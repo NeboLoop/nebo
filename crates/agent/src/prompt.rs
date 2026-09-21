@@ -390,6 +390,14 @@ const GEMINI_OPERATIONAL_GUIDANCE: &str = r#"
 /// NeboAI loop (file sharing via the `loop` tool), desktop/web surfaces (""/web/app —
 /// Work-panel document steering), or any other plugin-backed channel (route I/O +
 /// uploads through `plugin(...)`). `neboai` is served by the `loop` tool, not a plugin.
+/// Mathematics renders on the desktop/web/app surfaces and in loop chats.
+/// One inline form, one display form — the two both renderers accept.
+const MATH_GUIDANCE: &str = "\n\n## Math\n\
+    This surface renders LaTeX in `$…$` inline (`$E = mc^2$`) and `$$…$$` \
+    displayed on its own lines — those two forms only, never `\\(…\\)`, \
+    `\\[…\\]` or bare TeX, which show as text. Use them for any formula or \
+    symbol-heavy expression. A plain price like `$5` is not math.";
+
 fn channel_guidance(channel: &str) -> String {
     if let Some(fmt) = match channel {
         "dm" => Some("Keep responses concise for direct messages. Avoid markdown formatting."),
@@ -456,6 +464,15 @@ fn channel_guidance(channel: &str) -> String {
              path: \"<abs_path>\")` — it renders as a download card. NEVER point the \
              user at a local path or claim you cannot share a file.",
         );
+        // Both surfaces that render this channel's markdown — the web (marked +
+        // KaTeX) and the phone (flutter_math) — render these two delimiters and
+        // only these two, so the model is told exactly them. Without this the
+        // model picks whatever its training prefers (`\(…\)`, `\[…\]`, bare
+        // TeX) and the reader sees the delimiters instead of the equation.
+        // Its own `## Math` heading: how to write a formula is not a clause of
+        // how to file a deliverable, and a rule buried under someone else's
+        // heading is a rule the model reads as an aside.
+        guidance.push_str(MATH_GUIDANCE);
         return guidance;
     }
 
@@ -1761,32 +1778,58 @@ mod tests {
         let dynamic_part = build_dynamic_suffix(&dctx);
         // Rough estimate: ~4 chars per token.
         //
-        // The two halves are bounded SEPARATELY. The dynamic suffix carries the
-        // date, time, timezone, and hostname, so its length depends on the
-        // machine and the day ("Wednesday, September 30" is 8 chars longer than
-        // "Monday, May 1"); a single combined ceiling failed on 2026-09-02 by two
-        // characters with no prompt change at all. The static prefix is the
-        // cached, hand-written part the budget exists to police.
+        // Each part is bounded for what it actually is, because a ceiling laid
+        // over two unlike things reads ordinary growth in one as runaway growth
+        // in the other. A single static+dynamic ceiling failed on 2026-09-02 by
+        // two characters with no prompt change at all — the date had simply
+        // grown longer ("Wednesday, September 30" is 8 chars past "Monday,
+        // May 1") — so the two halves were split. The suffix then hid the same
+        // mismatch inside itself: nine tenths of it is `channel_guidance`,
+        // fixed hand-written text, and the ceiling's stated reason was the
+        // date and the hostname. Adding the Math rule (PR #161) tripped a
+        // budget that was never sized for the block it lives in. So: three
+        // numbers, each with one thing to say about it.
         //
-        // 5100 static (the old combined 5500 minus the suffix's share; raised
-        // from 5000 on 2026-08-22 because the ceiling had ~40 tokens of headroom
-        // left and forced every new rule into telegraphic fragments). The budget
-        // catches runaway growth, not necessary guidance — revisit pruning when
-        // it nears the ceiling again.
+        // 5100 static — the cached, hand-written prefix (the old combined 5500
+        // minus the suffix's share; raised from 5000 on 2026-08-22 because the
+        // ceiling had ~40 tokens of headroom left and forced every new rule
+        // into telegraphic fragments).
         const STATIC_BUDGET_TOKENS: usize = 5100;
-        // The suffix on the longest date/hostname this test has seen, plus room.
-        const DYNAMIC_BUDGET_TOKENS: usize = 800;
+        // 800 channel guidance — the web/app/desktop form, longest of the four:
+        // the Work Documents rules, the existing-file hand-off, and the Math
+        // rule. It stands at ~733 tokens, so this leaves roughly 270 chars of
+        // room; the next rule that does not fit prunes this block, it does not
+        // raise this number.
+        const CHANNEL_BUDGET_TOKENS: usize = 800;
+        // 150 for the rest of the suffix: the date, time, timezone, hostname
+        // and model line — ~88 tokens today. This is the one number that moves
+        // with the calendar and the machine, and nothing else moves it.
+        const TAIL_BUDGET_TOKENS: usize = 150;
+        // The suffix carries the channel block verbatim; subtracting it leaves
+        // the per-run tail. Split here, not by re-deriving the tail, so the
+        // two numbers always add up to the whole suffix.
+        let channel_part = channel_guidance(&dctx.channel);
+        assert!(
+            dynamic_part.contains(&channel_part),
+            "the suffix no longer carries channel_guidance verbatim — re-derive this split"
+        );
         let static_tokens = static_part.len() / 4;
-        let dynamic_tokens = dynamic_part.len() / 4;
+        let channel_tokens = channel_part.len() / 4;
+        let tail_tokens = (dynamic_part.len() - channel_part.len()) / 4;
         assert!(
             static_tokens < STATIC_BUDGET_TOKENS,
             "Static prompt too large: ~{static_tokens} tokens ({} chars). Budget is {STATIC_BUDGET_TOKENS} tokens.",
             static_part.len()
         );
         assert!(
-            dynamic_tokens < DYNAMIC_BUDGET_TOKENS,
-            "Dynamic suffix too large: ~{dynamic_tokens} tokens ({} chars). Budget is {DYNAMIC_BUDGET_TOKENS} tokens.",
-            dynamic_part.len()
+            channel_tokens < CHANNEL_BUDGET_TOKENS,
+            "Channel guidance too large: ~{channel_tokens} tokens ({} chars). Budget is {CHANNEL_BUDGET_TOKENS} tokens.",
+            channel_part.len()
+        );
+        assert!(
+            tail_tokens < TAIL_BUDGET_TOKENS,
+            "Dynamic suffix tail too large: ~{tail_tokens} tokens ({} chars). Budget is {TAIL_BUDGET_TOKENS} tokens.",
+            dynamic_part.len() - channel_part.len()
         );
     }
 }
@@ -1810,5 +1853,29 @@ fn get_hostname() -> String {
         } else {
             "unknown".to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod math_guidance_tests {
+    use super::{channel_guidance, MATH_GUIDANCE};
+
+    /// The delimiter rule goes exactly where markdown renders: the desktop,
+    /// web and app surfaces and loop chats. A terse channel gets none of it,
+    /// since a voice reply or a terminal cannot show an equation either way.
+    #[test]
+    fn math_delimiters_follow_the_renderers() {
+        for ch in ["", "web", "app", "neboai"] {
+            assert!(channel_guidance(ch).contains(MATH_GUIDANCE), "{ch:?} should carry math guidance");
+        }
+        for ch in ["voice", "cli", "dm"] {
+            assert!(!channel_guidance(ch).contains("LaTeX"), "{ch:?} should not carry math guidance");
+        }
+        assert!(MATH_GUIDANCE.contains("`$…$`") && MATH_GUIDANCE.contains("`$$…$$`"));
+        // Its own heading, not a tail on the Work Documents section.
+        assert!(MATH_GUIDANCE.starts_with("\n\n## Math\n"));
+        let desktop = channel_guidance("");
+        assert!(desktop.ends_with(MATH_GUIDANCE));
+        assert!(desktop.contains("## Work Documents"));
     }
 }

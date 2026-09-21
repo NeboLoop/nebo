@@ -459,11 +459,20 @@ pub fn take_for_apply(
 /// forty-eight seats and three saves while the owner is editing used to be a
 /// hundred and forty-four hidden runs for one edit; now it is three parked
 /// entries collapsed into one, and the learning happens when the owner says so.
-pub async fn detect_changes(state: &AppState, current: Vec<napp::Pack>) -> usize {
+///
+/// It reads the directory ITSELF, inside the locks that record the reading.
+/// A scan taken before the lock describes a directory that may have moved on
+/// while the lock was waited for, and two rescans racing could then record
+/// them out of order: the loser parked a pack the owner had just deleted, and
+/// nothing un-parked it, because the disk had stopped changing and no further
+/// rescan was coming. Applying that phantom entry put a pack back into the
+/// applied snapshot with no pack on disk — a layer the owner could not remove
+/// until they touched the folder again.
+pub async fn detect_changes(state: &AppState, packs_dir: &std::path::Path) -> usize {
     let (count, changed, slugs) = {
         let mut applied = state.packs.write().await;
         let mut pending = state.pending_layers.write().await;
-        let found = record_pending(&mut applied, &mut pending, current);
+        let found = record_pending(&mut applied, &mut pending, napp::scan_packs(packs_dir));
         if found.snapshot_moved {
             save_applied(&applied);
         }
@@ -537,10 +546,10 @@ pub async fn apply_pending(state: &AppState, slugs: Option<Vec<String>>) -> (Vec
 /// parks instead — that is the whole point of the split.
 pub async fn detect_and_apply(
     state: &AppState,
-    current: Vec<napp::Pack>,
+    packs_dir: &std::path::Path,
     slugs: Option<Vec<String>>,
 ) -> (Vec<String>, usize) {
-    detect_changes(state, current).await;
+    detect_changes(state, packs_dir).await;
     apply_pending(state, slugs).await
 }
 

@@ -474,6 +474,7 @@ async fn run_single(
             cache_creation_tokens: total_cache_creation,
         },
         grade: None,
+        failure_reason: None,
     })
 }
 

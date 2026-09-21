@@ -467,6 +467,17 @@
 	word-break: normal;
 	hyphens: none;
 }
+/* A displayed equation is one line by nature: a long one scrolls sideways
+   the way a wide table does, instead of wrapping mid-fraction. Unscoped on
+   purpose: the markdown pipeline is shared, but `prose` is not — the coworker
+   thread, the team view and the embedded work page render the same math
+   without it, and a second rule for them would be the drift this file exists
+   to prevent. */
+:where(.katex-display) {
+	overflow-x: auto;
+	overflow-y: hidden;
+	max-width: 100%;
+}
 [data-user-msg] {
 	min-width: 0;
 	max-width: 100%;

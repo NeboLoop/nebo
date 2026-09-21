@@ -447,7 +447,7 @@ pub async fn delete_layer_file(
 /// later pass finds the same thing and replaces the same one entry.
 async fn park_now(state: &AppState, slug: &str) -> Option<PendingLayerEntry> {
     let packs_dir = config::packs_dir().ok()?;
-    layers_update::detect_changes(state, napp::scan_packs(&packs_dir)).await;
+    layers_update::detect_changes(state, &packs_dir).await;
     state
         .pending_layers
         .read()
