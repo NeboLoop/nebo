@@ -1224,14 +1224,14 @@ mod tests {
         let _ = std::fs::remove_file(&file);
         let t = tool();
         let started = std::time::Instant::now();
-        // `set -m` puts the background job in its own process group, which the
-        // group kill does not reach — the stand-in for a `D`-state child.
+        // The grandchild puts itself in its own process group, which the group
+        // kill does not reach — the stand-in for a `D`-state child.
         let r = t
             .execute(
                 &ctx(),
                 json!({
                     "action": "exec",
-                    "command": format!("set -m; sleep 30 & echo $! > {}; wait", file.display()),
+                    "command": crate::process::escaped_child_command(&file),
                     "timeout": 1
                 }),
             )
@@ -1249,13 +1249,14 @@ mod tests {
             "the answer waited on a process that would not die ({waited:?})"
         );
 
-        if let Ok(text) = std::fs::read_to_string(&file)
-            && let Ok(pid) = text.trim().parse::<i32>()
-        {
-            // SAFETY: a pid this test created; the escaped process is let go by
-            // the tool, not by the test.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-        }
+        let escaped = crate::process::grandchild_pid(&file).await;
+        assert!(
+            crate::process::alive(escaped),
+            "the stand-in needs a grandchild the group kill misses; pid {escaped} died"
+        );
+        // SAFETY: a pid this test created; the escaped process is let go by
+        // the tool, so the test is what kills it.
+        unsafe { libc::kill(escaped, libc::SIGKILL) };
         let _ = std::fs::remove_file(&file);
     }
 

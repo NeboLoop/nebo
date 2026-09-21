@@ -702,29 +702,61 @@ mod utf8_tests {
     }
 }
 
+/// A shell command that leaves behind a grandchild the group kill cannot
+/// reach: `perl` puts itself in its own process group before exec'ing
+/// `sleep`, so `killpg` on the wrapper's group misses it, and it holds the
+/// wrapper's output pipe open for as long as it lives. The `$!` written to
+/// `pid_file` is that process, so a test can prove it survived. This is the
+/// stand-in for the `D`-state child the tests are really about — a process in
+/// uninterruptible sleep cannot be made on demand.
+///
+/// Shell job control (`set -m`) cannot stand in for it. `dash` is `/bin/sh`
+/// on Debian and Ubuntu, CI runners included, and it turns job control off
+/// when there is no tty ("sh: set: can't access tty; job control turned
+/// off"), leaving the background job in the wrapper's group, where the kill
+/// reaches it. Only `bash` — `/bin/sh` on macOS — honours `set -m` without a
+/// tty, so the escape was real on the Mac the tests were written on and a
+/// no-op on Linux, where the grandchild died with the group: the test then
+/// panicked on the hosted runner and passed on the house VM, because a
+/// grandchild killed a moment ago is still a zombie and `kill(pid, 0)`
+/// answers for one (2026-09-21).
+#[cfg(all(test, unix))]
+pub(crate) fn escaped_child_command(pid_file: &std::path::Path) -> String {
+    format!(
+        "perl -e 'setpgrp 0,0; exec q(sleep), q(30)' & echo $! > {}; wait",
+        pid_file.display()
+    )
+}
+
+/// Is that process still there? Signal 0 only checks existence.
+#[cfg(all(test, unix))]
+pub(crate) fn alive(pid: i32) -> bool {
+    // SAFETY: signal 0 checks existence and delivers nothing.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// The grandchild's pid, as the shell wrote it to `file`.
+#[cfg(all(test, unix))]
+pub(crate) async fn grandchild_pid(file: &std::path::Path) -> i32 {
+    for _ in 0..50 {
+        if let Ok(t) = std::fs::read_to_string(file)
+            && let Ok(pid) = t.trim().parse()
+        {
+            return pid;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("grandchild never reported its pid (is `perl` installed?)");
+}
+
 #[cfg(all(test, unix))]
 mod group_tests {
     use super::*;
     use std::time::Duration;
 
-    /// A grandchild's pid, written by the shell so the test can watch it die.
+    /// Where a grandchild reports its pid, so the test can watch it live or die.
     fn pid_file() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("nebo-group-{}", Uuid::new_v4()))
-    }
-    fn alive(pid: i32) -> bool {
-        // SAFETY: signal 0 only checks existence.
-        unsafe { libc::kill(pid, 0) == 0 }
-    }
-    async fn grandchild_pid(file: &std::path::Path) -> i32 {
-        for _ in 0..50 {
-            if let Ok(t) = std::fs::read_to_string(file)
-                && let Ok(pid) = t.trim().parse()
-            {
-                return pid;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        panic!("grandchild never reported its pid");
     }
     async fn settle() {
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -751,15 +783,15 @@ mod group_tests {
     /// was in uninterruptible sleep on a virtiofs mount, and the kill-and-wait
     /// waited on it. Nothing in this module may block on a process that will
     /// not exit — it signals the group, reaps with a bound, and answers
-    /// anyway. A real `D`-state process cannot be made on demand, so the
-    /// stand-in is a grandchild in its own process group (`set -m`), which the
-    /// group kill does not reach and which keeps the output pipe open.
+    /// anyway. The stand-in for that process is
+    /// [`escaped_child_command`]: a grandchild that puts itself in its own
+    /// process group, which the group kill does not reach and which keeps the
+    /// output pipe open.
     #[tokio::test]
     async fn a_child_the_kill_cannot_reach_does_not_hold_up_the_answer() {
         let file = pid_file();
         let mut cmd = Command::new("sh");
-        cmd.arg("-c")
-            .arg(format!("set -m; sleep 30 & echo $! > {}; wait", file.display()));
+        cmd.arg("-c").arg(escaped_child_command(&file));
 
         let started = std::time::Instant::now();
         let out = output_within(cmd, Duration::from_millis(300)).await.unwrap();
@@ -771,6 +803,15 @@ mod group_tests {
             "the answer waited on a process that would not die ({waited:?})"
         );
 
+        // The answer can only have come back after the drain gave up on the
+        // pipe the escaped child still holds. Without that the test proves
+        // nothing: a grandchild that died with the group closes the pipe, the
+        // drain ends at once, and the answer arrives in the timeout alone.
+        assert!(
+            waited >= REAP_BOUND,
+            "nothing held the output pipe open — the answer came back in {waited:?}, \
+             inside the drain bound, so the stand-in never escaped the group"
+        );
         let escaped = grandchild_pid(&file).await;
         assert!(
             alive(escaped),
