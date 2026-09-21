@@ -34,6 +34,13 @@ struct AgentWSClaims {
 
 /// Validate a JWT token and return raw claims.
 pub fn validate_jwt(token_string: &str, secret: &str) -> Result<Claims, NeboError> {
+    // HS256 happily verifies against an empty key, so an empty secret would
+    // accept any token an attacker signs with the empty string. No caller can
+    // ever mean that; refuse before we get near the signature.
+    if secret.is_empty() {
+        return Err(NeboError::InvalidToken);
+    }
+
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
     // We handle claims extraction manually
@@ -156,6 +163,34 @@ mod tests {
         let parsed = validate_jwt_claims(&token, secret).unwrap();
         assert_eq!(parsed.sub, "user-123");
         assert_eq!(parsed.email, "test@example.com");
+    }
+
+    /// An empty secret is never a secret. HS256 verifies against an empty key
+    /// without complaint, so a token signed with "" would otherwise be waved
+    /// through by anything that lost hold of the real secret.
+    #[test]
+    fn an_empty_secret_validates_nothing() {
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+
+        let now = chrono::Utc::now().timestamp();
+        let mut claims = Claims::new();
+        claims.insert("userId".into(), serde_json::json!("user-123"));
+        claims.insert("email".into(), serde_json::json!("test@example.com"));
+        claims.insert("exp".into(), serde_json::json!(now + 3600));
+
+        let forged = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(b""),
+        )
+        .unwrap();
+
+        assert!(validate_jwt(&forged, "").is_err());
+        assert!(validate_jwt_claims(&forged, "").is_err());
+        assert!(validate_agent_ws_token(&forged, "").is_err());
+        // And a real token is not accepted by an empty secret either.
+        let real = generate_agent_ws_token("test-secret", 3600).unwrap();
+        assert!(validate_agent_ws_token(&real, "").is_err());
     }
 
     /// A session the owner already holds must survive a library upgrade. These

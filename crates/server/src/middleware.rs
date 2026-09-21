@@ -21,11 +21,26 @@ pub struct AuthClaims {
 /// Axum middleware that validates JWT from the Authorization header.
 /// On success, inserts `AuthClaims` into request extensions.
 pub async fn jwt_auth(mut request: Request, next: Next) -> Response {
-    let secret = request
-        .extensions()
-        .get::<JwtSecret>()
-        .map(|s| s.0.clone())
-        .unwrap_or_default();
+    // No fallback here, ever. An absent or empty secret is a server wiring
+    // fault, and an empty HS256 key verifies any token an attacker signs with
+    // the empty string — so refuse the request loudly instead of validating
+    // against nothing.
+    let secret = match request.extensions().get::<JwtSecret>() {
+        Some(JwtSecret(s)) if !s.is_empty() => s.clone(),
+        Some(_) => {
+            tracing::error!(
+                "jwt_auth: JWT secret is empty — refusing request; check auth.access_secret"
+            );
+            return misconfigured();
+        }
+        None => {
+            tracing::error!(
+                "jwt_auth: no JwtSecret extension in request — refusing request; the \
+                 Extension layer must be listed AFTER from_fn(jwt_auth) so it is outermost"
+            );
+            return misconfigured();
+        }
+    };
 
     let auth_header = request
         .headers()
@@ -60,6 +75,20 @@ pub async fn jwt_auth(mut request: Request, next: Next) -> Response {
 /// Wrapper type for the JWT secret, stored in request extensions via a layer.
 #[derive(Clone)]
 pub struct JwtSecret(pub String);
+
+/// A request that could not be authenticated because the server is wired
+/// wrong. 500, not 401: the caller's credentials were never the problem, and
+/// dressing a server fault as a credential failure is how this class of bug
+/// hides in ordinary auth noise.
+fn misconfigured() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error: "authentication is not configured".to_string(),
+        }),
+    )
+        .into_response()
+}
 
 fn auth_error(message: &str) -> Response {
     (
@@ -227,11 +256,25 @@ impl RateLimiter {
 /// Uses ConnectInfo (RemoteAddr) only — intentionally ignores X-Forwarded-For
 /// because it is trivially spoofable by any client. Matches Go's DefaultKeyFunc.
 pub async fn rate_limit(request: Request, next: Next) -> Response {
-    let limiter = request.extensions().get::<RateLimiter>().cloned();
-
-    let limiter = match limiter {
+    // Same rule as `jwt_auth`: this middleware is only ever installed together
+    // with its `RateLimiter` extension, so a missing one means the layers are
+    // wired wrong. Letting the request through unlimited would turn that
+    // mistake into a silently unprotected login door.
+    let limiter = match request.extensions().get::<RateLimiter>().cloned() {
         Some(l) => l,
-        None => return next.run(request).await,
+        None => {
+            tracing::error!(
+                "rate_limit: no RateLimiter extension in request — refusing request; the \
+                 Extension layer must be listed AFTER from_fn(rate_limit) so it is outermost"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "rate limiting is not configured".to_string(),
+                }),
+            )
+                .into_response();
+        }
     };
 
     // Extract client IP from peer address only (RemoteAddr).

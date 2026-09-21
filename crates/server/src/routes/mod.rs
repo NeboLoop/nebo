@@ -43,11 +43,18 @@ use crate::state::AppState;
 
 /// Compose all API sub-routers into the `/api/v1` router.
 pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppState> {
-    // Auth routes with rate limiting (10 req/min per IP)
+    // Auth routes with rate limiting (10 req/min per IP).
+    //
+    // LAYER ORDER IS LOAD-BEARING. In axum each `.layer` wraps what came
+    // before it, so the LAST layer listed is the outermost one and is the
+    // first to see the request. A middleware that reads an `Extension` must
+    // therefore be listed BEFORE that Extension, or it runs while the value
+    // is not in the request yet. Listing them the other way round is what
+    // left `jwt_auth` reading a secret that was never there.
     let auth_limiter = middleware::RateLimiter::new(10, std::time::Duration::from_secs(60));
     let auth_routes = auth::auth_routes()
-        .layer(axum::Extension(auth_limiter))
-        .layer(axum::middleware::from_fn(middleware::rate_limit));
+        .layer(axum::middleware::from_fn(middleware::rate_limit))
+        .layer(axum::Extension(auth_limiter));
 
     // Public routes (no auth required)
     let public = Router::new()
@@ -84,10 +91,12 @@ pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppS
         .merge(user::public_routes())
         .merge(self::codes_and_deps());
 
-    // Protected routes (JWT required)
+    // Protected routes (JWT required). Extension last = outermost, so the
+    // secret is in the request by the time `jwt_auth` reads it. See the note
+    // on `auth_routes` above.
     let protected = user::protected_routes()
-        .layer(axum::Extension(jwt_secret))
-        .layer(axum::middleware::from_fn(middleware::jwt_auth));
+        .layer(axum::middleware::from_fn(middleware::jwt_auth))
+        .layer(axum::Extension(jwt_secret));
 
     Router::new()
         .merge(auth_routes)
