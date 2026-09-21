@@ -1,5 +1,7 @@
 <script lang="ts">
   import '../app.css';
+  // KaTeX's own styles, once, for the math the shared markdown pipeline emits.
+  import 'katex/dist/katex.min.css';
   import '$lib/i18n';
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
