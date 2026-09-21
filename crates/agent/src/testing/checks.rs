@@ -329,6 +329,7 @@ mod tests {
                 ..Default::default()
             },
             grade: None,
+            failure_reason: None,
         }
     }
 
