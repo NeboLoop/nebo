@@ -344,6 +344,7 @@ export interface Chat {
 	updatedAt: number
 	userId?: string
 	sessionName?: string
+	model?: string
 }
 
 export interface ChatMessage {
@@ -877,6 +878,7 @@ export interface PendingWrite {
 	content?: string
 	gist: string
 	targetHash: string
+	priorContent?: string
 	status: string
 	createdAt: number
 	resolvedAt?: number
@@ -2030,6 +2032,10 @@ export interface ResolveWorkflowApprovalResponse {
 	runId: string
 }
 
+export interface RevertLearningResponse {
+	status: string
+}
+
 export interface RevokeAgentApiKeyResponse {
 	ok: boolean
 }
@@ -2235,14 +2241,6 @@ export interface UpdateTeamResponse {
 
 export interface UpdateWorkflowResponse {
 	workflow: Workflow
-}
-
-export interface UploadFileResponse {
-	fileId: string
-	filename: string
-	mimeType: unknown
-	size: number
-	url: string
 }
 
 export interface UserAcceptTermsResponse {

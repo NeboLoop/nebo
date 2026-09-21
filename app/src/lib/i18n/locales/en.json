@@ -2990,7 +2990,9 @@
 		"failedAt": "Failed during \"{activity}\"",
 		"steps": "What it was doing",
 		"output": "Output",
-		"recordGone": "The run record is gone. It was removed along with the employee that owned it, so only this notice remains."
+		"recordGone": "The run record is gone. It was removed along with the employee that owned it, so only this notice remains.",
+		"revert": "Revert",
+		"reverted": "Reverted"
 	},
 	"voice": {
 		"startConversation": "Voice conversation",

@@ -21,6 +21,7 @@ fn row_to_pending_write(row: &rusqlite::Row) -> rusqlite::Result<PendingWrite> {
         content: row.get("content")?,
         gist: row.get("gist")?,
         target_hash: row.get("target_hash")?,
+        prior_content: row.get("prior_content")?,
         status: row.get("status")?,
         created_at: row.get("created_at")?,
         resolved_at: row.get("resolved_at")?,
@@ -28,6 +29,7 @@ fn row_to_pending_write(row: &rusqlite::Row) -> rusqlite::Result<PendingWrite> {
 }
 
 impl Store {
+    #[allow(clippy::too_many_arguments)]
     pub fn create_pending_write(
         &self,
         id: &str,
@@ -38,15 +40,58 @@ impl Store {
         content: Option<&str>,
         gist: &str,
         target_hash: &str,
+        prior_content: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO pending_writes (id, agent_id, kind, action, target, content, gist, target_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id, agent_id, kind, action, target, content, gist, target_hash],
+            "INSERT INTO pending_writes (id, agent_id, kind, action, target, content, gist, target_hash, prior_content)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, agent_id, kind, action, target, content, gist, target_hash, prior_content],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Create a pending write that is already applied (auto-mode audit row).
+    /// Same shape as `create_pending_write` but lands with status 'approved'
+    /// so it becomes a revert anchor immediately — the auto-mode counterpart to
+    /// the staged create + approve flow.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_applied_write(
+        &self,
+        id: &str,
+        agent_id: &str,
+        kind: &str,
+        action: &str,
+        target: &str,
+        content: Option<&str>,
+        gist: &str,
+        target_hash: &str,
+        prior_content: Option<&str>,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO pending_writes (id, agent_id, kind, action, target, content, gist, target_hash, prior_content, status, resolved_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'approved', unixepoch())",
+            params![id, agent_id, kind, action, target, content, gist, target_hash, prior_content],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Mark an APPLIED learning as reverted (approved → reverted). Returns false
+    /// if the row is missing or not in 'approved' state (a pending, rejected,
+    /// conflicted, expired, or already-reverted row cannot be reverted).
+    pub fn revert_pending_write(&self, id: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let n = conn
+            .execute(
+                "UPDATE pending_writes SET status = 'reverted', resolved_at = unixepoch()
+                 WHERE id = ?1 AND status = 'approved'",
+                params![id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(n > 0)
     }
 
     /// Whether the agent has any pending_writes row of `kind` created in the
@@ -122,5 +167,73 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         Ok(ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+
+    fn temp_store() -> Store {
+        let path = std::env::temp_dir().join(format!(
+            "nebo-pending-writes-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        Store::new(path.to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn prior_content_round_trips() {
+        let s = temp_store();
+        s.create_pending_write(
+            "p1", "agent-a", "skill", "update", "my-skill",
+            Some("new body"), "Update my-skill", "abc123", Some("old body"),
+        )
+        .unwrap();
+        let row = s.get_pending_write("p1").unwrap().unwrap();
+        assert_eq!(row.prior_content.as_deref(), Some("old body"));
+        assert_eq!(row.content.as_deref(), Some("new body"));
+        assert_eq!(row.status, "pending");
+    }
+
+    #[test]
+    fn record_applied_write_lands_approved() {
+        let s = temp_store();
+        s.record_applied_write(
+            "p2", "agent-a", "skill", "create", "made", Some("body"),
+            "Create made", "", None,
+        )
+        .unwrap();
+        let row = s.get_pending_write("p2").unwrap().unwrap();
+        assert_eq!(row.status, "approved");
+        assert!(row.resolved_at.is_some());
+        assert_eq!(row.prior_content, None);
+    }
+
+    #[test]
+    fn revert_only_transitions_applied_rows() {
+        let s = temp_store();
+        // An applied learning can be reverted exactly once.
+        s.record_applied_write(
+            "p3", "agent-a", "skill", "update", "made", Some("v2"),
+            "Update made", "h", Some("v1"),
+        )
+        .unwrap();
+        assert!(s.revert_pending_write("p3").unwrap());
+        assert_eq!(s.get_pending_write("p3").unwrap().unwrap().status, "reverted");
+        // A second revert is a no-op — it is no longer 'approved'.
+        assert!(!s.revert_pending_write("p3").unwrap());
+
+        // A pending (not-yet-applied) row cannot be reverted.
+        s.create_pending_write(
+            "p4", "agent-a", "skill", "create", "x", Some("b"), "g", "", None,
+        )
+        .unwrap();
+        assert!(!s.revert_pending_write("p4").unwrap());
+        assert_eq!(s.get_pending_write("p4").unwrap().unwrap().status, "pending");
     }
 }
