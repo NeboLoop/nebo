@@ -168,9 +168,11 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                 // 35522052383, 2026-09-20); a cloud pod would crawl the same way.
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
                 let args = find_args(dir, &home, query);
+                // kill_on_drop: a timed-out find must die with the wait, not
+                // reparent to init and walk on (architecture_drift gate).
                 let find_output = tokio::time::timeout(
                     FIND_BUDGET,
-                    tokio::process::Command::new("find").args(&args).output(),
+                    tokio::process::Command::new("find").args(&args).kill_on_drop(true).output(),
                 )
                 .await;
                 match find_output {
