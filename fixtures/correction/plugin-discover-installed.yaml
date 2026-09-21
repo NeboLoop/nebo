@@ -5,10 +5,16 @@ description: |
   built an install card for QuickBooks Online while that plugin was already
   installed, and the run parked on the card. Now discover checks the plugin
   store before offering a card: an installed best match is reported as
-  already installed and the run continues with the connect step. This
-  fixture runs on a machine with quickbooks installed and pins that no
-  install card is ever offered.
+  already installed and the run continues with the connect step. Setup
+  installs quickbooks through the one install pathway (the store product's
+  install code), so the machine this runs on really does have it, and
+  teardown removes it again. It pins that no install card is ever offered.
 target_component: plugin
+
+setup:
+  - "python3 -c \"import json,urllib.request as u; s='${NEBO_TEST_SERVER:-localhost:27895}'; ps=json.load(u.urlopen('http://'+s+'/api/v1/store/products?type=plugin&q=quickbooks'))['products']; p=[x for x in ps if x.get('slug')=='quickbooks'][0]; u.urlopen(u.Request('http://'+s+'/api/v1/store/products/'+p['id']+'/install', method='POST'), timeout=180).read()\""
+teardown:
+  - "curl -s -X DELETE http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/plugins/quickbooks > /dev/null"
 
 conversation:
   - role: user
@@ -31,7 +37,7 @@ prompt_assertions:
       text: "If discover is called for quickbooks, its result says the plugin was already installed and points at plugin(resource: \"quickbooks\", ...)"
       severity: critical
     - id: no-first-call-misses
-      text: "Every call is accepted: no missing-resource or unknown-action error in any tool result"
+      text: "Every call is accepted: no tool result is an error — in particular no missing-resource or unknown-action error"
       severity: critical
       check: { max_errors: 0 }
     - id: bounded

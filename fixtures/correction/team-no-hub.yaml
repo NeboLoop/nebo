@@ -7,15 +7,23 @@ description: |
   NeboAI loop, and the model wandered off to the marketplace or the plugin
   store looking for a fix. Now team(action: "create", ...) creates a local
   team (its own thread, the named employees as members) and never touches
-  the hub. This fixture runs on a machine that is paired with no hub loop
-  and has Chief of Staff and Executive Assistant installed; it pins that
-  the FIRST call is the team create with those agents, that it is accepted,
-  and that the model reports the team as existing.
+  the hub. This fixture runs on a machine that is paired with no hub loop;
+  setup hires the two employees the team is made of, so the create has
+  something to name. It pins that the FIRST call is the team create with
+  those employees, that it is accepted, and that the model reports the team
+  as existing.
 target_component: team
+
+setup:
+  - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"chief-of-staff-{{tag}}\"}' > /dev/null"
+  - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"executive-assistant-{{tag}}\"}' > /dev/null"
+teardown:
+  - "python3 -c \"import json,urllib.request as u; ts=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/teams'))['teams']; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/teams/'+t['id'], method='DELETE')) for t in ts if t.get('name')=='Operations-{{tag}}']\" || true"
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name') in ('chief-of-staff-{{tag}}','executive-assistant-{{tag}}')]; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
 
 conversation:
   - role: user
-    content: "make a team called Operations with Chief of Staff and Executive Assistant"
+    content: "make a team called Operations-{{tag}} with chief-of-staff-{{tag}} and executive-assistant-{{tag}}"
 
 tool_config:
   team:
@@ -30,10 +38,10 @@ tool_config:
 prompt_assertions:
   recovery:
     - id: first-call-is-team-create
-      text: "The first tool call is team(action: \"create\") (or its alias loop(action: \"create\") / loop(resource: \"workroom\", action: \"create\")) with name \"Operations\" and agents containing \"Chief of Staff\" and \"Executive Assistant\""
+      text: "The first tool call is team(action: \"create\") (or its alias loop(action: \"create\") / loop(resource: \"workroom\", action: \"create\")) with name \"Operations-{{tag}}\" and agents containing \"chief-of-staff-{{tag}}\" and \"executive-assistant-{{tag}}\""
       severity: critical
     - id: no-first-call-misses
-      text: "Every call is accepted: no missing-parameter, unknown-action, or \"no loop available\" error in any tool result"
+      text: "Every call is accepted: no tool result is an error — in particular no missing-parameter, unknown-action, unknown-employee, or \"no loop available\" error"
       severity: critical
       check: { max_errors: 0 }
     - id: bounded
@@ -44,9 +52,9 @@ prompt_assertions:
       text: "No plugin(action: \"discover\") call and no marketplace lookup is made"
       severity: critical
     - id: team-exists
-      text: "The final response tells the user the Operations team exists (is created / ready) with Chief of Staff and Executive Assistant on it, and never says the team needs a hub, a loop, or a NeboAI connection"
+      text: "The final response tells the user the Operations-{{tag}} team exists (is created / ready) with chief-of-staff-{{tag}} and executive-assistant-{{tag}} on it, and never says the team needs a hub, a loop, or a NeboAI connection"
       severity: critical
 
 ideal_behavior:
   tool_calls: 1
-  narrative: "One call: team(action: \"create\", name: \"Operations\", agents: [\"Chief of Staff\", \"Executive Assistant\"]); then tell the owner the team exists and offer to post the first ask."
+  narrative: "One call: team(action: \"create\", name: \"Operations-{{tag}}\", agents: [\"chief-of-staff-{{tag}}\", \"executive-assistant-{{tag}}\"]); then tell the owner the team exists and offer to post the first ask."
