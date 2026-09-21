@@ -9,6 +9,7 @@
   import { t } from 'svelte-i18n';
   import { neboAIShareTargets, neboAIShareArtifact } from '$lib/api/nebo';
   import type { ShareChannel, ShareMember } from '$lib/api/neboComponents';
+  import { orderShareMembers } from '$lib/chat/shareTargets';
   import { addToast } from '$lib/stores/toast';
 
   interface Props {
@@ -50,6 +51,10 @@
       loading = false;
     }
   }
+
+  // The bots you can reach lead the list. The selection is held by bot id, so
+  // the picked row keeps its mark wherever the order puts it.
+  const orderedMembers = $derived(orderShareMembers(members));
 
   const selectedName = $derived.by(() => {
     if (selected.startsWith('c:')) return channels.find((c) => c.channelId === selected.slice(2))?.channelName ?? '';
@@ -118,7 +123,7 @@
           {#if members.length > 0}
             <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('chat.shareMembers')}</div>
             <div class="flex flex-col gap-1">
-              {#each members as m (`${m.loopId}:${m.botId}`)}
+              {#each orderedMembers as m (`${m.loopId}:${m.botId}`)}
                 <button
                   class="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-left cursor-pointer transition-colors {selected === `m:${m.botId}` ? 'bg-primary/10 border border-primary/40' : 'bg-base-200/50 border border-transparent hover:bg-base-200'}"
                   onclick={() => (selected = `m:${m.botId}`)}
