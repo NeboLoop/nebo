@@ -47,6 +47,7 @@ pub(super) async fn text_raw(image: &std::path::Path) -> Result<String, String> 
             .arg(image)
             .arg("-")
             .arg("tsv")
+            .kill_on_drop(true)
             .output(),
     )
     .await

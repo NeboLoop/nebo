@@ -6,76 +6,22 @@ use tokio::io::AsyncBufReadExt;
 
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
+use crate::walk_bounds::{self, skip_paths};
 
-/// How long a file search may run before it gives up.
-///
-/// The runner's per-tool budget is 300 s and the harness ends a silent run at
-/// 180 s, so neither of those can ever be the thing that stops a search: the
-/// run is over before the tool says a word. A search that has not found the
-/// file in twenty seconds is searching the wrong place, and the employee is
-/// better served by a sentence telling it to narrow the search than by three
-/// more minutes of walking the disk.
-///
-/// This is the whole call's budget, not one command's: when plocate is absent
-/// and the find fallback runs, both share these twenty seconds.
-const SEARCH_DEADLINE: Duration = Duration::from_secs(20);
+/// The whole call's budget, not one command's: when plocate is absent and the
+/// find fallback runs, both share the one deadline every filesystem walk in
+/// this tree gets. See `walk_bounds` for why twenty seconds.
+const SEARCH_DEADLINE: Duration = walk_bounds::WALK_DEADLINE;
 
 /// The engine budget this tool asks for: the search's own deadline plus room
 /// to format the answer. The tool always stops itself first, so the model
 /// reads the search's own sentence about narrowing the query instead of the
 /// runner's generic timeout text.
-const SEARCH_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+const SEARCH_EXECUTION_TIMEOUT: Duration = walk_bounds::WALK_EXECUTION_TIMEOUT;
 
 /// How deep a name search walks. Matches the depth the Linux fallback has
 /// always used; a file further down than this wants a `dir`.
 const MAX_DEPTH: &str = "5";
-
-/// Paths a name search must never walk: kernel and device trees that are not
-/// files, the runtime churn beside them, and the autofs triggers that mount a
-/// remote filesystem merely by being looked at. Pruned only when they are
-/// actually under the root, so a scoped search pays nothing for them.
-const NEVER_WALK: [&str; 11] = [
-    "/proc",
-    "/sys",
-    "/dev",
-    "/run",
-    "/var/run",
-    "/mnt",
-    "/media",
-    "/net",
-    "/private/var/vm",
-    "/System/Volumes/Data",
-    "/Volumes",
-];
-
-/// Filesystem types a name search must never enter. A read of a directory on
-/// one of these can block in the kernel with no timeout and no signal: the
-/// gate's orphaned `find` processes were stuck in uninterruptible sleep inside
-/// `fuse_readdir` on a virtiofs mount, where neither a deadline, a `kill`, nor
-/// `kill_on_drop` can reach them. The only fix that works is not going in.
-/// Matched against `/proc/self/mounts`; anything starting with `fuse` counts.
-/// The table is Linux-shaped, so only a Linux build reads it — macOS keeps the
-/// autofs and removable-volume roots in `NEVER_WALK` instead.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-const FOREIGN_FS: [&str; 17] = [
-    "virtiofs",
-    "nfs",
-    "nfs4",
-    "cifs",
-    "smbfs",
-    "smb3",
-    "afpfs",
-    "autofs",
-    "9p",
-    "sshfs",
-    "davfs",
-    "webdav",
-    "ceph",
-    "glusterfs",
-    "lustre",
-    "afs",
-    "coda",
-];
 
 /// Spotlight tool: search files using platform-native search (mdfind on macOS, plocate/find on Linux).
 pub struct SpotlightTool;
@@ -297,78 +243,6 @@ fn name_pattern(query: &str) -> String {
     }
 }
 
-/// Mount points on a filesystem a search must not enter, read from a
-/// `/proc/self/mounts`-shaped table: `device mountpoint fstype options…`,
-/// with the kernel's octal escapes for the awkward characters in a path.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn parse_foreign_mounts(table: &str) -> Vec<PathBuf> {
-    table
-        .lines()
-        .filter_map(|line| {
-            let mut f = line.split_whitespace();
-            let _device = f.next()?;
-            let point = f.next()?;
-            let fstype = f.next()?;
-            let foreign = fstype.starts_with("fuse") || FOREIGN_FS.contains(&fstype);
-            foreign.then(|| PathBuf::from(unescape_mount_path(point)))
-        })
-        .collect()
-}
-
-/// `/proc/self/mounts` escapes space, tab, newline and backslash in octal.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn unescape_mount_path(raw: &str) -> String {
-    if !raw.contains('\\') {
-        return raw.to_string();
-    }
-    let bytes = raw.as_bytes();
-    let mut out = String::with_capacity(raw.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 3 < bytes.len() {
-            if let Some(c) = std::str::from_utf8(&bytes[i + 1..i + 4])
-                .ok()
-                .and_then(|o| u8::from_str_radix(o, 8).ok())
-            {
-                out.push(c as char);
-                i += 4;
-                continue;
-            }
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
-}
-
-/// Every mount on this box a search must not walk into. Linux reads the live
-/// table; macOS has no `/proc`, and the autofs and removable-volume roots that
-/// would hang a walk there are already in `NEVER_WALK`.
-fn foreign_mounts() -> Vec<PathBuf> {
-    #[cfg(target_os = "linux")]
-    {
-        std::fs::read_to_string("/proc/self/mounts")
-            .map(|t| parse_foreign_mounts(&t))
-            .unwrap_or_default()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Vec::new()
-    }
-}
-
-/// The paths this search must step around: the kernel and device trees, plus
-/// every foreign mount, narrowed to the ones actually under the root.
-fn skip_paths(root: &Path) -> Vec<PathBuf> {
-    let under = |p: &Path| p.starts_with(root) && p != root;
-    NEVER_WALK
-        .iter()
-        .map(PathBuf::from)
-        .chain(foreign_mounts())
-        .filter(|p| under(p))
-        .collect()
-}
-
 /// The find command for this root: depth-bounded, kept on the root's own
 /// filesystem with `-xdev`, and with every path in `skip` pruned by name
 /// before find ever asks the kernel about it.
@@ -408,26 +282,17 @@ async fn run_find(
     run_search(find_command(root, query, skip), limit, deadline).await
 }
 
-/// The plain sentence a search that ran out of time gives back: what was
-/// searched, that it was stopped, how to narrow it, and whatever it had
-/// already found.
+/// The plain sentence a search that ran out of time gives back. The wording
+/// is the one every bounded walk in this tree uses; a search narrows with
+/// `dir`.
 fn took_too_long(query: &str, root: &Path, budget: Duration, partial: &[String]) -> String {
-    let mut msg = format!(
-        "The search for \"{}\" under {} took longer than {} seconds, so it was stopped. \
-         Narrow it and search again: pass dir with the folder the file is likely in, \
-         or give a more specific name.",
-        query,
-        root.display(),
-        budget.as_secs()
-    );
-    if !partial.is_empty() {
-        msg.push_str(&format!(
-            "\n\nWhat it had found before it stopped ({}):\n{}",
-            partial.len(),
-            partial.join("\n")
-        ));
-    }
-    msg
+    walk_bounds::took_too_long(
+        &format!("search for \"{query}\""),
+        root,
+        walk_bounds::CutShort::Deadline(budget),
+        "dir",
+        partial,
+    )
 }
 
 /// Nothing matched — the same advice on every platform.
@@ -582,6 +447,7 @@ fn found_header(n: usize, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::walk_bounds::parse_foreign_mounts;
 
     /// A pid is gone (or a reaped-any-moment zombie) — not still walking the disk.
     fn still_running(pid: u32) -> bool {
@@ -684,32 +550,6 @@ mod tests {
             .collect();
         assert!(!args.contains(&"-prune".to_string()));
         assert!(args.contains(&"-xdev".to_string()));
-    }
-
-    /// The mounts table, read the way the kernel writes it: only the
-    /// filesystems a walk must not enter come back, escapes and all.
-    #[test]
-    fn the_mounts_table_names_only_the_filesystems_to_stay_out_of() {
-        let table = "\
-/dev/vda1 / ext4 rw,relatime 0 0
-proc /proc proc rw,nosuid 0 0
-mount0 /mnt/lima-rosetta fuse.virtiofs rw,nosuid,nodev 0 0
-share /Users/stadium virtiofs rw,relatime 0 0
-fileserver:/vol /srv/files nfs4 rw 0 0
-//host/share /srv/win\\040share cifs rw 0 0
-tmpfs /tmp tmpfs rw 0 0
-";
-        let foreign = parse_foreign_mounts(table);
-        assert_eq!(
-            foreign,
-            vec![
-                PathBuf::from("/mnt/lima-rosetta"),
-                PathBuf::from("/Users/stadium"),
-                PathBuf::from("/srv/files"),
-                PathBuf::from("/srv/win share"),
-            ],
-            "ext4, proc and tmpfs are walkable; fuse, virtiofs, nfs and cifs are not"
-        );
     }
 
     /// The incident's shape, run for real: a directory standing in for the

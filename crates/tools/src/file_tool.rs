@@ -1,6 +1,7 @@
 use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::ToolResult;
+use crate::walk_bounds::{self, CutShort, WalkBounds};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
@@ -1029,7 +1030,8 @@ impl FileTool {
 
         let limit = if input.limit <= 0 { 100 } else { input.limit } as usize;
 
-        let matches = glob_with_globset(&base_path, pattern, limit);
+        let bounds = WalkBounds::for_root(Path::new(&base_path));
+        let (matches, cut_short) = glob_with_globset(&base_path, pattern, limit, &bounds);
 
         // Sort by modification time (newest first)
         let mut files_with_time: Vec<(String, i64)> = matches
@@ -1058,6 +1060,15 @@ impl FileTool {
         }
 
         if files_with_time.is_empty() {
+            if let Some(cut) = cut_short {
+                return ToolResult::ok(walk_bounds::took_too_long(
+                    &format!("glob of \"{pattern}\""),
+                    Path::new(&base_path),
+                    cut,
+                    "path",
+                    &[],
+                ));
+            }
             return ToolResult::ok(format!(
                 "No files found matching \"{}\" in {}. This is not an error; nothing here matches. \
                  Next: widen the search with os(resource: \"file\", action: \"glob\", pattern: \"{}\", path: \"{}\"), \
@@ -1086,6 +1097,18 @@ impl FileTool {
         } else {
             format!("Found {} entries matching \"{}\"", total_found, pattern)
         };
+        if let Some(cut) = cut_short {
+            result.push_str(&format!(
+                " {}",
+                walk_bounds::took_too_long(
+                    &format!("glob of \"{pattern}\""),
+                    Path::new(&base_path),
+                    cut,
+                    "path",
+                    &[],
+                )
+            ));
+        }
         result.push_str("\n\n");
         result.push_str(&paths.join("\n"));
 
@@ -1155,7 +1178,18 @@ impl Default for FileTool {
 }
 
 /// Glob using globset (supports brace expansion like *.{rs,toml}).
-fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String> {
+///
+/// `bounds` is what keeps a walk from `/` from crossing the whole disk: the
+/// model called `glob "**/image.png" path "/"` and this walk ran for three
+/// minutes until the harness ended the run (gate 35577273218, 2026-09-21); a
+/// cloud bot would walk the same way. Returns the matches (limit + 1 at most)
+/// and, when the walk was stopped early, which bound stopped it.
+fn glob_with_globset(
+    base_path: &str,
+    pattern: &str,
+    limit: usize,
+    bounds: &WalkBounds,
+) -> (Vec<String>, Option<CutShort>) {
     let full_pattern = if pattern.contains("**") {
         // For recursive patterns, prepend base only if pattern doesn't start with /
         if Path::new(pattern).is_absolute() {
@@ -1175,11 +1209,13 @@ fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String
         .build()
     {
         Ok(g) => g.compile_matcher(),
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), None),
     };
 
     let is_recursive = pattern.contains("**");
     let mut matches = Vec::new();
+    let mut visited = 0usize;
+    let mut cut_short = None;
 
     let walker = walkdir::WalkDir::new(base_path)
         .follow_links(false)
@@ -1198,6 +1234,13 @@ fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String
                 {
                     return false;
                 }
+                // The kernel and device trees, and every foreign mount on this
+                // box: a read of a directory on a virtiofs or NFS mount can
+                // block with no timeout and no signal, where the deadline
+                // below cannot reach it. The only fix is not going in.
+                if bounds.skips(e.path()) {
+                    return false;
+                }
             }
             true
         });
@@ -1205,6 +1248,11 @@ fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String
     // Collect limit+1 so the caller can detect truncation.
     for entry in walker {
         if matches.len() > limit {
+            break;
+        }
+        visited += 1;
+        if let Some(cut) = bounds.spent(visited) {
+            cut_short = Some(cut);
             break;
         }
 
@@ -1227,7 +1275,7 @@ fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String
         }
     }
 
-    matches
+    (matches, cut_short)
 }
 
 /// Split a path at the first glob metacharacter, returning (base_dir, glob_pattern).
@@ -1786,6 +1834,109 @@ pub fn edit_snippet(old: &str, new: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A walk that hits its entry budget stops and says so; one that does not
+    /// finishes clean. Both on the same tree, so only the budget differs.
+    #[test]
+    fn glob_walk_stops_at_its_entry_budget_and_says_so() {
+        // tempdir names start with a dot, which the walk skips; walk a plain child.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        for d in 0..5 {
+            let sub = root.join(format!("d{d}"));
+            std::fs::create_dir(&sub).unwrap();
+            for f in 0..5 {
+                std::fs::write(sub.join(format!("f{f}.txt")), "x").unwrap();
+            }
+        }
+        let base = root.to_string_lossy().to_string();
+        let big = WalkBounds {
+            skip: Vec::new(),
+            max_entries: 1_000,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+        };
+        let (all, cut) = glob_with_globset(&base, "**/*.txt", 100, &big);
+        assert_eq!((all.len(), cut), (25, None));
+
+        let small = WalkBounds { max_entries: 8, ..big };
+        let (some, cut) = glob_with_globset(&base, "**/*.txt", 100, &small);
+        assert_eq!(cut, Some(CutShort::Entries(8)), "the walk must report it stopped early");
+        assert!(some.len() < 25, "fewer matches than exist: {}", some.len());
+    }
+
+    /// The incident: `glob "**/image.png" path "/"` walked the whole disk for
+    /// three minutes. A walk from the root must step around a foreign mount —
+    /// a read inside one can block in the kernel where no deadline reaches it
+    /// — and must come back when its clock runs out, saying so.
+    #[test]
+    fn a_glob_from_the_root_stays_out_of_a_foreign_mount_and_stops_at_its_deadline() {
+        // A real directory under / stands in for the virtiofs mount that hung
+        // the gate's walk, named by the mounts table this box would report.
+        let mount = ["/usr", "/Library", "/opt", "/home", "/srv"]
+            .iter()
+            .map(Path::new)
+            .find(|p| p.is_dir())
+            .expect("some walkable directory exists under /");
+        let table = format!(
+            "/dev/vda1 / ext4 rw 0 0\nmount0 {} fuse.virtiofs rw 0 0\n",
+            mount.display()
+        );
+        let foreign = walk_bounds::parse_foreign_mounts(&table);
+        assert_eq!(foreign, vec![mount.to_path_buf()]);
+
+        let open = WalkBounds {
+            skip: Vec::new(),
+            max_entries: usize::MAX,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+        };
+        let (listed, _) = glob_with_globset("/", "*", 10_000, &open);
+        assert!(
+            listed.iter().any(|p| Path::new(p) == mount),
+            "a walk of / reaches {} when nothing prunes it",
+            mount.display()
+        );
+
+        let pruned = WalkBounds { skip: foreign.clone(), ..open };
+        let (kept, _) = glob_with_globset("/", "*", 10_000, &pruned);
+        assert!(
+            !kept.iter().any(|p| Path::new(p).starts_with(mount)),
+            "the walk stepped into the mount it was told to skip: {kept:?}"
+        );
+
+        // And the recursive walk that hung the gate comes back at its clock.
+        let budget = std::time::Duration::from_millis(500);
+        let started = std::time::Instant::now();
+        let timed = WalkBounds {
+            skip: foreign,
+            max_entries: usize::MAX,
+            deadline: started + budget,
+        };
+        // A pattern nothing matches, so only the clock can end the walk.
+        let (found, cut) = glob_with_globset("/", "**/*.nebo-no-such-extension", 100, &timed);
+        let elapsed = started.elapsed();
+        assert!(found.is_empty(), "found {found:?}");
+        assert!(
+            matches!(cut, Some(CutShort::Deadline(_))),
+            "a recursive walk of / cannot finish in {budget:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "the walk must return at its deadline, took {elapsed:?}"
+        );
+
+        let msg = walk_bounds::took_too_long(
+            "glob of \"**/*.nebo-no-such-extension\"",
+            Path::new("/"),
+            cut.unwrap(),
+            "path",
+            &[],
+        );
+        assert!(msg.contains("not proof of absence"));
+        assert!(msg.contains("Narrow it"));
+        assert!(msg.contains("path"));
+        assert!(!msg.contains('!'));
+    }
 
     /// Spill artifacts under nebo-tool-results/ already carry line numbers
     /// from the read that produced them; reading one back must NOT number the
