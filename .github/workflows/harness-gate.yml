@@ -157,8 +157,15 @@ jobs:
           test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" \
             || { echo "HARNESS_NEBO_BOT_ID and HARNESS_NEBO_BOT_TOKEN are not set"; exit 1; }
           mkdir -p "$NEBO_HOME"
+          # A job cancelled mid-suite leaves its server on this runner's port
+          # (the runner's orphan sweep does not always reach a nohup'd child):
+          # 35582848373 died on "port 27891 is already in use" behind the
+          # cancelled 35582523046. Whatever listens there is a leftover of
+          # this runner's own earlier job; free the port before starting.
+          fuser -k -TERM "$GATE_PORT/tcp" 2>/dev/null && sleep 2 || true
           nohup ./target/debug/nebo-cli agent > "${{ runner.temp }}/server.log" 2>&1 &
           server=$!
+          echo "server=$server" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
             curl -sf -m 2 "http://localhost:$GATE_PORT/health" >/dev/null && break
             sleep 2
@@ -210,6 +217,12 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
         run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --grader claude-opus-5 --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
+
+      - name: Stop this job's server
+        if: always()
+        run: |
+          [ -n "${server:-}" ] && kill "$server" 2>/dev/null || true
+          fuser -k -TERM "$GATE_PORT/tcp" 2>/dev/null || true
 
       - name: Keep the traces and the server log on the VM
         if: always()
