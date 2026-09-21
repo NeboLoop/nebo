@@ -157,4 +157,36 @@ mod tests {
         assert_eq!(parsed.sub, "user-123");
         assert_eq!(parsed.email, "test@example.com");
     }
+
+    /// A session the owner already holds must survive a library upgrade. These
+    /// four HS256 tokens were minted OUTSIDE this crate against the secret
+    /// "test-secret" and are checked in as literals, so the test fails the day
+    /// the wire format we accept changes — which is the day every signed-in
+    /// person is logged out. Do not regenerate them to make the test pass.
+    #[test]
+    fn tokens_minted_before_the_upgrade_still_validate() {
+        let secret = "test-secret";
+
+        // userId + far-future exp — the shape the login path mints.
+        let with_exp = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiJ1c2VyLTEyMyIsImVtYWlsIjoidGVzdEBleGFtcGxlLmNvbSIsImlhdCI6MTc1NjY4NDgwMCwiZXhwIjo0MTAyNDQ0ODAwfQ.ettYcpSvffmlBeq7sg-YL3ExG0GGlha-s7wz0C64vEI";
+        let parsed = validate_jwt_claims(with_exp, secret).unwrap();
+        assert_eq!(parsed.sub, "user-123");
+        assert_eq!(parsed.email, "test@example.com");
+        assert_eq!(parsed.exp, 4102444800);
+
+        // `sub` instead of `userId`, and NO exp at all — accepted because
+        // required_spec_claims is cleared. jsonwebtoken 10.3.0 fixed a type
+        // confusion on exp/nbf when they are not required; this is the guard.
+        let no_exp = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMyIsImVtYWlsIjoidGVzdEBleGFtcGxlLmNvbSIsImlhdCI6MTc1NjY4NDgwMH0.dE-D3FMUERjIOkcRnyKJQYAusgF5FyT1Mmp-hW3WUeU";
+        assert_eq!(validate_jwt_claims(no_exp, secret).unwrap().sub, "user-123");
+
+        // Expired in 2001 — still refused.
+        let expired = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiJ1c2VyLTEyMyIsImlhdCI6MTAwMDAwMDAwMCwiZXhwIjoxMDAwMDAzNjAwfQ.ew85LG2koFqxJKJ-Ant5KFrCiwENEhL6k0BRDPnCuhw";
+        assert!(validate_jwt_claims(expired, secret).is_err());
+
+        // An agent WebSocket token minted before the upgrade still opens /agent/ws.
+        let agent_ws = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ0eXBlIjoiYWdlbnRfd3MiLCJpYXQiOjE3NTY2ODQ4MDAsImV4cCI6NDEwMjQ0NDgwMH0.3elr1HdDL9MnDYKSUzHZ6sqBMc3MBI5PF4LY6bnQ9WA";
+        assert!(validate_agent_ws_token(agent_ws, secret).is_ok());
+        assert!(validate_agent_ws_token(agent_ws, "wrong-secret").is_err());
+    }
 }
