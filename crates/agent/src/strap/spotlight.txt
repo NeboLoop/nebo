@@ -5,3 +5,6 @@ USE THIS when: user wants to search for files by name, content, or metadata usin
 - os(resource: "search", action: "search", query: "*.pdf", dir: "~/Documents") — Search within a directory
 
 Uses Spotlight (macOS), plocate/find (Linux), or Windows Search (Windows) for fast indexed search.
+The search is bounded: with no `dir` it searches this bot's own working area, never the whole
+filesystem, and it gives up after 20 seconds with a note to narrow it. Pass `dir` whenever you
+know roughly where the file is.

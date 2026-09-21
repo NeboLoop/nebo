@@ -996,6 +996,18 @@ impl DynTool for OsTool {
         }
     }
 
+    fn execution_timeout(&self, input: &serde_json::Value) -> Option<std::time::Duration> {
+        // A file search stops itself well inside its own deadline. Hand the
+        // engine that same budget so the search's plain sentence about
+        // narrowing the query is what reaches the model — the runner's
+        // generic 300 s timeout text never can, because the harness ends a
+        // silent run at 180 s. Every other resource keeps the default.
+        if OsTool::resolved_resource(input) == "search" {
+            return self.spotlight_tool.execution_timeout(input);
+        }
+        None
+    }
+
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match OsTool::resolved_resource(input) {
@@ -1941,6 +1953,27 @@ mod tests {
         assert!(
             !required_strs.contains(&"resource"),
             "resource must NOT be required — it is inferred from action"
+        );
+    }
+
+    /// A file search asks the engine for its own budget, so the search's own
+    /// sentence about narrowing the query is what reaches the model. Every
+    /// other resource keeps the runner default.
+    #[test]
+    fn a_file_search_carries_its_own_execution_budget() {
+        let tool = OsTool::new(
+            crate::policy::Policy::default(),
+            Arc::new(crate::process::ProcessRegistry::new()),
+        );
+        let search = serde_json::json!({"resource": "search", "action": "search", "query": "*.md"});
+        let budget = tool
+            .execution_timeout(&search)
+            .expect("a search declares its own budget");
+        assert!(budget < std::time::Duration::from_secs(180), "{budget:?}");
+        assert!(
+            tool.execution_timeout(&serde_json::json!({"resource": "shell", "action": "exec", "command": "ls"}))
+                .is_none(),
+            "only search overrides the runner default"
         );
     }
 
