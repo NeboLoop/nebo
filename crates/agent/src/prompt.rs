@@ -393,11 +393,10 @@ const GEMINI_OPERATIONAL_GUIDANCE: &str = r#"
 /// Mathematics renders on the desktop/web/app surfaces and in loop chats.
 /// One inline form, one display form — the two both renderers accept.
 const MATH_GUIDANCE: &str = "\n\n## Math\n\
-    This surface renders LaTeX. Inline math goes in `$…$` (no space inside the \
-    dollars: `$E = mc^2$`) and a displayed equation in `$$…$$` on its own lines. \
-    Use these for any formula, derivation or symbol-heavy expression; never \
-    `\\(…\\)`, `\\[…\\]` or bare TeX, which show as text. Plain prices (`$5`) \
-    stay as they are.";
+    This surface renders LaTeX in `$…$` inline (`$E = mc^2$`) and `$$…$$` \
+    displayed on its own lines — those two forms only, never `\\(…\\)`, \
+    `\\[…\\]` or bare TeX, which show as text. Use them for any formula or \
+    symbol-heavy expression. A plain price like `$5` is not math.";
 
 fn channel_guidance(channel: &str) -> String {
     if let Some(fmt) = match channel {
@@ -1779,32 +1778,58 @@ mod tests {
         let dynamic_part = build_dynamic_suffix(&dctx);
         // Rough estimate: ~4 chars per token.
         //
-        // The two halves are bounded SEPARATELY. The dynamic suffix carries the
-        // date, time, timezone, and hostname, so its length depends on the
-        // machine and the day ("Wednesday, September 30" is 8 chars longer than
-        // "Monday, May 1"); a single combined ceiling failed on 2026-09-02 by two
-        // characters with no prompt change at all. The static prefix is the
-        // cached, hand-written part the budget exists to police.
+        // Each part is bounded for what it actually is, because a ceiling laid
+        // over two unlike things reads ordinary growth in one as runaway growth
+        // in the other. A single static+dynamic ceiling failed on 2026-09-02 by
+        // two characters with no prompt change at all — the date had simply
+        // grown longer ("Wednesday, September 30" is 8 chars past "Monday,
+        // May 1") — so the two halves were split. The suffix then hid the same
+        // mismatch inside itself: nine tenths of it is `channel_guidance`,
+        // fixed hand-written text, and the ceiling's stated reason was the
+        // date and the hostname. Adding the Math rule (PR #161) tripped a
+        // budget that was never sized for the block it lives in. So: three
+        // numbers, each with one thing to say about it.
         //
-        // 5100 static (the old combined 5500 minus the suffix's share; raised
-        // from 5000 on 2026-08-22 because the ceiling had ~40 tokens of headroom
-        // left and forced every new rule into telegraphic fragments). The budget
-        // catches runaway growth, not necessary guidance — revisit pruning when
-        // it nears the ceiling again.
+        // 5100 static — the cached, hand-written prefix (the old combined 5500
+        // minus the suffix's share; raised from 5000 on 2026-08-22 because the
+        // ceiling had ~40 tokens of headroom left and forced every new rule
+        // into telegraphic fragments).
         const STATIC_BUDGET_TOKENS: usize = 5100;
-        // The suffix on the longest date/hostname this test has seen, plus room.
-        const DYNAMIC_BUDGET_TOKENS: usize = 800;
+        // 800 channel guidance — the web/app/desktop form, longest of the four:
+        // the Work Documents rules, the existing-file hand-off, and the Math
+        // rule. It stands at ~733 tokens, so this leaves roughly 270 chars of
+        // room; the next rule that does not fit prunes this block, it does not
+        // raise this number.
+        const CHANNEL_BUDGET_TOKENS: usize = 800;
+        // 150 for the rest of the suffix: the date, time, timezone, hostname
+        // and model line — ~88 tokens today. This is the one number that moves
+        // with the calendar and the machine, and nothing else moves it.
+        const TAIL_BUDGET_TOKENS: usize = 150;
+        // The suffix carries the channel block verbatim; subtracting it leaves
+        // the per-run tail. Split here, not by re-deriving the tail, so the
+        // two numbers always add up to the whole suffix.
+        let channel_part = channel_guidance(&dctx.channel);
+        assert!(
+            dynamic_part.contains(&channel_part),
+            "the suffix no longer carries channel_guidance verbatim — re-derive this split"
+        );
         let static_tokens = static_part.len() / 4;
-        let dynamic_tokens = dynamic_part.len() / 4;
+        let channel_tokens = channel_part.len() / 4;
+        let tail_tokens = (dynamic_part.len() - channel_part.len()) / 4;
         assert!(
             static_tokens < STATIC_BUDGET_TOKENS,
             "Static prompt too large: ~{static_tokens} tokens ({} chars). Budget is {STATIC_BUDGET_TOKENS} tokens.",
             static_part.len()
         );
         assert!(
-            dynamic_tokens < DYNAMIC_BUDGET_TOKENS,
-            "Dynamic suffix too large: ~{dynamic_tokens} tokens ({} chars). Budget is {DYNAMIC_BUDGET_TOKENS} tokens.",
-            dynamic_part.len()
+            channel_tokens < CHANNEL_BUDGET_TOKENS,
+            "Channel guidance too large: ~{channel_tokens} tokens ({} chars). Budget is {CHANNEL_BUDGET_TOKENS} tokens.",
+            channel_part.len()
+        );
+        assert!(
+            tail_tokens < TAIL_BUDGET_TOKENS,
+            "Dynamic suffix tail too large: ~{tail_tokens} tokens ({} chars). Budget is {TAIL_BUDGET_TOKENS} tokens.",
+            dynamic_part.len() - channel_part.len()
         );
     }
 }

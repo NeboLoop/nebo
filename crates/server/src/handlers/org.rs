@@ -198,10 +198,9 @@ pub async fn install_org(
     //    the company layer's own policy — its purpose, its unattended bounds,
     //    the operations it reserves to the owner — because there is no artifact
     //    above the company layer to read it from.
-    let current = napp::scan_packs(&packs_dir);
     let (_applied, seats) = crate::layers_update::detect_and_apply(
         &state,
-        current,
+        &packs_dir,
         Some(packs_copied.clone()),
     )
     .await;
