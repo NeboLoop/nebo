@@ -4,6 +4,10 @@
  * The bot's carrier tunnel resets mid-call, so a dropped socket has to be
  * redialed — same thread, same transcript, same wake lock — for as long as the
  * server would still take the call back (VOICE_RESUME_WINDOW, 30 minutes).
+ *
+ * None of which the owner is told about. A redial that lands inside the quiet
+ * window (RECONNECT_QUIET_MS, 4s) never reaches the screen: the call keeps the
+ * status it had. Only an outage that outlasts it says one line.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { get } from 'svelte/store';
@@ -118,11 +122,43 @@ afterEach(() => {
 });
 
 describe('voiceSession reconnect', () => {
+	it('says nothing at all about a drop the redial fixes inside the quiet window', async () => {
+		const { voiceSession } = await liveCall();
+
+		FakeSocket.instances[0].drop(1006);
+		expect(get(voiceSession).status).toBe('listening');
+
+		await vi.advanceTimersByTimeAsync(500);
+		const second = FakeSocket.instances[1];
+		second.open();
+		expect(get(voiceSession).status).toBe('listening');
+		second.emit({ type: 'session_initialized' });
+		expect(get(voiceSession).status).toBe('listening');
+
+		// The quiet window passes with the call long since back: the line that
+		// would have announced the outage never fires.
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(get(voiceSession).status).toBe('listening');
+	});
+
+	it('says one line, once, when an outage outlasts the quiet window', async () => {
+		const { voiceSession } = await liveCall();
+
+		FakeSocket.instances[0].drop(1006);
+		await vi.advanceTimersByTimeAsync(3_999);
+		expect(get(voiceSession).status).toBe('listening');
+
+		await vi.advanceTimersByTimeAsync(1);
+		expect(get(voiceSession).status).toBe('reconnecting');
+	});
+
 	it('redials the bound thread after an unexpected close, keeping the transcript and the wake lock', async () => {
 		const { voiceSession } = await liveCall();
 
 		FakeSocket.instances[0].drop(1006);
-		expect(get(voiceSession).status).toBe('reconnecting');
+		// Inside the quiet window the screen is untouched — the call still
+		// reads as listening while the redial runs behind it.
+		expect(get(voiceSession).status).toBe('listening');
 		expect(get(voiceSession).transcripts).toEqual([{ speaker: 'agent', text: 'Good morning.' }]);
 		expect(released).not.toHaveBeenCalled();
 		expect(FakeSocket.instances).toHaveLength(1);
@@ -137,7 +173,7 @@ describe('voiceSession reconnect', () => {
 
 		second.open();
 		expect(JSON.parse(second.sent[0])).toEqual({ type: 'Start', agentId: 'employee-1' });
-		expect(get(voiceSession).status).toBe('reconnecting');
+		expect(get(voiceSession).status).toBe('listening');
 
 		second.emit({ type: 'session_initialized' });
 		expect(get(voiceSession).status).toBe('listening');
@@ -222,7 +258,7 @@ describe('voiceSession reconnect', () => {
 		const state = get(voiceSession);
 		expect(state.status).toBe('error');
 		expect(state.errorMessage).toBe(
-			'Could not rejoin the call: Voice needs an agent to bind to.'
+			'The call dropped and could not be rejoined. Start it again.'
 		);
 
 		// A refusal is final — nothing redials after it.
@@ -248,7 +284,7 @@ describe('voiceSession reconnect', () => {
 		await vi.advanceTimersByTimeAsync(2 * 60_000);
 		unsub();
 		expect(seen.find((s) => s.status === 'error')?.errorMessage).toBe(
-			'The call dropped and could not be rejoined within the 30-minute window. Everything said before that is saved in the thread.'
+			'The call dropped and could not be rejoined. Start it again.'
 		);
 		expect(released).toHaveBeenCalled();
 
