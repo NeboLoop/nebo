@@ -448,7 +448,7 @@ impl WorkflowBinding {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentActivity {
     pub id: String,
-    /// Activity type: custom, research, email, notify, code, condition, loop, wait, agent, connector, http, transform.
+    /// Activity type: custom, research, email, notify, code, condition, loop, wait, agent, connector, http, command, decide, transform.
     #[serde(rename = "type", default)]
     pub activity_type: String,
     /// Natural-language task. Optional — typed nodes (http, wait, condition)

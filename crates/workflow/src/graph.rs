@@ -67,7 +67,9 @@ struct GraphCtx<'a> {
     def: &'a WorkflowDef,
     inputs: &'a serde_json::Value,
     store: &'a Arc<Store>,
-    provider: &'a dyn ai::Provider,
+    /// The typed-decision door (Jev through Janus): the step evaluator and
+    /// `decide` nodes run on it. `None` when Janus is not configured.
+    decide: Option<&'a ai::DecideClient>,
     /// The ONE injected agentic loop (see workflow::loop_contract).
     loop_impl: &'a dyn crate::ActivityLoop,
     resolved_tools: &'a [Box<dyn DynTool>],
@@ -195,7 +197,7 @@ pub(crate) async fn execute_graph(
     memory_writes_disabled: bool,
     inputs: &serde_json::Value,
     store: &Arc<Store>,
-    provider: &dyn ai::Provider,
+    decide: Option<&ai::DecideClient>,
     loop_impl: &dyn crate::ActivityLoop,
     resolved_tools: &[Box<dyn DynTool>],
     // See scoped_activity_tools — deferred schemas ship only when declared/referenced.
@@ -216,7 +218,7 @@ pub(crate) async fn execute_graph(
         memory_writes_disabled,
         inputs,
         store,
-        provider,
+        decide,
         loop_impl,
         resolved_tools,
         deferred_tools,
@@ -312,7 +314,7 @@ fn build_ctx<'a>(
     memory_writes_disabled: bool,
     inputs: &'a serde_json::Value,
     store: &'a Arc<Store>,
-    provider: &'a dyn ai::Provider,
+    decide: Option<&'a ai::DecideClient>,
     // The ONE injected agentic loop (see workflow::loop_contract).
     loop_impl: &'a dyn crate::ActivityLoop,
     resolved_tools: &'a [Box<dyn DynTool>],
@@ -389,7 +391,7 @@ fn build_ctx<'a>(
         def,
         inputs,
         store,
-        provider,
+        decide,
         loop_impl,
         resolved_tools,
         deferred_tools,
@@ -589,6 +591,7 @@ async fn execute_node<'a>(
         "wait" => run_wait(ctx, scope, activity).await,
         "http" => run_http(ctx, scope, activity).await,
         "command" => run_command(ctx, scope, activity).await,
+        "decide" => run_decide(ctx, scope, activity).await,
         _ => run_llm_activity(ctx, scope, activity).await,
     }
 }
@@ -849,6 +852,103 @@ async fn run_http<'a>(
     );
     info!(activity = activity.id.as_str(), "http node completed");
     record_output(ctx, scope, &activity.id, result.content);
+    route(ctx, scope, &activity.id, |_| true).await
+}
+
+/// Typed decision node: one Jev call (through Janus) over a declared state,
+/// answered in milliseconds with a distribution and a confidence per
+/// question. No LLM turn, no scratch session, nothing generated. The output
+/// is the `answers` map as JSON plus `model`, so a downstream `condition`
+/// reads `nodes.<id>.<question>.choice` / `.confidence` / `.score` / `.noul`
+/// with the expression syntax it already has — `decide` never routes; the
+/// author's threshold in the condition does (the "never AI-decided" law).
+///
+/// `params.state` is a data path (`inputs._event_payload`, `item`,
+/// `nodes.fetch.body`); a path that resolves to nothing is sent as the
+/// literal text. `params.questions` is the Jev question map, passed through
+/// as-is (an object, or a JSON string from the builder's textarea).
+async fn run_decide<'a>(
+    ctx: &GraphCtx<'a>,
+    scope: &WalkScope,
+    activity: &Activity,
+) -> Result<(), WorkflowError> {
+    if let Some(content) = replay_completed(ctx, scope, activity) {
+        info!(activity = activity.id.as_str(), "resume: replaying completed decide node");
+        record_output(ctx, scope, &activity.id, content);
+        return route(ctx, scope, &activity.id, |_| true).await;
+    }
+    let started_at = chrono::Utc::now().timestamp();
+
+    let fail = |err_msg: String| {
+        let _ = ctx.store.create_activity_result(
+            &ctx.run_id,
+            &activity.id,
+            &scope.iteration,
+            "failed",
+            0,
+            1,
+            Some(&err_msg),
+            started_at,
+            Some(chrono::Utc::now().timestamp()),
+        );
+        Err(WorkflowError::ActivityFailed(activity.id.clone(), err_msg))
+    };
+
+    let Some(client) = ctx.decide else {
+        return fail(
+            "decide activity requires the typed-decision service (NeboAI), which is not connected"
+                .into(),
+        );
+    };
+    let questions = match crate::parser::decide_questions(activity) {
+        Ok(q) => q,
+        Err(e) => return fail(e),
+    };
+    let questions: std::collections::BTreeMap<&str, ai::Question> = questions
+        .iter()
+        .map(|(name, q)| (name.as_str(), q.clone()))
+        .collect();
+
+    let data = data_context(ctx, scope);
+    let state_path = param_str(activity, "state");
+    let state = resolve_path(&data, state_path)
+        .unwrap_or_else(|| serde_json::Value::String(state_path.to_string()));
+
+    let decision = match client.decide(&state, &questions).await {
+        Ok(d) => d,
+        Err(e) => return fail(format!("decide call failed: {e}")),
+    };
+
+    let mut output = serde_json::Map::new();
+    for (name, answer) in &decision.answers {
+        match serde_json::to_value(answer) {
+            Ok(v) => {
+                output.insert(name.clone(), v);
+            }
+            Err(e) => return fail(format!("decide answer '{name}' did not encode: {e}")),
+        }
+    }
+    output.insert("model".into(), serde_json::Value::String(decision.model.clone()));
+
+    let tokens = (decision.usage.input_tokens + decision.usage.output_tokens) as i64;
+    let _ = ctx.store.create_activity_result(
+        &ctx.run_id,
+        &activity.id,
+        &scope.iteration,
+        "completed",
+        tokens,
+        1,
+        None,
+        started_at,
+        Some(chrono::Utc::now().timestamp()),
+    );
+    info!(
+        activity = activity.id.as_str(),
+        model = %decision.model,
+        answers = decision.answers.len(),
+        "decide node completed"
+    );
+    record_output(ctx, scope, &activity.id, serde_json::Value::Object(output).to_string());
     route(ctx, scope, &activity.id, |_| true).await
 }
 
@@ -1235,7 +1335,7 @@ async fn run_llm_activity<'a>(
         &ctx.memory_user_id,
         ctx.memory_writes_disabled,
         ctx.inputs,
-        ctx.provider,
+        ctx.decide,
         ctx.loop_impl,
         &activity_tools,
         ctx.skill_content,
@@ -1699,10 +1799,36 @@ mod walk_tests {
         Arc::new(Store::new(path.to_str().unwrap()).expect("test store"))
     }
 
+    /// Open a provider stream, retrying transient/retryable errors (transport
+    /// blips, 5xx, rate limits) with a short backoff — the same classes the
+    /// chat runner retries. Terminal errors (auth, usage limit) fail
+    /// immediately. Test-only: the engine no longer streams a chat model
+    /// itself; this keeps the scripted stand-in's retry policy explicit.
+    async fn stream_with_retry(
+        provider: &dyn ai::Provider,
+        req: &ai::ChatRequest,
+    ) -> Result<tokio::sync::mpsc::Receiver<ai::StreamEvent>, ai::ProviderError> {
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut attempt = 1;
+        loop {
+            match provider.stream(req).await {
+                Ok(rx) => return Ok(rx),
+                Err(e) if attempt < MAX_ATTEMPTS
+                    && (e.is_retryable() || ai::is_transient_error(&e)) =>
+                {
+                    warn!(attempt, error = %e, "workflow provider error, retrying");
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Drives the MockProvider's scripts through the injected-loop contract —
     /// the minimal faithful stand-in for the runner-backed loop: one scripted
     /// stream per turn, real `exit` tool calls honored, usage accounted, the
-    /// SAME retry policy (engine::stream_with_retry).
+    /// same retry policy the chat runner applies (stream_with_retry above).
     struct ScriptedLoop<'a> {
         provider: &'a MockProvider,
     }
@@ -1720,7 +1846,7 @@ mod walk_tests {
                 max_tokens: 16384,
                 ..Default::default()
             };
-            let mut rx = crate::engine::stream_with_retry(self.provider, &req)
+            let mut rx = stream_with_retry(self.provider, &req)
                 .await
                 .map_err(|e| WorkflowError::Provider(e.to_string()))?;
             let mut text = String::new();
@@ -1790,7 +1916,7 @@ mod walk_tests {
             false,
             &inputs,
             &store,
-            provider,
+            None,
             &looper,
             &[],
             None,
@@ -2419,7 +2545,7 @@ mod walk_tests {
                 false,
                 &serde_json::json!({}),
                 &store,
-                &provider,
+                None,
                 &ScriptedLoop { provider: &provider },
                 &[],
                 None,
@@ -2588,6 +2714,74 @@ mod walk_tests {
         assert_eq!(run_status(&store, &run_id), "completed");
     }
 
+    /// A decide node's output shape — the `answers` map plus `model` — drives
+    /// condition routing on `.choice` and `.confidence` with the existing
+    /// expression syntax. Hand-written here because the live call is
+    /// verified separately; the shape is the contract.
+    #[tokio::test]
+    async fn test_decide_shaped_output_drives_condition_routing() {
+        let decide_output = r#"{"intent":{"type":"choice","choice":"quote_request","confidence":0.91,"probabilities":{"quote_request":0.91,"other":0.09}},"model":"jev-1.13.0"}"#;
+        let provider = MockProvider::new(&[("task-a", decide_output)]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"classify","intent":"task-a"},
+                {"id":"is-quote","type":"condition","params":{"expression":"nodes.classify.intent.choice == \"quote_request\""}},
+                {"id":"is-sure","type":"condition","params":{"expression":"nodes.classify.intent.confidence >= 0.7"}},
+                {"id":"hit","intent":"task-hit"},
+                {"id":"miss","intent":"task-miss"},
+                {"id":"unsure","intent":"task-unsure"}],
+            "connections":[
+                {"from":"__trigger__","to":"classify"},
+                {"from":"classify","to":"is-quote"},
+                {"from":"is-quote","to":"is-sure","label":"True"},
+                {"from":"is-quote","to":"miss","label":"False"},
+                {"from":"is-sure","to":"hit","label":"True"},
+                {"from":"is-sure","to":"unsure","label":"False"},
+                {"from":"hit","to":"__emit__"},{"from":"miss","to":"__emit__"},{"from":"unsure","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(def, serde_json::json!({}), &provider).await;
+        result.expect("run ok");
+        let calls = provider.calls();
+        let user_part = |c: &String| c.split("###SYSTEM###").next().unwrap_or("").to_string();
+        assert_eq!(
+            calls.iter().filter(|c| user_part(c).contains("task-hit")).count(),
+            1,
+            "choice + confidence must route True/True: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| user_part(c).contains("task-miss") || user_part(c).contains("task-unsure")),
+            "other branches must stay dead: {calls:?}"
+        );
+        assert_eq!(run_status(&store, &run_id), "completed");
+    }
+
+    /// Without the typed-decision service a decide node fails its activity
+    /// with a clear message instead of guessing.
+    #[tokio::test]
+    async fn test_decide_node_without_client_fails_clearly() {
+        let provider = MockProvider::new(&[]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"classify","type":"decide","params":{"state":"inputs.text","questions":{
+                    "intent":{"type":"choice","instructions":"What does `text` ask for","criteria":{"quote_request":"a price","other":"anything else"}}}}}],
+            "connections":[
+                {"from":"__trigger__","to":"classify"},{"from":"classify","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) =
+            run_graph(def, serde_json::json!({"text": "how much"}), &provider).await;
+        match result {
+            Err(WorkflowError::ActivityFailed(id, msg)) => {
+                assert_eq!(id, "classify");
+                assert!(msg.contains("typed-decision service"), "{msg}");
+            }
+            other => panic!("expected ActivityFailed, got {other:?}"),
+        }
+        assert!(provider.calls().is_empty(), "a decide node never reaches the chat model");
+        assert_eq!(run_status(&store, &run_id), "failed");
+    }
+
     /// on_error.retry is the activity-level retry budget: after
     /// stream_with_retry's transient retries are exhausted, a declared budget
     /// re-runs the activity and the run completes; the default budget (one
@@ -2675,7 +2869,7 @@ mod walk_tests {
                 false,
                 &serde_json::json!({}),
                 &store,
-                &provider,
+                None,
                 &ScriptedLoop { provider: &provider },
                 &[],
                 None,

@@ -25,8 +25,10 @@ use crate::types::ProviderError;
 pub const JEV_MODEL: &str = "jev-latest";
 
 /// One typed question. The key it is sent under names the answer; the model
-/// never sees the key, so the whole question lives in `instructions`.
-#[derive(Debug, Clone, Serialize)]
+/// never sees the key, so the whole question lives in `instructions`. The
+/// wire shape is also the authoring shape: a workflow `decide` activity
+/// deserializes its `params.questions` straight into this type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Question {
     /// One option from a named set. The answer carries `choice`,
@@ -72,19 +74,20 @@ impl Question {
     }
 }
 
-/// The answer to one question.
-#[derive(Debug, Clone, Deserialize)]
+/// The answer to one question. Serializes back to the wire shape (absent
+/// fields omitted) so a workflow node can record it as its output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Answer {
     #[serde(rename = "type")]
     pub kind: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choice: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub noul: Option<f64>,
     /// Confidence of a Choice or Score, 0 to 1. Absent on a Noul.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
     #[serde(default)]
     pub probabilities: BTreeMap<String, f64>,

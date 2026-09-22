@@ -1781,6 +1781,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let workflow_manager = Arc::new(workflow_manager::WorkflowManagerImpl::new(
         store.clone(),
         runner.providers(),
+        runner.decide(),
         tool_registry.clone(),
         hub.clone(),
         cfg.clone(),

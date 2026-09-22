@@ -135,6 +135,8 @@
 					if (!pstr('source')) err(`Loop "${act.id}" needs a data source (e.g. inputs.items)`, act.id);
 				} else if (t === 'http') {
 					if (!pstr('url')) err(`HTTP node "${act.id}" needs a URL`, act.id);
+				} else if (t === 'decide') {
+					if (!pstr('questions')) err(`Decide node "${act.id}" needs questions (a JSON object of typed questions)`, act.id);
 				} else if (t === 'wait') {
 					if (!pstr('duration')) err(`Wait node "${act.id}" needs a duration`, act.id);
 				} else if ((!act.intent || !act.intent.trim()) && !(act.steps && act.steps.length > 0)) {
