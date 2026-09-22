@@ -1508,10 +1508,10 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
     let (rt_tx, rt_rx) = match voice::realtime::connect(cfg).await {
         Ok(pair) => pair,
         Err(e) => {
-            error!(error = %e, "realtime connect failed");
+            warn!(error = %e, "realtime connect failed");
             let msg = serde_json::json!({
                 "type": "Error",
-                "message": format!("Voice connection failed: {e}"),
+                "message": "The call could not be started. Try again.",
             });
             let _ = socket.send(Message::Text(msg.to_string().into())).await;
             return;

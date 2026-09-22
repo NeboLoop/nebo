@@ -179,11 +179,11 @@ impl WorkflowManagerImpl {
             let Some(agent_id) =
                 types::keyparser::agent_id_from_workflow_id(&run.workflow_id).map(str::to_string)
             else {
-                fail("interrupted by a restart and this run type cannot resume");
+                fail("interrupted and this run type cannot resume automatically");
                 continue;
             };
             let Some(definition) = run.definition.clone().filter(|d| !d.is_empty()) else {
-                fail("interrupted by a restart before definition snapshots existed — re-run manually");
+                fail("interrupted before its definition was saved; run it again");
                 continue;
             };
             let mut inputs: serde_json::Value = run
@@ -208,7 +208,7 @@ impl WorkflowManagerImpl {
                 Ok(_) => info!(run_id = %run.id, "interrupted run resumed"),
                 Err(e) => {
                     warn!(run_id = %run.id, error = %e, "interrupted run failed to relaunch");
-                    fail(&format!("interrupted by a restart; resume failed: {e}"));
+                    fail(&format!("interrupted; resume failed: {e}"));
                 }
             }
         }

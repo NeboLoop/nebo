@@ -1033,8 +1033,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             Ok(chats) => {
                 for (chat_id, _session_name) in &chats {
                     let msg_id = uuid::Uuid::new_v4().to_string();
-                    let text = "I was interrupted by a restart before I could finish. Want me to \
-                                pick up where I left off? Just say \"continue\".";
+                    let text = "I was interrupted before I could finish. Tell me to continue and I \
+                                will pick up where I stopped.";
                     // Stamped so thread summaries read it as a state of the
                     // thread (a restart), not as the employee's last words.
                     let metadata = handlers::chat::restart_notice_metadata();
