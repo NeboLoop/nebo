@@ -921,11 +921,17 @@ async fn run_decide<'a>(
         .unwrap_or_else(|| serde_json::Value::String(state_path.to_string()));
     let state = cap_decide_state(&activity.id, state);
 
+    let trace = ai::RequestTrace {
+        agent_id: ctx.agent_id.clone(),
+        run_id: ctx.run_id.clone(),
+        action_id: activity.id.clone(),
+        ..ai::RequestTrace::new("workflow_decide")
+    };
     let outcome = match ctx.decide {
         None => Err("the typed-decision service (NeboAI) is not connected".to_string()),
         Some(client) => {
             let deadline = std::time::Duration::from_secs(crate::engine::DECISION_TIMEOUT_SECS);
-            match tokio::time::timeout(deadline, client.decide(&state, &questions)).await {
+            match tokio::time::timeout(deadline, client.decide(&trace, &state, &questions)).await {
                 Ok(Ok(d)) => Ok(d),
                 Ok(Err(e)) => Err(format!("decide call failed: {e}")),
                 Err(_) => Err("decide call timed out".to_string()),
@@ -1941,7 +1947,7 @@ mod walk_tests {
                 system: turn.system.clone(),
                 temperature: 0.0,
                 max_tokens: 16384,
-                ..Default::default()
+                ..ai::ChatRequest::new(turn.trace.clone())
             };
             let mut rx = stream_with_retry(self.provider, &req)
                 .await

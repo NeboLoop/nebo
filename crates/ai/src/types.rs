@@ -469,14 +469,19 @@ pub struct Message {
     pub images: Option<Vec<ImageContent>>,
 }
 
-/// Trace IDs linking an LLM request to the Nebo run that produced it. The Janus
-/// provider reads these and emits `X-Agent-ID`/`X-Run-ID`/`X-Workflow-ID`/`X-Action-ID`/`X-Step-ID`
-/// headers so usage can be attributed per agent/workflow/action/step. `agent_id` is
-/// the rollup key that disambiguates the same workflow run by different agents; chat
-/// runs set `agent_id` + `run_id`. Empty fields stay off the wire. Never serialized
-/// into the request body.
-#[derive(Debug, Clone, Default)]
+/// What an LLM request is for and which Nebo run produced it. Every
+/// `ChatRequest` carries one, so a call that does not name its purpose does
+/// not compile. The Janus provider emits it as `X-Purpose` plus
+/// `X-Agent-ID`/`X-Run-ID`/`X-Workflow-ID`/`X-Action-ID`/`X-Step-ID` headers so
+/// usage can be grouped by purpose and attributed per agent/workflow/action/
+/// step. `agent_id` is the rollup key that disambiguates the same workflow run
+/// by different agents; chat runs set `agent_id` + `run_id`. Empty ids stay off
+/// the wire. Never serialized into the request body.
+#[derive(Debug, Clone)]
 pub struct RequestTrace {
+    /// Short stable name of the call site's job (`agent_turn`,
+    /// `memory_extract`, `compaction`, ...). The grouping key in Janus usage.
+    pub purpose: &'static str,
     pub agent_id: String,
     pub run_id: String,
     pub workflow_id: String,
@@ -484,8 +489,45 @@ pub struct RequestTrace {
     pub step_id: String,
 }
 
-/// A request to an AI provider.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+impl RequestTrace {
+    /// A trace naming `purpose`, with no ids. Set the ids that are in scope
+    /// with struct update syntax: `RequestTrace { agent_id, ..RequestTrace::new("title") }`.
+    pub fn new(purpose: &'static str) -> Self {
+        Self {
+            purpose,
+            agent_id: String::new(),
+            run_id: String::new(),
+            workflow_id: String::new(),
+            action_id: String::new(),
+            step_id: String::new(),
+        }
+    }
+
+    /// The attribution headers for this trace. The one place they are
+    /// written; every Janus request path inserts these.
+    pub fn headers(&self) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (name, val) in [
+            ("x-purpose", self.purpose),
+            ("x-agent-id", self.agent_id.as_str()),
+            ("x-run-id", self.run_id.as_str()),
+            ("x-workflow-id", self.workflow_id.as_str()),
+            ("x-action-id", self.action_id.as_str()),
+            ("x-step-id", self.step_id.as_str()),
+        ] {
+            if !val.is_empty()
+                && let Ok(hv) = val.parse()
+            {
+                headers.insert(reqwest::header::HeaderName::from_static(name), hv);
+            }
+        }
+        headers
+    }
+}
+
+/// A request to an AI provider. There is no `Default`: `trace` is required,
+/// so build one from [`ChatRequest::new`] or name every field.
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
     pub messages: Vec<Message>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -518,10 +560,33 @@ pub struct ChatRequest {
     /// kill their child process when the user hits stop.
     #[serde(skip)]
     pub cancel_token: Option<CancellationToken>,
-    /// Trace linking this request to a Nebo run/workflow/action/step. Consumed by
-    /// the Janus provider to emit usage-attribution headers; never serialized.
+    /// What this request is for and the Nebo run/workflow/action/step behind
+    /// it. Consumed by the Janus provider to emit usage-attribution headers;
+    /// never serialized.
     #[serde(skip)]
-    pub trace: Option<RequestTrace>,
+    pub trace: RequestTrace,
+}
+
+impl ChatRequest {
+    /// An empty request for `trace`. Fill the rest with struct update syntax:
+    /// `ChatRequest { messages, ..ChatRequest::new(RequestTrace::new("title")) }`.
+    pub fn new(trace: RequestTrace) -> Self {
+        Self {
+            messages: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: ToolChoice::default(),
+            max_tokens: 0,
+            temperature: 0.0,
+            system: String::new(),
+            static_system: String::new(),
+            model: String::new(),
+            enable_thinking: false,
+            metadata: None,
+            cache_breakpoints: Vec::new(),
+            cancel_token: None,
+            trace,
+        }
+    }
 }
 
 /// Sender half of a streaming event channel.
@@ -929,7 +994,7 @@ mod transient_tests {
         // Auto must be omitted on the wire → existing requests stay byte-identical.
         let auto = ChatRequest {
             tool_choice: ToolChoice::Auto,
-            ..Default::default()
+            ..ChatRequest::new(RequestTrace::new("test"))
         };
         let v = serde_json::to_value(&auto).unwrap();
         assert!(
@@ -940,7 +1005,7 @@ mod transient_tests {
         // Non-Auto is serialized (the per-provider adapter then maps it).
         let forced = ChatRequest {
             tool_choice: ToolChoice::Tool("StructuredOutput".to_string()),
-            ..Default::default()
+            ..ChatRequest::new(RequestTrace::new("test"))
         };
         let v2 = serde_json::to_value(&forced).unwrap();
         assert!(

@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use a2ui_validation::validate as validate_schema;
 use ai::{
-    ChatRequest, Message, Provider, ProviderError, StreamEventType, ToolCall, ToolChoice,
+    ChatRequest, Message, Provider, ProviderError, RequestTrace, StreamEventType, ToolCall,
+    ToolChoice,
     ToolDefinition,
 };
 
@@ -63,11 +64,14 @@ pub struct StructuredRequest {
     /// completed tool call. Lets the caller detect a stalled sub-agent (no
     /// progress) without imposing a wall-clock cap on legitimate long work.
     pub activity: Option<Arc<AtomicU64>>,
+    /// What the sub-agent's calls are for; rides every turn it takes.
+    pub trace: RequestTrace,
 }
 
 impl StructuredRequest {
     /// Construct with sensible defaults (2 validation retries, 8 tool turns).
     pub fn new(
+        trace: RequestTrace,
         system: impl Into<String>,
         task: impl Into<String>,
         schema: serde_json::Value,
@@ -83,6 +87,7 @@ impl StructuredRequest {
             max_tool_turns: DEFAULT_MAX_TOOL_TURNS,
             max_tokens: DEFAULT_MAX_TOKENS,
             activity: None,
+            trace,
         }
     }
 
@@ -133,7 +138,7 @@ where
             model: req.model.clone(),
             max_tokens: req.max_tokens,
             temperature: 0.0,
-            ..Default::default()
+            ..ChatRequest::new(req.trace.clone())
         };
         let (text, tool_calls) = drive(&provider, &chat, req.activity.as_deref()).await?;
 
@@ -169,7 +174,7 @@ where
                 model: req.model.clone(),
                 max_tokens: req.max_tokens,
                 temperature: 0.0,
-                ..Default::default()
+                ..ChatRequest::new(req.trace.clone())
             };
             let (_text, tool_calls) = drive(&provider, &chat, req.activity.as_deref()).await?;
             captured = tool_calls
@@ -332,7 +337,7 @@ mod tests {
     #[tokio::test]
     async fn returns_validated_object() {
         let provider = mock(vec![serde_json::json!({"answer": "42"})]);
-        let req = StructuredRequest::new("sys", "task", schema(), "mock");
+        let req = StructuredRequest::new(RequestTrace::new("test"), "sys", "task", schema(), "mock");
         let out = agent_structured(provider, req, noop_tool).await.unwrap();
         assert_eq!(out["answer"], "42");
     }
@@ -344,7 +349,7 @@ mod tests {
             serde_json::json!({ "wrong": "shape" }),
             serde_json::json!({ "answer": "ok" }),
         ]);
-        let req = StructuredRequest::new("sys", "task", schema(), "mock");
+        let req = StructuredRequest::new(RequestTrace::new("test"), "sys", "task", schema(), "mock");
         let out = agent_structured(provider, req, noop_tool).await.unwrap();
         assert_eq!(out["answer"], "ok");
     }
@@ -358,7 +363,7 @@ mod tests {
             serde_json::json!({ "wrong": "c" }),
             serde_json::json!({ "wrong": "d" }),
         ]);
-        let req = StructuredRequest::new("sys", "task", schema(), "mock");
+        let req = StructuredRequest::new(RequestTrace::new("test"), "sys", "task", schema(), "mock");
         let err = agent_structured(provider, req, noop_tool).await.unwrap_err();
         assert!(matches!(err, StructuredError::ValidationFailed(_)));
     }

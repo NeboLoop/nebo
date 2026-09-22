@@ -24,6 +24,7 @@ validation'. Do not include technical details.";
 /// Uses a cheap model (Haiku/flash) with truncated inputs/outputs.
 /// Non-critical: errors are logged and swallowed.
 pub async fn summarize_tool_batch(
+    trace: ai::RequestTrace,
     providers: &[Arc<dyn Provider>],
     tool_calls: &[ai::ToolCall],
     tool_results: &[ToolResult],
@@ -91,7 +92,7 @@ pub async fn summarize_tool_batch(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace,
     };
 
     match provider.stream(&req).await {
@@ -128,11 +129,13 @@ pub async fn summarize_tool_batch(
 /// Uses a cheap model with a minimal prompt. Non-critical: returns `None` on
 /// any failure so callers can silently skip.
 pub async fn generate_session_title(
+    trace: ai::RequestTrace,
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     user_prompt: &str,
     model: &str,
 ) -> Option<String> {
     one_line(
+        trace,
         providers,
         model,
         "Generate a 3-7 word title for this conversation. \
@@ -147,6 +150,7 @@ pub async fn generate_session_title(
 /// `instruction`: a chat title, a working objective. Non-critical: `None` on
 /// any failure, an empty answer, or one over 200 chars.
 pub async fn one_line(
+    trace: ai::RequestTrace,
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     model: &str,
     instruction: &str,
@@ -178,7 +182,7 @@ pub async fn one_line(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace,
     };
 
     let mut rx = match provider.stream(&request).await {

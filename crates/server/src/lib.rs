@@ -5952,6 +5952,7 @@ async fn process_comm_attachments(
             let spoken = match transcription_endpoint(state) {
                 Some((key, base_url, model)) => {
                     match ai::transcribe::transcribe(
+                        &ai::RequestTrace::new("transcribe"),
                         &key,
                         &base_url,
                         &model,

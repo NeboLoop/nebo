@@ -156,6 +156,7 @@ pub fn build_prompt(goal: &str, steps: &[String], finding: &str) -> String {
 /// Ask the cheap model for a verdict. None when no provider answered or the
 /// reply carried no advice; the run then simply continues.
 pub async fn review(
+    trace: ai::RequestTrace,
     providers: &[Arc<dyn Provider>],
     goal: &str,
     steps: &[String],
@@ -182,7 +183,7 @@ pub async fn review(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace,
     };
     match provider.stream(&req).await {
         Ok(mut rx) => {

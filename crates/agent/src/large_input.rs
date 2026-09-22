@@ -121,6 +121,7 @@ pub fn save_to_file(content: &str, msg_id: &str) -> Result<PathBuf, String> {
 /// no DB writes, cheapest available model.  The full document content **never**
 /// enters the main chat context.
 pub async fn summarize(
+    trace: ai::RequestTrace,
     provider: &dyn Provider,
     content: &str,
     content_type: &str,
@@ -165,7 +166,7 @@ pub async fn summarize(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace,
     };
 
     let mut rx = provider

@@ -136,6 +136,7 @@ fn judge_state(last_user_prompt: &str, assistant_response: &str) -> serde_json::
 /// (logged at debug).
 pub async fn judge(
     decide: Option<&DecideClient>,
+    trace: &ai::RequestTrace,
     last_user_prompt: &str,
     assistant_response: &str,
 ) -> Verdict {
@@ -160,7 +161,7 @@ pub async fn judge(
         ),
     ]);
 
-    let call = client.decide(&state, &questions);
+    let call = client.decide(trace, &state, &questions);
     match tokio::time::timeout(Duration::from_secs(JUDGE_TIMEOUT_SECS), call).await {
         Ok(Ok(decision)) => {
             let unfinished = decision

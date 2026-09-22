@@ -30,7 +30,7 @@ pub async fn decompose_task(runner: &Arc<Runner>, prompt: &str) -> Result<Vec<Ta
     let full_prompt = format!("{}{}", DECOMPOSE_PROMPT, prompt);
 
     let response = runner
-        .chat(&full_prompt)
+        .chat(ai::RequestTrace::new("task_decompose"), &full_prompt)
         .await
         .map_err(|e| format!("Decomposition LLM call failed: {}", e))?;
 

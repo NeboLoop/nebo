@@ -134,7 +134,7 @@ pub async fn synthesize_directive(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace: ai::RequestTrace::new("personality"),
     };
 
     let mut rx = match provider.stream(&req).await {

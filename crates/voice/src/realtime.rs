@@ -26,6 +26,7 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
@@ -160,6 +161,10 @@ pub async fn connect(
             request.headers_mut().insert("X-Bot-ID", v);
         }
     }
+    // Janus groups usage by purpose; a realtime session is always voice.
+    request
+        .headers_mut()
+        .insert("X-Purpose", HeaderValue::from_static("voice"));
 
     let (ws, _resp) = tokio_tungstenite::connect_async(request)
         .await

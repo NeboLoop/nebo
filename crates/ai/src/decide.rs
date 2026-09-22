@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::ProviderError;
+use crate::types::{ProviderError, RequestTrace};
 
 /// Model sent on every request: a versioned id, never an alias. Every
 /// threshold in the call sites (auto-continue, objective, memory pair, step
@@ -199,8 +199,11 @@ impl DecideClient {
     }
 
     /// Ask every question in `questions` about `state` in one round trip.
+    /// `trace` names what the decision is for, sent as `X-Purpose` with the
+    /// ids in scope, the same headers the chat path sends.
     pub async fn decide(
         &self,
+        trace: &RequestTrace,
         state: &serde_json::Value,
         questions: &BTreeMap<&str, Question>,
     ) -> Result<Decision, ProviderError> {
@@ -220,6 +223,7 @@ impl DecideClient {
                 .post(&self.url)
                 .timeout(DECIDE_TIMEOUT)
                 .bearer_auth(&bearer.token)
+                .headers(trace.headers())
                 .json(&body);
             if let Some(bot_id) = &bearer.bot_id {
                 req = req.header("X-Bot-ID", bot_id);
