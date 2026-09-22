@@ -15,6 +15,7 @@
 //! See docs/prd/2026-09-21-jev-typed-decisions-fit.md.
 
 use std::collections::{BTreeMap, HashMap};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,15 @@ use crate::types::ProviderError;
 /// Model alias sent on every request. Pin a versioned id (`jev-1.13.0`) once
 /// thresholds are tuned against it; the alias moves when TypeSafe ships.
 pub const JEV_MODEL: &str = "jev-latest";
+
+/// Ceiling on one decision round trip. A decision answers in about 200 ms;
+/// this only bounds an upstream that hangs instead of erroring, so a stalled
+/// TypeSafe never costs a workflow step more than this. Every caller
+/// inherits it.
+const DECIDE_TIMEOUT: Duration = Duration::from_secs(5);
+/// One retry after a rate limit or an overload, the way the TypeSafe SDK
+/// does; anything else fails to the caller's safe default at once.
+const RETRY_AFTER: Duration = Duration::from_millis(300);
 
 /// One typed question. The key it is sent under names the answer; the model
 /// never sees the key, so the whole question lives in `instructions`. The
@@ -154,7 +164,11 @@ impl DecideClient {
         Self {
             url: format!("{}/v1/systemone", janus_url.trim_end_matches('/')),
             auth: Box::new(auth),
-            http: crate::http::request_client(),
+            http: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(3))
+                .timeout(DECIDE_TIMEOUT)
+                .build()
+                .expect("reqwest client builder is infallible with these options"),
         }
     }
 
@@ -172,34 +186,49 @@ impl DecideClient {
         let Some(bearer) = (self.auth)() else {
             return Err(ProviderError::Auth("no NeboAI token".into()));
         };
-        let mut req = self
-            .http
-            .post(&self.url)
-            .bearer_auth(&bearer.token)
-            .json(&body);
-        if let Some(bot_id) = &bearer.bot_id {
-            req = req.header("X-Bot-ID", bot_id);
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let mut req = self
+                .http
+                .post(&self.url)
+                .bearer_auth(&bearer.token)
+                .json(&body);
+            if let Some(bot_id) = &bearer.bot_id {
+                req = req.header("X-Bot-ID", bot_id);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ProviderError::Request(e.to_string()))?;
+            let status = resp.status();
+            if status.is_success() {
+                return resp
+                    .json::<Decision>()
+                    .await
+                    .map_err(|e| ProviderError::Request(format!("systemone decode: {e}")));
+            }
+            let err = classify(status.as_u16(), resp.text().await.unwrap_or_default());
+            if attempt == 1 && err.is_retryable() {
+                tokio::time::sleep(RETRY_AFTER).await;
+                continue;
+            }
+            return Err(err);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ProviderError::Request(e.to_string()))?;
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(match status.as_u16() {
-                401 | 403 => ProviderError::Auth(text),
-                429 => ProviderError::RateLimit,
-                code => ProviderError::Api {
-                    code: code.to_string(),
-                    message: text,
-                    retryable: code >= 500,
-                },
-            });
-        }
-        resp.json::<Decision>()
-            .await
-            .map_err(|e| ProviderError::Request(format!("systemone decode: {e}")))
+    }
+}
+
+/// Map a non-success status to the provider error the caller falls back on.
+/// 429 and 5xx (Janus relays an upstream 529 as 502) are the retryable ones.
+fn classify(status: u16, text: String) -> ProviderError {
+    match status {
+        401 | 403 => ProviderError::Auth(text),
+        429 => ProviderError::RateLimit,
+        code => ProviderError::Api {
+            code: code.to_string(),
+            message: text,
+            retryable: code >= 500,
+        },
     }
 }
 
@@ -250,6 +279,16 @@ mod tests {
         assert_eq!(d.usage.cost_micro, 488);
         assert_eq!(d.answer("action").unwrap().yes(), 0.0);
         assert_eq!(d.answer("urgency").unwrap().picked(), "");
+    }
+
+    #[test]
+    fn only_rate_limits_and_overloads_are_retried() {
+        assert!(classify(429, String::new()).is_retryable());
+        assert!(classify(502, "upstream 529".into()).is_retryable());
+        assert!(!classify(422, "bad question".into()).is_retryable());
+        assert!(!classify(401, String::new()).is_retryable());
+        assert!(matches!(classify(401, String::new()), ProviderError::Auth(_)));
+        assert!(matches!(classify(429, String::new()), ProviderError::RateLimit));
     }
 
     #[test]
