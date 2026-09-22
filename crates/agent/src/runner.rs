@@ -846,7 +846,7 @@ struct ToolResultRow {
 /// Workflow-mode configuration for a run — the ONE-loop convergence: workflow
 /// activities execute through this same Runner instead of a second loop in
 /// the engine. Config on the request, NOT a second run() (Rule 8).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct WorkflowMode {
     /// Janus attribution — workflow/action/step ids ride the request trace.
     pub trace: RequestTrace,
@@ -1404,7 +1404,13 @@ fn spawn_chat_title_generation(
             .collect::<Vec<_>>()
             .join("\n");
         if let Some(title) =
-            crate::summarizer::generate_session_title(&providers, &transcript, &cheap_model).await
+            crate::summarizer::generate_session_title(
+                RequestTrace::new("title"),
+                &providers,
+                &transcript,
+                &cheap_model,
+            )
+            .await
         {
             let _ = store.update_chat_title(&chat_id, &title, false);
             info!(chat_id = %chat_id, title = %title, "auto-generated chat title");
@@ -1840,6 +1846,10 @@ impl Runner {
                     let prov = prefer_non_gateway(&self.providers.read().await);
                     match prov {
                         Some(p) => crate::large_input::summarize(
+                            RequestTrace {
+                                agent_id: req.agent_id.clone(),
+                                ..RequestTrace::new("large_input_summary")
+                            },
                             p.as_ref(),
                             &req.prompt,
                             content_type,
@@ -2472,7 +2482,7 @@ impl Runner {
     }
 
     /// One-shot convenience: prompt -> response text (no tools).
-    pub async fn chat(&self, prompt: &str) -> Result<String, ProviderError> {
+    pub async fn chat(&self, trace: RequestTrace, prompt: &str) -> Result<String, ProviderError> {
         let prov_lock = self.providers.read().await;
         if prov_lock.is_empty() {
             return Err(ProviderError::Request(
@@ -2497,7 +2507,7 @@ impl Runner {
             metadata: None,
             cache_breakpoints: vec![],
             cancel_token: None,
-            trace: None,
+            trace,
         };
 
         let mut rx = prov_lock[0].stream(&req).await?;
@@ -2886,6 +2896,11 @@ async fn run_loop(
     // 2026-09-19). Rule 12: never a silent kill.
     let mut runaway_wrap_up: Option<String> = None;
     let mut runaway_wrap_up_issued = false;
+    // The trace a side call of this run carries: its purpose and the agent.
+    let side_trace = |purpose: &'static str| RequestTrace {
+        agent_id: agent_id.to_string(),
+        ..RequestTrace::new(purpose)
+    };
     // Temporal grounding (the harness pattern): every turn's first call
     // carries WHEN the message arrived, then the marker vanishes. The model
     // resolves "today/tomorrow/in an hour" against the message, not against
@@ -3835,6 +3850,7 @@ async fn run_loop(
         let providers = providers.clone();
         let store = store.clone();
         let session_id = session_id.to_string();
+        let agent_id = agent_id.to_string();
         let user_prompt = sessions
             .get_messages(&session_id)
             .ok()
@@ -3849,6 +3865,7 @@ async fn run_loop(
             let session_mgr = SessionManager::new(store);
             detect_objective(
                 decide.as_deref(),
+                &agent_id,
                 &providers,
                 &session_mgr,
                 &session_id,
@@ -4179,9 +4196,11 @@ async fn run_loop(
                 let task = active_task.clone();
                 let existing = existing_summary.clone();
                 let conc = concurrency.clone();
+                let trace = side_trace("compaction");
                 let handle = tokio::spawn(async move {
                     let _permit = conc.acquire_background_permit().await;
                     match pruning::build_llm_summary(
+                        trace,
                         prov.as_ref(),
                         &evicted,
                         &existing,
@@ -4860,15 +4879,15 @@ async fn run_loop(
             // Tag this chat run so Janus attributes its usage per agent (no
             // workflow_id — chat runs are excluded from per-workflow rollups by
             // design; agent_id is the rollup key for chat spend).
-            trace: Some(match workflow_mode {
+            trace: match workflow_mode {
                 // Workflow attribution: workflow/action/step ids ride to Janus.
                 Some(m) => m.trace.clone(),
                 None => RequestTrace {
                     agent_id: agent_id.to_string(),
                     run_id: progress.map(|p| p.run_id.clone()).unwrap_or_default(),
-                    ..Default::default()
+                    ..RequestTrace::new("agent_turn")
                 },
-            }),
+            },
         };
 
         let pre_llm_ms = t_iter_start.elapsed().as_millis() as u64;
@@ -6710,9 +6729,11 @@ async fn run_loop(
                     if !crate::tool_guardrail::gated(&tc.name, &tc.input, read_only) {
                         continue;
                     }
+                    let trace = side_trace("tool_guardrail");
                     judged.push(async move {
                         let judgment = crate::tool_guardrail::judge(
                             decide.map(|d| d.as_ref()),
+                            &trace,
                             guardrail_mode,
                             &tc.name,
                             &tc.input,
@@ -7031,8 +7052,10 @@ async fn run_loop(
                                     let image_url = image_url.clone();
                                     let action_ctx = format!("{} — {}", tc.name, result.content);
                                     let prov = provider.clone();
+                                    let trace = side_trace("screenshot_verify");
                                     sidecar_futures.push(async move {
                                         let verification = crate::sidecar::verify_screenshot(
+                                            trace,
                                             prov.as_ref(),
                                             &image_url,
                                             &action_ctx,
@@ -7652,7 +7675,7 @@ async fn run_loop(
                         let prov_snapshot: Vec<Arc<dyn Provider>> = providers.read().await.clone();
                         let steps = crate::reviewer::describe_steps(&msgs);
                         let goal = if active_task.is_empty() { user_prompt } else { active_task.as_str() };
-                        match crate::reviewer::review(&prov_snapshot, goal, &steps, name).await {
+                        match crate::reviewer::review(side_trace("loop_review"), &prov_snapshot, goal, &steps, name).await {
                             Some(v) if v.stop => {
                                 // A stop is the reviewer saying this model on
                                 // this path cannot finish. Before ending the
@@ -7763,9 +7786,11 @@ async fn run_loop(
                 let summary_tx = tx.clone();
                 let summary_assistant = assistant_content.clone();
                 let summary_tcs = summary_tool_calls;
+                let summary_trace = side_trace("tool_summary");
                 let summary_trs = summary_tool_results;
                 tokio::spawn(async move {
                     if let Some(summary) = crate::summarizer::summarize_tool_batch(
+                        summary_trace,
                         &prov_snapshot,
                         &summary_tcs,
                         &summary_trs,
@@ -8075,7 +8100,7 @@ async fn run_loop(
                     metadata: sticky_metadata.clone(),
                     cache_breakpoints: vec![],
                     cancel_token: Some(cancel_token.clone()),
-                    trace: None,
+                    trace: side_trace("budget_summary"),
                 };
 
                 if let Ok(mut rx) = summary_provider.stream(&summary_req).await {
@@ -8159,6 +8184,8 @@ async fn run_loop(
             // client the server builds); the objective line is evidence.
             let decide = decide.cloned();
             let objective = active_task.clone();
+            let gate_trace = side_trace("memory_gate");
+            let trace = side_trace("memory_extract");
 
             debouncer
                 .schedule(session_id, move || async move {
@@ -8166,7 +8193,7 @@ async fn run_loop(
                     // skip only when the new turn plausibly holds nothing
                     // durable; every doubt runs extraction as before.
                     let gate_state = crate::memory_gate::gate_state(&last_exchange, &objective);
-                    if !crate::memory_gate::should_extract(decide.as_deref(), &gate_state).await {
+                    if !crate::memory_gate::should_extract(decide.as_deref(), &gate_trace, &gate_state).await {
                         debug!(
                             session_id = session_id_owned,
                             "memory extraction skipped: nothing durable in the turn"
@@ -8180,6 +8207,7 @@ async fn run_loop(
                     };
                     if let Some((provider, aux_model)) = resolved {
                         if let Some(facts) = memory::extract_facts(
+                            trace,
                             provider.as_ref(),
                             &last_exchange,
                             Some(&store),
@@ -8889,6 +8917,7 @@ pub(crate) fn objective_is_plain(text: &str) -> bool {
 /// and does not write, so a plain message stands as it is and anything else
 /// gets one line from the cheap model.
 async fn objective_sentence(
+    agent_id: &str,
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     user_prompt: &str,
 ) -> Option<String> {
@@ -8897,6 +8926,10 @@ async fn objective_sentence(
         return Some(text.to_string());
     }
     crate::summarizer::one_line(
+        RequestTrace {
+            agent_id: agent_id.to_string(),
+            ..RequestTrace::new("objective_sentence")
+        },
         providers,
         "",
         OBJECTIVE_INSTRUCTION,
@@ -8921,6 +8954,7 @@ async fn objective_sentence(
 /// runner reads as "no decision" and falls back to keywords at once.
 async fn detect_objective(
     decide: Option<&ai::DecideClient>,
+    agent_id: &str,
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     sessions: &SessionManager,
     session_id: &str,
@@ -9018,7 +9052,11 @@ async fn detect_objective(
         .unwrap_or_default();
     questions.extend(turn_questions.iter().map(|(k, q)| (k.as_str(), q.clone())));
 
-    let call = client.decide(&state, &questions);
+    let trace = RequestTrace {
+        agent_id: agent_id.to_string(),
+        ..RequestTrace::new("objective")
+    };
+    let call = client.decide(&trace, &state, &questions);
     let decision =
         match tokio::time::timeout(Duration::from_secs(OBJECTIVE_TIMEOUT_SECS), call).await {
             Ok(Ok(decision)) => decision,
@@ -9061,7 +9099,7 @@ async fn detect_objective(
 
     match objective_decision(picked, confidence, mode, objective_is_none) {
         ObjectiveDecision::Set { mode } => {
-            let Some(objective) = objective_sentence(providers, user_prompt).await else {
+            let Some(objective) = objective_sentence(agent_id, providers, user_prompt).await else {
                 debug!("objective set: no sentence could be written; leaving objective as is");
                 return;
             };
@@ -9070,7 +9108,7 @@ async fn detect_objective(
             sessions.set_detected_mode(session_id, &mode);
         }
         ObjectiveDecision::Update { mode } => {
-            let Some(objective) = objective_sentence(providers, user_prompt).await else {
+            let Some(objective) = objective_sentence(agent_id, providers, user_prompt).await else {
                 debug!("objective update: no sentence could be written; leaving objective as is");
                 return;
             };
@@ -9399,7 +9437,7 @@ mod objective_decision_tests {
     fn workflow_turns_and_review_forks_skip_the_objective_call() {
         assert!(objective_detection_applies(None, None));
         let workflow = WorkflowMode {
-            trace: Default::default(),
+            trace: ai::RequestTrace::new("workflow_activity"),
             advertised_tools: Default::default(),
             tainted: false,
             spend_cap_microcents: 0,

@@ -657,6 +657,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         drop(providers);
 
                                         let summary = match agent::pruning::build_llm_summary(
+                                            ai::RequestTrace::new("compaction"),
                                             provider.as_ref(),
                                             &messages,
                                             &existing_summary,
@@ -1250,6 +1251,10 @@ async fn handle_builtin_slash(
 
             let state_clone = state.clone();
             let skey = session_key.clone();
+            let trace = ai::RequestTrace {
+                agent_id: agent_id.to_string(),
+                ..ai::RequestTrace::new("compaction")
+            };
             tokio::spawn(async move {
                 let internal_sid = match state_clone.runner.sessions()
                     .resolve_session_id_by_key(&skey) {
@@ -1327,7 +1332,7 @@ async fn handle_builtin_slash(
                     metadata: None,
                     cache_breakpoints: vec![],
                     cancel_token: None,
-                    trace: None,
+                    trace,
                 };
 
                 let mut rx = match provider.stream(&req).await {

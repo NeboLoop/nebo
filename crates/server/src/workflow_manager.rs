@@ -2255,7 +2255,10 @@ async fn review_failed_workflow_run(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace: ai::RequestTrace {
+            agent_id: agent_id.clone(),
+            ..ai::RequestTrace::new("failed_run_review")
+        },
     };
     let mut rx = match provider.stream(&req).await {
         Ok(rx) => rx,
@@ -2869,7 +2872,10 @@ async fn workflow_tuning_sweep(
             metadata: None,
             cache_breakpoints: vec![],
             cancel_token: None,
-            trace: None,
+            trace: ai::RequestTrace {
+                agent_id: agent.id.clone(),
+                ..ai::RequestTrace::new("workflow_tune")
+            },
         };
         let mut rx = match provider.stream(&req).await {
             Ok(rx) => rx,

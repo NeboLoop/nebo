@@ -305,6 +305,7 @@ pub struct Judgment {
 /// stands. Every call logs `site="tool_guardrail"` at debug.
 pub async fn judge(
     decide: Option<&DecideClient>,
+    trace: &ai::RequestTrace,
     mode: Mode,
     tool: &str,
     input: &serde_json::Value,
@@ -317,7 +318,7 @@ pub async fn judge(
     };
     let state = state(tool, input, objective, last_user_message);
     let questions = questions();
-    let call = client.decide(&state, &questions);
+    let call = client.decide(trace, &state, &questions);
     let decision = match tokio::time::timeout(GUARDRAIL_TIMEOUT, call).await {
         Ok(Ok(decision)) => decision,
         Ok(Err(e)) => {
@@ -508,10 +509,11 @@ mod tests {
     #[tokio::test]
     async fn judge_fails_open_without_a_client_and_on_an_error() {
         let input = json!({"action": "write", "path": "/tmp/a"});
-        assert!(judge(None, Mode::On, "os", &input, "", "").await.is_none());
+        let trace = ai::RequestTrace::new("tool_guardrail");
+        assert!(judge(None, &trace, Mode::On, "os", &input, "", "").await.is_none());
         // A client with no bearer errors before any request is sent.
         let client = DecideClient::new("http://127.0.0.1:9", || None);
-        assert!(judge(Some(&client), Mode::On, "os", &input, "", "").await.is_none());
+        assert!(judge(Some(&client), &trace, Mode::On, "os", &input, "", "").await.is_none());
     }
 
     #[test]

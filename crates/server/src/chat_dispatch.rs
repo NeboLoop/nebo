@@ -1795,7 +1795,11 @@ fn maybe_auto_continue(
             _ => return,
         };
         let decide = state.runner.decide();
-        let reason = match goals::judge(decide.as_deref(), &last_user, &assistant_response).await {
+        let trace = ai::RequestTrace {
+            agent_id: p.agent_id.clone(),
+            ..ai::RequestTrace::new("continue_judge")
+        };
+        let reason = match goals::judge(decide.as_deref(), &trace, &last_user, &assistant_response).await {
             goals::Verdict::Continue { reason } => reason,
             goals::Verdict::Done => return,
         };

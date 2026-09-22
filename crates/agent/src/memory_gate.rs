@@ -127,7 +127,11 @@ pub fn verdict_from(decision: &Decision) -> Gate {
 /// Ask Jev whether the turn in `state` (from [`gate_state`]) holds anything
 /// worth the chat-model extraction. Fails OPEN: the gate off, no client, any
 /// error, or a timeout returns `true` (logged at debug).
-pub async fn should_extract(decide: Option<&DecideClient>, state: &serde_json::Value) -> bool {
+pub async fn should_extract(
+    decide: Option<&DecideClient>,
+    trace: &ai::RequestTrace,
+    state: &serde_json::Value,
+) -> bool {
     if !enabled() {
         return true;
     }
@@ -157,7 +161,7 @@ pub async fn should_extract(decide: Option<&DecideClient>, state: &serde_json::V
         ),
     ]);
 
-    let call = client.decide(state, &questions);
+    let call = client.decide(trace, state, &questions);
     let gate = match tokio::time::timeout(GATE_TIMEOUT, call).await {
         Ok(Ok(decision)) => {
             let noul = |name: &str| decision.answer(name).map(Answer::yes).unwrap_or(-1.0);
@@ -289,10 +293,11 @@ mod tests {
     #[tokio::test]
     async fn no_client_or_a_failed_call_runs_extraction() {
         let state = gate_state(&[msg("user", "hi"), msg("assistant", "hello")], "");
-        assert!(should_extract(None, &state).await);
+        let trace = ai::RequestTrace::new("memory_gate");
+        assert!(should_extract(None, &trace, &state).await);
         // A client with no bearer fails as Auth before any network call.
         let client = DecideClient::new("http://127.0.0.1:1", || None);
-        assert!(should_extract(Some(&client), &state).await);
+        assert!(should_extract(Some(&client), &trace, &state).await);
     }
 
     #[test]

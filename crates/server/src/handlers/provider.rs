@@ -472,7 +472,7 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace: ai::RequestTrace::new("provider_test"),
     };
 
     match tokio::time::timeout(std::time::Duration::from_secs(15), provider.stream(&req)).await {

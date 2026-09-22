@@ -339,7 +339,8 @@ pub async fn consolidate_scope(
         memory_lines.join(",\n")
     );
 
-    let response = run_curation_prompt(provider, model, prompt).await?;
+    let response =
+        run_curation_prompt(ai::RequestTrace::new("memory_curate"), provider, model, prompt).await?;
 
     // Parse the consolidation response
     let json_str = crate::memory::extract_json_object_pub(&response)
@@ -416,6 +417,7 @@ async fn apply_consolidation_plan(
 /// The ONE LLM plumbing for curator calls (sweep and micro-check): build the
 /// curation request, stream, and collect the text response.
 async fn run_curation_prompt(
+    trace: ai::RequestTrace,
     provider: &dyn Provider,
     model: &str,
     prompt: String,
@@ -437,7 +439,7 @@ async fn run_curation_prompt(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace,
     };
 
     let mut rx = provider
@@ -664,7 +666,8 @@ async fn micro_curate_pair(
         ),
     ]);
 
-    let call = decide.decide(&state, &questions);
+    let trace = ai::RequestTrace::new("memory_pair");
+    let call = decide.decide(&trace, &state, &questions);
     let deadline = std::time::Duration::from_secs(PAIR_CHECK_TIMEOUT_SECS);
     let decision = match tokio::time::timeout(deadline, call).await {
         Ok(Ok(decision)) => decision,
@@ -743,7 +746,8 @@ async fn write_merged_fact(
         existing.value.replace('"', "\\\""),
         newly.value.replace('"', "\\\"")
     );
-    let response = run_curation_prompt(provider, model, prompt).await?;
+    let response =
+        run_curation_prompt(ai::RequestTrace::new("memory_merge"), provider, model, prompt).await?;
     let json_str = crate::memory::extract_json_object_pub(&response)
         .ok_or_else(|| "no JSON object in merged-fact response".to_string())?;
     let merged: MergedFact =

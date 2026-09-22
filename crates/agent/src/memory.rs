@@ -155,6 +155,7 @@ fn extract_confidence_from_metadata(mem: &Memory) -> Option<f64> {
 /// when non-empty they replace the generic `project` category in the prompt.
 /// `model` overrides the provider's default model (empty = provider default).
 pub async fn extract_facts(
+    trace: ai::RequestTrace,
     provider: &dyn Provider,
     messages: &[ChatMessage],
     store: Option<&Store>,
@@ -249,7 +250,7 @@ pub async fn extract_facts(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace,
     };
 
     let mut rx = match provider.stream(&req).await {

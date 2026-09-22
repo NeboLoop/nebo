@@ -227,7 +227,16 @@ async fn run_flush_inner(
 
     // Extract from all messages
     if let Some(facts) =
-        memory::extract_facts(provider, &messages, Some(store), Some(user_id), topics, "").await
+        memory::extract_facts(
+            ai::RequestTrace::new("memory_flush"),
+            provider,
+            &messages,
+            Some(store),
+            Some(user_id),
+            topics,
+            "",
+        )
+        .await
     {
         memory::store_facts(store, &facts, user_id, embedding_provider, topics, provenance);
         debug!(session_id, "memory flush extraction complete");

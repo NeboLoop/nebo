@@ -786,6 +786,7 @@ pub async fn execute_activity(
     // standalone (non-agent-bound) workflow runs. step_id is the step index ("" when
     // the activity has no steps).
     let make_trace = |step_id: String| ai::RequestTrace {
+        purpose: "workflow_activity",
         agent_id: agent_id.to_string(),
         run_id: run_id.to_string(),
         workflow_id: workflow_id.to_string(),
@@ -1004,7 +1005,11 @@ pub async fn execute_activity(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            evaluate_step(decide, step, &step_result, &remaining_steps).await
+            let eval_trace = ai::RequestTrace {
+                purpose: "step_evaluator",
+                ..make_trace(i.to_string())
+            };
+            evaluate_step(decide, &eval_trace, step, &step_result, &remaining_steps).await
         } else {
             if untrusted && i + 1 < total_steps {
                 info!(
@@ -1128,6 +1133,7 @@ fn step_evaluator_applies(index: usize, total: usize, untrusted: bool) -> bool {
 /// perform the required side effects (storing, sending, recording).
 async fn evaluate_step(
     decide: Option<&ai::DecideClient>,
+    trace: &ai::RequestTrace,
     step_text: &str,
     step_output: &str,
     remaining_steps: &str,
@@ -1165,7 +1171,7 @@ async fn evaluate_step(
         ),
     )]);
 
-    let call = client.decide(&state, &questions);
+    let call = client.decide(trace, &state, &questions);
     let deadline = std::time::Duration::from_secs(DECISION_TIMEOUT_SECS);
     match tokio::time::timeout(deadline, call).await {
         Ok(Ok(decision)) => {

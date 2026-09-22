@@ -1133,6 +1133,7 @@ pub const COMPACTION_MESSAGE_MARKER: &str = "**Conversation Summary**";
 /// Uses the sidecar pattern (isolated ChatRequest, no session/DB writes).
 /// Falls back to `build_quick_fallback_summary()` on any error.
 pub async fn build_llm_summary(
+    trace: ai::RequestTrace,
     provider: &dyn Provider,
     evicted: &[ChatMessage],
     existing_summary: &str,
@@ -1259,7 +1260,7 @@ turns from this transcript — do not carry over dropped turns from the snapshot
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace,
     };
 
     let mut rx = provider

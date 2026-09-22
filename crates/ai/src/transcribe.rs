@@ -6,7 +6,7 @@
 //! whisper servers all implement as well, so the endpoint is a base URL rather
 //! than a provider enum.
 
-use crate::ProviderError;
+use crate::{ProviderError, RequestTrace};
 
 /// Providers reject anything larger, and the request would be a slow way to
 /// find that out.
@@ -38,6 +38,7 @@ pub fn is_transcribable(filename: &str, mime_type: &str) -> bool {
 /// An empty transcript is returned as `Ok("")` — silence is a real answer, and
 /// the caller says so in words rather than presenting nothing.
 pub async fn transcribe(
+    trace: &RequestTrace,
     api_key: &str,
     base_url: &str,
     model: &str,
@@ -62,6 +63,7 @@ pub async fn transcribe(
     let response = reqwest::Client::new()
         .post(&url)
         .bearer_auth(api_key)
+        .headers(trace.headers())
         .multipart(form)
         .send()
         .await

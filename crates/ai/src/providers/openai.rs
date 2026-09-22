@@ -843,23 +843,9 @@ impl Provider for OpenAIProvider {
                 headers.insert(reqwest::header::HeaderName::from_static("x-lane"), val);
             }
         }
-        // Workflow trace headers — let Janus attribute usage to the run/workflow/
-        // action/step that produced this request. Empty fields are skipped.
-        if let Some(ref trace) = req.trace {
-            for (name, val) in [
-                ("x-agent-id", &trace.agent_id),
-                ("x-run-id", &trace.run_id),
-                ("x-workflow-id", &trace.workflow_id),
-                ("x-action-id", &trace.action_id),
-                ("x-step-id", &trace.step_id),
-            ] {
-                if !val.is_empty() {
-                    if let Ok(hv) = val.parse() {
-                        headers.insert(reqwest::header::HeaderName::from_static(name), hv);
-                    }
-                }
-            }
-        }
+        // Purpose + trace headers — let Janus group usage by what the call was
+        // for and attribute it to the agent/run/workflow/action/step behind it.
+        headers.extend(req.trace.headers());
 
         let client = self
             .http_client
@@ -1202,5 +1188,46 @@ mod tests {
         }
         assert!(saw_done, "complete stream must emit Done");
         assert!(!saw_error, "complete stream must NOT emit an Error");
+    }
+
+    // Every request names its purpose on the wire, next to the ids in scope,
+    // so Janus can group usage by what the call was for. Empty ids stay off.
+    #[tokio::test]
+    async fn request_carries_purpose_and_trace_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            let n = sock.read(&mut buf).await.unwrap();
+            let body = "data: [DONE]\n\n";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_lowercase()
+        });
+
+        let provider =
+            OpenAIProvider::with_base_url(String::new(), "m".into(), format!("http://{addr}"));
+        let req = ChatRequest {
+            messages: vec![Message {
+                role: "user".into(),
+                content: "hi".into(),
+                ..Default::default()
+            }],
+            ..ChatRequest::new(RequestTrace {
+                agent_id: "agent-1".into(),
+                ..RequestTrace::new("memory_extract")
+            })
+        };
+        let mut rx = provider.stream(&req).await.unwrap();
+        while rx.recv().await.is_some() {}
+        let head = server.await.unwrap();
+
+        assert!(head.contains("x-purpose: memory_extract"), "{head}");
+        assert!(head.contains("x-agent-id: agent-1"), "{head}");
+        assert!(!head.contains("x-run-id"), "empty ids stay off the wire: {head}");
     }
 }

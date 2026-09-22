@@ -100,7 +100,8 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
             let mut req_builder = self
                 .http_client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key));
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .headers(crate::RequestTrace::new("embedding").headers());
             for (key, value) in &self.extra_headers {
                 req_builder = req_builder.header(key, value);
             }

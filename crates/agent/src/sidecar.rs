@@ -32,6 +32,7 @@ Report only what you can actually see. Do not invent content. No preamble.";
 
 /// Run one image through the sidecar vision model and return its description.
 async fn describe(
+    trace: ai::RequestTrace,
     provider: &dyn Provider,
     image: ImageContent,
     system: &str,
@@ -56,7 +57,7 @@ async fn describe(
         metadata: None,
         cache_breakpoints: vec![],
         cancel_token: None,
-        trace: None,
+        trace,
     };
 
     let mut rx = match provider.stream(&req).await {
@@ -82,12 +83,14 @@ async fn describe(
 /// Verify a post-action screenshot using a cheap vision model.
 /// Returns a short text description, or None if verification fails.
 pub async fn verify_screenshot(
+    trace: ai::RequestTrace,
     provider: &dyn Provider,
     screenshot_b64: &str,
     action_context: &str,
 ) -> Option<String> {
     let (media_type, data) = ai::image_source_to_base64(screenshot_b64)?;
     describe(
+        trace,
         provider,
         ImageContent { media_type, data },
         SIDECAR_SYSTEM,
@@ -117,7 +120,13 @@ pub async fn describe_attached_images(provider: &dyn Provider, req: &mut ChatReq
             } else {
                 "Attached image".to_string()
             };
+            // Same run and agent as the turn it serves, named for what it does.
+            let trace = ai::RequestTrace {
+                purpose: "image_describe",
+                ..req.trace.clone()
+            };
             let note = match describe(
+                trace,
                 provider,
                 image,
                 ATTACHMENT_SYSTEM,

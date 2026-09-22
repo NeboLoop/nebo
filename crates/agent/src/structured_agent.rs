@@ -67,8 +67,14 @@ impl StructuredAgent for StructuredRunner {
                 }
             }
 
-            let mut req = StructuredRequest::new(task.system, task.task, task.schema, String::new())
-                .with_aux_tools(aux);
+            let mut req = StructuredRequest::new(
+                ai::RequestTrace::new("research_subagent"),
+                task.system,
+                task.task,
+                task.schema,
+                String::new(),
+            )
+            .with_aux_tools(aux);
             if let Some(turns) = task.max_tool_turns {
                 req.max_tool_turns = turns;
             }
