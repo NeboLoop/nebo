@@ -132,6 +132,27 @@ pub async fn generate_session_title(
     user_prompt: &str,
     model: &str,
 ) -> Option<String> {
+    one_line(
+        providers,
+        model,
+        "Generate a 3-7 word title for this conversation. \
+         Output ONLY the title, no quotes, no punctuation at the end.",
+        truncate_str(user_prompt, 300),
+        30,
+    )
+    .await
+}
+
+/// One short line written by the cheap model from `text` under
+/// `instruction`: a chat title, a working objective. Non-critical: `None` on
+/// any failure, an empty answer, or one over 200 chars.
+pub async fn one_line(
+    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    model: &str,
+    instruction: &str,
+    text: &str,
+    max_tokens: i32,
+) -> Option<String> {
     let (provider, model) = {
         let lock = providers.read().await;
         match crate::runner::resolve_aux(&ModelsConfig::load(), &lock) {
@@ -140,21 +161,17 @@ pub async fn generate_session_title(
         }
     };
 
-    let system = "Generate a 3-7 word title for this conversation. \
-                  Output ONLY the title, no quotes, no punctuation at the end.";
-    let truncated = truncate_str(user_prompt, 300);
-
     let request = ChatRequest {
         tool_choice: Default::default(),
         model,
-        system: system.to_string(),
+        system: instruction.to_string(),
         static_system: String::new(),
         messages: vec![Message {
             role: "user".to_string(),
-            content: truncated.to_string(),
+            content: text.to_string(),
             ..Default::default()
         }],
-        max_tokens: 30,
+        max_tokens,
         temperature: 0.3,
         tools: vec![],
         enable_thinking: false,
@@ -167,7 +184,7 @@ pub async fn generate_session_title(
     let mut rx = match provider.stream(&request).await {
         Ok(rx) => rx,
         Err(e) => {
-            debug!(error = %e, "session title generation failed");
+            debug!(error = %e, "one-line generation failed");
             return None;
         }
     };
@@ -181,12 +198,12 @@ pub async fn generate_session_title(
         }
     }
 
-    let title = response.trim().to_string();
-    if title.is_empty() || title.len() > 100 {
+    let line = response.trim().to_string();
+    if line.is_empty() || line.len() > 200 {
         None
     } else {
-        debug!(title = %title, "session title generated");
-        Some(title)
+        debug!(line = %line, "one line generated");
+        Some(line)
     }
 }
 

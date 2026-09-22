@@ -3806,6 +3806,7 @@ async fn run_loop(
     // decision, milliseconds; it never touches the chat provider.
     {
         let decide = decide.cloned();
+        let providers = providers.clone();
         let store = store.clone();
         let session_id = session_id.to_string();
         let user_prompt = sessions
@@ -3820,7 +3821,14 @@ async fn run_loop(
             .unwrap_or_default();
         tokio::spawn(async move {
             let session_mgr = SessionManager::new(store);
-            detect_objective(decide.as_deref(), &session_mgr, &session_id, &user_prompt).await;
+            detect_objective(
+                decide.as_deref(),
+                &providers,
+                &session_mgr,
+                &session_id,
+                &user_prompt,
+            )
+            .await;
         });
     }
 
@@ -8659,6 +8667,12 @@ const OBJECTIVE_KEEP_FLOOR: f64 = 0.6;
 /// Char-boundary-safe cap on the objective sentence and on each recent
 /// message the classifier sees.
 const OBJECTIVE_MESSAGE_CAP: usize = 200;
+/// Instruction for the cheap model when the message cannot be its own
+/// objective (see [`objective_is_plain`]).
+const OBJECTIVE_INSTRUCTION: &str = "Write the person's working objective as ONE sentence of at \
+     most 25 words, in their own words, from this message. Output ONLY the sentence.";
+/// How much of a long or framed message the cheap model reads.
+const OBJECTIVE_WRITER_INPUT_CAP: usize = 2_000;
 /// How many recent messages the classifier sees.
 const OBJECTIVE_RECENT_MESSAGES: usize = 6;
 
@@ -8702,22 +8716,52 @@ pub(crate) fn objective_decision(
     }
 }
 
+/// A short message with no framing is its own objective. A long one, or one
+/// that opens with a bracketed frame (a coworker note, a background event, a
+/// case event, a hire prompt), is not: its first line would become the
+/// objective, and "[Coworker message from Nebo]" is no objective.
+pub(crate) fn objective_is_plain(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty() && text.len() <= OBJECTIVE_MESSAGE_CAP && !text.starts_with('[')
+}
+
+/// The sentence stored as the objective on a set or an update. Jev decides
+/// and does not write, so a plain message stands as it is and anything else
+/// gets one line from the cheap model.
+async fn objective_sentence(
+    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    user_prompt: &str,
+) -> Option<String> {
+    let text = user_prompt.trim();
+    if objective_is_plain(text) {
+        return Some(text.to_string());
+    }
+    crate::summarizer::one_line(
+        providers,
+        "",
+        OBJECTIVE_INSTRUCTION,
+        truncate_str(text, OBJECTIVE_WRITER_INPUT_CAP),
+        60,
+    )
+    .await
+}
+
 /// Detect the person's working objective from their latest message.
 /// Runs as a background task (fire-and-forget) before the main loop: one
 /// typed decision (Jev through Janus, [`ai::DecideClient`]) answers whether
 /// the message starts, refines, finishes or continues the current objective,
-/// and whether the work is research or normal. Jev does not write, so the
-/// objective sentence is the latest message itself, capped. No client, any
-/// error or a timeout leaves the objective untouched.
+/// and whether the work is research or normal. The objective sentence comes
+/// from [`objective_sentence`], only when the decision is set or update. A
+/// continuation nudge is never classified: it is not the person speaking.
+/// No client, any error or a timeout leaves the objective untouched.
 async fn detect_objective(
     decide: Option<&ai::DecideClient>,
+    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     sessions: &SessionManager,
     session_id: &str,
     user_prompt: &str,
 ) {
-    // Jev decides, it does not write: the newest message is the objective.
-    let objective = truncate_str(user_prompt.trim(), OBJECTIVE_MESSAGE_CAP);
-    if objective.is_empty() {
+    if user_prompt.trim().is_empty() || crate::goals::is_continuation_prompt(user_prompt) {
         return;
     }
     let Some(client) = decide else {
@@ -8827,13 +8871,21 @@ async fn detect_objective(
 
     match objective_decision(picked, confidence, mode, objective_is_none) {
         ObjectiveDecision::Set { mode } => {
+            let Some(objective) = objective_sentence(providers, user_prompt).await else {
+                debug!("objective set: no sentence could be written; leaving objective as is");
+                return;
+            };
             info!(objective = %objective, mode = %mode, "objective set");
-            let _ = sessions.set_active_task(session_id, objective);
+            let _ = sessions.set_active_task(session_id, &objective);
             sessions.set_detected_mode(session_id, &mode);
         }
         ObjectiveDecision::Update { mode } => {
+            let Some(objective) = objective_sentence(providers, user_prompt).await else {
+                debug!("objective update: no sentence could be written; leaving objective as is");
+                return;
+            };
             info!(objective = %objective, mode = %mode, "objective updated");
-            let _ = sessions.set_active_task(session_id, objective);
+            let _ = sessions.set_active_task(session_id, &objective);
             if !mode.is_empty() {
                 sessions.set_detected_mode(session_id, &mode);
             }
@@ -9146,7 +9198,16 @@ mod attachment_storage_tests {
 
 #[cfg(test)]
 mod objective_decision_tests {
-    use super::{objective_decision, ObjectiveDecision, OBJECTIVE_KEEP_FLOOR};
+    use super::{objective_decision, objective_is_plain, ObjectiveDecision, OBJECTIVE_KEEP_FLOOR};
+
+    #[test]
+    fn a_plain_short_ask_is_its_own_objective_and_a_framed_one_is_not() {
+        assert!(objective_is_plain("Ask the chief-of-staff agent to draft my weekly report."));
+        assert!(!objective_is_plain("[Coworker message from Nebo]\n\nDraft a weekly report."));
+        assert!(!objective_is_plain("[Background event — not an owner message]\nA task finished"));
+        assert!(!objective_is_plain(&"You have just been hired, and ".repeat(20)));
+        assert!(!objective_is_plain("   "));
+    }
 
     fn set(mode: &str) -> ObjectiveDecision {
         ObjectiveDecision::Set {
