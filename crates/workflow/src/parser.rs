@@ -59,11 +59,12 @@ pub struct InputParam {
 pub struct Activity {
     pub id: String,
     /// Activity type from the builder: custom, research, email, notify, code,
-    /// condition, loop, wait, agent, connector, http, command, transform. Empty = custom.
+    /// condition, loop, wait, agent, connector, http, command, decide, transform.
+    /// Empty = custom.
     #[serde(rename = "type", default)]
     pub activity_type: String,
     /// Natural-language task. Optional — typed nodes (http, wait, condition,
-    /// command) may be fully described by `params`.
+    /// command, decide) may be fully described by `params`.
     #[serde(default)]
     pub intent: String,
     /// Display label from the builder.
@@ -221,6 +222,98 @@ pub(crate) fn param_str<'a>(activity: &'a Activity, key: &str) -> &'a str {
         .unwrap_or("")
 }
 
+/// Jev caps a Choice at 255 options and a Score at 10 levels.
+const DECIDE_CHOICE_MAX: usize = 255;
+const DECIDE_SCORE_MAX: usize = 10;
+
+/// The questions a `decide` activity asks, in the Jev wire shape
+/// (`{ "<name>": { "type": "choice"|"score"|"noul", "instructions", "criteria" } }`).
+/// Accepts an object or a JSON string (the builder's textarea). The same
+/// function validates at parse time and feeds the engine at run time, so a
+/// definition that parses is one the node can send; every error names the
+/// question.
+pub(crate) fn decide_questions(
+    activity: &Activity,
+) -> Result<std::collections::BTreeMap<String, ai::Question>, String> {
+    let id = &activity.id;
+    let raw = activity.params.as_ref().and_then(|p| p.get("questions"));
+    let questions = match raw {
+        Some(serde_json::Value::Object(m)) => m.clone(),
+        Some(serde_json::Value::String(text)) => {
+            match serde_json::from_str::<serde_json::Value>(text) {
+                Ok(serde_json::Value::Object(m)) => m,
+                _ => {
+                    return Err(format!(
+                        "decide activity '{id}': params.questions must be a JSON object of questions"
+                    ));
+                }
+            }
+        }
+        _ => {
+            return Err(format!(
+                "decide activity '{id}' requires params.questions (a non-empty object of typed questions)"
+            ));
+        }
+    };
+    if questions.is_empty() {
+        return Err(format!(
+            "decide activity '{id}': params.questions must name at least one question"
+        ));
+    }
+
+    let mut out = std::collections::BTreeMap::new();
+    for (name, raw) in questions {
+        if name == "model" {
+            return Err(format!(
+                "decide activity '{id}': question 'model' collides with the output's model field"
+            ));
+        }
+        let kind = raw
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !matches!(kind.as_str(), "choice" | "score" | "noul") {
+            return Err(format!(
+                "decide activity '{id}': question '{name}' has type '{kind}' — expected choice, score or noul"
+            ));
+        }
+        if kind == "noul" && raw.get("criteria").is_some() {
+            return Err(format!(
+                "decide activity '{id}': noul question '{name}' takes no criteria (it judges one statement)"
+            ));
+        }
+        let question: ai::Question = serde_json::from_value(raw).map_err(|e| {
+            format!("decide activity '{id}': question '{name}' is malformed: {e}")
+        })?;
+        let (instructions, count, range) = match &question {
+            ai::Question::Choice { instructions, criteria } => {
+                (instructions, Some(criteria.len()), 2..=DECIDE_CHOICE_MAX)
+            }
+            ai::Question::Score { instructions, criteria } => {
+                (instructions, Some(criteria.len()), 2..=DECIDE_SCORE_MAX)
+            }
+            ai::Question::Noul { instructions } => (instructions, None, 0..=0),
+        };
+        if instructions.trim().is_empty() {
+            return Err(format!(
+                "decide activity '{id}': question '{name}' needs instructions"
+            ));
+        }
+        if let Some(n) = count {
+            if !range.contains(&n) {
+                return Err(format!(
+                    "decide activity '{id}': {kind} question '{name}' needs {} to {} criteria, has {n}",
+                    range.start(),
+                    range.end()
+                ));
+            }
+        }
+        out.insert(name, question);
+    }
+    Ok(out)
+}
+
 /// Parse a wait duration like "30s", "5m", "1h" (bare numbers are seconds).
 pub(crate) fn parse_wait_duration(s: &str) -> Option<std::time::Duration> {
     let s = s.trim();
@@ -336,6 +429,11 @@ fn validate_activities(def: &WorkflowDef) -> Result<(), WorkflowError> {
                         activity.id
                     )));
                 }
+            }
+            // Typed decision — the questions are the contract; routing on the
+            // answer stays in a condition node.
+            "decide" => {
+                decide_questions(activity).map_err(WorkflowError::Validation)?;
             }
             "wait" => {
                 if !param_str(activity, "waitUntil").trim().is_empty() {
@@ -628,6 +726,131 @@ mod tests {
         }"#;
         let def2 = parse_workflow(json2).unwrap();
         assert_eq!(def2.activities[0].token_budget.max, 2000);
+    }
+
+    /// A one-node decide workflow around the given `questions` JSON.
+    fn decide_def(questions: &str) -> String {
+        format!(
+            r#"{{"version":"1.0","id":"wf","name":"n","activities":[
+                {{"id":"classify","type":"decide","params":{{"state":"inputs._event_payload","questions":{questions}}}}}]}}"#
+        )
+    }
+
+    fn decide_error(questions: &str) -> String {
+        match parse_workflow(&decide_def(questions)) {
+            Err(WorkflowError::Validation(msg)) => msg,
+            other => panic!("expected a validation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decide_accepts_every_question_kind() {
+        let def = parse_workflow(&decide_def(
+            r#"{
+                "intent":{"type":"choice","instructions":"What `text` asks for","criteria":{"quote_request":"a price","other":"anything else"}},
+                "urgency":{"type":"score","instructions":"How soon `text` needs an answer","criteria":["routine","soon","now"]},
+                "is_spam":{"type":"noul","instructions":"`text` is unsolicited bulk mail"}
+            }"#,
+        ))
+        .expect("valid decide activity");
+        assert_eq!(def.activities[0].activity_type, "decide");
+        let questions = decide_questions(&def.activities[0]).unwrap();
+        assert_eq!(questions.len(), 3);
+        assert!(matches!(questions["intent"], ai::Question::Choice { .. }));
+        assert!(matches!(questions["urgency"], ai::Question::Score { .. }));
+        assert!(matches!(questions["is_spam"], ai::Question::Noul { .. }));
+    }
+
+    #[test]
+    fn test_decide_accepts_questions_as_json_text() {
+        // The builder's textarea saves the object as a string.
+        let text = r#"{\"ok\":{\"type\":\"noul\",\"instructions\":\"`text` is fine\"}}"#;
+        let def = parse_workflow(&decide_def(&format!("\"{text}\""))).expect("string questions");
+        assert_eq!(decide_questions(&def.activities[0]).unwrap().len(), 1);
+        assert!(decide_error(r#""not json""#).contains("must be a JSON object"));
+    }
+
+    #[test]
+    fn test_decide_requires_questions() {
+        let def = r#"{"version":"1.0","id":"wf","name":"n","activities":[
+            {"id":"classify","type":"decide","params":{"state":"inputs.x"}}]}"#;
+        match parse_workflow(def) {
+            Err(WorkflowError::Validation(msg)) => {
+                assert!(msg.contains("classify") && msg.contains("requires params.questions"), "{msg}")
+            }
+            other => panic!("expected a validation error, got {other:?}"),
+        }
+        assert!(decide_error("{}").contains("at least one question"));
+    }
+
+    #[test]
+    fn test_decide_question_type_and_instructions() {
+        let msg = decide_error(r#"{"q":{"type":"rank","instructions":"x","criteria":["a","b"]}}"#);
+        assert!(msg.contains("'q'") && msg.contains("rank"), "{msg}");
+        let msg = decide_error(r#"{"q":{"instructions":"x"}}"#);
+        assert!(msg.contains("'q'") && msg.contains("expected choice, score or noul"), "{msg}");
+        let msg = decide_error(r#"{"q":{"type":"noul","instructions":"  "}}"#);
+        assert!(msg.contains("'q' needs instructions"), "{msg}");
+        let msg = decide_error(r#"{"q":{"type":"noul"}}"#);
+        assert!(msg.contains("'q' is malformed"), "{msg}");
+        let msg = decide_error(r#"{"model":{"type":"noul","instructions":"x"}}"#);
+        assert!(msg.contains("'model' collides"), "{msg}");
+    }
+
+    #[test]
+    fn test_decide_choice_criteria_bounds() {
+        let msg = decide_error(r#"{"q":{"type":"choice","instructions":"x","criteria":{"only":"one"}}}"#);
+        assert!(msg.contains("choice question 'q' needs 2 to 255 criteria, has 1"), "{msg}");
+        let msg = decide_error(r#"{"q":{"type":"choice","instructions":"x","criteria":["a","b"]}}"#);
+        assert!(msg.contains("'q' is malformed"), "{msg}");
+        let many: serde_json::Map<String, serde_json::Value> = (0..256)
+            .map(|i| (format!("o{i}"), serde_json::Value::String("opt".into())))
+            .collect();
+        let q = serde_json::json!({"q":{"type":"choice","instructions":"x","criteria":many}});
+        let msg = decide_error(&q.to_string());
+        assert!(msg.contains("has 256"), "{msg}");
+        parse_workflow(&decide_def(
+            r#"{"q":{"type":"choice","instructions":"x","criteria":{"a":"1","b":"2"}}}"#,
+        ))
+        .expect("two options is the floor");
+    }
+
+    #[test]
+    fn test_decide_score_criteria_bounds() {
+        let msg = decide_error(r#"{"q":{"type":"score","instructions":"x","criteria":["one"]}}"#);
+        assert!(msg.contains("score question 'q' needs 2 to 10 criteria, has 1"), "{msg}");
+        let eleven: Vec<String> = (0..11).map(|i| format!("l{i}")).collect();
+        let q = serde_json::json!({"q":{"type":"score","instructions":"x","criteria":eleven}});
+        let msg = decide_error(&q.to_string());
+        assert!(msg.contains("has 11"), "{msg}");
+        let msg = decide_error(r#"{"q":{"type":"score","instructions":"x","criteria":{"a":"b"}}}"#);
+        assert!(msg.contains("'q' is malformed"), "{msg}");
+        parse_workflow(&decide_def(
+            r#"{"q":{"type":"score","instructions":"x","criteria":["low","high"]}}"#,
+        ))
+        .expect("two levels is the floor");
+    }
+
+    #[test]
+    fn test_decide_noul_takes_no_criteria() {
+        let msg = decide_error(r#"{"q":{"type":"noul","instructions":"x","criteria":["a","b"]}}"#);
+        assert!(msg.contains("noul question 'q' takes no criteria"), "{msg}");
+        parse_workflow(&decide_def(r#"{"q":{"type":"noul","instructions":"`text` holds"}}"#))
+            .expect("a bare noul is valid");
+    }
+
+    #[test]
+    fn test_decide_filter_fixture_validates() {
+        let def = parse_workflow(include_str!(
+            "../../../tests/fixtures/neboai/decide-filter/workflow.json"
+        ))
+        .expect("fixture parses and validates");
+        assert_eq!(def.id, "decide-filter");
+        let classify = def.activities.iter().find(|a| a.id == "classify").unwrap();
+        assert_eq!(classify.activity_type, "decide");
+        assert_eq!(param_str(classify, "state"), "inputs._event_payload");
+        assert!(decide_questions(classify).unwrap().contains_key("intent"));
+        assert!(def.activities.iter().any(|a| a.activity_type == "condition"));
     }
 
     #[test]

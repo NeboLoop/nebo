@@ -180,7 +180,7 @@
     onupdate?.(a.id, 'params', { ...(a.params ?? {}), code: src });
   }
 
-  const DETERMINISTIC = new Set(['code', 'tool', 'http', 'transform', 'connector', 'wait']);
+  const DETERMINISTIC = new Set(['code', 'tool', 'http', 'decide', 'transform', 'connector', 'wait']);
 
   /** The last id in reading order — the `+` after the chain inserts after it. */
   const lastStepId = $derived.by(() => {

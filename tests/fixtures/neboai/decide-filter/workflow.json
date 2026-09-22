@@ -1,0 +1,80 @@
+{
+  "version": "1",
+  "id": "decide-filter",
+  "name": "Decide Filter",
+  "trigger": { "type": "event", "sources": ["mail.received"] },
+  "inputs": {
+    "_event_payload": {
+      "type": "object",
+      "required": true
+    }
+  },
+  "activities": [
+    {
+      "id": "classify",
+      "type": "decide",
+      "params": {
+        "state": "inputs._event_payload",
+        "questions": {
+          "intent": {
+            "type": "choice",
+            "instructions": "`subject` and `body` are one incoming email. What is the sender asking for? Pick `other` when none of the named intents fits.",
+            "criteria": {
+              "quote_request": "the sender asks what something costs or asks for a proposal or estimate",
+              "support": "the sender reports a problem with something they already have",
+              "other": "anything else, including newsletters and notifications"
+            }
+          },
+          "urgency": {
+            "type": "score",
+            "instructions": "How soon `body` needs a reply.",
+            "criteria": ["routine", "this week", "today"]
+          }
+        }
+      }
+    },
+    {
+      "id": "is-quote",
+      "type": "condition",
+      "params": {
+        "mode": "expression",
+        "expression": "nodes.classify.intent.choice == \"quote_request\""
+      }
+    },
+    {
+      "id": "is-sure",
+      "type": "condition",
+      "params": {
+        "mode": "expression",
+        "expression": "nodes.classify.intent.confidence >= 0.7"
+      }
+    },
+    {
+      "id": "notify-owner",
+      "type": "notify",
+      "intent": "Tell the owner a quote request arrived",
+      "steps": [
+        "Read the sender, subject and the first lines of the body from the event payload",
+        "Send the owner one message naming the sender and what they want priced"
+      ],
+      "token_budget": { "max": 1024 },
+      "on_error": { "retry": 1 }
+    }
+  ],
+  "connections": [
+    { "from": "__trigger__", "to": "classify" },
+    { "from": "classify", "to": "is-quote" },
+    { "from": "is-quote", "to": "is-sure", "label": "True" },
+    { "from": "is-sure", "to": "notify-owner", "label": "True" },
+    { "from": "notify-owner", "to": "__emit__" }
+  ],
+  "dependencies": {
+    "skills": [],
+    "tools": [],
+    "workflows": []
+  },
+  "budget": {
+    "total_per_run": 2048,
+    "cost_estimate": "$0.01"
+  }
+}

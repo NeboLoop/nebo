@@ -4,7 +4,6 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use ai::{ChatRequest, StreamEventType};
 use db::Store;
 use tools::registry::DynTool;
 
@@ -28,91 +27,11 @@ fn activity_max_iterations(activity: &Activity) -> u32 {
 }
 
 
-/// Open a provider stream, retrying transient/retryable errors (transport
-/// blips, 5xx, rate limits) with a short backoff — the same classes the
-/// chat runner retries. Terminal errors (auth, usage limit) fail immediately.
-pub(crate) async fn stream_with_retry(
-    provider: &dyn ai::Provider,
-    req: &ChatRequest,
-) -> Result<tokio::sync::mpsc::Receiver<ai::StreamEvent>, ai::ProviderError> {
-    const MAX_ATTEMPTS: u32 = 3;
-    let mut attempt = 1;
-    loop {
-        match provider.stream(req).await {
-            Ok(rx) => return Ok(rx),
-            Err(e) if attempt < MAX_ATTEMPTS
-                && (e.is_retryable() || ai::is_transient_error(&e)) =>
-            {
-                warn!(attempt, error = %e, "workflow provider error, retrying");
-                attempt += 1;
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
-
 /// Decision from the step evaluator (orchestrator between steps).
 #[derive(Debug)]
 enum EvalDecision {
     Proceed,
     Exit(String),
-}
-
-fn parse_eval_response(content: &str) -> EvalDecision {
-    let trimmed = content.trim();
-    if let Some(reason) = trimmed.strip_prefix("exit:") {
-        let reason = reason.trim();
-        if exit_reason_is_really_proceed(reason) {
-            return EvalDecision::Proceed;
-        }
-        EvalDecision::Exit(reason.to_string())
-    } else {
-        EvalDecision::Proceed
-    }
-}
-
-/// An `exit:` whose reason is actually a proceed/skip statement is treated as
-/// proceed. Observed live, four times across one workflow: the evaluator wrote
-/// `exit: Email is valid ... proceeding to Step 2`, `exit: ... skipping as
-/// instructed`, `exit: SKIP` (a step's own sentinel echoed back), and
-/// `exit: Report file path identified from payload: /data/.../report.xls` — a
-/// healthy, affirmative step result — each of which killed the RUN, not the
-/// step, so downstream loops and summaries never executed. Exit is reserved
-/// for "this task is inapplicable / a precondition failed / continuing would
-/// be harmful"; a reason that says the step succeeded, is proceeding, or is a
-/// conditional skip is none of those.
-fn exit_reason_is_really_proceed(reason: &str) -> bool {
-    let r = reason.to_ascii_lowercase();
-    if r.is_empty() {
-        return false;
-    }
-    const PROCEED_SIGNALS: &[&str] = &[
-        "proceed",
-        "continu",
-        "next step",
-        "as instructed",
-        "not applicable to this",
-        "no action needed",
-        "nothing to do for this",
-        "skipping",
-        "skipped",
-        "identified",
-        "complete",
-        "resolved",
-        "logged",
-        "successfully",
-        "ready for",
-    ];
-    if r == "skip" || r == "skipped" || r == "none" {
-        return true;
-    }
-    // A reason that names a concrete artifact (a path, an id) is a step
-    // result, not an exit condition.
-    if r.contains('/') && (r.ends_with(".xls") || r.ends_with(".xlsx") || r.ends_with(".csv") || r.ends_with(".json") || r.ends_with(".pdf")) {
-        return true;
-    }
-    PROCEED_SIGNALS.iter().any(|s| r.contains(s))
 }
 
 /// The slug of the seat a run belongs to — the producer stamped on every event
@@ -330,7 +249,11 @@ pub async fn execute_workflow(
     trigger_type: &str,
     trigger_detail: Option<&str>,
     store: &Arc<Store>,
-    provider: &dyn ai::Provider,
+    // The typed-decision door (Jev through Janus). The step evaluator and
+    // `decide` activities run on it; `None` when Janus is not configured.
+    // The engine itself never streams a chat model: every LLM turn goes
+    // through `loop_impl`.
+    decide: Option<&ai::DecideClient>,
     // The ONE injected agentic loop every activity runs through (Phase 4:
     // the engine's own loop is deleted; see loop_contract).
     loop_impl: &dyn ActivityLoop,
@@ -387,7 +310,7 @@ pub async fn execute_workflow(
             memory_writes_disabled,
             &inputs,
             store,
-            provider,
+            decide,
             loop_impl,
             resolved_tools,
             deferred_tools,
@@ -491,7 +414,7 @@ pub async fn execute_workflow(
             memory_user_id,
             memory_writes_disabled,
             &inputs,
-            provider,
+            decide,
             loop_impl,
             &activity_tools,
             skill_content,
@@ -735,7 +658,7 @@ pub(crate) async fn execute_activity_with_retry(
     memory_user_id: &str,
     memory_writes_disabled: bool,
     inputs: &serde_json::Value,
-    provider: &dyn ai::Provider,
+    decide: Option<&ai::DecideClient>,
     loop_impl: &dyn ActivityLoop,
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
@@ -776,7 +699,7 @@ pub(crate) async fn execute_activity_with_retry(
             memory_user_id,
             memory_writes_disabled,
             inputs,
-            provider,
+            decide,
             loop_impl,
             tools,
             skill_content,
@@ -834,7 +757,7 @@ pub async fn execute_activity(
     memory_user_id: &str,
     memory_writes_disabled: bool,
     inputs: &serde_json::Value,
-    provider: &dyn ai::Provider,
+    decide: Option<&ai::DecideClient>,
     loop_impl: &dyn ActivityLoop,
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
@@ -1063,17 +986,8 @@ pub async fn execute_activity(
             .map(|(j, s)| format!("- Step {}: {}", i + j + 2, truncate_at_char_boundary(s, 200)))
             .collect::<Vec<_>>()
             .join("\n");
-        let (eval, eval_tokens) = evaluate_step(
-            provider,
-            &system,
-            step,
-            &step_result,
-            i,
-            total_steps,
-            &remaining_steps,
-            make_trace(i.to_string()),
-        )
-        .await?;
+        let (eval, eval_tokens) =
+            evaluate_step(decide, step, &step_result, &remaining_steps).await;
         *spent += eval_tokens;
 
         match eval {
@@ -1091,10 +1005,9 @@ pub async fn execute_activity(
                 // here can only kill downstream graph nodes (loop re-entry,
                 // commit, delivery) for zero benefit. Observed live: the
                 // evaluator exited on "Chunk 7 complete: 4 rows resolved..."
-                // — an affirmative completion — after the keyword guard in
-                // exit_reason_is_really_proceed missed it ("complete:" vs
-                // "completed"). Keyword lists leak; position doesn't. Treat a
-                // final-step exit as normal completion of the activity.
+                // — an affirmative completion — that the prose evaluator's
+                // keyword guard missed. Keyword lists leak; position doesn't.
+                // Treat a final-step exit as normal completion of the activity.
                 info!(
                     activity = %activity.id,
                     step = i,
@@ -1171,109 +1084,88 @@ pub async fn execute_activity(
     Ok((final_output, total_tokens))
 }
 
-/// Evaluate a step's output using the same provider (prompt-cached system prompt).
-/// Returns Proceed or Exit plus the evaluator's own token usage (previously
-/// uncounted — every step paid an invisible evaluation turn).
-/// Fails open (Proceed) on any error.
+/// Floor on a non-proceed outcome: below it the evaluator proceeds, however
+/// the probabilities lean. Exit kills the RUN, not the step, so the bar is
+/// high and every uncertain case continues.
+const STEP_EXIT_CONFIDENCE: f64 = 0.7;
+
+/// Evaluate a step's output with one typed decision (Jev through Janus).
+/// Returns Proceed or Exit plus the decision's own token usage, which counts
+/// against the activity like every other turn.
+///
+/// Fails open: no decide client, a failed call, or an answer that is not a
+/// choice all Proceed — the remaining steps exist for a reason and often
+/// perform the required side effects (storing, sending, recording).
 async fn evaluate_step(
-    provider: &dyn ai::Provider,
-    system: &str,
+    decide: Option<&ai::DecideClient>,
     step_text: &str,
     step_output: &str,
-    step_index: usize,
-    total_steps: usize,
     remaining_steps: &str,
-    trace: ai::RequestTrace,
-) -> Result<(EvalDecision, u32), WorkflowError> {
+) -> (EvalDecision, u32) {
+    let Some(client) = decide else {
+        return (EvalDecision::Proceed, 0);
+    };
     let remaining_block = if remaining_steps.is_empty() {
-        String::from("(none — this is the final step)")
+        "(none — this is the final step)"
     } else {
-        remaining_steps.to_string()
+        remaining_steps
     };
-    let eval_system = format!(
-        "{}\n\n## Step Evaluation Mode\n\
-         You are evaluating the output of Step {}/{}: \"{}\"\n\n\
-         Steps that have NOT run yet:\n{}\n\n\
-         Based on the workflow context above and the step output below, respond with EXACTLY ONE of:\n\
-         - proceed — step completed its stated goal, continue to the next step\n\
-         - exit:<reason> — ONLY when the task is inapplicable to this data, a required \
-           precondition failed, or continuing would be harmful\n\n\
-         NEVER exit because the work so far looks complete or sufficient — the remaining \
-         steps exist for a reason and often perform the required side effects (storing, \
-         sending, recording). \"Task completed\" and \"no actions required\" are NOT valid \
-         exit reasons; if this step met its goal, respond proceed. If the remaining steps \
-         carry their own conditional guards (\"only if\", \"always\", \"skip if\"), respond \
-         proceed and let the steps self-gate — do not exit on their behalf.\n\n\
-         Respond with ONLY the decision. Nothing else.",
-        system, step_index + 1, total_steps, step_text, remaining_block,
-    );
+    let state = serde_json::json!({
+        "step": step_text,
+        "remaining_steps": remaining_block,
+        "step_output": truncate_at_char_boundary(step_output, 2000),
+    });
+    let questions = std::collections::BTreeMap::from([(
+        "outcome",
+        ai::Question::choice(
+            "`step_output` is what a workflow step produced for the instruction in `step`; \
+             `remaining_steps` are the steps that have NOT run yet. Judge the outcome of \
+             this step alone. NEVER pick anything but `proceed` because the work so far looks \
+             complete or sufficient: the remaining steps exist for a reason and often perform \
+             the required side effects (storing, sending, recording). If `remaining_steps` \
+             carry their own conditional guards (\"only if\", \"always\", \"skip if\"), pick \
+             `proceed` and let them self-gate.",
+            &[
+                (
+                    "proceed",
+                    "the step met its stated goal, or the remaining steps carry their own conditional guards",
+                ),
+                ("inapplicable", "the task does not apply to this data"),
+                (
+                    "precondition_failed",
+                    "something the step required was missing or failed",
+                ),
+                ("harmful", "continuing would cause harm"),
+            ],
+        ),
+    )]);
 
-    let truncated_output = truncate_at_char_boundary(step_output, 2000);
-
-    let messages = vec![ai::Message {
-        role: "user".into(),
-        content: format!("Step output:\n\n{}", truncated_output),
-        ..Default::default()
-    }];
-
-    let req = ChatRequest {
-        tool_choice: Default::default(),
-        messages,
-        tools: vec![],
-        max_tokens: 100,
-        temperature: 0.0,
-        system: eval_system,
-        static_system: String::new(),
-        model: String::new(),
-        enable_thinking: false,
-        metadata: None,
-        cache_breakpoints: vec![],
-        cancel_token: None,
-        trace: Some(trace),
-    };
-
-    let mut rx = stream_with_retry(provider, &req)
-        .await
-        .map_err(|e| WorkflowError::Provider(e.to_string()))?;
-
-    let mut response_text = String::new();
-    // Max-merged per field: usage counters are cumulative running totals, and
-    // a provider may emit them once (OpenAI final chunk), per chunk (Janus),
-    // or split across two events with disjoint fields (input at start, output
-    // at end). Max per field is correct for all three; summing or last-wins
-    // is not.
-    let mut eval_input: i32 = 0;
-    let mut eval_output: i32 = 0;
-    while let Some(event) = rx.recv().await {
-        match event.event_type {
-            StreamEventType::Text => response_text.push_str(&event.text),
-            StreamEventType::Error => {
-                warn!("step evaluator error: {:?}", event.error);
-                let eval_tokens = (eval_input.max(0) + eval_output.max(0)) as u32;
-                return Ok((EvalDecision::Proceed, eval_tokens));
+    match client.decide(&state, &questions).await {
+        Ok(decision) => {
+            let tokens = (decision.usage.input_tokens + decision.usage.output_tokens) as u32;
+            let Some(answer) = decision.answer("outcome") else {
+                warn!("step evaluator answered without an outcome; proceeding");
+                return (EvalDecision::Proceed, tokens);
+            };
+            let picked = answer.picked();
+            let confidence = answer.confidence.unwrap_or(0.0);
+            info!(
+                model = %decision.model,
+                outcome = picked,
+                confidence,
+                "step evaluator decided"
+            );
+            if picked != "proceed" && !picked.is_empty() && confidence >= STEP_EXIT_CONFIDENCE {
+                (EvalDecision::Exit(picked.to_string()), tokens)
+            } else {
+                (EvalDecision::Proceed, tokens)
             }
-            // Providers emit usage as a dedicated Usage event; Done carries
-            // usage: None everywhere (done()/done_with_reason() construct it
-            // that way). Reading usage only on Done left eval_tokens at 0.
-            StreamEventType::Usage => {
-                if let Some(usage) = event.usage {
-                    eval_input = eval_input.max(usage.input_tokens);
-                    eval_output = eval_output.max(usage.output_tokens);
-                }
-            }
-            StreamEventType::Done => {
-                if let Some(usage) = event.usage {
-                    eval_input = eval_input.max(usage.input_tokens);
-                    eval_output = eval_output.max(usage.output_tokens);
-                }
-                break;
-            }
-            _ => {}
+        }
+        Err(e) => {
+            warn!(error = %e, "step evaluator call failed; proceeding");
+            (EvalDecision::Proceed, 0)
         }
     }
-
-    let eval_tokens = (eval_input.max(0) + eval_output.max(0)) as u32;
-    Ok((parse_eval_response(&response_text), eval_tokens))
 }
 
 /// Core LLM multi-turn loop extracted from the original execute_activity.
@@ -1897,56 +1789,6 @@ mod engine_tests {
         assert!(!prompt.contains("ALWAYS use the plugin tool"));
         // Section spacing unchanged for the no-plugin case.
         assert!(prompt.contains("or any namespace.\n\n"));
-    }
-
-    #[test]
-    fn test_parse_eval_response() {
-        match parse_eval_response("proceed") {
-            EvalDecision::Proceed => {}
-            other => panic!("expected Proceed, got {:?}", other),
-        }
-        match parse_eval_response("  proceed\n") {
-            EvalDecision::Proceed => {}
-            other => panic!("expected Proceed, got {:?}", other),
-        }
-        match parse_eval_response("exit:SENT email, task inapplicable") {
-            EvalDecision::Exit(reason) => assert_eq!(reason, "SENT email, task inapplicable"),
-            other => panic!("expected Exit, got {:?}", other),
-        }
-        match parse_eval_response("  exit: nothing to do  ") {
-            EvalDecision::Exit(reason) => assert_eq!(reason, "nothing to do"),
-            other => panic!("expected Exit, got {:?}", other),
-        }
-        // Unknown responses default to Proceed (fail-open)
-        match parse_eval_response("maybe continue?") {
-            EvalDecision::Proceed => {}
-            other => panic!("expected Proceed, got {:?}", other),
-        }
-        // Contradictory exits — an exit whose reason is a proceed/skip
-        // statement — are proceed. Every one of these killed a live run.
-        for contradictory in [
-            "exit: Email is valid order report - proceeding to Step 2/5 to parse the attachment",
-            "exit: Local test payload - no real mailbox message, skipping label operations as instructed",
-            "exit: SKIP",
-            "exit: Report file path identified from payload: /data/appdata/skills/x/inbox/oor.xls",
-            "exit: no action needed for this item, continuing",
-        ] {
-            match parse_eval_response(contradictory) {
-                EvalDecision::Proceed => {}
-                other => panic!("expected Proceed for {contradictory:?}, got {:?}", other),
-            }
-        }
-        // Real exits still exit.
-        for real in [
-            "exit: QuickBooks authentication is not configured; cannot pull transactions",
-            "exit: task inapplicable — the email is a shipping notice, not an order",
-            "exit: precondition failed: no connected account for gws",
-        ] {
-            match parse_eval_response(real) {
-                EvalDecision::Exit(_) => {}
-                other => panic!("expected Exit for {real:?}, got {:?}", other),
-            }
-        }
     }
 
     #[test]

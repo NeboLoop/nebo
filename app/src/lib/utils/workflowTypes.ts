@@ -8,6 +8,7 @@
  * - Activities: custom, research, email, notify, code
  * - Flow control: condition, loop, wait
  * - Integrations: connector (MCP), http
+ * - Decisions: decide (typed questions, engine-executed)
  * - Composition: agent (delegation), transform
  */
 
@@ -24,6 +25,7 @@ export type ActivityType =
 	| 'agent'
 	| 'connector'
 	| 'http'
+	| 'decide'
 	| 'transform'
 	// Call-tree nodes — only legal inside a call_tree binding; never
 	// executed by the workflow engine (the voice session consumes them).
@@ -531,6 +533,33 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 				type: 'textarea',
 				placeholder: 'Authorization: Bearer {{secrets.api_key}}',
 				description: 'One header per line (key: value)',
+			},
+		],
+	},
+	decide: {
+		type: 'decide',
+		label: 'Decide',
+		description: 'Classify or judge data with typed questions',
+		icon: '⚖',
+		accentClass: 'border-info',
+		defaultSkills: [],
+		defaultSteps: [],
+		parameters: [
+			{
+				key: 'state',
+				label: 'State',
+				type: 'text',
+				placeholder: 'inputs._event_payload',
+				description: 'Data path to judge (inputs.*, item, nodes.<id>.*)',
+			},
+			{
+				key: 'questions',
+				label: 'Questions',
+				type: 'textarea',
+				placeholder:
+					'{ "intent": { "type": "choice", "instructions": "What `text` asks for", "criteria": { "quote_request": "a price", "other": "anything else" } } }',
+				description:
+					'JSON object of typed questions (choice, score, noul). A condition node routes on nodes.<id>.<question>.choice and .confidence',
 			},
 		],
 	},
