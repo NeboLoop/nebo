@@ -3807,7 +3807,10 @@ async fn run_loop(
     // task-tracking nudge. The first step waits for them until `turn_deadline`
     // at the tool filter; no answer by then, or none at all, and the keyword
     // filter and keyword nudge run for this turn (see `turn_decide`).
-    let turn_groups = if decide.is_some() && crate::turn_decide::enabled() {
+    // Workflow turns and review forks have no person speaking and run on
+    // scratch sessions: no objective call, so no turn decision rides it.
+    let objective_applies = objective_detection_applies(workflow_mode, review_fork.as_ref());
+    let turn_groups = if objective_applies && decide.is_some() && crate::turn_decide::enabled() {
         let registered: HashSet<String> = tools.get_tool_names().await.into_iter().collect();
         Some(tool_filter::context_groups(&registered))
     } else {
@@ -3824,8 +3827,10 @@ async fn run_loop(
     let mut turn_signals: Option<crate::turn_decide::TurnSignals> = None;
 
     // Fire objective detection in background (non-blocking). One typed
-    // decision, milliseconds; it never touches the chat provider.
-    {
+    // decision, milliseconds; it never touches the chat provider. Workflow
+    // turns and review forks have no person speaking and run on scratch
+    // sessions, so an objective there is paid for and never read.
+    if objective_applies {
         let decide = decide.cloned();
         let providers = providers.clone();
         let store = store.clone();
@@ -8722,6 +8727,18 @@ const OBJECTIVE_WRITER_INPUT_CAP: usize = 2_000;
 /// How many recent messages the classifier sees.
 const OBJECTIVE_RECENT_MESSAGES: usize = 6;
 
+/// Whether a run classifies the person's objective. A workflow turn is the
+/// engine's step on a scratch session deleted at run end, and a review fork
+/// is the runner's own self-review prompt on a scratch fork session: neither
+/// is the person speaking, and nothing reads an objective set there. A
+/// command fork does classify: it is the only run its message gets.
+fn objective_detection_applies(
+    workflow_mode: Option<&WorkflowMode>,
+    review_fork: Option<&crate::review_fork::ReviewForkCtx>,
+) -> bool {
+    workflow_mode.is_none() && review_fork.is_none()
+}
+
 /// What the objective classifier decided to do with the session's objective.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ObjectiveDecision {
@@ -8854,7 +8871,7 @@ async fn detect_objective(
     let state = serde_json::json!({
         "current_objective": if objective_is_none { "none" } else { current_objective.as_str() },
         "recent_conversation": recent_conversation,
-        "latest_user_message": truncate_str(user_prompt, crate::turn_decide::LATEST_USER_MESSAGE_CAP),
+        "latest_user_message": ai::decide::clip(user_prompt, crate::turn_decide::LATEST_USER_MESSAGE_CAP),
     });
     let mut questions = BTreeMap::from([
         (
@@ -8922,6 +8939,7 @@ async fn detect_objective(
     let confidence = action.and_then(|a| a.confidence).unwrap_or(1.0);
     let mode = decision.answer("mode").map(Answer::picked).unwrap_or("");
     debug!(
+        site = "objective",
         model = %decision.model,
         action = picked,
         confidence,
@@ -9273,7 +9291,45 @@ mod attachment_storage_tests {
 
 #[cfg(test)]
 mod objective_decision_tests {
-    use super::{objective_decision, objective_is_plain, ObjectiveDecision, OBJECTIVE_KEEP_FLOOR};
+    use super::{
+        OBJECTIVE_KEEP_FLOOR, ObjectiveDecision, WorkflowMode, objective_decision,
+        objective_detection_applies, objective_is_plain,
+    };
+
+    /// Workflow turns and review forks are scratch runs with no person
+    /// speaking; only a chat run (a command fork included) classifies.
+    #[test]
+    fn workflow_turns_and_review_forks_skip_the_objective_call() {
+        assert!(objective_detection_applies(None, None));
+        let workflow = WorkflowMode {
+            trace: Default::default(),
+            advertised_tools: Default::default(),
+            tainted: false,
+            spend_cap_microcents: 0,
+            park: None,
+        };
+        assert!(!objective_detection_applies(Some(&workflow), None));
+        let review = crate::review_fork::ReviewForkCtx::new("agent-1".into(), false);
+        assert!(!objective_detection_applies(None, Some(&review)));
+    }
+
+    /// A pasted document is capped at both ends: the ask at the close of a
+    /// long message still reaches the classifier.
+    #[test]
+    fn the_latest_message_is_capped_at_both_ends() {
+        let pasted = format!(
+            "Here is the contract. {} Please summarize the termination clause.",
+            "Clause text. ".repeat(5_000)
+        );
+        let sent = ai::decide::clip(&pasted, crate::turn_decide::LATEST_USER_MESSAGE_CAP);
+        assert!(
+            sent.len() < crate::turn_decide::LATEST_USER_MESSAGE_CAP + 64,
+            "{}",
+            sent.len()
+        );
+        assert!(sent.starts_with("Here is the contract."));
+        assert!(sent.ends_with("Please summarize the termination clause."));
+    }
 
     #[test]
     fn a_plain_short_ask_is_its_own_objective_and_a_framed_one_is_not() {

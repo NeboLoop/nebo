@@ -39,7 +39,9 @@ use types::keyparser;
 /// Max auto-continuations per real user message.
 pub const MAX_AUTO_CONTINUATIONS: u32 = 5;
 
-/// Char-boundary-safe caps for the judge prompt — keep the call cheap.
+/// Char-boundary-safe caps for the judge state — keep the call cheap. The
+/// response is clipped at both ends ([`ai::decide::clip`]): a long reply
+/// states its "next I will…" at the close, which a head-only cut drops.
 const JUDGE_USER_CAP: usize = 2_000;
 const JUDGE_RESPONSE_CAP: usize = 4_000;
 /// Cap on the stored last-real-prompt per session.
@@ -49,9 +51,11 @@ const STORED_PROMPT_CAP: usize = 4_000;
 const JUDGE_TIMEOUT_SECS: u64 = 5;
 /// Floor on "the response commits to more work it can do now".
 const COMMITMENT_FLOOR: f64 = 0.7;
-/// Ceiling on "the response is waiting on the person"; at or above it the
-/// ball is in their court and continuing cannot supply what is missing.
-const WAITING_CEILING: f64 = 0.5;
+/// Most "the response is waiting on the person" may be for a continuation.
+/// Above it the ball is in their court and continuing cannot supply what is
+/// missing. Every continuation spends a full paid turn, so a near coin flip
+/// on waiting (0.49 under the old 0.5 ceiling) stops.
+const WAITING_MAX: f64 = 0.3;
 /// The one reason a continuation carries; Jev decides, it does not write.
 const CONTINUE_REASON: &str = "unfinished work in the previous response";
 
@@ -106,15 +110,25 @@ pub fn eligible_for_judging(
 }
 
 /// Continue only when the response commits to more work AND is not waiting
-/// on the person. Anything short of both thresholds is `Done`.
+/// on the person (at most [`WAITING_MAX`]). Anything short of both
+/// thresholds is `Done`.
 pub fn verdict_from(unfinished_commitment: f64, waiting_on_person: f64) -> Verdict {
-    if unfinished_commitment >= COMMITMENT_FLOOR && waiting_on_person < WAITING_CEILING {
+    if unfinished_commitment >= COMMITMENT_FLOOR && waiting_on_person <= WAITING_MAX {
         Verdict::Continue {
             reason: CONTINUE_REASON.to_string(),
         }
     } else {
         Verdict::Done
     }
+}
+
+/// The judge's state: the person's last real message and the response,
+/// each capped (see [`JUDGE_RESPONSE_CAP`]).
+fn judge_state(last_user_prompt: &str, assistant_response: &str) -> serde_json::Value {
+    serde_json::json!({
+        "last_user_message": truncate_str(last_user_prompt, JUDGE_USER_CAP),
+        "assistant_response": ai::decide::clip(assistant_response, JUDGE_RESPONSE_CAP),
+    })
 }
 
 /// Ask Jev whether the assistant's final response left work it can do now.
@@ -130,10 +144,7 @@ pub async fn judge(
         return Verdict::Done;
     };
 
-    let state = serde_json::json!({
-        "last_user_message": truncate_str(last_user_prompt, JUDGE_USER_CAP),
-        "assistant_response": truncate_str(assistant_response, JUDGE_RESPONSE_CAP),
-    });
+    let state = judge_state(last_user_prompt, assistant_response);
     let questions = BTreeMap::from([
         (
             "unfinished_commitment",
@@ -161,7 +172,10 @@ pub async fn judge(
                 .map(Answer::yes)
                 .unwrap_or(1.0);
             debug!(
+                site = "auto_continue",
                 model = %decision.model,
+                input_tokens = decision.usage.input_tokens,
+                cost_micro = decision.usage.cost_micro,
                 unfinished,
                 waiting,
                 "auto-continue judge decided"
@@ -356,10 +370,33 @@ mod tests {
         assert_eq!(verdict_from(0.9, 0.6), Verdict::Done);
         // Nothing promised.
         assert_eq!(verdict_from(0.3, 0.1), Verdict::Done);
-        // Both thresholds are edges: at the floor continues, at the ceiling stops.
-        assert!(matches!(verdict_from(0.7, 0.49), Verdict::Continue { .. }));
+        // Both thresholds are edges: at the floor continues, and waiting at
+        // WAITING_MAX still continues; anything above it stops.
+        assert!(matches!(verdict_from(0.7, 0.3), Verdict::Continue { .. }));
         assert_eq!(verdict_from(0.69, 0.0), Verdict::Done);
+        assert_eq!(verdict_from(1.0, 0.31), Verdict::Done);
+        // A near coin flip on waiting no longer spends a paid turn.
+        assert_eq!(verdict_from(1.0, 0.49), Verdict::Done);
         assert_eq!(verdict_from(1.0, 0.5), Verdict::Done);
+    }
+
+    #[test]
+    fn a_long_response_keeps_its_closing_promise() {
+        let response = format!(
+            "Here is the first part of the report. {} Next I will draft the remaining three sections.",
+            "Detail line. ".repeat(1_000)
+        );
+        let state = judge_state("write the report", &response);
+        let sent = state["assistant_response"].as_str().unwrap();
+        assert!(sent.len() < response.len());
+        assert!(sent.starts_with("Here is the first part"), "{sent}");
+        assert!(
+            sent.ends_with("Next I will draft the remaining three sections."),
+            "the tail carries the commitment: {sent}"
+        );
+        // A short response goes as it is.
+        let state = judge_state("hi", "Done.");
+        assert_eq!(state["assistant_response"], "Done.");
     }
 
     #[test]

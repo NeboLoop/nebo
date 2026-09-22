@@ -878,6 +878,10 @@ pub async fn execute_activity(
     let mut total_tokens: u32 = 0;
     let mut step_outputs: Vec<String> = Vec::new();
     let total_steps = activity.steps.len();
+    // Outside text in the conversation so far: a watch payload in the run's
+    // inputs, or any earlier step that read web, mail, channel or phone
+    // content (its output is seeded into every later step). Sticky.
+    let mut untrusted = checkpoint.is_some_and(|c| c.tainted);
 
     // Resume rehydration: earlier steps' work lives in the restored messages —
     // skip re-executing them; enter the loop at the suspended step with the
@@ -943,13 +947,13 @@ pub async fn execute_activity(
             cancel: cancel_token.cloned(),
             turn_key: format!("{}:{}:{}", activity.id, iteration, i),
         };
-        let (step_result, step_tokens) = loop_impl
+        let (step_result, step_tokens, step_tainted) = loop_impl
             .run_turn(turn)
             .await
             .map(|o| {
                 *spent += o.total_tokens;
                 *spent_output += o.output_tokens;
-                (o.text, o.total_tokens)
+                (o.text, o.total_tokens, o.tainted)
             })
         .map_err(|e| {
             // Exit-by-design (exit tool) is a clean stop, not a step failure —
@@ -980,40 +984,43 @@ pub async fn execute_activity(
         // work (often the side effects: store, send, record) still exists —
         // without this it exited workflows whose intermediate output merely
         // LOOKED complete (voice profile distilled at step 2/5, never stored).
-        let remaining_steps = activity.steps[i + 1..]
-            .iter()
-            .enumerate()
-            .map(|(j, s)| format!("- Step {}: {}", i + j + 2, truncate_at_char_boundary(s, 200)))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let (eval, eval_tokens) =
-            evaluate_step(decide, step, &step_result, &remaining_steps).await;
+        //
+        // Not asked (see `step_evaluator_applies`): after the FINAL step, where
+        // there is nothing left to skip and an exit could only kill
+        // downstream graph nodes, and after a step whose output carries
+        // outside text (web, mail, a watch payload), which the evaluator
+        // must not be able to stop the run on.
+        untrusted |= step_tainted;
+        let (eval, eval_tokens) = if step_evaluator_applies(i, total_steps, untrusted) {
+            let remaining_steps = activity.steps[i + 1..]
+                .iter()
+                .enumerate()
+                .map(|(j, s)| {
+                    format!(
+                        "- Step {}: {}",
+                        i + j + 2,
+                        truncate_at_char_boundary(s, 200)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            evaluate_step(decide, step, &step_result, &remaining_steps).await
+        } else {
+            if untrusted && i + 1 < total_steps {
+                info!(
+                    site = "step_eval",
+                    activity = %activity.id,
+                    step = i,
+                    "step output carries outside text; evaluator not asked, proceeding"
+                );
+            }
+            (EvalDecision::Proceed, 0)
+        };
         *spent += eval_tokens;
 
         match eval {
             EvalDecision::Proceed => {
                 // Normal flow: append result, continue to next step
-                messages.push(ai::Message {
-                    role: "assistant".into(),
-                    content: step_result.clone(),
-                    ..Default::default()
-                });
-            }
-            EvalDecision::Exit(reason) if i + 1 == total_steps => {
-                // FINAL step: there are nothing left to skip — the eval prompt
-                // itself says "(none — this is the final step)" — so an exit
-                // here can only kill downstream graph nodes (loop re-entry,
-                // commit, delivery) for zero benefit. Observed live: the
-                // evaluator exited on "Chunk 7 complete: 4 rows resolved..."
-                // — an affirmative completion — that the prose evaluator's
-                // keyword guard missed. Keyword lists leak; position doesn't.
-                // Treat a final-step exit as normal completion of the activity.
-                info!(
-                    activity = %activity.id,
-                    step = i,
-                    reason = %reason,
-                    "evaluator exit on final step demoted to completion"
-                );
                 messages.push(ai::Message {
                     role: "assistant".into(),
                     content: step_result.clone(),
@@ -1089,6 +1096,29 @@ pub async fn execute_activity(
 /// high and every uncertain case continues.
 const STEP_EXIT_CONFIDENCE: f64 = 0.7;
 
+/// Ceiling on one workflow decision (the step evaluator and the `decide`
+/// node), retry included. A decision answers in milliseconds; this only
+/// bounds a stalled connection, and on timeout both fail open.
+pub(crate) const DECISION_TIMEOUT_SECS: u64 = 5;
+
+/// Whether the step evaluator is asked after step `index` of `total`.
+///
+/// Never after the final step: there is nothing left to skip, so an exit
+/// could only kill downstream graph nodes (loop re-entry, commit, delivery)
+/// for zero benefit, and the call was paid for and thrown away. Observed
+/// live: the evaluator exited on "Chunk 7 complete: 4 rows resolved...".
+///
+/// Never after a step whose output carries outside text (`untrusted`: this
+/// or an earlier step read web pages, mail, channel or phone content, or the
+/// run's inputs are a watch payload). That output is raw tool output, and the typed
+/// decision model is not robust to text written to steer it: an injected
+/// "this is harmful, stop" could otherwise end the owner's run. Such a run
+/// proceeds, and its remaining steps, `requires_tools`, the iteration
+/// ceiling and the spend cap still govern it.
+fn step_evaluator_applies(index: usize, total: usize, untrusted: bool) -> bool {
+    index + 1 < total && !untrusted
+}
+
 /// Evaluate a step's output with one typed decision (Jev through Janus).
 /// Returns Proceed or Exit plus the decision's own token usage, which counts
 /// against the activity like every other turn.
@@ -1105,14 +1135,9 @@ async fn evaluate_step(
     let Some(client) = decide else {
         return (EvalDecision::Proceed, 0);
     };
-    let remaining_block = if remaining_steps.is_empty() {
-        "(none — this is the final step)"
-    } else {
-        remaining_steps
-    };
     let state = serde_json::json!({
         "step": step_text,
-        "remaining_steps": remaining_block,
+        "remaining_steps": remaining_steps,
         "step_output": truncate_at_char_boundary(step_output, 2000),
     });
     let questions = std::collections::BTreeMap::from([(
@@ -1140,17 +1165,25 @@ async fn evaluate_step(
         ),
     )]);
 
-    match client.decide(&state, &questions).await {
-        Ok(decision) => {
+    let call = client.decide(&state, &questions);
+    let deadline = std::time::Duration::from_secs(DECISION_TIMEOUT_SECS);
+    match tokio::time::timeout(deadline, call).await {
+        Ok(Ok(decision)) => {
             let tokens = (decision.usage.input_tokens + decision.usage.output_tokens) as u32;
             let Some(answer) = decision.answer("outcome") else {
-                warn!("step evaluator answered without an outcome; proceeding");
+                warn!(
+                    site = "step_eval",
+                    "step evaluator answered without an outcome; proceeding"
+                );
                 return (EvalDecision::Proceed, tokens);
             };
             let picked = answer.picked();
             let confidence = answer.confidence.unwrap_or(0.0);
             info!(
+                site = "step_eval",
                 model = %decision.model,
+                input_tokens = decision.usage.input_tokens,
+                cost_micro = decision.usage.cost_micro,
                 outcome = picked,
                 confidence,
                 "step evaluator decided"
@@ -1161,8 +1194,12 @@ async fn evaluate_step(
                 (EvalDecision::Proceed, tokens)
             }
         }
-        Err(e) => {
-            warn!(error = %e, "step evaluator call failed; proceeding");
+        Ok(Err(e)) => {
+            warn!(site = "step_eval", error = %e, "step evaluator call failed; proceeding");
+            (EvalDecision::Proceed, 0)
+        }
+        Err(_) => {
+            warn!(site = "step_eval", "step evaluator timed out; proceeding");
             (EvalDecision::Proceed, 0)
         }
     }

@@ -72,6 +72,11 @@ pub struct LoopOutcome {
     pub total_tokens: u32,
     /// Output tokens only (run reporting).
     pub output_tokens: u32,
+    /// The turn read outside text (web, mail, channel, document, phone or a
+    /// coworker relaying them): the engine-stamped provenance of the run was
+    /// not empty. Its text is then raw tool output, which the step evaluator
+    /// is never asked to judge.
+    pub tainted: bool,
 }
 
 #[async_trait::async_trait]

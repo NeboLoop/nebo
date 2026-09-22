@@ -65,6 +65,17 @@ const SAME_SUBJECT_FLOOR: f64 = 0.7;
 /// Floor on the confidence of the merge/supersede choice. Short of either
 /// floor the pair stays two facts — the historical keep_both bias.
 const RELATION_CONFIDENCE_FLOOR: f64 = 0.6;
+/// Supersede hard-deletes the older fact, so it clears a higher bar than a
+/// merge (which keeps both facts' content in one row): "same subject" at
+/// least this sure...
+const SUPERSEDE_SAME_SUBJECT_FLOOR: f64 = 0.9;
+/// ...and the supersede choice at least this confident. Short of either the
+/// pair stays two facts, the non-destructive outcome.
+const SUPERSEDE_CONFIDENCE_FLOOR: f64 = 0.8;
+/// Ceiling on the pair decision, retry included. On timeout the pair stays
+/// two facts. A decision answers in milliseconds; this only bounds a stalled
+/// connection inside the background write path.
+const PAIR_CHECK_TIMEOUT_SECS: u64 = 5;
 
 /// Tracks last consolidation time per scope.
 static LAST_CONSOLIDATION: LazyLock<Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>> =
@@ -595,14 +606,21 @@ enum PairRelation {
 
 /// Map the typed answers onto a relation. Merge or supersede only when the
 /// pair is about the same subject AND the choice is confident; anything
-/// short of both floors keeps both (the existing bias).
+/// short of both floors keeps both (the existing bias). Supersede deletes a
+/// fact, so it needs the higher pair of floors
+/// ([`SUPERSEDE_SAME_SUBJECT_FLOOR`], [`SUPERSEDE_CONFIDENCE_FLOOR`]).
 fn relation_from(same_subject: f64, choice: &str, confidence: f64) -> PairRelation {
     if same_subject < SAME_SUBJECT_FLOOR || confidence < RELATION_CONFIDENCE_FLOOR {
         return PairRelation::KeepBoth;
     }
     match choice {
         "merge" => PairRelation::Merge,
-        "supersede" => PairRelation::Supersede,
+        "supersede"
+            if same_subject >= SUPERSEDE_SAME_SUBJECT_FLOOR
+                && confidence >= SUPERSEDE_CONFIDENCE_FLOOR =>
+        {
+            PairRelation::Supersede
+        }
         _ => PairRelation::KeepBoth,
     }
 }
@@ -646,10 +664,13 @@ async fn micro_curate_pair(
         ),
     ]);
 
-    let decision = decide
-        .decide(&state, &questions)
-        .await
-        .map_err(|e| format!("decide error: {}", e))?;
+    let call = decide.decide(&state, &questions);
+    let deadline = std::time::Duration::from_secs(PAIR_CHECK_TIMEOUT_SECS);
+    let decision = match tokio::time::timeout(deadline, call).await {
+        Ok(Ok(decision)) => decision,
+        Ok(Err(e)) => return Err(format!("decide error: {}", e)),
+        Err(_) => return Err("decide timed out; kept both".to_string()),
+    };
     let same_subject = decision
         .answer("same_subject")
         .map(Answer::yes)
@@ -660,8 +681,11 @@ async fn micro_curate_pair(
         .unwrap_or_default();
     let relation = relation_from(same_subject, &choice, confidence);
     debug!(
+        site = "memory_pair",
         scope = %user_id,
         model = %decision.model,
+        input_tokens = decision.usage.input_tokens,
+        cost_micro = decision.usage.cost_micro,
         same_subject,
         choice = %choice,
         confidence,
@@ -971,6 +995,12 @@ mod tests {
         assert_eq!(relation_from(0.9, "merge", 0.9), Merge);
         assert_eq!(relation_from(0.9, "supersede", 0.9), Supersede);
         assert_eq!(relation_from(0.9, "keep_both", 0.9), KeepBoth);
+        // Supersede deletes the older fact: it needs same_subject >= 0.9 AND
+        // confidence >= 0.8. The merge floors are not enough.
+        assert_eq!(relation_from(0.9, "supersede", 0.8), Supersede);
+        assert_eq!(relation_from(0.89, "supersede", 1.0), KeepBoth);
+        assert_eq!(relation_from(1.0, "supersede", 0.79), KeepBoth);
+        assert_eq!(relation_from(0.7, "supersede", 0.6), KeepBoth);
         // Different subjects never merge or supersede, however confident.
         assert_eq!(relation_from(0.3, "supersede", 1.0), KeepBoth);
         // An unsure choice keeps both.
@@ -978,7 +1008,7 @@ mod tests {
         // Edges: the floors are inclusive.
         assert_eq!(relation_from(0.7, "merge", 0.6), Merge);
         assert_eq!(relation_from(0.69, "merge", 1.0), KeepBoth);
-        assert_eq!(relation_from(1.0, "supersede", 0.59), KeepBoth);
+        assert_eq!(relation_from(1.0, "merge", 0.59), KeepBoth);
         // An option outside the set (or a missing answer) keeps both.
         assert_eq!(relation_from(1.0, "", 1.0), KeepBoth);
         assert_eq!(relation_from(1.0, "other", 1.0), KeepBoth);
