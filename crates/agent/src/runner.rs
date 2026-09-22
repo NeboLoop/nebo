@@ -1433,6 +1433,9 @@ pub struct Runner {
     /// handler. Set via `set_approval_channels`.
     approval_channels: Option<tools::ApprovalChannels>,
     embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    /// The typed-decision door (TypeSafe Jev through Janus). Present exactly
+    /// when the Janus provider is; the judges use it instead of a chat turn.
+    decide: Option<Arc<ai::DecideClient>>,
     /// The SAME hybrid-search adapter instance the memory tool uses (shared
     /// TurboVec index cache) — powers per-message prompt recall.
     hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
@@ -1467,6 +1470,7 @@ impl Runner {
             agent_registry,
             skill_loader,
             embedding_provider: None,
+            decide: None,
             hybrid_searcher: None,
             title_sink: std::sync::OnceLock::new(),
             active_turns: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -1531,6 +1535,17 @@ impl Runner {
     pub fn set_embedding_provider(mut self, provider: Arc<dyn ai::EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
         self
+    }
+
+    /// Install the typed-decision client (Jev through Janus).
+    pub fn set_decide(mut self, client: Arc<ai::DecideClient>) -> Self {
+        self.decide = Some(client);
+        self
+    }
+
+    /// The typed-decision client, if the Janus provider is present.
+    pub fn decide(&self) -> Option<Arc<ai::DecideClient>> {
+        self.decide.clone()
     }
 
     /// Set the hybrid searcher for per-message prompt memory recall — pass the

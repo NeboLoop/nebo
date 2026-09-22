@@ -407,6 +407,34 @@ fn build_embedding_provider(
 
 /// Build AI providers from auth_profiles in the database.
 /// Config is needed for NeboAI's Janus URL (not stored in auth_profile).
+/// The typed-decision door (TypeSafe Jev through Janus `/v1/systemone`).
+/// Present exactly when the Janus chat provider is: same gateway root, same
+/// bearer (the NeboAI profile's token, else the bot id), same bot id.
+pub fn build_decide_client(
+    providers: &[Arc<dyn ai::Provider>],
+    store: &db::Store,
+    cfg: &Config,
+) -> Option<Arc<ai::DecideClient>> {
+    if !providers.iter().any(|p| p.id() == "janus") {
+        return None;
+    }
+    let bot_id = config::read_bot_id();
+    let token = store
+        .list_auth_profiles()
+        .ok()?
+        .into_iter()
+        .find(|p| {
+            p.provider == "neboai" && p.is_active.unwrap_or(0) != 0 && !p.api_key.is_empty()
+        })
+        .map(|p| p.api_key);
+    let api_key = token.or_else(|| bot_id.clone())?;
+    Some(Arc::new(ai::DecideClient::new(
+        &cfg.neboai.janus_url,
+        api_key,
+        bot_id,
+    )))
+}
+
 pub fn build_providers(
     store: &db::Store,
     cfg: &Config,
@@ -1704,6 +1732,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let approval_channels: tools::ApprovalChannels =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
+    let decide_client = build_decide_client(&providers, &store, &cfg);
     let mut runner_builder = agent::Runner::new(
         store.clone(),
         tool_registry.clone(),
@@ -1723,6 +1752,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     if let Some(ep) = embedding_provider.clone() {
         runner_builder = runner_builder.set_embedding_provider(ep);
+    }
+    if let Some(dc) = decide_client {
+        runner_builder = runner_builder.set_decide(dc);
     }
 
     let runner = Arc::new(runner_builder);
