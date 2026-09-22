@@ -217,10 +217,19 @@ impl DecideClient {
 
 /// Map a non-success status to the provider error the caller falls back on.
 /// 429 and 5xx (Janus relays an upstream 529 as 502) are the retryable ones.
+/// The exception is 504: Janus bounds TypeSafe below the patience the caller
+/// holds here, so a 504 means the decision already ran out of time. Asking
+/// again only spends that budget twice over, and the caller's safe default
+/// is what it will use either way.
 fn classify(status: u16, text: String) -> ProviderError {
     match status {
         401 | 403 => ProviderError::Auth(text),
         429 => ProviderError::RateLimit,
+        504 => ProviderError::Api {
+            code: "504".into(),
+            message: text,
+            retryable: false,
+        },
         code => ProviderError::Api {
             code: code.to_string(),
             message: text,
@@ -282,6 +291,9 @@ mod tests {
     fn only_rate_limits_and_overloads_are_retried() {
         assert!(classify(429, String::new()).is_retryable());
         assert!(classify(502, "upstream 529".into()).is_retryable());
+        // Janus gives up on TypeSafe before we give up on Janus, so a 504 is
+        // a decision that already spent its time; the caller falls back now.
+        assert!(!classify(504, "systemone_timeout".into()).is_retryable());
         assert!(!classify(422, "bad question".into()).is_retryable());
         assert!(!classify(401, String::new()).is_retryable());
         assert!(matches!(classify(401, String::new()), ProviderError::Auth(_)));
