@@ -129,22 +129,28 @@ impl Decision {
     }
 }
 
-/// Client for Janus `/v1/systemone`. Built beside the Janus chat provider
-/// with the same gateway root, bearer and bot id.
+/// What a call authenticates with: the NeboAI token as bearer and the bot
+/// id for per-bot billing. Resolved on every call so a rotated token is
+/// picked up without a restart, the same way the chat path does it.
+pub struct Bearer {
+    pub token: String,
+    pub bot_id: Option<String>,
+}
+
+/// Client for Janus `/v1/systemone`.
 pub struct DecideClient {
     url: String,
-    api_key: String,
-    bot_id: Option<String>,
+    auth: Box<dyn Fn() -> Option<Bearer> + Send + Sync>,
     http: reqwest::Client,
 }
 
 impl DecideClient {
-    /// `janus_url` is the gateway root (no `/v1`).
-    pub fn new(janus_url: &str, api_key: impl Into<String>, bot_id: Option<String>) -> Self {
+    /// `janus_url` is the gateway root (no `/v1`). `auth` resolves the current
+    /// bearer; `None` means no NeboAI token yet and the call fails as Auth.
+    pub fn new(janus_url: &str, auth: impl Fn() -> Option<Bearer> + Send + Sync + 'static) -> Self {
         Self {
             url: format!("{}/v1/systemone", janus_url.trim_end_matches('/')),
-            api_key: api_key.into(),
-            bot_id,
+            auth: Box::new(auth),
             http: crate::http::request_client(),
         }
     }
@@ -160,12 +166,15 @@ impl DecideClient {
             "state": state,
             "questions": questions,
         });
+        let Some(bearer) = (self.auth)() else {
+            return Err(ProviderError::Auth("no NeboAI token".into()));
+        };
         let mut req = self
             .http
             .post(&self.url)
-            .bearer_auth(&self.api_key)
+            .bearer_auth(&bearer.token)
             .json(&body);
-        if let Some(bot_id) = &self.bot_id {
+        if let Some(bot_id) = &bearer.bot_id {
             req = req.header("X-Bot-ID", bot_id);
         }
         let resp = req
@@ -242,7 +251,8 @@ mod tests {
 
     #[test]
     fn client_posts_to_the_systemone_path() {
-        let c = DecideClient::new("https://janus.example.com/", "k", None);
+        let c = DecideClient::new("https://janus.example.com/", || None);
         assert_eq!(c.url, "https://janus.example.com/v1/systemone");
+        assert!((c.auth)().is_none());
     }
 }

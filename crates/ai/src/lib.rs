@@ -9,7 +9,7 @@ pub mod sse;
 pub mod transcribe;
 pub mod types;
 
-pub use decide::{Answer, DecideClient, Decision, Question, JEV_MODEL};
+pub use decide::{Answer, Bearer, DecideClient, Decision, Question, JEV_MODEL};
 pub use embedding::{
     CachedEmbeddingProvider, EmbeddingProvider, OllamaEmbeddingProvider, OpenAIEmbeddingProvider,
     bytes_to_f32, f32_to_bytes,

@@ -408,31 +408,17 @@ fn build_embedding_provider(
 /// Build AI providers from auth_profiles in the database.
 /// Config is needed for NeboAI's Janus URL (not stored in auth_profile).
 /// The typed-decision door (TypeSafe Jev through Janus `/v1/systemone`).
-/// Present exactly when the Janus chat provider is: same gateway root, same
-/// bearer (the NeboAI profile's token, else the bot id), same bot id.
-pub fn build_decide_client(
-    providers: &[Arc<dyn ai::Provider>],
-    store: &db::Store,
-    cfg: &Config,
-) -> Option<Arc<ai::DecideClient>> {
-    if !providers.iter().any(|p| p.id() == "janus") {
-        return None;
-    }
-    let bot_id = config::read_bot_id();
-    let token = store
-        .list_auth_profiles()
-        .ok()?
-        .into_iter()
-        .find(|p| {
-            p.provider == "neboai" && p.is_active.unwrap_or(0) != 0 && !p.api_key.is_empty()
+/// The bearer is the NeboAI token, resolved on every call through the ONE
+/// resolver the comms and tunnel paths use (`codes::neboai_token_from`, which
+/// honors the rotated-token cache), so a rotation or a login after boot needs
+/// no rebuild. Janus rejects a bare bot id as a bearer.
+pub fn build_decide_client(store: Arc<db::Store>, cfg: &Config) -> Arc<ai::DecideClient> {
+    Arc::new(ai::DecideClient::new(&cfg.neboai.janus_url, move || {
+        Some(ai::Bearer {
+            token: codes::neboai_token_from(&store)?,
+            bot_id: config::read_bot_id(),
         })
-        .map(|p| p.api_key);
-    let api_key = token.or_else(|| bot_id.clone())?;
-    Some(Arc::new(ai::DecideClient::new(
-        &cfg.neboai.janus_url,
-        api_key,
-        bot_id,
-    )))
+    }))
 }
 
 pub fn build_providers(
@@ -1732,7 +1718,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let approval_channels: tools::ApprovalChannels =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
-    let decide_client = build_decide_client(&providers, &store, &cfg);
+    let decide_client = build_decide_client(store.clone(), &cfg);
     let mut runner_builder = agent::Runner::new(
         store.clone(),
         tool_registry.clone(),
@@ -1753,9 +1739,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     if let Some(ep) = embedding_provider.clone() {
         runner_builder = runner_builder.set_embedding_provider(ep);
     }
-    if let Some(dc) = decide_client {
-        runner_builder = runner_builder.set_decide(dc);
-    }
+    runner_builder = runner_builder.set_decide(decide_client);
 
     let runner = Arc::new(runner_builder);
 
