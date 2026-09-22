@@ -407,6 +407,20 @@ fn build_embedding_provider(
 
 /// Build AI providers from auth_profiles in the database.
 /// Config is needed for NeboAI's Janus URL (not stored in auth_profile).
+/// The typed-decision door (TypeSafe Jev through Janus `/v1/systemone`).
+/// The bearer is the NeboAI token, resolved on every call through the ONE
+/// resolver the comms and tunnel paths use (`codes::neboai_token_from`, which
+/// honors the rotated-token cache), so a rotation or a login after boot needs
+/// no rebuild. Janus rejects a bare bot id as a bearer.
+pub fn build_decide_client(store: Arc<db::Store>, cfg: &Config) -> Arc<ai::DecideClient> {
+    Arc::new(ai::DecideClient::new(&cfg.neboai.janus_url, move || {
+        Some(ai::Bearer {
+            token: codes::neboai_token_from(&store)?,
+            bot_id: config::read_bot_id(),
+        })
+    }))
+}
+
 pub fn build_providers(
     store: &db::Store,
     cfg: &Config,
@@ -1704,6 +1718,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let approval_channels: tools::ApprovalChannels =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
+    let decide_client = build_decide_client(store.clone(), &cfg);
     let mut runner_builder = agent::Runner::new(
         store.clone(),
         tool_registry.clone(),
@@ -1724,15 +1739,18 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     if let Some(ep) = embedding_provider.clone() {
         runner_builder = runner_builder.set_embedding_provider(ep);
     }
+    runner_builder = runner_builder.set_decide(decide_client);
 
     let runner = Arc::new(runner_builder);
 
     // Spawn background memory consolidation sweep (30-min interval, per-scope
-    // dedup/prune); the embedding provider keeps merged values' vectors fresh.
+    // dedup/prune); the embedding provider keeps merged values' vectors fresh
+    // and the decide client judges write-time contradiction pairs.
     agent::memory_consolidation::spawn_sweep(
         store.clone(),
         runner.providers(),
         embedding_provider.clone(),
+        runner.decide(),
     );
 
     // Create event bus and dispatcher for workflow-to-workflow events
@@ -1765,6 +1783,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let workflow_manager = Arc::new(workflow_manager::WorkflowManagerImpl::new(
         store.clone(),
         runner.providers(),
+        runner.decide(),
         tool_registry.clone(),
         hub.clone(),
         cfg.clone(),

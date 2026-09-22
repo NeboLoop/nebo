@@ -1,4 +1,5 @@
 pub mod call_budget;
+pub mod decide;
 pub mod embedding;
 pub mod http;
 pub mod image_norm;
@@ -8,6 +9,7 @@ pub mod sse;
 pub mod transcribe;
 pub mod types;
 
+pub use decide::{Answer, Bearer, DecideClient, Decision, Question, JEV_MODEL};
 pub use embedding::{
     CachedEmbeddingProvider, EmbeddingProvider, OllamaEmbeddingProvider, OpenAIEmbeddingProvider,
     bytes_to_f32, f32_to_bytes,

@@ -1,8 +1,10 @@
 //! Judge-gated auto-continuation ("persistent goals" v1).
 //!
-//! After a chat run completes normally, a cheap-model judge decides whether the
-//! assistant's final response left an explicit unfinished commitment (promised
-//! next steps, a partial enumeration, work it said it would do but didn't show).
+//! After a chat run completes normally, a typed-decision judge (Jev through
+//! Janus, [`ai::DecideClient`]) decides whether the assistant's final response
+//! left an explicit unfinished commitment (promised next steps, a partial
+//! enumeration, work it said it would do but didn't show) and is not waiting
+//! on the person. Two Noul questions, thresholds in code, milliseconds.
 //! If so, the server re-dispatches a synthetic user message through the ONE
 //! canonical chat pathway ([`run_chat`]) telling the agent to keep going.
 //!
@@ -15,24 +17,24 @@
 //! - Budget: at most [`MAX_AUTO_CONTINUATIONS`] continuations per real user
 //!   message, tracked in-memory per session key (deliberate v1 ceiling: a
 //!   server restart drops the counters).
-//! - The judge fails CLOSED: any provider error, timeout, or unparseable
-//!   verdict is treated as `done` (we auto-continue on EVERY chat, not just
-//!   explicit goals, so uncertainty must halt the loop — never fail-open).
+//! - The judge fails CLOSED: no decide client, any error, or a timeout is
+//!   treated as `done` (we auto-continue on EVERY chat, not just explicit
+//!   goals, so uncertainty must halt the loop — never fail-open).
 //! - Subagent sessions, errored/cancelled runs, and empty responses are never
 //!   judged (see [`eligible_for_judging`]).
 //!
 //! Off switch: `NEBO_AUTO_CONTINUE=0` (env kill-switch, default ON — see
 //! [`enabled`]).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 use std::time::Duration;
 
-use ai::{ChatRequest, Message, Provider, StreamEventType};
+use ai::{Answer, DecideClient, Question};
 use tracing::debug;
 
+use crate::runner::truncate_str;
 use types::keyparser;
-use crate::runner::{prefer_non_gateway, truncate_str};
 
 /// Max auto-continuations per real user message.
 pub const MAX_AUTO_CONTINUATIONS: u32 = 5;
@@ -42,26 +44,22 @@ const JUDGE_USER_CAP: usize = 2_000;
 const JUDGE_RESPONSE_CAP: usize = 4_000;
 /// Cap on the stored last-real-prompt per session.
 const STORED_PROMPT_CAP: usize = 4_000;
-/// Judge call wall-clock ceiling — on timeout we fail CLOSED (done).
-const JUDGE_TIMEOUT_SECS: u64 = 20;
+/// Judge call wall-clock ceiling — on timeout we fail CLOSED (done). A
+/// decision answers in milliseconds; this only bounds a stalled connection.
+const JUDGE_TIMEOUT_SECS: u64 = 5;
+/// Floor on "the response commits to more work it can do now".
+const COMMITMENT_FLOOR: f64 = 0.7;
+/// Ceiling on "the response is waiting on the person"; at or above it the
+/// ball is in their court and continuing cannot supply what is missing.
+const WAITING_CEILING: f64 = 0.5;
+/// The one reason a continuation carries; Jev decides, it does not write.
+const CONTINUE_REASON: &str = "unfinished work in the previous response";
 
 /// Exact prefix of every synthetic continuation message. This is the marker
 /// the dispatch layer uses to tell continuations apart from real user
 /// messages (the dispatch payload has no metadata channel for it).
 pub const CONTINUATION_PREFIX: &str =
     "Continue — your previous response committed to more work that isn't done yet:";
-
-const JUDGE_SYSTEM_PROMPT: &str = "\
-You judge whether an AI assistant finished its turn or left an explicit unfinished commitment.\n\
-Respond with STRICT JSON only: {\"verdict\": \"continue\" | \"done\", \"reason\": \"...\"}\n\
-Verdict \"continue\" ONLY if the assistant's response contains an explicit unfinished commitment \
-it can act on RIGHT NOW: promised next steps (\"I'll now…\", \"next I will…\"), a partial \
-enumeration it said it would complete, or work it stated it would do but didn't show.\n\
-Verdict \"done\" whenever the assistant is waiting on the person: if its response asks a question, \
-or requests information, a decision, or access it needs before it can proceed, the turn is \
-finished — the ball is in the person's court. A promise conditioned on their answer (\"once you \
-give me X, I'll…\") is NOT an unfinished commitment; continuing cannot supply the missing X.\n\
-If uncertain, the verdict is \"done\".";
 
 /// Judge decision for a completed run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,99 +105,73 @@ pub fn eligible_for_judging(
     true
 }
 
-/// Parse the judge's raw output defensively. Anything that isn't strict JSON
-/// with `"verdict": "continue"` is `Done` (fail closed).
-pub fn parse_verdict(raw: &str) -> Verdict {
-    let trimmed = raw.trim();
-    // Tolerate prose or code fences around the JSON: take the outermost braces.
-    let candidate = match (trimmed.find('{'), trimmed.rfind('}')) {
-        (Some(start), Some(end)) if end > start => &trimmed[start..=end],
-        _ => return Verdict::Done,
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) else {
-        return Verdict::Done;
-    };
-    match value.get("verdict").and_then(|v| v.as_str()) {
-        Some("continue") => {
-            let reason = value
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or("unfinished work in the previous response")
-                .to_string();
-            Verdict::Continue { reason }
+/// Continue only when the response commits to more work AND is not waiting
+/// on the person. Anything short of both thresholds is `Done`.
+pub fn verdict_from(unfinished_commitment: f64, waiting_on_person: f64) -> Verdict {
+    if unfinished_commitment >= COMMITMENT_FLOOR && waiting_on_person < WAITING_CEILING {
+        Verdict::Continue {
+            reason: CONTINUE_REASON.to_string(),
         }
-        _ => Verdict::Done,
+    } else {
+        Verdict::Done
     }
 }
 
-/// Ask a cheap model whether the assistant's final response satisfied the
-/// user's last real message. Fails CLOSED: any error, timeout, or garbage
-/// output returns [`Verdict::Done`] (logged at debug).
+/// Ask Jev whether the assistant's final response left work it can do now.
+/// Fails CLOSED: no client, any error, or a timeout returns [`Verdict::Done`]
+/// (logged at debug).
 pub async fn judge(
-    providers: &[Arc<dyn Provider>],
+    decide: Option<&DecideClient>,
     last_user_prompt: &str,
     assistant_response: &str,
 ) -> Verdict {
-    let resolved = crate::runner::resolve_aux(&config::ModelsConfig::load(), providers)
-        .or_else(|| prefer_non_gateway(providers).map(|p| (p, String::new())));
-    let Some((provider, aux_model)) = resolved else {
-        debug!("auto-continue judge: no provider available; treating as done");
+    let Some(client) = decide else {
+        debug!("auto-continue judge: no decide client (Janus absent); treating as done");
         return Verdict::Done;
     };
 
-    let content = format!(
-        "Last user message:\n{}\n\nAssistant's final response:\n{}",
-        truncate_str(last_user_prompt, JUDGE_USER_CAP),
-        truncate_str(assistant_response, JUDGE_RESPONSE_CAP),
-    );
+    let state = serde_json::json!({
+        "last_user_message": truncate_str(last_user_prompt, JUDGE_USER_CAP),
+        "assistant_response": truncate_str(assistant_response, JUDGE_RESPONSE_CAP),
+    });
+    let questions = BTreeMap::from([
+        (
+            "unfinished_commitment",
+            Question::noul(
+                "`assistant_response` states work the assistant will do next and can do right now without anything more from the person: a promised next step ('I will now', 'next I will'), a list it said it would complete, or work it said it would do but did not show.",
+            ),
+        ),
+        (
+            "waiting_on_person",
+            Question::noul(
+                "`assistant_response` asks the person a question, or requests information, a decision, or access it needs before it can proceed. A promise conditioned on their answer ('once you give me X, I will') counts as waiting.",
+            ),
+        ),
+    ]);
 
-    let req = ChatRequest {
-        tool_choice: Default::default(),
-        messages: vec![Message {
-            role: "user".to_string(),
-            content,
-            ..Default::default()
-        }],
-        tools: vec![],
-        max_tokens: 150,
-        temperature: 0.0,
-        system: JUDGE_SYSTEM_PROMPT.to_string(),
-        static_system: String::new(),
-        model: aux_model,
-        enable_thinking: false,
-        metadata: None,
-        cache_breakpoints: vec![],
-        cancel_token: None,
-        trace: None,
-    };
-
-    let call = async {
-        let mut rx = match provider.stream(&req).await {
-            Ok(rx) => rx,
-            Err(e) => {
-                debug!(error = %e, "auto-continue judge call failed; treating as done");
-                return None;
-            }
-        };
-        let mut response = String::new();
-        while let Some(event) = rx.recv().await {
-            match event.event_type {
-                StreamEventType::Text => response.push_str(&event.text),
-                StreamEventType::Error => {
-                    debug!(error = ?event.error, "auto-continue judge stream error; treating as done");
-                    return None;
-                }
-                StreamEventType::Done => break,
-                _ => {}
-            }
-        }
-        Some(response)
-    };
-
+    let call = client.decide(&state, &questions);
     match tokio::time::timeout(Duration::from_secs(JUDGE_TIMEOUT_SECS), call).await {
-        Ok(Some(raw)) => parse_verdict(&raw),
-        Ok(None) => Verdict::Done,
+        Ok(Ok(decision)) => {
+            let unfinished = decision
+                .answer("unfinished_commitment")
+                .map(Answer::yes)
+                .unwrap_or(0.0);
+            let waiting = decision
+                .answer("waiting_on_person")
+                .map(Answer::yes)
+                .unwrap_or(1.0);
+            debug!(
+                model = %decision.model,
+                unfinished,
+                waiting,
+                "auto-continue judge decided"
+            );
+            verdict_from(unfinished, waiting)
+        }
+        Ok(Err(e)) => {
+            debug!(error = %e, "auto-continue judge call failed; treating as done");
+            Verdict::Done
+        }
         Err(_) => {
             debug!("auto-continue judge timed out; treating as done");
             Verdict::Done
@@ -378,36 +350,16 @@ mod tests {
     }
 
     #[test]
-    fn verdict_parsing_valid_continue() {
-        let v = parse_verdict(r#"{"verdict": "continue", "reason": "promised to write tests next"}"#);
-        assert_eq!(
-            v,
-            Verdict::Continue {
-                reason: "promised to write tests next".to_string()
-            }
-        );
-        // Fenced / prose-wrapped JSON still parses.
-        let v = parse_verdict(
-            "```json\n{\"verdict\": \"continue\", \"reason\": \"partial list\"}\n```",
-        );
-        assert!(matches!(v, Verdict::Continue { .. }));
-    }
-
-    #[test]
-    fn verdict_parsing_valid_done() {
-        assert_eq!(
-            parse_verdict(r#"{"verdict": "done", "reason": "all work shown"}"#),
-            Verdict::Done
-        );
-    }
-
-    #[test]
-    fn verdict_parsing_garbage_is_done() {
-        assert_eq!(parse_verdict(""), Verdict::Done);
-        assert_eq!(parse_verdict("the assistant should continue"), Verdict::Done);
-        assert_eq!(parse_verdict("{not json at all"), Verdict::Done);
-        assert_eq!(parse_verdict(r#"{"verdict": "CONTINUE"}"#), Verdict::Done);
-        assert_eq!(parse_verdict(r#"{"reason": "no verdict field"}"#), Verdict::Done);
+    fn verdict_needs_a_commitment_and_no_open_question() {
+        assert!(matches!(verdict_from(0.9, 0.1), Verdict::Continue { .. }));
+        // Committed but the response is asking the person for something.
+        assert_eq!(verdict_from(0.9, 0.6), Verdict::Done);
+        // Nothing promised.
+        assert_eq!(verdict_from(0.3, 0.1), Verdict::Done);
+        // Both thresholds are edges: at the floor continues, at the ceiling stops.
+        assert!(matches!(verdict_from(0.7, 0.49), Verdict::Continue { .. }));
+        assert_eq!(verdict_from(0.69, 0.0), Verdict::Done);
+        assert_eq!(verdict_from(1.0, 0.5), Verdict::Done);
     }
 
     #[test]

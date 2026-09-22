@@ -1794,8 +1794,8 @@ fn maybe_auto_continue(
             Some(s) if !s.is_empty() => s,
             _ => return,
         };
-        let providers = state.runner.providers().read().await.clone();
-        let reason = match goals::judge(&providers, &last_user, &assistant_response).await {
+        let decide = state.runner.decide();
+        let reason = match goals::judge(decide.as_deref(), &last_user, &assistant_response).await {
             goals::Verdict::Continue { reason } => reason,
             goals::Verdict::Done => return,
         };

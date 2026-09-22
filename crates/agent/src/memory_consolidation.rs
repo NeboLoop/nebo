@@ -20,17 +20,20 @@
 //!
 //! The micro-check complements the sweep: on every NEW memory write (via the
 //! canonical embed wrapper), the freshly embedded fact is compared against its
-//! OWN scope's vectors; a near-duplicate under a different key triggers ONE
-//! cheap LLM call on just that pair — so a wrong fact in a 3-memory case scope
-//! gets corrected the moment its replacement arrives, not at sweep time.
+//! OWN scope's vectors; a near-duplicate under a different key puts just that
+//! pair in front of ONE typed decision (Jev through Janus, [`ai::DecideClient`])
+//! — merge / supersede / keep_both, thresholds in code — and the chat model is
+//! asked only to WRITE the combined fact, only on merge. So a wrong fact in a
+//! 3-memory case scope gets corrected the moment its replacement arrives, not
+//! at sweep time.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock};
 
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use ai::{EmbeddingProvider, Provider, StreamEventType};
+use ai::{Answer, DecideClient, EmbeddingProvider, Provider, Question, StreamEventType};
 use db::Store;
 use db::models::Memory;
 
@@ -53,9 +56,15 @@ const SWEEP_INTERVAL_MINUTES: u64 = 30;
 /// micro-curator together with the nearest existing same-scope fact. 0.88 is
 /// deliberately high: only near-restatements of the same subject clear it
 /// ("settlement figure is $4.2M" vs "settlement figure is $3.1M"), while
-/// merely related facts in the same case never do — a false trigger costs an
-/// LLM call and risks a bad merge, a miss just waits for the sweep.
+/// merely related facts in the same case never do — a false trigger costs a
+/// decide call and risks a bad merge, a miss just waits for the sweep.
 const CONTRADICTION_SIMILARITY: f64 = 0.88;
+/// Floor on "`existing.value` and `new.value` describe the same fact about
+/// the same subject" before a pair may be merged or superseded.
+const SAME_SUBJECT_FLOOR: f64 = 0.7;
+/// Floor on the confidence of the merge/supersede choice. Short of either
+/// floor the pair stays two facts — the historical keep_both bias.
+const RELATION_CONFIDENCE_FLOOR: f64 = 0.6;
 
 /// Tracks last consolidation time per scope.
 static LAST_CONSOLIDATION: LazyLock<Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>> =
@@ -76,6 +85,11 @@ static MICRO_LOCKS: LazyLock<Mutex<HashSet<String>>> =
 /// paths deliberately don't carry chat providers — when this is unset (unit
 /// tests, no server wiring) the micro-check silently skips.
 static PROVIDERS: OnceLock<Arc<tokio::sync::RwLock<Vec<Arc<dyn Provider>>>>> = OnceLock::new();
+
+/// Typed-decision client for the write-time micro-curator, set once by
+/// [`spawn_sweep`] beside [`PROVIDERS`]. None (Janus absent) means every
+/// candidate pair is kept as two facts — no call.
+static DECIDE: OnceLock<Option<Arc<DecideClient>>> = OnceLock::new();
 
 /// Result of a single scope consolidation.
 #[derive(Debug, Default)]
@@ -99,13 +113,18 @@ fn curation_provider(providers: &[Arc<dyn Provider>]) -> Option<(Arc<dyn Provide
 /// consolidates each that passes the gate chain. `embedding_provider` keeps
 /// the vector store truthful after curation: merged values are re-embedded
 /// through the canonical pathway (None = FTS-only install, nothing to refresh).
+/// `decide` is the write-time micro-curator's judge (None = keep both, no
+/// call); the sweep curator does not use it.
 pub fn spawn_sweep(
     store: Arc<Store>,
     providers: Arc<tokio::sync::RwLock<Vec<Arc<dyn Provider>>>>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    decide: Option<Arc<DecideClient>>,
 ) {
-    // Share the provider handle with the write-time micro-curator.
+    // Share the provider handle and the decide client with the write-time
+    // micro-curator.
     let _ = PROVIDERS.set(providers.clone());
+    let _ = DECIDE.set(decide);
 
     tokio::spawn(async move {
         // Retire the legacy daily/ layer (docs/design/MEMORY_QUALITY.md):
@@ -427,9 +446,9 @@ async fn run_curation_prompt(
 /// Write-time contradiction micro-check for freshly stored + embedded
 /// memories (Phase 2, docs/plans/memory-rock-solid.md). Called from the ONE
 /// new-write embed wrapper (`memory::embed_memories_async`) — best-effort in
-/// every direction: no providers wired, no embeddings, a busy scope, or any
-/// error simply skips the check (the sweep is the backstop). Never blocks or
-/// fails a store.
+/// every direction: no decide client wired, no embeddings, a busy scope, or
+/// any error simply skips the check (the sweep is the backstop). Never blocks
+/// or fails a store.
 pub async fn check_new_memories(
     store: &Arc<Store>,
     embedding_provider: &dyn EmbeddingProvider,
@@ -439,12 +458,15 @@ pub async fn check_new_memories(
     let Some(providers) = PROVIDERS.get() else {
         return; // no server wiring (tests, embedded use) — skip
     };
-    let resolved = {
+    let Some(decide) = DECIDE.get().and_then(|d| d.clone()) else {
+        debug!(scope = %user_id, "micro-curation: no decide client (Janus absent); keeping both");
+        return;
+    };
+    // The chat model only WRITES a merged value; without one, merge falls
+    // back to keeping both while supersede still applies.
+    let writer = {
         let lock = providers.read().await;
         curation_provider(&lock)
-    };
-    let Some((provider, model)) = resolved else {
-        return; // no chat provider — skippable by design
     };
 
     // Rate limit: at most one in-flight micro-check per scope.
@@ -457,8 +479,8 @@ pub async fn check_new_memories(
 
     micro_check_scope(
         store,
-        provider.as_ref(),
-        &model,
+        decide.as_ref(),
+        writer.as_ref().map(|(p, m)| (p.as_ref(), m.as_str())),
         embedding_provider,
         keys,
         user_id,
@@ -472,8 +494,8 @@ pub async fn check_new_memories(
 /// micro-curate the top near-duplicate pair, if any.
 async fn micro_check_scope(
     store: &Arc<Store>,
-    provider: &dyn Provider,
-    model: &str,
+    decide: &DecideClient,
+    writer: Option<(&dyn Provider, &str)>,
     embedding_provider: &dyn EmbeddingProvider,
     keys: &[(String, String)],
     user_id: &str,
@@ -511,8 +533,8 @@ async fn micro_check_scope(
             "write-time contradiction candidate"
         );
         if let Err(e) = micro_curate_pair(
-            provider,
-            model,
+            decide,
+            writer,
             store,
             embedding_provider,
             &existing,
@@ -562,39 +584,112 @@ fn find_contradiction_candidate(
     best
 }
 
-/// ONE cheap LLM call on a single (existing, new) pair — merge / supersede /
-/// keep_both — applied through the same store methods the sweep curator uses.
+/// How a near-duplicate (existing, new) pair reconciles. Jev decides; the
+/// chat model only writes the merged fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairRelation {
+    Merge,
+    Supersede,
+    KeepBoth,
+}
+
+/// Map the typed answers onto a relation. Merge or supersede only when the
+/// pair is about the same subject AND the choice is confident; anything
+/// short of both floors keeps both (the existing bias).
+fn relation_from(same_subject: f64, choice: &str, confidence: f64) -> PairRelation {
+    if same_subject < SAME_SUBJECT_FLOOR || confidence < RELATION_CONFIDENCE_FLOOR {
+        return PairRelation::KeepBoth;
+    }
+    match choice {
+        "merge" => PairRelation::Merge,
+        "supersede" => PairRelation::Supersede,
+        _ => PairRelation::KeepBoth,
+    }
+}
+
+/// ONE typed decision on a single (existing, new) pair — merge / supersede /
+/// keep_both — then, on merge only, ONE chat call to write the combined fact;
+/// applied through the same store methods the sweep curator uses.
 async fn micro_curate_pair(
-    provider: &dyn Provider,
-    model: &str,
+    decide: &DecideClient,
+    writer: Option<(&dyn Provider, &str)>,
     store: &Store,
     embedding_provider: &dyn EmbeddingProvider,
     existing: &Memory,
     newly: &Memory,
     user_id: &str,
 ) -> Result<(), String> {
-    let prompt = format!(
-        "Two memories in the same scope are semantically close. Decide how to reconcile them.\n\n\
-         EXISTING (id {}, key \"{}\"): \"{}\"\n\
-         NEW (id {}, key \"{}\", just stored): \"{}\"\n\n\
-         Return ONLY valid JSON, exactly one of:\n\
-         {{\"action\": \"merge\", \"value\": \"<one concise fact combining both>\"}} — they describe the same thing and can be one fact\n\
-         {{\"action\": \"supersede\"}} — the NEW fact contradicts or replaces the EXISTING one (the existing will be deleted)\n\
-         {{\"action\": \"keep_both\"}} — genuinely distinct facts\n\n\
-         Bias toward keep_both unless they clearly cover the same subject.",
-        existing.id,
-        existing.key,
-        existing.value.replace('"', "\\\""),
-        newly.id,
-        newly.key,
-        newly.value.replace('"', "\\\"")
+    let state = serde_json::json!({
+        "existing": { "id": existing.id, "key": existing.key, "value": existing.value },
+        "new": { "id": newly.id, "key": newly.key, "value": newly.value },
+    });
+    let questions = BTreeMap::from([
+        (
+            "same_subject",
+            Question::noul(
+                "`existing.value` and `new.value` describe the same fact about the same subject. Two different facts about one case, person or project (a deadline and a budget) do not.",
+            ),
+        ),
+        (
+            "relation",
+            Question::choice(
+                "How `new.value`, just stored, relates to `existing.value`, stored earlier in the same scope.",
+                &[
+                    ("merge", "they describe the same thing and can be one fact"),
+                    (
+                        "supersede",
+                        "`new.value` contradicts or replaces `existing.value`, which is now stale",
+                    ),
+                    ("keep_both", "genuinely distinct facts"),
+                ],
+            ),
+        ),
+    ]);
+
+    let decision = decide
+        .decide(&state, &questions)
+        .await
+        .map_err(|e| format!("decide error: {}", e))?;
+    let same_subject = decision
+        .answer("same_subject")
+        .map(Answer::yes)
+        .unwrap_or(0.0);
+    let (choice, confidence) = decision
+        .answer("relation")
+        .map(|a| (a.picked().to_string(), a.confidence.unwrap_or(0.0)))
+        .unwrap_or_default();
+    let relation = relation_from(same_subject, &choice, confidence);
+    debug!(
+        scope = %user_id,
+        model = %decision.model,
+        same_subject,
+        choice = %choice,
+        confidence,
+        ?relation,
+        "micro-curation decided"
     );
 
-    let response = run_curation_prompt(provider, model, prompt).await?;
-    let json_str = crate::memory::extract_json_object_pub(&response)
-        .ok_or_else(|| "no JSON object in micro-curation response".to_string())?;
-    let verdict: MicroVerdict =
-        serde_json::from_str(&json_str).map_err(|e| format!("parse micro verdict: {}", e))?;
+    let verdict = match relation {
+        PairRelation::KeepBoth => MicroVerdict {
+            action: "keep_both".to_string(),
+            value: None,
+        },
+        PairRelation::Supersede => MicroVerdict {
+            action: "supersede".to_string(),
+            value: None,
+        },
+        PairRelation::Merge => {
+            let Some((provider, model)) = writer else {
+                debug!(scope = %user_id, "micro-curation: merge decided but no chat provider to write it — kept both");
+                return Ok(());
+            };
+            let value = write_merged_fact(provider, model, existing, newly).await?;
+            MicroVerdict {
+                action: "merge".to_string(),
+                value: Some(value),
+            }
+        }
+    };
 
     apply_micro_verdict(
         store,
@@ -606,6 +701,30 @@ async fn micro_curate_pair(
     )
     .await;
     Ok(())
+}
+
+/// The one chat call left on the write-time path: write the merged fact for
+/// a pair Jev already decided to merge.
+async fn write_merged_fact(
+    provider: &dyn Provider,
+    model: &str,
+    existing: &Memory,
+    newly: &Memory,
+) -> Result<String, String> {
+    let prompt = format!(
+        "Combine these two facts into one concise declarative fact.\n\n\
+         FACT 1: \"{}\"\n\
+         FACT 2 (newer): \"{}\"\n\n\
+         Return ONLY {{\"fact\": \"<the combined fact>\"}} — nothing else.",
+        existing.value.replace('"', "\\\""),
+        newly.value.replace('"', "\\\"")
+    );
+    let response = run_curation_prompt(provider, model, prompt).await?;
+    let json_str = crate::memory::extract_json_object_pub(&response)
+        .ok_or_else(|| "no JSON object in merged-fact response".to_string())?;
+    let merged: MergedFact =
+        serde_json::from_str(&json_str).map_err(|e| format!("parse merged fact: {}", e))?;
+    Ok(merged.fact)
 }
 
 /// Apply a micro-curation verdict via the existing store methods, then keep
@@ -668,11 +787,15 @@ async fn apply_micro_verdict(
     crate::search_adapter::invalidate_index(user_id);
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug)]
 struct MicroVerdict {
     action: String,
-    #[serde(default)]
     value: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MergedFact {
+    fact: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -838,6 +961,27 @@ mod tests {
         assert!(find_contradiction_candidate(&rows_b, mem_b.id, &mem_b.key).is_none());
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Relation from the typed answers ────────────────────────────────
+
+    #[test]
+    fn relation_needs_same_subject_and_a_confident_choice() {
+        use PairRelation::*;
+        assert_eq!(relation_from(0.9, "merge", 0.9), Merge);
+        assert_eq!(relation_from(0.9, "supersede", 0.9), Supersede);
+        assert_eq!(relation_from(0.9, "keep_both", 0.9), KeepBoth);
+        // Different subjects never merge or supersede, however confident.
+        assert_eq!(relation_from(0.3, "supersede", 1.0), KeepBoth);
+        // An unsure choice keeps both.
+        assert_eq!(relation_from(1.0, "merge", 0.2), KeepBoth);
+        // Edges: the floors are inclusive.
+        assert_eq!(relation_from(0.7, "merge", 0.6), Merge);
+        assert_eq!(relation_from(0.69, "merge", 1.0), KeepBoth);
+        assert_eq!(relation_from(1.0, "supersede", 0.59), KeepBoth);
+        // An option outside the set (or a missing answer) keeps both.
+        assert_eq!(relation_from(1.0, "", 1.0), KeepBoth);
+        assert_eq!(relation_from(1.0, "other", 1.0), KeepBoth);
     }
 
     // ── Verdict application ────────────────────────────────────────────

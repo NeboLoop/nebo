@@ -46,6 +46,9 @@ use crate::handlers::ws::ClientHub;
 pub struct WorkflowManagerImpl {
     store: Arc<db::Store>,
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    /// The runner's typed-decision door (Jev through Janus); the engine's
+    /// step evaluator and `decide` nodes run on it. None without Janus.
+    decide: Option<Arc<ai::DecideClient>>,
     tools: Arc<tools::Registry>,
     hub: Arc<ClientHub>,
     config: config::Config,
@@ -81,6 +84,7 @@ impl WorkflowManagerImpl {
     pub fn new(
         store: Arc<db::Store>,
         providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+        decide: Option<Arc<ai::DecideClient>>,
         tools: Arc<tools::Registry>,
         hub: Arc<ClientHub>,
         config: config::Config,
@@ -91,6 +95,7 @@ impl WorkflowManagerImpl {
         Self {
             store,
             providers,
+            decide,
             tools,
             hub,
             config,
@@ -728,6 +733,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             // Clone Arcs for the spawned task
             let store = self.store.clone();
             let providers = self.providers.clone();
+            let decide = self.decide.clone();
             let tools_registry = self.tools.clone();
             let hub = self.hub.clone();
             let active_runs = self.active_runs.clone();
@@ -740,43 +746,38 @@ impl WorkflowManager for WorkflowManagerImpl {
             let trigger = trigger_type.to_string();
 
             tokio::spawn(async move {
-                // Get first available provider
-                let provider = {
-                    let lock = providers.read().await;
-                    lock.first().cloned()
-                };
-                let provider = match provider {
-                    Some(p) => p,
-                    None => {
-                        if let Err(e) = store.update_workflow_run(
-                            &run_id_clone,
-                            Some("failed"),
-                            None,
-                            None,
-                            Some("no AI provider available"),
-                            None,
-                        ) {
-                            warn!(run_id = %run_id_clone, error = %e, "failed to update workflow run status");
-                        }
-                        notify_workflow_failure(
-                            &store,
-                            &hub,
-                            &wf_id,
-                            &run_id_clone,
-                            &wf_id,
-                            "no AI provider available",
-                        );
-                        hub.broadcast(
-                            "workflow_run_failed",
-                            serde_json::json!({
-                                "workflowId": wf_id,
-                                "runId": run_id_clone,
-                                "error": "no AI provider available",
-                            }),
-                        );
-                        return;
+                // LLM activities run through the injected loop on these same
+                // providers; a run with none configured fails here, before
+                // any node executes.
+                if providers.read().await.is_empty() {
+                    if let Err(e) = store.update_workflow_run(
+                        &run_id_clone,
+                        Some("failed"),
+                        None,
+                        None,
+                        Some("no AI provider available"),
+                        None,
+                    ) {
+                        warn!(run_id = %run_id_clone, error = %e, "failed to update workflow run status");
                     }
-                };
+                    notify_workflow_failure(
+                        &store,
+                        &hub,
+                        &wf_id,
+                        &run_id_clone,
+                        &wf_id,
+                        "no AI provider available",
+                    );
+                    hub.broadcast(
+                        "workflow_run_failed",
+                        serde_json::json!({
+                            "workflowId": wf_id,
+                            "runId": run_id_clone,
+                            "error": "no AI provider available",
+                        }),
+                    );
+                    return;
+                }
 
                 // Build tool wrappers from the registry snapshot
                 let tool_defs = tools_registry.list().await;
@@ -837,7 +838,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     &trigger,
                     None,
                     &store,
-                    &*provider,
+                    decide.as_deref(),
                     &*wf_loop,
                     &resolved_tools,
                     Some(&deferred_names),
@@ -1408,6 +1409,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             // Clone Arcs for the spawned task
             let store = self.store.clone();
             let providers = self.providers.clone();
+            let decide = self.decide.clone();
             let tools_registry = self.tools.clone();
             let hub = self.hub.clone();
             let active_runs = self.active_runs.clone();
@@ -1442,69 +1444,65 @@ impl WorkflowManager for WorkflowManagerImpl {
                 // Session key for posting chat messages to the agent's conversation
                 let chat_session = format!("agent:{}:web", agent_id_owned);
 
-                let provider = {
-                    let lock = providers.read().await;
-                    lock.first().cloned()
-                };
-                let provider = match provider {
-                    Some(p) => p,
-                    None => {
-                        let _ = store.update_workflow_run(
-                            &run_id_clone,
-                            Some("failed"),
-                            None,
-                            None,
-                            Some("no AI provider available"),
-                            None,
-                        );
-                        // Post failure to agent chat
-                        post_automation_message(
+                // LLM activities run through the injected loop on these same
+                // providers; a run with none configured fails here, before
+                // any node executes.
+                if providers.read().await.is_empty() {
+                    let _ = store.update_workflow_run(
+                        &run_id_clone,
+                        Some("failed"),
+                        None,
+                        None,
+                        Some("no AI provider available"),
+                        None,
+                    );
+                    // Post failure to agent chat
+                    post_automation_message(
+                        &store,
+                        &hub,
+                        &chat_session,
+                        &format!(
+                            "**Automation failed** — {} ({}): no AI provider available",
+                            binding_name, trigger
+                        ),
+                    );
+
+                    // Notify with the same consecutive-failure policy as
+                    // engine failures — a missing provider hits every
+                    // scheduled run and would otherwise ping on each one.
+                    if record_failure_should_notify(
+                        &failure_counts,
+                        &agent_id_owned,
+                        &binding_name,
+                        &trigger,
+                    ) {
+                        notify_workflow_failure(
                             &store,
                             &hub,
-                            &chat_session,
-                            &format!(
-                                "**Automation failed** — {} ({}): no AI provider available",
-                                binding_name, trigger
-                            ),
-                        );
-
-                        // Notify with the same consecutive-failure policy as
-                        // engine failures — a missing provider hits every
-                        // scheduled run and would otherwise ping on each one.
-                        if record_failure_should_notify(
-                            &failure_counts,
                             &agent_id_owned,
+                            &run_id_clone,
                             &binding_name,
-                            &trigger,
-                        ) {
-                            notify_workflow_failure(
-                                &store,
-                                &hub,
-                                &agent_id_owned,
-                                &run_id_clone,
-                                &binding_name,
-                                "no AI provider available",
-                            );
-                        }
-
-                        hub.broadcast(
-                            "workflow_run_failed",
-                            serde_json::json!({
-                                "agentId": agent_id_owned,
-                                "runId": run_id_clone,
-                                "bindingName": binding_name,
-                                "error": "no AI provider available",
-                            }),
+                            "no AI provider available",
                         );
-                        let now = chrono::Utc::now().to_rfc3339();
-                        let _ = store.update_agent_workflow_last_fired(
-                            &agent_id_owned,
-                            &binding_name,
-                            &now,
-                        );
-                        return;
                     }
-                };
+
+                    hub.broadcast(
+                        "workflow_run_failed",
+                        serde_json::json!({
+                            "agentId": agent_id_owned,
+                            "runId": run_id_clone,
+                            "bindingName": binding_name,
+                            "error": "no AI provider available",
+                        }),
+                    );
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let _ = store.update_agent_workflow_last_fired(
+                        &agent_id_owned,
+                        &binding_name,
+                        &now,
+                    );
+                    return;
+                }
 
                 let mut tool_defs = tools_registry.list().await;
 
@@ -1687,7 +1685,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     &trigger,
                     None,
                     &store,
-                    &*provider,
+                    decide.as_deref(),
                     &*wf_loop,
                     &resolved_tools,
                     Some(&deferred_names),

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use ai::{
-    ChatRequest, Message, Provider, ProviderError, RequestTrace, StreamEvent, StreamEventType,
+    Answer, ChatRequest, Message, Question, Provider, ProviderError, RequestTrace, StreamEvent, StreamEventType,
 };
 use db::Store;
 use db::models::ChatMessage;
@@ -1433,6 +1433,9 @@ pub struct Runner {
     /// handler. Set via `set_approval_channels`.
     approval_channels: Option<tools::ApprovalChannels>,
     embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    /// The typed-decision door (TypeSafe Jev through Janus). Present exactly
+    /// when the Janus provider is; the judges use it instead of a chat turn.
+    decide: Option<Arc<ai::DecideClient>>,
     /// The SAME hybrid-search adapter instance the memory tool uses (shared
     /// TurboVec index cache) — powers per-message prompt recall.
     hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
@@ -1467,6 +1470,7 @@ impl Runner {
             agent_registry,
             skill_loader,
             embedding_provider: None,
+            decide: None,
             hybrid_searcher: None,
             title_sink: std::sync::OnceLock::new(),
             active_turns: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -1531,6 +1535,17 @@ impl Runner {
     pub fn set_embedding_provider(mut self, provider: Arc<dyn ai::EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
         self
+    }
+
+    /// Install the typed-decision client (Jev through Janus).
+    pub fn set_decide(mut self, client: Arc<ai::DecideClient>) -> Self {
+        self.decide = Some(client);
+        self
+    }
+
+    /// The typed-decision client, if the Janus provider is present.
+    pub fn decide(&self) -> Option<Arc<ai::DecideClient>> {
+        self.decide.clone()
     }
 
     /// Set the hybrid searcher for per-message prompt memory recall — pass the
@@ -1932,6 +1947,7 @@ impl Runner {
         let store = self.store.clone();
         let tools = self.tools.clone();
         let providers = self.providers.clone();
+        let decide = self.decide.clone();
         let concurrency = self.concurrency.clone();
         let selector = self.selector.clone();
         let hooks = self.hooks.clone();
@@ -2119,6 +2135,7 @@ impl Runner {
                         &fork_taint,
                         None, // forks never reply to a coworker audience
                         None, // forks are chat, never workflow mode
+                        decide.as_ref(),
                     )
                     .await;
 
@@ -2225,6 +2242,7 @@ impl Runner {
                 &run_taint,
                 req.audience.as_deref(),
                 req.workflow.as_ref(),
+                decide.as_ref(),
             )
             .await;
 
@@ -2292,6 +2310,7 @@ impl Runner {
                     let tools_rf = tools.clone();
                     let store_rf = store.clone();
                     let providers_rf = providers.clone();
+                    let decide_rf = decide.clone();
                     let concurrency_rf = concurrency.clone();
                     let selector_rf = selector.clone();
                     let hooks_rf = hooks.clone();
@@ -2423,6 +2442,7 @@ impl Runner {
                             &fork_taint,
                             None, // review forks never reply to a coworker audience
                             None, // review forks are chat, never workflow mode
+                            decide_rf.as_ref(),
                         )
                         .await;
                         drop(sub_tx);
@@ -2849,6 +2869,7 @@ async fn run_loop(
     run_taint: &std::sync::Mutex<std::collections::BTreeSet<types::provenance::ProvenanceClass>>,
     audience: Option<&str>,
     workflow_mode: Option<&WorkflowMode>,
+    decide: Option<&Arc<ai::DecideClient>>,
 ) -> Result<String, String> {
     let mut state = RunState::new();
     // Stream reminders are EPHEMERAL: queued here, injected into the NEXT
@@ -3781,12 +3802,11 @@ async fn run_loop(
     // Record run start time for sliding window protection
     let run_start_time = chrono::Utc::now().timestamp();
 
-    // Fire objective detection in background (non-blocking).
-    // Acquires an LLM permit so it doesn't steal provider capacity from the main request.
+    // Fire objective detection in background (non-blocking). One typed
+    // decision, milliseconds; it never touches the chat provider.
     {
-        let providers = providers.clone();
+        let decide = decide.cloned();
         let store = store.clone();
-        let conc = concurrency.clone();
         let session_id = session_id.to_string();
         let user_prompt = sessions
             .get_messages(&session_id)
@@ -3799,9 +3819,8 @@ async fn run_loop(
             })
             .unwrap_or_default();
         tokio::spawn(async move {
-            let _permit = conc.acquire_background_permit().await;
             let session_mgr = SessionManager::new(store);
-            detect_objective(&providers, &session_mgr, &session_id, &user_prompt).await;
+            detect_objective(decide.as_deref(), &session_mgr, &session_id, &user_prompt).await;
         });
     }
 
@@ -8630,189 +8649,201 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     result
 }
 
-/// Detect user's working objective from latest message.
-/// Runs as a background task (fire-and-forget) before the main loop.
+/// Objective classifier call ceiling; on timeout the objective is left as is.
+/// A decision answers in milliseconds; this only bounds a stalled connection.
+const OBJECTIVE_TIMEOUT_SECS: u64 = 5;
+/// A `keep` below this confidence while no objective is set is treated as
+/// `set`: an agent with no objective for work the person just asked for is
+/// worse than an objective they did not mean to start.
+const OBJECTIVE_KEEP_FLOOR: f64 = 0.6;
+/// Char-boundary-safe cap on the objective sentence and on each recent
+/// message the classifier sees.
+const OBJECTIVE_MESSAGE_CAP: usize = 200;
+/// How many recent messages the classifier sees.
+const OBJECTIVE_RECENT_MESSAGES: usize = 6;
+
+/// What the objective classifier decided to do with the session's objective.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ObjectiveDecision {
+    /// A new task: the latest message becomes the objective, `mode` applies.
+    Set { mode: String },
+    /// A refinement: the latest message becomes the objective; `mode`
+    /// applies only when the classifier named one.
+    Update { mode: String },
+    /// The task is done: drop the objective and the mode.
+    Clear,
+    /// No change.
+    Keep,
+}
+
+/// Map Jev's `action` choice (with its confidence) and `mode` choice to the
+/// decision applied to the session. The priority rule lives here as a
+/// threshold, not in the prompt: a `keep` under [`OBJECTIVE_KEEP_FLOOR`]
+/// while no objective is set is a `set`. An unrecognised action is `Keep`,
+/// the no-op.
+pub(crate) fn objective_decision(
+    action: &str,
+    confidence: f64,
+    mode: &str,
+    objective_is_none: bool,
+) -> ObjectiveDecision {
+    match action {
+        "set" => ObjectiveDecision::Set {
+            mode: mode.to_string(),
+        },
+        "update" => ObjectiveDecision::Update {
+            mode: mode.to_string(),
+        },
+        "clear" => ObjectiveDecision::Clear,
+        "keep" if objective_is_none && confidence < OBJECTIVE_KEEP_FLOOR => ObjectiveDecision::Set {
+            mode: mode.to_string(),
+        },
+        _ => ObjectiveDecision::Keep,
+    }
+}
+
+/// Detect the person's working objective from their latest message.
+/// Runs as a background task (fire-and-forget) before the main loop: one
+/// typed decision (Jev through Janus, [`ai::DecideClient`]) answers whether
+/// the message starts, refines, finishes or continues the current objective,
+/// and whether the work is research or normal. Jev does not write, so the
+/// objective sentence is the latest message itself, capped. No client, any
+/// error or a timeout leaves the objective untouched.
 async fn detect_objective(
-    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    decide: Option<&ai::DecideClient>,
     sessions: &SessionManager,
     session_id: &str,
     user_prompt: &str,
 ) {
-    if user_prompt.is_empty() {
+    // Jev decides, it does not write: the newest message is the objective.
+    let objective = truncate_str(user_prompt.trim(), OBJECTIVE_MESSAGE_CAP);
+    if objective.is_empty() {
         return;
     }
-
-    let provider = {
-        let prov_lock = providers.read().await;
-        prefer_non_gateway(&prov_lock)
-    };
-    let provider = match provider {
-        Some(p) => p,
-        None => return,
+    let Some(client) = decide else {
+        debug!("objective detection: no decide client (Janus absent); leaving objective as is");
+        return;
     };
 
     let current_objective = sessions.get_active_task(session_id).unwrap_or_default();
-    let obj_display = if current_objective.is_empty() {
-        "none".to_string()
-    } else {
-        current_objective.clone()
-    };
+    let objective_is_none = current_objective.is_empty();
 
-    // Gather recent conversation context (last 6 messages) for better classification
-    let recent_context = sessions
+    // Recent conversation (last 6 messages, each capped) for context.
+    let recent_conversation: Vec<String> = sessions
         .get_messages(session_id)
         .ok()
         .map(|msgs| {
-            let recent: Vec<String> = msgs
-                .iter()
+            msgs.iter()
                 .rev()
-                .take(6)
+                .take(OBJECTIVE_RECENT_MESSAGES)
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
                 .filter(|m| m.role == "user" || m.role == "assistant")
                 .map(|m| {
-                    let content = if m.content.len() > 200 {
-                        format!("{}...", truncate_str(&m.content, 200))
+                    let content = if m.content.len() > OBJECTIVE_MESSAGE_CAP {
+                        format!("{}...", truncate_str(&m.content, OBJECTIVE_MESSAGE_CAP))
                     } else {
                         m.content.clone()
                     };
                     format!("[{}]: {}", m.role, content)
                 })
-                .collect();
-            recent.join("\n")
+                .collect()
         })
         .unwrap_or_default();
 
-    let classify_prompt = format!(
-        r#"You are classifying whether a user has started a NEW task or is continuing their current one.
+    let state = serde_json::json!({
+        "current_objective": if objective_is_none { "none" } else { current_objective.as_str() },
+        "recent_conversation": recent_conversation,
+        "latest_user_message": user_prompt,
+    });
+    let questions = BTreeMap::from([
+        (
+            "action",
+            Question::choice(
+                "Read `latest_user_message` against `current_objective`, with `recent_conversation` for context, and pick what happens to the objective.",
+                &[
+                    (
+                        "set",
+                        "`latest_user_message` starts a new task, or talks about a subject, system or goal unrelated to `current_objective`; or `current_objective` is `none` and the message asks for anything to be done.",
+                    ),
+                    (
+                        "update",
+                        "`latest_user_message` refines the task in `current_objective`: it adds scope, adds a requirement, or corrects what was asked, in the same area of work.",
+                    ),
+                    (
+                        "clear",
+                        "`latest_user_message` says the task is done and asks for nothing new: thanks, looks good, perfect, that's it, never mind, done.",
+                    ),
+                    (
+                        "keep",
+                        "`latest_user_message` stays on the task in `current_objective` without changing it: a greeting, a question about the current work, or feedback on it; or `current_objective` is `none` and the message is a greeting or a question with no task in it.",
+                    ),
+                ],
+            ),
+        ),
+        (
+            "mode",
+            Question::choice(
+                "Pick how the work asked for in `latest_user_message` should be carried out.",
+                &[
+                    (
+                        "research",
+                        "The work is a multi-source investigation: comparing options, finding deals, evaluating alternatives, or gathering information from several websites.",
+                    ),
+                    (
+                        "normal",
+                        "Everything else: a direct action, a conversation, a single lookup, a creative task.",
+                    ),
+                ],
+            ),
+        ),
+    ]);
 
-Current objective: {obj}
-Recent conversation:
-{context}
-Latest user message: {msg}
-
-Respond with ONLY one JSON line, no markdown fences:
-{{"action": "set", "objective": "concise 1-sentence objective", "mode": "normal"}}
-OR {{"action": "update", "objective": "refined objective incorporating the addition", "mode": "normal"}}
-OR {{"action": "clear"}}
-OR {{"action": "keep"}}
-
-The "mode" field (required for "set" and "update") classifies HOW the agent should work:
-- "research" — the user wants multi-source investigation: comparing options, finding deals, evaluating alternatives, gathering information from multiple websites. The agent should use parallel sub-agents for coverage.
-- "normal" — everything else: direct actions, conversations, single lookups, creative tasks.
-
-## Decision rules (in priority order):
-
-1. **TOPIC CHANGE → "set"**: If the user's message introduces a DIFFERENT subject, domain, or goal than the current objective, this is a new task. People don't announce "I'm starting a new task" — they just start talking about something else.
-   - Current: "fix the login bug" → User: "can you help me write tests for the API" → **set** (different area)
-   - Current: "build the dashboard" → User: "let's work on the deployment pipeline" → **set** (different system)
-   - Current: "optimize the search query" → User: "I need to update the README" → **set** (different task entirely)
-
-2. **CONTINUATION / REFINEMENT → "update"**: The user is adding scope or adjusting the SAME objective.
-   - Current: "build user auth" → User: "also add password reset" → **update** (same domain, added scope)
-   - Current: "fix the API" → User: "and add rate limiting while you're at it" → **update** (same area, added requirement)
-
-3. **COMPLETION SIGNALS → "clear"**: The user signals the task is done with no new goal.
-   - "thanks", "looks good", "perfect", "that's it", "never mind", "done"
-
-4. **SAME TASK INTERACTION → "keep"**: Questions, feedback, or corrections that are clearly ABOUT the current objective.
-   - Current: "fix the login bug" → User: "what's causing the null pointer?" → **keep** (investigating same bug)
-   - Current: "build the dashboard" → User: "use a bar chart instead" → **keep** (feedback on same work)
-
-5. **When objective is "none"**: Any message with an action or request → **"set"**. Pure greetings or questions with no task → **"keep"**.
-
-## Key principle: When in doubt between "set" and "keep", prefer "set". A stale objective that doesn't match what the user actually wants is MORE harmful than resetting. The user can always continue the old task, but they can't unstick an agent that's persisting on a finished objective."#,
-        obj = obj_display,
-        context = if recent_context.is_empty() {
-            "(no prior messages)".to_string()
-        } else {
-            recent_context
-        },
-        msg = user_prompt
+    let call = client.decide(&state, &questions);
+    let decision =
+        match tokio::time::timeout(Duration::from_secs(OBJECTIVE_TIMEOUT_SECS), call).await {
+            Ok(Ok(decision)) => decision,
+            Ok(Err(e)) => {
+                debug!(error = %e, "objective detection failed; leaving objective as is");
+                return;
+            }
+            Err(_) => {
+                debug!("objective detection timed out; leaving objective as is");
+                return;
+            }
+        };
+    let action = decision.answer("action");
+    let picked = action.map(Answer::picked).unwrap_or("");
+    let confidence = action.and_then(|a| a.confidence).unwrap_or(1.0);
+    let mode = decision.answer("mode").map(Answer::picked).unwrap_or("");
+    debug!(
+        model = %decision.model,
+        action = picked,
+        confidence,
+        mode,
+        "objective classifier decided"
     );
 
-    let req = ChatRequest {
-        tool_choice: Default::default(),
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: classify_prompt,
-            ..Default::default()
-        }],
-        tools: vec![],
-        max_tokens: 256,
-        temperature: 0.0,
-        system: String::new(),
-        static_system: String::new(),
-        model: String::new(),
-        enable_thinking: false,
-        metadata: None,
-        cache_breakpoints: vec![],
-        cancel_token: None,
-        trace: None,
-    };
-
-    let stream_result = provider.stream(&req).await;
-
-    let mut rx = match stream_result {
-        Ok(rx) => rx,
-        Err(e) => {
-            debug!(error = %e, "objective detection failed");
-            return;
+    match objective_decision(picked, confidence, mode, objective_is_none) {
+        ObjectiveDecision::Set { mode } => {
+            info!(objective = %objective, mode = %mode, "objective set");
+            let _ = sessions.set_active_task(session_id, objective);
+            sessions.set_detected_mode(session_id, &mode);
         }
-    };
-
-    let mut resp = String::new();
-    while let Some(event) = rx.recv().await {
-        if event.event_type == StreamEventType::Text {
-            resp.push_str(&event.text);
-        }
-        if event.event_type == StreamEventType::Error {
-            return;
-        }
-    }
-
-    // Strip markdown fences and parse
-    let resp = resp.trim();
-    let resp = resp.trim_start_matches("```json").trim_start_matches("```");
-    let resp = resp.trim_end_matches("```").trim();
-
-    #[derive(serde::Deserialize)]
-    struct ObjectiveResult {
-        action: String,
-        #[serde(default)]
-        objective: String,
-        #[serde(default)]
-        mode: String,
-    }
-
-    let result: ObjectiveResult = match serde_json::from_str(resp) {
-        Ok(r) => r,
-        Err(e) => {
-            debug!(error = %e, response = resp, "objective parse failed");
-            return;
-        }
-    };
-
-    match result.action.as_str() {
-        "set" if !result.objective.is_empty() => {
-            info!(objective = %result.objective, mode = %result.mode, "objective set");
-            let _ = sessions.set_active_task(session_id, &result.objective);
-            sessions.set_detected_mode(session_id, &result.mode);
-        }
-        "update" if !result.objective.is_empty() => {
-            info!(objective = %result.objective, mode = %result.mode, "objective updated");
-            let _ = sessions.set_active_task(session_id, &result.objective);
-            if !result.mode.is_empty() {
-                sessions.set_detected_mode(session_id, &result.mode);
+        ObjectiveDecision::Update { mode } => {
+            info!(objective = %objective, mode = %mode, "objective updated");
+            let _ = sessions.set_active_task(session_id, objective);
+            if !mode.is_empty() {
+                sessions.set_detected_mode(session_id, &mode);
             }
         }
-        "clear" => {
+        ObjectiveDecision::Clear => {
             info!("objective cleared");
             let _ = sessions.clear_active_task(session_id);
             sessions.set_detected_mode(session_id, "");
         }
-        "keep" | _ => {
+        ObjectiveDecision::Keep => {
             // No change
         }
     }
@@ -9110,6 +9141,55 @@ mod attachment_storage_tests {
     #[test]
     fn a_message_without_pictures_stores_none() {
         assert!(images_to_store(&RunRequest::default()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod objective_decision_tests {
+    use super::{objective_decision, ObjectiveDecision, OBJECTIVE_KEEP_FLOOR};
+
+    fn set(mode: &str) -> ObjectiveDecision {
+        ObjectiveDecision::Set {
+            mode: mode.to_string(),
+        }
+    }
+
+    #[test]
+    fn choices_map_straight_through() {
+        assert_eq!(objective_decision("set", 1.0, "research", false), set("research"));
+        assert_eq!(
+            objective_decision("update", 1.0, "normal", false),
+            ObjectiveDecision::Update {
+                mode: "normal".to_string()
+            }
+        );
+        assert_eq!(objective_decision("clear", 1.0, "normal", false), ObjectiveDecision::Clear);
+        assert_eq!(objective_decision("keep", 1.0, "normal", false), ObjectiveDecision::Keep);
+        // A missing mode answer rides through as the empty mode, as before.
+        assert_eq!(objective_decision("set", 1.0, "", true), set(""));
+    }
+
+    #[test]
+    fn a_doubtful_keep_with_no_objective_is_a_set() {
+        // Below the floor and nothing to keep: prefer set.
+        assert_eq!(objective_decision("keep", 0.3, "normal", true), set("normal"));
+        assert_eq!(
+            objective_decision("keep", OBJECTIVE_KEEP_FLOOR - 0.01, "research", true),
+            set("research")
+        );
+        // At the floor the keep stands.
+        assert_eq!(
+            objective_decision("keep", OBJECTIVE_KEEP_FLOOR, "normal", true),
+            ObjectiveDecision::Keep
+        );
+        // With an objective in place a doubtful keep never resets it.
+        assert_eq!(objective_decision("keep", 0.3, "normal", false), ObjectiveDecision::Keep);
+    }
+
+    #[test]
+    fn an_unrecognised_action_is_a_no_op() {
+        assert_eq!(objective_decision("", 0.0, "", true), ObjectiveDecision::Keep);
+        assert_eq!(objective_decision("other", 1.0, "normal", false), ObjectiveDecision::Keep);
     }
 }
 
