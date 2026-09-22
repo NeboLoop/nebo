@@ -1,5 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Same allocator as nebo-cli — see crates/cli/src/main.rs for why.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Mutex;

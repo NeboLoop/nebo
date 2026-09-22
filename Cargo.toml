@@ -36,6 +36,9 @@ license = "Apache-2.0"
 repository = "https://github.com/NeboLoop/nebo"
 
 [workspace.dependencies]
+# Allocator — one for every Nebo binary (see crates/cli/src/main.rs)
+mimalloc = "0.1"
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 

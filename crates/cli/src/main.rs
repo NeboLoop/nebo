@@ -1,5 +1,12 @@
 mod mcp_serve;
 
+// glibc malloc keeps one 64 MB arena per worker thread and never returns a
+// fragmented arena to the kernel: a cloud bot sat at ~620 MB anon after its
+// runs ended, pinned against the 1 GiB pod limit, and thrashed page cache until
+// /health stopped answering (2026-09-22). mimalloc returns freed memory.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
