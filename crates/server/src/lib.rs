@@ -1744,11 +1744,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let runner = Arc::new(runner_builder);
 
     // Spawn background memory consolidation sweep (30-min interval, per-scope
-    // dedup/prune); the embedding provider keeps merged values' vectors fresh.
+    // dedup/prune); the embedding provider keeps merged values' vectors fresh
+    // and the decide client judges write-time contradiction pairs.
     agent::memory_consolidation::spawn_sweep(
         store.clone(),
         runner.providers(),
         embedding_provider.clone(),
+        runner.decide(),
     );
 
     // Create event bus and dispatcher for workflow-to-workflow events
