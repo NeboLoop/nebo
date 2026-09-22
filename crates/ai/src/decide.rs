@@ -12,7 +12,7 @@
 //! Jev reads the state literally and does not treat it as hostile: trim the
 //! state to the fields a question needs, name them in the instructions with
 //! backticks, and keep untrusted text out of the instructions themselves.
-//! See docs/prd/2026-09-21-jev-typed-decisions-fit.md.
+//! See the design doc in the neboloop repo, `docs/prd/decide.md`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
@@ -21,9 +21,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::ProviderError;
 
-/// Model alias sent on every request. Pin a versioned id (`jev-1.13.0`) once
-/// thresholds are tuned against it; the alias moves when TypeSafe ships.
-pub const JEV_MODEL: &str = "jev-latest";
+/// Model sent on every request: a versioned id, never an alias. Every
+/// threshold in the call sites (auto-continue, objective, memory pair, step
+/// evaluator) was written against the answers of `jev-1.13.0`. An alias such
+/// as `jev-latest` moves when TypeSafe ships a new model, and the thresholds
+/// would silently start routing on a different distribution. Moving to a new
+/// version is a deliberate change here, together with re-checking those
+/// thresholds.
+pub const JEV_MODEL: &str = "jev-1.13.0";
 
 /// Ceiling on one decision round trip. A decision answers in about 200 ms;
 /// this only bounds an upstream that hangs instead of erroring, so a stalled
@@ -148,6 +153,31 @@ impl Decision {
 pub struct Bearer {
     pub token: String,
     pub bot_id: Option<String>,
+}
+
+/// Cap `text` at `max_bytes` for a decision state, keeping both ends: the
+/// opening says what a message is about, the close says what it asks for or
+/// promises next ("next I will…"). A cut keeps the first and last halves of
+/// the budget on char boundaries, with a marker naming how much was left out,
+/// so Jev reads a gap and not a sentence. Text within the cap is unchanged.
+pub fn clip(text: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
+    if text.len() <= max_bytes {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut head_end = max_bytes / 2;
+    while !text.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = text.len() - (max_bytes - max_bytes / 2);
+    while !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let omitted = tail_start - head_end;
+    std::borrow::Cow::Owned(format!(
+        "{}\n[... {omitted} bytes left out ...]\n{}",
+        &text[..head_end],
+        &text[tail_start..]
+    ))
 }
 
 /// Client for Janus `/v1/systemone`.
@@ -286,6 +316,28 @@ mod tests {
         assert!(!classify(401, String::new()).is_retryable());
         assert!(matches!(classify(401, String::new()), ProviderError::Auth(_)));
         assert!(matches!(classify(429, String::new()), ProviderError::RateLimit));
+    }
+
+    #[test]
+    fn the_model_is_a_pinned_version_not_an_alias() {
+        assert_eq!(JEV_MODEL, "jev-1.13.0");
+        assert!(!JEV_MODEL.ends_with("latest"));
+    }
+
+    #[test]
+    fn clip_keeps_both_ends() {
+        assert_eq!(clip("short", 10), "short");
+        let long = format!("OPENING {} next I will send it", "x".repeat(10_000));
+        let clipped = clip(&long, 100);
+        assert!(clipped.starts_with("OPENING "), "{clipped}");
+        assert!(clipped.ends_with("next I will send it"), "{clipped}");
+        assert!(clipped.contains("bytes left out"));
+        // Budget plus the marker, never the whole text.
+        assert!(clipped.len() < 100 + 40, "{}", clipped.len());
+        // Multi-byte text never splits a character.
+        let wide = "é".repeat(1_000);
+        let clipped = clip(&wide, 101);
+        assert!(clipped.starts_with('é') && clipped.ends_with('é'));
     }
 
     #[test]

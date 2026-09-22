@@ -263,9 +263,9 @@ pub(crate) fn decide_questions(
 
     let mut out = std::collections::BTreeMap::new();
     for (name, raw) in questions {
-        if name == "model" {
+        if name == "model" || name == "defaulted" {
             return Err(format!(
-                "decide activity '{id}': question 'model' collides with the output's model field"
+                "decide activity '{id}': question '{name}' collides with the output's {name} field"
             ));
         }
         let kind = raw
@@ -310,6 +310,108 @@ pub(crate) fn decide_questions(
             }
         }
         out.insert(name, question);
+    }
+    Ok(out)
+}
+
+/// The answers a `decide` activity records when no decision can be had: the
+/// typed-decision service is not connected, unreachable, throttled or over
+/// its deadline. `params.default` (an object, or a JSON string from the
+/// builder's textarea) names the author's safe answer per question: an
+/// option for a choice, a level for a score, `true`/`false` for a noul.
+///
+/// A defaulted answer carries confidence 0, so a downstream condition that
+/// checks `.confidence` treats it as unsure. A question with no declared
+/// default gets no answer at all: every `.choice == ...` condition on it
+/// takes its False edge. Choice options are stored sorted, so there is no
+/// "first declared" option to fall back on, and an arbitrary option could
+/// route a run down an action branch nobody chose.
+pub(crate) fn decide_defaults(
+    activity: &Activity,
+    questions: &std::collections::BTreeMap<String, ai::Question>,
+) -> Result<std::collections::BTreeMap<String, ai::Answer>, String> {
+    let id = &activity.id;
+    let defaults = match activity.params.as_ref().and_then(|p| p.get("default")) {
+        None | Some(serde_json::Value::Null) => return Ok(Default::default()),
+        Some(serde_json::Value::String(text)) if text.trim().is_empty() => {
+            return Ok(Default::default());
+        }
+        Some(serde_json::Value::Object(m)) => m.clone(),
+        Some(serde_json::Value::String(text)) => {
+            match serde_json::from_str::<serde_json::Value>(text) {
+                Ok(serde_json::Value::Object(m)) => m,
+                _ => {
+                    return Err(format!(
+                        "decide activity '{id}': params.default must be a JSON object of answers"
+                    ));
+                }
+            }
+        }
+        Some(_) => {
+            return Err(format!(
+                "decide activity '{id}': params.default must be a JSON object of answers"
+            ));
+        }
+    };
+
+    let mut out = std::collections::BTreeMap::new();
+    for (name, value) in defaults {
+        let Some(question) = questions.get(&name) else {
+            return Err(format!(
+                "decide activity '{id}': params.default names '{name}', which is not a question"
+            ));
+        };
+        let answer = match (question, &value) {
+            (ai::Question::Choice { criteria, .. }, serde_json::Value::String(option))
+                if criteria.contains_key(option) =>
+            {
+                ai::Answer {
+                    kind: "choice".into(),
+                    choice: Some(option.clone()),
+                    score: None,
+                    noul: None,
+                    confidence: Some(0.0),
+                    probabilities: Default::default(),
+                }
+            }
+            (ai::Question::Score { criteria, .. }, serde_json::Value::String(level))
+                if criteria.contains(level) =>
+            {
+                let index = criteria.iter().position(|l| l == level).unwrap_or(0);
+                ai::Answer {
+                    kind: "score".into(),
+                    choice: None,
+                    score: Some(index as f64),
+                    noul: None,
+                    confidence: Some(0.0),
+                    probabilities: Default::default(),
+                }
+            }
+            (ai::Question::Noul { .. }, serde_json::Value::Bool(holds)) => ai::Answer {
+                kind: "noul".into(),
+                choice: None,
+                score: None,
+                noul: Some(if *holds { 1.0 } else { 0.0 }),
+                confidence: None,
+                probabilities: Default::default(),
+            },
+            (ai::Question::Choice { .. }, _) => {
+                return Err(format!(
+                    "decide activity '{id}': default for '{name}' must be one of its options"
+                ));
+            }
+            (ai::Question::Score { .. }, _) => {
+                return Err(format!(
+                    "decide activity '{id}': default for '{name}' must be one of its levels"
+                ));
+            }
+            (ai::Question::Noul { .. }, _) => {
+                return Err(format!(
+                    "decide activity '{id}': default for '{name}' must be true or false"
+                ));
+            }
+        };
+        out.insert(name, answer);
     }
     Ok(out)
 }
@@ -433,7 +535,8 @@ fn validate_activities(def: &WorkflowDef) -> Result<(), WorkflowError> {
             // Typed decision — the questions are the contract; routing on the
             // answer stays in a condition node.
             "decide" => {
-                decide_questions(activity).map_err(WorkflowError::Validation)?;
+                let questions = decide_questions(activity).map_err(WorkflowError::Validation)?;
+                decide_defaults(activity, &questions).map_err(WorkflowError::Validation)?;
             }
             "wait" => {
                 if !param_str(activity, "waitUntil").trim().is_empty() {
@@ -795,6 +898,8 @@ mod tests {
         assert!(msg.contains("'q' is malformed"), "{msg}");
         let msg = decide_error(r#"{"model":{"type":"noul","instructions":"x"}}"#);
         assert!(msg.contains("'model' collides"), "{msg}");
+        let msg = decide_error(r#"{"defaulted":{"type":"noul","instructions":"x"}}"#);
+        assert!(msg.contains("'defaulted' collides"), "{msg}");
     }
 
     #[test]
@@ -837,6 +942,54 @@ mod tests {
         assert!(msg.contains("noul question 'q' takes no criteria"), "{msg}");
         parse_workflow(&decide_def(r#"{"q":{"type":"noul","instructions":"`text` holds"}}"#))
             .expect("a bare noul is valid");
+    }
+
+    /// A decide node with the given questions and `params.default`.
+    fn decide_def_with_default(questions: &str, default: &str) -> String {
+        format!(
+            r#"{{"version":"1.0","id":"wf","name":"n","activities":[
+                {{"id":"classify","type":"decide","params":{{"state":"inputs.x","questions":{questions},"default":{default}}}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn test_decide_default_answers() {
+        let questions = r#"{
+            "intent":{"type":"choice","instructions":"x","criteria":{"quote_request":"a price","other":"anything else"}},
+            "urgency":{"type":"score","instructions":"x","criteria":["routine","soon","now"]},
+            "is_spam":{"type":"noul","instructions":"x"}
+        }"#;
+        let def = parse_workflow(&decide_def_with_default(
+            questions,
+            r#"{"intent":"other","urgency":"soon","is_spam":false}"#,
+        ))
+        .expect("valid defaults");
+        let a = &def.activities[0];
+        let d = decide_defaults(a, &decide_questions(a).unwrap()).unwrap();
+        assert_eq!(d["intent"].picked(), "other");
+        assert_eq!(d["intent"].confidence, Some(0.0));
+        assert_eq!(d["urgency"].score, Some(1.0));
+        assert_eq!(d["is_spam"].noul, Some(0.0));
+
+        // No default: no answers, and that is valid.
+        let def = parse_workflow(&decide_def(questions)).unwrap();
+        let a = &def.activities[0];
+        assert!(
+            decide_defaults(a, &decide_questions(a).unwrap())
+                .unwrap()
+                .is_empty()
+        );
+
+        let bad = |default: &str| match parse_workflow(&decide_def_with_default(questions, default))
+        {
+            Err(WorkflowError::Validation(msg)) => msg,
+            other => panic!("expected a validation error, got {other:?}"),
+        };
+        assert!(bad(r#"{"intent":"refund"}"#).contains("one of its options"));
+        assert!(bad(r#"{"urgency":"never"}"#).contains("one of its levels"));
+        assert!(bad(r#"{"is_spam":"no"}"#).contains("true or false"));
+        assert!(bad(r#"{"mood":"calm"}"#).contains("not a question"));
+        assert!(bad(r#"["other"]"#).contains("JSON object of answers"));
     }
 
     #[test]

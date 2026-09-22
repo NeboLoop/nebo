@@ -359,6 +359,7 @@ impl ActivityLoop for RunnerActivityLoop {
         let mut notice = String::new();
         let mut error: Option<String> = None;
         let mut exit_reason = String::new();
+        let mut tainted = false;
         let commit = |ci: &mut i32, co: &mut i32, ti: &mut u32, to: &mut u32| {
             *ti += (*ci).max(0) as u32;
             *to += (*co).max(0) as u32;
@@ -397,6 +398,7 @@ impl ActivityLoop for RunnerActivityLoop {
                     if let Some(r) = ev.stop_reason {
                         exit_reason = r;
                     }
+                    tainted |= ev.provenance.is_some_and(|p| !p.is_empty());
                 }
                 _ => {}
             }
@@ -474,6 +476,7 @@ impl ActivityLoop for RunnerActivityLoop {
             text,
             total_tokens: total_in + total_out,
             output_tokens: total_out,
+            tainted,
         })
     }
 

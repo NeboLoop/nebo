@@ -561,6 +561,14 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 				description:
 					'JSON object of typed questions (choice, score, noul). A condition node routes on nodes.<id>.<question>.choice and .confidence',
 			},
+			{
+				key: 'default',
+				label: 'Default answers',
+				type: 'textarea',
+				placeholder: '{ "intent": "other" }',
+				description:
+					'Answers to use when no decision can be made: an option for a choice, a level for a score, true or false for a noul. The node then sets nodes.<id>.defaulted',
+			},
 		],
 	},
 	transform: {

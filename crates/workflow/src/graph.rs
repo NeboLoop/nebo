@@ -865,8 +865,16 @@ async fn run_http<'a>(
 ///
 /// `params.state` is a data path (`inputs._event_payload`, `item`,
 /// `nodes.fetch.body`); a path that resolves to nothing is sent as the
-/// literal text. `params.questions` is the Jev question map, passed through
-/// as-is (an object, or a JSON string from the builder's textarea).
+/// literal text, and a state over [`DECIDE_STATE_CAP`] is clipped.
+/// `params.questions` is the Jev question map, passed through as-is (an
+/// object, or a JSON string from the builder's textarea).
+///
+/// Fails open: when no decision can be had (the service is not connected,
+/// errors, is throttled or misses its deadline) the node still completes,
+/// recording the author's `params.default` answers (see
+/// [`crate::parser::decide_defaults`]) with `"defaulted": true` and an empty
+/// `model`, and routes on. A decision service being unavailable never fails
+/// the owner's run.
 async fn run_decide<'a>(
     ctx: &GraphCtx<'a>,
     scope: &WalkScope,
@@ -894,14 +902,12 @@ async fn run_decide<'a>(
         Err(WorkflowError::ActivityFailed(activity.id.clone(), err_msg))
     };
 
-    let Some(client) = ctx.decide else {
-        return fail(
-            "decide activity requires the typed-decision service (NeboAI), which is not connected"
-                .into(),
-        );
-    };
     let questions = match crate::parser::decide_questions(activity) {
         Ok(q) => q,
+        Err(e) => return fail(e),
+    };
+    let defaults = match crate::parser::decide_defaults(activity, &questions) {
+        Ok(d) => d,
         Err(e) => return fail(e),
     };
     let questions: std::collections::BTreeMap<&str, ai::Question> = questions
@@ -913,10 +919,56 @@ async fn run_decide<'a>(
     let state_path = param_str(activity, "state");
     let state = resolve_path(&data, state_path)
         .unwrap_or_else(|| serde_json::Value::String(state_path.to_string()));
+    let state = cap_decide_state(&activity.id, state);
 
-    let decision = match client.decide(&state, &questions).await {
+    let outcome = match ctx.decide {
+        None => Err("the typed-decision service (NeboAI) is not connected".to_string()),
+        Some(client) => {
+            let deadline = std::time::Duration::from_secs(crate::engine::DECISION_TIMEOUT_SECS);
+            match tokio::time::timeout(deadline, client.decide(&state, &questions)).await {
+                Ok(Ok(d)) => Ok(d),
+                Ok(Err(e)) => Err(format!("decide call failed: {e}")),
+                Err(_) => Err("decide call timed out".to_string()),
+            }
+        }
+    };
+    let decision = match outcome {
         Ok(d) => d,
-        Err(e) => return fail(format!("decide call failed: {e}")),
+        Err(reason) => {
+            warn!(
+                site = "decide_node",
+                activity = activity.id.as_str(),
+                reason = %reason,
+                defaults = defaults.len(),
+                "no decision; the node recorded its default answers and routed on"
+            );
+            let mut output = serde_json::Map::new();
+            for (name, answer) in &defaults {
+                if let Ok(v) = serde_json::to_value(answer) {
+                    output.insert(name.clone(), v);
+                }
+            }
+            output.insert("model".into(), serde_json::Value::String(String::new()));
+            output.insert("defaulted".into(), serde_json::Value::Bool(true));
+            let _ = ctx.store.create_activity_result(
+                &ctx.run_id,
+                &activity.id,
+                &scope.iteration,
+                "completed",
+                0,
+                1,
+                None,
+                started_at,
+                Some(chrono::Utc::now().timestamp()),
+            );
+            record_output(
+                ctx,
+                scope,
+                &activity.id,
+                serde_json::Value::Object(output).to_string(),
+            );
+            return route(ctx, scope, &activity.id, |_| true).await;
+        }
     };
 
     let mut output = serde_json::Map::new();
@@ -943,13 +995,43 @@ async fn run_decide<'a>(
         Some(chrono::Utc::now().timestamp()),
     );
     info!(
+        site = "decide_node",
         activity = activity.id.as_str(),
         model = %decision.model,
+        input_tokens = decision.usage.input_tokens,
+        cost_micro = decision.usage.cost_micro,
         answers = decision.answers.len(),
         "decide node completed"
     );
     record_output(ctx, scope, &activity.id, serde_json::Value::Object(output).to_string());
     route(ctx, scope, &activity.id, |_| true).await
+}
+
+/// Most bytes of state one `decide` node sends, about 6k tokens and under
+/// the decision service's state limit. A whole event payload or tool result
+/// can be far larger; past this the state is clipped at both ends.
+const DECIDE_STATE_CAP: usize = 24_000;
+
+/// Clip a `decide` node's state to [`DECIDE_STATE_CAP`] bytes of JSON. A
+/// state within the cap goes as it is; a larger one goes as its JSON text,
+/// clipped at both ends ([`ai::decide::clip`]), and the cut is logged so an
+/// author can narrow `params.state`.
+fn cap_decide_state(activity_id: &str, state: serde_json::Value) -> serde_json::Value {
+    let text = match &state {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    if text.len() <= DECIDE_STATE_CAP {
+        return state;
+    }
+    warn!(
+        site = "decide_node",
+        activity = activity_id,
+        bytes = text.len(),
+        cap = DECIDE_STATE_CAP,
+        "decide state over the cap; clipped at both ends (narrow params.state)"
+    );
+    serde_json::Value::String(ai::decide::clip(&text, DECIDE_STATE_CAP).into_owned())
 }
 
 /// Deterministic condition: evaluate params against the data context and
@@ -1671,6 +1753,9 @@ mod walk_tests {
         /// system-prompt substring -> exit reason. Emits a real `exit` tool
         /// call so the engine takes its genuine EXIT_SENTINEL path.
         exit_scripts: Vec<(String, String)>,
+        /// user-message substrings whose turn "read outside text": the Done
+        /// event carries web provenance, as the runner stamps it.
+        tainted_scripts: Vec<String>,
     }
 
     impl MockProvider {
@@ -1685,7 +1770,12 @@ mod walk_tests {
                 rate_limit_failures: StdMutex::new(0),
                 context_scripts: vec![],
                 exit_scripts: vec![],
+                tainted_scripts: vec![],
             }
+        }
+        fn with_tainted_turns(mut self, keys: &[&str]) -> Self {
+            self.tainted_scripts = keys.iter().map(|k| k.to_string()).collect();
+            self
         }
         fn with_exit_scripts(mut self, scripts: &[(&str, &str)]) -> Self {
             self.exit_scripts = scripts
@@ -1776,11 +1866,18 @@ mod walk_tests {
                 .unwrap_or_else(|| format!("done: {}", user));
             let (tx, rx) = tokio::sync::mpsc::channel(4);
             let usage_per_turn = self.usage_per_turn;
+            let tainted = self
+                .tainted_scripts
+                .iter()
+                .any(|k| user.contains(k.as_str()));
             tokio::spawn(async move {
                 if !response.is_empty() {
                     let _ = tx.send(ai::StreamEvent::text(response)).await;
                 }
                 let mut done = ai::StreamEvent::done();
+                if tainted {
+                    done = done.with_provenance(vec![types::provenance::ProvenanceClass::Web]);
+                }
                 if let Some(tokens) = usage_per_turn {
                     done.usage = Some(ai::UsageInfo {
                         input_tokens: tokens / 2,
@@ -1852,6 +1949,7 @@ mod walk_tests {
             let mut text = String::new();
             let (mut ti, mut to) = (0i32, 0i32);
             let mut exit: Option<String> = None;
+            let mut tainted = false;
             while let Some(ev) = rx.recv().await {
                 match ev.event_type {
                     ai::StreamEventType::Text => text.push_str(&ev.text),
@@ -1879,6 +1977,7 @@ mod walk_tests {
                             ti = ti.max(u.input_tokens);
                             to = to.max(u.output_tokens);
                         }
+                        tainted |= ev.provenance.is_some_and(|p| !p.is_empty());
                         break;
                     }
                     _ => {}
@@ -1891,6 +1990,7 @@ mod walk_tests {
                 text,
                 total_tokens: (ti.max(0) + to.max(0)) as u32,
                 output_tokens: to.max(0) as u32,
+                tainted,
             })
         }
 
@@ -1901,6 +2001,15 @@ mod walk_tests {
         def_json: &str,
         inputs: serde_json::Value,
         provider: &MockProvider,
+    ) -> (Result<(String, String), WorkflowError>, Arc<Store>, String) {
+        run_graph_with(def_json, inputs, provider, None).await
+    }
+
+    async fn run_graph_with(
+        def_json: &str,
+        inputs: serde_json::Value,
+        provider: &MockProvider,
+        decide: Option<&ai::DecideClient>,
     ) -> (Result<(String, String), WorkflowError>, Arc<Store>, String) {
         let def = parse_workflow(def_json).expect("valid def");
         let store = test_store();
@@ -1916,7 +2025,7 @@ mod walk_tests {
             false,
             &inputs,
             &store,
-            None,
+            decide,
             &looper,
             &[],
             None,
@@ -2756,30 +2865,216 @@ mod walk_tests {
         assert_eq!(run_status(&store, &run_id), "completed");
     }
 
-    /// Without the typed-decision service a decide node fails its activity
-    /// with a clear message instead of guessing.
+    /// A stand-in for Janus `/v1/systemone` on a local port: every request
+    /// is read whole and answered with `status` and `body`; `hits` counts
+    /// them. Lets a test see exactly how many decisions a run paid for.
+    async fn fake_janus(
+        status: u16,
+        body: &'static str,
+    ) -> (ai::DecideClient, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let counter = counter.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    loop {
+                        let n = sock.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                            continue;
+                        };
+                        let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                        let len = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if buf.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let reply = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        let client = ai::DecideClient::new(&format!("http://{addr}"), || {
+            Some(ai::Bearer {
+                token: "test".into(),
+                bot_id: None,
+            })
+        });
+        (client, hits)
+    }
+
+    const OUTCOME_PROCEED: &str = r#"{"model":"jev-1.13.0","answers":{"outcome":{"type":"choice","choice":"proceed","confidence":0.99,"probabilities":{}}},"usage":{"input_tokens":10,"output_tokens":1,"cost_micro":10}}"#;
+    const OUTCOME_HARMFUL: &str = r#"{"model":"jev-1.13.0","answers":{"outcome":{"type":"choice","choice":"harmful","confidence":0.99,"probabilities":{}}},"usage":{"input_tokens":10,"output_tokens":1,"cost_micro":10}}"#;
+
+    /// A decide node routed by two conditions on its `intent` answer.
+    const DECIDE_ROUTED: &str = r#"{
+        "version":"1.0","id":"t","name":"T",
+        "activities":[
+            {"id":"classify","type":"decide","params":{"state":"inputs.text",DEFAULT"questions":{
+                "intent":{"type":"choice","instructions":"What `text` asks for","criteria":{"quote_request":"a price","other":"anything else"}}}}},
+            {"id":"is-other","type":"condition","params":{"expression":"nodes.classify.intent.choice == \"other\""}},
+            {"id":"is-defaulted","type":"condition","params":{"mode":"exists","expression":"nodes.classify.defaulted"}},
+            {"id":"other","intent":"task-other"},
+            {"id":"not-other","intent":"task-not-other"},
+            {"id":"flagged","intent":"task-flagged"}],
+        "connections":[
+            {"from":"__trigger__","to":"classify"},
+            {"from":"classify","to":"is-other"},
+            {"from":"classify","to":"is-defaulted"},
+            {"from":"is-other","to":"other","label":"True"},
+            {"from":"is-other","to":"not-other","label":"False"},
+            {"from":"is-defaulted","to":"flagged","label":"True"},
+            {"from":"other","to":"__emit__"},{"from":"not-other","to":"__emit__"},{"from":"flagged","to":"__emit__"}]
+    }"#;
+
+    fn ran(provider: &MockProvider, intent: &str) -> bool {
+        provider.calls().iter().any(|c| {
+            c.split("###SYSTEM###")
+                .next()
+                .unwrap_or("")
+                .contains(intent)
+        })
+    }
+
+    /// No decision service connected: the node records the author's declared
+    /// default, flags itself defaulted, and the run completes down the
+    /// default's branch. It never fails the run.
     #[tokio::test]
-    async fn test_decide_node_without_client_fails_clearly() {
+    async fn test_decide_node_without_service_takes_its_declared_default() {
+        let provider = MockProvider::new(&[]);
+        let def = DECIDE_ROUTED.replace("DEFAULT", r#""default":{"intent":"other"},"#);
+        let (result, store, run_id) =
+            run_graph(&def, serde_json::json!({"text": "how much"}), &provider).await;
+        result.expect("a missing decision service never fails the run");
+        assert!(ran(&provider, "task-other"), "{:?}", provider.calls());
+        assert!(!ran(&provider, "task-not-other"));
+        assert!(
+            ran(&provider, "task-flagged"),
+            "the output says it was defaulted"
+        );
+        assert_eq!(run_status(&store, &run_id), "completed");
+    }
+
+    /// The service errors (a throttled or failing upstream: 5xx, retried
+    /// once) and the node declares no default: the question has no answer,
+    /// every `.choice == ...` condition takes its False edge, and the run
+    /// completes.
+    #[tokio::test]
+    async fn test_decide_node_fails_open_without_a_default() {
+        let (client, hits) = fake_janus(502, r#"{"error":"upstream 529"}"#).await;
+        let provider = MockProvider::new(&[]);
+        let def = DECIDE_ROUTED.replace("DEFAULT", "");
+        let (result, store, run_id) = run_graph_with(
+            &def,
+            serde_json::json!({"text": "how much"}),
+            &provider,
+            Some(&client),
+        )
+        .await;
+        result.expect("a failed decision never fails the run");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one call, one retry"
+        );
+        assert!(ran(&provider, "task-not-other"), "{:?}", provider.calls());
+        assert!(!ran(&provider, "task-other"));
+        assert!(ran(&provider, "task-flagged"));
+        assert_eq!(run_status(&store, &run_id), "completed");
+    }
+
+    /// A state past the cap is clipped at both ends; one within it is sent
+    /// untouched, object shape included.
+    #[test]
+    fn test_decide_state_is_capped() {
+        let small = serde_json::json!({"subject": "hi"});
+        assert_eq!(cap_decide_state("n", small.clone()), small);
+        let big = serde_json::json!({
+            "subject": "Quote please",
+            "body": "x".repeat(DECIDE_STATE_CAP * 2),
+            "zz_signature": "Sent from the road"
+        });
+        let capped = cap_decide_state("n", big);
+        let text = capped.as_str().expect("clipped state goes as text");
+        assert!(text.len() < DECIDE_STATE_CAP + 64, "{}", text.len());
+        assert!(text.contains("Quote please") && text.contains("Sent from the road"));
+    }
+
+    /// A two-step activity pays for ONE evaluator call: after step 1. The
+    /// final step's verdict was always thrown away, so it is not asked.
+    #[tokio::test]
+    async fn test_step_evaluator_skips_the_final_step() {
+        let (client, hits) = fake_janus(200, OUTCOME_PROCEED).await;
         let provider = MockProvider::new(&[]);
         let def = r#"{
             "version":"1.0","id":"t","name":"T",
-            "activities":[
-                {"id":"classify","type":"decide","params":{"state":"inputs.text","questions":{
-                    "intent":{"type":"choice","instructions":"What does `text` ask for","criteria":{"quote_request":"a price","other":"anything else"}}}}}],
-            "connections":[
-                {"from":"__trigger__","to":"classify"},{"from":"classify","to":"__emit__"}]
+            "activities":[{"id":"a","intent":"task-a","steps":["step-one","step-two"]}],
+            "connections":[{"from":"__trigger__","to":"a"},{"from":"a","to":"__emit__"}]
         }"#;
+        let (result, _store, _run_id) =
+            run_graph_with(def, serde_json::json!({}), &provider, Some(&client)).await;
+        result.expect("run ok");
+        assert!(ran(&provider, "step-two"));
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// The evaluator can stop a run after a clean step, but never after one
+    /// that read outside text, nor after any later step (the outside text is
+    /// in their conversation): it is not asked there, so an injected "stop"
+    /// in a web page or an email cannot end the run.
+    #[tokio::test]
+    async fn test_step_evaluator_cannot_stop_a_run_on_outside_text() {
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[{"id":"a","intent":"task-a","steps":["read-inbox","step-two","step-three"]}],
+            "connections":[{"from":"__trigger__","to":"a"},{"from":"a","to":"__emit__"}]
+        }"#;
+
+        // Clean step: a confident "harmful" stops the run before step two.
+        let (client, hits) = fake_janus(200, OUTCOME_HARMFUL).await;
+        let provider = MockProvider::new(&[]);
         let (result, store, run_id) =
-            run_graph(def, serde_json::json!({"text": "how much"}), &provider).await;
-        match result {
-            Err(WorkflowError::ActivityFailed(id, msg)) => {
-                assert_eq!(id, "classify");
-                assert!(msg.contains("typed-decision service"), "{msg}");
-            }
-            other => panic!("expected ActivityFailed, got {other:?}"),
-        }
-        assert!(provider.calls().is_empty(), "a decide node never reaches the chat model");
-        assert_eq!(run_status(&store, &run_id), "failed");
+            run_graph_with(def, serde_json::json!({}), &provider, Some(&client)).await;
+        result.expect("an exit ends the run cleanly");
+        assert_eq!(
+            run_status(&store, &run_id),
+            "exited",
+            "the clean-step exit stands"
+        );
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!ran(&provider, "step-two"));
+
+        // Same verdict, but step one read outside text: not asked, run goes on.
+        let (client, hits) = fake_janus(200, OUTCOME_HARMFUL).await;
+        let provider = MockProvider::new(&[]).with_tainted_turns(&["read-inbox"]);
+        let (result, store, run_id) =
+            run_graph_with(def, serde_json::json!({}), &provider, Some(&client)).await;
+        result.expect("run ok");
+        assert_eq!(
+            run_status(&store, &run_id),
+            "completed",
+            "outside text never lets the evaluator stop the run"
+        );
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(ran(&provider, "step-three"));
     }
 
     /// on_error.retry is the activity-level retry budget: after
