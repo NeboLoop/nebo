@@ -21,14 +21,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{ProviderError, RequestTrace};
 
-/// Model sent on every request: a versioned id, never an alias. Every
-/// threshold in the call sites (auto-continue, objective, memory pair, step
-/// evaluator) was written against the answers of `jev-1.13.0`. An alias such
-/// as `jev-latest` moves when TypeSafe ships a new model, and the thresholds
-/// would silently start routing on a different distribution. Moving to a new
-/// version is a deliberate change here, together with re-checking those
-/// thresholds.
-pub const JEV_MODEL: &str = "jev-1.13.0";
+/// Model sent on every request: the alias, on purpose (owner, 2026-09-22).
+/// TypeSafe ships improvements to the alias and we want every one of them
+/// without a code change. The trade is that thresholds in the call sites
+/// were written against one version's answers and may drift when the alias
+/// moves; every decision therefore logs the versioned `model` that actually
+/// answered (`Decision::model`, `site=` lines), so a shift shows up in the
+/// logs and the thresholds get re-checked, rather than being frozen behind
+/// a pin nobody bumps.
+pub const JEV_MODEL: &str = "jev-latest";
 
 /// Ceiling on one decision round trip. A decision answers in about 200 ms;
 /// this only bounds an upstream that hangs instead of erroring, so a stalled
@@ -323,9 +324,10 @@ mod tests {
     }
 
     #[test]
-    fn the_model_is_a_pinned_version_not_an_alias() {
-        assert_eq!(JEV_MODEL, "jev-1.13.0");
-        assert!(!JEV_MODEL.ends_with("latest"));
+    fn the_model_is_the_alias_and_the_answer_names_the_version() {
+        // Owner 2026-09-22: follow TypeSafe's alias, never pin. The versioned
+        // id lives on the answer (`Decision::model`) and is logged per site.
+        assert_eq!(JEV_MODEL, "jev-latest");
     }
 
     #[test]
