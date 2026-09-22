@@ -3,14 +3,17 @@ use std::collections::HashSet;
 use ai::ToolDefinition;
 use db::models::ChatMessage;
 
-/// Contextual tool groups: (context_name, trigger_keywords).
-/// Context names map to STRAP sub-docs and/or tool names.
+/// Contextual tool groups: (context_name, description, trigger_keywords).
+/// Context names map to STRAP sub-docs and/or tool names. The description
+/// completes "asks for work involving …" in the turn decision's question
+/// for the group (see `turn_decide`).
 /// For "os" sub-contexts (desktop, app, music, etc.), the tool is always registered
 /// but the STRAP docs are only injected when keywords match.
-const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
+const CONTEXTUAL_GROUPS: &[(&str, &str, &[&str])] = &[
     // Web & browsing (also core, keywords for adjacency)
     (
         "web",
+        "browsing websites, fetching pages, or searching the internet",
         &[
             "browse", "website", "url", "http", "fetch", "search", "google", "look up", "find out",
             "internet", "link", "page", "navigate", "yelp", "reddit", "youtube", "wiki",
@@ -19,6 +22,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // Scheduling & events (also core, keywords for adjacency)
     (
         "event",
+        "scheduling something for later: a reminder, an alarm, a timer, or a recurring job",
         &[
             "event",
             "schedule",
@@ -42,6 +46,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // NeboAI communication (tool: loop)
     (
         "loop",
+        "messaging on NeboAI: direct messages, channels, group chats, or topics",
         &[
             "neboai",
             "channel",
@@ -56,6 +61,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // Workflows (tool: work)
     (
         "work",
+        "a workflow, or automating a repeatable procedure",
         &[
             "workflow",
             "automate",
@@ -67,6 +73,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // Desktop GUI automation (os sub-context)
     (
         "desktop",
+        "operating the computer's screen: clicking, typing into apps, windows, menus, screenshots, or speaking aloud",
         &[
             "click",
             "mouse",
@@ -95,6 +102,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // App lifecycle (os sub-context)
     (
         "app",
+        "launching, switching to, or quitting applications on the computer",
         &[
             "launch",
             "open app",
@@ -111,6 +119,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // Personal information management (os sub-context)
     (
         "organizer",
+        "email, calendar events, contacts, appointments, or reminders",
         &[
             "calendar",
             "reminder",
@@ -129,6 +138,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // Music & media (os sub-context)
     (
         "music",
+        "playing, pausing, or choosing music or other media",
         &[
             "music",
             "play",
@@ -147,6 +157,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // System settings (os sub-context)
     (
         "settings",
+        "computer settings such as volume, brightness, Wi-Fi, Bluetooth, dark mode, sleep, or battery",
         &[
             "volume",
             "brightness",
@@ -164,6 +175,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // Credential storage (os sub-context)
     (
         "keychain",
+        "stored passwords, credentials, API keys, or other secrets",
         &[
             "password",
             "credential",
@@ -178,6 +190,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // File search (os sub-context)
     (
         "spotlight",
+        "finding where a file is on the computer",
         &[
             "find file",
             "search file",
@@ -191,6 +204,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // Script execution (tool: execute)
     (
         "execute",
+        "running a script or a piece of code",
         &[
             "run script",
             "execute script",
@@ -202,11 +216,39 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     // Event emission (tool: emit)
-    ("emit", &["emit event", "fire event", "trigger event"]),
+    ("emit", "emitting or triggering an event for other automations", &["emit event", "fire event", "trigger event"]),
 ];
 
 /// Context names that correspond to actual registered tools (not os sub-contexts).
 const TOOL_CONTEXTS: &[&str] = &["web", "event", "loop", "work", "execute", "emit", "code"];
+
+/// The `code` context's description; its keyword test is [`coding_signal`],
+/// not a row of [`CONTEXTUAL_GROUPS`].
+const CODE_GROUP_DESCRIPTION: &str =
+    "software: source code, a codebase, a programming language, a build, tests, or version control";
+
+/// The context groups that exist for this roster, as (name, description):
+/// a tool context when its tool is registered, an os sub-context when `os`
+/// is. The turn decision asks one question per group returned here, so the
+/// menu is rebuilt from what is registered now.
+pub fn context_groups(registered: &HashSet<String>) -> Vec<(&'static str, &'static str)> {
+    let exists = |name: &str| {
+        if TOOL_CONTEXTS.contains(&name) {
+            registered.contains(name)
+        } else {
+            registered.contains("os")
+        }
+    };
+    let mut groups: Vec<(&'static str, &'static str)> = CONTEXTUAL_GROUPS
+        .iter()
+        .filter(|(name, _, _)| exists(name))
+        .map(|(name, desc, _)| (*name, *desc))
+        .collect();
+    if exists("code") {
+        groups.push(("code", CODE_GROUP_DESCRIPTION));
+    }
+    groups
+}
 
 /// Tokens that mean "software" in any human language: tool and language
 /// names are spelled the same in Spanish or Japanese text, and plain-English
@@ -398,11 +440,15 @@ pub fn withhold_memory_tools(
     (kept, withheld)
 }
 
+/// `decided_contexts` is the turn decision's set of groups to show (see
+/// `turn_decide`); it only ever adds to what the keywords matched, never
+/// hides one. `None` when there is no decision: the keywords alone decide.
 pub fn filter_tools_with_context(
     all_tools: &[ToolDefinition],
     messages: &[ChatMessage],
     called_tools: &[String],
     agent_tool_names: &HashSet<String>,
+    decided_contexts: Option<&HashSet<String>>,
 ) -> (Vec<ToolDefinition>, Vec<String>) {
     if all_tools.is_empty() {
         return (vec![], vec![]);
@@ -430,7 +476,7 @@ pub fn filter_tools_with_context(
         active_contexts.push("code".to_string());
     }
 
-    for (context_name, keywords) in CONTEXTUAL_GROUPS {
+    for (context_name, _, keywords) in CONTEXTUAL_GROUPS {
         // A context's prose docs activate on a keyword match, or when its own tool
         // was called (loop/work/etc.). Previously, calling `os` for ANYTHING also
         // blanket-activated EVERY os sub-context (desktop, music, keychain, PIM,
@@ -443,6 +489,18 @@ pub fn filter_tools_with_context(
         if matched {
             active_contexts.push(context_name.to_string());
         }
+    }
+
+    // The turn decision reads the message in any language; a group it shows
+    // joins the keyword matches. Union, never replacement: a group the
+    // keywords matched stays on whatever the decision said.
+    if let Some(decided) = decided_contexts {
+        let mut extra: Vec<&String> = decided
+            .iter()
+            .filter(|c| !active_contexts.contains(c))
+            .collect();
+        extra.sort();
+        active_contexts.extend(extra.into_iter().cloned());
     }
 
     // Filter tool schemas to only include tools relevant to the current context.
@@ -485,7 +543,7 @@ pub fn filter_tools(
     messages: &[ChatMessage],
     called_tools: &[String],
 ) -> Vec<ToolDefinition> {
-    filter_tools_with_context(all_tools, messages, called_tools, &HashSet::new()).0
+    filter_tools_with_context(all_tools, messages, called_tools, &HashSet::new(), None).0
 }
 
 /// Get the names of tools that would pass the filter.
@@ -597,14 +655,14 @@ mod tests {
         }
         let tools = vec![make_tool("os"), make_tool("code")];
         let coding = vec![make_msg("user", "hay un error en main.rs")];
-        let (result, contexts) = filter_tools_with_context(&tools, &coding, &[], &HashSet::new());
+        let (result, contexts) = filter_tools_with_context(&tools, &coding, &[], &HashSet::new(), None);
         assert!(result.iter().any(|t| t.name == "code"));
         assert!(contexts.contains(&"code".to_string()));
         let plain = vec![make_msg("user", "what is the discount code for the open house")];
-        let (result, _) = filter_tools_with_context(&tools, &plain, &[], &HashSet::new());
+        let (result, _) = filter_tools_with_context(&tools, &plain, &[], &HashSet::new(), None);
         assert!(!result.iter().any(|t| t.name == "code"), "no coding tool for a discount code");
         // Once called, it stays for the session like any other tool.
-        let (result, _) = filter_tools_with_context(&tools, &plain, &["code".to_string()], &HashSet::new());
+        let (result, _) = filter_tools_with_context(&tools, &plain, &["code".to_string()], &HashSet::new(), None);
         assert!(result.iter().any(|t| t.name == "code"));
     }
 
@@ -613,7 +671,7 @@ mod tests {
         // `loop` is a non-core tool, so it exercises keyword gating (web/os are now core).
         let tools = vec![make_tool("os"), make_tool("loop")];
         let messages = vec![make_msg("user", "Take a screenshot of the current screen")];
-        let (result, contexts) = filter_tools_with_context(&tools, &messages, &[], &HashSet::new());
+        let (result, contexts) = filter_tools_with_context(&tools, &messages, &[], &HashSet::new(), None);
         // "desktop" sub-context keyword activates os tool
         assert!(result.iter().any(|t| t.name == "os"));
         assert!(contexts.contains(&"desktop".to_string()));
@@ -625,7 +683,7 @@ mod tests {
     fn test_music_keyword_activates_context() {
         let tools = vec![make_tool("os")];
         let messages = vec![make_msg("user", "Play some music")];
-        let (_, contexts) = filter_tools_with_context(&tools, &messages, &[], &HashSet::new());
+        let (_, contexts) = filter_tools_with_context(&tools, &messages, &[], &HashSet::new(), None);
         assert!(contexts.contains(&"music".to_string()));
     }
 
@@ -648,7 +706,7 @@ mod tests {
     #[test]
     fn test_os_does_not_blanket_activate_sub_contexts() {
         let tools = vec![make_tool("os")];
-        let (_, contexts) = filter_tools_with_context(&tools, &[], &["os".to_string()], &HashSet::new());
+        let (_, contexts) = filter_tools_with_context(&tools, &[], &["os".to_string()], &HashSet::new(), None);
         // Calling "os" must NOT blanket-activate every os sub-context — that injected
         // ~12K chars of irrelevant prose for a simple file read. Sub-contexts activate
         // only on their own keywords (see test_organizer_keyword/test_keychain_keyword).
@@ -660,7 +718,7 @@ mod tests {
     fn test_organizer_keyword() {
         let tools = vec![make_tool("os")];
         let messages = vec![make_msg("user", "Check my calendar for today")];
-        let (_, contexts) = filter_tools_with_context(&tools, &messages, &[], &HashSet::new());
+        let (_, contexts) = filter_tools_with_context(&tools, &messages, &[], &HashSet::new(), None);
         assert!(contexts.contains(&"organizer".to_string()));
     }
 
@@ -668,8 +726,59 @@ mod tests {
     fn test_keychain_keyword() {
         let tools = vec![make_tool("os")];
         let messages = vec![make_msg("user", "What's my github password?")];
-        let (_, contexts) = filter_tools_with_context(&tools, &messages, &[], &HashSet::new());
+        let (_, contexts) = filter_tools_with_context(&tools, &messages, &[], &HashSet::new(), None);
         assert!(contexts.contains(&"keychain".to_string()));
+    }
+
+    #[test]
+    fn test_decided_contexts_add_and_never_hide() {
+        let tools = vec![make_tool("os"), make_tool("loop"), make_tool("execute")];
+        // Spanish for "message the sales channel and check my calendar":
+        // no keyword matches it.
+        let messages = vec![make_msg("user", "Escribe al canal de ventas y revisa mi agenda")];
+        let (result, contexts) = filter_tools_with_context(&tools, &messages, &[], &HashSet::new(), None);
+        assert!(!contexts.contains(&"loop".to_string()));
+        assert!(!result.iter().any(|t| t.name == "loop"));
+
+        let decided: HashSet<String> = ["loop", "organizer"].iter().map(|s| s.to_string()).collect();
+        let (result, contexts) =
+            filter_tools_with_context(&tools, &messages, &[], &HashSet::new(), Some(&decided));
+        assert!(contexts.contains(&"loop".to_string()));
+        assert!(contexts.contains(&"organizer".to_string()));
+        assert!(result.iter().any(|t| t.name == "loop"), "a shown tool context declares its tool");
+        assert!(!result.iter().any(|t| t.name == "execute"));
+
+        // Union: a keyword match survives a decision that did not show it.
+        let keyword = vec![make_msg("user", "Check my calendar and run script build.sh")];
+        let (result, contexts) =
+            filter_tools_with_context(&tools, &keyword, &[], &HashSet::new(), Some(&HashSet::new()));
+        assert!(contexts.contains(&"organizer".to_string()));
+        assert!(result.iter().any(|t| t.name == "execute"));
+    }
+
+    #[test]
+    fn test_context_groups_follow_the_roster() {
+        let names = |registered: &[&str]| -> Vec<&'static str> {
+            let set: HashSet<String> = registered.iter().map(|s| s.to_string()).collect();
+            context_groups(&set).into_iter().map(|(n, _)| n).collect()
+        };
+        // Nothing registered → nothing to ask.
+        assert!(names(&[]).is_empty());
+        // `os` brings its sub-contexts, and no tool context whose tool is absent.
+        let os_only = names(&["os"]);
+        assert!(os_only.contains(&"desktop") && os_only.contains(&"organizer"));
+        assert!(!os_only.contains(&"loop") && !os_only.contains(&"code"));
+        // A registered tool brings its own context.
+        let with_tools = names(&["loop", "code"]);
+        assert_eq!(with_tools, ["loop", "code"]);
+        // Every group has a description to ask about.
+        let all: HashSet<String> = ["os", "web", "event", "loop", "work", "execute", "emit", "code"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let groups = context_groups(&all);
+        assert_eq!(groups.len(), CONTEXTUAL_GROUPS.len() + 1);
+        assert!(groups.iter().all(|(_, d)| !d.trim().is_empty()));
     }
 
     #[test]

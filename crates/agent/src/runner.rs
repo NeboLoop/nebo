@@ -3802,6 +3802,27 @@ async fn run_loop(
     // Record run start time for sliding window protection
     let run_start_time = chrono::Utc::now().timestamp();
 
+    // The turn decision's questions ride the objective call (one Jev request
+    // per real user message): one per context group registered now, plus the
+    // task-tracking nudge. The first step waits for them until `turn_deadline`
+    // at the tool filter; no answer by then, or none at all, and the keyword
+    // filter and keyword nudge run for this turn (see `turn_decide`).
+    let turn_groups = if decide.is_some() && crate::turn_decide::enabled() {
+        let registered: HashSet<String> = tools.get_tool_names().await.into_iter().collect();
+        Some(tool_filter::context_groups(&registered))
+    } else {
+        None
+    };
+    let (turn_tx, mut turn_rx) = match turn_groups {
+        Some(groups) => {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            (Some((groups, tx)), Some(rx))
+        }
+        None => (None, None),
+    };
+    let turn_deadline = tokio::time::Instant::now() + crate::turn_decide::WAIT;
+    let mut turn_signals: Option<crate::turn_decide::TurnSignals> = None;
+
     // Fire objective detection in background (non-blocking). One typed
     // decision, milliseconds; it never touches the chat provider.
     {
@@ -3827,6 +3848,7 @@ async fn run_loop(
                 &session_mgr,
                 &session_id,
                 &user_prompt,
+                turn_tx,
             )
             .await;
         });
@@ -4298,11 +4320,19 @@ async fn run_loop(
             }
         }
 
+        // First step only: take the turn decision if it answered in time.
+        // A closed channel (no client, an error, a continuation) is an
+        // immediate keyword fallback, never a wait.
+        if let Some(rx) = turn_rx.take() {
+            turn_signals = crate::turn_decide::receive(rx, turn_deadline).await;
+        }
+
         let (mut tool_defs, active_contexts) = tool_filter::filter_tools_with_context(
             &all_tool_defs,
             &window_messages,
             &called_tools,
             &agent_tool_names,
+            turn_signals.as_ref().map(|t| &t.shown_contexts),
         );
 
         // Restricted runs (phone callers) declare ONLY their allowlisted
@@ -7493,6 +7523,7 @@ async fn run_loop(
                     provider_id: selected_provider_id,
                     work_tasks: &work_tasks,
                     user_prompt,
+                    multi_stage: turn_signals.as_ref().map(|t| t.multi_stage),
                     active_task: &active_task,
                     recent_tool_result_hashes: &recent_tool_result_hashes,
                     user_presence: &user_presence,
@@ -8769,12 +8800,21 @@ async fn objective_sentence(
 /// from [`objective_sentence`], only when the decision is set or update. A
 /// continuation nudge is never classified: it is not the person speaking.
 /// No client, any error or a timeout leaves the objective untouched.
+///
+/// `turn` carries the turn decision's context groups and the channel its
+/// answer goes back on: those questions ride this same request (see
+/// [`crate::turn_decide`]). Any early return drops the sender, which the
+/// runner reads as "no decision" and falls back to keywords at once.
 async fn detect_objective(
     decide: Option<&ai::DecideClient>,
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     sessions: &SessionManager,
     session_id: &str,
     user_prompt: &str,
+    turn: Option<(
+        Vec<(&'static str, &'static str)>,
+        tokio::sync::oneshot::Sender<crate::turn_decide::TurnSignals>,
+    )>,
 ) {
     if user_prompt.trim().is_empty() || crate::goals::is_continuation_prompt(user_prompt) {
         return;
@@ -8814,9 +8854,9 @@ async fn detect_objective(
     let state = serde_json::json!({
         "current_objective": if objective_is_none { "none" } else { current_objective.as_str() },
         "recent_conversation": recent_conversation,
-        "latest_user_message": user_prompt,
+        "latest_user_message": truncate_str(user_prompt, crate::turn_decide::LATEST_USER_MESSAGE_CAP),
     });
-    let questions = BTreeMap::from([
+    let mut questions = BTreeMap::from([
         (
             "action",
             Question::choice(
@@ -8858,6 +8898,11 @@ async fn detect_objective(
             ),
         ),
     ]);
+    let turn_questions = turn
+        .as_ref()
+        .map(|(groups, _)| crate::turn_decide::questions(groups))
+        .unwrap_or_default();
+    questions.extend(turn_questions.iter().map(|(k, q)| (k.as_str(), q.clone())));
 
     let call = client.decide(&state, &questions);
     let decision =
@@ -8881,8 +8926,23 @@ async fn detect_objective(
         action = picked,
         confidence,
         mode,
+        questions = questions.len(),
+        input_tokens = decision.usage.input_tokens,
+        output_tokens = decision.usage.output_tokens,
+        cost_micro = decision.usage.cost_micro,
         "objective classifier decided"
     );
+    if let Some((groups, tx)) = turn {
+        let signals = crate::turn_decide::signals_from(&decision, &groups);
+        debug!(
+            shown = ?signals.shown_contexts,
+            multi_stage = signals.multi_stage,
+            "turn decision"
+        );
+        // The runner stops listening once its wait trips; a late answer
+        // has nowhere to go and the keyword path already ran.
+        let _ = tx.send(signals);
+    }
 
     match objective_decision(picked, confidence, mode, objective_is_none) {
         ObjectiveDecision::Set { mode } => {
