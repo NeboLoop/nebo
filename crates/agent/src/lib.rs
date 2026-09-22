@@ -52,6 +52,7 @@ pub mod task_graph;
 pub mod tool_filter;
 pub mod testing;
 pub mod transcript;
+pub mod turn_decide;
 
 // Link the BLAS provider for turbovec's ndarray backend: blas-src's contract
 // requires a crate in the graph to reference it, or rustc drops the rlib and

@@ -65,6 +65,10 @@ pub struct ReminderContext<'a> {
     pub work_tasks: &'a [WorkTask],
     /// The current user prompt (complexity detection for task-tracking).
     pub user_prompt: &'a str,
+    /// The turn decision's answer to "is this a multi-stage request"
+    /// (`turn_decide`); `None` when there is no decision and the keyword
+    /// count in [`TaskTrackingNudge`] decides.
+    pub multi_stage: Option<bool>,
     /// The current modifiable objective (active_task) — the goal-anchor reminder re-injects it.
     pub active_task: &'a str,
     /// Rolling (name_hash, args_hash, result_hash) for recent tool calls (duplicate detection).
@@ -1526,6 +1530,12 @@ impl Reminder for TaskTrackingNudge {
             return None;
         }
 
+        // The turn decision read the request in whatever language it came
+        // in; the keyword count below is the fallback when there is none.
+        if let Some(multi_stage) = ctx.multi_stage {
+            return multi_stage.then(task_tracking_text);
+        }
+
         // Detect multi-step complexity in the user prompt
         let lower = ctx.user_prompt.to_lowercase();
         let complexity_signals = [
@@ -1568,16 +1578,18 @@ impl Reminder for TaskTrackingNudge {
             return None;
         }
 
-        Some(
-            "This looks like a multi-stage request. If it will take many tool calls across \
-             several distinct stages, track it so the user can see progress:\n\
-             1. Create tasks: agent(resource: \"task\", action: \"create\", subject: \"...\")\n\
-             2. Update as you work: agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
-             3. Mark complete with output: agent(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
-             If you can finish it in a handful of calls, skip the task list and just do the work."
-                .to_string(),
-        )
+        Some(task_tracking_text())
     }
+}
+
+fn task_tracking_text() -> String {
+    "This looks like a multi-stage request. If it will take many tool calls across \
+     several distinct stages, track it so the user can see progress:\n\
+     1. Create tasks: agent(resource: \"task\", action: \"create\", subject: \"...\")\n\
+     2. Update as you work: agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
+     3. Mark complete with output: agent(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
+     If you can finish it in a handful of calls, skip the task list and just do the work."
+        .to_string()
 }
 
 // 16. Task Completion Nudge — remind to update tasks when work is being done but tasks aren't progressing
@@ -2596,6 +2608,29 @@ mod tests {
     }
 
     #[test]
+    fn test_task_tracking_nudge_follows_the_turn_decision() {
+        // A decision replaces the keyword count both ways: a multi-stage
+        // request with no English signal words fires, and a keyword-heavy
+        // prompt the decision called simple does not.
+        let spanish = "Investiga el mercado, compara proveedores y redacta un informe.";
+        let decided_yes = ReminderContext { multi_stage: Some(true), ..rctx_prompt(spanish, 1) };
+        assert!(TaskTrackingNudge.check(&decided_yes).unwrap().contains("Create tasks"));
+        assert!(
+            TaskTrackingNudge.check(&rctx_prompt(spanish, 1)).is_none(),
+            "the keyword fallback misses it"
+        );
+        let keywords = "First research the market, then compare vendors and analyze the options.";
+        let decided_no = ReminderContext { multi_stage: Some(false), ..rctx_prompt(keywords, 1) };
+        assert!(TaskTrackingNudge.check(&decided_no).is_none());
+        // Still iteration 1 only, still silent once tasks exist.
+        let later = ReminderContext { multi_stage: Some(true), ..rctx_prompt(spanish, 2) };
+        assert!(TaskTrackingNudge.check(&later).is_none());
+        let tasks = [WorkTask { id: "1".into(), subject: "x".into(), status: "pending".into(), details: None }];
+        let tracked = ReminderContext { multi_stage: Some(true), work_tasks: &tasks, ..rctx_prompt(spanish, 1) };
+        assert!(TaskTrackingNudge.check(&tracked).is_none());
+    }
+
+    #[test]
     fn test_untrusted_content_fires_on_web() {
         let web = vec!["web".to_string()];
         assert!(
@@ -2847,6 +2882,7 @@ mod tests {
             provider_id: "openai",
             work_tasks: &[],
             user_prompt: "",
+            multi_stage: None,
             active_task: "",
             recent_tool_result_hashes: &[],
             user_presence: "",
