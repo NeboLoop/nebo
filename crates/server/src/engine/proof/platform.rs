@@ -87,8 +87,8 @@ fn uc54_one_resume_after_a_crash_then_a_human_decides() {
     w.start(&turn.id);
     assert_eq!(recover(&w.s), 0);
     assert_eq!(w.run(&turn.id).state, "failed");
-    assert!(w.card(&turn.id).unwrap().contains("interrupted by a restart twice"));
-    assert!(w.history_has(&case, "needs_attention", "interrupted by a restart twice"));
+    assert!(w.card(&turn.id).unwrap().contains("interrupted twice"));
+    assert!(w.history_has(&case, "needs_attention", "interrupted twice"));
     assert!(w.queued_turn(&case).is_none(), "no third attempt starts on its own");
 }
 

@@ -116,7 +116,7 @@ fn parity_subagent_tasks_are_linked_and_bounded() {
     w.s.engine_set_run_state("child", "running", w.t, None).unwrap();
     assert_eq!(recover(&w.s), 0, "not a second");
     assert_eq!(w.run("child").state, "failed");
-    assert!(w.card("child").unwrap().contains("interrupted by a restart twice"));
+    assert!(w.card("child").unwrap().contains("interrupted twice"));
     w.s.cancel_task("root").unwrap();
     w.s.cancel_child_tasks("root").unwrap();
     assert_eq!(w.run("root").state, "cancelled");

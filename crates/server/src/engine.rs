@@ -99,7 +99,7 @@ pub fn recover(store: &Store) -> usize {
             Ok(false) => {
                 warn!(run = %run.id, "engine: run interrupted twice — failed, not retried");
                 let case = run.parent_run_id.as_deref().and_then(|p| store.engine_get_run(p).ok().flatten());
-                let reason = format!("{} run {} was interrupted by a restart twice and was not retried", run.kind, run.id);
+                let reason = format!("{} run {} was interrupted twice and was not retried", run.kind, run.id);
                 if let Err(e) = needs_attention(store, &run.agent_id, &run.id, &run.id, case.as_ref(), &reason, t) {
                     warn!(run = %run.id, error = %e, "engine: could not route the failed run for attention");
                 }
