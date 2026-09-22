@@ -51,6 +51,7 @@ pub mod summarizer;
 pub mod reviewer;
 pub mod task_graph;
 pub mod tool_filter;
+pub mod tool_guardrail;
 pub mod testing;
 pub mod transcript;
 pub mod turn_decide;
