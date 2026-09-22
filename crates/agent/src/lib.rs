@@ -21,6 +21,7 @@ pub mod provenance;
 /// change had to land three times).
 pub const CHARS_PER_TOKEN: usize = 4;
 pub mod memory_debounce;
+pub mod memory_gate;
 pub mod memory_flush;
 pub mod orchestrator;
 pub mod workflow_loop;

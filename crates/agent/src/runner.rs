@@ -8022,9 +8022,24 @@ async fn run_loop(
             let embed_prov = embedding_provider.cloned();
             let topics = memory_topics.clone();
             let taint = final_taint.clone();
+            // The gate's judge is the runner's own decide handle (the one
+            // client the server builds); the objective line is evidence.
+            let decide = decide.cloned();
+            let objective = active_task.clone();
 
             debouncer
                 .schedule(session_id, move || async move {
+                    // One typed decision before the chat-model extraction:
+                    // skip only when the new turn plausibly holds nothing
+                    // durable; every doubt runs extraction as before.
+                    let gate_state = crate::memory_gate::gate_state(&last_exchange, &objective);
+                    if !crate::memory_gate::should_extract(decide.as_deref(), &gate_state).await {
+                        debug!(
+                            session_id = session_id_owned,
+                            "memory extraction skipped: nothing durable in the turn"
+                        );
+                        return;
+                    }
                     let resolved = {
                         let prov_lock = providers.read().await;
                         resolve_aux(&config::ModelsConfig::load(), &prov_lock)
