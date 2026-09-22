@@ -164,11 +164,7 @@ impl DecideClient {
         Self {
             url: format!("{}/v1/systemone", janus_url.trim_end_matches('/')),
             auth: Box::new(auth),
-            http: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(3))
-                .timeout(DECIDE_TIMEOUT)
-                .build()
-                .expect("reqwest client builder is infallible with these options"),
+            http: crate::http::request_client(),
         }
     }
 
@@ -192,6 +188,7 @@ impl DecideClient {
             let mut req = self
                 .http
                 .post(&self.url)
+                .timeout(DECIDE_TIMEOUT)
                 .bearer_auth(&bearer.token)
                 .json(&body);
             if let Some(bot_id) = &bearer.bot_id {
