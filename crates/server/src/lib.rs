@@ -1079,6 +1079,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let browser_config = browser::BrowserConfig::default();
     let browser_data_dir = data_dir.to_string_lossy().to_string();
     let browser_manager = Arc::new(browser::Manager::new(browser_config, browser_data_dir));
+    let shutdown_browser = browser_manager.clone();
     let extension_bridge = browser_manager.bridge();
 
     // Install/update native messaging host manifest for Chrome extension.
@@ -2954,7 +2955,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 }
                 lifecycles.clear();
             }
-            info!("app sidecars stopped, disconnecting comm plugins...");
+            info!("app sidecars stopped, closing the browser and the desktop...");
+            // Asked to exit, not killed: the browser releases its profile
+            // whole, so nothing still writes into the data directory.
+            shutdown_browser.shutdown().await;
+            tools::desktop_session::stop().await;
+            info!("browser and desktop closed, disconnecting comm plugins...");
             shutdown_comm.shutdown().await;
             // Brief pause for write_loop to send the WebSocket Close frame
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
