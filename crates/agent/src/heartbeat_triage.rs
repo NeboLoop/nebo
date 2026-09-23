@@ -108,9 +108,11 @@ pub struct Flags {
     /// Messages addressed to the employee (its chats, threads and channels,
     /// not its own workflow sessions) since the last run started.
     pub new_messages: i64,
-    /// Other work of the employee that started or ended since then: runs of
-    /// its other bindings, event- and watch-triggered workflow runs, case
-    /// turns. The binding's own runs and sub-agents are not counted.
+    /// Other work of the employee that started or ended since then: chat
+    /// turns, cases and case turns, workflow runs started by an event, a
+    /// watch, the owner or the employee, and a schedule's run-now. Timer
+    /// fires are not counted — the binding's own, and its sibling schedules'
+    /// and heartbeats' (the clock is not a change) — nor are sub-agents.
     pub other_runs: i64,
     /// Assignments handed to the employee since then.
     pub new_assignments: i64,
@@ -128,6 +130,24 @@ impl Flags {
             || self.other_runs > 0
             || self.new_assignments > 0
             || self.settings_changed
+    }
+
+    /// The flags that are set, for the log: `other_runs:2,settings_changed`.
+    /// Empty when none is.
+    pub fn set_names(&self) -> String {
+        let counted = |n: i64, name: &str| (n > 0).then(|| format!("{name}:{n}"));
+        [
+            self.first_run.then(|| "first_run".to_string()),
+            self.last_run_failed.then(|| "last_run_failed".to_string()),
+            counted(self.new_messages, "new_messages"),
+            counted(self.other_runs, "other_runs"),
+            counted(self.new_assignments, "new_assignments"),
+            self.settings_changed.then(|| "settings_changed".to_string()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(",")
     }
 }
 
@@ -261,7 +281,7 @@ pub fn state(b: &Binding) -> serde_json::Value {
         "time_since_last_run": b.since_last_run.map(elapsed_label).unwrap_or_else(|| "unknown".into()),
         "unchanged_since_last_run": [
             "no new messages to this employee",
-            "no other work by this employee started or finished",
+            "no other work by this employee started or finished, apart from its own scheduled runs",
             "no new assignments to this employee",
             "no change to this employee's settings or instructions",
             "the last run ended cleanly",
@@ -293,6 +313,7 @@ fn log_run(b: &Binding, reason: &str, tally: Tally) {
         agent = %b.agent_id,
         outcome = "run",
         reason,
+        flags = %b.flags.set_names(),
         standing = b.standing,
         consecutive_skips = tally.consecutive_skips,
         since_last_run = b.since_last_run.unwrap_or(-1),
@@ -567,6 +588,45 @@ mod tests {
             assert_eq!(triage(Some(&counting), Mode::On, &flagged, T).await, Gate::Run);
         }
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn set_names_lists_only_the_flags_that_are_set() {
+        assert_eq!(Flags::default().set_names(), "");
+        let f = Flags { other_runs: 2, settings_changed: true, ..Default::default() };
+        assert_eq!(f.set_names(), "other_runs:2,settings_changed");
+        let all = Flags { first_run: true, last_run_failed: true, new_messages: 1, other_runs: 3, new_assignments: 4, settings_changed: true };
+        assert_eq!(all.set_names(), "first_run,last_run_failed,new_messages:1,other_runs:3,new_assignments:4,settings_changed");
+    }
+
+    #[tokio::test]
+    async fn the_run_line_names_the_flags_that_forced_it() {
+        #[derive(Clone, Default)]
+        struct Buf(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Buf::default();
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let mut b = quiet("test:log-flags");
+        b.flags = Flags { other_runs: 2, settings_changed: true, ..Default::default() };
+        assert_eq!(triage(None, Mode::On, &b, T).await, Gate::Run);
+        let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        let line = out.lines().find(|l| l.contains("binding=test:log-flags")).expect("a triage line");
+        assert!(line.contains(r#"reason="changed""#), "{line}");
+        assert!(line.contains("flags=other_runs:2,settings_changed"), "{line}");
     }
 
     #[tokio::test]
