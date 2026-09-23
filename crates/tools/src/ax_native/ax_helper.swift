@@ -141,6 +141,57 @@ func node(at path: String, in win: AXUIElement) -> AXUIElement? {
     return el
 }
 
+/// What names an element across captures: its title, description or
+/// placeholder. Never its value — a field's contents change when typed into,
+/// and a secure field's contents are never read at all.
+func identity(_ el: AXUIElement) -> String {
+    if let t = str(el, kAXTitleAttribute), !t.isEmpty { return t }
+    if let d = str(el, kAXDescriptionAttribute), !d.isEmpty { return d }
+    if let p = str(el, "AXPlaceholderValue"), !p.isEmpty { return p }
+    return ""
+}
+
+/// The element a recorded path points at, re-identified against the live
+/// tree before anything acts on it. With `role` and `label`, the node at the
+/// path must still be that element; otherwise the window is searched for the
+/// one element with that role and label. Zero or several matches refuse: an
+/// old observation never becomes a live mutation of the wrong thing.
+func locate(_ path: String, in win: AXUIElement, role: String?, label: String?) -> AXUIElement {
+    let atPath = node(at: path, in: win)
+    guard let role = role, !role.isEmpty else {
+        guard let el = atPath else { fail("no element at path \(path); the window changed — walk it again") }
+        return el
+    }
+    let label = label ?? ""
+    let matches: (AXUIElement) -> Bool = { el in
+        (str(el, kAXRoleAttribute) ?? "") == role && (label.isEmpty || identity(el) == label)
+    }
+    if let el = atPath, matches(el) { return el }
+    var found: [AXUIElement] = []
+    var visited = 0
+    let start = Date()
+    func search(_ el: AXUIElement, _ depth: Int) {
+        if found.count > 1 || visited > 1500 || Date().timeIntervalSince(start) > 1.5 { return }
+        visited += 1
+        if matches(el) { found.append(el); return }
+        if depth < 30 { for c in children(el) { search(c, depth + 1) } }
+    }
+    search(win, 0)
+    switch found.count {
+    case 1: return found[0]
+    case 0: fail("stale: no \(role) \"\(label)\" is on this window now; capture again")
+    default: fail("ambiguous: \(found.count) elements are \(role) \"\(label)\"; capture again and use the one you mean")
+    }
+}
+
+/// Bring the element's own window forward, not just its app: physical input
+/// lands on whatever window is on top at the point.
+func raise(_ win: AXUIElement) {
+    app.activate(options: [])
+    AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+    usleep(120_000)
+}
+
 let windowIndex = Int(params["window"] ?? "1") ?? 1
 
 switch command {
@@ -178,13 +229,17 @@ case "tree":
                AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue {
                 actions.append("AXSetValue")
             }
-            let value = str(el, kAXValueAttribute).map { String($0.prefix(200)) }
+            // A secure field's value is never read: it would land in the
+            // transcript. Its placeholder still identifies it.
+            let value = role == "AXSecureTextField" ? nil : str(el, kAXValueAttribute).map { String($0.prefix(200)) }
             let desc = str(el, kAXDescriptionAttribute)
+            let placeholder = str(el, "AXPlaceholderValue")
             emit([
                 "path": path.map(String.init).joined(separator: "."),
                 "role": role,
                 "title": title,
                 "value": value ?? NSNull(),
+                "placeholder": (placeholder?.isEmpty == false ? placeholder! : NSNull()),
                 "desc": (desc?.isEmpty == false ? desc! : NSNull()),
                 "frame": [Int(f!.minX.rounded()), Int(f!.minY.rounded()), Int(f!.width.rounded()), Int(f!.height.rounded())],
                 "actions": actions,
@@ -227,17 +282,25 @@ case "window":
 case "act":
     guard let path = params["path"], let action = params["action"] else { fail("act needs --path and --action", 2) }
     let (win, _) = window(windowIndex)
-    guard let el = node(at: path, in: win) else { fail("no element at path \(path); the window changed — walk it again") }
+    let el = locate(path, in: win, role: params["role"], label: params["label"])
+    if params["raise"] != nil { raise(win) }
     let r = AXUIElementPerformAction(el, action as CFString)
     if r != .success { fail("\(action) on \(path) failed (AXError \(r.rawValue))") }
 
 case "set":
     guard let path = params["path"], let value = params["value"] else { fail("set needs --path and --value", 2) }
     let (win, _) = window(windowIndex)
-    guard let el = node(at: path, in: win) else { fail("no element at path \(path); the window changed — walk it again") }
+    let el = locate(path, in: win, role: params["role"], label: params["label"])
     let r = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFTypeRef)
     if r != .success { fail("set value on \(path) failed (AXError \(r.rawValue))") }
+    // Delivered is not verified: read the field back.
+    let now = str(el, kAXValueAttribute) ?? ""
+    if now != value { fail("value was set but the field now reads \"\(now.prefix(80))\"") }
+
+case "raise":
+    let (win, _) = window(windowIndex)
+    raise(win)
 
 default:
-    fail("unknown command \(command); use tree, window, act, set, text", 2)
+    fail("unknown command \(command); use tree, window, act, set, raise, text", 2)
 }

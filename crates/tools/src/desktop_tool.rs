@@ -138,7 +138,8 @@ impl DynTool for DesktopTool {
                 "max_elements": { "type": "integer", "description": "Max elements returned by see (default: 60)" },
                 "until": { "type": "string", "description": "For input scroll: keep scrolling a page at a time until an element whose label contains this text is on screen (case-insensitive), up to max_pages" },
                 "max_pages": { "type": "integer", "description": "For input scroll with until: page budget (default 8, max 30)" },
-                "to_ref": { "type": "string", "description": "For input drag: the element to drop onto (from the last capture); alternative to coordinate" }
+                "to_ref": { "type": "string", "description": "For input drag: the element to drop onto (from the last capture); alternative to coordinate" },
+                "physical": { "type": "boolean", "description": "For input click/type: use the mouse and clipboard instead of accessibility. Off by default; an accessibility action that fails is reported, never silently replaced" }
             },
             "required": ["resource", "action"]
         })
@@ -757,23 +758,42 @@ async fn handle_input(
             if text.is_empty() {
                 return ToolResult::error(errors::missing_param("type", "text", "os(resource: \"input\", action: \"type\", text: \"hello\")"));
             }
+            // A field that accepts AXSetValue gets the text set and read back;
+            // anything else gets the text pasted (one keystroke per character
+            // drops characters and loses capitals). The ref is re-identified
+            // before either.
+            let physical = input["physical"].as_bool().unwrap_or(false);
+            if !physical {
+                if let Some(e) = element.as_ref().filter(|e| !e.path.is_empty() && e.actions.iter().any(|a| a == "AXSetValue")) {
+                    return match ax_native::set_value(&app, 1, &e.path, text, Some((&e.role, &e.label))).await {
+                        Ok(()) => ToolResult::ok(format!("Set {} \"{}\" to {} chars via accessibility (read back)", e.id, e.label, text.chars().count())),
+                        Err(err) => ToolResult::error(format!(
+                            "Setting {} \"{}\" through accessibility failed: {err}. Nothing was typed. \
+                             Capture again and use a current ref, or pass physical: true to click it and paste."
+                        , e.id, e.label)),
+                    };
+                }
+            }
             if let Some((x, y, label)) = &target {
+                if element.is_some() && !app.is_empty() {
+                    let _ = ax_native::raise(&app, 1).await;
+                }
                 let click_result = input_click(*x, *y).await;
                 if click_result.is_error {
                     return click_result;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let r = input_type(text).await;
+                let r = paste_text(text).await;
                 if r.is_error {
-                    return ToolResult::error(format!("Clicked {label} but typing failed: {}", r.content));
+                    return ToolResult::error(format!("Clicked {label} but pasting failed: {}", r.content));
                 }
-                ToolResult::ok(format!("Clicked {label} and typed {} chars", text.chars().count()))
+                ToolResult::ok(format!("Clicked {label} and pasted {} chars", text.chars().count()))
             } else {
-                let r = input_type(text).await;
+                let r = paste_text(text).await;
                 if r.is_error {
                     return r;
                 }
-                ToolResult::ok(format!("Typed {} chars", text.chars().count()))
+                ToolResult::ok(format!("Pasted {} chars into the focused field", text.chars().count()))
             }
         }
         "press" | "hotkey" => {
@@ -796,32 +816,37 @@ async fn handle_input(
             let click_count = if action == "double_click" { 2 } else { input["click_count"].as_u64().unwrap_or(1) };
             let button = if action == "right_click" { "right" } else { input["button"].as_str().unwrap_or("left") };
             // A plain click on an element that accepts AXPress is pressed
-            // through accessibility: no pointer travel, and it works on an
-            // element the pointer could not reach (occluded, off-screen).
-            let mut pressed_via_ax: Option<Result<(), String>> = None;
-            if click_count == 1 && button == "left" {
+            // through accessibility, after the element is re-identified in
+            // the live tree: no pointer travel, and it works on an element
+            // the pointer could not reach. A press that fails is reported,
+            // not replaced by a mouse click on a point that may now hold
+            // something else; the mouse is opt-in (`physical: true`).
+            let physical = input["physical"].as_bool().unwrap_or(false);
+            if click_count == 1 && button == "left" && !physical {
                 if let Some(e) = element.as_ref().filter(|e| !e.path.is_empty() && e.actions.iter().any(|a| a == "AXPress")) {
-                    pressed_via_ax = Some(ax_native::act(&app, 1, &e.path, "AXPress").await);
+                    return match ax_native::act(&app, 1, &e.path, "AXPress", Some((&e.role, &e.label))).await {
+                        Ok(()) => ToolResult::ok(format!("Pressed {label} via accessibility")),
+                        Err(err) => ToolResult::error(format!(
+                            "Press of {label} through accessibility failed: {err}. Nothing was clicked. \
+                             Capture again and use a current ref, or pass physical: true to click its point with the mouse."
+                        )),
+                    };
                 }
             }
-            match pressed_via_ax {
-                Some(Ok(())) => ToolResult::ok(format!("Pressed {label} via accessibility")),
-                other => {
-                    let (r, how) = match (click_count, button) {
-                        (_, "right") => (input_right_click(*x, *y).await, "Right-clicked"),
-                        (2, _) => (input_double_click(*x, *y).await, "Double-clicked"),
-                        _ => (input_click(*x, *y).await, "Clicked"),
-                    };
-                    if r.is_error {
-                        return r;
-                    }
-                    let fallback = match other {
-                        Some(Err(err)) => format!(" (accessibility press failed: {err}; clicked the point instead)"),
-                        _ => String::new(),
-                    };
-                    ToolResult::ok(format!("{how} {label} at screen ({x},{y}){fallback}"))
-                }
+            // Physical input lands on whatever window is on top at the point:
+            // bring the element's own window forward first.
+            if element.is_some() && !app.is_empty() {
+                let _ = ax_native::raise(&app, 1).await;
             }
+            let (r, how) = match (click_count, button) {
+                (_, "right") => (input_right_click(*x, *y).await, "Right-clicked"),
+                (2, _) => (input_double_click(*x, *y).await, "Double-clicked"),
+                _ => (input_click(*x, *y).await, "Clicked"),
+            };
+            if r.is_error {
+                return r;
+            }
+            ToolResult::ok(format!("{how} {label} at screen ({x},{y})"))
         }
         "move" => {
             let Some((x, y, label)) = &target else {
@@ -978,6 +1003,40 @@ async fn handle_input(
             performed.content, e.content
         )),
     }
+}
+
+/// Put `text` into the focused field through the clipboard, and put the
+/// clipboard back afterwards. On Linux xdotool types directly, which does
+/// not drop characters the way macOS keystrokes do.
+async fn paste_text(text: &str) -> ToolResult {
+    #[cfg(target_os = "macos")]
+    {
+        let before = tokio::process::Command::new("pbpaste").output().await.ok().map(|o| o.stdout);
+        if let Err(e) = pbcopy(text.as_bytes()).await {
+            return ToolResult::error(format!("could not stage the text on the clipboard: {e}"));
+        }
+        let r = input_paste().await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if let Some(b) = before {
+            let _ = pbcopy(&b).await;
+        }
+        return r;
+    }
+    #[allow(unreachable_code)]
+    input_type(text).await
+}
+
+#[cfg(target_os = "macos")]
+async fn pbcopy(bytes: &[u8]) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(bytes).await.map_err(|e| e.to_string())?;
+    }
+    child.wait().await.map_err(|e| e.to_string()).map(|_| ())
 }
 
 async fn input_type(text: &str) -> ToolResult {
@@ -1794,30 +1853,51 @@ async fn capture_see(
 
 /// Walk `app` natively; when that is unavailable, the AppleScript walk. The
 /// layer used is named in the capture, never inferred by the caller.
+/// Roles a person types into: their value is what they typed, never their name.
+fn is_editable_role(role: &str) -> bool {
+    matches!(role, "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField" | "AXSecureTextField")
+}
+
+/// A walked node as the model sees it. The label is what names the element
+/// across captures (title, description, placeholder); a field's contents are
+/// its value, listed beside it. A secure field's contents are never read.
+fn element_from_node(n: &ax_native::AxNode) -> UIElement {
+    let secure = n.role == "AXSecureTextField";
+    let editable = is_editable_role(&n.role);
+    let label = if !n.title.is_empty() {
+        n.title.clone()
+    } else if let Some(d) = n.desc.clone().filter(|d| !d.is_empty()) {
+        d
+    } else if let Some(p) = n.placeholder.clone().filter(|p| !p.is_empty()) {
+        p
+    } else if secure {
+        "[secure field]".to_string()
+    } else if editable {
+        String::new()
+    } else {
+        n.value.clone().unwrap_or_default()
+    };
+    UIElement {
+        id: String::new(),
+        role: n.role.clone(),
+        label,
+        bounds: Rect { x: n.frame[0], y: n.frame[1], width: n.frame[2], height: n.frame[3] },
+        actionable: !n.actions.is_empty(),
+        keyboard_shortcut: None,
+        actions: n.actions.clone(),
+        path: n.path.clone(),
+        focused: n.focused,
+        value: if secure || !editable { None } else { n.value.clone().filter(|v| !v.is_empty()) },
+    }
+}
+
 async fn walk_elements(app: &str) -> (AxCapture, Vec<UIElement>) {
     match ax_native::tree(app, &ax_native::WalkOpts::default()).await {
         Ok(tree) => {
             let elements: Vec<UIElement> = tree
                 .nodes
                 .iter()
-                .map(|n| {
-                    let label = if !n.title.is_empty() {
-                        n.title.clone()
-                    } else {
-                        n.desc.clone().or_else(|| n.value.clone()).unwrap_or_default()
-                    };
-                    UIElement {
-                        id: String::new(),
-                        role: n.role.clone(),
-                        label,
-                        bounds: Rect { x: n.frame[0], y: n.frame[1], width: n.frame[2], height: n.frame[3] },
-                        actionable: !n.actions.is_empty(),
-                        keyboard_shortcut: None,
-                        actions: n.actions.clone(),
-                        path: n.path.clone(),
-                        focused: n.focused,
-                    }
-                })
+                .map(element_from_node)
                 .collect();
             let actionable = elements.iter().filter(|e| e.actionable).count();
             (
@@ -1878,6 +1958,7 @@ fn merge_text_lines(
             actions: Vec::new(),
             path: String::new(),
             focused: false,
+            value: None,
         });
         added += 1;
     }
@@ -2057,7 +2138,8 @@ async fn observe(
         if e.actions.iter().any(|a| a == "AXSetValue") { tags.push("editable"); }
         if e.focused { tags.push("focused"); }
         let tags = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
-        text.push_str(&format!("{}  {}  \"{}\"  at {x},{y} {w}×{h}{tags}\n", e.id, e.role, e.label));
+        let value = e.value.as_deref().map(|v| format!("  = \"{v}\"")).unwrap_or_default();
+        text.push_str(&format!("{}  {}  \"{}\"{value}  at {x},{y} {w}×{h}{tags}\n", e.id, e.role, e.label));
     }
     if !filter.is_empty() || !role_filter.is_empty() {
         text.push_str(&format!(
@@ -4352,6 +4434,7 @@ mod tests {
                 actions: vec![],
                 path: String::new(),
                 focused: false,
+                value: None,
             }],
             frame: Some(desktop_snapshot::Rect { x: 0, y: 0, width: 100, height: 100 }),
             scale: 1.0,
@@ -4480,6 +4563,26 @@ mod tests {
         let _ = run_osascript_raw("tell application \"Calculator\" to quit", Some(AX_CAPTURE_TIMEOUT)).await;
     }
 
+    /// A field is named by its placeholder, not its contents; its contents are
+    /// its value; a secure field has neither read.
+    #[test]
+    fn a_fields_name_is_not_its_contents_and_a_secure_field_has_none() {
+        let node = |role: &str, title: &str, value: Option<&str>, placeholder: Option<&str>| ax_native::AxNode {
+            path: "0".into(), role: role.into(), title: title.into(), value: value.map(String::from),
+            desc: None, placeholder: placeholder.map(String::from), frame: [0, 0, 10, 10], actions: vec![], enabled: true, focused: false,
+        };
+        let typed = element_from_node(&node("AXTextField", "", Some("alma@x.com"), Some("you@company.com")));
+        assert_eq!((typed.label.as_str(), typed.value.as_deref()), ("you@company.com", Some("alma@x.com")));
+        let empty = element_from_node(&node("AXTextField", "", Some(""), Some("you@company.com")));
+        assert_eq!(empty.value, None);
+        let secure = element_from_node(&node("AXSecureTextField", "", Some("hunter2"), None));
+        assert_eq!((secure.label.as_str(), secure.value), ("[secure field]", None));
+        let text = element_from_node(&node("AXStaticText", "", Some("Welcome back"), None));
+        assert_eq!((text.label.as_str(), text.value), ("Welcome back", None));
+        let titled = element_from_node(&node("AXButton", "Continue", None, None));
+        assert_eq!(titled.label, "Continue");
+    }
+
     /// A text line inside a labelled element is that element; one outside
     /// becomes an OCRText element in screen points (image px × scale + origin).
     #[test]
@@ -4495,6 +4598,7 @@ mod tests {
             actions: vec!["AXPress".into()],
             path: "0".into(),
             focused: false,
+            value: None,
         }];
         let lines = vec![
             ax_native::TextLine { text: "Save".into(), frame: [12, 22, 40, 12], confidence: 0.9 }, // centre (32,28) px → (164,106) pt: inside Save

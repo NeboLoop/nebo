@@ -32,6 +32,9 @@ pub struct AxNode {
     pub value: Option<String>,
     #[serde(default)]
     pub desc: Option<String>,
+    /// A text field's placeholder: the name it keeps while its value changes.
+    #[serde(default)]
+    pub placeholder: Option<String>,
     pub frame: [i64; 4],
     #[serde(default)]
     pub actions: Vec<String>,
@@ -122,31 +125,48 @@ pub async fn tree(app: &str, opts: &WalkOpts) -> Result<AxTree, String> {
 
 /// Perform an accessibility action (`AXPress`, `AXShowMenu`, …) on the node at
 /// `path` from the most recent walk of `app`'s window.
-pub async fn act(app: &str, window: usize, path: &str, action: &str) -> Result<(), String> {
+/// What an act expects to find at its path: the element's role and stable
+/// label. The backend re-identifies before acting and refuses a stale or
+/// ambiguous target; `None` acts on the path as recorded.
+pub type Expect<'a> = Option<(&'a str, &'a str)>;
+
+pub async fn act(app: &str, window: usize, path: &str, action: &str, expect: Expect<'_>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    return macos::act_raw(app, window, path, action).await;
+    return macos::act_raw(app, window, path, action, expect).await;
     #[cfg(target_os = "linux")]
     return linux::act_raw(app, window, path, action).await;
     #[cfg(target_os = "windows")]
     return windows::act_raw(app, window, path, action).await;
     #[allow(unreachable_code)]
     {
-        let _ = (app, window, path, action);
+        let _ = (app, window, path, action, expect);
         Err("no native accessibility backend on this platform".into())
     }
 }
 
 /// Set the value of an editable node (text fields, sliders) without typing.
-pub async fn set_value(app: &str, window: usize, path: &str, value: &str) -> Result<(), String> {
+/// Bring the element's window to the front before physical input. Only
+/// macOS knows windows by id; elsewhere the app is raised by other means.
+pub async fn raise(app: &str, window: usize) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    return macos::set_raw(app, window, path, value).await;
+    return macos::raise_raw(app, window).await;
+    #[allow(unreachable_code)]
+    {
+        let _ = (app, window);
+        Ok(())
+    }
+}
+
+pub async fn set_value(app: &str, window: usize, path: &str, value: &str, expect: Expect<'_>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return macos::set_raw(app, window, path, value, expect).await;
     #[cfg(target_os = "linux")]
     return linux::set_raw(app, window, path, value).await;
     #[cfg(target_os = "windows")]
     return windows::set_raw(app, window, path, value).await;
     #[allow(unreachable_code)]
     {
-        let _ = (app, window, path, value);
+        let _ = (app, window, path, value, expect);
         Err("no native accessibility backend on this platform".into())
     }
 }
