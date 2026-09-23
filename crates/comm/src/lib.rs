@@ -5,6 +5,7 @@ pub mod dedup;
 pub mod devlog;
 pub mod frame;
 pub mod handle;
+pub mod lease;
 mod loopback;
 mod manager;
 pub mod neboai;

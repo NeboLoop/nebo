@@ -619,6 +619,8 @@ async fn send_from_phone_line(store: &Store, agent_id: Option<&str>, input: &ser
             let reference = ["id", "sid", "messageId", "message_id"].iter().find_map(|k| v[k].as_str()).map(str::to_string);
             SendOutcome::Sent(format!("Sent by text from your line {from} to {phone}."), reference)
         }
+        // Refused on this machine by the lease gate: nothing left it.
+        Err(e @ comm::CommError::Paused) => SendOutcome::PreSendFailure(e.to_string()),
         Err(comm::CommError::Http { status, body }) if (400..500).contains(&status) => {
             SendOutcome::ConfirmedFailure(format!("Could not text from line {from}: NeboAI refused ({status}): {body}. Do not retry with a different resource; tell the owner if this persists."))
         }

@@ -32,6 +32,9 @@ pub const TYPE_TYPING: u8 = 10;
 pub const TYPE_SLOW_DOWN: u8 = 11;
 pub const TYPE_REPLAY: u8 = 12;
 pub const TYPE_CLOSE: u8 = 13;
+/// Hub → bot answer to a lease renewal carried on the bot's ping
+/// (`wire::LeaseAnswer`). Only lease-aware bots receive it.
+pub const TYPE_LEASE: u8 = 14;
 
 // Flag bits.
 pub const FLAG_COMPRESSED: u8 = 1 << 0;

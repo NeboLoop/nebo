@@ -19,4 +19,5 @@ tokio-tungstenite = { workspace = true }
 yamux = { workspace = true }
 zstd = "0.13"
 getrandom = "0.2"
+uuid = { workspace = true }
 urlencoding = "2"

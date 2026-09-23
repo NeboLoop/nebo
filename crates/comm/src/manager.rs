@@ -15,6 +15,8 @@ pub struct PluginManager {
     /// requests while a pass is pending or running collapses into exactly
     /// one follow-up pass.
     agent_sync: tokio::sync::Notify,
+    /// This process's lease: a frozen process sends nothing (see `send`).
+    lease: &'static crate::lease::Lease,
 }
 
 struct Inner {
@@ -34,6 +36,7 @@ impl PluginManager {
                 topics: Vec::new(),
             }),
             agent_sync: tokio::sync::Notify::new(),
+            lease: crate::lease::process(),
         }
     }
 
@@ -115,8 +118,13 @@ impl PluginManager {
         inner.active.clone()
     }
 
-    /// Send a message through the active plugin.
+    /// Send a message through the active plugin. Refused with
+    /// `CommError::Paused` while this process's lease is not held (cloud
+    /// bots): another process may be the bot now.
     pub async fn send(&self, msg: CommMessage) -> Result<(), CommError> {
+        if self.lease.frozen() {
+            return Err(CommError::Paused);
+        }
         let inner = self.inner.read().await;
         let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
         if !active.is_connected() {
@@ -133,6 +141,9 @@ impl PluginManager {
         is_typing: bool,
         status: Option<&str>,
     ) -> Result<(), CommError> {
+        if self.lease.frozen() {
+            return Err(CommError::Paused);
+        }
         let inner = self.inner.read().await;
         let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
         if !active.is_connected() {
@@ -149,6 +160,9 @@ impl PluginManager {
         data: Vec<u8>,
         fields: &[(String, String)],
     ) -> Result<crate::wire::Attachment, CommError> {
+        if self.lease.frozen() {
+            return Err(CommError::Paused);
+        }
         let inner = self.inner.read().await;
         let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
         if !active.is_connected() {
@@ -414,3 +428,37 @@ impl Default for PluginManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Loop messages, typing and uploads (backup shipping) all stop while the
+    /// lease is not held, and go again once it is.
+    #[tokio::test]
+    async fn sends_are_paused_while_the_lease_is_not_held() {
+        let lease: &'static crate::lease::Lease = Box::leak(Box::new(crate::lease::Lease::new()));
+        lease.set_fenced(true);
+        lease.claim();
+        let mut manager = PluginManager::new();
+        manager.lease = lease;
+        manager.register(Arc::new(crate::LoopbackPlugin::new())).await;
+        manager.set_active("loopback").await.unwrap();
+        manager.connect_active(HashMap::new()).await.unwrap();
+
+        let msg: CommMessage = serde_json::from_value(serde_json::json!({
+            "id": "m1", "from": "bot", "to": "peer", "type": "message", "content": "hello"
+        }))
+        .unwrap();
+        assert!(matches!(manager.send(msg.clone()).await, Err(CommError::Paused)));
+        assert!(matches!(manager.send_typing("c", true, None).await, Err(CommError::Paused)));
+        assert!(matches!(
+            manager.upload_file("backup.tar", "application/x-tar", vec![1], &[]).await,
+            Err(CommError::Paused)
+        ));
+
+        lease.granted(1, std::time::Duration::from_secs(60), std::time::Instant::now());
+        assert!(manager.send(msg).await.is_ok(), "a held lease sends again");
+    }
+}
+

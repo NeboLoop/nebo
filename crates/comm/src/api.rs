@@ -18,6 +18,9 @@ pub struct NeboAIApi {
     bot_id: String,
     token: RwLock<String>,
     client: Client,
+    /// This process's lease: a frozen process sends nothing that changes
+    /// anything (see `gate`).
+    lease: &'static crate::lease::Lease,
 }
 
 /// Default production API server.
@@ -45,6 +48,7 @@ impl NeboAIApi {
             bot_id,
             token: RwLock::new(token),
             client: HTTP_CLIENT.clone(),
+            lease: crate::lease::process(),
         }
     }
 
@@ -82,6 +86,18 @@ impl NeboAIApi {
 
     // ── Internal helpers ────────────────────────────────────────────
 
+    /// The lease gate every request passes: while this process is frozen
+    /// (its lease Uncertain or Lost) a request that changes something is
+    /// refused before it leaves the machine. Reads still go.
+    fn gate(&self, method: &reqwest::Method) -> Result<(), CommError> {
+        let read = *method == reqwest::Method::GET || *method == reqwest::Method::HEAD;
+        if !read && self.lease.frozen() {
+            debug!(method = %method, "neboai api: refused while the lease is not held");
+            return Err(CommError::Paused);
+        }
+        Ok(())
+    }
+
     fn token(&self) -> String {
         self.token.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
@@ -92,6 +108,7 @@ impl NeboAIApi {
         path: &str,
         body: Option<&impl Serialize>,
     ) -> Result<T, CommError> {
+        self.gate(&method)?;
         let url = format!("{}{}", self.api_server, path);
         debug!(method = %method, url = %url, "neboai api");
 
@@ -124,6 +141,7 @@ impl NeboAIApi {
         path: &str,
         body: Option<&impl Serialize>,
     ) -> Result<(), CommError> {
+        self.gate(&method)?;
         let url = format!("{}{}", self.api_server, path);
         let mut req = self.client.request(method, &url).bearer_auth(self.token());
 
@@ -180,6 +198,7 @@ impl NeboAIApi {
         if !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Err(CommError::Other("invalid plugin slug".into()));
         }
+        self.gate(&method)?;
         let mut url = format!(
             "{}/api/v1/plugins/{}/proxy/{}",
             self.api_server,
@@ -579,6 +598,7 @@ impl NeboAIApi {
     /// Install a product (skill/agent/workflow) for this bot by product ID.
     /// NeboAI may return JSON or an empty body on success.
     pub async fn install_product(&self, id: &str) -> Result<serde_json::Value, CommError> {
+        self.gate(&reqwest::Method::POST)?;
         let body = serde_json::json!({ "botId": self.bot_id });
         let url = format!("{}/api/v1/products/{}/install", self.api_server, id);
         let resp = self
@@ -1578,6 +1598,7 @@ impl NeboAIApi {
         data: Vec<u8>,
         fields: &[(String, String)],
     ) -> Result<crate::wire::Attachment, CommError> {
+        self.gate(&reqwest::Method::POST)?;
         let part = reqwest::multipart::Part::bytes(data)
             .file_name(filename.to_string())
             .mime_str(mime_type)
@@ -1759,4 +1780,51 @@ pub struct AgentChatSync {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_activity_at: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A client on a frozen lease, pointed at a port nothing listens on: a
+    /// refused request never reaches the network, a read does (and fails
+    /// there, as a transport error — not as Paused).
+    fn frozen_api() -> NeboAIApi {
+        let lease: &'static crate::lease::Lease = Box::leak(Box::new(crate::lease::Lease::new()));
+        lease.set_fenced(true);
+        lease.claim();
+        let mut api = NeboAIApi::new("http://127.0.0.1:9".into(), "bot".into(), "token".into());
+        api.lease = lease;
+        api
+    }
+
+    #[tokio::test]
+    async fn a_frozen_bot_sends_nothing_that_changes_anything() {
+        let api = frozen_api();
+        let inbox = api.push_inbox_item(&serde_json::json!({"id": "x"})).await;
+        assert!(matches!(inbox, Err(CommError::Paused)), "{inbox:?}");
+        let upload = api.upload_file("a.txt", "text/plain", b"hi".to_vec(), &[]).await;
+        assert!(matches!(upload, Err(CommError::Paused)), "{upload:?}");
+        let proxied = api
+            .plugin_proxy(reqwest::Method::POST, "gmail", "/send", None, Default::default(), vec![])
+            .await;
+        assert!(matches!(proxied, Err(CommError::Paused)), "{proxied:?}");
+        let installed = api.install_product("p1").await;
+        assert!(matches!(installed, Err(CommError::Paused)), "{installed:?}");
+    }
+
+    #[tokio::test]
+    async fn a_frozen_bot_still_reads() {
+        let api = frozen_api();
+        let read = api.bot_update_status().await;
+        assert!(matches!(read, Err(CommError::Transport(_))), "a GET must reach the network: {read:?}");
+    }
+
+    #[tokio::test]
+    async fn a_held_lease_lets_writes_through() {
+        let api = frozen_api();
+        api.lease.granted(1, std::time::Duration::from_secs(60), std::time::Instant::now());
+        let inbox = api.push_inbox_item(&serde_json::json!({"id": "x"})).await;
+        assert!(!matches!(inbox, Err(CommError::Paused)), "{inbox:?}");
+    }
 }

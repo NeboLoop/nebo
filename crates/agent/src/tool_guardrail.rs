@@ -12,10 +12,10 @@
 //! without asking. The decision model can add an ask or a block there; it
 //! can never turn a refusal into a pass.
 //!
-//! Only calls with side effects are judged. The source of that set is the
-//! registry's existing read-only metadata (`DynTool::is_concurrent_safe`):
-//! a read (file read, search, list) skips the guardrail. The one carve-out
-//! is in [`gated`], with its reason.
+//! Only calls with side effects are judged: the registry's one answer,
+//! `tools::Registry::has_side_effects` (the same set the lease gate refuses
+//! while a cloud bot is frozen). A read (file read, search, list) skips the
+//! guardrail.
 //!
 //! Thresholds live in code ([`band_from`]); the model returns numbers, never
 //! a verdict. They are UNTUNED: the first release ships default OFF, and
@@ -76,24 +76,6 @@ const SECRET_KEY_MARKERS: &[&str] = &[
     "bearer",
 ];
 const REDACTED: &str = "[redacted]";
-
-/// `web` browser actions that change the page or send something: the web
-/// tool declares every call read-only for the concurrency phase (its
-/// browser is per session, so calls never contend), which is true for the
-/// scheduler and false for this guardrail. Everything else on `web`
-/// (navigate, read_page, screenshot, scroll, find, search, http GET) is a
-/// read.
-const WEB_SIDE_EFFECT_ACTIONS: &[&str] = &[
-    "click",
-    "fill",
-    "type",
-    "select",
-    "press",
-    "drag",
-    "evaluate",
-    "file_upload",
-    "webmcp_call",
-];
 
 /// What the env switch says. Default OFF for this first release: an enabled
 /// guardrail can add an ask, or a stop, to a live customer flow.
@@ -190,26 +172,6 @@ pub fn band_from(r: &Reading) -> Band {
         return Band::Ask;
     }
     Band::Allow
-}
-
-/// Whether a call is judged at all. `read_only` is the registry's answer
-/// (`Registry::is_concurrent_safe`); reads skip the guardrail. The `web`
-/// tool is the one carve-out (see [`WEB_SIDE_EFFECT_ACTIONS`]).
-pub fn gated(tool: &str, input: &serde_json::Value, read_only: bool) -> bool {
-    if tool == "web" {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        if WEB_SIDE_EFFECT_ACTIONS.contains(&action) {
-            return true;
-        }
-        // An HTTP call that is not a GET/HEAD sends something.
-        let method = input
-            .get("method")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_ascii_uppercase();
-        return !method.is_empty() && method != "GET" && method != "HEAD";
-    }
-    !read_only
 }
 
 /// The arguments with obvious secrets removed by key name, at every depth.
@@ -432,25 +394,6 @@ mod tests {
             assert_eq!(action_for(Mode::Off, band), Band::Allow);
             assert_eq!(action_for(Mode::On, band), band);
         }
-    }
-
-    #[test]
-    fn reads_are_never_gated() {
-        let read = json!({"resource": "file", "action": "read", "path": "/tmp/a"});
-        assert!(!gated("os", &read, true));
-        assert!(gated("os", &json!({"action": "write", "path": "/tmp/a"}), false));
-        assert!(gated("os", &json!({"action": "exec", "command": "rm -rf x"}), false));
-        assert!(gated("message", &json!({"action": "send"}), false));
-        // web declares every call read-only; browser actions that act are
-        // gated anyway, reads are not.
-        assert!(!gated("web", &json!({"action": "read_page"}), true));
-        assert!(!gated("web", &json!({"action": "navigate", "url": "https://example.com"}), true));
-        assert!(!gated("web", &json!({"action": "search", "query": "x"}), true));
-        assert!(!gated("web", &json!({"action": "fetch", "url": "https://example.com"}), true));
-        assert!(!gated("web", &json!({"action": "fetch", "method": "get", "url": "https://example.com"}), true));
-        assert!(gated("web", &json!({"action": "click", "ref": "e1"}), true));
-        assert!(gated("web", &json!({"action": "fill", "ref": "e1", "value": "x"}), true));
-        assert!(gated("web", &json!({"action": "fetch", "method": "POST", "url": "https://example.com"}), true));
     }
 
     #[test]

@@ -221,6 +221,43 @@ pub trait DynTool: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>>;
 }
 
+/// `web` browser actions that change the page or send something: the web
+/// tool declares every call read-only for the concurrency phase (its browser
+/// is per session, so calls never contend), which is true for the scheduler
+/// and false for side effects. Everything else on `web` (navigate,
+/// read_page, screenshot, scroll, find, search, http GET) is a read.
+const WEB_SIDE_EFFECT_ACTIONS: &[&str] = &[
+    "click",
+    "fill",
+    "type",
+    "select",
+    "press",
+    "drag",
+    "evaluate",
+    "file_upload",
+    "webmcp_call",
+];
+
+/// Whether a call changes something outside this process. `read_only` is the
+/// tool's own answer (`DynTool::is_concurrent_safe`); `web` is the one
+/// carve-out (see [`WEB_SIDE_EFFECT_ACTIONS`]): an HTTP call that is not a
+/// GET/HEAD sends something.
+pub fn call_has_side_effects(tool: &str, input: &serde_json::Value, read_only: bool) -> bool {
+    if tool == "web" {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        if WEB_SIDE_EFFECT_ACTIONS.contains(&action) {
+            return true;
+        }
+        let method = input
+            .get("method")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        return !method.is_empty() && method != "GET" && method != "HEAD";
+    }
+    !read_only
+}
+
 /// Registry manages available tools.
 pub struct Registry {
     // Arc, not Box: execute() clones the handle and drops the map lock BEFORE
@@ -264,6 +301,8 @@ pub struct Registry {
     /// messages), shared with MessageTool. Filled LATE like `notify_fn`.
     coworker_rail: crate::coworker::CoworkerRailCell,
     resource_permits: ResourcePermits,
+    /// This process's lease (`comm::lease`): the gate in `execute`.
+    lease: &'static comm::lease::Lease,
 }
 
 impl Registry {
@@ -286,6 +325,7 @@ impl Registry {
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             coworker_rail: crate::coworker::new_rail_cell(),
             resource_permits: ResourcePermits::new(),
+            lease: comm::lease::process(),
         }
     }
 
@@ -598,6 +638,15 @@ impl Registry {
             .map_or(false, |tool| tool.is_concurrent_safe(input))
     }
 
+    /// Whether this call changes something outside this process — the ONE
+    /// answer to that question: the runner's guardrail judges exactly these
+    /// calls, and the lease gate in [`Registry::execute`] refuses exactly
+    /// these while a cloud bot is frozen. See [`call_has_side_effects`].
+    pub async fn has_side_effects(&self, tool_name: &str, input: &serde_json::Value) -> bool {
+        let read_only = self.is_concurrent_safe(tool_name, input).await;
+        call_has_side_effects(tool_name, input, read_only)
+    }
+
     /// List tools filtered by per-entity permissions.
     /// Tools whose category is denied are excluded from the list sent to the LLM.
     pub async fn list_with_permissions(
@@ -761,6 +810,15 @@ impl Registry {
                      tools you were given, or say plainly that you can't do that.",
                     name
                 ));
+            }
+
+            // Lease gate: while this bot's lease is not held (a cloud bot
+            // that lost its NeboAI connection, or was replaced by another
+            // running copy) nothing that changes anything runs — another
+            // process may be the bot now. Reads still run.
+            if self.lease.frozen() && call_has_side_effects(name, &input, tool.is_concurrent_safe(&input)) {
+                warn!(tool = %name, "lease not held: side-effecting call paused");
+                return ToolResult::error(format!("{name}: {}", comm::lease::PAUSED));
             }
 
             tool.resource_permit(&input)
@@ -1678,6 +1736,87 @@ mod tests {
         let result = registry.execute(&ctx, "arrayparam", stringified).await;
         assert!(!result.is_error, "stringified array should reach the tool as an array: {}", result.content);
         assert_eq!(result.content, "array:2");
+    }
+
+    /// Reads skip, writes and sends are side effects; `web` declares every
+    /// call read-only and is the one carve-out.
+    #[test]
+    fn side_effects_are_the_writes_and_the_acting_web_calls() {
+        use serde_json::json;
+        let read = json!({"resource": "file", "action": "read", "path": "/tmp/a"});
+        assert!(!call_has_side_effects("os", &read, true));
+        assert!(call_has_side_effects("os", &json!({"action": "write", "path": "/tmp/a"}), false));
+        assert!(call_has_side_effects("os", &json!({"action": "exec", "command": "rm -rf x"}), false));
+        assert!(call_has_side_effects("message", &json!({"action": "send"}), false));
+        assert!(!call_has_side_effects("web", &json!({"action": "read_page"}), true));
+        assert!(!call_has_side_effects("web", &json!({"action": "navigate", "url": "https://example.com"}), true));
+        assert!(!call_has_side_effects("web", &json!({"action": "search", "query": "x"}), true));
+        assert!(!call_has_side_effects("web", &json!({"action": "fetch", "url": "https://example.com"}), true));
+        assert!(!call_has_side_effects("web", &json!({"action": "fetch", "method": "get", "url": "https://example.com"}), true));
+        assert!(call_has_side_effects("web", &json!({"action": "click", "ref": "e1"}), true));
+        assert!(call_has_side_effects("web", &json!({"action": "fill", "ref": "e1", "value": "x"}), true));
+        assert!(call_has_side_effects("web", &json!({"action": "fetch", "method": "POST", "url": "https://example.com"}), true));
+    }
+
+    /// A tool whose `read` action is read-only and whose other actions write;
+    /// counts how many calls actually ran.
+    struct LedgerTool(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl DynTool for LedgerTool {
+        fn name(&self) -> &str {
+            "ledger"
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn requires_approval(&self) -> bool {
+            false
+        }
+        fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+            input["action"] == "read"
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            _input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ToolResult::ok("done")
+            })
+        }
+    }
+
+    /// While a cloud bot's lease is not held, a call that changes something
+    /// is not run and says so truthfully (never a success); reads still run;
+    /// once the lease is held again the same call runs.
+    #[tokio::test]
+    async fn a_frozen_bot_runs_reads_and_pauses_everything_else() {
+        let lease: &'static comm::lease::Lease = Box::leak(Box::new(comm::lease::Lease::new()));
+        lease.set_fenced(true);
+        lease.claim();
+        let mut registry = Registry::new(Policy::default());
+        registry.lease = lease;
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        registry.register(Box::new(LedgerTool(ran.clone()))).await;
+        let ctx = ToolContext::default();
+
+        let write = registry.execute(&ctx, "ledger", serde_json::json!({"action": "post"})).await;
+        assert!(write.is_error, "a paused call must not report success: {}", write.content);
+        assert!(write.content.contains("Paused") && write.content.contains("nothing was sent or changed"), "{}", write.content);
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0, "the write ran while frozen");
+
+        let read = registry.execute(&ctx, "ledger", serde_json::json!({"action": "read"})).await;
+        assert!(!read.is_error, "{}", read.content);
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        lease.granted(2, std::time::Duration::from_secs(60), std::time::Instant::now());
+        let write = registry.execute(&ctx, "ledger", serde_json::json!({"action": "post"})).await;
+        assert!(!write.is_error, "{}", write.content);
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[test]
