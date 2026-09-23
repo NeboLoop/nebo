@@ -2663,6 +2663,34 @@ fn done_gate_due(edits_since_check: usize, fired: usize) -> bool {
     edits_since_check > 0 && fired < DONE_GATE_MAX
 }
 
+/// A reply the owner already has, word for word (whitespace aside). A
+/// Simulator session on 2026-09-22 sent the same 503-character apology five
+/// times, each one narrating clicks that never happened.
+fn repeats_earlier_reply(reply: &str, history: &[ChatMessage]) -> bool {
+    let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let r = norm(reply);
+    r.len() >= 80 && history.iter().any(|m| m.role == "assistant" && norm(&m.content) == r)
+}
+
+/// Desktop actions whose result is the screen after them.
+fn is_desktop_act(tc: &ai::ToolCall) -> bool {
+    tc.name == "os"
+        && matches!(
+            tc.input.get("action").and_then(|v| v.as_str()),
+            Some("click" | "double_click" | "right_click" | "type" | "press" | "hotkey" | "scroll" | "drag")
+        )
+}
+
+/// What the last desktop act reported, cut to what a reply must agree with:
+/// its first line (what was done), the screen header, and the first lines of
+/// the element list.
+fn desktop_evidence(result: &str) -> String {
+    let mut lines = result.lines().filter(|l| !l.trim().is_empty());
+    let mut out: Vec<&str> = lines.by_ref().take(2).collect();
+    out.extend(lines.take_while(|l| !l.starts_with("Coordinates are")).take(12));
+    out.join("\n")
+}
+
 /// Post-tool hooks, applied to a result BEFORE it is streamed or persisted, so
 /// the owner's transcript and the trace carry exactly what the model was
 /// given (a formatter's note, a test runner's verdict). Plugins listen as
@@ -3002,6 +3030,12 @@ async fn run_loop(
     // back to run the project's checks, DONE_GATE_MAX times per run.
     let mut edits_since_check: usize = 0;
     let mut done_gate_fired: usize = 0;
+    // Result gates at the text-response exit, each once per run: a reply that
+    // repeats an earlier one, and a reply after desktop acts checked against
+    // the screen those acts left.
+    let mut repeat_gate_fired = false;
+    let mut desktop_gate_fired = false;
+    let mut last_desktop_act: Option<String> = None;
     // Context accounting for the owner (Stage 8): where this run's tokens went.
     let mut ctx_compaction_passes: usize = 0;
     let mut ctx_evictions: usize = 0;
@@ -7201,6 +7235,9 @@ async fn run_loop(
                 if hook_noted.contains(&tc.id) || is_check_run_call(&tc) {
                     edits_since_check = 0;
                 }
+                if is_desktop_act(&tc) && !result.is_error {
+                    last_desktop_act = Some(desktop_evidence(&result.content));
+                }
                 // Terminal error (auth/permission/connection) — narrow, set only by
                 // ToolResult::terminal(). End the run after this batch instead of
                 // letting the model retry/improvise. Critical for autonomous
@@ -8068,6 +8105,37 @@ async fn run_loop(
                  sentence and finish."
             )));
             continue;
+        }
+
+        // Repeat gate: the owner already has this exact reply.
+        if !repeat_gate_fired && !cancel_token.is_cancelled() && repeats_earlier_reply(&assistant_content, &all_messages) {
+            repeat_gate_fired = true;
+            info!(iteration, session_id, "repeat gate fired");
+            pending_stream_reminders.push(steering::wrap_system_reminder(
+                "You already sent the owner this exact reply earlier in this conversation. \
+                 Do not send it again. Take the next concrete step with a tool, or say in \
+                 one sentence what is stopping you.",
+            ));
+            continue;
+        }
+
+        // Desktop gate: after acting on a window, the reply is checked against
+        // the screen the last act left, once. The Simulator session reported
+        // "code accepted, you're all set" right after a result that read
+        // `Pressed B5 "Home"` with the iPhone home screen below it.
+        if !desktop_gate_fired && !cancel_token.is_cancelled() {
+            if let Some(evidence) = last_desktop_act.take() {
+                desktop_gate_fired = true;
+                info!(iteration, session_id, "desktop gate fired");
+                pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+                    "Before this reply goes to the owner, check it against what your last \
+                     action actually did. Its result was:\n\n{evidence}\n\nIf your reply \
+                     says anything this does not show (a step done, a screen reached, a code \
+                     accepted, an app opened), rewrite it to say what the screen shows and \
+                     what you will do next. If it already matches, repeat it unchanged."
+                )));
+                continue;
+            }
         }
 
         // Conversation turn complete — normal exit with text response
@@ -9270,6 +9338,40 @@ mod plan_reminder_tests {
 #[cfg(test)]
 mod done_gate_tests {
     use super::*;
+
+    #[test]
+    fn a_repeated_reply_is_caught_and_a_short_or_new_one_is_not() {
+        let msg = |role: &str, content: &str| ChatMessage {
+            id: String::new(),
+            chat_id: String::new(),
+            role: role.into(),
+            content: content.into(),
+            metadata: None,
+            created_at: 0,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        };
+        let apology = "I'm sorry. I'll stop taking screenshots and interact directly with the Simulator: let me click Continue.";
+        let history = vec![msg("user", "you suck"), msg("assistant", apology)];
+        assert!(repeats_earlier_reply(&format!("  {apology}\n"), &history), "same words, other whitespace");
+        assert!(!repeats_earlier_reply("I'm sorry.", &[msg("assistant", "I'm sorry.")]), "short replies repeat naturally");
+        assert!(!repeats_earlier_reply(apology, &[msg("user", apology)]), "only the assistant's own replies count");
+        assert!(!repeats_earlier_reply(&format!("{apology} Then type the code."), &history));
+    }
+
+    #[test]
+    fn desktop_evidence_keeps_what_was_done_and_what_is_on_screen() {
+        let result = "Pressed B5 \"Home\" via accessibility. 24 elements now (29 before).\n\nSimulator — window at 1,2 size 3×4 pt; via ax; snapshot s\nB5  AXButton  \"Fitness\"\nB6  AXButton  \"Watch\"\nCoordinates are pixels of the image below.\nnever";
+        let e = desktop_evidence(result);
+        assert!(e.starts_with("Pressed B5 \"Home\""), "{e}");
+        assert!(e.contains("Simulator — window") && e.contains("\"Watch\""), "{e}");
+        assert!(!e.contains("Coordinates") && !e.contains("never"), "{e}");
+        let tc = |action: &str| ai::ToolCall { id: "1".into(), name: "os".into(), input: serde_json::json!({ "action": action }) };
+        assert!(is_desktop_act(&tc("click")) && !is_desktop_act(&tc("see")) && !is_desktop_act(&tc("exec")));
+    }
 
     #[test]
     fn done_gate_fires_once_and_only_after_an_unchecked_edit() {
