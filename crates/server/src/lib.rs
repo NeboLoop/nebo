@@ -1421,7 +1421,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // reflects live state. The loop tool holds this same handle, so it becomes
     // functional the moment the connection comes up — no registry rebuild needed.
     // (Also registered with the comm manager below.)
-    let neboai_plugin: Arc<dyn comm::CommPlugin> = Arc::new(comm::NeboAIPlugin::new());
+    let neboai_plugin: Arc<dyn comm::CommPlugin> = Arc::new(comm::NeboAIPlugin::new(Arc::new(
+        StoreStreamOffsets(store.clone()),
+    )));
 
     tool_registry.set_plugin_store(plugin_store.clone());
     tool_registry
@@ -3666,6 +3668,27 @@ async fn run_webhook_workflow(
             agent = %agent_id, workflow = %binding_name, error = %e,
             "webhook workflow run failed"
         ),
+    }
+}
+
+/// The comm plugin's stream offsets, kept in the database beside the inbound
+/// dedupe records they pair with. A read failure joins from 0 (no replay, the
+/// behavior before offsets existed); a write failure means the next connect
+/// replays a little more, which the dedupe absorbs.
+struct StoreStreamOffsets(Arc<db::Store>);
+
+impl comm::StreamOffsets for StoreStreamOffsets {
+    fn acked(&self, bot_id: &str, stream: &str) -> u64 {
+        self.0.comm_stream_offset(bot_id, stream).unwrap_or_else(|e| {
+            warn!(stream, error = %e, "reading comm stream offset failed");
+            0
+        })
+    }
+
+    fn record(&self, bot_id: &str, stream: &str, seq: u64) {
+        if let Err(e) = self.0.record_comm_stream_offset(bot_id, stream, seq) {
+            warn!(stream, seq, error = %e, "recording comm stream offset failed");
+        }
     }
 }
 
