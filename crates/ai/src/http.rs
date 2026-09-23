@@ -39,14 +39,24 @@ pub fn streaming_client() -> reqwest::Client {
         .expect("reqwest streaming client builder is infallible with these options")
 }
 
-/// HTTP client for short request/response calls (embeddings, model listing,
-/// version pings). Has a hard total timeout since these complete quickly.
+/// HTTP client for short request/response calls (Janus decisions, embeddings,
+/// model listing, version pings). Has a hard total timeout since these
+/// complete quickly.
+///
+/// These calls come in bursts separated by quiet minutes, and a cold
+/// connection to Janus costs a full TLS handshake (0.8-1.8 s against 0.37 s
+/// warm). So idle connections live until just under edgelb's 120 s idle
+/// reap, and HTTP/2 pings keep a quiet connection open and prove it alive:
+/// a dead one fails its ping and leaves the pool instead of being handed out.
 pub fn request_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
-        .pool_idle_timeout(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(110))
         .tcp_keepalive(Duration::from_secs(15))
+        .http2_keep_alive_interval(Duration::from_secs(30))
+        .http2_keep_alive_timeout(Duration::from_secs(10))
+        .http2_keep_alive_while_idle(true)
         .build()
         .expect("reqwest request client builder is infallible with these options")
 }
