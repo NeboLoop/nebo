@@ -22,7 +22,8 @@
 //!    [`STANDING_FLOOR_CAP`].
 //! 3. One decision, two Nouls in one call ([`verdict_from`]): does the job
 //!    still need to run now although nothing changed, and is anything
-//!    urgent. The thresholds are in code.
+//!    urgent. The thresholds are in code, looser after a standing outcome
+//!    ([`STANDING_SKIP_WORTH`], [`STANDING_SKIP_URGENT`]).
 //!
 //! A wrong skip looks exactly like a right one, so every skip is logged at
 //! info with `site="heartbeat_triage"` and the numbers that made it.
@@ -56,6 +57,26 @@ pub use crate::tool_guardrail::Mode;
 pub const WORTH_A_RUN_SKIP_CEILING: f64 = 0.25;
 /// `urgent` must be at or under this to skip.
 pub const URGENT_SKIP_CEILING: f64 = 0.1;
+
+// A binding whose last run ended with a standing outcome already proved
+// "nothing to do, and why" once, so its bar to skip is looser. A wrong skip
+// is still bounded by the standing floor and by flags winning. First live
+// samples (owner's desktop, 2026-09-23), all run under the ordinary bar:
+//
+//   voicemail-and-missed-sweep  "No telephony plugin installed…"  worth 0.64  urgent 0.83
+//   inventory-alerts            "zero orders…"                    worth 0.47  urgent 0.36
+//   order-issue-scan            "No orders found…"                worth 0.30  urgent 0.04
+//   publish-queue               (Social Media Manager)            worth 0.25  urgent 0.18
+//
+// Nothing had changed for any of them. Under these ceilings the last three
+// skip; the first still runs on `urgent`.
+
+/// UNTUNED. `worth_a_run` at or under this (with `urgent` under
+/// [`STANDING_SKIP_URGENT`]) skips a fire after a standing outcome.
+pub const STANDING_SKIP_WORTH: f64 = 0.5;
+/// UNTUNED. `urgent` must be at or under this to skip after a standing
+/// outcome.
+pub const STANDING_SKIP_URGENT: f64 = 0.5;
 
 // ── The floor: enforced in code, before the decision ─────────────────────
 
@@ -241,16 +262,23 @@ pub fn floor_allows_skip(consecutive_skips: u32, since_last_run: Option<i64>, ca
 }
 
 /// Skip only when `worth_a_run` is at or under [`WORTH_A_RUN_SKIP_CEILING`]
-/// and `urgent` at or under [`URGENT_SKIP_CEILING`]. A missing answer is a
-/// `Run`: triage never skips on what it cannot read.
-pub fn verdict_from(decision: &Decision) -> Gate {
+/// and `urgent` at or under [`URGENT_SKIP_CEILING`]; after a standing
+/// outcome (`standing`), at or under [`STANDING_SKIP_WORTH`] and
+/// [`STANDING_SKIP_URGENT`]. A missing answer is a `Run`: triage never
+/// skips on what it cannot read.
+pub fn verdict_from(decision: &Decision, standing: bool) -> Gate {
     let (Some(worth), Some(urgent)) = (
         decision.answer("worth_a_run").and_then(|a| a.noul),
         decision.answer("urgent").and_then(|a| a.noul),
     ) else {
         return Gate::Run;
     };
-    if worth <= WORTH_A_RUN_SKIP_CEILING && urgent <= URGENT_SKIP_CEILING {
+    let (worth_ceiling, urgent_ceiling) = if standing {
+        (STANDING_SKIP_WORTH, STANDING_SKIP_URGENT)
+    } else {
+        (WORTH_A_RUN_SKIP_CEILING, URGENT_SKIP_CEILING)
+    };
+    if worth <= worth_ceiling && urgent <= urgent_ceiling {
         Gate::Skip
     } else {
         Gate::Run
@@ -368,7 +396,7 @@ pub async fn triage(decide: Option<&DecideClient>, mode: Mode, b: &Binding, time
         return Gate::Run;
     };
 
-    let verdict = verdict_from(&decision);
+    let verdict = verdict_from(&decision, b.standing);
     let shadow = mode == Mode::Shadow;
     let outcome = match (verdict, shadow) {
         (Gate::Skip, false) => "skip",
@@ -480,25 +508,47 @@ mod tests {
 
     #[test]
     fn a_quiet_answer_skips_and_the_ceilings_are_inclusive() {
-        assert_eq!(verdict_from(&decision(0.05, 0.01)), Gate::Skip);
-        assert_eq!(verdict_from(&decision(WORTH_A_RUN_SKIP_CEILING, URGENT_SKIP_CEILING)), Gate::Skip);
+        assert_eq!(verdict_from(&decision(0.05, 0.01), false), Gate::Skip);
+        assert_eq!(verdict_from(&decision(WORTH_A_RUN_SKIP_CEILING, URGENT_SKIP_CEILING), false), Gate::Skip);
     }
 
     #[test]
     fn either_noul_over_its_ceiling_runs() {
-        assert_eq!(verdict_from(&decision(0.26, 0.0)), Gate::Run);
-        assert_eq!(verdict_from(&decision(0.0, 0.11)), Gate::Run);
-        assert_eq!(verdict_from(&decision(0.9, 0.9)), Gate::Run);
+        assert_eq!(verdict_from(&decision(0.26, 0.0), false), Gate::Run);
+        assert_eq!(verdict_from(&decision(0.0, 0.11), false), Gate::Run);
+        assert_eq!(verdict_from(&decision(0.9, 0.9), false), Gate::Run);
+    }
+
+    #[test]
+    fn a_standing_outcome_skips_under_its_own_inclusive_ceilings() {
+        assert_eq!(verdict_from(&decision(STANDING_SKIP_WORTH, STANDING_SKIP_URGENT), true), Gate::Skip);
+        assert_eq!(verdict_from(&decision(0.51, 0.0), true), Gate::Run);
+        assert_eq!(verdict_from(&decision(0.0, 0.51), true), Gate::Run);
+        // Without a standing outcome the same middling answer runs, as before.
+        assert_eq!(verdict_from(&decision(0.3, 0.0), false), Gate::Run);
+        assert_eq!(verdict_from(&decision(0.3, 0.0), true), Gate::Skip);
+    }
+
+    #[test]
+    fn the_first_live_standing_samples() {
+        // voicemail-and-missed-sweep: a missing plugin read as urgent still runs.
+        assert_eq!(verdict_from(&decision(0.64, 0.83), true), Gate::Run);
+        // inventory-alerts, order-issue-scan, publish-queue: unchanged worlds now skip.
+        assert_eq!(verdict_from(&decision(0.47, 0.36), true), Gate::Skip);
+        assert_eq!(verdict_from(&decision(0.30, 0.04), true), Gate::Skip);
+        assert_eq!(verdict_from(&decision(0.25, 0.18), true), Gate::Skip);
+        // publish-queue ran under the ordinary bar only on urgent 0.18 > 0.10.
+        assert_eq!(verdict_from(&decision(0.25, 0.18), false), Gate::Run);
     }
 
     #[test]
     fn a_missing_answer_runs() {
         let mut d = decision(0.0, 0.0);
         d.answers.remove("urgent");
-        assert_eq!(verdict_from(&d), Gate::Run);
+        assert_eq!(verdict_from(&d, false), Gate::Run);
         let mut d = decision(0.0, 0.0);
         d.answers.remove("worth_a_run");
-        assert_eq!(verdict_from(&d), Gate::Run);
+        assert_eq!(verdict_from(&d, false), Gate::Run);
     }
 
     #[test]
@@ -781,7 +831,7 @@ mod tests {
         let client = answering_client(0.05, 0.02).await;
         let key = "test:shadow";
         // The verdict is a skip; shadow logs `would_skip` and runs.
-        assert_eq!(verdict_from(&decision(0.05, 0.02)), Gate::Skip);
+        assert_eq!(verdict_from(&decision(0.05, 0.02), false), Gate::Skip);
         for _ in 0..(MAX_CONSECUTIVE_SKIPS + 2) {
             assert_eq!(triage(Some(&client), Mode::Shadow, &quiet(key), T).await, Gate::Run);
         }
