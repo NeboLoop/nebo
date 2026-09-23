@@ -755,8 +755,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         info!(orphans_killed = orphans, "startup: reaped orphan child processes from previous run");
     }
 
-    // Install SIGTERM/SIGINT/SIGHUP handler so children die with us on shutdown.
-    napp::child_guard::install_signal_handler();
+    // Register the shutdown signals now, so one that arrives while Nebo is
+    // still starting is held for the graceful path below instead of killing
+    // the process with its children still running.
+    let shutdown = shutdown_signal()?;
 
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
@@ -2934,7 +2936,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            shutdown_signal().await;
+            shutdown.await;
             info!("shutdown signal received — pausing scheduler, draining in-flight runs...");
             // A clean shutdown is not an interruption: case turns still
             // running are suspended and resume on boot with their budget intact.
@@ -2957,6 +2959,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             // Brief pause for write_loop to send the WebSocket Close frame
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             info!("comm plugins disconnected");
+            // Last: any child process still registered (plugins, watchers,
+            // bridges) is stopped so none outlives this process.
+            let children = tokio::task::spawn_blocking(napp::child_guard::kill_all_now)
+                .await
+                .unwrap_or_default();
+            info!(children, "child processes stopped — shutdown complete");
         })
         .await
         .map_err(|e| NeboError::Server(format!("server error: {e}")))?;
@@ -2964,9 +2972,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     Ok(())
 }
 
-/// Set once a shutdown signal arrives. The scheduler checks it each tick so no
-/// NEW flows start while in-flight ones drain — the graceful-update contract:
-/// signal -> pause scheduler -> wait for live runs (bounded) -> exit.
+/// Set once a shutdown signal arrives. The scheduler and the engine loop
+/// check it each tick so no NEW flows start while in-flight ones drain — the
+/// graceful-update contract: signal -> pause scheduler -> wait for live runs
+/// (bounded) -> exit.
 pub static DRAINING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Drain in-flight runs after a shutdown signal: every live run in the
@@ -3007,26 +3016,36 @@ async fn drain_in_flight_runs(registry: &run_registry::RunRegistry) {
     }
 }
 
-/// Wait for a shutdown signal (SIGTERM on Unix, Ctrl+C everywhere).
-async fn shutdown_signal() {
-    let ctrl_c = tokio::signal::ctrl_c();
+/// The shutdown signals: SIGTERM (kill, Kubernetes, hot reload), SIGINT
+/// (Ctrl+C) and SIGHUP (the terminal closed) on Unix, Ctrl+C everywhere.
+/// They are registered when this is called; the returned future resolves on
+/// the first one to arrive. This is the only shutdown signal handler in the
+/// process: the graceful drain it starts owns shutdown end to end.
+#[cfg(unix)]
+fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let register = |kind: SignalKind, name: &str| {
+        signal(kind).map_err(|e| NeboError::Server(format!("failed to install {name} handler: {e}")))
+    };
+    let mut term = register(SignalKind::terminate(), "SIGTERM")?;
+    let mut int = register(SignalKind::interrupt(), "SIGINT")?;
+    let mut hup = register(SignalKind::hangup(), "SIGHUP")?;
+    Ok(async move {
+        let sig = tokio::select! {
+            _ = term.recv() => "SIGTERM",
+            _ = int.recv() => "SIGINT",
+            _ = hup.recv() => "SIGHUP",
+        };
+        info!(signal = sig, "received shutdown signal");
+    })
+}
 
-    #[cfg(unix)]
-    {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler");
-
-        tokio::select! {
-            _ = ctrl_c => { info!("received Ctrl+C"); }
-            _ = sigterm.recv() => { info!("received SIGTERM"); }
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        ctrl_c.await.ok();
+#[cfg(not(unix))]
+fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError> {
+    Ok(async {
+        tokio::signal::ctrl_c().await.ok();
         info!("received Ctrl+C");
-    }
+    })
 }
 
 /// Process filesystem agent change events: sync DB, update registry, broadcast WS.
