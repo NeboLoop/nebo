@@ -850,6 +850,15 @@ struct ToolResultRow {
 pub struct WorkflowMode {
     /// Janus attribution — workflow/action/step ids ride the request trace.
     pub trace: RequestTrace,
+    /// What this step is for, in words: workflow name, activity and step
+    /// instruction. A workflow turn has no session objective (detection is
+    /// skipped for scratch sessions), so this is the objective the tool
+    /// guardrail judges calls against.
+    pub objective: String,
+    /// The work order this turn was given (the seed's final user message).
+    /// The run's prompt is empty — the seed carries it — so this stands in
+    /// for the person's latest message in the guardrail's state.
+    pub instruction: String,
     /// Schema-advertising filter (context scoping, not security): only these
     /// tools' schemas ship to the model. Dispatch still resolves through the
     /// full registry — the same roster fallback the engine loop had.
@@ -6721,7 +6730,16 @@ async fn run_loop(
             // decision above unchanged.
             let guardrail_mode = crate::tool_guardrail::mode();
             if guardrail_mode != crate::tool_guardrail::Mode::Off && wf_break_reason.is_none() {
-                let objective: &str = active_task.as_str();
+                // A workflow turn has no session objective and an empty
+                // prompt; its task is the step it was given.
+                let (objective, last_message, context) = match workflow_mode {
+                    Some(m) => (
+                        m.objective.as_str(),
+                        m.instruction.as_str(),
+                        crate::tool_guardrail::Context::WorkflowStep,
+                    ),
+                    None => (active_task.as_str(), user_prompt, crate::tool_guardrail::Context::Chat),
+                };
                 let mut judged = Vec::new();
                 for (idx, tc) in tool_calls.iter().enumerate() {
                     if blocked_results[idx].is_some() || owner_answered.contains(&idx) {
@@ -6740,7 +6758,8 @@ async fn run_loop(
                             &tc.name,
                             &tc.input,
                             objective,
-                            user_prompt,
+                            last_message,
+                            context,
                         )
                         .await;
                         (idx, judgment)
@@ -9442,6 +9461,8 @@ mod objective_decision_tests {
         assert!(objective_detection_applies(None, None));
         let workflow = WorkflowMode {
             trace: ai::RequestTrace::new("workflow_activity"),
+            objective: String::new(),
+            instruction: String::new(),
             advertised_tools: Default::default(),
             tainted: false,
             spend_cap_microcents: 0,
