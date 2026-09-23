@@ -63,7 +63,7 @@ pub mod turn_decide;
 #[cfg(target_os = "macos")]
 use blas_src as _;
 
-pub use agent_worker::{AgentWorkerRegistry, ChannelDispatcher};
+pub use agent_worker::{AgentWorkerRegistry, ChannelDispatcher, running_watchers};
 pub use concurrency::ConcurrencyController;
 pub use lanes::LaneManager;
 pub use orchestrator::Orchestrator;

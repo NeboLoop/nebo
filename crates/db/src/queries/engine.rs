@@ -570,6 +570,20 @@ impl Store {
         Ok(rows)
     }
 
+    /// When the next durable timer fires: the earliest undelivered timer's
+    /// due moment (unix seconds), or `None` when nothing is scheduled. This
+    /// is the bot's next wake — what a committed BotState tells the hub.
+    pub fn engine_next_timer_due(&self) -> Result<Option<i64>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT MIN(due_at) FROM engine_events
+             WHERE kind = 'timer' AND delivered_at IS NULL AND due_at IS NOT NULL",
+            [],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .db_err("engine_next_timer_due")
+    }
+
     /// The floor the next occurrence is computed from: the last timer this
     /// target consumed (its due moment) or dropped (the moment it was
     /// dropped, so a superseded future timer never pushes the floor ahead).
@@ -1534,6 +1548,25 @@ mod tests {
 
     fn case<'a>(id: &'a str) -> NewRun<'a> {
         NewRun { id, kind: "case", session_key: "agent:a:case:x", agent_id: "a", lane: "main", ..Default::default() }
+    }
+
+    /// The next wake is the earliest undelivered timer — not a signal, not a
+    /// delivered timer.
+    #[test]
+    fn next_timer_due_is_the_earliest_undelivered_timer() {
+        let s = store();
+        assert_eq!(s.engine_next_timer_due().unwrap(), None);
+        s.engine_enqueue_event(&signal("k", "s1")).unwrap();
+        assert_eq!(s.engine_next_timer_due().unwrap(), None, "a signal is not a timer");
+        let timer = |idem: &'static str, due: i64| NewEvent { kind: "timer", target_type: "binding", target_id: "b", idem_key: idem, due_at: Some(due), ..Default::default() };
+        s.engine_enqueue_event(&timer("t-late", 5_000)).unwrap();
+        let early = match s.engine_enqueue_event(&timer("t-early", 2_000)).unwrap() {
+            Enqueued::Inserted(id) => id,
+            Enqueued::Duplicate => unreachable!(),
+        };
+        assert_eq!(s.engine_next_timer_due().unwrap(), Some(2_000));
+        s.engine_complete_event(early, 2_001).unwrap();
+        assert_eq!(s.engine_next_timer_due().unwrap(), Some(5_000), "a delivered timer no longer wakes the bot");
     }
 
     #[test]

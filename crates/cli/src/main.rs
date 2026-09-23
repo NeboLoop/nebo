@@ -77,6 +77,26 @@ enum Commands {
         #[command(subcommand)]
         command: TestCommands,
     },
+    /// This bot's state in NeboAI (cloud bots)
+    State {
+        #[command(subcommand)]
+        command: StateCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum StateCommands {
+    /// Copy the whole data directory to NeboAI, kept 30 days (before a disk is retired)
+    Archive,
+    /// Restore a committed generation into an empty directory, to prove it opens
+    Restore {
+        /// The generation to restore (default: the latest state)
+        #[arg(long)]
+        generation: Option<i64>,
+        /// Where to restore it; never a live bot's data directory
+        #[arg(long)]
+        into: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -343,6 +363,17 @@ async fn run() -> anyhow::Result<()> {
     // Load config
     let mut cfg = config::Config::load_embedded()?;
 
+    // A cloud bot whose database is missing restores its committed state
+    // before anything writes into the data directory (settings, database).
+    // A restore that fails ends the process: never start empty over a bot
+    // that has state.
+    if matches!(cli.command, None | Some(Commands::Serve) | Some(Commands::Agent))
+        && let Err(e) = server::backup_ship::restore_on_boot(&cfg.neboai.api_url).await
+    {
+        tracing::error!(error = %e, "bot state restore failed; not starting");
+        anyhow::bail!("bot state restore failed: {e}");
+    }
+
     // Apply local settings (auto-generated secrets)
     let settings = config::load_settings()?;
     cfg.auth.access_secret = settings.access_secret;
@@ -518,6 +549,19 @@ async fn run() -> anyhow::Result<()> {
         Some(Commands::Test { command }) => {
             run_test_command(&cfg, command).await?;
         }
+        Some(Commands::State { command }) => match command {
+            StateCommands::Archive => {
+                let m = server::backup_ship::archive(&cfg.neboai.api_url).await.map_err(anyhow::Error::msg)?;
+                let bytes: u64 = m.objects.iter().flat_map(|o| o.chunks.iter()).map(|c| c.bytes).sum();
+                println!("Archived as generation {} ({} objects, {bytes} bytes in chunks), kept 30 days.", m.generation, m.objects.len());
+            }
+            StateCommands::Restore { generation, into } => {
+                let g = server::backup_ship::restore_into(&cfg.neboai.api_url, generation, &into)
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                println!("Restored generation {g} into {}; its database passed the integrity check.", into.display());
+            }
+        },
     }
 
     Ok(())

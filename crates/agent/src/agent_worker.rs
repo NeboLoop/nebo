@@ -1073,6 +1073,32 @@ fn effective_input_values(frontmatter: &str, input_values: &str) -> serde_json::
     serde_json::Value::Object(merged)
 }
 
+/// Plugin watchers and folder watchers running in this process. A bot with
+/// one is not safe to park (it would miss what it watches), so the count
+/// rides every BotState commit as a residency signal.
+static RUNNING_WATCHERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many watch bindings are running right now.
+pub fn running_watchers() -> usize {
+    RUNNING_WATCHERS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Counts one running watcher for as long as it lives.
+struct WatcherRunning;
+
+impl WatcherRunning {
+    fn enter() -> Self {
+        RUNNING_WATCHERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        WatcherRunning
+    }
+}
+
+impl Drop for WatcherRunning {
+    fn drop(&mut self) {
+        RUNNING_WATCHERS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Long-running loop that spawns a plugin watcher process, reads NDJSON lines
 /// from stdout, and fires `run_inline()` for each line received.
 ///
@@ -1104,6 +1130,7 @@ async fn watch_loop(
     // own account. `None` for plugins that don't use per-account credentials.
     profile_dir: Option<(String, String)>,
 ) {
+    let _running = WatcherRunning::enter();
     let mut backoff_secs = cfg.restart_delay_secs;
     // Consecutive auth-classified exits. ONE auth-looking failure must not
     // kill the watch: a transient refresh hiccup matches is_auth_error's
@@ -1557,6 +1584,7 @@ async fn folder_watch_loop(
     event_bus: EventBus,
     store: Arc<Store>,
 ) {
+    let _running = WatcherRunning::enter();
     use notify::{Event, EventKind, RecursiveMode, Watcher};
     use tokio::sync::mpsc;
 
