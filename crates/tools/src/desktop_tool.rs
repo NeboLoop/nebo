@@ -1992,6 +1992,7 @@ async fn observe(
     let front;
     let app: &str = if app.is_empty() {
         match ax_native::frontmost().await {
+            Ok(a) if ax_native::is_lock_screen(&a) => return Err(ToolResult::error(ax_native::LOCKED_SCREEN)),
             Ok(a) if !a.is_empty() && a != "Nebo" => {
                 front = a;
                 front.as_str()

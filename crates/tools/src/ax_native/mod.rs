@@ -288,6 +288,18 @@ pub fn parse_frontmost(line: &str) -> String {
         .unwrap_or_default()
 }
 
+/// What a capture or an act says when the screen is locked. Nothing behind
+/// the lock screen has a window frame, so every act would fail obscurely.
+pub const LOCKED_SCREEN: &str = "The screen is locked: the login window is in front. Unlock the Mac, then capture again.";
+
+/// The lock screen is the loginwindow process in front of a session that is
+/// already logged in.
+// ponytail: name match; CGSSessionScreenIsLocked from CGSessionCopyCurrentDictionary if a
+// lock ever shows up under another name.
+pub fn is_lock_screen(app: &str) -> bool {
+    app == "loginwindow"
+}
+
 /// The app in front right now, read without AppleEvents.
 pub async fn frontmost() -> Result<String, String> {
     #[cfg(target_os = "macos")]
@@ -322,6 +334,8 @@ mod tests {
         assert_eq!(parse_frontmost("{\"app\":\"Brave Browser\",\"pid\":12}\n"), "Brave Browser");
         assert_eq!(parse_frontmost("{\"app\":\"\",\"pid\":0}"), "");
         assert_eq!(parse_frontmost("garbage"), "");
+        assert!(is_lock_screen("loginwindow"));
+        assert!(!is_lock_screen("Calculator"));
     }
 
     #[test]
