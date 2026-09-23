@@ -489,8 +489,6 @@ impl CommPlugin for NeboAIPlugin {
                 0 => std::time::Duration::from_secs(60),
                 secs => std::time::Duration::from_secs(secs),
             };
-            lease.granted(auth_result.lease_epoch, ttl, connect_sent);
-            info!(bot_id = %bot_id, epoch = auth_result.lease_epoch, instance = %lease.instance_id(), "neboai: lease granted");
             if !auth_result.token.is_empty() {
                 *self.rotated_token.write().await = Some(auth_result.token.clone());
 
@@ -510,6 +508,11 @@ impl CommPlugin for NeboAIPlugin {
                     }
                 }
             }
+            // Granted last: the grant wakes the hub's other doors (the
+            // tunnel dial), and the connect token is dead the moment the hub
+            // rotates it. By now every reader sees the rotated one.
+            lease.granted(auth_result.lease_epoch, ttl, connect_sent);
+            info!(bot_id = %bot_id, epoch = auth_result.lease_epoch, instance = %lease.instance_id(), "neboai: lease granted");
         }
 
         if let Some(ref dl) = *self.devlog.read().await {

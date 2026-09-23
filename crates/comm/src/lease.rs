@@ -80,7 +80,8 @@ pub struct Lease {
     /// Set by the graceful drain: this process is shutting down and its
     /// connection hands the lease back as it closes.
     releasing: AtomicBool,
-    /// Signalled when a grant (or an unleased hub) lets hub work start.
+    /// Signalled when the hub answers a claim: a grant (or an unleased hub)
+    /// lets hub work start; a refusal sends the process back to asking.
     changed: Notify,
 }
 
@@ -167,6 +168,7 @@ impl Lease {
     /// The hub says another process holds the bot.
     pub fn lost(&self) {
         self.status.store(LOST, Ordering::Release);
+        self.changed.notify_waiters();
     }
 
     /// The epoch this process last held, 0 if none.
@@ -247,6 +249,19 @@ impl Lease {
             tokio::pin!(notified);
             notified.as_mut().enable();
             if matches!(self.status.load(Ordering::Acquire), HELD | UNLEASED) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Resolves once the hub has refused this process the bot (`Lost`).
+    pub async fn until_lost(&self) {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_lost() {
                 return;
             }
             notified.await;
@@ -430,5 +445,24 @@ mod tests {
             .await
             .expect("woke")
             .expect("joined");
+    }
+
+    /// A refusal wakes whoever waits to ask again (the reconnect watcher),
+    /// and leaves a waiter for a grant waiting.
+    #[tokio::test]
+    async fn a_refusal_wakes_the_askers() {
+        let l: &'static Lease = Box::leak(Box::new(Lease::new()));
+        l.claim();
+        let refused = tokio::spawn(l.until_lost());
+        let granted = tokio::spawn(l.granted_or_unleased());
+        tokio::task::yield_now().await;
+        assert!(!refused.is_finished());
+        l.lost();
+        tokio::time::timeout(Duration::from_secs(1), refused)
+            .await
+            .expect("woke")
+            .expect("joined");
+        tokio::task::yield_now().await;
+        assert!(!granted.is_finished());
     }
 }
