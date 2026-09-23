@@ -60,6 +60,11 @@ const DURABLE_TREES: &[&str] = &[
 /// a live profile is being written as it is read.
 const CHROMIUM_PROFILE: &str = "chromium-profile";
 
+/// The files by which a Chromium claims its profile. Never state: restored
+/// on another machine, they name a Chromium there that does not exist, and
+/// Chromium refuses a profile "in use on another computer".
+const CHROMIUM_LOCKS: &[&str] = &["SingletonLock", "SingletonSocket", "SingletonCookie"];
+
 /// Where a commit stages its chunks, inside the data directory (same disk,
 /// scratch by the rule above).
 pub const STAGING_DIR: &str = "cache/state-commit";
@@ -157,10 +162,51 @@ pub struct ChunkMeta<'a> {
     pub taken_at: i64,
 }
 
-/// True while a Chromium holds the profile: Chromium keeps a `SingletonLock`
-/// symlink in the profile directory for as long as it runs.
+/// True while a Chromium on this machine holds the profile. Chromium keeps a
+/// `SingletonLock` symlink naming `<hostname>-<pid>` for as long as it runs.
+/// A lock Chromium could not remove — it was killed, or the profile came from
+/// another machine — names a process not running here, and holds nothing.
 pub fn chromium_running(data_dir: &Path) -> bool {
-    fs::symlink_metadata(data_dir.join(CHROMIUM_PROFILE).join("SingletonLock")).is_ok()
+    match fs::read_link(data_dir.join(CHROMIUM_PROFILE).join("SingletonLock")) {
+        Ok(target) => lock_holder_running(&target.to_string_lossy()),
+        Err(_) => false,
+    }
+}
+
+/// Whether the `<hostname>-<pid>` a `SingletonLock` names is a process
+/// running on this machine. A lock that cannot be read that way counts as
+/// held: it is never packed as state while it might be live.
+#[cfg(unix)]
+fn lock_holder_running(target: &str) -> bool {
+    let Some((host, pid)) = target.rsplit_once('-') else {
+        return true;
+    };
+    let Ok(pid) = pid.parse::<libc::pid_t>() else {
+        return true;
+    };
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer outlives the call and its length is passed with it.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return true;
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    if host.as_bytes() != &buf[..len] {
+        return false;
+    }
+    // Signal 0 checks the process exists; EPERM means it exists as another user.
+    // SAFETY: kill with signal 0 sends nothing.
+    let signalled = unsafe { libc::kill(pid, 0) } == 0;
+    signalled || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn lock_holder_running(_target: &str) -> bool {
+    true
+}
+
+/// What a commit of the Chromium profile leaves out: its locks.
+fn chromium_excludes() -> Vec<String> {
+    CHROMIUM_LOCKS.iter().map(|f| format!("{CHROMIUM_PROFILE}/{f}")).collect()
 }
 
 /// The objects of a commit. `archive` is the whole data directory (the
@@ -195,7 +241,7 @@ pub fn sources(data_dir: &Path, archive: bool) -> Vec<Source> {
                     role: "tree".into(),
                     root: tree.to_string(),
                     members: vec![tree.to_string()],
-                    exclude: vec![],
+                    exclude: if *tree == CHROMIUM_PROFILE { chromium_excludes() } else { vec![] },
                 });
             }
         }
@@ -230,6 +276,7 @@ pub fn sources(data_dir: &Path, archive: bool) -> Vec<Source> {
                 format!("{DATABASE_PATH}-shm"),
             ],
             "cache" => vec![STAGING_DIR.into()],
+            CHROMIUM_PROFILE => chromium_excludes(),
             _ => vec![],
         };
         out.push(Source {
@@ -1054,13 +1101,34 @@ pub(super) mod tests {
         );
 
         #[cfg(unix)]
-        std::os::unix::fs::symlink("host-123", d.path().join("chromium-profile/SingletonLock"))
-            .unwrap();
-        #[cfg(unix)]
-        assert!(
-            !roots(&sources(d.path(), false)).contains(&"chromium-profile".to_string()),
-            "a running browser's profile is skipped"
-        );
+        {
+            let lock = d.path().join("chromium-profile/SingletonLock");
+            // Killed, or restored from another machine: the lock names a
+            // Chromium that is not running here. The profile is state; its
+            // locks are not.
+            std::os::unix::fs::symlink("another-host-123", &lock).unwrap();
+            let profile = sources(d.path(), false)
+                .into_iter()
+                .find(|s| s.root == "chromium-profile")
+                .expect("a stale lock does not hold the profile");
+            assert!(profile.exclude.contains(&"chromium-profile/SingletonLock".to_string()));
+            assert!(
+                !walk(d.path(), &profile).unwrap().iter().any(|e| e.rel.contains("Singleton")),
+                "a profile's locks are never packed"
+            );
+
+            // A live Chromium on this machine: this process stands in for it.
+            fs::remove_file(&lock).unwrap();
+            let mut host = [0u8; 256];
+            assert_eq!(unsafe { libc::gethostname(host.as_mut_ptr().cast(), host.len()) }, 0);
+            let len = host.iter().position(|&b| b == 0).unwrap();
+            let live = format!("{}-{}", String::from_utf8_lossy(&host[..len]), std::process::id());
+            std::os::unix::fs::symlink(&live, &lock).unwrap();
+            assert!(
+                !roots(&sources(d.path(), false)).contains(&"chromium-profile".to_string()),
+                "a running browser's profile is skipped"
+            );
+        }
 
         let archive = sources(d.path(), true);
         assert_eq!(
