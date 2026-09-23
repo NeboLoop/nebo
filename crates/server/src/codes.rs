@@ -2108,10 +2108,10 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
 
     let mut connect_result = state.comm_manager.connect_active(config.clone()).await;
 
-    // Every rotated token a rebuilt cloud pod restored is stale. Its
-    // provisioned credential (the boot credential in its Secret) is exempt
-    // from rotation and connects it under the lease; AUTH_OK hands back a
-    // fresh rotated token, persisted below as always.
+    // Every rotated token a rebuilt cloud pod restored is stale. Its boot
+    // credential (NEBO_BOOT_TOKEN in its Secret) is exempt from rotation and
+    // connects it under the lease; AUTH_OK hands back a fresh rotated token,
+    // persisted below as always.
     if let Err(ref e) = connect_result
         && e.to_string().contains("stale token")
         && let Some(provisioned) =

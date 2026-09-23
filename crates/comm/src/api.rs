@@ -26,14 +26,14 @@ pub struct NeboAIApi {
     provisioned: Option<String>,
 }
 
-/// The credential this bot was provisioned with (`NEBO_BOT_TOKEN`). On a
-/// cloud bot it is the boot credential the reconciler keeps in the pod
-/// Secret: never made stale by rotation, and accepted by the hub for exactly
-/// what a pod rebuilding into an empty /data needs — reading its committed
-/// state and its own backups, and CONNECT (whose AUTH_OK hands back the
-/// rotated token). Desktops have none.
+/// This bot's boot credential (`NEBO_BOOT_TOKEN`), which the reconciler
+/// keeps in a cloud pod's Secret beside the plain `NEBO_BOT_TOKEN` the auth
+/// profile is seeded from. Never made stale by rotation, and accepted by the
+/// hub for exactly what a pod rebuilding into an empty /data needs —
+/// reading its committed state and its own backups, and CONNECT under a
+/// lease (whose AUTH_OK hands back the rotated token). Desktops have none.
 pub fn provisioned_credential() -> Option<String> {
-    std::env::var("NEBO_BOT_TOKEN").ok().filter(|t| !t.trim().is_empty())
+    std::env::var("NEBO_BOOT_TOKEN").ok().filter(|t| !t.trim().is_empty())
 }
 
 /// Default production API server.
