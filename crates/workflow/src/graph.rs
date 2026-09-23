@@ -126,9 +126,8 @@ struct WalkScope {
     /// parent scope's locals so nested loops read outward. This is what makes
     /// concurrent iterations semantically invisible: a body node's readers
     /// (prior context, data paths) see ONLY their own iteration's values —
-    /// never a racing sibling's — and the loop publishes the highest-index
-    /// iteration's outputs on completion, which is byte-what sequential
-    /// execution produced.
+    /// never a racing sibling's — and the loop gathers every iteration's
+    /// outputs, in item order, into its own output on completion.
     outputs: Option<Mutex<HashMap<String, String>>>,
 }
 
@@ -1152,9 +1151,9 @@ async fn run_loop<'a>(
     // Hands-free concurrency: iterations run concurrently BY DEFAULT (auto
     // ceiling 4), adaptively governed — owners never dial a knob. This is
     // semantically invisible because iteration outputs are scope-local
-    // (readers see only their own iteration) and the loop publishes the
-    // highest-index iteration's outputs on completion — byte-what
-    // sequential execution produced. `params.concurrency` remains an escape
+    // (readers see only their own iteration) and the loop gathers every
+    // iteration's outputs in item order on completion, whatever order they
+    // finished in. `params.concurrency` remains an escape
     // hatch: 1 declares order-dependent external side effects (strictly
     // sequential); an explicit value sets the governor's ceiling.
     let ceiling = activity
@@ -1168,6 +1167,28 @@ async fn run_loop<'a>(
         .unwrap_or(AUTO_LOOP_CONCURRENCY)
         .clamp(1, MAX_LOOP_CONCURRENCY) as usize;
 
+    // Layered fan-in: `params.batchSize` hands the body N items at a time
+    // (the item is an array), so a loop over another loop's `results` can
+    // summarise in groups instead of reading every raw result at once.
+    let batch_size = activity
+        .params
+        .as_ref()
+        .and_then(|p| p.get("batchSize"))
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
+        .unwrap_or(1)
+        .max(1) as usize;
+    let items: Vec<serde_json::Value> = if batch_size > 1 {
+        items
+            .chunks(batch_size)
+            .map(|c| serde_json::Value::Array(c.to_vec()))
+            .collect()
+    } else {
+        items
+    };
+
     let total_items = items.len() as u64;
     let taken: Vec<(u64, serde_json::Value)> = items
         .into_iter()
@@ -1176,6 +1197,7 @@ async fn run_loop<'a>(
         .map(|(i, item)| (i as u64, item))
         .collect();
     let processed = taken.len() as u64;
+    let taken_items: Vec<serde_json::Value> = taken.iter().map(|(_, item)| item.clone()).collect();
 
     let body = &body;
     let entry_edges = &entry_edges;
@@ -1304,12 +1326,28 @@ async fn run_loop<'a>(
         }
     }
 
-    // Publish the highest-index iteration's outputs into the parent scope —
-    // deterministic and identical to what sequential execution left behind.
-    if let Some((_, locals)) = completed_locals.into_iter().max_by_key(|(i, _)| *i) {
-        for (id, content) in locals {
-            record_output(ctx, scope, &id, content);
-        }
+    // Fan-in: the loop's output carries EVERY iteration's body outputs in
+    // item order, so whatever follows "Done" reads all N results — never just
+    // the last one. Body nodes are not published individually: outside the
+    // loop, a body node's output only means something per item.
+    let mut results: Vec<serde_json::Value> = taken_items
+        .into_iter()
+        .map(|item| serde_json::json!({ "item": item }))
+        .collect();
+    for (idx, locals) in completed_locals {
+        let outputs: serde_json::Map<String, serde_json::Value> = locals
+            .into_iter()
+            .filter(|(id, _)| body.contains(id))
+            .map(|(id, out)| {
+                let parsed = serde_json::from_str::<serde_json::Value>(&out)
+                    .unwrap_or(serde_json::Value::String(out));
+                (id, parsed)
+            })
+            .collect();
+        results[idx as usize]["outputs"] = serde_json::Value::Object(outputs);
+    }
+    for (idx, reason) in &exited {
+        results[*idx as usize]["exited"] = serde_json::Value::String(reason.clone());
     }
 
     let _ = ctx.store.create_activity_result(
@@ -1364,7 +1402,12 @@ async fn run_loop<'a>(
             detail
         ));
     }
-    record_output(ctx, scope, &activity.id, summary);
+    record_output(
+        ctx,
+        scope,
+        &activity.id,
+        serde_json::json!({ "summary": summary, "results": results }).to_string(),
+    );
     info!(activity = activity.id.as_str(), processed, "loop completed");
     route(ctx, scope, &activity.id, |label| label == Some("Done")).await
 }
@@ -2326,10 +2369,10 @@ mod walk_tests {
     }
 
     #[tokio::test]
-    async fn test_loop_publishes_highest_index_iteration() {
-        // Sequential-equivalent publication: downstream of Done sees the
-        // LAST item's body output — identical to sequential execution —
-        // regardless of concurrent completion order.
+    async fn test_loop_gathers_every_iteration_in_item_order() {
+        // Fan-in: downstream of Done sees EVERY item's body output, in item
+        // order, regardless of concurrent completion order — "check 40
+        // files, then write one report" must see 40 results, not the last.
         let provider = MockProvider::new(&[]).with_context_scripts(&[
             ("[Current item]: \"ITEM_ALPHA\"", "out-ALPHA"),
             ("[Current item]: \"ITEM_BETA\"", "out-BETA"),
@@ -2361,13 +2404,61 @@ mod walk_tests {
             .find(|c| c.split("###SYSTEM###").next().unwrap_or("").contains("task-after"))
             .expect("after call");
         let system = after.split("###SYSTEM###").nth(1).unwrap_or("");
-        assert!(
-            system.contains("out-GAMMA"),
-            "downstream must see the highest-index iteration's output: {system:?}"
+        let (a, b, g) = (
+            system.find("out-ALPHA").expect("ALPHA result reaches downstream"),
+            system.find("out-BETA").expect("BETA result reaches downstream"),
+            system.find("out-GAMMA").expect("GAMMA result reaches downstream"),
         );
+        assert!(a < b && b < g, "results must be in item order: {system:?}");
         assert!(
-            !system.contains("out-ALPHA") && !system.contains("out-BETA"),
-            "downstream must NOT see racing siblings' outputs: {system:?}"
+            !system.contains("[Activity 'body' result]"),
+            "a body node's per-item output must not leak as a lone result: {system:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_loop_batch_size_hands_the_body_groups() {
+        // Layered fan-in: batchSize 2 over 5 items runs the body 3 times on
+        // [1,2], [3,4], [5] and the loop's results name each batch.
+        let provider = MockProvider::new(&[]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items","batchSize":2}},
+                {"id":"body","intent":"task-body"},
+                {"id":"after","intent":"task-after"}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"body","label":"Each item"},
+                {"from":"body","to":"l"},
+                {"from":"l","to":"after","label":"Done"},
+                {"from":"after","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(
+            def,
+            serde_json::json!({"items": [1, 2, 3, 4, 5]}),
+            &provider,
+        )
+        .await;
+        result.expect("run ok");
+        let calls = provider.calls();
+        let bodies: Vec<_> = calls
+            .iter()
+            .filter(|c| c.split("###SYSTEM###").next().unwrap_or("").contains("task-body"))
+            .collect();
+        assert_eq!(bodies.len(), 3, "one body run per batch");
+        for batch in ["[Current item]: [1,2]", "[Current item]: [3,4]", "[Current item]: [5]"] {
+            assert!(bodies.iter().any(|c| c.contains(batch)), "missing {batch}");
+        }
+        let output = store
+            .get_workflow_run(&run_id)
+            .unwrap()
+            .unwrap()
+            .output
+            .unwrap_or_default();
+        assert!(
+            output.contains(r#""results":[{"item":[1,2]"#),
+            "loop output gathers per batch: {output:?}"
         );
     }
 

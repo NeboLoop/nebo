@@ -4283,7 +4283,10 @@ pub async fn start_workflow_chat(
          - condition REQUIRES params.expression + params.mode (expression|contains|exists|regex) and \
            routes via edges labeled \"True\"/\"False\". Routing is never decided by the AI.\n\
          - loop REQUIRES params.source (data path, e.g. \"inputs.items\") and uses edges labeled \
-           \"Each item\" (body) and \"Done\". The AI lives INSIDE activities (intent + steps), never in routing.\n\n\
+           \"Each item\" (body) and \"Done\". Items run in parallel. After Done, the loop's output is \
+           {{summary, results:[{{item, outputs:{{<body-id>: ...}}}}]}} — EVERY item's result in item order. \
+           params.batchSize N hands the body N items at a time; loop over another loop's results with a \
+           batchSize to summarise in groups before one final report. The AI lives INSIDE activities (intent + steps), never in routing.\n\n\
          ## Example\n\
          User: \"notify me when an urgent email arrives\"\n\
          ```workflow-ops\n\
