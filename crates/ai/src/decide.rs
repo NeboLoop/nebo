@@ -255,7 +255,7 @@ impl DecideClient {
 fn classify(status: u16, text: String) -> ProviderError {
     match status {
         401 | 403 => ProviderError::Auth(text),
-        429 => ProviderError::RateLimit,
+        429 => ProviderError::RateLimit { retry_after_secs: None },
         code => ProviderError::Api {
             code: code.to_string(),
             message: text,
@@ -320,7 +320,7 @@ mod tests {
         assert!(!classify(422, "bad question".into()).is_retryable());
         assert!(!classify(401, String::new()).is_retryable());
         assert!(matches!(classify(401, String::new()), ProviderError::Auth(_)));
-        assert!(matches!(classify(429, String::new()), ProviderError::RateLimit));
+        assert!(matches!(classify(429, String::new()), ProviderError::RateLimit { .. }));
     }
 
     #[test]

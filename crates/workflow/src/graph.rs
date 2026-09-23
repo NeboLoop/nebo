@@ -15,7 +15,6 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt as _;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -133,35 +132,6 @@ fn record_output(ctx: &GraphCtx, scope: &WalkScope, id: &str, content: String) {
         None => {
             ctx.state.lock().unwrap().outputs.insert(id.to_string(), content);
         }
-    }
-}
-
-/// AIMD governor for concurrent loop iterations: halve on rate-limit
-/// pressure, creep back up (+1 per completed iteration) toward the ceiling.
-/// Purely reactive — the pressure signals are in-band in the iterations'
-/// own provider responses; the engine never asks a control plane anything.
-struct LoopGovernor {
-    ceiling: usize,
-    target: AtomicUsize,
-}
-
-impl LoopGovernor {
-    fn new(ceiling: usize) -> Self {
-        Self {
-            ceiling,
-            target: AtomicUsize::new(ceiling),
-        }
-    }
-    fn target(&self) -> usize {
-        self.target.load(Ordering::Relaxed).max(1)
-    }
-    fn on_rate_limit(&self) {
-        let t = self.target();
-        self.target.store((t / 2).max(1), Ordering::Relaxed);
-    }
-    fn on_success(&self) {
-        let t = self.target();
-        self.target.store((t + 1).min(self.ceiling), Ordering::Relaxed);
     }
 }
 
@@ -1149,14 +1119,15 @@ async fn run_loop<'a>(
     // Hands-free concurrency: every iteration starts at once BY DEFAULT —
     // owners never dial a knob, and the loop adds no width cap of its own.
     // The machine's real limits are the ONE brake per resource the body's
-    // work already goes through (the LLM permit pool, the tool permit pool);
-    // the governor below only halves admission on live rate-limit pressure.
+    // work already goes through (the LLM permit pool, the tool permit pool).
+    // Rate limits are that pool's job too: a 429 halves it for the whole bot,
+    // so the loop keeps no second, loop-local halving of its own.
     // This is semantically invisible because iteration outputs are scope-local
     // (readers see only their own iteration) and the loop gathers every
     // iteration's outputs in item order on completion, whatever order they
     // finished in. `params.concurrency` remains an escape
     // hatch: 1 declares order-dependent external side effects (strictly
-    // sequential); an explicit value sets the governor's ceiling.
+    // sequential); an explicit value caps how many items run at once.
     let declared_concurrency = activity
         .params
         .as_ref()
@@ -1267,20 +1238,21 @@ async fn run_loop<'a>(
             }
         }
     } else {
-        let governor = LoopGovernor::new(ceiling);
         let mut queue: VecDeque<(u64, serde_json::Value, u32)> =
             taken.into_iter().map(|(i, item)| (i, item, 0)).collect();
         let mut inflight = FuturesUnordered::new();
         loop {
-            while inflight.len() < governor.target() {
+            while inflight.len() < ceiling {
                 let Some((idx, item, attempt)) = queue.pop_front() else {
                     break;
                 };
                 let retry_copy = item.clone();
                 inflight.push(async move {
                     if attempt > 0 {
-                        // Exponential backoff before a rate-limited retry —
-                        // the OTHER half of halving the admission target.
+                        // Exponential backoff before a rate-limited retry:
+                        // the item's calls already retried inside the runner
+                        // and the pool already halved; this spaces the item's
+                        // next attempt.
                         let secs = (1u64 << attempt.min(4)).min(16);
                         tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                     }
@@ -1291,14 +1263,10 @@ async fn run_loop<'a>(
                 break;
             };
             match outcome {
-                Ok(locals) => {
-                    governor.on_success();
-                    completed_locals.push((idx, locals));
-                }
+                Ok(locals) => completed_locals.push((idx, locals)),
                 Err(WorkflowError::Exited(reason)) => {
-                    // Not a failure and not rate pressure — don't penalize the
-                    // governor, don't kill the siblings already in flight.
-                    governor.on_success();
+                    // Not a failure and not rate pressure — don't kill the
+                    // siblings already in flight.
                     warn!(
                         activity = activity.id.as_str(),
                         iteration = idx,
@@ -1311,13 +1279,11 @@ async fn run_loop<'a>(
                     if is_rate_limit_shaped(&e.to_string())
                         && attempt < MAX_ITEM_RATE_LIMIT_RETRIES =>
                 {
-                    governor.on_rate_limit();
                     warn!(
                         activity = activity.id.as_str(),
                         iteration = idx,
                         attempt,
-                        target = governor.target(),
-                        "iteration rate-limited — halving concurrency and requeueing"
+                        "iteration rate-limited — requeueing it"
                     );
                     queue.push_back((idx, item, attempt + 1));
                 }
@@ -1866,7 +1832,7 @@ mod walk_tests {
                 let mut remaining = self.rate_limit_failures.lock().unwrap();
                 if *remaining > 0 {
                     *remaining -= 1;
-                    return Err(ai::ProviderError::RateLimit);
+                    return Err(ai::ProviderError::RateLimit { retry_after_secs: None });
                 }
             }
             let user = req
@@ -2536,11 +2502,11 @@ mod walk_tests {
     }
 
     #[tokio::test]
-    async fn test_loop_governor_requeues_rate_limited_iteration() {
+    async fn test_loop_requeues_rate_limited_iteration() {
         // stream_with_retry absorbs 2 retries internally (3 attempts); 3
-        // consecutive RateLimit errors fail the activity — the governor must
-        // requeue the iteration (with backoff + halved target) rather than
-        // fail the run, and the retry then succeeds.
+        // consecutive RateLimit errors fail the activity — the loop must
+        // requeue the iteration (with backoff) rather than fail the run, and
+        // the retry then succeeds.
         let provider = MockProvider::new(&[]).with_rate_limit_failures(3);
         let def = r#"{
             "version":"1.0","id":"t","name":"T",
@@ -2794,6 +2760,8 @@ mod walk_tests {
     /// five at once.
     #[tokio::test]
     async fn test_loop_command_nodes_take_the_tool_permit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
         struct CountingOs {
             live: Arc<AtomicUsize>,
             peak: Arc<AtomicUsize>,
@@ -3506,31 +3474,8 @@ mod graph_tests {
         );
     }
 
-    /// AIMD contract: halve on rate-limit pressure (floor 1, never 0 — a
-    /// zero target would admit nothing and deadlock the loop), creep back +1
-    /// per success, capped at the ceiling. Additive ramp / multiplicative
-    /// backoff, or concurrency either stampedes or collapses.
-    #[test]
-    fn test_loop_governor_aimd_arithmetic() {
-        let g = LoopGovernor::new(4);
-        assert_eq!(g.target(), 4);
-        g.on_rate_limit();
-        assert_eq!(g.target(), 2);
-        g.on_rate_limit();
-        assert_eq!(g.target(), 1);
-        g.on_rate_limit();
-        assert_eq!(g.target(), 1, "backoff floors at 1, never 0");
-        g.on_success();
-        assert_eq!(g.target(), 2, "recovery is additive (+1), not a jump to ceiling");
-        g.on_success();
-        g.on_success();
-        assert_eq!(g.target(), 4);
-        g.on_success();
-        assert_eq!(g.target(), 4, "ramp is capped at the ceiling");
-    }
-
     /// The in-band pressure classifier: provider spellings of rate-limiting
-    /// must match (else the governor never backs off), and ordinary failures
+    /// must match (else a rate-limited item is never requeued), and ordinary failures
     /// must NOT (else real errors get requeued instead of failing the run).
     #[test]
     fn test_is_rate_limit_shaped() {

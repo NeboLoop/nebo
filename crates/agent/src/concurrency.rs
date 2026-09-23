@@ -1,8 +1,6 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ai::RateLimitMeta;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info, warn};
 
@@ -26,21 +24,16 @@ const MIN_PERMITS: usize = 2;
 
 /// Adaptive global concurrency controller for LLM and tool execution.
 ///
-/// Governs all LLM calls and parallel tool execution via dynamic semaphores.
-/// Adapts to rate limits (429 backpressure) and system resources (CPU/memory).
+/// LLM calls take a permit from ONE pool per bot (auditor Rule 15.2). Its size
+/// is the smaller of two bounds: the machine's (memory and load, from the
+/// resource probe) and the provider's (halved on a 429 wave, +1 per
+/// successful call). Shrinking never waits for free permits: permits that are
+/// checked out when a cut lands are retired as their calls finish.
 pub struct ConcurrencyController {
-    /// Dynamic semaphore for LLM calls — initialized at ceiling.
     llm_semaphore: Arc<Semaphore>,
-    /// Current effective permits (adjusted dynamically).
-    effective_permits: AtomicUsize,
-    /// Permits held back to reduce concurrency (acquire-and-hold pattern).
-    held_back: Mutex<Vec<OwnedSemaphorePermit>>,
+    llm_pool: Arc<Mutex<LlmPool>>,
     /// Floor — never go below this.
     min_permits: usize,
-    /// Ceiling — never exceed this (set by resource probe).
-    ceiling: AtomicUsize,
-    /// Backpressure flag — rate limited.
-    backpressure: AtomicBool,
     /// Tool-level concurrency per turn.
     tool_semaphore: Arc<Semaphore>,
     /// Background LLM work (summaries, objective detection, personality
@@ -48,9 +41,52 @@ pub struct ConcurrencyController {
     /// a burst of housekeeping must not queue a person's reply.
     background_semaphore: Arc<Semaphore>,
     /// Absolute max permits — configured limit, or DEFAULT_MAX_CEILING when auto.
-    /// The semaphore is created with this many permits; the resource monitor can
-    /// only trim below it (permits can never grow past the initial count).
     max_ceiling: usize,
+}
+
+/// The LLM pool's books. Every change goes through `rebalance`.
+struct LlmPool {
+    /// Permits that exist: free in the semaphore plus checked out.
+    capacity: usize,
+    /// Checked-out permits to retire when they come back instead of freeing
+    /// them — the part of a cut larger than the free permits at that moment.
+    debt: usize,
+    /// The machine's bound (memory and load), set by the resource probe.
+    ceiling: usize,
+    /// The provider's bound: halved per 429 wave, +1 per successful call.
+    rate_target: usize,
+    /// Bumped on every 429 cut. A permit carries the round it was granted
+    /// in, so the 429s of calls that started before a cut do not cut again —
+    /// fifty calls rejected together are one signal, not fifty halvings.
+    round: u64,
+}
+
+/// A checked-out LLM permit. Dropping it frees the slot, or retires it when
+/// the pool owes a cut.
+pub struct LlmPermit {
+    permit: Option<OwnedSemaphorePermit>,
+    pool: Arc<Mutex<LlmPool>>,
+    round: u64,
+}
+
+impl LlmPermit {
+    /// The 429 round this permit was granted in — pass it to
+    /// `report_rate_limit` so one wave of rejections cuts once.
+    pub fn round(&self) -> u64 {
+        self.round
+    }
+}
+
+impl Drop for LlmPermit {
+    fn drop(&mut self) {
+        let Some(permit) = self.permit.take() else { return };
+        let mut pool = self.pool.lock().unwrap();
+        if pool.debt > 0 {
+            pool.debt -= 1;
+            pool.capacity -= 1;
+            permit.forget();
+        }
+    }
 }
 
 impl ConcurrencyController {
@@ -64,11 +100,14 @@ impl ConcurrencyController {
 
         let controller = Self {
             llm_semaphore: Arc::new(Semaphore::new(max_ceiling)),
-            effective_permits: AtomicUsize::new(max_ceiling),
-            held_back: Mutex::new(Vec::new()),
+            llm_pool: Arc::new(Mutex::new(LlmPool {
+                capacity: max_ceiling,
+                debt: 0,
+                ceiling: max_ceiling,
+                rate_target: max_ceiling,
+                round: 0,
+            })),
             min_permits: MIN_PERMITS,
-            ceiling: AtomicUsize::new(max_ceiling),
-            backpressure: AtomicBool::new(false),
             // Tools run locally (processes, files, browser) and compete for
             // cores, so their pool is sized from the machine — never derived
             // from the LLM ceiling, whose permits only wait on the network.
@@ -100,12 +139,15 @@ impl ConcurrencyController {
     }
 
     /// Acquire a permit for an LLM call. Blocks when at capacity.
-    pub async fn acquire_llm_permit(&self) -> OwnedSemaphorePermit {
-        self.llm_semaphore
+    pub async fn acquire_llm_permit(&self) -> LlmPermit {
+        let permit = self
+            .llm_semaphore
             .clone()
             .acquire_owned()
             .await
-            .expect("llm semaphore closed")
+            .expect("llm semaphore closed");
+        let round = self.llm_pool.lock().unwrap().round;
+        LlmPermit { permit: Some(permit), pool: self.llm_pool.clone(), round }
     }
 
     /// Acquire a permit for background LLM work. Separate, smaller pool (a
@@ -128,149 +170,89 @@ impl ConcurrencyController {
             .expect("tool semaphore closed")
     }
 
-    /// Report a successful LLM call. May release held permits if headroom exists.
-    pub fn report_success(&self, meta: Option<&RateLimitMeta>) {
-        // Clear backpressure on success
-        if self.backpressure.swap(false, Ordering::SeqCst) {
-            debug!("backpressure cleared after successful call");
-        }
-
-        // If we have headroom from rate limit headers, release held permits
-        if let Some(meta) = meta {
-            if let Some(remaining) = meta.remaining_requests {
-                if remaining > 5 {
-                    self.release_held(2);
-                }
-            }
+    /// A call finished without a rate limit: the provider's bound grows by
+    /// one, back toward the machine's.
+    pub fn report_success(&self) {
+        let mut pool = self.llm_pool.lock().unwrap();
+        if pool.rate_target < self.max_ceiling {
+            pool.rate_target += 1;
+            self.rebalance(&mut pool);
         }
     }
 
-    /// Report a 429 rate limit. Acquires permits into held_back to reduce concurrency.
-    pub fn report_rate_limit(&self, retry_after_secs: Option<u64>) {
-        self.backpressure.store(true, Ordering::SeqCst);
-
-        let effective = self.effective_permits.load(Ordering::SeqCst);
-        let to_hold = (effective / 2).max(1);
-        let target = effective.saturating_sub(to_hold).max(self.min_permits);
-        let actual_hold = effective - target;
-
-        if actual_hold == 0 {
+    /// A call was rate limited (429). Halve the provider's bound to half the
+    /// calls in flight right now — once per wave: a call granted before the
+    /// last cut (`granted_round` older than the pool's) reports the same wave
+    /// that cut already answered.
+    pub fn report_rate_limit(&self, granted_round: u64) {
+        let mut pool = self.llm_pool.lock().unwrap();
+        if granted_round < pool.round {
             return;
         }
-
+        let in_flight = (pool.capacity - pool.debt)
+            .saturating_sub(self.llm_semaphore.available_permits());
+        pool.rate_target = (in_flight / 2).max(self.min_permits);
+        pool.round += 1;
         info!(
-            effective,
-            to_hold = actual_hold,
-            target,
-            retry_after_secs,
-            "rate limit backpressure: reducing concurrency"
+            in_flight,
+            rate_target = pool.rate_target,
+            round = pool.round,
+            "rate limit: halving LLM concurrency"
         );
-
-        // Try to acquire permits synchronously (non-blocking) to hold them back.
-        // Count only NEWLY acquired permits — held_back may already contain
-        // permits from a prior ceiling trim, and those were already subtracted
-        // from effective_permits when they were held.
-        let mut held = self.held_back.lock().unwrap();
-        let held_before = held.len();
-        for _ in 0..actual_hold {
-            match self.llm_semaphore.clone().try_acquire_owned() {
-                Ok(permit) => {
-                    held.push(permit);
-                }
-                Err(_) => break, // All permits in use, can't reduce further
-            }
-        }
-        let newly_held = held.len() - held_before;
-        drop(held);
-
-        self.effective_permits
-            .store(effective.saturating_sub(newly_held), Ordering::SeqCst);
-
-        // Permits are released on report_success or set_ceiling calls.
-        // The backpressure flag + held permits naturally throttle until success.
+        self.rebalance(&mut pool);
     }
 
-    /// Release N held permits back to the semaphore.
-    fn release_held(&self, count: usize) {
-        let mut held = self.held_back.lock().unwrap();
-        let to_release = count.min(held.len());
-        if to_release == 0 {
-            return;
-        }
-
-        for _ in 0..to_release {
-            // Dropping the OwnedSemaphorePermit returns it to the semaphore
-            held.pop();
-        }
-        let remaining_held = held.len();
-        drop(held);
-
-        let old = self
-            .effective_permits
-            .fetch_add(to_release, Ordering::SeqCst);
-        debug!(
-            released = to_release,
-            new_effective = old + to_release,
-            remaining_held,
-            "released held permits"
-        );
-    }
-
-    /// Set the ceiling — called by resource monitor. Adjusts permits accordingly.
+    /// Set the machine's bound — called by the resource monitor.
     pub fn set_ceiling(&self, new_ceiling: usize) {
-        let clamped = new_ceiling.max(self.min_permits);
-        let old_ceiling = self.ceiling.swap(clamped, Ordering::SeqCst);
+        let mut pool = self.llm_pool.lock().unwrap();
+        pool.ceiling = new_ceiling.max(self.min_permits);
+        self.rebalance(&mut pool);
+    }
 
-        if clamped == old_ceiling {
-            return;
-        }
-
-        let effective = self.effective_permits.load(Ordering::SeqCst);
-
-        if clamped > effective {
-            // Ceiling increased — release held permits up to new ceiling
-            let can_release = clamped - effective;
-            self.release_held(can_release);
-        } else if clamped < effective {
-            // Ceiling decreased — acquire more permits into held_back.
-            // Count only NEWLY acquired permits (see report_rate_limit).
-            let to_hold = effective - clamped;
-            let mut held = self.held_back.lock().unwrap();
-            let held_before = held.len();
-            for _ in 0..to_hold {
+    /// Bring the pool to min(machine bound, provider bound). Growing pays
+    /// down owed retirements before adding permits; shrinking retires free
+    /// permits now and owes the rest, collected as busy calls return theirs.
+    fn rebalance(&self, pool: &mut LlmPool) {
+        let target = pool.ceiling.min(pool.rate_target).max(self.min_permits);
+        let effective = pool.capacity - pool.debt;
+        if target < effective {
+            let mut cut = effective - target;
+            while cut > 0 {
                 match self.llm_semaphore.clone().try_acquire_owned() {
-                    Ok(permit) => held.push(permit),
+                    Ok(free) => {
+                        free.forget();
+                        pool.capacity -= 1;
+                        cut -= 1;
+                    }
                     Err(_) => break,
                 }
             }
-            let newly_held = held.len() - held_before;
-            drop(held);
-
-            self.effective_permits
-                .store(effective.saturating_sub(newly_held), Ordering::SeqCst);
+            pool.debt += cut;
+        } else if target > effective {
+            let grow = target - effective;
+            let forgiven = grow.min(pool.debt);
+            pool.debt -= forgiven;
+            let added = grow - forgiven;
+            self.llm_semaphore.add_permits(added);
+            pool.capacity += added;
         }
-
         debug!(
-            old_ceiling,
-            new_ceiling = clamped,
-            effective = self.effective_permits.load(Ordering::SeqCst),
-            "ceiling adjusted"
+            target,
+            capacity = pool.capacity,
+            debt = pool.debt,
+            "LLM pool rebalanced"
         );
     }
 
-    /// Whether backpressure is active (rate limited).
-    pub fn is_backpressured(&self) -> bool {
-        self.backpressure.load(Ordering::SeqCst)
-    }
-
-    /// Current effective permit count.
+    /// Permits the pool is sized to right now (owed retirements excluded).
     pub fn effective_permits(&self) -> usize {
-        self.effective_permits.load(Ordering::SeqCst)
+        let pool = self.llm_pool.lock().unwrap();
+        pool.capacity - pool.debt
     }
 
-    /// Current ceiling.
+    /// The machine's bound (memory and load).
     pub fn ceiling(&self) -> usize {
-        self.ceiling.load(Ordering::SeqCst)
+        self.llm_pool.lock().unwrap().ceiling
     }
 }
 
@@ -328,7 +310,6 @@ mod tests {
         let ctrl = ConcurrencyController::new(None);
         assert!(ctrl.effective_permits() >= 2);
         assert_eq!(ctrl.ceiling(), ctrl.effective_permits());
-        assert!(!ctrl.is_backpressured());
     }
 
     #[tokio::test]
@@ -374,64 +355,86 @@ mod tests {
     }
 
     #[test]
-    fn test_report_success_clears_backpressure() {
-        let ctrl = ConcurrencyController::new(None);
-        ctrl.backpressure.store(true, Ordering::SeqCst);
-        assert!(ctrl.is_backpressured());
-        ctrl.report_success(None);
-        assert!(!ctrl.is_backpressured());
-    }
-
-    #[test]
-    fn test_report_rate_limit_sets_backpressure() {
-        let ctrl = ConcurrencyController::new(None);
-        ctrl.report_rate_limit(Some(5));
-        assert!(ctrl.is_backpressured());
-    }
-
-    #[test]
     fn test_set_ceiling_clamps_to_min() {
         let ctrl = ConcurrencyController::new(None);
         ctrl.set_ceiling(1); // Below min_permits (2)
         assert!(ctrl.ceiling() >= 2);
     }
 
-    #[test]
-    fn test_set_ceiling_noop_same_value() {
-        let ctrl = ConcurrencyController::new(None);
-        let initial = ctrl.ceiling();
-        ctrl.set_ceiling(initial);
-        assert_eq!(ctrl.ceiling(), initial);
+    /// A 429 cut lands while every permit is checked out: nothing is free to
+    /// take, so the cut is owed and collected as the busy calls return.
+    #[tokio::test]
+    async fn test_rate_limit_cut_lands_when_every_permit_is_busy() {
+        let ctrl = ConcurrencyController::new(Some(8));
+        ctrl.set_ceiling(8);
+        let mut busy = Vec::new();
+        for _ in 0..8 {
+            busy.push(ctrl.acquire_llm_permit().await);
+        }
+        let round = busy[0].round();
+        ctrl.report_rate_limit(round);
+        assert_eq!(ctrl.effective_permits(), 4, "halved to half of the 8 in flight");
+        drop(busy);
+        assert_eq!(
+            ctrl.llm_semaphore.available_permits(),
+            4,
+            "four returning permits were retired, four freed"
+        );
     }
 
-    #[test]
-    fn test_release_held_empty() {
-        // The boot probe trims to available_mb / MB_PER_LLM_CALL — on a memory-starved
-        // machine that lands below even a small configured cap, leaving
-        // permits in held_back. Drain them first so held_back is empty
-        // regardless of the machine running the test.
-        let ctrl = ConcurrencyController::new(Some(4));
-        ctrl.release_held(usize::MAX);
-        let before = ctrl.effective_permits();
-        ctrl.release_held(5); // Nothing held
-        assert_eq!(ctrl.effective_permits(), before);
+    /// Fifty calls rejected together are one signal: the first 429 of a
+    /// round cuts; the rest of that round's 429s do not cut again.
+    #[tokio::test]
+    async fn test_one_wave_of_429s_cuts_once() {
+        let ctrl = ConcurrencyController::new(Some(16));
+        ctrl.set_ceiling(16);
+        let mut wave = Vec::new();
+        for _ in 0..16 {
+            wave.push(ctrl.acquire_llm_permit().await);
+        }
+        for p in &wave {
+            ctrl.report_rate_limit(p.round());
+        }
+        assert_eq!(ctrl.effective_permits(), 8, "one cut, not sixteen");
+        drop(wave);
+        // A call granted after the cut is a new round: it may cut again.
+        let next = ctrl.acquire_llm_permit().await;
+        ctrl.report_rate_limit(next.round());
+        assert_eq!(ctrl.effective_permits(), MIN_PERMITS, "half of the one call in flight, floored");
     }
 
-    #[test]
-    fn test_report_success_with_headroom_releases() {
-        let ctrl = ConcurrencyController::new(None);
-        // First, hold back some permits
-        ctrl.report_rate_limit(Some(5));
-        let after_limit = ctrl.effective_permits();
+    /// Recovery needs no header and no probe: every successful call grows
+    /// the provider's bound by one, up to the machine's.
+    #[tokio::test]
+    async fn test_successes_recover_to_the_ceiling() {
+        let ctrl = ConcurrencyController::new(Some(8));
+        ctrl.set_ceiling(8);
+        let mut busy = Vec::new();
+        for _ in 0..8 {
+            busy.push(ctrl.acquire_llm_permit().await);
+        }
+        ctrl.report_rate_limit(busy[0].round());
+        drop(busy);
+        assert_eq!(ctrl.effective_permits(), 4);
+        for _ in 0..10 {
+            ctrl.report_success();
+        }
+        assert_eq!(ctrl.effective_permits(), 8, "back to the machine's bound, not past it");
+        assert_eq!(ctrl.llm_semaphore.available_permits(), 8);
+    }
 
-        // Now report success with headroom
-        let meta = RateLimitMeta {
-            remaining_requests: Some(100),
-            ..Default::default()
-        };
-        ctrl.report_success(Some(&meta));
-        assert!(!ctrl.is_backpressured());
-        // Should have released some permits
-        assert!(ctrl.effective_permits() >= after_limit);
+    /// The memory trim shrinks a busy pool the same way a 429 does.
+    #[tokio::test]
+    async fn test_ceiling_trim_lands_when_every_permit_is_busy() {
+        let ctrl = ConcurrencyController::new(Some(8));
+        ctrl.set_ceiling(8);
+        let mut busy = Vec::new();
+        for _ in 0..8 {
+            busy.push(ctrl.acquire_llm_permit().await);
+        }
+        ctrl.set_ceiling(3);
+        assert_eq!(ctrl.effective_permits(), 3);
+        drop(busy);
+        assert_eq!(ctrl.llm_semaphore.available_permits(), 3);
     }
 }

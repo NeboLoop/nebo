@@ -15,6 +15,15 @@
 
 use std::time::Duration;
 
+/// A response's `Retry-After`, in seconds (the delta-seconds form; the
+/// HTTP-date form is not sent by any provider we call).
+pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse().ok())
+}
+
 /// HTTP client for streaming chat completions (Anthropic, OpenAI, Janus,
 /// DeepSeek, Gemini). Long-running SSE — no total request timeout, but we
 /// detect dead connections via TCP keepalive and proactively recycle idle

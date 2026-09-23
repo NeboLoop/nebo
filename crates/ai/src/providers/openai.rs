@@ -417,6 +417,29 @@ impl OpenAIProvider {
                                     raw = %err_obj,
                                     "provider returned error in SSE stream"
                                 );
+                                // A rate limit inside the stream (Janus sends
+                                // 200 + SSE headers before its per-user check
+                                // runs) carries how long to wait as
+                                // `retry_after`, a Go duration. Hand it to the
+                                // runner on the rate-limit event it already
+                                // reads, ahead of the error that ends the turn.
+                                if err_type == "rate_limit_error" {
+                                    let wait = err_obj
+                                        .get("retry_after")
+                                        .and_then(|v| match v {
+                                            serde_json::Value::String(s) => go_duration_secs(s),
+                                            serde_json::Value::Number(n) => n.as_u64(),
+                                            _ => None,
+                                        });
+                                    if wait.is_some() {
+                                        let _ = tx
+                                            .send(StreamEvent::rate_limit_info(RateLimitMeta {
+                                                retry_after_secs: wait,
+                                                ..Default::default()
+                                            }))
+                                            .await;
+                                    }
+                                }
                                 let _ = tx.send(StreamEvent::error(msg.to_string())).await;
                                 finished = true;
                                 errored = true;
@@ -862,6 +885,7 @@ impl Provider for OpenAIProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after = crate::http::retry_after_secs(response.headers());
             let body = response.text().await.unwrap_or_default();
             warn!(
                 status = status.as_u16(),
@@ -870,7 +894,7 @@ impl Provider for OpenAIProvider {
                 model = model,
                 "provider HTTP error"
             );
-            return Err(map_http_error(status.as_u16(), &body, &model, &url));
+            return Err(map_http_error(status.as_u16(), &body, &model, &url, retry_after));
         }
 
         let (tx, rx) = mpsc::channel(100);
@@ -979,8 +1003,58 @@ impl Provider for OpenAIProvider {
     }
 }
 
+/// Whole seconds (rounded up) in a Go `time.Duration` string such as `5s`,
+/// `1.5s`, `5h0m0s` or `250ms` — the form Janus writes `retry_after` in.
+fn go_duration_secs(s: &str) -> Option<u64> {
+    let mut total = 0f64;
+    let mut num = String::new();
+    let mut unit = String::new();
+    let flush = |num: &mut String, unit: &mut String, total: &mut f64| -> Option<()> {
+        let n: f64 = num.parse().ok()?;
+        let per_sec = match unit.as_str() {
+            "h" => 3600.0,
+            "m" => 60.0,
+            "s" => 1.0,
+            "ms" => 0.001,
+            "us" | "µs" => 0.000_001,
+            "ns" => 0.000_000_001,
+            _ => return None,
+        };
+        *total += n * per_sec;
+        num.clear();
+        unit.clear();
+        Some(())
+    };
+    for c in s.trim().chars() {
+        if c.is_ascii_digit() || c == '.' {
+            if !unit.is_empty() {
+                flush(&mut num, &mut unit, &mut total)?;
+            }
+            num.push(c);
+        } else {
+            if num.is_empty() {
+                return None;
+            }
+            unit.push(c);
+        }
+    }
+    if num.is_empty() && unit.is_empty() && total == 0.0 {
+        return None;
+    }
+    if !num.is_empty() {
+        flush(&mut num, &mut unit, &mut total)?;
+    }
+    Some(total.ceil() as u64)
+}
+
 /// Map HTTP error status + body to our ProviderError type.
-fn map_http_error(status: u16, body: &str, model: &str, url: &str) -> ProviderError {
+fn map_http_error(
+    status: u16,
+    body: &str,
+    model: &str,
+    url: &str,
+    retry_after_secs: Option<u64>,
+) -> ProviderError {
     // Try to parse as OpenAI error JSON: {"error":{"message":"...", "code":"..."}}
     let (msg, code) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
         let err = &v["error"];
@@ -1000,12 +1074,12 @@ fn map_http_error(status: u16, body: &str, model: &str, url: &str) -> ProviderEr
             message: format!("USAGE_LIMIT_EXCEEDED: {msg}"),
             retryable: false,
         },
-        429 => ProviderError::RateLimit,
+        429 => ProviderError::RateLimit { retry_after_secs },
         401 => ProviderError::Auth(msg),
         _ => {
             // Rate limit by code/message
             if code == "rate_limit_exceeded" || msg.contains("rate limit") || msg.contains("429") {
-                return ProviderError::RateLimit;
+                return ProviderError::RateLimit { retry_after_secs };
             }
             // Auth
             if code == "invalid_api_key"
@@ -1147,6 +1221,57 @@ mod tests {
         }
         assert!(saw_error, "truncated stream must emit a retryable Error event");
         assert!(!saw_done, "truncated stream must NOT emit a clean Done");
+    }
+
+    #[test]
+    fn go_duration_strings_become_whole_seconds() {
+        assert_eq!(go_duration_secs("5s"), Some(5));
+        assert_eq!(go_duration_secs("1.2s"), Some(2), "rounded up");
+        assert_eq!(go_duration_secs("5h0m0s"), Some(18_000));
+        assert_eq!(go_duration_secs("2m30s"), Some(150));
+        assert_eq!(go_duration_secs("250ms"), Some(1), "sub-second waits at least one second");
+        assert_eq!(go_duration_secs("0s"), Some(0));
+        assert_eq!(go_duration_secs("soon"), None);
+        assert_eq!(go_duration_secs(""), None);
+        assert_eq!(go_duration_secs("5"), None, "a bare number is not a Go duration");
+    }
+
+    // Janus's per-user rate limit arrives INSIDE the stream (it sends 200 +
+    // SSE headers before the check runs), as an error envelope carrying
+    // `retry_after`. The runner must get that wait on the rate-limit event
+    // before the error ends the turn.
+    #[tokio::test]
+    async fn in_stream_rate_limit_carries_retry_after() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let envelope = "data: {\"error\":{\"message\":\"Rate limit exceeded for user\",\"type\":\"rate_limit_error\",\"code\":\"rate_limit_exceeded\",\"retryable\":true,\"retry_after\":\"5s\"}}\n\n";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{envelope}"
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+        let response = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        OpenAIProvider::handle_stream(response, tx).await;
+        server.await.unwrap();
+
+        let mut kinds = Vec::new();
+        let mut wait = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(meta) = &ev.rate_limit {
+                wait = meta.retry_after_secs;
+            }
+            kinds.push(ev.event_type);
+        }
+        assert_eq!(wait, Some(5), "retry_after reaches the runner as seconds");
+        let rl = kinds.iter().position(|k| matches!(k, StreamEventType::RateLimit));
+        let er = kinds.iter().position(|k| matches!(k, StreamEventType::Error));
+        assert!(rl.is_some() && er.is_some() && rl < er, "the wait precedes the error: {kinds:?}");
     }
 
     // A well-formed stream that ends with finish_reason + [DONE] must still emit

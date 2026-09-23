@@ -223,35 +223,95 @@ async fn the_store_and_the_ledger_hold_under_contention() {
     }
 }
 
-/// Given words for every model call: the plan request gets three independent
-/// sub-tasks, every other call gets "done". The permits, the runner's loop,
-/// the store and the DAG scheduler are the product's own.
-struct PlanThenDone;
+/// Given words for every model call: the plan request gets `tasks`
+/// independent sub-tasks, every other call gets "done" after a short think.
+/// The first `reject` calls after the plan are refused with a 429, as Janus
+/// refuses when an upstream provider is limiting it. `live`/`peak` count
+/// the calls in flight at the provider. The permits, the runner's loop and
+/// retries, the store and the DAG scheduler are the product's own.
+struct GivenWords(Arc<Words>);
+
+struct Words {
+    tasks: usize,
+    reject: std::sync::atomic::AtomicUsize,
+    live: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+    /// Peak calls in flight after the 429 wave was answered.
+    peak_after_reject: std::sync::atomic::AtomicUsize,
+}
+
+impl Words {
+    fn new(tasks: usize, reject: usize) -> Arc<Self> {
+        use std::sync::atomic::AtomicUsize;
+        Arc::new(Self {
+            tasks,
+            reject: AtomicUsize::new(reject),
+            live: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            peak_after_reject: AtomicUsize::new(0),
+        })
+    }
+}
 
 #[async_trait::async_trait]
-impl ai::Provider for PlanThenDone {
+impl ai::Provider for GivenWords {
     fn id(&self) -> &str {
         "given-words"
     }
     async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+        use std::sync::atomic::Ordering::SeqCst;
         let asks_for_plan = req
             .messages
             .iter()
             .any(|m| m.content.contains("Break this task into independent sub-tasks"));
+        let words = &self.0;
         let text = if asks_for_plan {
-            r#"[{"id":"1","description":"one","prompt":"do one","agent_type":"general","depends_on":[]},
-                {"id":"2","description":"two","prompt":"do two","agent_type":"general","depends_on":[]},
-                {"id":"3","description":"three","prompt":"do three","agent_type":"general","depends_on":[]}]"#
+            let plan: Vec<_> = (1..=words.tasks)
+                .map(|i| json!({"id": i.to_string(), "description": format!("part-{i}"), "prompt": format!("do part {i}"), "agent_type": "general", "depends_on": []}))
+                .collect();
+            serde_json::to_string(&plan).unwrap()
         } else {
-            "done"
+            let rejecting = words.reject.fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1)).is_ok();
+            if rejecting {
+                return Err(ai::ProviderError::RateLimit { retry_after_secs: Some(0) });
+            }
+            "done".to_string()
         };
+        let me = words.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(4);
         tokio::spawn(async move {
+            let now = me.live.fetch_add(1, SeqCst) + 1;
+            me.peak.fetch_max(now, SeqCst);
+            if me.reject.load(SeqCst) == 0 {
+                me.peak_after_reject.fetch_max(now, SeqCst);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            me.live.fetch_sub(1, SeqCst);
             let _ = tx.send(ai::StreamEvent::text(text)).await;
             let _ = tx.send(ai::StreamEvent::done()).await;
         });
         Ok(rx)
     }
+}
+
+/// A real runner over a fresh store with only the model's words given.
+fn given_words_runner(
+    words: Arc<Words>,
+    concurrency: Arc<agent::ConcurrencyController>,
+) -> (Arc<agent::Runner>, Arc<db::Store>) {
+    let store = Arc::new(fresh_store());
+    let runner = Arc::new(agent::Runner::new(
+        store.clone(),
+        Arc::new(tools::Registry::new(tools::Policy::new())),
+        vec![Arc::new(GivenWords(words)) as Arc<dyn ai::Provider>],
+        agent::selector::ModelSelector::new(Default::default()),
+        concurrency,
+        Arc::new(napp::HookDispatcher::new()),
+        None,
+        Default::default(),
+        None,
+    ));
+    (runner, store)
 }
 
 /// A fan-out finishes when only two model calls may run at once. A permit
@@ -266,18 +326,7 @@ async fn a_fan_out_finishes_at_the_permit_floor() {
 
     let concurrency = Arc::new(agent::ConcurrencyController::new(Some(2)));
     assert_eq!(concurrency.ceiling(), 2, "the scenario runs at the permit floor");
-    let store = Arc::new(fresh_store());
-    let runner = Arc::new(agent::Runner::new(
-        store.clone(),
-        Arc::new(tools::Registry::new(tools::Policy::new())),
-        vec![Arc::new(PlanThenDone) as Arc<dyn ai::Provider>],
-        agent::selector::ModelSelector::new(Default::default()),
-        concurrency,
-        Arc::new(napp::HookDispatcher::new()),
-        None,
-        Default::default(),
-        None,
-    ));
+    let (runner, store) = given_words_runner(Words::new(3, 0), concurrency);
     let orchestrator = agent::Orchestrator::new(runner, store);
 
     let result = tokio::time::timeout(
@@ -288,7 +337,46 @@ async fn a_fan_out_finishes_at_the_permit_floor() {
     .expect("the fan-out deadlocked: a permit is held around work that needs permits")
     .expect("the fan-out runs");
     assert!(result.success, "every sub-task completes: {:?}", result.error);
-    for part in ["one", "two", "three"] {
+    for part in ["part-1", "part-2", "part-3"] {
         assert!(result.output.contains(part), "sub-task '{part}' is missing from: {}", result.output);
     }
+}
+
+/// A 429 slows the whole bot, not the one call that got it, and the bot
+/// recovers on its own. Eight sub-tasks fan out over eight permits and
+/// Janus refuses the first wave of eight calls. The pool halves once for
+/// the wave (not eight times), no later moment runs all eight again until
+/// successes rebuild it, every sub-task still finishes, and the pool is back
+/// to eight — with no header from Janus and no resource probe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_429_slows_the_whole_bot_and_it_recovers() {
+    use std::sync::atomic::Ordering::SeqCst;
+    use tools::SubAgentOrchestrator as _;
+
+    let concurrency = Arc::new(agent::ConcurrencyController::new(Some(8)));
+    concurrency.set_ceiling(8);
+    assert_eq!(concurrency.effective_permits(), 8);
+    let words = Words::new(8, 8);
+    let (runner, store) = given_words_runner(words.clone(), concurrency.clone());
+    let orchestrator = agent::Orchestrator::new(runner, store);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        orchestrator.execute_dag("eight independent jobs", "owner", "agent:ops:web", "", None),
+    )
+    .await
+    .expect("the fan-out finished")
+    .expect("the fan-out runs");
+    assert!(result.success, "every sub-task completes after the 429 wave: {:?}", result.error);
+    for i in 1..=8 {
+        let part = format!("part-{i}");
+        assert!(result.output.contains(&part), "sub-task '{part}' is missing from: {}", result.output);
+    }
+    assert_eq!(words.reject.load(SeqCst), 0, "the whole 429 wave was served");
+    let after = words.peak_after_reject.load(SeqCst);
+    assert!(
+        (1..8).contains(&after),
+        "after the 429 wave the bot ran at most half again, not all eight at once: peak {after}"
+    );
+    assert_eq!(concurrency.effective_permits(), 8, "successes grew the pool back to the machine's bound");
 }

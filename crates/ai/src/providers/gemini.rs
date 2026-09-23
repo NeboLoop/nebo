@@ -276,13 +276,14 @@ impl Provider for GeminiProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after = crate::http::retry_after_secs(response.headers());
             let body = response.text().await.unwrap_or_default();
             warn!(
                 status = status.as_u16(),
                 body = %body,
                 "Gemini HTTP error"
             );
-            return Err(map_gemini_error(status.as_u16(), &body));
+            return Err(map_gemini_error(status.as_u16(), &body, retry_after));
         }
 
         let (tx, rx) = mpsc::channel(100);
@@ -531,7 +532,7 @@ fn convert_json_schema(schema: &serde_json::Value) -> GeminiSchema {
 }
 
 /// Map Gemini HTTP errors to ProviderError.
-fn map_gemini_error(status: u16, body: &str) -> ProviderError {
+fn map_gemini_error(status: u16, body: &str, retry_after_secs: Option<u64>) -> ProviderError {
     let msg = if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
         v["error"]["message"].as_str().unwrap_or(body).to_string()
     } else {
@@ -539,7 +540,7 @@ fn map_gemini_error(status: u16, body: &str) -> ProviderError {
     };
 
     match status {
-        429 => ProviderError::RateLimit,
+        429 => ProviderError::RateLimit { retry_after_secs },
         401 | 403 => ProviderError::Auth(msg),
         _ => {
             if msg.contains("context") && msg.contains("exceeded") {

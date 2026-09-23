@@ -604,9 +604,10 @@ impl Provider for AnthropicProvider {
 
         let status = response.status();
         if !status.is_success() {
+            let retry_after_secs = crate::http::retry_after_secs(response.headers());
             let body = response.text().await.unwrap_or_default();
             if status.as_u16() == 429 {
-                return Err(ProviderError::RateLimit);
+                return Err(ProviderError::RateLimit { retry_after_secs });
             }
             if status.as_u16() == 401 {
                 return Err(ProviderError::Auth(body));

@@ -4947,13 +4947,16 @@ async fn run_loop(
 
         // Acquire LLM permit before provider call (blocks if at capacity)
         let t_permit_start = std::time::Instant::now();
-        let _llm_permit = tokio::select! {
+        let llm_permit = tokio::select! {
             _ = cancel_token.cancelled() => {
                 info!(session_id, "run cancelled waiting for LLM permit");
                 return Ok(turn_exit_reason.label());
             }
             permit = concurrency.acquire_llm_permit() => permit,
         };
+        // A 429 on this call reports the round its permit was granted in, so
+        // one wave of rejections halves the pool once.
+        let permit_round = llm_permit.round();
         let permit_wait_ms = t_permit_start.elapsed().as_millis() as u64;
         if permit_wait_ms > 5 {
             info!(
@@ -5034,6 +5037,9 @@ async fn run_loop(
                 rx
             }
             Err(e) => {
+                // Every branch below retries after a wait or ends the turn:
+                // a waiting call must not sit on a slot other calls could use.
+                drop(llm_permit);
                 // Deduplicate repeated errors to avoid log spam
                 let err_str = format!("{}", e);
                 let fingerprint = dedupe::fingerprint_error(&err_str);
@@ -5111,6 +5117,14 @@ async fn run_loop(
                     continue;
                 }
 
+                // A 429 slows the whole bot, not just this call: the pool
+                // halves, and this call waits as long as the provider asked.
+                let mut retry_after = None;
+                if let ProviderError::RateLimit { retry_after_secs } = &e {
+                    concurrency.report_rate_limit(permit_round);
+                    retry_after = *retry_after_secs;
+                }
+
                 if e.is_retryable() {
                     retryable_retries += 1;
                     selector.mark_failed(&selected_model);
@@ -5135,7 +5149,7 @@ async fn run_loop(
                     }
                     tokio::select! {
                         _ = cancel_token.cancelled() => return Ok("cancelled".to_string()),
-                        _ = tokio::time::sleep(retry_backoff(retryable_retries, None)) => {}
+                        _ = tokio::time::sleep(retry_backoff(retryable_retries, retry_after)) => {}
                     }
                     continue;
                 }
@@ -5316,7 +5330,6 @@ async fn run_loop(
                 StreamEventType::RateLimit => {
                     if let Some(ref meta) = event.rate_limit {
                         last_retry_after = meta.retry_after_secs;
-                        concurrency.report_success(Some(meta));
 
                         // Check Janus session/weekly usage and generate quota warning at >80%
                         let mut warnings = Vec::new();
@@ -5418,7 +5431,7 @@ async fn run_loop(
         }
 
         // Drop LLM permit now that stream is complete
-        drop(_llm_permit);
+        drop(llm_permit);
 
         // Reset retry counters only when stream actually produced content
         if stream_error.is_none() && (!assistant_content.is_empty() || !tool_calls.is_empty()) {
@@ -5431,7 +5444,7 @@ async fn run_loop(
 
         // Report success or rate limit to concurrency controller
         if stream_error.is_none() {
-            concurrency.report_success(None);
+            concurrency.report_success();
         }
 
         // Handle stream errors — classify and retry (matches Go runner logic)
@@ -5529,7 +5542,7 @@ async fn run_loop(
 
             // Report rate limit to concurrency controller
             if reason == "rate_limit" {
-                concurrency.report_rate_limit(last_retry_after);
+                concurrency.report_rate_limit(permit_round);
             }
 
             // Layer 2: Retryable errors (rate_limit, billing, provider errors)
