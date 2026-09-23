@@ -640,7 +640,15 @@ impl DynTool for OsTool {
     }
 
     fn description(&self) -> String {
-        "Local machine operations — files, shell, apps, desktop automation, settings, media, credentials, search, PIM.\n\n\
+        // Said up front in server mode: a gate run (2026-09-23) watched the
+        // model call os(action: "today", calendar: …) on a headless server
+        // and get the refusal below after the fact.
+        let server_note = if crate::server_mode() {
+            "SERVER MODE — this Nebo runs in the cloud: no mail, contacts, calendar, reminders, notification, shortcut, tts or dock (never call them here); window, input, clipboard, capture, ui, menu, dialog and space only while a desktop session is up. File, shell, web, keychain, settings and search work normally.\n\n"
+        } else {
+            ""
+        };
+        format!("{server_note}{}", "Local machine operations — files, shell, apps, desktop automation, settings, media, credentials, search, PIM.\n\n\
          Rules:\n\
          - ALWAYS call this tool for file/system facts — NEVER answer from memory or training data. To read a file, call os(resource: \"file\", action: \"read\"); do NOT claim a file is missing or report its contents without calling first.\n\
          - Prefer file actions over shell: use file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find.\n\
@@ -684,7 +692,7 @@ impl DynTool for OsTool {
          os(resource: \"music\", action: \"play\")\n  \
          os(resource: \"keychain\", action: \"get\", service: \"myapp\", account: \"user@example.com\")\n  \
          os(resource: \"mail\", action: \"unread\")"
-            .to_string()
+            .to_string())
     }
 
     fn schema(&self) -> serde_json::Value {
