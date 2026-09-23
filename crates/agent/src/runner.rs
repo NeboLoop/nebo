@@ -3298,6 +3298,67 @@ async fn run_loop(
         has_context,
     );
 
+    // The turn decision's questions ride the objective call (one Jev request
+    // per real user message): one per context group registered now, plus the
+    // task-tracking nudge. Fired here, before recall and the rest of setup,
+    // so the round trip (a fresh connection to Janus included) overlaps that
+    // setup and the answer is usually waiting when the first step's tool
+    // filter asks for it; no answer in time, or none at all, and the keyword
+    // filter and keyword nudge run for this turn (see `turn_decide::receive`).
+    // Workflow turns and review forks have no person speaking and run on
+    // scratch sessions: no objective call, so no turn decision rides it.
+    let objective_applies = objective_detection_applies(workflow_mode, review_fork.as_ref());
+    let turn_groups = if objective_applies && decide.is_some() && crate::turn_decide::enabled() {
+        let registered: HashSet<String> = tools.get_tool_names().await.into_iter().collect();
+        Some(tool_filter::context_groups(&registered))
+    } else {
+        None
+    };
+    let (turn_tx, mut turn_rx) = match turn_groups {
+        Some(groups) => {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            (Some((groups, tx)), Some(rx))
+        }
+        None => (None, None),
+    };
+    let turn_fired = tokio::time::Instant::now();
+    let mut turn_signals: Option<crate::turn_decide::TurnSignals> = None;
+
+    // Fire objective detection in background (non-blocking). One typed
+    // decision, milliseconds; it never touches the chat provider. Workflow
+    // turns and review forks have no person speaking and run on scratch
+    // sessions, so an objective there is paid for and never read.
+    if objective_applies {
+        let decide = decide.cloned();
+        let providers = providers.clone();
+        let store = store.clone();
+        let session_id = session_id.to_string();
+        let agent_id = agent_id.to_string();
+        let user_prompt = sessions
+            .get_messages(&session_id)
+            .ok()
+            .and_then(|msgs| {
+                msgs.iter()
+                    .rev()
+                    .find(|m| m.role == "user")
+                    .map(|m| m.content.clone())
+            })
+            .unwrap_or_default();
+        tokio::spawn(async move {
+            let session_mgr = SessionManager::new(store);
+            detect_objective(
+                decide.as_deref(),
+                &agent_id,
+                &providers,
+                &session_mgr,
+                &session_id,
+                &user_prompt,
+                turn_tx,
+            )
+            .await;
+        });
+    }
+
     // Kick off per-message memory recall CONCURRENTLY with the rest of prompt
     // assembly: its cost is a query-embedding network round trip (~650ms
     // steady-state), while the sibling loads below (db context, configured
@@ -3817,65 +3878,6 @@ async fn run_loop(
     // Record run start time for sliding window protection
     let run_start_time = chrono::Utc::now().timestamp();
 
-    // The turn decision's questions ride the objective call (one Jev request
-    // per real user message): one per context group registered now, plus the
-    // task-tracking nudge. The first step waits for them until `turn_deadline`
-    // at the tool filter; no answer by then, or none at all, and the keyword
-    // filter and keyword nudge run for this turn (see `turn_decide`).
-    // Workflow turns and review forks have no person speaking and run on
-    // scratch sessions: no objective call, so no turn decision rides it.
-    let objective_applies = objective_detection_applies(workflow_mode, review_fork.as_ref());
-    let turn_groups = if objective_applies && decide.is_some() && crate::turn_decide::enabled() {
-        let registered: HashSet<String> = tools.get_tool_names().await.into_iter().collect();
-        Some(tool_filter::context_groups(&registered))
-    } else {
-        None
-    };
-    let (turn_tx, mut turn_rx) = match turn_groups {
-        Some(groups) => {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            (Some((groups, tx)), Some(rx))
-        }
-        None => (None, None),
-    };
-    let turn_deadline = tokio::time::Instant::now() + crate::turn_decide::WAIT;
-    let mut turn_signals: Option<crate::turn_decide::TurnSignals> = None;
-
-    // Fire objective detection in background (non-blocking). One typed
-    // decision, milliseconds; it never touches the chat provider. Workflow
-    // turns and review forks have no person speaking and run on scratch
-    // sessions, so an objective there is paid for and never read.
-    if objective_applies {
-        let decide = decide.cloned();
-        let providers = providers.clone();
-        let store = store.clone();
-        let session_id = session_id.to_string();
-        let agent_id = agent_id.to_string();
-        let user_prompt = sessions
-            .get_messages(&session_id)
-            .ok()
-            .and_then(|msgs| {
-                msgs.iter()
-                    .rev()
-                    .find(|m| m.role == "user")
-                    .map(|m| m.content.clone())
-            })
-            .unwrap_or_default();
-        tokio::spawn(async move {
-            let session_mgr = SessionManager::new(store);
-            detect_objective(
-                decide.as_deref(),
-                &agent_id,
-                &providers,
-                &session_mgr,
-                &session_id,
-                &user_prompt,
-                turn_tx,
-            )
-            .await;
-        });
-    }
-
     // Use the extended ceiling for the loop range; adaptive check below enforces
     // the default limit unless the agent is making genuine progress.
     let hard_ceiling = max_iterations.max(EXTENDED_MAX_ITERATIONS);
@@ -4348,7 +4350,7 @@ async fn run_loop(
         // A closed channel (no client, an error, a continuation) is an
         // immediate keyword fallback, never a wait.
         if let Some(rx) = turn_rx.take() {
-            turn_signals = crate::turn_decide::receive(rx, turn_deadline).await;
+            turn_signals = crate::turn_decide::receive(rx, turn_fired).await;
         }
 
         let (mut tool_defs, active_contexts) = tool_filter::filter_tools_with_context(
@@ -9056,6 +9058,7 @@ async fn detect_objective(
         agent_id: agent_id.to_string(),
         ..RequestTrace::new("objective")
     };
+    let t_call = std::time::Instant::now();
     let call = client.decide(&trace, &state, &questions);
     let decision =
         match tokio::time::timeout(Duration::from_secs(OBJECTIVE_TIMEOUT_SECS), call).await {
@@ -9080,6 +9083,7 @@ async fn detect_objective(
         confidence,
         mode,
         questions = questions.len(),
+        call_ms = t_call.elapsed().as_millis() as u64,
         input_tokens = decision.usage.input_tokens,
         output_tokens = decision.usage.output_tokens,
         cost_micro = decision.usage.cost_micro,
