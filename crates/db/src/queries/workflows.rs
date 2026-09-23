@@ -428,14 +428,25 @@ impl Store {
             self.engine_set_run_result_tag(id, tag)?;
         }
         self.engine_set_run_state(id, state, now(), error)?;
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE workflow_runs
-             SET total_tokens_used = ?1, error_activity = ?2, completed_at = unixepoch()
-             WHERE id = ?3",
-            params![total_tokens_used, error_activity, id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
+        {
+            let conn = self.conn()?;
+            conn.execute(
+                "UPDATE workflow_runs
+                 SET total_tokens_used = ?1, error_activity = ?2, completed_at = unixepoch()
+                 WHERE id = ?3",
+                params![total_tokens_used, error_activity, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        }
+        // `exited` is how a run ends when the step evaluator or the employee
+        // says there is nothing to do: a clean end (engine state `done`) with
+        // a reason, which is the binding's standing outcome. Every other
+        // status is either real work done or a failure, and records none.
+        if status == "exited" {
+            if let Some(reason) = error.filter(|r| !r.trim().is_empty()) {
+                self.record_standing_outcome(id, reason, now())?;
+            }
+        }
         Ok(())
     }
 
@@ -911,6 +922,37 @@ fn row_to_workflow_run(row: &rusqlite::Row) -> rusqlite::Result<WorkflowRun> {
 #[cfg(test)]
 mod tests {
     use crate::Store;
+
+    /// An `exited` run records its reason's first line, capped, on the
+    /// binding it belongs to (by the binding name or `<binding>:<detail>`);
+    /// a completed or failed run records nothing, and a run of no binding
+    /// touches no binding.
+    #[test]
+    fn test_an_exited_run_records_its_bindings_standing_outcome() {
+        let path = std::env::temp_dir().join(format!("nebo-wf-standing-{}.db", uuid::Uuid::new_v4()));
+        let store = Store::new(&path.to_string_lossy()).unwrap();
+        store.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
+        for b in ["sweep", "report"] {
+            store.upsert_agent_workflow("emp", b, "heartbeat", "30m", None, None, None, None, None, false).unwrap();
+        }
+        store.create_workflow_run("r1", "agent:emp", "heartbeat", Some("sweep:item-7"), None, None, None).unwrap();
+        let long = format!("{}\nsecond line", "x".repeat(400));
+        store.complete_workflow_run("r1", "exited", 0, Some(&long), None, None).unwrap();
+        let (outcome, at) = store.agent_workflow_last_outcome("emp", "sweep").unwrap().unwrap();
+        assert_eq!(outcome, "x".repeat(super::super::assignments::STANDING_OUTCOME_CAP));
+        assert!(at > 0);
+        assert_eq!(store.agent_workflow_last_outcome("emp", "report").unwrap(), None);
+
+        for (id, status) in [("r2", "completed"), ("r3", "failed")] {
+            store.create_workflow_run(id, "agent:emp", "heartbeat", Some("report"), None, None, None).unwrap();
+            store.complete_workflow_run(id, status, 0, Some("an error"), None, None).unwrap();
+        }
+        assert_eq!(store.agent_workflow_last_outcome("emp", "report").unwrap(), None);
+
+        store.create_workflow_run("r4", "wf-standalone", "manual", None, None, None, None).unwrap();
+        store.complete_workflow_run("r4", "exited", 0, Some("nothing"), None, None).unwrap();
+        assert_eq!(store.agent_workflow_last_outcome("emp", "sweep").unwrap().unwrap().0.len(), 300);
+    }
 
     /// A loop body appends one row per item under the SAME run and activity id.
     /// Both the read and the content write must key on the iteration, or the

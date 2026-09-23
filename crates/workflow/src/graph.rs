@@ -3256,6 +3256,85 @@ mod walk_tests {
         assert!(ran(&provider, "step-three"));
     }
 
+    /// A run of an employee's binding, in `store`: the binding row, and the
+    /// run row carrying `agent:<id>` and the binding name as a timer fire's
+    /// run does.
+    async fn run_binding_graph(
+        def_json: &str,
+        provider: &MockProvider,
+        decide: Option<&ai::DecideClient>,
+    ) -> (Result<(String, String), WorkflowError>, Arc<Store>, String) {
+        let def = parse_workflow(def_json).expect("valid def");
+        let store = test_store();
+        store.conn_exec_for_test(
+            "INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)",
+        );
+        store
+            .upsert_agent_workflow("emp", "sweep", "heartbeat", "30m", None, None, None, None, None, false)
+            .unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_workflow_run(&run_id, "agent:emp", "heartbeat", Some("sweep"), None, None, None)
+            .expect("run row");
+        let looper = ScriptedLoop::new(provider);
+        let result = execute_graph(
+            &def, "", "test-owner", false, &serde_json::json!({}), &store, decide, &looper, &[], None,
+            &run_id, None, None, None, None, None, None, None,
+        )
+        .await;
+        (result, store, run_id)
+    }
+
+    const OUTCOME_PRECONDITION: &str = r#"{"model":"jev-1.13.0","answers":{"outcome":{"type":"choice","choice":"precondition_failed","confidence":0.99,"probabilities":{}}},"usage":{"input_tokens":10,"output_tokens":1,"cost_micro":10}}"#;
+
+    /// How a run ends decides what it is, never what its text says. The step
+    /// evaluator ending it after the first step is a clean end with a
+    /// reason: `exited` (engine state `done`), the reason the step's own
+    /// words, the binding's standing outcome recorded, and nothing after it
+    /// runs — not the activity's next step, not the next activity. The
+    /// employee calling `exit` is the same. A provider failure is `failed`
+    /// and records no standing outcome.
+    #[tokio::test]
+    async fn test_a_run_ended_for_nothing_to_do_is_a_standing_outcome_and_a_failure_is_not() {
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","intent":"task-a","steps":["step-one","step-two"]},
+                {"id":"b","intent":"task-b"}],
+            "connections":[{"from":"__trigger__","to":"a"},{"from":"a","to":"b"},{"from":"b","to":"__emit__"}]
+        }"#;
+
+        // The step evaluator ends it.
+        let (client, _hits) = fake_janus(200, OUTCOME_PRECONDITION).await;
+        let provider = MockProvider::new(&[("step-one", "## Check\nThe list is empty; there is nothing to act on.")]);
+        let (result, store, run_id) = run_binding_graph(def, &provider, Some(&client)).await;
+        result.expect("an evaluator exit ends the run cleanly");
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run.status, "exited");
+        assert_eq!(store.engine_get_run(&run_id).unwrap().unwrap().state, "done");
+        assert_eq!(run.error.as_deref(), Some("Step 1/2 evaluator: Check"));
+        assert!(!ran(&provider, "step-two") && !ran(&provider, "task-b"), "{:?}", provider.calls());
+        let (outcome, _at) = store.agent_workflow_last_outcome("emp", "sweep").unwrap().expect("standing outcome");
+        assert_eq!(outcome, "Step 1/2 evaluator: Check");
+
+        // The employee says why and exits.
+        let provider = MockProvider::new(&[]).with_exit_scripts(&[("task-a", "Nothing new since the last run.\nDetail.")]);
+        let one_step = def.replace(r#","steps":["step-one","step-two"]"#, "");
+        let (result, store, run_id) = run_binding_graph(&one_step, &provider, None).await;
+        result.expect("an exit ends the run cleanly");
+        assert_eq!(run_status(&store, &run_id), "exited");
+        assert!(!ran(&provider, "task-b"));
+        let (outcome, _at) = store.agent_workflow_last_outcome("emp", "sweep").unwrap().expect("standing outcome");
+        assert_eq!(outcome, "Nothing new since the last run.");
+
+        // A provider failure is a failure, with no standing outcome.
+        let provider = MockProvider::new(&[]).with_rate_limit_failures(3);
+        let (result, store, run_id) = run_binding_graph(&one_step, &provider, None).await;
+        assert!(result.is_err());
+        assert_eq!(run_status(&store, &run_id), "failed");
+        assert_eq!(store.agent_workflow_last_outcome("emp", "sweep").unwrap(), None);
+    }
+
     /// on_error.retry is the activity-level retry budget: after
     /// stream_with_retry's transient retries are exhausted, a declared budget
     /// re-runs the activity and the run completes; the default budget (one

@@ -1060,9 +1060,12 @@ pub async fn execute_activity(
                     reason = %reason,
                     "orchestrator exited workflow at step"
                 );
-                return Err(WorkflowError::Exited(
-                    format!("Step {}/{} evaluator: {}", i + 1, total_steps, reason),
-                ));
+                return Err(WorkflowError::Exited(evaluator_exit_reason(
+                    i + 1,
+                    total_steps,
+                    &reason,
+                    &step_result,
+                )));
             }
         }
 
@@ -1096,6 +1099,19 @@ pub async fn execute_activity(
     // Final result is the last step's output (or concatenation if needed for prior_context)
     let final_output = step_outputs.last().cloned().unwrap_or_default();
     Ok((final_output, total_tokens))
+}
+
+/// The reason a run the step evaluator ended records: the step's own words
+/// (the first line of what it produced), which is the run's standing
+/// outcome, or the evaluator's verdict when the step said nothing. The
+/// `Step n/m evaluator:` prefix is what the dashboard strips for the owner.
+fn evaluator_exit_reason(step: usize, total: usize, verdict: &str, step_output: &str) -> String {
+    let said = step_output
+        .lines()
+        .map(|l| l.trim().trim_start_matches('#').trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or(verdict);
+    format!("Step {step}/{total} evaluator: {}", truncate_at_char_boundary(said, 300))
 }
 
 /// Floor on a non-proceed outcome: below it the evaluator proceeds, however
