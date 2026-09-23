@@ -22,6 +22,15 @@ pub enum CommError {
     Http { status: u16, body: String },
     #[error("{0}")]
     Other(String),
+    /// Refused before anything left this machine: the bot's lease is
+    /// Uncertain or Lost and this process is frozen (`lease`). Nothing was
+    /// sent.
+    #[error("{}", crate::lease::PAUSED)]
+    Paused,
+    /// The hub refused the connection (AUTH_FAIL `lease_held`): another
+    /// running process holds this bot.
+    #[error("another running copy of this bot holds its NeboAI connection (lease_held)")]
+    LeaseHeld,
 }
 
 /// Thread-safe message handler callback.

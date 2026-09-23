@@ -6796,8 +6796,7 @@ async fn run_loop(
                     if blocked_results[idx].is_some() || owner_answered.contains(&idx) {
                         continue;
                     }
-                    let read_only = tools.is_concurrent_safe(&tc.name, &tc.input).await;
-                    if !crate::tool_guardrail::gated(&tc.name, &tc.input, read_only) {
+                    if !tools.has_side_effects(&tc.name, &tc.input).await {
                         continue;
                     }
                     let trace = side_trace("tool_guardrail");

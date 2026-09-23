@@ -210,6 +210,11 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = SendOutcome>,
 {
+    // Lease gate, before anything is recorded: a paused send was never
+    // attempted, so it leaves no ledger row and asks the owner nothing.
+    if comm::lease::process().frozen() {
+        return ToolResult::error(format!("{operation}: {}", comm::lease::PAUSED));
+    }
     let run = run_ref(ctx);
     let key = send_key(&run, operation, input);
     let counterparty = counterparty_of(input);
@@ -327,6 +332,10 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = ToolResult>,
 {
+    // Lease gate, before anything is recorded (see `guarded_send`).
+    if comm::lease::process().frozen() {
+        return ToolResult::error(format!("{operation}: {}", comm::lease::PAUSED));
+    }
     let seat = match types::keyparser::extract_agent_id(&ctx.session_key) {
         id if id.is_empty() => ctx.session_key.clone(),
         id => id,

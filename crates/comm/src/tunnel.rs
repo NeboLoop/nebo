@@ -68,6 +68,7 @@ pub async fn run(
         .parse()
         .map_err(|_| TunnelError::Dial("bot token is not a valid header value".into()))?;
     request.headers_mut().insert("Authorization", auth);
+    claim_lease(request.headers_mut(), crate::lease::process());
 
     let (ws, _) = tokio_tungstenite::connect_async(request)
         .await
@@ -95,6 +96,22 @@ pub async fn run(
                 info!("tunnel: hub closed the connection");
                 return Ok(());
             }
+        }
+    }
+}
+
+/// Name this process's lease on the dial (`crate::lease`): the hub lets only
+/// the process holding the bot's lease hold its tunnel, and closes a session
+/// whose lease has since passed to another process. A process with no lease
+/// yet sends epoch 0, which the hub refuses.
+fn claim_lease(headers: &mut tokio_tungstenite::tungstenite::http::HeaderMap, lease: &crate::lease::Lease) {
+    let pairs = [
+        ("X-Nebo-Instance", lease.instance_id().to_string()),
+        ("X-Nebo-Lease-Epoch", lease.epoch().to_string()),
+    ];
+    for (name, value) in pairs {
+        if let Ok(value) = value.parse() {
+            headers.insert(name, value);
         }
     }
 }
@@ -270,6 +287,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dial names the process and the epoch it holds; before any grant
+    /// that epoch is 0, which the hub never accepts.
+    #[test]
+    fn the_dial_claims_the_lease() {
+        let lease = crate::lease::Lease::new();
+        let mut headers = tokio_tungstenite::tungstenite::http::HeaderMap::new();
+        claim_lease(&mut headers, &lease);
+        assert_eq!(headers["X-Nebo-Instance"], lease.instance_id());
+        assert_eq!(headers["X-Nebo-Lease-Epoch"], "0");
+
+        lease.granted(9, std::time::Duration::from_secs(60), std::time::Instant::now());
+        claim_lease(&mut headers, &lease);
+        assert_eq!(headers["X-Nebo-Lease-Epoch"], "9");
+    }
 
     #[test]
     fn blocks_local_trust_surfaces() {

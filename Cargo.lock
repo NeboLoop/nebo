@@ -5771,6 +5771,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "urlencoding",
+ "uuid",
  "yamux",
  "zstd",
 ]

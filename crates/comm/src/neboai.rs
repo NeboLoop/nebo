@@ -360,6 +360,11 @@ impl CommPlugin for NeboAIPlugin {
         // Create API client
         let api = Arc::new(NeboAIApi::new(api_server, bot_id.clone(), token.clone()));
 
+        // This process is about to act as the bot: frozen (where freezing is
+        // on) until the hub grants the lease on AUTH_OK.
+        let lease = crate::lease::process();
+        lease.claim();
+
         // WebSocket connect
         let (ws_stream, _) = tokio_tungstenite::connect_async(&gateway)
             .await
@@ -388,6 +393,9 @@ impl CommPlugin for NeboAIPlugin {
             // The read loop acks every delivery it dispatches, so the gateway
             // may safely backfill this connection's agent spaces.
             acks_offsets: true,
+            // Ask for the bot's lease (crate::lease).
+            instance_id: Some(lease.instance_id().to_string()),
+            lease_epoch: lease.epoch(),
         };
         tracing::info!(
             target: "neboai_identity",
@@ -408,6 +416,8 @@ impl CommPlugin for NeboAIPlugin {
         )
         .map_err(|e| CommError::Other(e.to_string()))?;
 
+        // The lease a grant confers is measured from this send.
+        let connect_sent = std::time::Instant::now();
         write
             .send(WsMessage::Binary(connect_frame.into()))
             .await
@@ -439,6 +449,11 @@ impl CommPlugin for NeboAIPlugin {
             if let Some(ref dl) = *self.devlog.read().await {
                 dl.error(&format!("AUTH_FAIL: {}", result.reason));
             }
+            if result.reason == "lease_held" {
+                warn!(bot_id = %bot_id, instance = %lease.instance_id(), "neboai: another running copy of this bot holds its lease; this process stays off");
+                lease.lost();
+                return Err(CommError::LeaseHeld);
+            }
             return Err(CommError::Other(format!("auth failed: {}", result.reason)));
         }
 
@@ -457,6 +472,14 @@ impl CommPlugin for NeboAIPlugin {
 
         // Parse AUTH_OK to extract rotated token (if present)
         if let Ok(auth_result) = serde_json::from_slice::<wire::AuthResultPayload>(auth_payload) {
+            // The lease this process now holds; epoch 0 = a hub that issues
+            // none. An unreadable AUTH_OK leaves the lease unconfirmed.
+            let ttl = match auth_result.lease_ttl_secs {
+                0 => std::time::Duration::from_secs(60),
+                secs => std::time::Duration::from_secs(secs),
+            };
+            lease.granted(auth_result.lease_epoch, ttl, connect_sent);
+            info!(bot_id = %bot_id, epoch = auth_result.lease_epoch, instance = %lease.instance_id(), "neboai: lease granted");
             if !auth_result.token.is_empty() {
                 *self.rotated_token.write().await = Some(auth_result.token.clone());
 
@@ -1246,7 +1269,7 @@ async fn read_loop(
                         break;
                     }
                     Err(_) => {
-                        // No data received in 120s (4x the 30s ping interval).
+                        // No data received in 120s (8x the 15s ping interval).
                         // Connection is likely dead (e.g. after system sleep/wake).
                         warn!("neboai read timeout (120s), treating as disconnect");
                         if let Some(ref dl) = devlog {
@@ -1547,6 +1570,30 @@ async fn read_loop(
                         }
                     }
 
+                    frame::TYPE_LEASE => {
+                        let answer: wire::LeaseAnswer = match serde_json::from_slice(payload) {
+                            Ok(a) => a,
+                            Err(e) => {
+                                debug!(error = %e, "unreadable lease answer");
+                                continue;
+                            }
+                        };
+                        let lease = crate::lease::process();
+                        if answer.kind == "lease_ok" {
+                            lease.renewed(answer.epoch, lease.instant_of(answer.t));
+                            continue;
+                        }
+                        // Another process holds the bot now. The hub closes
+                        // this connection; stop reading so the reconnect
+                        // path asks again (and is refused while it lasts).
+                        warn!(epoch = answer.epoch, "neboai: lease lost — another running copy of this bot holds it");
+                        if let Some(ref dl) = devlog {
+                            dl.event(&format!("LEASE_LOST epoch={}", answer.epoch));
+                        }
+                        lease.lost();
+                        break;
+                    }
+
                     frame::TYPE_REPLAY => {
                         if let Some(ref dl) = devlog {
                             dl.event(&format!("← REPLAY payload={}b", payload.len()));
@@ -1588,14 +1635,16 @@ async fn read_loop(
     info!("neboai read loop exited");
 }
 
-/// Write loop — sends queued frames and periodic pings.
+/// Write loop — sends queued frames and periodic pings. Each ping carries
+/// the lease renewal while this process holds the bot's lease.
 async fn write_loop(
     mut write: SplitSink<WsStream, WsMessage>,
     mut send_rx: mpsc::Receiver<Vec<u8>>,
     cancel: tokio_util::sync::CancellationToken,
     devlog: Option<DevLog>,
 ) {
-    let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    let lease = crate::lease::process();
+    let mut ping_interval = tokio::time::interval(crate::lease::RENEW_EVERY);
     ping_interval.tick().await; // skip first immediate tick
     let mut last_ping_wall = std::time::SystemTime::now();
 
@@ -1621,8 +1670,9 @@ async fn write_loop(
                 }
             }
             _ = ping_interval.tick() => {
-                // Detect wall-clock drift — if elapsed > 2x the 30s interval,
-                // the system was likely asleep and the TCP connection is dead.
+                // Detect wall-clock drift — if elapsed > 60s (4x the ping
+                // interval), the system was likely asleep and the TCP
+                // connection is dead.
                 let now_wall = std::time::SystemTime::now();
                 let elapsed = now_wall.duration_since(last_ping_wall).unwrap_or_default();
                 last_ping_wall = now_wall;
@@ -1641,7 +1691,17 @@ async fn write_loop(
                 if let Some(ref dl) = devlog {
                     dl.event("→ PING");
                 }
-                if let Err(e) = write.send(WsMessage::Ping(vec![].into())).await {
+                let renewal = lease
+                    .held_epoch()
+                    .and_then(|epoch| {
+                        serde_json::to_vec(&wire::LeaseRenewal {
+                            lease_epoch: epoch,
+                            t: lease.stamp(std::time::Instant::now()),
+                        })
+                        .ok()
+                    })
+                    .unwrap_or_default();
+                if let Err(e) = write.send(WsMessage::Ping(renewal.into())).await {
                     debug!(error = %e, "neboai ping error");
                     break;
                 }

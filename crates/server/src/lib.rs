@@ -763,6 +763,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
 
+    // BotLease (comm::lease): a cloud bot freezes itself whenever its lease
+    // is not held; a desktop does not. A bot with NeboAI credentials is
+    // frozen from here until the hub grants it the lease — before any loop
+    // below can fire a timer or send.
+    let lease = comm::lease::process();
+    lease.set_fenced(tools::server_mode());
+    if cfg.is_neboai_enabled() && codes::neboai_token_from(&store).is_some() {
+        lease.claim();
+    }
+    info!(instance = %lease.instance_id(), fenced = tools::server_mode(), "bot lease: this process's instance");
+
     // A Nebo never quietly serves a broken database. The check is quick; a
     // failure is logged and, once the hub exists, told to the owner with the
     // newest copy that does open whole.
@@ -2593,6 +2604,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         }
                         backoff_secs = 30;
                     }
+                    Err(_) if comm::lease::process().is_lost() => {
+                        // Another running copy holds the bot. Ask again at
+                        // the renewal cadence: its lease lapses within one
+                        // TTL of it stopping.
+                        backoff_secs = comm::lease::RENEW_EVERY.as_secs();
+                    }
                     Err(_) => {
                         backoff_secs = (backoff_secs * 2).min(600);
                     }
@@ -2616,6 +2633,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     continue;
                 };
+                // Only the process holding the bot's lease may hold its
+                // tunnel; the dial names that lease (comm::tunnel).
+                comm::lease::process().granted_or_unleased().await;
                 let started = std::time::Instant::now();
                 let hub_url = tunnel_state.config.neboai.tunnel_url.clone();
                 match comm::tunnel::run(&hub_url, &token, &local_addr, &tunnel_state.tunnel_online).await {
