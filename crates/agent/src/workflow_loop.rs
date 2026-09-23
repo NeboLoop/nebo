@@ -22,6 +22,50 @@ use tracing::{info, warn};
 use crate::runner::{RunRequest, Runner, WorkflowMode, WorkflowPark};
 use workflow::{ActivityLoop, LoopOutcome, LoopTurn, WorkflowError};
 
+/// The step's task in words, for the tool guardrail: `(objective,
+/// instruction)`. The objective names the workflow, the activity (its label,
+/// else its id) with its intent, and the current step's instruction; the
+/// instruction is the work order the model was handed this turn — the
+/// seed's final user message. Pure, so it is tested without a runner.
+fn step_task(
+    workflow_name: &str,
+    activity: &workflow::parser::Activity,
+    step_index: Option<i64>,
+    seed: &[ai::Message],
+) -> (String, String) {
+    let activity_name = activity
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .unwrap_or(&activity.id);
+    let mut objective = format!("Workflow \"{}\", activity \"{}\"", workflow_name.trim(), activity_name);
+    let intent = activity.intent.trim();
+    if !intent.is_empty() {
+        objective.push_str(": ");
+        objective.push_str(intent);
+    }
+    let step = step_index
+        .and_then(|i| usize::try_from(i).ok())
+        .and_then(|i| activity.steps.get(i).map(|s| (i, s.trim())));
+    if let Some((i, step)) = step {
+        objective.push_str(&format!(
+            "{}Step {}/{}: {}",
+            if intent.is_empty() { ". " } else { " " },
+            i + 1,
+            activity.steps.len(),
+            step
+        ));
+    }
+    let instruction = seed
+        .iter()
+        .rev()
+        .find(|m| m.role == "user" && !m.content.trim().is_empty())
+        .map(|m| m.content.trim().to_string())
+        .unwrap_or_default();
+    (objective, instruction)
+}
+
 pub struct RunnerActivityLoop {
     runner: Arc<Runner>,
     store: Arc<db::Store>,
@@ -311,6 +355,8 @@ impl ActivityLoop for RunnerActivityLoop {
         });
 
         let cancel = turn.cancel.clone().unwrap_or_default();
+        let (objective, instruction) =
+            step_task(turn.workflow_name, turn.activity, turn.step_index, &turn.seed_messages);
         let req = RunRequest {
             session_key: key,
             prompt: String::new(), // the seed carries the work order
@@ -334,6 +380,8 @@ impl ActivityLoop for RunnerActivityLoop {
             full_access: true,
             workflow: Some(WorkflowMode {
                 trace: turn.trace.clone(),
+                objective,
+                instruction,
                 advertised_tools: turn.advertised_tools.iter().cloned().collect(),
                 tainted: turn.checkpoint.map(|c| c.tainted).unwrap_or(false),
                 spend_cap_microcents: turn.spend_cap_microcents,
@@ -492,5 +540,59 @@ impl ActivityLoop for RunnerActivityLoop {
                 warn!(run_id, session = %id, error = %e, "workflow cleanup: delete failed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::step_task;
+
+    fn activity(json: serde_json::Value) -> workflow::parser::Activity {
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn user(text: &str) -> ai::Message {
+        ai::Message { role: "user".into(), content: text.into(), ..Default::default() }
+    }
+
+    fn assistant(text: &str) -> ai::Message {
+        ai::Message { role: "assistant".into(), content: text.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn a_step_task_names_the_workflow_the_activity_and_the_step() {
+        let a = activity(serde_json::json!({
+            "id": "pull-orders",
+            "label": "Pull orders",
+            "intent": "Collect last week's orders and the products they name.",
+            "steps": ["List the orders.", "List the products."],
+        }));
+        let seed = vec![
+            user("Step 1/2: List the orders."),
+            assistant("12 orders."),
+            user("Step 2/2: List the products."),
+        ];
+        let (objective, instruction) = step_task("Weekly report", &a, Some(1), &seed);
+        assert_eq!(
+            objective,
+            "Workflow \"Weekly report\", activity \"Pull orders\": Collect last week's orders \
+             and the products they name. Step 2/2: List the products."
+        );
+        assert_eq!(instruction, "Step 2/2: List the products.");
+    }
+
+    #[test]
+    fn a_single_turn_activity_is_its_intent_and_an_unlabelled_one_its_id() {
+        let a = activity(serde_json::json!({"id": "send-summary", "intent": "Mail the summary."}));
+        let (objective, instruction) =
+            step_task("Weekly report", &a, None, &[user("Mail the summary.")]);
+        assert_eq!(objective, "Workflow \"Weekly report\", activity \"send-summary\": Mail the summary.");
+        assert_eq!(instruction, "Mail the summary.");
+
+        // A typed node with no intent and no seed: the names alone, no instruction.
+        let a = activity(serde_json::json!({"id": "fetch", "type": "http", "steps": ["GET the feed."]}));
+        let (objective, instruction) = step_task("Feeds", &a, Some(0), &[]);
+        assert_eq!(objective, "Workflow \"Feeds\", activity \"fetch\". Step 1/1: GET the feed.");
+        assert_eq!(instruction, "");
     }
 }

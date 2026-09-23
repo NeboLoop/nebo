@@ -270,21 +270,39 @@ pub fn redact(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// Where the judged call is being made, which decides what `objective` and
+/// `last_user_message` mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Context {
+    /// A chat turn: the session's objective and the person's latest message.
+    Chat,
+    /// A workflow step: no person is speaking. The objective names the
+    /// workflow, the activity and the step; the last message is the work
+    /// order the step was given. The state says so (`"context"`), so the
+    /// decision judges the call against the step, not a chat reply.
+    WorkflowStep,
+}
+
 /// The state one decision sees: evidence, filtered in code.
 pub fn state(
     tool: &str,
     input: &serde_json::Value,
     objective: &str,
     last_user_message: &str,
+    context: Context,
 ) -> serde_json::Value {
     let args = redact(input).to_string();
     let objective = objective.trim();
-    serde_json::json!({
+    let mut state = serde_json::json!({
         "tool": tool,
         "arguments": truncate_str(&args, ARGS_CAP),
         "objective": if objective.is_empty() { "none" } else { truncate_str(objective, OBJECTIVE_CAP) },
         "last_user_message": truncate_str(last_user_message.trim(), USER_MESSAGE_CAP),
-    })
+    });
+    if context == Context::WorkflowStep {
+        state["context"] = serde_json::Value::String("workflow step".into());
+    }
+    state
 }
 
 fn questions() -> BTreeMap<&'static str, Question> {
@@ -347,12 +365,13 @@ pub async fn judge(
     input: &serde_json::Value,
     objective: &str,
     last_user_message: &str,
+    context: Context,
 ) -> Option<Judgment> {
     let Some(client) = decide else {
         debug!(site = "tool_guardrail", tool, "no decide client (Janus absent); policy decision stands");
         return None;
     };
-    let state = state(tool, input, objective, last_user_message);
+    let state = state(tool, input, objective, last_user_message, context);
     let questions = questions();
     let call = client.decide(trace, &state, &questions);
     let decision = match tokio::time::timeout(GUARDRAIL_TIMEOUT, call).await {
@@ -535,7 +554,7 @@ mod tests {
             "body": {"password": "hunter2", "apiKey": "k-1", "items": [{"token": "t"}, {"name": "ok"}]},
             "note": "the word password in a value stays"
         });
-        let s = state("web", &input, "post the report", "please post it");
+        let s = state("web", &input, "post the report", "please post it", Context::Chat);
         let args = s["arguments"].as_str().unwrap();
         assert!(!args.contains("abc123"));
         assert!(!args.contains("hunter2"));
@@ -553,10 +572,41 @@ mod tests {
     #[test]
     fn state_is_capped_and_an_empty_objective_is_none() {
         let big = json!({"content": "x".repeat(ARGS_CAP * 2)});
-        let s = state("os", &big, "  ", &" y".repeat(USER_MESSAGE_CAP));
+        let s = state("os", &big, "  ", &" y".repeat(USER_MESSAGE_CAP), Context::Chat);
         assert!(s["arguments"].as_str().unwrap().len() <= ARGS_CAP);
         assert_eq!(s["objective"], "none");
         assert!(s["last_user_message"].as_str().unwrap().len() <= USER_MESSAGE_CAP);
+    }
+
+    #[test]
+    fn a_chat_state_is_the_four_fields_and_a_workflow_state_names_the_step() {
+        let input = json!({"command": "store orders list"});
+        let chat = state("os", &input, "reconcile last week's orders", "pull the orders", Context::Chat);
+        assert_eq!(
+            chat,
+            json!({
+                "tool": "os",
+                "arguments": input.to_string(),
+                "objective": "reconcile last week's orders",
+                "last_user_message": "pull the orders",
+            })
+        );
+
+        let step = state(
+            "os",
+            &input,
+            "Workflow \"Weekly report\", activity \"Pull orders\": Collect last week's orders. Step 1/2: List the orders.",
+            "Step 1/2: List the orders.",
+            Context::WorkflowStep,
+        );
+        assert_eq!(step["context"], "workflow step");
+        assert!(step["objective"].as_str().unwrap().contains("Step 1/2: List the orders."));
+        assert_eq!(step["last_user_message"], "Step 1/2: List the orders.");
+        assert_eq!(step["arguments"], chat["arguments"]);
+        // An empty work order stays empty; the context line still says it is a step.
+        let bare = state("os", &input, "Workflow \"Weekly report\"", "", Context::WorkflowStep);
+        assert_eq!(bare["last_user_message"], "");
+        assert_eq!(bare["context"], "workflow step");
     }
 
     #[test]
@@ -584,10 +634,10 @@ mod tests {
     async fn judge_fails_open_without_a_client_and_on_an_error() {
         let input = json!({"action": "write", "path": "/tmp/a"});
         let trace = ai::RequestTrace::new("tool_guardrail");
-        assert!(judge(None, &trace, Mode::On, "os", &input, "", "").await.is_none());
+        assert!(judge(None, &trace, Mode::On, "os", &input, "", "", Context::Chat).await.is_none());
         // A client with no bearer errors before any request is sent.
         let client = DecideClient::new("http://127.0.0.1:9", || None);
-        assert!(judge(Some(&client), &trace, Mode::On, "os", &input, "", "").await.is_none());
+        assert!(judge(Some(&client), &trace, Mode::On, "os", &input, "", "", Context::Chat).await.is_none());
     }
 
     #[test]

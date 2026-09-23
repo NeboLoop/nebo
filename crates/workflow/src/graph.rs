@@ -1431,7 +1431,7 @@ async fn run_llm_activity<'a>(
         ctx.store,
         &ctx.agent_id,
         &ctx.run_id,
-        &ctx.def.id,
+        ctx.def,
         ctx.progress_tx.as_ref(),
         &mut spent,
         &mut spent_output,

@@ -26,6 +26,9 @@ pub struct LoopTurn<'a> {
     /// verbatim. The implementation seeds its own scratch history from this;
     /// the final user message is the work order for this turn.
     pub seed_messages: Vec<ai::Message>,
+    /// The workflow's display name, so the loop can say which workflow a
+    /// step belongs to (the tool guardrail's task evidence).
+    pub workflow_name: &'a str,
     /// Names the model may see schemas for: the activity's scoped set,
     /// including `exit`, and `emit` when granted. Dispatch still falls back
     /// to the full roster exactly as before — advertising is context
