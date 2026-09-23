@@ -152,9 +152,19 @@ func node(at path: String, in win: AXUIElement) -> AXUIElement? {
 /// What names an element across captures: its title, description or
 /// placeholder. Never its value — a field's contents change when typed into,
 /// and a secure field's contents are never read at all.
+/// The description, or for a nameless element with a subrole its role
+/// description: the window's traffic lights carry no title or description,
+/// and "close button" is what keeps the model from pressing one blind
+/// (Stadium, 2026-09-23: B23 "" closed Calculator).
+func describe(_ el: AXUIElement) -> String? {
+    if let d = str(el, kAXDescriptionAttribute), !d.isEmpty { return d }
+    if let sub = str(el, kAXSubroleAttribute), !sub.isEmpty, sub != "AXUnknown",
+       let rd = str(el, kAXRoleDescriptionAttribute), !rd.isEmpty { return rd }
+    return nil
+}
 func identity(_ el: AXUIElement) -> String {
     if let t = str(el, kAXTitleAttribute), !t.isEmpty { return t }
-    if let d = str(el, kAXDescriptionAttribute), !d.isEmpty { return d }
+    if let d = describe(el) { return d }
     if let p = str(el, "AXPlaceholderValue"), !p.isEmpty { return p }
     return ""
 }
@@ -240,7 +250,7 @@ case "tree":
             // A secure field's value is never read: it would land in the
             // transcript. Its placeholder still identifies it.
             let value = role == "AXSecureTextField" ? nil : str(el, kAXValueAttribute).map { String($0.prefix(200)) }
-            let desc = str(el, kAXDescriptionAttribute)
+            let desc = describe(el)
             let placeholder = str(el, "AXPlaceholderValue")
             emit([
                 "path": path.map(String.init).joined(separator: "."),

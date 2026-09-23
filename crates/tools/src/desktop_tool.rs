@@ -719,6 +719,11 @@ async fn handle_input(
                 let _ = ax_native::raise(&app, 1).await;
                 Some(Rect { x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3] })
             }
+            // The helper answered: there is nothing to act on. System Events
+            // would only say the same thing worse ("Can't set process to true").
+            Err(e) if is_no_window(&e) => {
+                return ToolResult::error(format!("{action}: {e}; capture again once a window is back"));
+            }
             Err(_) => match window_frame(&app, true).await {
                 Ok(r) => Some(r),
                 Err(e) if cfg!(target_os = "macos") => {
@@ -1118,6 +1123,25 @@ async fn input_press(key: &str) -> ToolResult {
 
 
 /// `x, y, w, h` as System Events prints a window's `{position, size}`.
+/// The helper's answer when the app is running with no window to act on.
+pub(crate) fn is_no_window(e: &str) -> bool {
+    e.contains("has no open window") || e.contains("there is no window")
+}
+
+/// A window mid-resize (a launch animation, a mode switch) yields an image
+/// that is not the frame's shape, and the elements would land on the wrong
+/// pixels. Five percent covers rounding and a title bar's worth of shadow.
+pub(crate) fn image_matches_frame(frame: Option<&Rect>, dims: Option<(i64, i64)>) -> bool {
+    match (frame, dims) {
+        (Some(f), Some((w, h))) if f.width > 0 && f.height > 0 && w > 0 && h > 0 => {
+            let want = f.width as f64 / f.height as f64;
+            let got = w as f64 / h as f64;
+            ((want - got) / want).abs() <= 0.05
+        }
+        _ => true,
+    }
+}
+
 pub(crate) fn parse_frame(s: &str) -> Option<(i64, i64, i64, i64)> {
     let mut it = s
         .split(|c: char| c == ',' || c.is_whitespace())
@@ -2006,39 +2030,50 @@ async fn observe(
     // 1. What the image will cover. The window's own pixels by id when the
     //    platform gives one (they are right even under other windows); by
     //    screen region otherwise, which shows whatever is on top there.
-    let mut window_id: Option<u64> = None;
-    let (frame, window_image, frame_note) = if app.is_empty() {
-        (screen_rect().await, false, String::new())
-    } else {
-        match ax_native::window(app, 1).await {
-            Ok(w) => {
-                window_id = w.window_id;
-                let f = Rect { x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3] };
-                let note = if w.window_id.is_some() { String::new() } else { " (captured by screen region; windows on top of it show through)".to_string() };
-                (Some(f), true, note)
+    let mut window_id: Option<u64>;
+    let mut attempt = 0;
+    let (frame, window_image, frame_note, shot, dims) = loop {
+        window_id = None;
+        let (frame, window_image, frame_note) = if app.is_empty() {
+            (screen_rect().await, false, String::new())
+        } else {
+            match ax_native::window(app, 1).await {
+                Ok(w) => {
+                    window_id = w.window_id;
+                    let f = Rect { x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3] };
+                    let note = if w.window_id.is_some() { String::new() } else { " (captured by screen region; windows on top of it show through)".to_string() };
+                    (Some(f), true, note)
+                }
+                Err(_) => match window_frame(app, false).await {
+                    Ok(r) => (Some(r), true, " (captured by screen region; windows on top of it show through)".to_string()),
+                    Err(e) => (screen_rect().await, false, format!(" ({e}; captured the whole screen instead)")),
+                },
             }
-            Err(_) => match window_frame(app, false).await {
-                Ok(r) => (Some(r), true, " (captured by screen region; windows on top of it show through)".to_string()),
-                Err(e) => (screen_rect().await, false, format!(" ({e}; captured the whole screen instead)")),
-            },
-        }
-    };
+        };
 
-    // 2. The image.
-    let shot_input = match (&frame, window_image, window_id) {
-        (_, true, Some(id)) => serde_json::json!({ "window_id": id, "quality": quality }),
-        (Some(f), true, None) => serde_json::json!({ "region": format!("{},{},{},{}", f.x, f.y, f.width, f.height), "quality": quality }),
-        _ => serde_json::json!({ "quality": quality }),
+        // 2. The image.
+        let shot_input = match (&frame, window_image, window_id) {
+            (_, true, Some(id)) => serde_json::json!({ "window_id": id, "quality": quality }),
+            (Some(f), true, None) => serde_json::json!({ "region": format!("{},{},{},{}", f.x, f.y, f.width, f.height), "quality": quality }),
+            _ => serde_json::json!({ "quality": quality }),
+        };
+        let shot = capture_screenshot(&shot_input).await;
+        if shot.is_error {
+            return Err(shot);
+        }
+        let dims = shot
+            .payload
+            .as_ref()
+            .and_then(|p| Some((p["width"].as_u64()? as i64, p["height"].as_u64()? as i64)))
+            .filter(|(w, h)| *w > 0 && *h > 0);
+        // One retake after a beat when the image is not the frame's shape.
+        if attempt == 0 && window_image && !image_matches_frame(frame.as_ref(), dims) {
+            attempt += 1;
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            continue;
+        }
+        break (frame, window_image, frame_note, shot, dims);
     };
-    let shot = capture_screenshot(&shot_input).await;
-    if shot.is_error {
-        return Err(shot);
-    }
-    let dims = shot
-        .payload
-        .as_ref()
-        .and_then(|p| Some((p["width"].as_u64()? as i64, p["height"].as_u64()? as i64)))
-        .filter(|(w, h)| *w > 0 && *h > 0);
     let scale = match (&frame, dims) {
         (Some(f), Some((w, _))) => f.width as f64 / w as f64,
         _ => 1.0,
@@ -4232,6 +4267,17 @@ fn key_name_to_sendkeys(key: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_capture_mid_resize_is_not_the_frames_shape() {
+        let f = super::Rect { x: 703, y: 824, width: 230, height: 408 };
+        assert!(!super::image_matches_frame(Some(&f), Some((468, 501))), "Calculator mid-launch on Stadium");
+        assert!(super::image_matches_frame(Some(&f), Some((230, 408))));
+        assert!(super::image_matches_frame(Some(&f), Some((460, 816))), "retina");
+        assert!(super::image_matches_frame(None, Some((10, 10))), "the whole screen has no frame to disagree with");
+        assert!(super::is_no_window("Calculator has no open window"));
+        assert!(!super::is_no_window("ax helper produced no output"));
+    }
+
     #[test]
     fn parse_frame_reads_system_events_output() {
         assert_eq!(super::parse_frame("868, 60, 447, 950\n"), Some((868, 60, 447, 950)));
