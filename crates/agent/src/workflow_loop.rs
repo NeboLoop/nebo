@@ -266,6 +266,10 @@ impl RunnerActivityLoop {
 
 #[async_trait::async_trait]
 impl ActivityLoop for RunnerActivityLoop {
+    async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.runner.concurrency().acquire_tool_permit().await
+    }
+
     async fn run_turn(&self, turn: LoopTurn<'_>) -> Result<LoopOutcome, WorkflowError> {
         let key = Self::session_key(&turn);
         let session = self

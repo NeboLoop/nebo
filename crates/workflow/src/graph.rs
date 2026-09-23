@@ -15,7 +15,6 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt as _;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -29,21 +28,13 @@ use crate::parser::{
 };
 
 /// Safety net against malformed graphs: no single node may execute more than
-/// this many times in one run (loops are bounded by maxIterations well below
+/// this many times in one run (loops are bounded by maxIterations at or below
 /// this; the cap only trips on walker bugs).
 const MAX_NODE_VISITS: u32 = 10_000;
-/// Default loop iteration cap when params.maxIterations is absent.
-const DEFAULT_MAX_ITERATIONS: u64 = 100;
-/// Ceiling on `params.concurrency` for loop iterations — bounds provider
-/// pressure and DB write fan-in however large the declared value is.
-const MAX_LOOP_CONCURRENCY: u64 = 16;
-/// Hands-free default: loops run concurrently without any declaration —
-/// owners describe workflows, the engine owns execution. 4 balances provider
-/// pressure against wall-clock for typical LLM bodies; the governor adapts
-/// DOWNWARD from here on live rate-limit pressure. `params.concurrency`
-/// remains as an escape hatch (1 = strictly sequential for order-dependent
-/// external side effects), never a knob owners are expected to touch.
-const AUTO_LOOP_CONCURRENCY: u64 = 4;
+/// Default loop iteration cap when params.maxIterations is absent: as many
+/// items as a body node may run in one run, so the default never truncates a
+/// list the walker could have finished.
+const DEFAULT_MAX_ITERATIONS: u64 = MAX_NODE_VISITS as u64;
 /// Per-item retry budget when an iteration fails rate-limit-shaped.
 const MAX_ITEM_RATE_LIMIT_RETRIES: u32 = 4;
 
@@ -141,35 +132,6 @@ fn record_output(ctx: &GraphCtx, scope: &WalkScope, id: &str, content: String) {
         None => {
             ctx.state.lock().unwrap().outputs.insert(id.to_string(), content);
         }
-    }
-}
-
-/// AIMD governor for concurrent loop iterations: halve on rate-limit
-/// pressure, creep back up (+1 per completed iteration) toward the ceiling.
-/// Purely reactive — the pressure signals are in-band in the iterations'
-/// own provider responses; the engine never asks a control plane anything.
-struct LoopGovernor {
-    ceiling: usize,
-    target: AtomicUsize,
-}
-
-impl LoopGovernor {
-    fn new(ceiling: usize) -> Self {
-        Self {
-            ceiling,
-            target: AtomicUsize::new(ceiling),
-        }
-    }
-    fn target(&self) -> usize {
-        self.target.load(Ordering::Relaxed).max(1)
-    }
-    fn on_rate_limit(&self) {
-        let t = self.target();
-        self.target.store((t / 2).max(1), Ordering::Relaxed);
-    }
-    fn on_success(&self) {
-        let t = self.target();
-        self.target.store((t + 1).min(self.ceiling), Ordering::Relaxed);
     }
 }
 
@@ -668,7 +630,10 @@ async fn run_command<'a>(
     // env-auth plugin binaries work in command nodes (see ToolContext docs).
     tool_ctx.trusted_plugin_env = true;
     let tool_ctx = tool_ctx;
-    let result = os_tool.execute_dyn(&tool_ctx, input).await;
+    let result = {
+        let _permit = ctx.loop_impl.acquire_tool_permit().await;
+        os_tool.execute_dyn(&tool_ctx, input).await
+    };
     if result.is_error {
         return fail(result.content);
     }
@@ -833,7 +798,10 @@ async fn run_http<'a>(
     tool_ctx.user_id = ctx.memory_user_id.clone();
     tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
     let tool_ctx = tool_ctx;
-    let result = web_tool.execute_dyn(&tool_ctx, input).await;
+    let result = {
+        let _permit = ctx.loop_impl.acquire_tool_permit().await;
+        web_tool.execute_dyn(&tool_ctx, input).await
+    };
     if result.is_error {
         return fail(result.content);
     }
@@ -1148,24 +1116,26 @@ async fn run_loop<'a>(
         })
         .unwrap_or_default();
 
-    // Hands-free concurrency: iterations run concurrently BY DEFAULT (auto
-    // ceiling 4), adaptively governed — owners never dial a knob. This is
-    // semantically invisible because iteration outputs are scope-local
+    // Hands-free concurrency: every iteration starts at once BY DEFAULT —
+    // owners never dial a knob, and the loop adds no width cap of its own.
+    // The machine's real limits are the ONE brake per resource the body's
+    // work already goes through (the LLM permit pool, the tool permit pool).
+    // Rate limits are that pool's job too: a 429 halves it for the whole bot,
+    // so the loop keeps no second, loop-local halving of its own.
+    // This is semantically invisible because iteration outputs are scope-local
     // (readers see only their own iteration) and the loop gathers every
     // iteration's outputs in item order on completion, whatever order they
     // finished in. `params.concurrency` remains an escape
     // hatch: 1 declares order-dependent external side effects (strictly
-    // sequential); an explicit value sets the governor's ceiling.
-    let ceiling = activity
+    // sequential); an explicit value caps how many items run at once.
+    let declared_concurrency = activity
         .params
         .as_ref()
         .and_then(|p| p.get("concurrency"))
         .and_then(|v| {
             v.as_u64()
                 .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-        })
-        .unwrap_or(AUTO_LOOP_CONCURRENCY)
-        .clamp(1, MAX_LOOP_CONCURRENCY) as usize;
+        });
 
     // Layered fan-in: `params.batchSize` hands the body N items at a time
     // (the item is an array), so a loop over another loop's `results` can
@@ -1198,6 +1168,7 @@ async fn run_loop<'a>(
         .collect();
     let processed = taken.len() as u64;
     let taken_items: Vec<serde_json::Value> = taken.iter().map(|(_, item)| item.clone()).collect();
+    let ceiling = declared_concurrency.unwrap_or(processed).max(1) as usize;
 
     let body = &body;
     let entry_edges = &entry_edges;
@@ -1250,7 +1221,7 @@ async fn run_loop<'a>(
     // to Done. Surfaced below, never silent.
     let mut exited: Vec<(u64, String)> = Vec::new();
 
-    if ceiling <= 1 {
+    if declared_concurrency.is_some_and(|c| c <= 1) {
         for (idx, item) in taken {
             match run_one(idx, item).await {
                 Ok(locals) => completed_locals.push((idx, locals)),
@@ -1267,20 +1238,21 @@ async fn run_loop<'a>(
             }
         }
     } else {
-        let governor = LoopGovernor::new(ceiling);
         let mut queue: VecDeque<(u64, serde_json::Value, u32)> =
             taken.into_iter().map(|(i, item)| (i, item, 0)).collect();
         let mut inflight = FuturesUnordered::new();
         loop {
-            while inflight.len() < governor.target() {
+            while inflight.len() < ceiling {
                 let Some((idx, item, attempt)) = queue.pop_front() else {
                     break;
                 };
                 let retry_copy = item.clone();
                 inflight.push(async move {
                     if attempt > 0 {
-                        // Exponential backoff before a rate-limited retry —
-                        // the OTHER half of halving the admission target.
+                        // Exponential backoff before a rate-limited retry:
+                        // the item's calls already retried inside the runner
+                        // and the pool already halved; this spaces the item's
+                        // next attempt.
                         let secs = (1u64 << attempt.min(4)).min(16);
                         tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                     }
@@ -1291,14 +1263,10 @@ async fn run_loop<'a>(
                 break;
             };
             match outcome {
-                Ok(locals) => {
-                    governor.on_success();
-                    completed_locals.push((idx, locals));
-                }
+                Ok(locals) => completed_locals.push((idx, locals)),
                 Err(WorkflowError::Exited(reason)) => {
-                    // Not a failure and not rate pressure — don't penalize the
-                    // governor, don't kill the siblings already in flight.
-                    governor.on_success();
+                    // Not a failure and not rate pressure — don't kill the
+                    // siblings already in flight.
                     warn!(
                         activity = activity.id.as_str(),
                         iteration = idx,
@@ -1311,13 +1279,11 @@ async fn run_loop<'a>(
                     if is_rate_limit_shaped(&e.to_string())
                         && attempt < MAX_ITEM_RATE_LIMIT_RETRIES =>
                 {
-                    governor.on_rate_limit();
                     warn!(
                         activity = activity.id.as_str(),
                         iteration = idx,
                         attempt,
-                        target = governor.target(),
-                        "iteration rate-limited — halving concurrency and requeueing"
+                        "iteration rate-limited — requeueing it"
                     );
                     queue.push_back((idx, item, attempt + 1));
                 }
@@ -1866,7 +1832,7 @@ mod walk_tests {
                 let mut remaining = self.rate_limit_failures.lock().unwrap();
                 if *remaining > 0 {
                     *remaining -= 1;
-                    return Err(ai::ProviderError::RateLimit);
+                    return Err(ai::ProviderError::RateLimit { retry_after_secs: None });
                 }
             }
             let user = req
@@ -1977,10 +1943,27 @@ mod walk_tests {
     /// same retry policy the chat runner applies (stream_with_retry above).
     struct ScriptedLoop<'a> {
         provider: &'a MockProvider,
+        /// Stand-in for the runner's tool permit pool.
+        tool_pool: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl<'a> ScriptedLoop<'a> {
+        fn new(provider: &'a MockProvider) -> Self {
+            Self {
+                provider,
+                tool_pool: Arc::new(tokio::sync::Semaphore::new(
+                    tokio::sync::Semaphore::MAX_PERMITS,
+                )),
+            }
+        }
     }
 
     #[async_trait::async_trait]
     impl crate::ActivityLoop for ScriptedLoop<'_> {
+        async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+            self.tool_pool.clone().acquire_owned().await.expect("tool pool open")
+        }
+
         async fn run_turn(
             &self,
             turn: crate::LoopTurn<'_>,
@@ -2066,7 +2049,7 @@ mod walk_tests {
         store
             .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
             .expect("run row");
-        let looper = ScriptedLoop { provider };
+        let looper = ScriptedLoop::new(provider);
         let result = execute_graph(
             &def,
             "",
@@ -2519,11 +2502,11 @@ mod walk_tests {
     }
 
     #[tokio::test]
-    async fn test_loop_governor_requeues_rate_limited_iteration() {
+    async fn test_loop_requeues_rate_limited_iteration() {
         // stream_with_retry absorbs 2 retries internally (3 attempts); 3
-        // consecutive RateLimit errors fail the activity — the governor must
-        // requeue the iteration (with backoff + halved target) rather than
-        // fail the run, and the retry then succeeds.
+        // consecutive RateLimit errors fail the activity — the loop must
+        // requeue the iteration (with backoff) rather than fail the run, and
+        // the retry then succeeds.
         let provider = MockProvider::new(&[]).with_rate_limit_failures(3);
         let def = r#"{
             "version":"1.0","id":"t","name":"T",
@@ -2752,7 +2735,7 @@ mod walk_tests {
                 &serde_json::json!({}),
                 &store,
                 None,
-                &ScriptedLoop { provider: &provider },
+                &ScriptedLoop::new(&provider),
                 &[],
                 None,
                 &run_id,
@@ -2769,6 +2752,105 @@ mod walk_tests {
         .expect("terminated within timeout");
         result.expect("completes without executing the unsatisfiable cycle");
         assert!(provider.calls().is_empty());
+    }
+
+    /// A command node inside a wide loop spends local resources through the
+    /// ONE tool permit pool (auditor Rule 15.2): with a pool of 1, five items
+    /// never run their commands at the same time, though the loop admits all
+    /// five at once.
+    #[tokio::test]
+    async fn test_loop_command_nodes_take_the_tool_permit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingOs {
+            live: Arc<AtomicUsize>,
+            peak: Arc<AtomicUsize>,
+        }
+        impl DynTool for CountingOs {
+            fn name(&self) -> &str {
+                "os"
+            }
+            fn description(&self) -> String {
+                String::new()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn requires_approval(&self) -> bool {
+                false
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a tools::ToolContext,
+                _input: serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = tools::ToolResult> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    let now = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+                    self.peak.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    self.live.fetch_sub(1, Ordering::SeqCst);
+                    tools::ToolResult::ok("done")
+                })
+            }
+        }
+
+        let provider = MockProvider::new(&[]);
+        let def = parse_workflow(
+            r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items"}},
+                {"id":"cmd","type":"command","params":{"command":"echo hi"}}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"cmd","label":"Each item"},
+                {"from":"cmd","to":"l"},
+                {"from":"l","to":"__emit__","label":"Done"}]
+        }"#,
+        )
+        .expect("valid def");
+        let store = test_store();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
+            .expect("run row");
+        let peak = Arc::new(AtomicUsize::new(0));
+        let tools: Vec<Box<dyn DynTool>> = vec![Box::new(CountingOs {
+            live: Arc::new(AtomicUsize::new(0)),
+            peak: peak.clone(),
+        })];
+        let looper = ScriptedLoop {
+            provider: &provider,
+            tool_pool: Arc::new(tokio::sync::Semaphore::new(1)),
+        };
+        let result = execute_graph(
+            &def,
+            "",
+            "test-owner",
+            false,
+            &serde_json::json!({"items": [1, 2, 3, 4, 5]}),
+            &store,
+            None,
+            &looper,
+            &tools,
+            None,
+            &run_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        result.expect("run ok");
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "commands must queue on the tool permit, not all run at once"
+        );
     }
 
     /// A failing node poisons ONLY its own downstream: the fork's sibling
@@ -3262,7 +3344,7 @@ mod walk_tests {
                 &serde_json::json!({}),
                 &store,
                 None,
-                &ScriptedLoop { provider: &provider },
+                &ScriptedLoop::new(&provider),
                 &[],
                 None,
                 &run_id,
@@ -3392,31 +3474,8 @@ mod graph_tests {
         );
     }
 
-    /// AIMD contract: halve on rate-limit pressure (floor 1, never 0 — a
-    /// zero target would admit nothing and deadlock the loop), creep back +1
-    /// per success, capped at the ceiling. Additive ramp / multiplicative
-    /// backoff, or concurrency either stampedes or collapses.
-    #[test]
-    fn test_loop_governor_aimd_arithmetic() {
-        let g = LoopGovernor::new(4);
-        assert_eq!(g.target(), 4);
-        g.on_rate_limit();
-        assert_eq!(g.target(), 2);
-        g.on_rate_limit();
-        assert_eq!(g.target(), 1);
-        g.on_rate_limit();
-        assert_eq!(g.target(), 1, "backoff floors at 1, never 0");
-        g.on_success();
-        assert_eq!(g.target(), 2, "recovery is additive (+1), not a jump to ceiling");
-        g.on_success();
-        g.on_success();
-        assert_eq!(g.target(), 4);
-        g.on_success();
-        assert_eq!(g.target(), 4, "ramp is capped at the ceiling");
-    }
-
     /// The in-band pressure classifier: provider spellings of rate-limiting
-    /// must match (else the governor never backs off), and ordinary failures
+    /// must match (else a rate-limited item is never requeued), and ordinary failures
     /// must NOT (else real errors get requeued instead of failing the run).
     #[test]
     fn test_is_rate_limit_shaped() {

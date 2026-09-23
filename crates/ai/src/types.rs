@@ -664,8 +664,10 @@ pub enum ProviderError {
     #[error("context overflow")]
     ContextOverflow,
 
+    /// A 429. `retry_after_secs` is the provider's `Retry-After`, when it
+    /// sent one — the runner waits that long instead of its own backoff.
     #[error("rate limit exceeded")]
-    RateLimit,
+    RateLimit { retry_after_secs: Option<u64> },
 
     #[error("authentication error: {0}")]
     Auth(String),
@@ -688,7 +690,7 @@ impl ProviderError {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            ProviderError::RateLimit
+            ProviderError::RateLimit { .. }
                 | ProviderError::Api {
                     retryable: true,
                     ..
@@ -852,7 +854,7 @@ pub fn is_role_ordering_error(err: &ProviderError) -> bool {
 /// Classify an error reason for cooldown duration.
 pub fn classify_error_reason(err: &ProviderError) -> &str {
     match err {
-        ProviderError::RateLimit => "rate_limit",
+        ProviderError::RateLimit { .. } => "rate_limit",
         ProviderError::Auth(_) => "auth",
         ProviderError::ContextOverflow => "context_overflow",
         ProviderError::Api { code, message, .. } => {
@@ -1083,7 +1085,7 @@ mod deterministic_refusal_tests {
 
     #[test]
     fn other_error_kinds_are_left_alone() {
-        assert!(!is_deterministic_request_error(&ProviderError::RateLimit));
+        assert!(!is_deterministic_request_error(&ProviderError::RateLimit { retry_after_secs: None }));
         assert!(!is_deterministic_request_error(&ProviderError::Auth(
             "bad key".into()
         )));

@@ -78,7 +78,7 @@ pub async fn transcribe(
     if !status.is_success() {
         return Err(match status.as_u16() {
             401 | 403 => ProviderError::Auth(body),
-            429 => ProviderError::RateLimit,
+            429 => ProviderError::RateLimit { retry_after_secs: None },
             _ => ProviderError::Api {
                 code: status.as_u16().to_string(),
                 message: body,

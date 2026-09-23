@@ -1,0 +1,9 @@
+id: concurrency-a-fan-out-finishes-at-the-permit-floor
+name: "A fan-out finishes at the permit floor"
+description: |
+  Three independent sub-tasks run through the real runner when only two
+  model calls may run at once. All three report back; a permit held around a
+  sub-task while its own calls wait for permits would never finish.
+target_component: engine
+proof: engine::proof::concurrency::a_fan_out_finishes_at_the_permit_floor
+conversation: []
