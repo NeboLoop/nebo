@@ -212,6 +212,15 @@ impl CdpBridge {
                 .arg("--no-sandbox")
                 .arg("about:blank");
             if let Some(dir) = &self.config.storage_dir {
+                // A lock left by a Chromium that was killed, or by the one on
+                // the pod this profile came from, makes Chromium refuse the
+                // profile as "in use on another computer". This bridge is the
+                // profile's only user and the browser before it has exited
+                // (the core lock is held across close and launch), so any
+                // lock here is stale.
+                for lock in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+                    let _ = std::fs::remove_file(dir.join(lock));
+                }
                 cmd.arg(format!("--user-data-dir={}", dir.display()));
             }
         } else {
@@ -734,9 +743,10 @@ mod tests {
         assert!(bridge.core.lock().await.is_some(), "browser relaunched");
     }
 
-    /// A clean shutdown leaves the Chromium profile unlocked, so the bot's
-    /// state can commit it; the idle reaper takes the same path. A killed
-    /// Chromium leaves `SingletonLock` behind.
+    /// A stale lock from another machine does not stop the launch; a clean
+    /// shutdown leaves the Chromium profile unlocked, so the bot's state can
+    /// commit it; the idle reaper takes the same path. A killed Chromium
+    /// leaves `SingletonLock` behind.
     #[tokio::test]
     #[ignore = "requires a Chromium or Chrome; run with --ignored"]
     async fn shutdown_releases_the_chromium_profile() {
@@ -754,6 +764,10 @@ mod tests {
             chromium: true,
         }));
         let lock = profile.join("SingletonLock");
+        // Left by a Chromium on another pod: must not stop this one starting.
+        std::fs::create_dir_all(&profile).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("another-pod-37", &lock).unwrap();
 
         bridge
             .execute("navigate", &json!({"url": "about:blank"}), "close-test")
