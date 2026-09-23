@@ -138,6 +138,13 @@ impl Store {
         self.get_backup(&id)?.ok_or_else(|| NeboError::Database("backup row vanished".into()))
     }
 
+    /// A verified copy at `dest` that is not a ring entry: what a BotState
+    /// commit packs in the live database's place, then deletes.
+    pub fn copy_verified(&self, dest: &Path) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        vacuum_into(&conn, dest).map(|_| ())
+    }
+
     pub fn get_backup(&self, id: &str) -> Result<Option<Backup>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
@@ -157,17 +164,6 @@ impl Store {
             .db_err("list_backups prepare")?;
         let rows = stmt.query_map([], row_to_backup).db_err("list_backups")?;
         rows.collect::<Result<Vec<_>, _>>().db_err("list_backups collect")
-    }
-
-    /// A copy reached the hub: `file_id` is the hub's handle for it.
-    pub fn mark_shipped(&self, id: &str, file_id: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE backups SET shipped_at = ?2, file_id = ?3 WHERE id = ?1",
-            params![id, chrono_now(), file_id],
-        )
-        .db_err("mark shipped")?;
-        Ok(())
     }
 
     /// Apply the retention rule: delete the files and rows that no longer

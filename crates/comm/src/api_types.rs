@@ -888,3 +888,38 @@ pub struct LicenseKeysResponse {
     /// Map of artifact_id → license key entry.
     pub keys: std::collections::HashMap<String, LicenseKeyEntry>,
 }
+
+// ── BotState ────────────────────────────────────────────────────────
+
+/// One committed BotState generation (`GET /api/v1/bots/self/state`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BotStateGeneration {
+    pub generation: i64,
+    pub role: String,
+    #[serde(default)]
+    pub lease_epoch: i64,
+    pub committed_at: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    /// The manifest exactly as it was committed.
+    pub manifest: serde_json::Value,
+}
+
+/// Response from `GET /api/v1/bots/self/state`: the head generation a next
+/// commit must follow, and the generation asked for (`None` when the bot
+/// has never committed one).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BotStateResponse {
+    pub head: i64,
+    #[serde(default)]
+    pub state: Option<BotStateGeneration>,
+}
+
+/// Response from `POST /api/v1/bots/self/state`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BotStateCommitResponse {
+    pub generation: i64,
+    pub committed_at: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}

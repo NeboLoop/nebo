@@ -55,7 +55,7 @@ pub fn spawn(
             // Cleanup expired snapshots
             snapshot_store.cleanup();
             nightly_backup(&store, &state).await;
-            crate::backup_ship::ship_pending(&store, &state).await;
+            crate::backup_ship::commit_if_due(&store, &state).await;
         }
     });
 }
