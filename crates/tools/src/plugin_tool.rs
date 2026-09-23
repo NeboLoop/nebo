@@ -910,11 +910,14 @@ impl DynTool for PluginTool {
     fn description(&self) -> String {
         let slugs = self.installed_slugs();
         if slugs.is_empty() {
-            return "Run installed plugin binaries. No plugins are installed yet — use \
-                    plugin(action: \"list\") to confirm, and plugin(action: \"discover\", \
-                    query: \"<keyword>\") to find plugins in the marketplace. Discover is a \
+            return "Run installed plugin binaries. No plugins are installed yet. When the user \
+                    asks for something no installed tool does (post a tweet, message a Slack \
+                    channel, look up an invoice), your FIRST move is plugin(action: \"discover\", \
+                    query: \"<keyword>\") — never tell the user to set something up in Settings \
+                    or to do it by hand before you have searched the marketplace. Discover is a \
                     read-only search: run it without asking the user first; only installing \
-                    offers the user a card to approve. Once one is installed, every command \
+                    offers the user a card to approve. plugin(action: \"list\") shows what is \
+                    installed. Once one is installed, every command \
                     call names it by the slug plugin(action: \"list\") shows: \
                     plugin(resource: \"<slug>\", action: \"exec\", command: \"<subcommand and flags>\")."
                 .to_string();
