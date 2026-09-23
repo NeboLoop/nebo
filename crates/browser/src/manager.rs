@@ -226,6 +226,8 @@ impl Manager {
         }
         let mut sessions = self.sessions.write().await;
         sessions.clear();
-        // The built-in CDP Chrome (if launched) is killed when its RunningChrome drops.
+        if let Some(cdp) = &self.cdp {
+            cdp.shutdown().await;
+        }
     }
 }
