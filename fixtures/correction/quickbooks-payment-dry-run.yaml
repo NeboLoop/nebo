@@ -65,9 +65,9 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: plugin-first
-      text: "The first call is plugin(resource: quickbooks, action: exec) — a query for the invoice's customer, or the payment create dry run"
+      text: "The first call is the plugin (a query for the invoice's customer, or the payment call) or one of its skills — the plugin tool itself says a plugin's usage is its skills, and reading quickbooks-payment before acting is the pathway, not a detour. Never the shell."
       severity: critical
-      check: { first_call: true, tool: plugin }
+      check: { first_call: true, tool: [plugin, skill] }
   recovery:
     - id: no-shell-plugin
       text: "No os shell call runs the quickbooks binary, pipes JSON into it, or sets QUICKBOOKS_* env vars"
