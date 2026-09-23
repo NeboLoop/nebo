@@ -2546,8 +2546,19 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let mcp_refresh_wake = mcp_refresh_wake.clone();
         let plugin_refresh_wake = plugin_refresh_wake.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            let mut backoff_secs: u64 = 30;
+            // Boot connects on its own; this watcher takes over after a
+            // minute — or at once when the hub refused this process the bot
+            // (another copy holds its lease), which is then asked again at
+            // the renewal cadence rather than after the backoff.
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                _ = comm::lease::process().until_lost() => {}
+            }
+            let mut backoff_secs: u64 = if comm::lease::process().is_lost() {
+                comm::lease::RENEW_EVERY.as_secs()
+            } else {
+                30
+            };
             loop {
                 let before_sleep = std::time::SystemTime::now();
 
@@ -2626,14 +2637,16 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         tokio::spawn(async move {
             let mut backoff_secs: u64 = 30;
             loop {
+                // Only the process holding the bot's lease may hold its
+                // tunnel; the dial names that lease (comm::tunnel).
+                comm::lease::process().granted_or_unleased().await;
+                // The token is read after the grant: the AUTH_OK that granted
+                // the lease rotated it, and the one read before is refused.
                 let Some(token) = codes::neboai_token(&tunnel_state) else {
                     // Not activated yet — poll until credentials appear.
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     continue;
                 };
-                // Only the process holding the bot's lease may hold its
-                // tunnel; the dial names that lease (comm::tunnel).
-                comm::lease::process().granted_or_unleased().await;
                 let started = std::time::Instant::now();
                 let hub_url = tunnel_state.config.neboai.tunnel_url.clone();
                 match comm::tunnel::run(&hub_url, &token, &local_addr, &tunnel_state.tunnel_online).await {
