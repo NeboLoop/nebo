@@ -127,6 +127,11 @@ pub(super) async fn set_raw(app: &str, window: usize, path: &str, value: &str, e
     run_cmd(&bin, &target_args("set", app, window, path, "--value", value, expect), ACTION_DEADLINE).await.map(|_| ())
 }
 
+pub(super) async fn frontmost_raw() -> Result<String, String> {
+    let bin = helper().await?;
+    run_cmd(&bin, &["frontmost".to_string()], ACTION_DEADLINE).await
+}
+
 pub(super) async fn raise_raw(app: &str, window: usize) -> Result<(), String> {
     let bin = helper().await?;
     let args: Vec<String> = ["raise", "--app", app, "--window", &window.to_string()].map(String::from).to_vec();

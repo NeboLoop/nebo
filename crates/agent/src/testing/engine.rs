@@ -374,6 +374,20 @@ async fn run_single(
                                 warn!(fixture = %fixture.id, run = %run_id, "could not answer a card; the run will stall");
                             }
                         }
+                        // A tool approval card. The harness stands in for the
+                        // owner and the fixture asked for the work, so the
+                        // call is approved; the transcript records it so a
+                        // check can see what was approved. Unanswered, a
+                        // desktop fixture sat parked until the silence cap
+                        // (Stadium, 2026-09-23).
+                        Some("approval_request") => {
+                            for (note, reply) in approve_calls(&event) {
+                                all_text.push(note);
+                                if ws.send(Message::Text(reply.to_string().into())).await.is_err() {
+                                    warn!(fixture = %fixture.id, run = %run_id, "could not answer an approval; the run will stall");
+                                }
+                            }
+                        }
                         Some("chat_complete") => {
                             // A message typed mid-turn gets its own short stream
                             // that ends at once with the typed "queued" stop;
@@ -639,6 +653,33 @@ fn decline_card(event: &Value) -> (String, Value) {
     (note, reply)
 }
 
+/// One `approval_response` per gated call on the card (a batch card lists
+/// them under `batch`; a single card is its own request), each with the
+/// transcript line that records it.
+fn approve_calls(event: &Value) -> Vec<(String, Value)> {
+    let data = &event["data"];
+    let mut calls: Vec<(String, String)> = Vec::new();
+    if let Some(batch) = data["batch"].as_array() {
+        for c in batch {
+            calls.push((c["id"].as_str().unwrap_or("").to_string(), c["tool"].as_str().unwrap_or("").to_string()));
+        }
+    }
+    let first = data["request_id"].as_str().unwrap_or("");
+    if !first.is_empty() && !calls.iter().any(|(id, _)| id == first) {
+        calls.insert(0, (first.to_string(), data["tool"].as_str().unwrap_or("").to_string()));
+    }
+    calls
+        .into_iter()
+        .filter(|(id, _)| !id.is_empty())
+        .map(|(id, tool)| {
+            (
+                format!("[approval granted by the harness: {tool} {id}]\n"),
+                json!({ "type": "approval_response", "data": { "request_id": id, "approved": true } }),
+            )
+        })
+        .collect()
+}
+
 /// What the owner does mid-turn, sent over the same socket the turn runs on.
 async fn send_interrupt<S>(
     ws: &mut S,
@@ -688,6 +729,22 @@ where
 #[cfg(test)]
 mod session_filter_tests {
     use super::*;
+
+    /// A single approval card gets one approval; a batch card gets one per
+    /// listed call, the leading request first and never twice.
+    #[test]
+    fn approvals_answer_every_gated_call_once() {
+        let single = json!({"type":"approval_request","data":{"session_id":"s","request_id":"c1","tool":"os","input":{}}});
+        let a = approve_calls(&single);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].1["data"]["request_id"], "c1");
+        assert_eq!(a[0].1["data"]["approved"], true);
+        assert!(a[0].0.contains("os c1"));
+        let batch = json!({"type":"approval_request","data":{"request_id":"c1","tool":"os","batch":[{"id":"c1","tool":"os"},{"id":"c2","tool":"web"}]}});
+        let b = approve_calls(&batch);
+        assert_eq!(b.iter().map(|(_, r)| r["data"]["request_id"].as_str().unwrap().to_string()).collect::<Vec<_>>(), ["c1", "c2"]);
+        assert!(approve_calls(&json!({"type":"approval_request","data":{}})).is_empty());
+    }
 
     /// A card is answered with a decline addressed to its request id, and
     /// the transcript keeps what was offered so a check can see the offer.

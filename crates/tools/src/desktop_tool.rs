@@ -706,16 +706,26 @@ async fn handle_input(
         ));
     }
 
-    // Where the window is NOW (this also brings the app to the front).
+    // Where the window is NOW, brought to the front. The native helper
+    // answers from the accessibility API; System Events is the fallback, and
+    // it needs an Automation grant the app may not have (Stadium, 2026-09-23:
+    // every AppleEvent hung two minutes waiting for a consent nobody could
+    // click). Acting must not depend on it.
     let now: Option<Rect> = if app.is_empty() {
         None
     } else {
-        match window_frame(&app, true).await {
-            Ok(r) => Some(r),
-            Err(e) if cfg!(target_os = "macos") => {
-                return ToolResult::error(format!("{action}: {e}"));
+        match ax_native::window(&app, 1).await {
+            Ok(w) => {
+                let _ = ax_native::raise(&app, 1).await;
+                Some(Rect { x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3] })
             }
-            Err(_) => snap.as_ref().and_then(|s| s.frame.clone()),
+            Err(_) => match window_frame(&app, true).await {
+                Ok(r) => Some(r),
+                Err(e) if cfg!(target_os = "macos") => {
+                    return ToolResult::error(format!("{action}: {e}"));
+                }
+                Err(_) => snap.as_ref().and_then(|s| s.frame.clone()),
+            },
         }
     };
 
@@ -1974,6 +1984,24 @@ async fn observe(
     let quality = input["quality"].as_str().unwrap_or("medium");
     let max_elements = input["max_elements"].as_u64().unwrap_or(60).min(500) as usize;
 
+    // No app named means the window in front — what "look" means to a person
+    // — never the whole screen while a window is up. The model on Stadium
+    // (2026-09-23) captured the screen, then every click on it was refused
+    // against the window it had actually meant. The whole screen is what is
+    // left when nothing is in front, or when Nebo itself is.
+    let front;
+    let app: &str = if app.is_empty() {
+        match ax_native::frontmost().await {
+            Ok(a) if !a.is_empty() && a != "Nebo" => {
+                front = a;
+                front.as_str()
+            }
+            _ => app,
+        }
+    } else {
+        app
+    };
+
     // 1. What the image will cover. The window's own pixels by id when the
     //    platform gives one (they are right even under other windows); by
     //    screen region otherwise, which shows whatever is on top there.
@@ -2061,7 +2089,10 @@ async fn observe(
     // 4. The snapshot the next act resolves against.
     let snapshot = Snapshot {
         id: generate_snapshot_id(),
-        app: if observed.app.is_empty() { None } else { Some(observed.app.clone()) },
+        // A screen capture belongs to no app: an act that names one must
+        // capture that app's window first, or its pixels would be read
+        // against the wrong frame.
+        app: if observed.app.is_empty() || !window_image { None } else { Some(observed.app.clone()) },
         created_at: Instant::now(),
         elements: elements.clone(),
         frame: frame.clone(),

@@ -281,6 +281,22 @@ pub async fn window(app: &str, index: usize) -> Result<WindowInfo, String> {
     parse_window(&raw)
 }
 
+/// The name of the frontmost app, `""` when none. Parsed from one line.
+pub fn parse_frontmost(line: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .and_then(|v| v["app"].as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// The app in front right now, read without AppleEvents.
+pub async fn frontmost() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    return macos::frontmost_raw().await.map(|s| parse_frontmost(&s));
+    #[allow(unreachable_code)]
+    Err("frontmost app is not read on this platform".into())
+}
+
 /// Read the text in an image file. `Err` means the platform's recognizer is
 /// unavailable or failed; the caller says so and carries on without it.
 pub async fn text(image: &std::path::Path) -> Result<Vec<TextLine>, String> {
@@ -301,6 +317,13 @@ pub async fn text(image: &std::path::Path) -> Result<Vec<TextLine>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frontmost_line_yields_the_app_name_or_nothing() {
+        assert_eq!(parse_frontmost("{\"app\":\"Brave Browser\",\"pid\":12}\n"), "Brave Browser");
+        assert_eq!(parse_frontmost("{\"app\":\"\",\"pid\":0}"), "");
+        assert_eq!(parse_frontmost("garbage"), "");
+    }
 
     #[test]
     fn window_line_carries_frame_and_optional_id() {

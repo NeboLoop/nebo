@@ -56,6 +56,14 @@ if command == "text" {
     exit(0)
 }
 
+// MARK: - frontmost: the app in front, without System Events (which needs an
+// Automation grant the app may not have). Runs before the app guard.
+if command == "frontmost" {
+    let a = NSWorkspace.shared.frontmostApplication
+    emit(["app": a?.localizedName ?? "", "pid": Int(a?.processIdentifier ?? 0), "bundle": a?.bundleIdentifier ?? ""])
+    exit(0)
+}
+
 guard let appSpec = params["app"], !appSpec.isEmpty else { fail("--app is required", 2) }
 
 guard AXIsProcessTrusted() else {
