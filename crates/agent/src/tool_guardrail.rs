@@ -134,14 +134,18 @@ pub enum Mode {
 /// `NEBO_DECIDE_GUARDRAIL`: `1`/`true`/`on`/`yes` enables, `shadow` logs
 /// without acting, anything else (or unset) is off.
 pub fn mode() -> Mode {
-    mode_from(std::env::var("NEBO_DECIDE_GUARDRAIL").ok().as_deref())
+    mode_from(std::env::var("NEBO_DECIDE_GUARDRAIL").ok().as_deref(), Mode::Off)
 }
 
-fn mode_from(value: Option<&str>) -> Mode {
+/// One decision switch's value: `1`/`true`/`on`/`yes` is on, `shadow` logs
+/// without acting, `0`/`false`/`off`/`no` is off, and anything else (or
+/// unset) is the site's `default`.
+pub(crate) fn mode_from(value: Option<&str>, default: Mode) -> Mode {
     match value.map(|v| v.trim().to_ascii_lowercase()) {
         Some(v) if matches!(v.as_str(), "1" | "true" | "on" | "yes") => Mode::On,
         Some(v) if v == "shadow" => Mode::Shadow,
-        _ => Mode::Off,
+        Some(v) if matches!(v.as_str(), "0" | "false" | "off" | "no") => Mode::Off,
+        _ => default,
     }
 }
 
@@ -642,12 +646,12 @@ mod tests {
 
     #[test]
     fn mode_parses_the_switch() {
-        assert_eq!(super::mode_from(None), Mode::Off);
-        assert_eq!(super::mode_from(Some("0")), Mode::Off);
-        assert_eq!(super::mode_from(Some("1")), Mode::On);
-        assert_eq!(super::mode_from(Some(" On ")), Mode::On);
-        assert_eq!(super::mode_from(Some("shadow")), Mode::Shadow);
-        assert_eq!(super::mode_from(Some("SHADOW")), Mode::Shadow);
-        assert_eq!(super::mode_from(Some("anything")), Mode::Off);
+        assert_eq!(super::mode_from(None, Mode::Off), Mode::Off);
+        assert_eq!(super::mode_from(Some("0"), Mode::Off), Mode::Off);
+        assert_eq!(super::mode_from(Some("1"), Mode::Off), Mode::On);
+        assert_eq!(super::mode_from(Some(" On "), Mode::Off), Mode::On);
+        assert_eq!(super::mode_from(Some("shadow"), Mode::Off), Mode::Shadow);
+        assert_eq!(super::mode_from(Some("SHADOW"), Mode::Off), Mode::Shadow);
+        assert_eq!(super::mode_from(Some("anything"), Mode::Off), Mode::Off);
     }
 }

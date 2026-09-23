@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{Local, TimeZone};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::state::AppState;
 use db::models::CronJob;
@@ -893,6 +893,9 @@ async fn drive(state: &AppState) {
         }
         let state = state.clone();
         tokio::spawn(async move {
+            if !triage_admits(&state, &run).await {
+                return;
+            }
             let outcome = crate::heartbeat::fire(&state, &entity_type, &entity_id).await;
             let t = now();
             match outcome {
@@ -932,6 +935,9 @@ async fn drive(state: &AppState) {
             // the provider all at once.
             if i > 0 {
                 tokio::time::sleep(Duration::from_secs(i as u64)).await;
+            }
+            if !triage_admits(&state, &run).await {
+                return;
             }
             match (job, command) {
                 (Some(job), _) => {
@@ -990,6 +996,175 @@ async fn drive(state: &AppState) {
             warn!(run = %turn.id, error = %e, "engine: settle failed");
         }
     }
+}
+
+// ── heartbeat triage: one decision before a timer fire runs ──────────────
+
+/// Ceiling on the one triage decision; a trip runs the fire.
+const TRIAGE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How far back a binding's fires are read to find its last real run. The
+/// floor allows at most five skips in a row, so this always reaches one
+/// when there is one; when it does not, the fire counts as a first run.
+const TRIAGE_HISTORY: i64 = 20;
+
+/// Heartbeat triage (`agent::heartbeat_triage`) for one fire the engine is
+/// about to start: an entity heartbeat, a binding heartbeat or a schedule.
+/// True runs it. On unless `NEBO_DECIDE_TRIAGE=0` (or `shadow`), and a fire
+/// triage cannot read (see [`triage_binding`]) always runs. A skipped fire
+/// is closed `done` with the summary tag `skipped` and no output, so the
+/// next fire's "last real run" passes over it; its timer is already re-armed.
+async fn triage_admits(state: &AppState, run: &EngineRun) -> bool {
+    use agent::heartbeat_triage::{self as triage, Gate, Mode};
+    let mode = triage::mode();
+    if mode == Mode::Off {
+        return true;
+    }
+    let entity = if run.kind == "heartbeat" {
+        let inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+        match (inputs["entity_type"].as_str(), inputs["entity_id"].as_str()) {
+            (Some(et), Some(eid)) => crate::heartbeat::resolve(state, et, eid)
+                .ok()
+                .map(|r| (r.heartbeat_content, r.heartbeat_interval_minutes * 60)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let Some(binding) = triage_binding(&state.store, run, entity, now()) else {
+        debug!(site = "heartbeat_triage", run = %run.id, binding = ?run.external_ref, "triage does not apply to this fire; running");
+        return true;
+    };
+    let decide = state.runner.decide();
+    if triage::triage(decide.as_deref(), mode, &binding, TRIAGE_TIMEOUT).await == Gate::Run {
+        return true;
+    }
+    let t = now();
+    if let Err(e) = state
+        .store
+        .engine_set_run_result_tag(&run.id, "skipped")
+        .and_then(|_| state.store.engine_set_run_state(&run.id, "done", t, None))
+    {
+        warn!(run = %run.id, error = %e, "engine: could not close a skipped fire; running it");
+        return true;
+    }
+    false
+}
+
+/// What triage can know about the binding a queued fire belongs to, read
+/// from local rows. `entity` is an entity heartbeat's content and interval
+/// (seconds), resolved by the caller. None — triage does not apply, the fire
+/// runs as before — for: a fire with no employee (the main agent's and
+/// channels' heartbeats, agentless jobs), a run-now, a shell or plain
+/// workflow job, and a binding whose rows cannot be read.
+pub(crate) fn triage_binding(store: &Store, run: &EngineRun, entity: Option<(String, i64)>, t: i64) -> Option<agent::heartbeat_triage::Binding> {
+    use agent::heartbeat_triage::{Binding, Flags};
+    if run.agent_id.is_empty() {
+        return None;
+    }
+    let key = run.external_ref.clone()?;
+    let inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    if inputs["manual"].as_bool() == Some(true) {
+        return None;
+    }
+    let workflow_binding = |command: &str| {
+        let name = command.splitn(3, ':').nth(2)?;
+        store.list_agent_workflows(&run.agent_id).ok()?.into_iter().find(|w| w.binding_name == name)
+    };
+    // What it is for, how often it fires, and its workflow binding if any.
+    let (purpose, cadence, wf) = if run.kind == "heartbeat" {
+        let (content, interval) = entity?;
+        (content, u64::try_from(interval).ok().map(Duration::from_secs), None)
+    } else if let Some(id) = inputs["job_id"].as_i64() {
+        let job = store.get_cron_job(id).ok().flatten()?;
+        let cadence = cron_cadence(&job.schedule, t);
+        match job.task_type.as_str() {
+            "agent" => (job.message.clone().unwrap_or_else(|| job.command.clone()), cadence, None),
+            "agent_workflow" | "role_workflow" => {
+                let wf = workflow_binding(&job.command)?;
+                (binding_purpose(&wf), cadence, Some(wf))
+            }
+            _ => return None,
+        }
+    } else {
+        let wf = workflow_binding(inputs["command"].as_str()?)?;
+        let (every, _) = agent::agent_worker::parse_heartbeat(&wf.trigger_config);
+        (binding_purpose(&wf), (!every.is_zero()).then_some(every), Some(wf))
+    };
+
+    let history = store.engine_runs_for_ref(&key, TRIAGE_HISTORY, 0).ok()?;
+    let last = history
+        .into_iter()
+        .find(|r| r.id != run.id && r.summary != "skipped" && matches!(r.state.as_str(), "done" | "failed" | "cancelled"));
+    let Some(last) = last else {
+        return Some(Binding {
+            key,
+            agent_id: run.agent_id.clone(),
+            purpose,
+            last_status: String::new(),
+            last_outcome: String::new(),
+            since_last_run: None,
+            cadence,
+            flags: Flags { first_run: true, ..Default::default() },
+        });
+    };
+    let since = last.started_at.unwrap_or(last.created_at);
+    // A workflow binding's fire only starts its workflow; the workflow run
+    // says how it ended (`exited` is "nothing to do").
+    let wf_run = wf.as_ref().and_then(|wf| {
+        let prefix = format!("{}:", wf.binding_name);
+        store
+            .list_workflow_runs(&types::keyparser::agent_workflow_id(&run.agent_id), TRIAGE_HISTORY, 0)
+            .ok()?
+            .into_iter()
+            .find(|w| w.trigger_detail.as_deref().is_some_and(|d| d == wf.binding_name || d.starts_with(&prefix)))
+    });
+    let (status, outcome) = match &wf_run {
+        Some(w) => (w.status.clone(), w.output.clone().or_else(|| w.error.clone()).unwrap_or_default()),
+        None => (last.state.clone(), last.result.clone().or_else(|| last.error.clone()).unwrap_or_default()),
+    };
+    let clean = last.state == "done" && matches!(status.as_str(), "done" | "completed" | "exited");
+    let changes = store
+        .engine_agent_changes_since(&run.agent_id, since, &key, wf.as_ref().map(|w| w.binding_name.as_str()))
+        .ok()?;
+    Some(Binding {
+        key,
+        agent_id: run.agent_id.clone(),
+        purpose,
+        last_status: status,
+        last_outcome: outcome,
+        since_last_run: Some(t - since),
+        cadence,
+        flags: Flags {
+            first_run: false,
+            last_run_failed: !clean,
+            new_messages: changes.new_messages,
+            other_runs: changes.other_runs,
+            new_assignments: changes.new_assignments,
+            settings_changed: changes.settings_changed,
+        },
+    })
+}
+
+/// Seconds between a schedule's next two occurrences; None for a one-shot.
+fn cron_cadence(schedule: &str, t: i64) -> Option<Duration> {
+    let a = next_occurrence(schedule, t).ok()??;
+    let b = next_occurrence(schedule, a).ok()??;
+    u64::try_from(b - a).ok().map(Duration::from_secs)
+}
+
+/// What a workflow binding is for: its description, else its activities'
+/// intents.
+fn binding_purpose(wf: &db::models::AgentWorkflow) -> String {
+    if let Some(d) = wf.description.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        return format!("{}: {d}", wf.binding_name);
+    }
+    let intents: Vec<&str> = wf
+        .activities
+        .as_ref()
+        .and_then(|a| a.as_array())
+        .map(|acts| acts.iter().filter_map(|a| a["intent"].as_str()).collect())
+        .unwrap_or_default();
+    if intents.is_empty() { wf.binding_name.clone() } else { format!("{}: {}", wf.binding_name, intents.join("; ")) }
 }
 
 /// A short stable fingerprint of a definition, for the governance record.
@@ -2336,5 +2511,105 @@ mod tests {
         let hist = s.engine_events_for("run", &case_id, 50).unwrap();
         assert!(hist.iter().any(|e| e.kind == "turn_result" && e.payload.contains("without a valid next")));
         assert!(!hist.iter().any(|e| e.kind == "turn_failed"), "not a failure");
+    }
+
+    /// A past fire of `r#ref`, started `ago` seconds before `t`.
+    fn past_fire(s: &Store, id: &str, r#ref: &str, agent: &str, t: i64, ago: i64, state: &str, result: &str) {
+        s.engine_create_run(&NewRun { id, kind: "task", session_key: "cron-x", agent_id: agent, lane: "main", external_ref: Some(r#ref), ..Default::default() }).unwrap();
+        s.engine_set_run_result(id, result, None).unwrap();
+        s.engine_set_run_state(id, state, t - ago + 10, None).unwrap();
+        s.conn_exec_for_test(&format!("UPDATE engine_runs SET created_at = {c}, started_at = {c} WHERE id = '{id}'", c = t - ago));
+    }
+
+    #[test]
+    fn triage_reads_a_quiet_status_check_and_every_change_it_can_see() {
+        let s = store();
+        let t = now();
+        s.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
+        let job = s
+            .create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("Check the engagement-desk run and report results."), None, None, true, Some("emp"), None)
+            .unwrap();
+        let key = db::cron_ref(job.id);
+        past_fire(&s, "prev", &key, "emp", t, 120, "done", "The engagement-desk workflow no longer exists.\nDetails follow.");
+        // A skipped fire after it is passed over.
+        past_fire(&s, "skipped", &key, "emp", t, 5, "done", "");
+        s.engine_set_run_result_tag("skipped", "skipped").unwrap();
+        let fire_id = s.queue_cron_run(&job, false).unwrap();
+        let fire = s.engine_get_run(&fire_id).unwrap().unwrap();
+
+        let b = triage_binding(&s, &fire, None, t).expect("an employee's agent job is triaged");
+        assert_eq!(b.key, key);
+        assert_eq!(b.purpose, "Check the engagement-desk run and report results.");
+        assert_eq!(b.last_status, "done");
+        assert!(b.last_outcome.starts_with("The engagement-desk workflow no longer exists."));
+        assert_eq!(b.since_last_run, Some(120));
+        assert_eq!(b.cadence, Some(Duration::from_secs(120)));
+        assert!(!b.flags.changed_anything(), "{:?}", b.flags);
+
+        // A message to the employee after the last run is a change.
+        s.conn_exec_for_test("INSERT INTO chats (id, session_name) VALUES ('c1', 'agent:emp:web')");
+        s.conn_exec_for_test(&format!("INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('m1', 'c1', 'user', 'hi', {})", t - 60));
+        let b = triage_binding(&s, &fire, None, t).unwrap();
+        assert_eq!(b.flags.new_messages, 1);
+        assert!(b.flags.changed_anything());
+
+        // A failed last run is a change.
+        let s2 = store();
+        s2.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
+        let job2 = s2.create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None).unwrap();
+        past_fire(&s2, "prev", &db::cron_ref(job2.id), "emp", t, 120, "failed", "");
+        let fire2 = s2.engine_get_run(&s2.queue_cron_run(&job2, false).unwrap()).unwrap().unwrap();
+        assert!(triage_binding(&s2, &fire2, None, t).unwrap().flags.last_run_failed);
+
+        // No run on record: a first run.
+        let s3 = store();
+        let job3 = s3.create_cron_job("once", "0 5 10 23 8 * 2099", "", "agent", Some("Wake me"), None, None, true, Some("emp"), None).unwrap();
+        let fire3 = s3.engine_get_run(&s3.queue_cron_run(&job3, false).unwrap()).unwrap().unwrap();
+        let b3 = triage_binding(&s3, &fire3, None, t).unwrap();
+        assert!(b3.flags.first_run && b3.since_last_run.is_none());
+        assert_eq!(b3.cadence, None, "a one-shot has no cadence");
+    }
+
+    #[test]
+    fn triage_does_not_apply_without_an_employee_to_a_run_now_or_to_a_shell_job() {
+        let s = store();
+        let t = now();
+        let shell = s.create_cron_job("sh", "*/2 * * * *", "echo hi", "shell", None, None, None, true, Some("emp"), None).unwrap();
+        let fire = s.engine_get_run(&s.queue_cron_run(&shell, false).unwrap()).unwrap().unwrap();
+        assert!(triage_binding(&s, &fire, None, t).is_none());
+        let agentless = s.create_cron_job("check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, None, None).unwrap();
+        let fire = s.engine_get_run(&s.queue_cron_run(&agentless, false).unwrap()).unwrap().unwrap();
+        assert!(triage_binding(&s, &fire, None, t).is_none());
+        let agent = s.create_cron_job("mine", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None).unwrap();
+        let manual = s.engine_get_run(&s.queue_cron_run(&agent, true).unwrap()).unwrap().unwrap();
+        assert!(triage_binding(&s, &manual, None, t).is_none());
+        // The main agent's heartbeat has no employee id.
+        s.engine_create_run(&NewRun { id: "hb-main", kind: "heartbeat", session_key: "heartbeat-main-main", agent_id: "", lane: "heartbeat", external_ref: Some("heartbeat:main:main"), ..Default::default() }).unwrap();
+        let main = s.engine_get_run("hb-main").unwrap().unwrap();
+        assert!(triage_binding(&s, &main, Some(("check in".into(), 1800)), t).is_none());
+    }
+
+    #[test]
+    fn triage_reads_a_workflow_binding_by_its_workflow_run() {
+        let s = store();
+        let t = now();
+        s.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
+        s.upsert_agent_workflow("emp", "stock-watch", "heartbeat", "5m", None, None, None, Some(r#"[{"id":"a","intent":"Pull inventory"},{"id":"b","intent":"Flag low stock"}]"#), None, false).unwrap();
+        let key = "hb:emp:stock-watch";
+        past_fire(&s, "prev", key, "emp", t, 300, "done", "inline workflow run started: wf-1");
+        let wf = s.create_workflow_run("wf-1", "agent:emp", "heartbeat", Some("stock-watch"), None, Some("agent:emp:workflow:wf-1"), None).unwrap();
+        s.engine_set_run_result_tag(&wf.id, "exited").unwrap();
+        s.engine_set_run_result(&wf.id, "Nothing below threshold.", None).unwrap();
+        s.engine_set_run_state(&wf.id, "done", t - 250, None).unwrap();
+        s.conn_exec_for_test(&format!("UPDATE engine_runs SET created_at = {c} WHERE id = 'wf-1'", c = t - 299));
+        s.engine_create_run(&NewRun { id: "fire", kind: "task", session_key: "heartbeat-binding-emp-stock-watch", agent_id: "emp", lane: "main", inputs: Some(r#"{"command":"agent:emp:stock-watch","trigger":"heartbeat"}"#), external_ref: Some(key), ..Default::default() }).unwrap();
+        let fire = s.engine_get_run("fire").unwrap().unwrap();
+
+        let b = triage_binding(&s, &fire, None, t).expect("a binding heartbeat is triaged");
+        assert_eq!(b.purpose, "stock-watch: Pull inventory; Flag low stock");
+        assert_eq!(b.cadence, Some(Duration::from_secs(300)));
+        assert_eq!(b.last_status, "exited");
+        assert_eq!(b.last_outcome, "Nothing below threshold.");
+        assert!(!b.flags.changed_anything(), "its own workflow run is not other work: {:?}", b.flags);
     }
 }
