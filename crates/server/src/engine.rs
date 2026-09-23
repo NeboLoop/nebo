@@ -1009,7 +1009,7 @@ const TRIAGE_HISTORY: i64 = 20;
 
 /// Heartbeat triage (`agent::heartbeat_triage`) for one fire the engine is
 /// about to start: an entity heartbeat, a binding heartbeat or a schedule.
-/// True runs it. Off unless `NEBO_DECIDE_TRIAGE` says otherwise, and a fire
+/// True runs it. On unless `NEBO_DECIDE_TRIAGE=0` (or `shadow`), and a fire
 /// triage cannot read (see [`triage_binding`]) always runs. A skipped fire
 /// is closed `done` with the summary tag `skipped` and no output, so the
 /// next fire's "last real run" passes over it; its timer is already re-armed.

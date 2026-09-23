@@ -27,9 +27,9 @@
 //! Fails OPEN: triage off, no client, an error, a timeout, a rate limit or
 //! an incomplete answer all run the fire as before.
 //!
-//! Switch: `NEBO_DECIDE_TRIAGE` — `1` enables, `shadow` decides and logs
-//! `would_skip`/`would_run` without ever skipping, anything else (or unset)
-//! is off. Default OFF (see [`mode`]).
+//! Switch: `NEBO_DECIDE_TRIAGE` — `0` turns it off, `shadow` decides and
+//! logs `would_skip`/`would_run` without ever skipping; unset (or anything
+//! else) is on. Default ON (see [`mode`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
@@ -70,11 +70,16 @@ pub const SPAN_CADENCES: u64 = 5;
 const PURPOSE_CAP: usize = 2_000;
 const OUTCOME_CAP: usize = 300;
 
-/// What the env switch says. `NEBO_DECIDE_TRIAGE`: `1`/`true`/`on`/`yes`
-/// enables, `shadow` logs without acting, anything else (or unset) is off.
-/// Parsed by the same function as the tool guardrail's switch.
+/// What the env switch says. `NEBO_DECIDE_TRIAGE`: `0`/`false`/`off`/`no`
+/// turns triage off, `shadow` logs without acting, anything else (or unset)
+/// is on. Parsed by the same function as the tool guardrail's switch, with
+/// ON as this site's default.
 pub fn mode() -> Mode {
-    crate::tool_guardrail::mode_from(std::env::var("NEBO_DECIDE_TRIAGE").ok().as_deref())
+    mode_from(std::env::var("NEBO_DECIDE_TRIAGE").ok().as_deref())
+}
+
+fn mode_from(value: Option<&str>) -> Mode {
+    crate::tool_guardrail::mode_from(value, Mode::On)
 }
 
 /// Cheap facts about what changed for one binding since its last real run,
@@ -414,6 +419,18 @@ mod tests {
     }
 
     const T: Duration = Duration::from_secs(2);
+
+    #[test]
+    fn the_switch_defaults_on_and_zero_turns_it_off() {
+        assert_eq!(mode_from(None), Mode::On);
+        assert_eq!(mode_from(Some("1")), Mode::On);
+        assert_eq!(mode_from(Some("anything")), Mode::On);
+        assert_eq!(mode_from(Some("0")), Mode::Off);
+        assert_eq!(mode_from(Some(" Off ")), Mode::Off);
+        assert_eq!(mode_from(Some("false")), Mode::Off);
+        assert_eq!(mode_from(Some("shadow")), Mode::Shadow);
+        assert_eq!(mode_from(Some("SHADOW")), Mode::Shadow);
+    }
 
     #[test]
     fn a_quiet_answer_skips_and_the_ceilings_are_inclusive() {
