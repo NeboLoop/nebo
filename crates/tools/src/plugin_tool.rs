@@ -909,8 +909,9 @@ impl DynTool for PluginTool {
         if slugs.is_empty() {
             return "Run installed plugin binaries. No plugins are installed yet — use \
                     plugin(action: \"list\") to confirm, and plugin(action: \"discover\", \
-                    query: \"<keyword>\") to find plugins in the marketplace (installing \
-                    offers the user a card to approve). Once one is installed, every command \
+                    query: \"<keyword>\") to find plugins in the marketplace. Discover is a \
+                    read-only search: run it without asking the user first; only installing \
+                    offers the user a card to approve. Once one is installed, every command \
                     call names it by the slug plugin(action: \"list\") shows: \
                     plugin(resource: \"<slug>\", action: \"exec\", command: \"<subcommand and flags>\")."
                 .to_string();
@@ -918,7 +919,8 @@ impl DynTool for PluginTool {
 
         let mut out = String::from(
             "Run installed plugin binaries. plugin(action: \"list\") shows what's installed; \
-             plugin(action: \"discover\", query: \"…\") searches the marketplace.\n\n",
+             plugin(action: \"discover\", query: \"…\") searches the marketplace (read-only; \
+             run it without asking — only installing offers a card).\n\n",
         );
         out.push_str("ALWAYS use this tool for channel messaging — Slack, Discord, Teams, and any other channel-backed plugin. \
                       `plugin(resource: \"<channel-slug>\", command: \"upload|post|dm|reply ...\")` is the canonical pathway for \
