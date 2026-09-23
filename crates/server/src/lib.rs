@@ -22,6 +22,7 @@ mod migration;
 mod plugin_commands;
 pub(crate) mod plugin_oauth;
 mod plugin_provider;
+mod preflight;
 mod redact;
 pub mod routes;
 pub mod run_display;

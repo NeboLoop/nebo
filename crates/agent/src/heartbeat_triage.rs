@@ -16,7 +16,10 @@
 //! 2. The floor. Never more than [`MAX_CONSECUTIVE_SKIPS`] skips in a row
 //!    for one binding, and never a skip once more than [`max_skip_span`]
 //!    has passed since its last real run. A stuck "skip" can never silence
-//!    an employee.
+//!    an employee. A last run that ended with a standing outcome (it said
+//!    there was nothing to do, and why) is not a change and not a failure:
+//!    its span is [`STANDING_FLOOR_MULTIPLE`] cadences, capped at
+//!    [`STANDING_FLOOR_CAP`].
 //! 3. One decision, two Nouls in one call ([`verdict_from`]): does the job
 //!    still need to run now although nothing changed, and is anything
 //!    urgent. The thresholds are in code.
@@ -65,6 +68,14 @@ pub const MAX_SKIP_SPAN: Duration = Duration::from_secs(30 * 60);
 /// A binding that fires every N seconds may go at most N × this without a
 /// real run, when that is shorter than [`MAX_SKIP_SPAN`].
 pub const SPAN_CADENCES: u64 = 5;
+/// UNTUNED. A binding whose last run ended with a standing outcome may go
+/// its cadence × this without a real run (instead of [`max_skip_span`]'s
+/// 30 minutes): the run already said why there was nothing to do, so the
+/// question each fire is only whether that still holds.
+pub const STANDING_FLOOR_MULTIPLE: u32 = 8;
+/// UNTUNED. The standing-outcome span never exceeds this: at least one real
+/// run a day, whatever the cadence.
+pub const STANDING_FLOOR_CAP: Duration = Duration::from_secs(24 * 3600);
 
 /// Char-boundary-safe caps on the state.
 const PURPOSE_CAP: usize = 2_000;
@@ -91,7 +102,8 @@ pub struct Flags {
     pub first_run: bool,
     /// The last real run did not end cleanly: it failed, was cancelled or
     /// interrupted, or its workflow has not finished. Something to follow
-    /// up, not nothing to do.
+    /// up, not nothing to do. A run that ended with a standing outcome
+    /// ([`Binding::standing`]) ended cleanly and does not set this.
     pub last_run_failed: bool,
     /// Messages addressed to the employee (its chats, threads and channels,
     /// not its own workflow sessions) since the last run started.
@@ -130,10 +142,17 @@ pub struct Binding {
     /// the workflow binding's description.
     pub purpose: String,
     /// How the last real run ended, in the status words the store keeps
-    /// (`completed`, `exited`, `done`, ...), or empty when unknown.
+    /// (`completed`, `done`, ...), or empty when unknown. A standing outcome
+    /// reads `done`.
     pub last_status: String,
-    /// The first line of the last real run's output, or empty.
+    /// The first line of the last real run's output, or, for a standing
+    /// outcome, the reason the run gave. Empty when none.
     pub last_outcome: String,
+    /// The last real run ended with a standing outcome: the step evaluator
+    /// or the employee ended it because there was nothing to do, and said
+    /// why (`last_outcome`). Not a flag: it widens the floor's span
+    /// ([`max_skip_span`]) and the decision judges the reason.
+    pub standing: bool,
     /// Seconds since the last real run started. `None`: no run on record.
     pub since_last_run: Option<i64>,
     /// Seconds between fires, when the binding's schedule says.
@@ -182,9 +201,12 @@ fn record(key: &str, skipped: bool) -> Tally {
 }
 
 /// The longest a binding may go without a real run: [`MAX_SKIP_SPAN`], or
-/// its cadence × [`SPAN_CADENCES`] when that is shorter.
-pub fn max_skip_span(cadence: Option<Duration>) -> Duration {
+/// its cadence × [`SPAN_CADENCES`] when that is shorter. After a standing
+/// outcome (`standing`): its cadence × [`STANDING_FLOOR_MULTIPLE`], capped
+/// at [`STANDING_FLOOR_CAP`]; with no cadence, [`MAX_SKIP_SPAN`].
+pub fn max_skip_span(cadence: Option<Duration>, standing: bool) -> Duration {
     match cadence {
+        Some(c) if !c.is_zero() && standing => STANDING_FLOOR_CAP.min(c.saturating_mul(STANDING_FLOOR_MULTIPLE)),
         Some(c) if !c.is_zero() => MAX_SKIP_SPAN.min(c.saturating_mul(SPAN_CADENCES as u32)),
         _ => MAX_SKIP_SPAN,
     }
@@ -193,9 +215,9 @@ pub fn max_skip_span(cadence: Option<Duration>) -> Duration {
 /// The floor, in code: a skip is allowed only under
 /// [`MAX_CONSECUTIVE_SKIPS`] in a row and within [`max_skip_span`] of the
 /// last real run. No run on record allows no skip.
-pub fn floor_allows_skip(consecutive_skips: u32, since_last_run: Option<i64>, cadence: Option<Duration>) -> bool {
+pub fn floor_allows_skip(consecutive_skips: u32, since_last_run: Option<i64>, cadence: Option<Duration>, standing: bool) -> bool {
     let Some(since) = since_last_run else { return false };
-    consecutive_skips < MAX_CONSECUTIVE_SKIPS && since <= max_skip_span(cadence).as_secs() as i64
+    consecutive_skips < MAX_CONSECUTIVE_SKIPS && since <= max_skip_span(cadence, standing).as_secs() as i64
 }
 
 /// Skip only when `worth_a_run` is at or under [`WORTH_A_RUN_SKIP_CEILING`]
@@ -252,7 +274,7 @@ fn questions() -> BTreeMap<&'static str, Question> {
         (
             "worth_a_run",
             Question::noul(
-                "Although nothing in `unchanged_since_last_run` has changed, the job in `purpose` still needs to run now: it has a deadline or a set time that is due, a standing duty to check something on a schedule whatever happened (including anything outside this list, such as mail, a store, a website or a calendar), or a promise to act that is now due.",
+                "The last run ended with the outcome in `last_run_outcome`. Nothing in `unchanged_since_last_run` has changed since. Given that outcome and the standing duties in `purpose`, this fire still needs to run now: a deadline or a set time is due, a duty to check something outside this list on a schedule is due whatever happened, or a promise to act is now due.",
             ),
         ),
         (
@@ -271,6 +293,7 @@ fn log_run(b: &Binding, reason: &str, tally: Tally) {
         agent = %b.agent_id,
         outcome = "run",
         reason,
+        standing = b.standing,
         consecutive_skips = tally.consecutive_skips,
         since_last_run = b.since_last_run.unwrap_or(-1),
         skipped = tally.skipped,
@@ -292,7 +315,7 @@ pub async fn triage(decide: Option<&DecideClient>, mode: Mode, b: &Binding, time
         return Gate::Run;
     }
     let before = tally(&b.key);
-    if !floor_allows_skip(before.consecutive_skips, b.since_last_run, b.cadence) {
+    if !floor_allows_skip(before.consecutive_skips, b.since_last_run, b.cadence, b.standing) {
         log_run(b, "floor", record(&b.key, false));
         return Gate::Run;
     }
@@ -342,6 +365,7 @@ pub async fn triage(decide: Option<&DecideClient>, mode: Mode, b: &Binding, time
                 outcome,
                 worth_a_run = worth,
                 urgent,
+                standing = b.standing,
                 consecutive_skips = after.consecutive_skips,
                 since_last_run = b.since_last_run.unwrap_or(-1),
                 skipped = after.skipped,
@@ -402,6 +426,7 @@ mod tests {
             last_outcome: "The workflow no longer exists.\nMore detail.".into(),
             since_last_run: Some(120),
             cadence: Some(Duration::from_secs(120)),
+            standing: false,
             flags: Flags::default(),
         }
     }
@@ -475,18 +500,73 @@ mod tests {
     fn the_floor_caps_consecutive_skips_and_the_span() {
         let two_min = Some(Duration::from_secs(120));
         // Five in a row are allowed; the sixth fire runs.
-        assert!(floor_allows_skip(4, Some(120), two_min));
-        assert!(!floor_allows_skip(MAX_CONSECUTIVE_SKIPS, Some(120), two_min));
+        assert!(floor_allows_skip(4, Some(120), two_min, false));
+        assert!(!floor_allows_skip(MAX_CONSECUTIVE_SKIPS, Some(120), two_min, false));
         // Span: a 2-minute binding may go 10 minutes (5 cadences) without a run.
-        assert_eq!(max_skip_span(two_min), Duration::from_secs(600));
-        assert!(floor_allows_skip(0, Some(600), two_min));
-        assert!(!floor_allows_skip(0, Some(601), two_min));
+        assert_eq!(max_skip_span(two_min, false), Duration::from_secs(600));
+        assert!(floor_allows_skip(0, Some(600), two_min, false));
+        assert!(!floor_allows_skip(0, Some(601), two_min, false));
         // A slow binding is capped at 30 minutes, whatever its cadence.
-        assert_eq!(max_skip_span(Some(Duration::from_secs(3600))), MAX_SKIP_SPAN);
-        assert_eq!(max_skip_span(None), MAX_SKIP_SPAN);
-        assert!(!floor_allows_skip(0, Some(31 * 60), None));
+        assert_eq!(max_skip_span(Some(Duration::from_secs(3600)), false), MAX_SKIP_SPAN);
+        assert_eq!(max_skip_span(None, false), MAX_SKIP_SPAN);
+        assert!(!floor_allows_skip(0, Some(31 * 60), None, false));
         // No run on record: never a skip.
-        assert!(!floor_allows_skip(0, None, two_min));
+        assert!(!floor_allows_skip(0, None, two_min, false));
+    }
+
+    #[test]
+    fn a_standing_outcome_widens_the_span_to_cadences_capped_at_a_day() {
+        let half_hour = Some(Duration::from_secs(30 * 60));
+        // A 30-minute binding whose last run said why there was nothing to
+        // do may go 8 cadences (4 hours), not 30 minutes.
+        assert_eq!(max_skip_span(half_hour, true), Duration::from_secs(4 * 3600));
+        assert!(floor_allows_skip(0, Some(31 * 60), half_hour, true));
+        assert!(!floor_allows_skip(0, Some(31 * 60), half_hour, false));
+        assert!(floor_allows_skip(0, Some(4 * 3600), half_hour, true));
+        assert!(!floor_allows_skip(0, Some(4 * 3600 + 1), half_hour, true));
+        // A slow cadence is capped at a day.
+        assert_eq!(max_skip_span(Some(Duration::from_secs(6 * 3600)), true), STANDING_FLOOR_CAP);
+        assert_eq!(max_skip_span(Some(Duration::from_secs(7 * 86_400)), true), STANDING_FLOOR_CAP);
+        // No cadence: the ordinary span.
+        assert_eq!(max_skip_span(None, true), MAX_SKIP_SPAN);
+        // The consecutive cap still applies, and no run on record never skips.
+        assert!(!floor_allows_skip(MAX_CONSECUTIVE_SKIPS, Some(60), half_hour, true));
+        assert!(!floor_allows_skip(0, None, half_hour, true));
+    }
+
+    #[tokio::test]
+    async fn a_standing_outcome_is_judged_not_forced_and_flags_still_win() {
+        // A standing outcome past the ordinary 30-minute span is not a
+        // change: the decision is asked, and a quiet answer skips.
+        let key = "test:standing";
+        let mut b = quiet(key);
+        b.cadence = Some(Duration::from_secs(30 * 60));
+        b.since_last_run = Some(60 * 60);
+        b.standing = true;
+        b.last_outcome = "Nothing matched this run; the list was empty.".into();
+        assert!(!b.flags.changed_anything(), "a standing outcome is not a flag");
+        let client = answering_client(0.05, 0.02).await;
+        assert_eq!(triage(Some(&client), Mode::On, &b, T).await, Gate::Skip);
+        // The same fire without the standing outcome is past the floor and runs unasked.
+        let (counting, calls) = counting_client();
+        let mut ordinary = b.clone();
+        ordinary.key = "test:standing-ordinary".into();
+        ordinary.standing = false;
+        assert_eq!(triage(Some(&counting), Mode::On, &ordinary, T).await, Gate::Run);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        // Any flag still runs it without asking.
+        for f in [
+            Flags { new_messages: 1, ..Default::default() },
+            Flags { new_assignments: 1, ..Default::default() },
+            Flags { settings_changed: true, ..Default::default() },
+            Flags { other_runs: 1, ..Default::default() },
+            Flags { last_run_failed: true, ..Default::default() },
+        ] {
+            let mut flagged = b.clone();
+            flagged.flags = f;
+            assert_eq!(triage(Some(&counting), Mode::On, &flagged, T).await, Gate::Run);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
