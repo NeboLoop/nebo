@@ -222,3 +222,73 @@ async fn the_store_and_the_ledger_hold_under_contention() {
         assert_eq!(store.engine_waits_for_run(&run).unwrap().len(), 25, "{run}: every wait landed");
     }
 }
+
+/// Given words for every model call: the plan request gets three independent
+/// sub-tasks, every other call gets "done". The permits, the runner's loop,
+/// the store and the DAG scheduler are the product's own.
+struct PlanThenDone;
+
+#[async_trait::async_trait]
+impl ai::Provider for PlanThenDone {
+    fn id(&self) -> &str {
+        "given-words"
+    }
+    async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+        let asks_for_plan = req
+            .messages
+            .iter()
+            .any(|m| m.content.contains("Break this task into independent sub-tasks"));
+        let text = if asks_for_plan {
+            r#"[{"id":"1","description":"one","prompt":"do one","agent_type":"general","depends_on":[]},
+                {"id":"2","description":"two","prompt":"do two","agent_type":"general","depends_on":[]},
+                {"id":"3","description":"three","prompt":"do three","agent_type":"general","depends_on":[]}]"#
+        } else {
+            "done"
+        };
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            let _ = tx.send(ai::StreamEvent::text(text)).await;
+            let _ = tx.send(ai::StreamEvent::done()).await;
+        });
+        Ok(rx)
+    }
+}
+
+/// A fan-out finishes when only two model calls may run at once. A permit
+/// is taken where the resource is spent, at the call, never around a unit
+/// of work that makes calls: the DAG once held an LLM permit per sub-task
+/// while each sub-task's runner took one per call, so at the permit floor
+/// two sub-tasks held both and waited forever. Three independent sub-tasks
+/// run through the real runner and all three report back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fan_out_finishes_at_the_permit_floor() {
+    use tools::SubAgentOrchestrator as _;
+
+    let concurrency = Arc::new(agent::ConcurrencyController::new(Some(2)));
+    assert_eq!(concurrency.ceiling(), 2, "the scenario runs at the permit floor");
+    let store = Arc::new(fresh_store());
+    let runner = Arc::new(agent::Runner::new(
+        store.clone(),
+        Arc::new(tools::Registry::new(tools::Policy::new())),
+        vec![Arc::new(PlanThenDone) as Arc<dyn ai::Provider>],
+        agent::selector::ModelSelector::new(Default::default()),
+        concurrency,
+        Arc::new(napp::HookDispatcher::new()),
+        None,
+        Default::default(),
+        None,
+    ));
+    let orchestrator = agent::Orchestrator::new(runner, store);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        orchestrator.execute_dag("three independent jobs", "owner", "agent:ops:web", "", None),
+    )
+    .await
+    .expect("the fan-out deadlocked: a permit is held around work that needs permits")
+    .expect("the fan-out runs");
+    assert!(result.success, "every sub-task completes: {:?}", result.error);
+    for part in ["one", "two", "three"] {
+        assert!(result.output.contains(part), "sub-task '{part}' is missing from: {}", result.output);
+    }
+}
