@@ -83,6 +83,14 @@ pub struct LeaseRenewal {
     pub t: u64,
 }
 
+/// CLOSE frame payload (client -> server) of a process handing its lease back
+/// on a clean shutdown, so its successor need not wait out the TTL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseRelease {
+    pub release_lease: bool,
+}
+
 /// LEASE frame payload (server -> client): the answer to a renewal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -302,6 +310,8 @@ mod tests {
         assert_eq!((answer.kind.as_str(), answer.epoch, answer.t), ("lease_ok", 7, 1234));
         let lost: LeaseAnswer = serde_json::from_str(r#"{"type":"lease_lost","epoch":7}"#).unwrap();
         assert_eq!(lost.kind, "lease_lost");
+        let release = serde_json::to_string(&LeaseRelease { release_lease: true }).unwrap();
+        assert_eq!(release, r#"{"releaseLease":true}"#);
     }
 
     #[test]

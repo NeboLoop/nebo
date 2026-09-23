@@ -16,10 +16,22 @@
 //! token the hub currently honours.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use comm::CommPlugin;
 use nebo_comm as comm;
+
+/// A scratch bot's streams start from nothing: every JOIN carries offset 0,
+/// as a first run does.
+struct NoOffsets;
+
+impl comm::StreamOffsets for NoOffsets {
+    fn acked(&self, _bot_id: &str, _stream: &str) -> u64 {
+        0
+    }
+    fn record(&self, _bot_id: &str, _stream: &str, _seq: u64) {}
+}
 
 fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"))
@@ -40,7 +52,7 @@ async fn hold_the_bot() {
     lease.set_fenced(true);
     println!("INSTANCE {}", lease.instance_id());
 
-    let plugin = comm::NeboAIPlugin::new();
+    let plugin = comm::NeboAIPlugin::new(Arc::new(NoOffsets));
     let started = Instant::now();
     loop {
         let mut config = HashMap::new();

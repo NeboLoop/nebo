@@ -16,8 +16,12 @@
 //! object's files changed and the last commit is at least 15 minutes old, or
 //! when a day has passed regardless — an unchanged object is not re-packed
 //! and an unchanged chunk is not re-uploaded, so a quiet day costs one small
-//! request. On boot, a server whose database is missing restores the latest
-//! generation before anything opens it (`restore_on_boot`).
+//! request. The graceful drain commits whatever changed as its last act
+//! before the lease is handed back (`commit_on_drain`). A commit carries the
+//! lease epoch it was made under and is made only while this process holds
+//! the bot's lease (`comm::lease`). On boot, a server whose database is
+//! missing restores the latest generation before anything opens it
+//! (`restore_on_boot`).
 //!
 //! The key arrives as `NEBO_BACKUP_KEY` (hex, 32 bytes) in the pod's Secret.
 //! Without it nothing ships — a desktop keeps its ring local.
@@ -145,7 +149,7 @@ pub async fn commit_if_due(store: &Arc<Store>, state: &AppState) {
     let store = store.clone();
     let state = state.clone();
     tokio::spawn(async move {
-        let result = commit_tick(&store, &state, &key).await;
+        let result = commit_tick(&store, &state, &key, false).await.map(|_| ());
         IN_FLIGHT.store(false, Ordering::Release);
         let Err(e) = result else {
             FAILING_SINCE.store(0, Ordering::Relaxed);
@@ -169,7 +173,45 @@ pub async fn commit_if_due(store: &Arc<Store>, state: &AppState) {
     });
 }
 
-async fn commit_tick(store: &Arc<Store>, state: &AppState, key: &[u8; 32]) -> Result<(), String> {
+/// The graceful drain's commit: once runs have stopped, whatever changed
+/// since the last generation is committed now, without the 15-minute
+/// spacing, and the hub's answer is the proof it holds it. Waits for a
+/// commit the minute tick already started. A bot that ships no state
+/// (no `NEBO_BACKUP_KEY`) has nothing to do.
+pub async fn commit_on_drain(store: &Arc<Store>, state: &AppState) {
+    let key = match backup_key() {
+        None => return,
+        Some(Ok(k)) => k,
+        Some(Err(e)) => {
+            warn!(error = %e, "drain: bot state not committed");
+            return;
+        }
+    };
+    while IN_FLIGHT.swap(true, Ordering::AcqRel) {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let result = commit_tick(store, state, &key, true).await;
+    IN_FLIGHT.store(false, Ordering::Release);
+    match result {
+        Ok(Some(m)) => info!(generation = m.generation, lease_epoch = m.lease_epoch, "drain: bot state committed and accepted by the hub"),
+        Ok(None) => info!("drain: bot state unchanged since the last committed generation"),
+        Err(e) => warn!(error = %e, "drain: bot state NOT committed; the last committed generation stands"),
+    }
+}
+
+/// The lease epoch a commit is made under. A commit is made only while this
+/// process holds the bot's lease: any other process may be the bot now, and
+/// its state is the one that counts.
+fn commit_epoch(lease: &comm::lease::Lease) -> Result<i64, String> {
+    match lease.state() {
+        comm::lease::LeaseState::Held { epoch, .. } => Ok(epoch as i64),
+        other => Err(format!("this process does not hold the bot's lease ({other:?}); nothing committed")),
+    }
+}
+
+/// One state commit if it is due; `drain` commits anything changed, without
+/// the spacing. The committed manifest, or `None` when nothing was due.
+async fn commit_tick(store: &Arc<Store>, state: &AppState, key: &[u8; 32], drain: bool) -> Result<Option<Manifest>, String> {
     let bot_id = config::read_bot_id().ok_or("this Nebo has no bot id")?;
     let token = crate::codes::neboai_token(state).ok_or("this Nebo is not signed in to NeboAI")?;
     let api = NeboAIApi::new(state.config.neboai.api_url.clone(), bot_id.clone(), token);
@@ -188,9 +230,10 @@ async fn commit_tick(store: &Arc<Store>, state: &AppState, key: &[u8; 32]) -> Re
             .map_err(|e| e.to_string())??
     };
     let now = now_secs();
-    if !commit_due(&last, &sources, &prints, now) {
-        return Ok(());
+    if !commit_due(&last, &sources, &prints, now, drain) {
+        return Ok(None);
     }
+    let lease_epoch = commit_epoch(comm::lease::process())?;
 
     let residency = serde_json::json!({
         "idle": state.run_registry.list_all().await.is_empty(),
@@ -210,6 +253,7 @@ async fn commit_tick(store: &Arc<Store>, state: &AppState, key: &[u8; 32]) -> Re
         sources,
         prints,
         last: &last,
+        lease_epoch,
         next_wake,
         residency: Some(residency),
     })
@@ -220,12 +264,13 @@ async fn commit_tick(store: &Arc<Store>, state: &AppState, key: &[u8; 32]) -> Re
         ms = started.elapsed().as_millis() as u64,
         "bot state committed to the hub"
     );
-    Ok(())
+    Ok(Some(manifest))
 }
 
 /// Due when nothing was ever committed, when something changed and the
-/// last commit is 15 minutes old, or when a day has passed.
-fn commit_due(last: &Committed, sources: &[Source], prints: &[Fingerprint], now: i64) -> bool {
+/// last commit is 15 minutes old (at once, on the drain), or when a day has
+/// passed.
+fn commit_due(last: &Committed, sources: &[Source], prints: &[Fingerprint], now: i64, drain: bool) -> bool {
     if last.objects.is_empty() {
         return true;
     }
@@ -235,7 +280,7 @@ fn commit_due(last: &Committed, sources: &[Source], prints: &[Fingerprint], now:
     }
     let changed = sources.len() != last.objects.len()
         || sources.iter().zip(prints).any(|(s, p)| reusable(&last.objects, s, p).is_none());
-    changed && age >= COMMIT_SPACING_SECS
+    changed && (drain || age >= COMMIT_SPACING_SECS)
 }
 
 /// The committed entry for this object, if its files have not changed.
@@ -285,6 +330,9 @@ struct CommitRequest<'a> {
     sources: Vec<Source>,
     prints: Vec<Fingerprint>,
     last: &'a Committed,
+    /// The lease epoch this commit is made under (0: a process that holds
+    /// no lease, the archive command).
+    lease_epoch: i64,
     next_wake: Option<i64>,
     residency: Option<serde_json::Value>,
 }
@@ -361,7 +409,7 @@ async fn commit_staged(req: &CommitRequest<'_>, staging: &Path) -> Result<Manife
     let manifest = Manifest {
         bot_id: req.bot_id.to_string(),
         generation: req.last.head + 1,
-        lease_epoch: 0,
+        lease_epoch: req.lease_epoch,
         role: req.role.as_str().to_string(),
         taken_at: rfc3339(taken_at),
         nebo_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -418,14 +466,17 @@ async fn upload_chunk(api: &NeboAIApi, path: &Path, sha256: &str, taken_at: i64)
 
 /// How a process that is not the running server reaches the hub as this
 /// bot: the id from the environment or the data directory, the freshest
-/// token there is (the rotated-token cache, else the provisioned one).
+/// token there is (the rotated-token cache, else the provisioned one, else
+/// the boot credential). A read refused as stale retries with the boot
+/// credential inside `NeboAIApi`.
 fn hub_credentials(api_url: &str, data_dir: &Path) -> Option<NeboAIApi> {
     let bot_id = std::env::var("NEBO_BOT_ID").ok().filter(|s| s.len() == 36).or_else(config::read_bot_id)?;
     let token = std::fs::read_to_string(data_dir.join("neboai_token.cache"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("NEBO_BOT_TOKEN").ok().filter(|s| !s.is_empty()))?;
+        .or_else(|| std::env::var("NEBO_BOT_TOKEN").ok().filter(|s| !s.is_empty()))
+        .or_else(comm::api::provisioned_credential)?;
     Some(NeboAIApi::new(api_url.to_string(), bot_id, token))
 }
 
@@ -458,6 +509,7 @@ pub async fn archive(api_url: &str) -> Result<Manifest, String> {
         sources,
         prints,
         last: &base,
+        lease_epoch: 0,
         next_wake: None,
         residency: None,
     })
@@ -782,6 +834,7 @@ mod tests {
             sources,
             prints,
             last: &last,
+            lease_epoch: 7,
             next_wake: Some(1_789_800_000),
             residency: Some(serde_json::json!({"idle": true})),
         })
@@ -857,6 +910,7 @@ mod tests {
             sources,
             prints,
             last: &stale,
+            lease_epoch: 7,
             next_wake: None,
             residency: None,
         })
@@ -940,12 +994,34 @@ mod tests {
             .collect();
         let now = 1_800_000_000;
         let at = |age: i64| Committed { head: 1, at: now - age, objects: objects.clone() };
-        assert!(commit_due(&Committed { head: 0, at: 0, objects: vec![] }, &sources, &prints, now), "never committed");
-        assert!(!commit_due(&at(20 * 60), &sources, &prints, now), "unchanged");
-        assert!(commit_due(&at(25 * 3600), &sources, &prints, now), "a day has passed");
+        assert!(commit_due(&Committed { head: 0, at: 0, objects: vec![] }, &sources, &prints, now, false), "never committed");
+        assert!(!commit_due(&at(20 * 60), &sources, &prints, now, false), "unchanged");
+        assert!(commit_due(&at(25 * 3600), &sources, &prints, now, false), "a day has passed");
         let mut changed = prints.clone();
         changed[2].max_mtime_ns += 1;
-        assert!(!commit_due(&at(5 * 60), &sources, &changed, now), "changed, but committed 5 minutes ago");
-        assert!(commit_due(&at(16 * 60), &sources, &changed, now), "changed and 16 minutes old");
+        assert!(!commit_due(&at(5 * 60), &sources, &changed, now, false), "changed, but committed 5 minutes ago");
+        assert!(commit_due(&at(16 * 60), &sources, &changed, now, false), "changed and 16 minutes old");
+        // The drain commits anything changed at once, and nothing unchanged.
+        assert!(commit_due(&at(5 * 60), &sources, &changed, now, true), "drain: changed 5 minutes after a commit");
+        assert!(!commit_due(&at(5 * 60), &sources, &prints, now, true), "drain: unchanged");
+    }
+
+    /// A commit is made only under a held lease, and carries its epoch.
+    #[test]
+    fn a_commit_needs_the_lease_and_carries_its_epoch() {
+        use comm::lease::Lease;
+        let lease = Lease::new();
+        assert!(commit_epoch(&lease).is_err(), "unclaimed");
+        lease.set_fenced(true);
+        lease.claim();
+        assert!(commit_epoch(&lease).is_err(), "claimed, not yet granted");
+        lease.granted(42, std::time::Duration::from_secs(60), std::time::Instant::now());
+        assert_eq!(commit_epoch(&lease), Ok(42));
+        lease.lost();
+        assert!(commit_epoch(&lease).is_err(), "lost");
+        let unleased = Lease::new();
+        unleased.claim();
+        unleased.granted(0, std::time::Duration::from_secs(60), std::time::Instant::now());
+        assert!(commit_epoch(&unleased).is_err(), "a hub that issues no leases fences no commit");
     }
 }

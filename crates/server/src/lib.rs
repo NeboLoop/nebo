@@ -2916,6 +2916,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let shutdown_registry = state.run_registry.clone();
     let shutdown_store = state.store.clone();
     let shutdown_lifecycles = state.app_lifecycles.clone();
+    let shutdown_state = state.clone();
 
     if !quiet {
         info!("Server ready at http://localhost:{port}");
@@ -2976,7 +2977,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 }
                 lifecycles.clear();
             }
-            info!("app sidecars stopped, disconnecting comm plugins...");
+            info!("app sidecars stopped, committing bot state...");
+            // Nothing writes now: what changed is committed, the hub's answer
+            // is the proof, then the lease is handed back as the connection
+            // closes (plan 1A-4: commit, verify, release).
+            backup_ship::commit_on_drain(&shutdown_store, &shutdown_state).await;
+            comm::lease::process().release();
+            info!("bot state settled, disconnecting comm plugins...");
             shutdown_comm.shutdown().await;
             // Brief pause for write_loop to send the WebSocket Close frame
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

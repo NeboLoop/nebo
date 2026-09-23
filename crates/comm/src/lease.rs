@@ -77,6 +77,9 @@ pub struct Lease {
     /// Monotonic milliseconds since [`BASE`] of the latest confirmation.
     confirmed_ms: AtomicU64,
     ttl_ms: AtomicU64,
+    /// Set by the graceful drain: this process is shutting down and its
+    /// connection hands the lease back as it closes.
+    releasing: AtomicBool,
     /// Signalled when a grant (or an unleased hub) lets hub work start.
     changed: Notify,
 }
@@ -110,6 +113,7 @@ impl Lease {
             epoch: AtomicU64::new(0),
             confirmed_ms: AtomicU64::new(0),
             ttl_ms: AtomicU64::new(DEFAULT_TTL.as_millis() as u64),
+            releasing: AtomicBool::new(false),
             changed: Notify::new(),
         }
     }
@@ -212,6 +216,22 @@ impl Lease {
     /// long since it was last confirmed.
     pub fn held_epoch(&self) -> Option<u64> {
         (self.status.load(Ordering::Acquire) == HELD).then(|| self.epoch.load(Ordering::Acquire))
+    }
+
+    /// The graceful drain is done with the bot: when this process's gateway
+    /// connection closes, it hands the lease back (a CLOSE frame with
+    /// `{"releaseLease":true}`) so the next process need not wait out the TTL.
+    pub fn release(&self) {
+        self.releasing.store(true, Ordering::Release);
+    }
+
+    /// The epoch to hand back as the connection closes: `Some` once
+    /// [`Lease::release`] was called and while this process holds the lease.
+    pub fn release_epoch(&self) -> Option<u64> {
+        if !self.releasing.load(Ordering::Acquire) {
+            return None;
+        }
+        self.held_epoch()
     }
 
     /// Whether the hub told this process it may not hold the bot.
@@ -373,6 +393,21 @@ mod tests {
         l.granted(0, Duration::from_secs(60), Instant::now());
         assert_eq!(l.state(), LeaseState::Unleased);
         assert!(!l.frozen());
+    }
+
+    /// Only a drained process that holds the lease hands it back.
+    #[test]
+    fn release_hands_back_only_a_held_lease() {
+        let l = fenced();
+        l.claim();
+        l.release();
+        assert_eq!(l.release_epoch(), None, "nothing held, nothing to hand back");
+        l.granted(6, Duration::from_secs(60), Instant::now());
+        assert_eq!(l.release_epoch(), Some(6));
+
+        let running = fenced();
+        running.granted(2, Duration::from_secs(60), Instant::now());
+        assert_eq!(running.release_epoch(), None, "a running process keeps its lease");
     }
 
     #[test]

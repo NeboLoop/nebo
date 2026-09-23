@@ -1721,6 +1721,20 @@ async fn write_loop(
             _ = cancel.cancelled() => break,
         }
     }
+    // A drained process hands its lease back before it goes, so the next
+    // process need not wait out the TTL.
+    if let Some(frame) = lease_release_frame(lease) {
+        let sent = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            write.send(WsMessage::Binary(frame.into())),
+        )
+        .await;
+        match sent {
+            Ok(Ok(())) => info!(epoch = lease.epoch(), "bot lease handed back to the hub"),
+            Ok(Err(e)) => warn!(error = %e, "bot lease release not sent; it expires on its TTL"),
+            Err(_) => warn!("bot lease release timed out (2s); it expires on its TTL"),
+        }
+    }
     // Send WebSocket Close frame so the gateway drops this connection immediately
     // (rather than waiting for its keepalive timeout to expire).
     let close_result = tokio::time::timeout(
@@ -1743,6 +1757,21 @@ async fn write_loop(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/// The CLOSE frame that hands this process's lease back, once the drain has
+/// released it (`Lease::release`) and while it is held.
+fn lease_release_frame(lease: &crate::lease::Lease) -> Option<Vec<u8>> {
+    lease.release_epoch()?;
+    let payload = serde_json::to_vec(&wire::LeaseRelease { release_lease: true }).ok()?;
+    frame::encode(
+        Header {
+            frame_type: frame::TYPE_CLOSE,
+            ..Default::default()
+        },
+        &payload,
+    )
+    .ok()
+}
 
 /// Mirror of NeboLoop's `sanitizeChannelName` so find-by-name matches what the
 /// server stores: lowercase, trim, spaces→'-', drop '.', keep [a-z0-9-],
@@ -1801,6 +1830,20 @@ fn derive_api_url(gateway: &str) -> String {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    /// The drain's CLOSE frame: sent only once the lease is released while
+    /// held, and it says `releaseLease` in the hub's frame format.
+    #[test]
+    fn a_released_lease_is_handed_back_on_a_close_frame() {
+        let lease = crate::lease::Lease::new();
+        lease.granted(3, std::time::Duration::from_secs(60), std::time::Instant::now());
+        assert!(lease_release_frame(&lease).is_none(), "a running process keeps its lease");
+        lease.release();
+        let bytes = lease_release_frame(&lease).expect("a release frame");
+        let (h, payload) = frame::decode(&bytes).unwrap();
+        assert_eq!(h.frame_type, frame::TYPE_CLOSE);
+        assert_eq!(payload, br#"{"releaseLease":true}"#);
+    }
 
     #[derive(Default)]
     struct MemOffsets(Mutex<HashMap<String, u64>>);
