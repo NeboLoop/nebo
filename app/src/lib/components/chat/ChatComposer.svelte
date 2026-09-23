@@ -787,24 +787,31 @@
               title={$t('modelPick.hint')}
               tabindex={-1}
             >{modelName}</button>
-            <ul class="dropdown-content menu bg-base-100 rounded-box z-20 w-64 p-1 shadow-md border border-base-300 flex-nowrap max-h-80 overflow-y-auto">
-              {#each modelOptions as opt (opt.value)}
-                <li>
+            <!-- Same sheet as the phone: title, what it applies to, then one
+                 row per speed — icon, name, the job it is for, a check. -->
+            <div class="dropdown-content bg-base-100 rounded-box z-20 w-80 p-2 shadow-md border border-base-300">
+              <div class="px-2 pt-1.5 pb-2">
+                <div class="text-sm font-semibold">{$t('modelPick.composerTitle')}</div>
+                {#if threadId}
+                  <div class="text-xs text-base-content/60 mt-0.5">{$t('modelPick.composerHint')}</div>
+                {/if}
+              </div>
+              <div class="max-h-80 overflow-y-auto">
+                {#each modelOptions as opt (opt.value)}
                   <button
-                    class="text-sm flex-col items-start gap-0"
+                    class="w-full flex items-center gap-3 px-2 py-2 rounded-lg text-left hover:bg-base-200 cursor-pointer border-none bg-transparent"
                     onclick={() => { pickModel(opt.value); (document.activeElement as HTMLElement | null)?.blur(); }}
                   >
-                    <span class="flex items-center gap-1.5">
-                      {opt.label}
-                      {#if modelLabel(activeModel, modelOptions) === opt.label}<span class="text-primary">&check;</span>{/if}
+                    <opt.icon class="w-5 h-5 shrink-0 text-base-content/70" />
+                    <span class="min-w-0 flex-1">
+                      <span class="block text-sm">{opt.label}</span>
+                      <span class="block text-xs text-base-content/60">{opt.description}</span>
                     </span>
-                    {#if opt.description}
-                      <span class="text-xs text-base-content/60 whitespace-normal">{opt.description}</span>
-                    {/if}
+                    <span class="w-5 shrink-0 text-primary">{#if modelLabel(activeModel, modelOptions) === opt.label}&check;{/if}</span>
                   </button>
-                </li>
-              {/each}
-            </ul>
+                {/each}
+              </div>
+            </div>
           </div>
         {/if}
       </div>

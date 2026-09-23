@@ -4,9 +4,28 @@
  * /api/v1/models). Settings → General → MODEL and the composer chip both read
  * this; neither keeps a list of its own.
  */
+import { get } from 'svelte/store';
+import { t } from 'svelte-i18n';
+import Settings from 'lucide-svelte/icons/settings';
+import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
+import Zap from 'lucide-svelte/icons/zap';
+import Brain from 'lucide-svelte/icons/brain';
 import * as api from '$lib/api/nebo';
 
-export type ModelOption = { value: string; label: string; description: string };
+type Icon = typeof Settings;
+
+export type ModelOption = { value: string; label: string; description: string; icon: Icon };
+
+/**
+ * The words people see for each speed — the same ones the phone shows.
+ * Janus's display names stay internal; an id not listed here keeps them.
+ */
+const SPEEDS: Record<string, { key: string; icon: Icon }> = {
+	'nebo-1': { key: 'default', icon: Settings },
+	'nebo-1-flash': { key: 'flash', icon: Zap },
+	'nebo-1-medium': { key: 'medium', icon: SlidersHorizontal },
+	'nebo-1-pro': { key: 'pro', icon: Brain }
+};
 
 type CatalogModel = {
 	id: string;
@@ -29,11 +48,16 @@ export async function loadModelOptions(): Promise<ModelOption[]> {
 			(m) => m.isActive && (m.id === DEFAULT_ID || m.description)
 		);
 		janus.sort((a, b) => (a.id === DEFAULT_ID ? -1 : b.id === DEFAULT_ID ? 1 : 0));
-		return janus.map((m) => ({
-			value: m.id === DEFAULT_ID ? '' : `janus/${m.id}`,
-			label: m.displayName,
-			description: m.description ?? ''
-		}));
+		const tr = get(t);
+		return janus.map((m) => {
+			const speed = SPEEDS[m.id];
+			return {
+				value: m.id === DEFAULT_ID ? '' : `janus/${m.id}`,
+				label: speed ? tr(`modelPick.speeds.${speed.key}.label`) : m.displayName,
+				description: speed ? tr(`modelPick.speeds.${speed.key}.description`) : (m.description ?? ''),
+				icon: speed?.icon ?? SlidersHorizontal
+			};
+		});
 	} catch {
 		return [];
 	}
