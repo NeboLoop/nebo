@@ -1,0 +1,9 @@
+id: sc17-an-install-by-another-door-answers-the-install-card
+name: "SC17 — An install by another door answers the install card"
+description: |
+  A chat parked on a plugin's install card resumes with "installed" when the
+  owner pastes that plugin's code into another chat and it installs; the run
+  holds no question afterwards, and a card for a different plugin stays parked.
+target_component: staffed-company
+proof: staffed_proof::connections::an_install_by_another_door_answers_the_install_card
+conversation: []

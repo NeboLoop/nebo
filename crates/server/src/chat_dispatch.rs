@@ -54,10 +54,44 @@ pub(crate) async fn announce_ask(
 /// cleared. Returns false when nothing was waiting on that request id.
 pub(crate) async fn answer_ask(state: &AppState, request_id: &str, value: String) -> bool {
     let tx = state.ask_channels.lock().await.remove(request_id);
-    state.run_registry.resolve_ask(request_id).await;
-    match tx {
-        Some(tx) => tx.send(value).is_ok(),
-        None => false,
+    let session_key = state.run_registry.resolve_ask(request_id).await;
+    let Some(tx) = tx else {
+        return false;
+    };
+    // Every surface still showing the card closes it with the answer, whoever
+    // gave it: the phone, a loop reply, or an install that landed by another
+    // door.
+    if let Some(session_key) = session_key {
+        state.hub.broadcast(
+            "ask_answered",
+            serde_json::json!({
+                "session_id": session_key,
+                "request_id": request_id,
+                "value": value,
+            }),
+        );
+    }
+    tx.send(value).is_ok()
+}
+
+/// A plugin landed on this Nebo, by whatever door: every question parked on
+/// an install card for it is answered "installed", exactly as the card's own
+/// button would have. Live (2026-09-22): the owner pasted the card's code in
+/// another chat, the plugin installed, and the card's run stayed parked for
+/// 14 minutes holding the chat.
+pub(crate) async fn release_install_cards(state: &AppState, slug: &str) {
+    for (session_key, ask) in state.run_registry.pending_asks().await {
+        let offers = ask.widgets.as_ref().and_then(tools::plugin_tool::install_card_plugin);
+        if offers == Some(slug)
+            && answer_ask(
+                state,
+                &ask.request_id,
+                tools::plugin_tool::INSTALL_CARD_INSTALLED.to_string(),
+            )
+            .await
+        {
+            info!(session_key, plugin = slug, "install card answered: the plugin was installed another way");
+        }
     }
 }
 

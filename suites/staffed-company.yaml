@@ -26,3 +26,4 @@ fixtures:
   - ../fixtures/staffed-company/policy/sc14-the-catalogue-is-the-gate.yaml
   - ../fixtures/staffed-company/migrations/sc15-migrations-run-forward-on-a-real-database.yaml
   - ../fixtures/staffed-company/layers/sc16-an-uploaded-pack-keeps-its-own-slug.yaml
+  - ../fixtures/staffed-company/connections/sc17-an-install-by-another-door-answers-the-install-card.yaml

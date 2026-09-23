@@ -23,7 +23,33 @@ const RECOVERY_MIN_REMAINING: Duration = Duration::from_secs(10);
 /// The install card's answer once the plugin is on disk.
 /// What an install/hire card submits once POST /codes has succeeded. Shared
 /// with the employee hire card so both resume the same way.
-pub(crate) const INSTALL_CARD_INSTALLED: &str = "installed";
+pub const INSTALL_CARD_INSTALLED: &str = "installed";
+
+/// The install card a discover call parks on: the ONE producer of the
+/// `install_plugin` widget, so [`install_card_plugin`] reads the shape it
+/// writes.
+pub fn install_card_widget(code: &str, name: &str, slug: &str, description: &str) -> serde_json::Value {
+    serde_json::json!([{
+        "type": "install_plugin",
+        "code": code,
+        "name": name,
+        "plugin": slug,
+        "description": description,
+    }])
+}
+
+/// The plugin slug a parked question's widgets offer to install, when the
+/// question is an install card. An install that lands by any other door (a
+/// pasted code, the marketplace, a hub push) answers that card for it.
+pub fn install_card_plugin(widgets: &serde_json::Value) -> Option<&str> {
+    widgets
+        .as_array()?
+        .iter()
+        .find(|w| w.get("type").and_then(|t| t.as_str()) == Some("install_plugin"))?
+        .get("plugin")?
+        .as_str()
+        .filter(|slug| !slug.is_empty())
+}
 
 /// The listing a query most plausibly names. The marketplace ranks by
 /// relevance, but a query that IS a listing's name must beat one that merely
@@ -674,13 +700,7 @@ impl PluginTool {
                                         "**{top_name}** can do this. Install it on the card and \
                                          I'll pick up right where I left off."
                                     ),
-                                    serde_json::json!([{
-                                        "type": "install_plugin",
-                                        "code": top_code,
-                                        "name": top_name,
-                                        "plugin": top_slug,
-                                        "description": top_desc,
-                                    }]),
+                                    install_card_widget(top_code, top_name, top_slug, top_desc),
                                 )
                                 .await
                             };
