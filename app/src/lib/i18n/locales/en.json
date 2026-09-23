@@ -3038,12 +3038,11 @@
 	},
 	"modelPick": {
 		"title": "Model",
-		"hint": "Which Nebo 1 speed this employee works at. Default lets each task pick the right one; a named speed pins every task to it.",
+		"hint": "Which Nebo 1 speed this employee works at. Auto lets each task pick the right one; a named speed pins every task to it.",
 		"composerTitle": "Response style",
 		"composerHint": "For this conversation. New chats use the employee’s setting.",
-		"useEmployee": "Use this employee’s setting",
 		"speeds": {
-			"default": { "label": "Default", "description": "Picks the right speed for each task" },
+			"default": { "label": "Auto", "description": "Let Nebo decide for me" },
 			"flash": { "label": "Fast", "description": "Quick answers for everyday tasks" },
 			"medium": { "label": "Balanced", "description": "A balance of speed and depth" },
 			"pro": { "label": "Deep", "description": "More thorough work on complex tasks" }

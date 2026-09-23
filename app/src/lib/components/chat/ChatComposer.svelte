@@ -805,7 +805,7 @@
                     <opt.icon class="w-5 h-5 shrink-0 text-base-content/70" />
                     <span class="min-w-0 flex-1">
                       <span class="block text-sm">{opt.label}</span>
-                      <span class="block text-xs text-base-content/60">{opt.value ? opt.description : $t('modelPick.useEmployee')}</span>
+                      <span class="block text-xs text-base-content/60">{opt.description}</span>
                     </span>
                     <span class="w-5 shrink-0 text-primary">{#if modelLabel(activeModel, modelOptions) === opt.label}&check;{/if}</span>
                   </button>
