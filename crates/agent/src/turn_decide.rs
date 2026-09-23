@@ -17,20 +17,26 @@
 //! - The nudge fires only at [`NUDGE_FLOOR`] or more.
 //!
 //! Fails open: no client, an error, a timeout or `NEBO_DECIDE_TURN=0` leaves
-//! the keyword behaviour exactly as it was. The runner waits at most
-//! [`WAIT`] for the answer; the objective itself keeps its own ceiling.
+//! the keyword behaviour exactly as it was. The runner fires the call as the
+//! turn's setup starts and waits for the answer until [`WAIT`] after firing,
+//! or [`GRACE`] after it asks, whichever is later; the objective itself keeps
+//! its own ceiling.
 
 use std::collections::HashSet;
 use std::time::Duration;
 
 use ai::{Answer, Decision, Question};
 
-/// How long the runner waits for the turn decision before it filters tools
-/// for the first step. The wait starts when the call is fired, so it
-/// overlaps the rest of the turn's setup; when it trips, the keyword filter
-/// and keyword nudge run for the whole turn (the objective still lands in
-/// the background under its own ceiling).
+/// How long after the call is fired the runner is still willing to wait for
+/// the turn decision before it filters tools for the first step. The call is
+/// fired as the turn's setup starts, so this overlaps that setup; when it
+/// trips, the keyword filter and keyword nudge run for the whole turn (the
+/// objective still lands in the background under its own ceiling).
 pub const WAIT: Duration = Duration::from_millis(1_500);
+/// The least the runner waits once it asks, however long setup took: a setup
+/// that outran [`WAIT`] still gives an answer in flight this long to land.
+/// Jev answers in about 250 ms at the median and 330 ms at p90 inside Janus.
+pub const GRACE: Duration = Duration::from_millis(400);
 /// Char-boundary-safe cap on `latest_user_message` in the objective call's
 /// state. A pasted document is irrelevant detail to every question asked,
 /// and the state limit is 32k tokens.
@@ -110,24 +116,39 @@ pub fn signals_from(decision: &Decision, groups: &[(&str, &str)]) -> TurnSignals
     }
 }
 
-/// Take the turn decision if it answers by `deadline`. A closed channel (no
-/// client, an error, a continuation, the objective call's own timeout) is
-/// an immediate `None`, never a wait; a missed deadline is logged. `None`
-/// means the keyword filter and keyword nudge run unchanged.
+/// Take the turn decision for the call fired at `fired`. An answer already
+/// in the channel is taken at once, however late the runner asks; otherwise
+/// the wait runs to [`WAIT`] after `fired` or [`GRACE`] from now, whichever
+/// is later. A closed channel (no client, an error, a continuation, the
+/// objective call's own timeout) is an immediate `None`, never a wait.
+/// `None` means the keyword filter and keyword nudge run unchanged. Every
+/// call logs one `turn decision wait` line (used, missed or absent) with the
+/// time since firing and the time spent waiting, so the hit rate is
+/// countable.
 pub async fn receive(
     rx: tokio::sync::oneshot::Receiver<TurnSignals>,
-    deadline: tokio::time::Instant,
+    fired: tokio::time::Instant,
 ) -> Option<TurnSignals> {
-    match tokio::time::timeout_at(deadline, rx).await {
-        Ok(Ok(signals)) => Some(signals),
-        Ok(Err(_)) => None,
+    let asked = tokio::time::Instant::now();
+    let deadline = (fired + WAIT).max(asked + GRACE);
+    let (outcome, signals) = match tokio::time::timeout_at(deadline, rx).await {
+        Ok(Ok(signals)) => ("used", Some(signals)),
+        Ok(Err(_)) => ("absent", None),
         Err(_) => {
             tracing::info!(
                 "turn decision missed its wait; keyword tool filter and nudge for this turn"
             );
-            None
+            ("missed", None)
         }
-    }
+    };
+    let now = tokio::time::Instant::now();
+    tracing::debug!(
+        outcome,
+        since_fired_ms = now.duration_since(fired).as_millis() as u64,
+        waited_ms = now.duration_since(asked).as_millis() as u64,
+        "turn decision wait"
+    );
+    signals
 }
 
 /// Fail toward showing: a missing answer, a probability at the floor or
@@ -246,15 +267,20 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel::<TurnSignals>();
         drop(tx);
         let started = tokio::time::Instant::now();
-        assert_eq!(receive(rx, started + Duration::from_secs(30)).await, None);
+        assert_eq!(receive(rx, started).await, None);
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_slow_decision_trips_the_wait() {
         let (tx, rx) = tokio::sync::oneshot::channel::<TurnSignals>();
-        let deadline = tokio::time::Instant::now() + WAIT;
-        assert_eq!(receive(rx, deadline).await, None);
+        let fired = tokio::time::Instant::now();
+        assert_eq!(receive(rx, fired).await, None);
+        assert_eq!(
+            fired.elapsed(),
+            WAIT,
+            "asked at once: the wait is WAIT from firing"
+        );
         // The late answer has nowhere to go; sending it is harmless.
         assert!(tx.send(TurnSignals::default()).is_err());
     }
@@ -264,8 +290,66 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let signals = signals_from(&decision(&[("multi_stage", noul(0.9))]), GROUPS);
         tx.send(signals.clone()).unwrap();
-        let got = receive(rx, tokio::time::Instant::now() + WAIT).await;
+        let got = receive(rx, tokio::time::Instant::now()).await;
         assert_eq!(got, Some(signals));
+    }
+
+    /// The runner's order: the call is fired as setup starts, setup runs
+    /// (history, recall, compaction), then the tool filter asks. `setup` and
+    /// `answer` are measured from firing; returns what the filter got and
+    /// how long it waited once it asked.
+    async fn turn(setup: Duration, answer: Duration) -> (Option<TurnSignals>, Duration) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let fired = tokio::time::Instant::now();
+        tokio::spawn(async move {
+            tokio::time::sleep(answer).await;
+            let _ = tx.send(TurnSignals {
+                multi_stage: true,
+                ..Default::default()
+            });
+        });
+        tokio::time::sleep(setup).await;
+        let asked = tokio::time::Instant::now();
+        let got = receive(rx, fired).await;
+        (got, asked.elapsed())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_that_landed_during_setup_is_taken_however_late_the_filter_asks() {
+        // A 250 ms decision and a 2 s setup: the answer sits in the channel
+        // past WAIT, and the filter takes it without waiting at all.
+        let (got, waited) = turn(Duration::from_secs(2), Duration::from_millis(250)).await;
+        assert!(got.is_some_and(|s| s.multi_stage));
+        assert_eq!(waited, Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_setup_that_outran_the_wait_still_gets_the_grace() {
+        // Setup took 2 s, past WAIT from firing; the answer lands 200 ms after
+        // the filter asks, inside GRACE, and is used.
+        let (got, waited) = turn(Duration::from_secs(2), Duration::from_millis(2_200)).await;
+        assert!(got.is_some_and(|s| s.multi_stage));
+        assert_eq!(waited, Duration::from_millis(200));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_answer_after_a_slow_setup_holds_the_turn_only_the_grace() {
+        let (got, waited) = turn(Duration::from_secs(2), Duration::from_secs(5)).await;
+        assert_eq!(got, None);
+        assert_eq!(waited, GRACE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_quick_setup_waits_to_wait_after_firing() {
+        // Setup took 300 ms; an answer at 1.4 s from firing is used, and the
+        // filter waited only the difference.
+        let (got, waited) = turn(Duration::from_millis(300), Duration::from_millis(1_400)).await;
+        assert!(got.is_some());
+        assert_eq!(waited, Duration::from_millis(1_100));
+        // One at 1.6 s is missed at exactly WAIT from firing.
+        let (got, waited) = turn(Duration::from_millis(300), Duration::from_millis(1_600)).await;
+        assert_eq!(got, None);
+        assert_eq!(waited, WAIT - Duration::from_millis(300));
     }
 
     #[test]
