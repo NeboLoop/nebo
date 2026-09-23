@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ai::{ChatRequest, EventReceiver, Provider, ProviderError, StreamEventType};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info, warn};
 
@@ -301,6 +302,83 @@ impl ConcurrencyController {
     }
 }
 
+/// A provider whose calls are housekeeping: each call takes a background
+/// permit for its whole stream and reports its outcome to the pool — a
+/// 429 at send time or inside the stream halves the pool, a completed
+/// stream grows it. The ONE way a background LLM call is made
+/// (auditor Rule 15.2): the helpers it wraps keep calling `Provider::stream`
+/// and know nothing about permits.
+pub struct BackgroundProvider {
+    inner: Arc<dyn Provider>,
+    concurrency: Arc<ConcurrencyController>,
+}
+
+impl ConcurrencyController {
+    /// Wrap a provider so its calls run as housekeeping.
+    pub fn background(self: &Arc<Self>, inner: Arc<dyn Provider>) -> Arc<dyn Provider> {
+        Arc::new(BackgroundProvider { inner, concurrency: self.clone() })
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for BackgroundProvider {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+    fn display_name(&self) -> &str {
+        self.inner.display_name()
+    }
+    fn profile_id(&self) -> &str {
+        self.inner.profile_id()
+    }
+    fn handles_tools(&self) -> bool {
+        self.inner.handles_tools()
+    }
+    fn supports_tool_result_images(&self) -> bool {
+        self.inner.supports_tool_result_images()
+    }
+    fn supports_vision(&self) -> bool {
+        self.inner.supports_vision()
+    }
+    async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+        let permit = self.concurrency.acquire_background_permit().await;
+        let round = permit.round();
+        let mut rx = match self.inner.stream(req).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                if let ProviderError::RateLimit { .. } = &e {
+                    self.concurrency.report_rate_limit(round);
+                }
+                return Err(e);
+            }
+        };
+        // Hold the permit for the whole stream and judge it the way the
+        // runner judges a foreground stream: an error event that classifies
+        // as a rate limit is a 429; anything else that finishes is a success.
+        let (tx, out) = tokio::sync::mpsc::channel(32);
+        let concurrency = self.concurrency.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let mut limited = false;
+            while let Some(event) = rx.recv().await {
+                if event.event_type == StreamEventType::Error {
+                    let msg = event.error.clone().unwrap_or_else(|| event.text.clone());
+                    limited |= ai::classify_error_reason(&ProviderError::Stream(msg)) == "rate_limit";
+                }
+                if tx.send(event).await.is_err() {
+                    break;
+                }
+            }
+            if limited {
+                concurrency.report_rate_limit(round);
+            } else {
+                concurrency.report_success();
+            }
+        });
+        Ok(out)
+    }
+}
+
 /// Spawn the background resource monitor that adjusts the ceiling every 30s.
 pub fn spawn_monitor(controller: Arc<ConcurrencyController>) {
     tokio::spawn(async move {
@@ -522,6 +600,65 @@ mod tests {
         assert_eq!(ctrl.background_permits(), 1, "never below one, never above its share");
         ctrl.set_ceiling(12);
         assert_eq!(ctrl.background_permits(), 3);
+    }
+
+
+    /// A housekeeping call behaves like a foreground one toward the pool: a
+    /// 429 at send time halves it, a rate-limit error inside the stream
+    /// halves it, a completed stream grows it back — and each call holds a
+    /// background permit for its whole stream.
+    #[tokio::test]
+    async fn test_background_provider_reports_to_the_pool() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        struct Scripted(AtomicUsize);
+        #[async_trait::async_trait]
+        impl Provider for Scripted {
+            fn id(&self) -> &str {
+                "scripted"
+            }
+            async fn stream(&self, _req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+                let n = self.0.fetch_add(1, SeqCst);
+                let (tx, rx) = tokio::sync::mpsc::channel(4);
+                match n {
+                    0 => return Err(ProviderError::RateLimit { retry_after_secs: None }),
+                    1 => {
+                        let _ = tx.send(ai::StreamEvent::error("Rate limit exceeded for user")).await;
+                    }
+                    _ => {
+                        let _ = tx.send(ai::StreamEvent::text("ok")).await;
+                        let _ = tx.send(ai::StreamEvent::done()).await;
+                    }
+                }
+                Ok(rx)
+            }
+        }
+        let ctrl = Arc::new(ConcurrencyController::new(Some(16)));
+        ctrl.set_ceiling(16);
+        let prov = ctrl.background(Arc::new(Scripted(AtomicUsize::new(0))));
+        let req = ChatRequest::new(ai::RequestTrace::new("test"));
+        // Eight foreground calls in flight so the halving has something to halve.
+        let mut busy = Vec::new();
+        for _ in 0..8 {
+            busy.push(ctrl.acquire_llm_permit().await);
+        }
+
+        assert!(prov.stream(&req).await.is_err(), "first call is refused at send time");
+        assert_eq!(ctrl.effective_permits(), 4, "a send-time 429 on housekeeping halves the pool");
+
+        // The second call was granted after the first cut: a new round, so its
+        // in-stream rate limit is a second wave and halves again (4 → 2).
+        let mut rx = prov.stream(&req).await.expect("second call streams");
+        while rx.recv().await.is_some() {}
+        tokio::task::yield_now().await;
+        assert_eq!(ctrl.effective_permits(), 2, "an in-stream rate limit on housekeeping halves the pool");
+        assert_eq!(ctrl.background_permits(), 1);
+
+        drop(busy);
+        let before = ctrl.effective_permits();
+        let mut rx = prov.stream(&req).await.expect("third call streams");
+        while rx.recv().await.is_some() {}
+        tokio::task::yield_now().await;
+        assert_eq!(ctrl.effective_permits(), before + 1, "a completed housekeeping stream grows the pool");
     }
 
 }
