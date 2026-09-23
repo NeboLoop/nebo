@@ -483,7 +483,9 @@ pub async fn execute_workflow(
                     activity.id, result_text
                 ));
             }
-            Err(WorkflowError::Exited(reason)) => {
+            // A standing outcome (an exit, a terminal refusal) ends the run
+            // cleanly with its reason — never a failure.
+            Err(e) if let Some(reason) = e.standing_outcome() => {
                 total_tokens += activity_spent;
                 let completed_at = chrono::Utc::now().timestamp();
                 let _ = store.create_activity_result(
@@ -962,7 +964,7 @@ pub async fn execute_activity(
             // Exit-by-design (exit tool) is a clean stop, not a step failure —
             // recording it as failed painted successful exited runs red in the UI.
             // A suspension keeps the step pending: it re-runs after approval.
-            let status = if matches!(e, WorkflowError::Exited(_)) {
+            let status = if e.standing_outcome().is_some() {
                 "exited"
             } else if matches!(e, WorkflowError::AwaitingApproval { .. }) {
                 "pending"

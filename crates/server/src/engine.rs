@@ -2940,6 +2940,17 @@ mod tests {
             Some("Step 3/7 evaluator: The list is empty; nothing to act on.")
         );
 
+        // A tool's terminal refusal ends the run the same way (the workflow
+        // engine records `WorkflowError::Blocked` as `exited` with the
+        // refusal): the reason is the standing outcome triage reads.
+        let blocked = "blocked: No example account is connected for this agent. Connect one in this agent's Settings, Plugins before using example.";
+        let (s, b) = setup("exited", Some(blocked));
+        assert!(b.standing);
+        assert_eq!(b.last_status, "done");
+        assert_eq!(b.last_outcome, blocked);
+        assert!(!b.flags.last_run_failed && !b.flags.changed_anything(), "{:?}", b.flags);
+        assert_eq!(s.agent_workflow_last_outcome("emp", "sweep").unwrap().map(|(o, _)| o).as_deref(), Some(blocked));
+
         let (s, b) = setup("failed", Some("provider error: 503 upstream unavailable"));
         assert!(!b.standing);
         assert!(b.flags.last_run_failed && b.flags.changed_anything());
