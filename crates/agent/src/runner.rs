@@ -4244,10 +4244,9 @@ async fn run_loop(
                 let sid = session_id.to_string();
                 let task = active_task.clone();
                 let existing = existing_summary.clone();
-                let conc = concurrency.clone();
+                let prov = concurrency.background(prov);
                 let trace = side_trace("compaction");
                 let handle = tokio::spawn(async move {
-                    let _permit = conc.acquire_background_permit().await;
                     match pruning::build_llm_summary(
                         trace,
                         prov.as_ref(),
@@ -8286,6 +8285,7 @@ async fn run_loop(
             let embed_prov = embedding_provider.cloned();
             let topics = memory_topics.clone();
             let taint = final_taint.clone();
+            let conc = concurrency.clone();
             // The gate's judge is the runner's own decide handle (the one
             // client the server builds); the objective line is evidence.
             let decide = decide.cloned();
@@ -8310,6 +8310,7 @@ async fn run_loop(
                         let prov_lock = providers.read().await;
                         resolve_aux(&config::ModelsConfig::load(), &prov_lock)
                             .or_else(|| prefer_non_gateway(&prov_lock).map(|p| (p, String::new())))
+                            .map(|(p, m)| (conc.background(p), m))
                     };
                     if let Some((provider, aux_model)) = resolved {
                         if let Some(facts) = memory::extract_facts(
@@ -8346,8 +8347,7 @@ async fn run_loop(
         let uid = memory_user_id.clone();
         let conc = concurrency.clone();
         let handle = tokio::spawn(async move {
-            let _permit = conc.acquire_background_permit().await;
-            let prov = prefer_non_gateway(&providers_clone.read().await);
+            let prov = prefer_non_gateway(&providers_clone.read().await).map(|p| conc.background(p));
             if let Some(prov) = prov {
                 crate::personality::synthesize_directive(&store_clone, prov.as_ref(), &uid).await;
             }

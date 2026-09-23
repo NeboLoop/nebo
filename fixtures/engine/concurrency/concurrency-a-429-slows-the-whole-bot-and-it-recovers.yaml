@@ -1,9 +1,10 @@
 id: concurrency-a-429-slows-the-whole-bot-and-it-recovers
 name: "A 429 slows the whole bot and it recovers"
 description: |
-  Eight sub-tasks fan out over eight model slots and Janus refuses the first
-  wave of eight calls with a 429. The bot halves once for the whole wave,
-  never runs all eight at once again until successes rebuild the pool, every
+  Eight sub-tasks fan out over eight model slots and Janus refuses everyone
+  for a moment with a 429 and Retry-After 1 s. The bot halves once for the
+  whole wave, the refused calls wait the second they were told, no later
+  moment runs all eight at once until successes rebuild the pool, every
   sub-task still finishes, and the pool grows back to eight on its own.
 target_component: engine
 proof: engine::proof::concurrency::a_429_slows_the_whole_bot_and_it_recovers
