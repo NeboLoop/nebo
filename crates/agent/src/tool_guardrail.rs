@@ -137,7 +137,7 @@ pub fn mode() -> Mode {
     mode_from(std::env::var("NEBO_DECIDE_GUARDRAIL").ok().as_deref())
 }
 
-fn mode_from(value: Option<&str>) -> Mode {
+pub(crate) fn mode_from(value: Option<&str>) -> Mode {
     match value.map(|v| v.trim().to_ascii_lowercase()) {
         Some(v) if matches!(v.as_str(), "1" | "true" | "on" | "yes") => Mode::On,
         Some(v) if v == "shadow" => Mode::Shadow,

@@ -98,6 +98,20 @@ pub struct EngineRun {
     pub ended_at: Option<i64>,
 }
 
+/// Local changes for one employee over a window (heartbeat triage's flags).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgentChanges {
+    /// Its other runs that started or ended in the window.
+    pub other_runs: i64,
+    /// Messages addressed to it (its chats, threads and channels; not its
+    /// own workflow sessions).
+    pub new_messages: i64,
+    /// Assignments handed to it.
+    pub new_assignments: i64,
+    /// Its agent row changed (settings, instructions, bindings).
+    pub settings_changed: bool,
+}
+
 impl EngineRun {
     /// What woke a re-queued run, if an event did: the id
     /// `engine_resume_from_wait` recorded in its inputs.
@@ -845,6 +859,51 @@ impl Store {
             |r| r.get::<_, bool>(0),
         )
         .db_err("engine_has_live_run_for_ref")
+    }
+
+    /// What changed for one employee since `since` (unix seconds), counted
+    /// from local rows only, for heartbeat triage. `own_ref` is the firing
+    /// binding's timer target and `own_binding` its workflow binding name,
+    /// if it has one: the binding's own fires, the workflow runs they
+    /// started, sub-agents and skipped fires are not "other work".
+    pub fn engine_agent_changes_since(
+        &self,
+        agent_id: &str,
+        since: i64,
+        own_ref: &str,
+        own_binding: Option<&str>,
+    ) -> Result<AgentChanges, NeboError> {
+        let conn = self.conn()?;
+        let own_binding = own_binding.unwrap_or("");
+        let session_prefix = format!("agent:{agent_id}:");
+        let workflow_prefix = format!("agent:{agent_id}:workflow:");
+        conn.query_row(
+            "SELECT
+               (SELECT COUNT(*) FROM engine_runs r
+                 WHERE r.agent_id = ?1 AND r.kind != 'subagent' AND r.summary != 'skipped'
+                   AND COALESCE(r.external_ref, '') != ?3
+                   AND (r.created_at > ?2 OR r.ended_at > ?2)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM workflow_runs w
+                      WHERE w.id = r.id AND ?4 != ''
+                        AND (w.trigger_detail = ?4 OR substr(w.trigger_detail, 1, length(?4) + 1) = ?4 || ':'))),
+               (SELECT COUNT(*) FROM chat_messages m JOIN chats c ON c.id = m.chat_id
+                 WHERE m.created_at > ?2 AND m.role = 'user'
+                   AND substr(c.session_name, 1, length(?5)) = ?5
+                   AND substr(c.session_name, 1, length(?6)) != ?6),
+               (SELECT COUNT(*) FROM assignments WHERE assignee_agent_id = ?1 AND created_at > ?2),
+               EXISTS(SELECT 1 FROM agents WHERE id = ?1 AND updated_at > ?2)",
+            params![agent_id, since, own_ref, own_binding, session_prefix, workflow_prefix],
+            |r| {
+                Ok(AgentChanges {
+                    other_runs: r.get(0)?,
+                    new_messages: r.get(1)?,
+                    new_assignments: r.get(2)?,
+                    settings_changed: r.get(3)?,
+                })
+            },
+        )
+        .db_err("engine_agent_changes_since")
     }
 
     /// The one live child of a parent, if a turn is running or about to.
@@ -1769,5 +1828,47 @@ mod tests {
         }
         assert_eq!(s.engine_expire_transient_events(200).unwrap(), 1, "only the timer went");
         assert_eq!(s.engine_events_for("run", "run-1", 50).unwrap().len(), 1, "the signal is history");
+    }
+
+    #[test]
+    fn agent_changes_count_only_other_work_addressed_to_the_employee() {
+        let s = store();
+        let run = |id: &str, kind: &str, session: &str, ext: Option<&str>| {
+            s.engine_create_run(&NewRun { id, kind, session_key: session, agent_id: "emp", lane: "main", external_ref: ext, ..Default::default() }).unwrap();
+            s.conn_exec_for_test(&format!("UPDATE engine_runs SET created_at = 500 WHERE id = '{id}'"));
+        };
+        // Before the window: nothing counts.
+        s.engine_create_run(&NewRun { id: "old", kind: "task", session_key: "cron-x", agent_id: "emp", lane: "main", ..Default::default() }).unwrap();
+        s.conn_exec_for_test("UPDATE engine_runs SET created_at = 50, ended_at = 60 WHERE id = 'old'");
+        s.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 10)");
+        let quiet = s.engine_agent_changes_since("emp", 100, "hb:emp:watch", Some("watch")).unwrap();
+        assert_eq!(quiet, AgentChanges::default());
+
+        // The binding's own fire, its own workflow run, a sub-agent and a
+        // skipped fire are not other work.
+        run("own-fire", "task", "heartbeat-binding-emp-watch", Some("hb:emp:watch"));
+        run("own-wf", "workflow", "agent:emp:workflow:1", None);
+        s.insert_workflow_run_detail("own-wf", "agent:emp", "heartbeat", Some("watch")).unwrap();
+        run("sub", "subagent", "subagent:agent:emp:workflow:1", None);
+        run("skipped", "task", "cron-other", Some("cron:9"));
+        s.engine_set_run_result_tag("skipped", "skipped").unwrap();
+        // A workflow message in its own workflow session is not addressed to it.
+        s.conn_exec_for_test("INSERT INTO chats (id, session_name) VALUES ('wf-chat', 'agent:emp:workflow:1:step')");
+        s.conn_exec_for_test("INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('m0', 'wf-chat', 'user', 'work order', 500)");
+        assert_eq!(s.engine_agent_changes_since("emp", 100, "hb:emp:watch", Some("watch")).unwrap(), AgentChanges::default());
+
+        // Another binding's workflow run, a message in its chat, an
+        // assignment and an edited agent all count.
+        run("other-wf", "workflow", "agent:emp:workflow:2", None);
+        s.insert_workflow_run_detail("other-wf", "agent:emp", "event", Some("inbox")).unwrap();
+        s.conn_exec_for_test("INSERT INTO chats (id, session_name) VALUES ('owner-chat', 'agent:emp:web')");
+        s.conn_exec_for_test("INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('m1', 'owner-chat', 'user', 'hi', 500)");
+        s.conn_exec_for_test("INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('m2', 'owner-chat', 'assistant', 'hello', 500)");
+        s.conn_exec_for_test("INSERT INTO assignments (id, assigner_agent_id, assignee_agent_id, subject, case_key, created_at) VALUES ('a1', 'boss', 'emp', 'do it', 'k', 500)");
+        s.conn_exec_for_test("UPDATE agents SET updated_at = 500 WHERE id = 'emp'");
+        let changed = s.engine_agent_changes_since("emp", 100, "hb:emp:watch", Some("watch")).unwrap();
+        assert_eq!(changed, AgentChanges { other_runs: 1, new_messages: 1, new_assignments: 1, settings_changed: true });
+        // Another employee's prefix never matches this one.
+        assert_eq!(s.engine_agent_changes_since("em", 100, "x", None).unwrap().new_messages, 0);
     }
 }

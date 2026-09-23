@@ -133,19 +133,7 @@ pub(crate) async fn enabled_entities(state: &AppState) -> Result<Vec<Enabled>, S
 /// heartbeat lane. Ok(false) means it was not fired — disabled or empty by
 /// the time it came due.
 pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -> Result<bool, String> {
-    let (settings, global_permissions, heartbeat_md) = context(state)?;
-    let entity = state
-        .store
-        .get_entity_config(entity_type, entity_id)
-        .map_err(|e| e.to_string())?;
-    let resolved: ResolvedEntityConfig = entity_config::resolve(
-        entity_type,
-        entity_id,
-        entity.as_ref(),
-        &settings,
-        &global_permissions,
-        &heartbeat_md,
-    );
+    let resolved = resolve(state, entity_type, entity_id)?;
     if !resolved.heartbeat_enabled || resolved.heartbeat_content.trim().is_empty() {
         return Ok(false);
     }
@@ -190,6 +178,24 @@ pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -
         warn!(entity = %key, error = %e, "failed to persist heartbeat timestamp");
     }
     Ok(true)
+}
+
+/// One entity's configuration as its heartbeat sees it now: its row
+/// resolved against global settings and HEARTBEAT.md.
+pub(crate) fn resolve(state: &AppState, entity_type: &str, entity_id: &str) -> Result<ResolvedEntityConfig, String> {
+    let (settings, global_permissions, heartbeat_md) = context(state)?;
+    let entity = state
+        .store
+        .get_entity_config(entity_type, entity_id)
+        .map_err(|e| e.to_string())?;
+    Ok(entity_config::resolve(
+        entity_type,
+        entity_id,
+        entity.as_ref(),
+        &settings,
+        &global_permissions,
+        &heartbeat_md,
+    ))
 }
 
 fn context(state: &AppState) -> Result<(db::models::Setting, HashMap<String, bool>, String), String> {

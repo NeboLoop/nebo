@@ -10,6 +10,7 @@ pub mod memory_consolidation;
 pub mod fuzzy;
 pub mod goals;
 pub mod guardrails;
+pub mod heartbeat_triage;
 pub mod hooks;
 pub mod lanes;
 pub mod large_input;

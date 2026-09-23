@@ -41,7 +41,7 @@ pub use assignments::{Assignment, NewAssignment};
 pub use cron_jobs::cron_ref;
 pub use company_policy::{OperationCounters, COMPANY_COUNTER_KEY};
 pub use engine::{
-    EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
+    AgentChanges, EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,
 };
 pub use run_usage::cost_microcents;
