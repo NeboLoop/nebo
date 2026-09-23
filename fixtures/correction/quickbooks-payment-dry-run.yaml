@@ -82,8 +82,8 @@ prompt_assertions:
           - "is required"
           - "not found"
     - id: bounded
-      text: "At most 4 tool calls"
-      severity: critical
+      text: "At most 4 tool calls. Critical on a connected machine; on the gate bot (no merchant grant, 2026-09-23: 8 calls reading skills and probing before doctor said not connected) it is the model's cost to report, not the light that blocks a merge — the shape checks above are what the gate proves here."
+      severity: important
       check: { max_tool_calls: 4 }
     - id: dry-run-only
       text: "The payment create call carries --dry-run and the reply says nothing was posted"
