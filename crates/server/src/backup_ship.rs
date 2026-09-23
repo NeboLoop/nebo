@@ -465,16 +465,28 @@ async fn upload_chunk(api: &NeboAIApi, path: &Path, sha256: &str, taken_at: i64)
 }
 
 /// How a process that is not the running server reaches the hub as this
-/// bot: the id from the environment or the data directory, the freshest
-/// token there is (the rotated-token cache, else the provisioned one, else
-/// the boot credential). A read refused as stale retries with the boot
-/// credential inside `NeboAIApi`.
-fn hub_credentials(api_url: &str, data_dir: &Path) -> Option<NeboAIApi> {
+/// bot: the id from the environment or the data directory, and a token.
+///
+/// A `restore` reads with the boot credential when the pod has one: it is
+/// what a rebuilt pod is given, rotation never makes it stale, and the hub
+/// accepts it for exactly the state and backup-file reads a restore makes.
+/// A stale bot token is no use there: the files door takes it as no identity
+/// and answers 403, which no retry can tell from a real refusal.
+///
+/// Anything else (an archive commits) uses the freshest token there is: the
+/// rotated-token cache, else the provisioned one, else the boot credential.
+/// A read refused as stale retries with the boot credential inside
+/// `NeboAIApi`.
+fn hub_credentials(api_url: &str, data_dir: &Path, restore: bool) -> Option<NeboAIApi> {
     let bot_id = std::env::var("NEBO_BOT_ID").ok().filter(|s| s.len() == 36).or_else(config::read_bot_id)?;
-    let token = std::fs::read_to_string(data_dir.join("neboai_token.cache"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let boot = if restore { comm::api::provisioned_credential() } else { None };
+    let token = boot
+        .or_else(|| {
+            std::fs::read_to_string(data_dir.join("neboai_token.cache"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
         .or_else(|| std::env::var("NEBO_BOT_TOKEN").ok().filter(|s| !s.is_empty()))
         .or_else(comm::api::provisioned_credential)?;
     Some(NeboAIApi::new(api_url.to_string(), bot_id, token))
@@ -487,7 +499,7 @@ fn hub_credentials(api_url: &str, data_dir: &Path) -> Option<NeboAIApi> {
 pub async fn archive(api_url: &str) -> Result<Manifest, String> {
     let key = backup_key().ok_or("NEBO_BACKUP_KEY is not set")??;
     let data_dir = config::data_dir().map_err(|e| e.to_string())?;
-    let api = hub_credentials(api_url, &data_dir).ok_or("no bot id and token to reach NeboAI with")?;
+    let api = hub_credentials(api_url, &data_dir, false).ok_or("no bot id and token to reach NeboAI with")?;
     let bot_id = api.bot_id().to_string();
     let last = load_committed(&api).await?;
     let sources = pack::sources(&data_dir, true);
@@ -528,7 +540,7 @@ pub async fn restore_on_boot(api_url: &str) -> Result<(), String> {
     if data_dir.join(pack::DATABASE_PATH).exists() {
         return Ok(());
     }
-    let Some(api) = hub_credentials(api_url, &data_dir) else {
+    let Some(api) = hub_credentials(api_url, &data_dir, true) else {
         info!("no database and no NeboAI identity: starting as a new Nebo");
         return Ok(());
     };
@@ -564,7 +576,7 @@ pub async fn restore_into(api_url: &str, generation: Option<i64>, into: &Path) -
         return Err(format!("{} already holds a database; restore into an empty directory", into.display()));
     }
     let data_dir = config::data_dir().map_err(|e| e.to_string())?;
-    let api = hub_credentials(api_url, &data_dir).ok_or("no bot id and token to reach NeboAI with")?;
+    let api = hub_credentials(api_url, &data_dir, true).ok_or("no bot id and token to reach NeboAI with")?;
     std::fs::create_dir_all(into).map_err(|e| format!("create {}: {e}", into.display()))?;
     let key = backup_key().transpose()?;
     restore(&api, generation, into, key).await?.ok_or_else(|| "this bot has no committed state".to_string())
