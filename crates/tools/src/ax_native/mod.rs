@@ -134,9 +134,9 @@ pub async fn act(app: &str, window: usize, path: &str, action: &str, expect: Exp
     #[cfg(target_os = "macos")]
     return macos::act_raw(app, window, path, action, expect).await;
     #[cfg(target_os = "linux")]
-    return linux::act_raw(app, window, path, action).await;
+    return linux::act_raw(app, window, path, action, expect).await;
     #[cfg(target_os = "windows")]
-    return windows::act_raw(app, window, path, action).await;
+    return windows::act_raw(app, window, path, action, expect).await;
     #[allow(unreachable_code)]
     {
         let _ = (app, window, path, action, expect);
@@ -161,9 +161,9 @@ pub async fn set_value(app: &str, window: usize, path: &str, value: &str, expect
     #[cfg(target_os = "macos")]
     return macos::set_raw(app, window, path, value, expect).await;
     #[cfg(target_os = "linux")]
-    return linux::set_raw(app, window, path, value).await;
+    return linux::set_raw(app, window, path, value, expect).await;
     #[cfg(target_os = "windows")]
-    return windows::set_raw(app, window, path, value).await;
+    return windows::set_raw(app, window, path, value, expect).await;
     #[allow(unreachable_code)]
     {
         let _ = (app, window, path, value, expect);
@@ -272,13 +272,12 @@ pub fn parse_window(line: &str) -> Result<WindowInfo, String> {
 /// `app`'s window `index` (1-based). `Err` when the platform cannot say.
 pub async fn window(app: &str, index: usize) -> Result<WindowInfo, String> {
     #[cfg(target_os = "macos")]
-    let raw = macos::window_raw(app, index).await?;
+    return parse_window(&macos::window_raw(app, index).await?);
     #[cfg(not(target_os = "macos"))]
-    let raw: String = {
+    {
         let _ = (app, index);
-        return Err("window ids are not read on this platform".into());
-    };
-    parse_window(&raw)
+        Err("window ids are not read on this platform".into())
+    }
 }
 
 /// The name of the frontmost app, `""` when none. Parsed from one line.
