@@ -35,14 +35,6 @@ pub const KEY_VERSION: u32 = 1;
 /// The database, as the durable set names it.
 pub const DATABASE_PATH: &str = "data/nebo.db";
 
-/// Loose files at the top of the data directory that are part of the bot.
-const TOP_FILES: &[&str] = &[
-    "settings.json",
-    "bot_id",
-    "neboai_token.cache",
-    ".setup-complete",
-];
-
 /// Directories that are part of the bot. Everything else in the data
 /// directory is scratch: rebuilt, re-downloaded or disposable.
 const DURABLE_TREES: &[&str] = &[
@@ -225,13 +217,32 @@ pub fn sources(data_dir: &Path, archive: bool) -> Vec<Source> {
         exclude: vec![],
     };
     let mut out = vec![database];
+    let mut names: Vec<(String, bool)> = fs::read_dir(data_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let ft = e.file_type().ok()?;
+                    Some((name, ft.is_dir()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    // Every loose file at the top of the data directory is the bot's: its
+    // id, settings and tokens, its local keys (.mcp-key, .extension-secret)
+    // and the markers of one-time work already done (.migrated-*,
+    // .bundled-*, layers-applied.json). A restore without a marker runs that
+    // work again over the restored state — re-extracting a deleted
+    // employee's archive brought the employee back.
+    let loose: Vec<String> = names.iter().filter(|(_, is_dir)| !is_dir).map(|(n, _)| n.clone()).collect();
+    out.push(Source {
+        role: "top".into(),
+        root: ".".into(),
+        members: loose,
+        exclude: vec![],
+    });
     if !archive {
-        out.push(Source {
-            role: "top".into(),
-            root: ".".into(),
-            members: TOP_FILES.iter().map(|s| s.to_string()).collect(),
-            exclude: vec![],
-        });
         for tree in DURABLE_TREES {
             if *tree == CHROMIUM_PROFILE && browser_busy {
                 continue;
@@ -247,25 +258,8 @@ pub fn sources(data_dir: &Path, archive: bool) -> Vec<Source> {
         }
         return out;
     }
-    let mut names: Vec<(String, bool)> = fs::read_dir(data_dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    let ft = e.file_type().ok()?;
-                    Some((name, ft.is_dir()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    names.sort();
-    let mut loose = Vec::new();
     for (name, is_dir) in names {
-        if name == RESTORE_DIR || (name == CHROMIUM_PROFILE && browser_busy) {
-            continue;
-        }
-        if !is_dir {
-            loose.push(name);
+        if !is_dir || name == RESTORE_DIR || (name == CHROMIUM_PROFILE && browser_busy) {
             continue;
         }
         let exclude = match name.as_str() {
@@ -286,15 +280,6 @@ pub fn sources(data_dir: &Path, archive: bool) -> Vec<Source> {
             exclude,
         });
     }
-    out.insert(
-        1,
-        Source {
-            role: "top".into(),
-            root: ".".into(),
-            members: loose,
-            exclude: vec![],
-        },
-    );
     out
 }
 
@@ -1080,6 +1065,8 @@ pub(super) mod tests {
         for f in [
             "settings.json",
             "bot_id",
+            ".migrated-v3",
+            ".mcp-key",
             "data/nebo.db",
             "data/nebo.db-journal",
         ] {
@@ -1087,6 +1074,12 @@ pub(super) mod tests {
         }
         let roots = |v: &[Source]| v.iter().map(|s| s.root.clone()).collect::<Vec<_>>();
         let state = sources(d.path(), false);
+        // Every loose top-level file: markers of one-time work and local keys
+        // are state; without them a restore redoes that work.
+        assert_eq!(
+            state.iter().find(|s| s.root == ".").unwrap().members,
+            vec![".mcp-key", ".migrated-v3", "bot_id", "settings.json"]
+        );
         assert_eq!(
             roots(&state),
             vec![
@@ -1150,9 +1143,6 @@ pub(super) mod tests {
         assert!(data.exclude.contains(&"data/nebo.db".to_string()));
         let cache = archive.iter().find(|s| s.root == "cache").unwrap();
         assert_eq!(cache.exclude, vec![STAGING_DIR.to_string()]);
-        assert_eq!(
-            archive[1].members,
-            vec!["bot_id".to_string(), "settings.json".to_string()]
-        );
+        assert_eq!(archive[1].members, vec![".mcp-key", ".migrated-v3", "bot_id", "settings.json"]);
     }
 }
