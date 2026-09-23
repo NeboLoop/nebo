@@ -106,6 +106,23 @@ pub struct LeaseAnswer {
     pub t: u64,
 }
 
+/// RESIDENCY frame payload. Hub -> bot: `{"type":"passivate","idleForSecs",
+/// "minNextWakeSecs"}` asks the bot to park, with the thresholds the hub
+/// decided on. Bot -> hub: `{"type":"busy","reason"}` declines; a bot that
+/// parks says nothing (it commits, hands its lease back and exits).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResidencyFrame {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub idle_for_secs: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub min_next_wake_secs: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
 /// SEND_MESSAGE frame payload (client -> server).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -312,6 +329,18 @@ mod tests {
         assert_eq!(lost.kind, "lease_lost");
         let release = serde_json::to_string(&LeaseRelease { release_lease: true }).unwrap();
         assert_eq!(release, r#"{"releaseLease":true}"#);
+    }
+
+    #[test]
+    fn test_residency_frames_match_the_hub() {
+        let ask: ResidencyFrame =
+            serde_json::from_str(r#"{"type":"passivate","idleForSecs":1800,"minNextWakeSecs":600}"#).unwrap();
+        assert_eq!((ask.kind.as_str(), ask.idle_for_secs, ask.min_next_wake_secs), ("passivate", 1800, 600));
+        let busy = ResidencyFrame { kind: "busy".into(), reason: "a run is in flight".into(), ..Default::default() };
+        assert_eq!(
+            serde_json::to_string(&busy).unwrap(),
+            r#"{"type":"busy","reason":"a run is in flight"}"#
+        );
     }
 
     #[test]

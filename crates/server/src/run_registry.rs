@@ -177,6 +177,7 @@ impl RunHandle {
 
 impl Drop for RunHandle {
     fn drop(&mut self) {
+        crate::residency::touch();
         // Best-effort removal — don't panic if lock is poisoned
         if let Ok(mut runs) = self.registry.runs.try_write() {
             runs.remove(&self.run_id);
@@ -248,6 +249,7 @@ impl RunRegistry {
         };
 
         self.inner.runs.write().await.insert(run_id.clone(), entry);
+        crate::residency::touch();
 
         RunHandle {
             registry: self.inner.clone(),
@@ -308,6 +310,7 @@ impl RunRegistry {
     /// Remove a run explicitly (also happens automatically on RunHandle drop).
     pub async fn unregister(&self, run_id: &str) {
         self.inner.runs.write().await.remove(run_id);
+        crate::residency::touch();
     }
 
     /// All runs (user/frontend — full visibility).

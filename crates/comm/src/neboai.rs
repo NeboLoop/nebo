@@ -1347,6 +1347,13 @@ async fn read_loop(
 
                 match header.frame_type {
                     frame::TYPE_MESSAGE_DELIVERY => {
+                        // Parking: what arrives now is neither handled nor
+                        // acked, so it waits in the hub mailbox for the next
+                        // process to be this bot (crate::residency).
+                        if crate::residency::holding() {
+                            debug!(seq = header.seq, "delivery held for the hub: this bot is parking");
+                            continue;
+                        }
                         // Skip duplicate messages (same msg_id seen within sliding window)
                         if dedup.is_duplicate(header.msg_id) {
                             debug!("duplicate message, skipping");
@@ -1607,6 +1614,47 @@ async fn read_loop(
                         }
                         lease.lost();
                         break;
+                    }
+
+                    frame::TYPE_RESIDENCY => {
+                        let ask: wire::ResidencyFrame = match serde_json::from_slice(payload) {
+                            Ok(a) => a,
+                            Err(e) => {
+                                debug!(error = %e, "unreadable residency frame");
+                                continue;
+                            }
+                        };
+                        if ask.kind != "passivate" {
+                            debug!(kind = %ask.kind, "unknown residency frame");
+                            continue;
+                        }
+                        info!(idle_for_secs = ask.idle_for_secs, min_next_wake_secs = ask.min_next_wake_secs, "neboai: the hub asks this bot to park");
+                        let decision = crate::residency::request(crate::residency::Passivate {
+                            idle_for: std::time::Duration::from_secs(ask.idle_for_secs),
+                            min_next_wake: std::time::Duration::from_secs(ask.min_next_wake_secs),
+                        });
+                        // Decided off the read loop; only a refusal is answered.
+                        let tx = send_tx.clone();
+                        tokio::spawn(async move {
+                            let reason = match decision.await {
+                                Ok(crate::residency::Decision::Parking) => return,
+                                Ok(crate::residency::Decision::Busy(reason)) => reason,
+                                Err(_) => "no decision".to_string(),
+                            };
+                            info!(reason = %reason, "neboai: not parking");
+                            let busy = wire::ResidencyFrame { kind: "busy".into(), reason, ..Default::default() };
+                            let encoded = serde_json::to_vec(&busy).map_err(|e| e.to_string()).and_then(|p| {
+                                frame::encode(Header { frame_type: frame::TYPE_RESIDENCY, ..Default::default() }, &p).map_err(|e| e.to_string())
+                            });
+                            match encoded {
+                                Ok(f) => {
+                                    if tx.send(f).await.is_err() {
+                                        debug!("residency answer not sent: connection closed");
+                                    }
+                                }
+                                Err(e) => debug!(error = %e, "residency answer encode failed"),
+                            }
+                        });
                     }
 
                     frame::TYPE_REPLAY => {

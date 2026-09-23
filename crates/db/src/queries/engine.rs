@@ -598,6 +598,48 @@ impl Store {
         .db_err("engine_next_timer_due")
     }
 
+    /// What keeps the engine from being idle, if anything (the idle half a
+    /// cloud bot reports before it may park): a turn queued or running, or
+    /// suspended by a clean shutdown and owed a resume; or an event
+    /// deliverable now — untimed or due, a session wake included, one under
+    /// a delivery lease included. Poisoned events do not count: they will
+    /// never be delivered. `None` when idle.
+    pub fn engine_busy(&self, now: i64) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        let runs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engine_runs
+                 WHERE state IN ('queued', 'running')
+                    OR (state = 'interrupted' AND summary = 'clean_shutdown')",
+                [],
+                |r| r.get(0),
+            )
+            .db_err("engine_busy runs")?;
+        if runs > 0 {
+            return Ok(Some(format!("{runs} workflow turn(s) queued or running")));
+        }
+        let events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engine_events
+                 WHERE delivered_at IS NULL AND attempts < ?2
+                   AND (due_at IS NULL OR due_at <= ?1)",
+                params![now, EVENT_MAX_ATTEMPTS],
+                |r| r.get(0),
+            )
+            .db_err("engine_busy events")?;
+        if events > 0 {
+            return Ok(Some(format!("{events} engine event(s) to deliver")));
+        }
+        Ok(None)
+    }
+
+    /// When the latest workflow turn ended (unix seconds), if any has.
+    pub fn engine_last_run_end(&self) -> Result<Option<i64>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row("SELECT MAX(ended_at) FROM engine_runs", [], |r| r.get::<_, Option<i64>>(0))
+            .db_err("engine_last_run_end")
+    }
+
     /// The floor the next occurrence is computed from: the last timer this
     /// target consumed (its due moment) or dropped (the moment it was
     /// dropped, so a superseded future timer never pushes the floor ahead).
@@ -1626,6 +1668,42 @@ mod tests {
         assert_eq!(s.engine_next_timer_due().unwrap(), Some(2_000));
         s.engine_complete_event(early, 2_001).unwrap();
         assert_eq!(s.engine_next_timer_due().unwrap(), Some(5_000), "a delivered timer no longer wakes the bot");
+    }
+
+    /// Idle means nothing owed now: a future timer is a wake, not work; a
+    /// signal to deliver, a queued turn, or a turn a clean shutdown
+    /// suspended is work; a poisoned event never will be.
+    #[test]
+    fn engine_busy_is_work_owed_now() {
+        let s = store();
+        assert_eq!(s.engine_busy(1_000).unwrap(), None);
+        let timer = NewEvent { kind: "timer", target_type: "binding", target_id: "b", idem_key: "t", due_at: Some(5_000), ..Default::default() };
+        s.engine_enqueue_event(&timer).unwrap();
+        assert_eq!(s.engine_busy(1_000).unwrap(), None, "a future timer is the next wake, not work");
+        assert!(s.engine_busy(5_000).unwrap().is_some(), "a due timer is work");
+
+        let s = store();
+        let id = match s.engine_enqueue_event(&signal("k", "s1")).unwrap() {
+            Enqueued::Inserted(id) => id,
+            Enqueued::Duplicate => unreachable!(),
+        };
+        assert!(s.engine_busy(1_000).unwrap().is_some(), "an undelivered signal is work");
+        s.engine_complete_event(id, 1_001).unwrap();
+        assert_eq!(s.engine_busy(1_002).unwrap(), None);
+
+        s.engine_create_run(&case("r1")).unwrap();
+        assert!(s.engine_busy(1_002).unwrap().unwrap().contains("turn"), "a queued turn is work");
+        s.engine_set_run_state("r1", "done", 1_003, None).unwrap();
+        assert_eq!(s.engine_busy(1_004).unwrap(), None);
+        assert_eq!(s.engine_last_run_end().unwrap(), Some(1_003));
+
+        s.conn_exec_for_test("UPDATE engine_runs SET state = 'interrupted', summary = 'clean_shutdown' WHERE id = 'r1'");
+        assert!(s.engine_busy(1_005).unwrap().is_some(), "a turn owed a resume is work");
+
+        let s = store();
+        s.engine_enqueue_event(&signal("k", "cursed")).unwrap();
+        s.conn_exec_for_test(&format!("UPDATE engine_events SET attempts = {EVENT_MAX_ATTEMPTS}"));
+        assert_eq!(s.engine_busy(1_000).unwrap(), None, "a poisoned event is never delivered");
     }
 
     #[test]
