@@ -50,6 +50,12 @@ pub struct UIElement {
     /// Keyboard focus was on this element when the walk ran.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub focused: bool,
+    /// The element's current value (a field's contents, a slider's number).
+    /// Shown beside the label, never part of the label: a value changes when
+    /// typed into and must not change the element's ref. Secure fields never
+    /// carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 /// A snapshot combining a screenshot with detected UI elements.
@@ -370,6 +376,7 @@ pub fn parse_ax_output(output: &str) -> Vec<UIElement> {
             actions: Vec::new(),
             path: String::new(),
             focused: false,
+            value: None,
         });
     }
     elements
@@ -416,6 +423,7 @@ mod tests {
                 actions: vec![],
                 path: String::new(),
                 focused: focused == Some(i),
+                value: None,
             })
             .collect();
         Snapshot {
@@ -443,6 +451,7 @@ mod tests {
             actions: vec![],
             path: String::new(),
             focused: false,
+            value: None,
         };
         let mut book = RefBook::default();
         let mut first = vec![el("AXButton", "Home"), el("AXButton", "Continue with email")];
@@ -516,6 +525,7 @@ mod tests {
                 actions: vec![],
                 path: String::new(),
                 focused: false,
+                value: None,
             }],
         };
         store.insert(snap);
@@ -593,6 +603,7 @@ mod tests {
                     actions: vec![],
                     path: String::new(),
                     focused: false,
+                    value: None,
                 },
                 UIElement {
                     id: "T1".into(),
@@ -609,6 +620,7 @@ mod tests {
                     actions: vec![],
                     path: String::new(),
                     focused: false,
+                    value: None,
                 },
             ],
         });
@@ -646,6 +658,7 @@ mod tests {
                 actions: vec![],
                 path: String::new(),
                 focused: false,
+                value: None,
             },
             UIElement {
                 id: String::new(),
@@ -662,6 +675,7 @@ mod tests {
                 actions: vec![],
                 path: String::new(),
                 focused: false,
+                value: None,
             },
             UIElement {
                 id: String::new(),
@@ -678,6 +692,7 @@ mod tests {
                 actions: vec![],
                 path: String::new(),
                 focused: false,
+                value: None,
             },
             UIElement {
                 id: String::new(),
@@ -694,6 +709,7 @@ mod tests {
                 actions: vec![],
                 path: String::new(),
                 focused: false,
+                value: None,
             },
         ];
         assign_element_ids(&mut elements, &mut RefBook::default());

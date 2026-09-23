@@ -215,14 +215,14 @@ pub(super) async fn tree_raw(app: &str, opts: &WalkOpts) -> Result<String, Strin
     run(&tree_script(app, opts), opts.timeout + STARTUP_GRACE).await
 }
 
-pub(super) async fn act_raw(app: &str, window: usize, path: &str, action: &str) -> Result<(), String> {
+pub(super) async fn act_raw(app: &str, window: usize, path: &str, action: &str, _expect: super::Expect<'_>) -> Result<(), String> {
     if !valid_path(path) {
         return Err(format!("bad path {path:?}: expected child indices like 0.3.2"));
     }
     run(&act_script(app, window, path, action), Duration::from_secs(5) + STARTUP_GRACE).await.map(|_| ())
 }
 
-pub(super) async fn set_raw(app: &str, window: usize, path: &str, value: &str) -> Result<(), String> {
+pub(super) async fn set_raw(app: &str, window: usize, path: &str, value: &str, _expect: super::Expect<'_>) -> Result<(), String> {
     if !valid_path(path) {
         return Err(format!("bad path {path:?}: expected child indices like 0.3.2"));
     }

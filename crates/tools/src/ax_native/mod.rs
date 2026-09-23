@@ -32,6 +32,9 @@ pub struct AxNode {
     pub value: Option<String>,
     #[serde(default)]
     pub desc: Option<String>,
+    /// A text field's placeholder: the name it keeps while its value changes.
+    #[serde(default)]
+    pub placeholder: Option<String>,
     pub frame: [i64; 4],
     #[serde(default)]
     pub actions: Vec<String>,
@@ -122,31 +125,48 @@ pub async fn tree(app: &str, opts: &WalkOpts) -> Result<AxTree, String> {
 
 /// Perform an accessibility action (`AXPress`, `AXShowMenu`, …) on the node at
 /// `path` from the most recent walk of `app`'s window.
-pub async fn act(app: &str, window: usize, path: &str, action: &str) -> Result<(), String> {
+/// What an act expects to find at its path: the element's role and stable
+/// label. The backend re-identifies before acting and refuses a stale or
+/// ambiguous target; `None` acts on the path as recorded.
+pub type Expect<'a> = Option<(&'a str, &'a str)>;
+
+pub async fn act(app: &str, window: usize, path: &str, action: &str, expect: Expect<'_>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    return macos::act_raw(app, window, path, action).await;
+    return macos::act_raw(app, window, path, action, expect).await;
     #[cfg(target_os = "linux")]
-    return linux::act_raw(app, window, path, action).await;
+    return linux::act_raw(app, window, path, action, expect).await;
     #[cfg(target_os = "windows")]
-    return windows::act_raw(app, window, path, action).await;
+    return windows::act_raw(app, window, path, action, expect).await;
     #[allow(unreachable_code)]
     {
-        let _ = (app, window, path, action);
+        let _ = (app, window, path, action, expect);
         Err("no native accessibility backend on this platform".into())
     }
 }
 
 /// Set the value of an editable node (text fields, sliders) without typing.
-pub async fn set_value(app: &str, window: usize, path: &str, value: &str) -> Result<(), String> {
+/// Bring the element's window to the front before physical input. Only
+/// macOS knows windows by id; elsewhere the app is raised by other means.
+pub async fn raise(app: &str, window: usize) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    return macos::set_raw(app, window, path, value).await;
-    #[cfg(target_os = "linux")]
-    return linux::set_raw(app, window, path, value).await;
-    #[cfg(target_os = "windows")]
-    return windows::set_raw(app, window, path, value).await;
+    return macos::raise_raw(app, window).await;
     #[allow(unreachable_code)]
     {
-        let _ = (app, window, path, value);
+        let _ = (app, window);
+        Ok(())
+    }
+}
+
+pub async fn set_value(app: &str, window: usize, path: &str, value: &str, expect: Expect<'_>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return macos::set_raw(app, window, path, value, expect).await;
+    #[cfg(target_os = "linux")]
+    return linux::set_raw(app, window, path, value, expect).await;
+    #[cfg(target_os = "windows")]
+    return windows::set_raw(app, window, path, value, expect).await;
+    #[allow(unreachable_code)]
+    {
+        let _ = (app, window, path, value, expect);
         Err("no native accessibility backend on this platform".into())
     }
 }
@@ -252,13 +272,40 @@ pub fn parse_window(line: &str) -> Result<WindowInfo, String> {
 /// `app`'s window `index` (1-based). `Err` when the platform cannot say.
 pub async fn window(app: &str, index: usize) -> Result<WindowInfo, String> {
     #[cfg(target_os = "macos")]
-    let raw = macos::window_raw(app, index).await?;
+    return parse_window(&macos::window_raw(app, index).await?);
     #[cfg(not(target_os = "macos"))]
-    let raw: String = {
+    {
         let _ = (app, index);
-        return Err("window ids are not read on this platform".into());
-    };
-    parse_window(&raw)
+        Err("window ids are not read on this platform".into())
+    }
+}
+
+/// The name of the frontmost app, `""` when none. Parsed from one line.
+pub fn parse_frontmost(line: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .and_then(|v| v["app"].as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// What a capture or an act says when the screen is locked. Nothing behind
+/// the lock screen has a window frame, so every act would fail obscurely.
+pub const LOCKED_SCREEN: &str = "The screen is locked: the login window is in front. Unlock the Mac, then capture again.";
+
+/// The lock screen is the loginwindow process in front of a session that is
+/// already logged in.
+// ponytail: name match; CGSSessionScreenIsLocked from CGSessionCopyCurrentDictionary if a
+// lock ever shows up under another name.
+pub fn is_lock_screen(app: &str) -> bool {
+    app == "loginwindow"
+}
+
+/// The app in front right now, read without AppleEvents.
+pub async fn frontmost() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    return macos::frontmost_raw().await.map(|s| parse_frontmost(&s));
+    #[allow(unreachable_code)]
+    Err("frontmost app is not read on this platform".into())
 }
 
 /// Read the text in an image file. `Err` means the platform's recognizer is
@@ -281,6 +328,15 @@ pub async fn text(image: &std::path::Path) -> Result<Vec<TextLine>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frontmost_line_yields_the_app_name_or_nothing() {
+        assert_eq!(parse_frontmost("{\"app\":\"Brave Browser\",\"pid\":12}\n"), "Brave Browser");
+        assert_eq!(parse_frontmost("{\"app\":\"\",\"pid\":0}"), "");
+        assert_eq!(parse_frontmost("garbage"), "");
+        assert!(is_lock_screen("loginwindow"));
+        assert!(!is_lock_screen("Calculator"));
+    }
 
     #[test]
     fn window_line_carries_frame_and_optional_id() {
