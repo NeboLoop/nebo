@@ -1499,6 +1499,9 @@ pub(crate) async fn fetch_and_install_plugin(
             .start_agent(&agent_id, &agent_name, None)
             .await;
     }
+    // The plugin is on disk and registered: a chat parked on an install card
+    // for it resumes now, whichever door this install came through.
+    crate::chat_dispatch::release_install_cards(state, slug).await;
     Ok(())
 }
 
