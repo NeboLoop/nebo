@@ -469,19 +469,23 @@ impl Store {
             .db_err("list_workflow_runs collect")
     }
 
-    /// Check if there is already a running workflow run for the given workflow_id
-    /// whose trigger_detail starts with the given binding name.
+    /// Check if there is already a running workflow run of `binding` under
+    /// the given workflow_id. A binding's runs carry its name in
+    /// trigger_detail in one of two shapes: bare (`<binding>`: heartbeat,
+    /// schedule, manual, webhook) or suffixed (`<binding>:<event source>`:
+    /// event subscriptions). Both match; a binding that merely shares a
+    /// prefix does not.
     pub fn has_running_run(
         &self,
         workflow_id: &str,
-        binding_prefix: &str,
+        binding: &str,
     ) -> Result<bool, NeboError> {
         let conn = self.conn()?;
-        let pattern = format!("{}:%", binding_prefix);
         conn.query_row(
             "SELECT COUNT(*) > 0 FROM workflow_runs w JOIN engine_runs r ON r.id = w.id
-             WHERE w.workflow_id = ?1 AND r.state = 'running' AND w.trigger_detail LIKE ?2",
-            params![workflow_id, pattern],
+             WHERE w.workflow_id = ?1 AND r.state = 'running'
+               AND (w.trigger_detail = ?2 OR substr(w.trigger_detail, 1, length(?2) + 1) = ?2 || ':')",
+            params![workflow_id, binding],
             |row| row.get(0),
         )
         .db_err("has_running_run")
@@ -1050,6 +1054,29 @@ mod durability_tests {
     /// `interrupted`; recovery claims it with the definition snapshotted at
     /// launch; finished runs are never touched. The run reads as interrupted
     /// until the relaunch flips it back to running.
+    /// A heartbeat run stores the bare binding name, an event run stores
+    /// `<binding>:<source>`; both are "this binding is still running". A
+    /// binding sharing a prefix (`inventory` vs `inventory-alerts`) or a
+    /// LIKE wildcard in the name (`_`) never matches another binding.
+    #[test]
+    fn has_running_run_matches_both_trigger_detail_shapes_and_only_its_binding() {
+        let s = store();
+        s.create_workflow_run("hb", "agent:a1", "heartbeat", Some("inventory"), None, None, Some("{}")).unwrap();
+        assert!(s.has_running_run("agent:a1", "inventory").unwrap(), "bare heartbeat run is detected");
+
+        s.create_workflow_run("ev", "agent:a1", "event", Some("order_intake:mail.received"), None, None, Some("{}")).unwrap();
+        assert!(s.has_running_run("agent:a1", "order_intake").unwrap(), "suffixed event run is detected");
+
+        assert!(!s.has_running_run("agent:a1", "inventory-alerts").unwrap(), "shared prefix is another binding");
+        assert!(!s.has_running_run("agent:a1", "inv").unwrap(), "a prefix of the name is another binding");
+        assert!(!s.has_running_run("agent:a1", "order-intake").unwrap(), "`_` in a stored name is not a wildcard");
+        assert!(!s.has_running_run("agent:a1", "invent_ry").unwrap(), "`_` in the queried name is not a wildcard");
+        assert!(!s.has_running_run("agent:a2", "inventory").unwrap(), "other agent's workflow");
+
+        s.complete_workflow_run("hb", "completed", 0, None, None, None).unwrap();
+        assert!(!s.has_running_run("agent:a1", "inventory").unwrap(), "a finished run is not running");
+    }
+
     #[test]
     fn sweep_stamps_stranded_runs_and_recovery_claims_the_snapshot() {
         let s = store();
