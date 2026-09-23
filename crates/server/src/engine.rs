@@ -1470,8 +1470,9 @@ pub fn suspend_for_shutdown(store: &Store) {
     }
 }
 
-/// The loop. Boot sweep first, then a tick every five seconds for the life
-/// of the process.
+/// The loop. Boot sweep first, then a tick every five seconds until a
+/// shutdown drain begins. From then on no schedule is armed and no event is
+/// claimed or delivered: whatever is due waits in the table for the next boot.
 pub fn spawn(state: AppState) {
     let store: Arc<Store> = state.store.clone();
     tokio::spawn(async move {
@@ -1480,6 +1481,10 @@ pub fn spawn(state: AppState) {
         let mut interval = tokio::time::interval(TICK);
         loop {
             interval.tick().await;
+            if crate::DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
+                info!("engine: draining — loop stopped");
+                return;
+            }
             let s = store.clone();
             let runner = state.runner.clone();
             let report = tokio::task::spawn_blocking(move || {
