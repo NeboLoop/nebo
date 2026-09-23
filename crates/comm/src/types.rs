@@ -36,6 +36,16 @@ pub enum CommError {
 /// Thread-safe message handler callback.
 pub type MessageHandler = Arc<dyn Fn(CommMessage) + Send + Sync>;
 
+/// Durable per-stream delivery offsets: the last seq the bot acked on each of
+/// its own hub streams. Every connect JOINs each stream with it, so the hub
+/// replays what arrived while the bot was disconnected.
+pub trait StreamOffsets: Send + Sync {
+    /// Last acked seq on `stream`; 0 when there is none.
+    fn acked(&self, bot_id: &str, stream: &str) -> u64;
+    /// Record that `seq` on `stream` was acked. Never moves backwards.
+    fn record(&self, bot_id: &str, stream: &str, seq: u64);
+}
+
 /// Type of a comm message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

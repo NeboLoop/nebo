@@ -22,10 +22,23 @@ use crate::ulid::UlidGen;
 use crate::wire;
 use crate::{
     AgentCard, ChannelMemberItem, ChannelMessageItem, CommError, CommMessage, CommMessageType,
-    CommPlugin, LoopChannelInfo, LoopInfo, MessageHandler,
+    CommPlugin, LoopChannelInfo, LoopInfo, MessageHandler, StreamOffsets,
 };
 
 type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// The bot's own hub streams, JOINed on every connect with their acked
+/// offsets. `channels/inbound` carries inbound email. The hub subscribes the
+/// bot to `installs`, `tasks`, `card` and `apps` itself and backfills those
+/// from its own record of our acks.
+const BOT_STREAMS: &[&str] = &[
+    "dm",
+    "installs",
+    "chat",
+    "account",
+    "voice",
+    "channels/inbound",
+];
 
 /// Channel metadata tracked after JOIN responses.
 #[derive(Debug, Clone)]
@@ -80,10 +93,12 @@ pub struct NeboAIPlugin {
     connected: Arc<AtomicBool>,
     /// Signalled when the read loop exits unexpectedly (not via cancel).
     disconnect_notify: Arc<Notify>,
+    /// Durable acked offsets of the bot's own streams.
+    offsets: Arc<dyn StreamOffsets>,
 }
 
 impl NeboAIPlugin {
-    pub fn new() -> Self {
+    pub fn new(offsets: Arc<dyn StreamOffsets>) -> Self {
         Self {
             inner: RwLock::new(Inner {
                 send_tx: None,
@@ -98,6 +113,7 @@ impl NeboAIPlugin {
             devlog: RwLock::new(None),
             connected: Arc::new(AtomicBool::new(false)),
             disconnect_notify: Arc::new(Notify::new()),
+            offsets,
         }
     }
 
@@ -183,15 +199,16 @@ impl NeboAIPlugin {
             .map_err(|_| CommError::Other("send channel closed".into()))
     }
 
-    /// Join a bot stream (e.g. "chat", "installs", "dm").
+    /// Join a bot stream (e.g. "chat", "installs", "dm") from its last acked
+    /// seq, so the hub replays whatever arrived while we were disconnected.
     pub async fn join_bot_stream(&self, bot_id: &str, stream: &str) -> Result<(), CommError> {
-        {
-            let mut maps = self.conv_maps.write().await;
-            maps.pending_joins.push(format!("{}:{}", bot_id, stream));
+        if let Some(ref dl) = *self.devlog.read().await {
+            dl.join_request(stream);
         }
         let payload = serde_json::to_vec(&wire::JoinPayload {
             bot_id: bot_id.to_string(),
             stream: stream.to_string(),
+            last_acked_seq: self.offsets.acked(bot_id, stream),
             ..Default::default()
         })
         .map_err(|e| CommError::Other(e.to_string()))?;
@@ -286,12 +303,6 @@ impl NeboAIPlugin {
         let content = serde_json::json!({ "type": "text", "text": text });
         self.send_on_conversation(&conv_id, "chat", content, false)
             .await
-    }
-}
-
-impl Default for NeboAIPlugin {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -539,6 +550,11 @@ impl CommPlugin for NeboAIPlugin {
         let connected_for_read = self.connected.clone();
         let notify_for_read = self.disconnect_notify.clone();
         let maps_for_read = self.conv_maps.clone();
+        let stream_acks = StreamAcks {
+            bot_id: bot_id.clone(),
+            offsets: self.offsets.clone(),
+            stream_by_conv: HashMap::new(),
+        };
         tokio::spawn(async move {
             read_loop(
                 read,
@@ -551,6 +567,7 @@ impl CommPlugin for NeboAIPlugin {
                 connected_for_read,
                 notify_for_read,
                 send_tx,
+                stream_acks,
             )
             .await;
         });
@@ -577,33 +594,10 @@ impl CommPlugin for NeboAIPlugin {
             }
         });
 
-        // Subscribe to default bot streams
-        for stream_name in &["dm", "installs", "chat", "account", "voice"] {
-            if let Some(ref dl) = *self.devlog.read().await {
-                dl.join_request(stream_name);
-            }
-            {
-                let mut maps = self.conv_maps.write().await;
-                maps.pending_joins
-                    .push(format!("{}:{}", bot_id, stream_name));
-            }
-            let payload = serde_json::to_vec(&wire::JoinPayload {
-                bot_id: bot_id.clone(),
-                stream: stream_name.to_string(),
-                ..Default::default()
-            })
-            .map_err(|e| CommError::Other(e.to_string()))?;
-            let encoded = frame::encode(
-                Header {
-                    frame_type: frame::TYPE_JOIN_CONVERSATION,
-                    ..Default::default()
-                },
-                &payload,
-            )
-            .map_err(|e| CommError::Other(e.to_string()))?;
-            let inner = self.inner.read().await;
-            if let Some(tx) = &inner.send_tx {
-                let _ = tx.send(encoded).await;
+        // Join the bot's own streams, each from its last acked seq.
+        for stream_name in BOT_STREAMS {
+            if let Err(e) = self.join_bot_stream(&bot_id, stream_name).await {
+                warn!(stream = %stream_name, error = %e, "bot stream join not queued");
             }
         }
 
@@ -1128,7 +1122,6 @@ enum JoinUpdate {
 #[derive(Default)]
 struct ConvMaps {
     conv_by_key: HashMap<String, String>,
-    pending_joins: Vec<String>,
     channel_convs: HashMap<String, String>,
     channel_by_conv: HashMap<String, String>,
     channel_meta: HashMap<String, ChannelMeta>,
@@ -1150,16 +1143,7 @@ impl ConvMaps {
                 key,
                 conversation_id,
             } => {
-                // If key is empty, pop from pending_joins queue (read loop
-                // doesn't know which stream the result belongs to).
-                let resolved_key = if key.is_empty() {
-                    self.pending_joins.pop().unwrap_or_default()
-                } else {
-                    key
-                };
-                if !resolved_key.is_empty() {
-                    self.conv_by_key.insert(resolved_key, conversation_id);
-                }
+                self.conv_by_key.insert(key, conversation_id);
             }
             JoinUpdate::Channel(meta, conv_id) => {
                 // Deduplicate: skip if this channel is already tracked with
@@ -1230,6 +1214,31 @@ fn encode_ack(conversation_id: &str, acked_seq: u64) -> Result<Vec<u8>, CommErro
     .map_err(|e| CommError::Other(e.to_string()))
 }
 
+/// Per-connection record of which conversations are the bot's own streams,
+/// learned from their JOIN results, so each ack on one is also persisted as
+/// that stream's offset. Owned by the read loop: what the hub replays for a
+/// JOIN follows the JOIN result on the same socket, so the lookup never misses
+/// it. (What the hub backfills before our JOIN — `installs` — it tracks by its
+/// own record of our acks.)
+struct StreamAcks {
+    bot_id: String,
+    offsets: Arc<dyn StreamOffsets>,
+    stream_by_conv: HashMap<String, String>,
+}
+
+impl StreamAcks {
+    fn joined(&mut self, conversation_id: &str, stream: &str) {
+        self.stream_by_conv
+            .insert(conversation_id.to_string(), stream.to_string());
+    }
+
+    fn acked(&self, conversation_id: &str, seq: u64) {
+        if let Some(stream) = self.stream_by_conv.get(conversation_id) {
+            self.offsets.record(&self.bot_id, stream, seq);
+        }
+    }
+}
+
 /// Read loop — receives WebSocket messages, decodes frames, dispatches.
 async fn read_loop(
     mut read: SplitStream<WsStream>,
@@ -1242,6 +1251,7 @@ async fn read_loop(
     connected: Arc<AtomicBool>,
     disconnect_notify: Arc<Notify>,
     send_tx: mpsc::Sender<Vec<u8>>,
+    mut stream_acks: StreamAcks,
 ) {
     if let Some(ref dl) = devlog {
         dl.event(&format!(
@@ -1441,12 +1451,15 @@ async fn read_loop(
                             h(msg);
 
                             // Ack what we took. The server replays an agent
-                            // space from this offset on the next connect, so a
-                            // conversation we never ack is one whose backlog it
-                            // can never hand back — that is how inbound
-                            // webhooks went missing. Ephemeral frames (presence,
-                            // identity) carry no durable seq: never ack those.
+                            // space or auto-subscribed stream from this offset
+                            // on the next connect, and we JOIN our own streams
+                            // from the offset persisted here, so a conversation
+                            // we never ack is one whose backlog can never come
+                            // back — that is how inbound webhooks went missing.
+                            // Ephemeral frames (presence, identity) carry no
+                            // durable seq: never ack those.
                             if header.seq > 0 && !header.is_ephemeral() {
+                                stream_acks.acked(&conv_id_str, header.seq);
                                 match encode_ack(&conv_id_str, header.seq) {
                                     Ok(frame) => {
                                         if send_tx.try_send(frame).is_err() {
@@ -1557,13 +1570,12 @@ async fn read_loop(
                                     result.conversation_id,
                                 ))
                                 .await;
-                        } else {
-                            // Bot stream join — use pending_joins queue
-                            // We don't have access to the queue here, so send
-                            // a generic update and let the processor match it.
+                        } else if !result.stream.is_empty() {
+                            // Bot stream join — the result names its stream.
+                            stream_acks.joined(&result.conversation_id, &result.stream);
                             let _ = join_tx
                                 .send(JoinUpdate::BotStream {
-                                    key: String::new(), // processor will pop pending
+                                    key: format!("{}:{}", result.bot_id, result.stream),
                                     conversation_id: result.conversation_id,
                                 })
                                 .await;
@@ -1783,4 +1795,174 @@ fn derive_api_url(gateway: &str) -> String {
         .replace("wss://comms.", "https://api.")
         .replace("ws://comms.", "http://api.")
         .replace("/ws", "")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MemOffsets(Mutex<HashMap<String, u64>>);
+
+    impl StreamOffsets for MemOffsets {
+        fn acked(&self, bot_id: &str, stream: &str) -> u64 {
+            let map = self.0.lock().unwrap();
+            map.get(&format!("{bot_id}:{stream}")).copied().unwrap_or(0)
+        }
+        fn record(&self, bot_id: &str, stream: &str, seq: u64) {
+            let mut map = self.0.lock().unwrap();
+            let slot = map.entry(format!("{bot_id}:{stream}")).or_insert(0);
+            *slot = (*slot).max(seq);
+        }
+    }
+
+    fn server_frame(
+        frame_type: u8,
+        conversation_id: [u8; 16],
+        seq: u64,
+        payload: serde_json::Value,
+    ) -> WsMessage {
+        let bytes = frame::encode(
+            Header {
+                frame_type,
+                conversation_id,
+                seq,
+                msg_id: [seq as u8; 16],
+                ..Default::default()
+            },
+            &serde_json::to_vec(&payload).unwrap(),
+        )
+        .unwrap();
+        WsMessage::Binary(bytes.into())
+    }
+
+    fn client_frame(msg: WsMessage) -> (Header, serde_json::Value) {
+        let WsMessage::Binary(data) = msg else {
+            panic!("expected a binary frame, got {msg:?}");
+        };
+        let (header, payload) = frame::decode(&data).unwrap();
+        (header, serde_json::from_slice(payload).unwrap())
+    }
+
+    /// Every connect JOINs each of the bot's own streams — `channels/inbound`
+    /// included — with its persisted acked offset, and a delivery handled on
+    /// one of them is acked to the hub AND persisted as that stream's offset
+    /// for the next connect.
+    #[tokio::test]
+    async fn joins_every_stream_from_its_offset_and_persists_acks() {
+        let bot = "bot-under-test";
+        let offsets = Arc::new(MemOffsets::default());
+        offsets.record(bot, "chat", 5);
+        offsets.record(bot, "channels/inbound", 2);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let chat_conv = [0x11u8; 16];
+
+        let hub = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+
+            let (connect, _) = client_frame(ws.next().await.unwrap().unwrap());
+            assert_eq!(connect.frame_type, frame::TYPE_CONNECT);
+            ws.send(server_frame(
+                frame::TYPE_AUTH_OK,
+                [0; 16],
+                0,
+                serde_json::json!({"ok": true}),
+            ))
+            .await
+            .unwrap();
+
+            let mut joins = HashMap::new();
+            while joins.len() < BOT_STREAMS.len() {
+                let (h, join) = client_frame(ws.next().await.unwrap().unwrap());
+                assert_eq!(h.frame_type, frame::TYPE_JOIN_CONVERSATION);
+                joins.insert(
+                    join["stream"].as_str().unwrap().to_string(),
+                    join["lastAckedSeq"].as_u64().unwrap_or(0),
+                );
+            }
+
+            // The chat JOIN result, then a delivery on it (what a replay sends).
+            ws.send(server_frame(
+                frame::TYPE_JOIN_CONVERSATION,
+                chat_conv,
+                0,
+                serde_json::json!({
+                    "conversationId": uuid_from_bytes(&chat_conv),
+                    "botId": bot,
+                    "stream": "chat",
+                }),
+            ))
+            .await
+            .unwrap();
+            ws.send(server_frame(
+                frame::TYPE_MESSAGE_DELIVERY,
+                chat_conv,
+                9,
+                serde_json::json!({"senderId": "owner", "stream": "chat", "content": {"text": "hi"}}),
+            ))
+            .await
+            .unwrap();
+
+            loop {
+                let (h, ack) = client_frame(ws.next().await.unwrap().unwrap());
+                if h.frame_type == frame::TYPE_ACK {
+                    return (joins, ack);
+                }
+            }
+        });
+
+        let plugin = NeboAIPlugin::new(offsets.clone());
+        plugin.set_message_handler(Arc::new(|_msg| {}));
+        let config = HashMap::from([
+            ("gateway".to_string(), format!("ws://{addr}/ws")),
+            ("bot_id".to_string(), bot.to_string()),
+            ("token".to_string(), "test-token".to_string()),
+            ("api_server".to_string(), "http://127.0.0.1:9".to_string()),
+        ]);
+        plugin.connect(config).await.unwrap();
+
+        let (joins, ack) = tokio::time::timeout(std::time::Duration::from_secs(10), hub)
+            .await
+            .expect("hub saw the joins and the ack")
+            .unwrap();
+
+        let expected: HashMap<String, u64> = BOT_STREAMS
+            .iter()
+            .map(|s| {
+                let seq = match *s {
+                    "chat" => 5,
+                    "channels/inbound" => 2,
+                    _ => 0,
+                };
+                (s.to_string(), seq)
+            })
+            .collect();
+        assert_eq!(joins, expected);
+        assert_eq!(ack["conversationId"], uuid_from_bytes(&chat_conv));
+        assert_eq!(ack["ackedSeq"], 9);
+        assert_eq!(
+            offsets.acked(bot, "chat"),
+            9,
+            "the ack is the next connect's offset"
+        );
+        // The join processor applies JOIN results on its own task.
+        let mut mapped = None;
+        for _ in 0..50 {
+            mapped = plugin.conversation_for_key(&format!("{bot}:chat")).await;
+            if mapped.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            mapped,
+            Some(uuid_from_bytes(&chat_conv)),
+            "the JOIN result maps the stream it names"
+        );
+        plugin.disconnect().await.unwrap();
+    }
 }
