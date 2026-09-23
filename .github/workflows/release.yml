@@ -486,9 +486,13 @@ jobs:
           nohup sudo -u runner ./run.sh --jitconfig '__JIT__' > /home/runner/runner.log 2>&1 &
           EOS
           sed -i "s|__JIT__|${{ steps.jit.outputs.config }}|" user-data.sh
+          # --ssh-keys: with no key DigitalOcean emails the owner a root
+          # password for every build droplet. Any account key suppresses that;
+          # nobody logs in (the runner is registered by user-data).
           id=$(doctl compute droplet create "nebo-ci-amd64-${{ github.run_id }}" \
             --region nyc3 --size s-8vcpu-16gb-amd --image "$image" \
             --tag-names nebo-ci-runner,run-${{ github.run_id }} \
+            --ssh-keys 15:57:9d:98:dc:e4:b9:b5:69:e2:42:d8:08:86:08:86 \
             --user-data-file user-data.sh --wait --format ID --no-header)
           rm -f user-data.sh
           echo "id=$id" >> "$GITHUB_OUTPUT"
