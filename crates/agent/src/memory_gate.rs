@@ -7,9 +7,10 @@
 //! decision (Jev through Janus, [`ai::DecideClient`]) reads the new turn —
 //! the last user message, the assistant's reply, the objective — and answers
 //! three Nouls in one round trip: is there a durable fact, is this a
-//! correction, is this procedural. Extraction is SKIPPED only when all three
-//! are near zero; anything else runs extraction exactly as before. The
-//! thresholds stay in code ([`verdict_from`]).
+//! correction, is this procedural. Extraction is SKIPPED only when there is
+//! plausibly no durable fact and the turn is clearly neither a correction nor
+//! a standing instruction; anything else runs extraction exactly as before.
+//! The thresholds stay in code ([`verdict_from`]).
 //!
 //! The expensive mistake is skipping a real memory; the cheap one is running
 //! extraction needlessly. So the gate fails OPEN: no decide client, any
@@ -28,14 +29,25 @@ use tracing::debug;
 
 use crate::runner::truncate_str;
 
-/// Every Noul must be at or under this for extraction to be skipped. A Noul
-/// is a probability, not an intensity: 0.15 means "almost certainly not",
-/// not "a little".
-pub const SKIP_CEILING: f64 = 0.15;
-/// Floor on how sure the judge is that `has_durable_fact` is false. A Noul
-/// carries no separate confidence on the wire (the binary distribution is
-/// the whole answer), so its certainty is `1 - noul` unless the answer
-/// carries one explicitly.
+/// `has_durable_fact` at or under this skips (with the two below quiet).
+/// Set from 71 after-turn gates on 2026-09-22 (two status heartbeats every
+/// two minutes plus one chat): the old 0.15 was never met (min 0.13 once,
+/// p25 0.26, median 0.31, p75 0.44), so the gate cost a call and saved none.
+/// Heartbeat status replies sit at 0.21–0.69, and extraction from them
+/// wrote restatements of the same status under new keys (0.88–0.95 similar
+/// to keys already stored); the real memories in the chat (corrections and
+/// "stop taking screenshots") read 0.65–0.83. At 0.35 the gate skips 40 of
+/// the 71 (56%), none of them chat.
+pub const DURABLE_SKIP_CEILING: f64 = 0.35;
+/// `is_correction` and `is_procedural` must each be at or under this to
+/// skip. Heartbeat turns read 0.02–0.07 on both; chat turns with nothing to
+/// keep read up to 0.24, and the corrections 0.67–0.94. A Noul is a
+/// probability, not an intensity: 0.1 means "almost certainly not".
+pub const SIGNAL_SKIP_CEILING: f64 = 0.1;
+/// Floor on an explicit confidence for `has_durable_fact`, when the answer
+/// carries one. A Noul carries none on the wire (the binary distribution is
+/// the whole answer, its certainty is `1 - noul`), and that certainty is
+/// already bounded by [`DURABLE_SKIP_CEILING`].
 pub const CONFIDENCE_FLOOR: f64 = 0.7;
 /// Gate call ceiling. A decision answers in milliseconds; this only bounds
 /// a stalled connection, and a trip runs extraction (fail open).
@@ -102,9 +114,11 @@ pub fn gate_state(messages: &[ChatMessage], objective: &str) -> serde_json::Valu
     })
 }
 
-/// Skip only when every Noul is at or under [`SKIP_CEILING`] and the judge's
-/// certainty that `has_durable_fact` is false clears [`CONFIDENCE_FLOOR`].
-/// A missing answer is a `Run`: the gate never skips on what it cannot read.
+/// Skip only when `has_durable_fact` is at or under [`DURABLE_SKIP_CEILING`],
+/// `is_correction` and `is_procedural` are at or under
+/// [`SIGNAL_SKIP_CEILING`], and an explicit confidence on `has_durable_fact`,
+/// if the answer carries one, clears [`CONFIDENCE_FLOOR`]. A missing answer
+/// is a `Run`: the gate never skips on what it cannot read.
 pub fn verdict_from(decision: &Decision) -> Gate {
     let (Some(durable), Some(correction), Some(procedural)) = (
         decision.answer("has_durable_fact"),
@@ -113,11 +127,11 @@ pub fn verdict_from(decision: &Decision) -> Gate {
     ) else {
         return Gate::Run;
     };
-    let confidence = durable.confidence.unwrap_or(1.0 - durable.yes());
-    let quiet = [durable, correction, procedural]
-        .iter()
-        .all(|a| a.yes() <= SKIP_CEILING);
-    if quiet && confidence >= CONFIDENCE_FLOOR {
+    let confident = durable.confidence.is_none_or(|c| c >= CONFIDENCE_FLOOR);
+    let quiet = durable.yes() <= DURABLE_SKIP_CEILING
+        && correction.yes() <= SIGNAL_SKIP_CEILING
+        && procedural.yes() <= SIGNAL_SKIP_CEILING;
+    if quiet && confident {
         Gate::Skip
     } else {
         Gate::Run
@@ -247,27 +261,25 @@ mod tests {
     #[test]
     fn a_quiet_turn_is_skipped() {
         assert_eq!(verdict_from(&decision(0.02, 0.01, 0.0)), Gate::Skip);
-        // The ceiling is inclusive.
+        // The ceilings are inclusive.
         assert_eq!(
-            verdict_from(&decision(SKIP_CEILING, SKIP_CEILING, SKIP_CEILING)),
+            verdict_from(&decision(DURABLE_SKIP_CEILING, SIGNAL_SKIP_CEILING, SIGNAL_SKIP_CEILING)),
             Gate::Skip
         );
     }
 
     #[test]
-    fn any_noul_over_the_ceiling_runs_extraction() {
-        assert_eq!(verdict_from(&decision(0.16, 0.0, 0.0)), Gate::Run);
-        assert_eq!(verdict_from(&decision(0.0, 0.5, 0.0)), Gate::Run);
-        assert_eq!(verdict_from(&decision(0.0, 0.0, 0.2)), Gate::Run);
+    fn any_noul_over_its_ceiling_runs_extraction() {
+        assert_eq!(verdict_from(&decision(0.36, 0.0, 0.0)), Gate::Run);
+        assert_eq!(verdict_from(&decision(0.0, 0.11, 0.0)), Gate::Run);
+        assert_eq!(verdict_from(&decision(0.0, 0.0, 0.11)), Gate::Run);
         assert_eq!(verdict_from(&decision(0.9, 0.9, 0.9)), Gate::Run);
     }
 
     #[test]
     fn a_doubtful_no_runs_extraction() {
-        // A Noul is its own certainty: 0.15 means 0.85 sure there is nothing.
-        let d = decision(0.15, 0.0, 0.0);
-        assert!(1.0 - d.answer("has_durable_fact").unwrap().yes() >= CONFIDENCE_FLOOR);
-        assert_eq!(verdict_from(&d), Gate::Skip);
+        // A Noul carries no confidence: the ceiling alone decides.
+        assert_eq!(verdict_from(&decision(DURABLE_SKIP_CEILING, 0.0, 0.0)), Gate::Skip);
         // An explicit confidence on the wire is honoured when present.
         let mut low = decision(0.05, 0.0, 0.0);
         low.answers.get_mut("has_durable_fact").unwrap().confidence = Some(0.6);
@@ -275,6 +287,24 @@ mod tests {
         let mut high = decision(0.05, 0.0, 0.0);
         high.answers.get_mut("has_durable_fact").unwrap().confidence = Some(CONFIDENCE_FLOOR);
         assert_eq!(verdict_from(&high), Gate::Skip);
+    }
+
+    /// Nouls copied from the 2026-09-22 gate log (the rule was set from it).
+    #[test]
+    fn logged_turns_skip_heartbeat_status_and_keep_corrections() {
+        // Status heartbeat: extraction wrote a restatement of the status
+        // under a new key (0.89 similar to one already stored).
+        assert_eq!(verdict_from(&decision(0.31, 0.04, 0.05)), Gate::Skip);
+        // The same heartbeat just over the cut still runs.
+        assert_eq!(verdict_from(&decision(0.36, 0.03, 0.04)), Gate::Run);
+        // Chat: the owner correcting what the employee did.
+        assert_eq!(verdict_from(&decision(0.83, 0.89, 0.38)), Gate::Run);
+        // Chat: "quit taking screenshots", a standing instruction.
+        assert_eq!(verdict_from(&decision(0.82, 0.8, 0.94)), Gate::Run);
+        // Chat: a low durable score with a procedural signal.
+        assert_eq!(verdict_from(&decision(0.24, 0.15, 0.67)), Gate::Run);
+        // Chat with nothing to keep, but not clearly quiet: runs (the cheap mistake).
+        assert_eq!(verdict_from(&decision(0.23, 0.04, 0.12)), Gate::Run);
     }
 
     #[test]

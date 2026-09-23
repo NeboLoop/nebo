@@ -1099,7 +1099,28 @@ pub async fn execute_activity(
 /// Floor on a non-proceed outcome: below it the evaluator proceeds, however
 /// the probabilities lean. Exit kills the RUN, not the step, so the bar is
 /// high and every uncertain case continues.
-const STEP_EXIT_CONFIDENCE: f64 = 0.7;
+///
+/// Set from 66 verdicts on 2026-09-22: 25 `precondition_failed`, all on runs
+/// facing standing conditions (a store with no order history, no mail or
+/// social account connected), read anywhere from 0.37 to 0.75 for the same
+/// condition, so the confidence does not separate a run that hit a blocker
+/// from one that did not. Two cleared 0.7 (0.70, 0.75) and ended their runs;
+/// the runs that proceeded past the same condition handled it themselves,
+/// the model exiting with its own reason ("no sales velocity to project
+/// against") or notifying the owner. 0.8 is the certainty a guardrail block
+/// needs; no verdict in the set reached it.
+const STEP_EXIT_CONFIDENCE: f64 = 0.8;
+
+/// The evaluator's verdict from its picked outcome and that pick's
+/// confidence: exit only on a non-proceed outcome at or above
+/// [`STEP_EXIT_CONFIDENCE`].
+fn eval_from(picked: &str, confidence: f64) -> EvalDecision {
+    if picked != "proceed" && !picked.is_empty() && confidence >= STEP_EXIT_CONFIDENCE {
+        EvalDecision::Exit(picked.to_string())
+    } else {
+        EvalDecision::Proceed
+    }
+}
 
 /// Ceiling on one workflow decision (the step evaluator and the `decide`
 /// node), retry included. A decision answers in milliseconds; this only
@@ -1194,11 +1215,7 @@ async fn evaluate_step(
                 confidence,
                 "step evaluator decided"
             );
-            if picked != "proceed" && !picked.is_empty() && confidence >= STEP_EXIT_CONFIDENCE {
-                (EvalDecision::Exit(picked.to_string()), tokens)
-            } else {
-                (EvalDecision::Proceed, tokens)
-            }
+            (eval_from(picked, confidence), tokens)
         }
         Ok(Err(e)) => {
             warn!(site = "step_eval", error = %e, "step evaluator call failed; proceeding");
@@ -1876,6 +1893,23 @@ mod engine_tests {
         assert!(!prompt.contains("## Activity Type"));
         assert!(!prompt.contains("## Parameters"));
         assert!(prompt.contains("## Task\nDo the thing"));
+    }
+
+    #[test]
+    fn test_step_exit_needs_confidence_0_8_logged_boundary_verdicts_proceed() {
+        // Verdicts copied from the 2026-09-22 log: both exited at 0.7.
+        // inventory run e77b93e5, step 3/7 after a no-tool turn on a store
+        // with no order history.
+        assert!(matches!(eval_from("precondition_failed", 0.7), EvalDecision::Proceed));
+        // inventory run f4570b4a, step 5/6 after no mail account was connected.
+        assert!(matches!(eval_from("precondition_failed", 0.75), EvalDecision::Proceed));
+        assert!(matches!(
+            eval_from("precondition_failed", STEP_EXIT_CONFIDENCE),
+            EvalDecision::Exit(ref r) if r == "precondition_failed"
+        ));
+        assert!(matches!(eval_from("harmful", 0.9), EvalDecision::Exit(_)));
+        assert!(matches!(eval_from("proceed", 0.98), EvalDecision::Proceed));
+        assert!(matches!(eval_from("", 1.0), EvalDecision::Proceed));
     }
 
     /// Byte-limit truncation must respect UTF-8 boundaries — a slice landing

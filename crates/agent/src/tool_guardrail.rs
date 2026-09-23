@@ -14,14 +14,14 @@
 //!
 //! Only calls with side effects are judged. The source of that set is the
 //! registry's existing read-only metadata (`DynTool::is_concurrent_safe`):
-//! a read (file read, search, list) skips the guardrail. The one carve-out
-//! is in [`gated`], with its reason.
+//! a read (file read, search, list) skips the guardrail. The carve-outs are
+//! in [`gated`], each with its reason.
 //!
 //! Thresholds live in code ([`band_from`]); the model returns numbers, never
-//! a verdict. They are UNTUNED: the first release ships default OFF, and
-//! `NEBO_DECIDE_GUARDRAIL=shadow` logs the band each call would have landed
-//! in without acting, which is how the thresholds get set on real traffic
-//! before the guardrail can block anything.
+//! a verdict. They were set from the first shadow run
+//! (`NEBO_DECIDE_GUARDRAIL=shadow`, 2026-09-22: 828 judged calls from
+//! heartbeats, workflow runs and one chat), where the untuned rule put 56% of
+//! calls in `ask`. The guardrail still ships default OFF.
 //!
 //! Fail-open: no client, any error, a timeout or a malformed answer leaves
 //! the policy layer's decision standing, unchanged (see [`judge`]).
@@ -39,7 +39,7 @@ use crate::runner::truncate_str;
 /// the policy layer already decided.
 const GUARDRAIL_TIMEOUT: Duration = Duration::from_millis(1_500);
 
-// ── Thresholds (UNTUNED — set from shadow-mode logs on real traffic) ────────
+// ── Thresholds (set from the 2026-09-22 shadow run, 828 decisions) ──────────
 //
 // BLOCK: the action is not what was asked AND cannot be undone. Both are
 // Nouls; a Noul carries no separate confidence because the probability is
@@ -49,11 +49,24 @@ const BLOCK_OUTSIDE_TASK_FLOOR: f64 = 0.9;
 // ASK: any one of these on its own is enough to put the owner in the loop.
 const ASK_SPENDS_MONEY_FLOOR: f64 = 0.7;
 const ASK_IRREVERSIBLE_FLOOR: f64 = 0.7;
-const ASK_OUTSIDE_TASK_FLOOR: f64 = 0.5;
+/// `outside_task` alone asks only at the certainty a block needs. In the
+/// shadow run it sat at 0.5–0.87 on plainly in-task calls (store order and
+/// product reads in an inventory workflow, typing the address the owner asked
+/// for into a sign-in form) and never reached 0.9: below that it reads "I
+/// cannot tell", not "this is off task". It still blocks together with
+/// `irreversible`.
+const ASK_OUTSIDE_TASK_FLOOR: f64 = 0.9;
 /// Risk level (1–5) at or above which the owner is asked.
 const ASK_RISK_FLOOR: f64 = 4.0;
-/// A `risk` read below this confidence is not acted on either way: ASK.
+/// A `risk` read below this confidence is not trusted to say "low"...
 const RISK_CONFIDENCE_FLOOR: f64 = 0.6;
+/// ...when its expected level is at least this (3: "a change to shared or
+/// external state"): there the spread reaches the levels that ask on their
+/// own, so it asks. Below 3 it does not: 57 of the 61 low-confidence reads
+/// in the shadow run sat there (owner notifications, memory writes, sign-in
+/// typing, often at confidence 0); the four at 3.0–3.5 were channel posts, a
+/// phone setup and an event.
+const LOW_CONFIDENCE_RISK_FLOOR: f64 = 3.0;
 
 /// Char-boundary-safe caps on the state. Arguments at ~1.5k tokens.
 const ARGS_CAP: usize = 6_000;
@@ -94,6 +107,19 @@ const WEB_SIDE_EFFECT_ACTIONS: &[&str] = &[
     "file_upload",
     "webmcp_call",
 ];
+
+/// `work` actions that only read workflow state. The work tool declares
+/// every call sequential, and must: a status poll's answer changes between
+/// calls, so the registry's identical-read ceiling (3) must not end a turn
+/// that is waiting on a run. That is true for the scheduler and false for
+/// this guardrail. These were 286 of the 828 shadow decisions, 81 of them
+/// in `ask`.
+const WORK_READ_ACTIONS: &[&str] = &["list", "status", "runs"];
+
+/// `emit` puts an event on the local bus and nothing leaves the machine;
+/// whatever a subscribed workflow then does runs through this guardrail in
+/// that run, so the effect is judged where it happens.
+const EMIT_TOOL: &str = "emit";
 
 /// What the env switch says. Default OFF for this first release: an enabled
 /// guardrail can add an ask, or a stop, to a live customer flow.
@@ -185,7 +211,7 @@ pub fn band_from(r: &Reading) -> Band {
         || r.irreversible >= ASK_IRREVERSIBLE_FLOOR
         || r.outside_task >= ASK_OUTSIDE_TASK_FLOOR
         || r.risk >= ASK_RISK_FLOOR
-        || r.risk_confidence < RISK_CONFIDENCE_FLOOR
+        || (r.risk_confidence < RISK_CONFIDENCE_FLOOR && r.risk >= LOW_CONFIDENCE_RISK_FLOOR)
     {
         return Band::Ask;
     }
@@ -193,9 +219,19 @@ pub fn band_from(r: &Reading) -> Band {
 }
 
 /// Whether a call is judged at all. `read_only` is the registry's answer
-/// (`Registry::is_concurrent_safe`); reads skip the guardrail. The `web`
-/// tool is the one carve-out (see [`WEB_SIDE_EFFECT_ACTIONS`]).
+/// (`Registry::is_concurrent_safe`); reads skip the guardrail. The
+/// carve-outs: `web` (see [`WEB_SIDE_EFFECT_ACTIONS`]), `work` reads (see
+/// [`WORK_READ_ACTIONS`]) and `emit` (see [`EMIT_TOOL`]).
 pub fn gated(tool: &str, input: &serde_json::Value, read_only: bool) -> bool {
+    if tool == EMIT_TOOL {
+        return false;
+    }
+    if tool == "work" {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        if WORK_READ_ACTIONS.contains(&action) {
+            return false;
+        }
+    }
     if tool == "web" {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         if WEB_SIDE_EFFECT_ACTIONS.contains(&action) {
@@ -411,8 +447,8 @@ mod tests {
         assert_eq!(band_from(&Reading { spends_money: 0.69, ..reading() }), Band::Allow);
         assert_eq!(band_from(&Reading { irreversible: 0.7, ..reading() }), Band::Ask);
         assert_eq!(band_from(&Reading { irreversible: 0.69, ..reading() }), Band::Allow);
-        assert_eq!(band_from(&Reading { outside_task: 0.5, ..reading() }), Band::Ask);
-        assert_eq!(band_from(&Reading { outside_task: 0.49, ..reading() }), Band::Allow);
+        assert_eq!(band_from(&Reading { outside_task: 0.9, ..reading() }), Band::Ask);
+        assert_eq!(band_from(&Reading { outside_task: 0.89, ..reading() }), Band::Allow);
         assert_eq!(band_from(&Reading { risk: 4.0, ..reading() }), Band::Ask);
         assert_eq!(band_from(&Reading { risk: 3.9, ..reading() }), Band::Allow);
         // destination_external is reported, not thresholded, in this release.
@@ -420,9 +456,38 @@ mod tests {
     }
 
     #[test]
-    fn a_low_confidence_risk_read_asks() {
-        assert_eq!(band_from(&Reading { risk_confidence: 0.59, ..reading() }), Band::Ask);
-        assert_eq!(band_from(&Reading { risk_confidence: 0.6, ..reading() }), Band::Allow);
+    fn a_low_confidence_risk_read_asks_from_level_three() {
+        let high = Reading { risk: 3.0, ..reading() };
+        assert_eq!(band_from(&Reading { risk_confidence: 0.59, ..high }), Band::Ask);
+        assert_eq!(band_from(&Reading { risk_confidence: 0.6, ..high }), Band::Allow);
+        // Below level 3 a spread-out read does not ask on its own.
+        assert_eq!(band_from(&Reading { risk_confidence: 0.0, risk: 2.99, ..reading() }), Band::Allow);
+    }
+
+    /// Readings copied from the 2026-09-22 shadow run (the rule was set
+    /// from it): the sends and posts a person would want to see still ask;
+    /// the reads and owner notifications that made up the old 56% do not.
+    #[test]
+    fn shadow_run_decisions_land_where_a_person_would_want_them() {
+        let logged = |irreversible, spends_money, outside_task, destination_external, risk, risk_confidence| Reading {
+            irreversible,
+            spends_money,
+            outside_task,
+            destination_external,
+            risk,
+            risk_confidence,
+        };
+        // plugin exec `orders list --limit 200 --status any` in an inventory
+        // workflow (no task on record): was ask on outside_task alone.
+        assert_eq!(band_from(&logged(0.04, 0.03, 0.74, 0.68, 1.0, 1.0)), Band::Allow);
+        // message notify owner with a stock alert: was ask on a 0.1-confidence risk read.
+        assert_eq!(band_from(&logged(0.61, 0.03, 0.53, 0.18, 2.94, 0.1)), Band::Allow);
+        // plugin exec `messages send --to owner ...` (mail): irreversible, still asks.
+        assert_eq!(band_from(&logged(0.84, 0.02, 0.66, 0.59, 3.91, 0.92)), Band::Ask);
+        // plugin exec `post --channel ... --text ...`: irreversible, still asks.
+        assert_eq!(band_from(&logged(0.7, 0.03, 0.75, 0.65, 3.4, 0.49)), Band::Ask);
+        // plugin exec `shared init` on the phone plugin: level 3 at confidence 0.33, asks.
+        assert_eq!(band_from(&logged(0.27, 0.07, 0.61, 0.45, 3.0, 0.33)), Band::Ask);
     }
 
     #[test]
@@ -441,6 +506,15 @@ mod tests {
         assert!(gated("os", &json!({"action": "write", "path": "/tmp/a"}), false));
         assert!(gated("os", &json!({"action": "exec", "command": "rm -rf x"}), false));
         assert!(gated("message", &json!({"action": "send"}), false));
+        // work declares every call sequential; its reads are not judged,
+        // its writes are.
+        assert!(!gated("work", &json!({"action": "list"}), false));
+        assert!(!gated("work", &json!({"resource": "weekly-report", "action": "status"}), false));
+        assert!(!gated("work", &json!({"resource": "weekly-report", "action": "runs"}), false));
+        assert!(gated("work", &json!({"resource": "weekly-report", "action": "run"}), false));
+        assert!(gated("work", &json!({"action": "update", "name": "x", "definition": "{}"}), false));
+        // emit is judged where its subscribers act, not on the bus.
+        assert!(!gated("emit", &json!({"source": "inventory.low"}), false));
         // web declares every call read-only; browser actions that act are
         // gated anyway, reads are not.
         assert!(!gated("web", &json!({"action": "read_page"}), true));
