@@ -1069,7 +1069,8 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str) -> (bool, Op
                 Some(match missing_command_name(output) {
                     Some(name) => format!(
                         "The command '{}' is not available on this system. Tell the user it isn't \
-                         installed — do not substitute another command or install it without asking.",
+                         installed — do not search the disk for it, substitute another command, or \
+                         install it without asking.",
                         name
                     ),
                     None => "A command in this pipeline is not installed (the shell's message above names it). Tell the user; do not substitute another command.".to_string(),
