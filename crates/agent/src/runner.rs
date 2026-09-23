@@ -3471,6 +3471,7 @@ async fn run_loop(
             .unwrap_or_else(|| "Nebo".to_string())
     };
     let mut db_context_formatted = db_context::format_for_system_prompt(&db_ctx, &agent_name);
+    db_context_formatted.push_str(&crate::phone_location::context(agent_id));
 
     // Inject agent input_values into the system prompt so the LLM knows
     // about user-configured values (API keys, target market, etc.).

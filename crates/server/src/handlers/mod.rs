@@ -97,3 +97,5 @@ pub type HandlerResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 /// Handlers returning this type can use the `?` operator on any `Result<_, NeboError>`
 /// directly, without needing `.map_err(to_error_response)`.
 pub type ApiResult<T> = Result<Json<T>, ApiError>;
+
+pub mod phone_location;

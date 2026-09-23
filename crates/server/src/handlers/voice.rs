@@ -1450,7 +1450,9 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              Be concise and conversational: short sentences, no markdown, no lists. \
              When the user asks you to do something that needs real data or action \
              (files, printers, email, calendar, web, documents, system info), call the \
-             `nebo` tool with the task and relay its result aloud; never guess and never \
+             `nebo` tool with the task and relay its result aloud. For current phone \
+             location or arrival estimates, use `nebo` for a fresh permission-checked \
+             reading and routing; never infer location from old conversation history. Never guess and never \
              claim you can't act. Only a request addressed to you is a task: the user \
              thinking aloud, describing what they see, or asking how it is going is not. \
              For progress questions call `status` and read it back. When the user asks \
