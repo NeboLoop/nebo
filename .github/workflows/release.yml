@@ -487,7 +487,7 @@ jobs:
           EOS
           sed -i "s|__JIT__|${{ steps.jit.outputs.config }}|" user-data.sh
           id=$(doctl compute droplet create "nebo-ci-amd64-${{ github.run_id }}" \
-            --region nyc3 --size s-8vcpu-16gb --image "$image" \
+            --region nyc3 --size s-8vcpu-16gb-amd --image "$image" \
             --tag-names nebo-ci-runner,run-${{ github.run_id }} \
             --user-data-file user-data.sh --wait --format ID --no-header)
           rm -f user-data.sh
