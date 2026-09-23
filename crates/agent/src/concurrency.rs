@@ -7,9 +7,19 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info, warn};
 
 /// Hard upper bound for the adaptive ceiling when no explicit limit is configured.
-/// LLM permits are spent waiting on network streams, so this is bounded by memory
-/// and provider rate limits (already handled via 429 backpressure), not CPU cores.
-const DEFAULT_MAX_CEILING: usize = 100;
+/// LLM permits are spent waiting on network streams, so the real bound is memory
+/// (see MB_PER_LLM_CALL) and 429 backpressure, not CPU cores or a fixed small
+/// number — width is ours (auditor Rule 15).
+const DEFAULT_MAX_CEILING: usize = 1000;
+
+/// Resident memory one LLM call holds while its permit is out (request body,
+/// connection, stream buffers). Measured 2026-09-23 through the real
+/// OpenAI-compatible provider (the Janus path), ~100 KB of prompt + 40 tool
+/// schemas, streams held open mid-reply: 1.2–1.4 MB per call, flat from 5 to
+/// 800 calls in flight (macOS allocator). Rounded up to 4 because a prompt
+/// carrying screenshots is several times larger; the 30 s probe re-reads real
+/// available memory, so heavier calls shrink the ceiling on their own.
+const MB_PER_LLM_CALL: u64 = 4;
 
 /// Floor — never throttle below this.
 const MIN_PERMITS: usize = 2;
@@ -59,9 +69,16 @@ impl ConcurrencyController {
             min_permits: MIN_PERMITS,
             ceiling: AtomicUsize::new(max_ceiling),
             backpressure: AtomicBool::new(false),
-            // Tools run locally (processes, files, browser) so a global cap stays,
-            // but it scales with run capacity instead of starving a busy fleet.
-            tool_semaphore: Arc::new(Semaphore::new((max_ceiling / 4).max(8))),
+            // Tools run locally (processes, files, browser) and compete for
+            // cores, so their pool is sized from the machine — never derived
+            // from the LLM ceiling, whose permits only wait on the network.
+            // 4 per core because most tool time is I/O wait, not compute.
+            tool_semaphore: Arc::new(Semaphore::new(
+                std::thread::available_parallelism()
+                    .map(|n| n.get() * 4)
+                    .unwrap_or(16)
+                    .max(8),
+            )),
             background_semaphore: Arc::new(Semaphore::new((max_ceiling / 4).max(1))),
             max_ceiling,
         };
@@ -71,7 +88,7 @@ impl ConcurrencyController {
         // could overcommit before it lands. Same heuristic as the monitor.
         let mut sys = sysinfo::System::new();
         sys.refresh_memory();
-        let mem_limit = (sys.available_memory() / 1_048_576 / 200) as usize;
+        let mem_limit = (sys.available_memory() / 1_048_576 / MB_PER_LLM_CALL) as usize;
         controller.set_ceiling(mem_limit.min(max_ceiling));
 
         controller
@@ -289,7 +306,7 @@ pub fn spawn_monitor(controller: Arc<ConcurrencyController>) {
 
             // LLM permits wait on network streams, not compute — memory and
             // *measured* load govern the ceiling; core count is not a cap.
-            let mem_limit = (available_mb / 200) as usize;
+            let mem_limit = (available_mb / MB_PER_LLM_CALL) as usize;
             let load_factor = if load > cpu_cores as f64 {
                 (cpu_cores as f64 / load).max(0.3)
             } else {
@@ -389,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_release_held_empty() {
-        // The boot probe trims to available_mb/200 — on a memory-starved
+        // The boot probe trims to available_mb / MB_PER_LLM_CALL — on a memory-starved
         // machine that lands below even a small configured cap, leaving
         // permits in held_back. Drain them first so held_back is empty
         // regardless of the machine running the test.

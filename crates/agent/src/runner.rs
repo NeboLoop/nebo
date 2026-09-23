@@ -2542,6 +2542,10 @@ impl Runner {
         &self.sessions
     }
 
+    pub fn concurrency(&self) -> &Arc<ConcurrencyController> {
+        &self.concurrency
+    }
+
     pub fn store(&self) -> &Arc<Store> {
         &self.store
     }

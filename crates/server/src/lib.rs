@@ -2086,7 +2086,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // without the agent crate depending on server state — rows are durable
     // before the send, so a dropped notification only delays to the boot sweep.
     let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let orchestrator = agent::Orchestrator::new(runner.clone(), store.clone(), concurrency.clone())
+    let orchestrator = agent::Orchestrator::new(runner.clone(), store.clone())
         .with_lanes(lanes.clone())
         .with_wake_notify(wake_tx);
     if orch_handle

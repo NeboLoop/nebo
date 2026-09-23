@@ -29,21 +29,13 @@ use crate::parser::{
 };
 
 /// Safety net against malformed graphs: no single node may execute more than
-/// this many times in one run (loops are bounded by maxIterations well below
+/// this many times in one run (loops are bounded by maxIterations at or below
 /// this; the cap only trips on walker bugs).
 const MAX_NODE_VISITS: u32 = 10_000;
-/// Default loop iteration cap when params.maxIterations is absent.
-const DEFAULT_MAX_ITERATIONS: u64 = 100;
-/// Ceiling on `params.concurrency` for loop iterations — bounds provider
-/// pressure and DB write fan-in however large the declared value is.
-const MAX_LOOP_CONCURRENCY: u64 = 16;
-/// Hands-free default: loops run concurrently without any declaration —
-/// owners describe workflows, the engine owns execution. 4 balances provider
-/// pressure against wall-clock for typical LLM bodies; the governor adapts
-/// DOWNWARD from here on live rate-limit pressure. `params.concurrency`
-/// remains as an escape hatch (1 = strictly sequential for order-dependent
-/// external side effects), never a knob owners are expected to touch.
-const AUTO_LOOP_CONCURRENCY: u64 = 4;
+/// Default loop iteration cap when params.maxIterations is absent: as many
+/// items as a body node may run in one run, so the default never truncates a
+/// list the walker could have finished.
+const DEFAULT_MAX_ITERATIONS: u64 = MAX_NODE_VISITS as u64;
 /// Per-item retry budget when an iteration fails rate-limit-shaped.
 const MAX_ITEM_RATE_LIMIT_RETRIES: u32 = 4;
 
@@ -668,7 +660,10 @@ async fn run_command<'a>(
     // env-auth plugin binaries work in command nodes (see ToolContext docs).
     tool_ctx.trusted_plugin_env = true;
     let tool_ctx = tool_ctx;
-    let result = os_tool.execute_dyn(&tool_ctx, input).await;
+    let result = {
+        let _permit = ctx.loop_impl.acquire_tool_permit().await;
+        os_tool.execute_dyn(&tool_ctx, input).await
+    };
     if result.is_error {
         return fail(result.content);
     }
@@ -833,7 +828,10 @@ async fn run_http<'a>(
     tool_ctx.user_id = ctx.memory_user_id.clone();
     tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
     let tool_ctx = tool_ctx;
-    let result = web_tool.execute_dyn(&tool_ctx, input).await;
+    let result = {
+        let _permit = ctx.loop_impl.acquire_tool_permit().await;
+        web_tool.execute_dyn(&tool_ctx, input).await
+    };
     if result.is_error {
         return fail(result.content);
     }
@@ -1148,24 +1146,25 @@ async fn run_loop<'a>(
         })
         .unwrap_or_default();
 
-    // Hands-free concurrency: iterations run concurrently BY DEFAULT (auto
-    // ceiling 4), adaptively governed — owners never dial a knob. This is
-    // semantically invisible because iteration outputs are scope-local
+    // Hands-free concurrency: every iteration starts at once BY DEFAULT —
+    // owners never dial a knob, and the loop adds no width cap of its own.
+    // The machine's real limits are the ONE brake per resource the body's
+    // work already goes through (the LLM permit pool, the tool permit pool);
+    // the governor below only halves admission on live rate-limit pressure.
+    // This is semantically invisible because iteration outputs are scope-local
     // (readers see only their own iteration) and the loop gathers every
     // iteration's outputs in item order on completion, whatever order they
     // finished in. `params.concurrency` remains an escape
     // hatch: 1 declares order-dependent external side effects (strictly
     // sequential); an explicit value sets the governor's ceiling.
-    let ceiling = activity
+    let declared_concurrency = activity
         .params
         .as_ref()
         .and_then(|p| p.get("concurrency"))
         .and_then(|v| {
             v.as_u64()
                 .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-        })
-        .unwrap_or(AUTO_LOOP_CONCURRENCY)
-        .clamp(1, MAX_LOOP_CONCURRENCY) as usize;
+        });
 
     // Layered fan-in: `params.batchSize` hands the body N items at a time
     // (the item is an array), so a loop over another loop's `results` can
@@ -1198,6 +1197,7 @@ async fn run_loop<'a>(
         .collect();
     let processed = taken.len() as u64;
     let taken_items: Vec<serde_json::Value> = taken.iter().map(|(_, item)| item.clone()).collect();
+    let ceiling = declared_concurrency.unwrap_or(processed).max(1) as usize;
 
     let body = &body;
     let entry_edges = &entry_edges;
@@ -1250,7 +1250,7 @@ async fn run_loop<'a>(
     // to Done. Surfaced below, never silent.
     let mut exited: Vec<(u64, String)> = Vec::new();
 
-    if ceiling <= 1 {
+    if declared_concurrency.is_some_and(|c| c <= 1) {
         for (idx, item) in taken {
             match run_one(idx, item).await {
                 Ok(locals) => completed_locals.push((idx, locals)),
@@ -1977,10 +1977,27 @@ mod walk_tests {
     /// same retry policy the chat runner applies (stream_with_retry above).
     struct ScriptedLoop<'a> {
         provider: &'a MockProvider,
+        /// Stand-in for the runner's tool permit pool.
+        tool_pool: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl<'a> ScriptedLoop<'a> {
+        fn new(provider: &'a MockProvider) -> Self {
+            Self {
+                provider,
+                tool_pool: Arc::new(tokio::sync::Semaphore::new(
+                    tokio::sync::Semaphore::MAX_PERMITS,
+                )),
+            }
+        }
     }
 
     #[async_trait::async_trait]
     impl crate::ActivityLoop for ScriptedLoop<'_> {
+        async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+            self.tool_pool.clone().acquire_owned().await.expect("tool pool open")
+        }
+
         async fn run_turn(
             &self,
             turn: crate::LoopTurn<'_>,
@@ -2066,7 +2083,7 @@ mod walk_tests {
         store
             .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
             .expect("run row");
-        let looper = ScriptedLoop { provider };
+        let looper = ScriptedLoop::new(provider);
         let result = execute_graph(
             &def,
             "",
@@ -2752,7 +2769,7 @@ mod walk_tests {
                 &serde_json::json!({}),
                 &store,
                 None,
-                &ScriptedLoop { provider: &provider },
+                &ScriptedLoop::new(&provider),
                 &[],
                 None,
                 &run_id,
@@ -2769,6 +2786,103 @@ mod walk_tests {
         .expect("terminated within timeout");
         result.expect("completes without executing the unsatisfiable cycle");
         assert!(provider.calls().is_empty());
+    }
+
+    /// A command node inside a wide loop spends local resources through the
+    /// ONE tool permit pool (auditor Rule 15.2): with a pool of 1, five items
+    /// never run their commands at the same time, though the loop admits all
+    /// five at once.
+    #[tokio::test]
+    async fn test_loop_command_nodes_take_the_tool_permit() {
+        struct CountingOs {
+            live: Arc<AtomicUsize>,
+            peak: Arc<AtomicUsize>,
+        }
+        impl DynTool for CountingOs {
+            fn name(&self) -> &str {
+                "os"
+            }
+            fn description(&self) -> String {
+                String::new()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn requires_approval(&self) -> bool {
+                false
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a tools::ToolContext,
+                _input: serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = tools::ToolResult> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    let now = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+                    self.peak.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    self.live.fetch_sub(1, Ordering::SeqCst);
+                    tools::ToolResult::ok("done")
+                })
+            }
+        }
+
+        let provider = MockProvider::new(&[]);
+        let def = parse_workflow(
+            r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items"}},
+                {"id":"cmd","type":"command","params":{"command":"echo hi"}}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"cmd","label":"Each item"},
+                {"from":"cmd","to":"l"},
+                {"from":"l","to":"__emit__","label":"Done"}]
+        }"#,
+        )
+        .expect("valid def");
+        let store = test_store();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
+            .expect("run row");
+        let peak = Arc::new(AtomicUsize::new(0));
+        let tools: Vec<Box<dyn DynTool>> = vec![Box::new(CountingOs {
+            live: Arc::new(AtomicUsize::new(0)),
+            peak: peak.clone(),
+        })];
+        let looper = ScriptedLoop {
+            provider: &provider,
+            tool_pool: Arc::new(tokio::sync::Semaphore::new(1)),
+        };
+        let result = execute_graph(
+            &def,
+            "",
+            "test-owner",
+            false,
+            &serde_json::json!({"items": [1, 2, 3, 4, 5]}),
+            &store,
+            None,
+            &looper,
+            &tools,
+            None,
+            &run_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        result.expect("run ok");
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "commands must queue on the tool permit, not all run at once"
+        );
     }
 
     /// A failing node poisons ONLY its own downstream: the fork's sibling
@@ -3262,7 +3376,7 @@ mod walk_tests {
                 &serde_json::json!({}),
                 &store,
                 None,
-                &ScriptedLoop { provider: &provider },
+                &ScriptedLoop::new(&provider),
                 &[],
                 None,
                 &run_id,

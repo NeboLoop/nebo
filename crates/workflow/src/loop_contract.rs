@@ -86,6 +86,12 @@ pub struct LoopOutcome {
 pub trait ActivityLoop: Send + Sync {
     async fn run_turn(&self, turn: LoopTurn<'_>) -> Result<LoopOutcome, WorkflowError>;
 
+    /// A permit from the ONE local tool-execution pool the chat runner's tool
+    /// calls take. Deterministic nodes that run a tool directly (command,
+    /// http) hold it for the call, so a wide loop spends local resources
+    /// through the same brake as everything else (auditor Rule 15.2).
+    async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit;
+
     /// Drop the scratch conversations this run created. The engine calls it
     /// on every run exit EXCEPT AwaitingApproval — the parked transcript is
     /// part of the resume state.

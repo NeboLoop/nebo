@@ -21,7 +21,6 @@ Rules:
 - Tasks with empty depends_on run immediately and concurrently
 - Keep each task focused: one clear objective per task
 - If the task is simple (single step), return a single-element array
-- Maximum 10 sub-tasks
 
 Task: "#;
 
@@ -72,13 +71,6 @@ fn parse_decomposition(response: &str) -> Result<Vec<TaskNode>, String> {
 
     if raw.is_empty() {
         return Err("Decomposition returned empty task list".to_string());
-    }
-
-    if raw.len() > 10 {
-        return Err(format!(
-            "Decomposition returned {} tasks, maximum is 10",
-            raw.len()
-        ));
     }
 
     let nodes: Vec<TaskNode> = raw
@@ -162,8 +154,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_too_many_tasks() {
-        let tasks: Vec<String> = (1..=11)
+    fn test_parse_wide_plan_is_not_capped() {
+        // Width is ours (auditor Rule 15): a plan is never refused for its
+        // task count — the LLM permit pool is the brake, not the parser.
+        let tasks: Vec<String> = (1..=40)
             .map(|i| {
                 format!(
                     r#"{{"id": "{}", "description": "Task {}", "prompt": "Do {}", "agent_type": "general", "depends_on": []}}"#,
@@ -173,9 +167,8 @@ mod tests {
             .collect();
         let json = format!("[{}]", tasks.join(","));
 
-        let result = parse_decomposition(&json);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("maximum"));
+        let nodes = parse_decomposition(&json).expect("40 independent tasks parse");
+        assert_eq!(nodes.len(), 40);
     }
 
     #[test]

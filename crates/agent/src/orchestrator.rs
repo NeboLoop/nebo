@@ -94,7 +94,6 @@ fn describe_tool_call(tc: &ToolCall) -> String {
     tc.name.clone()
 }
 
-use crate::concurrency::ConcurrencyController;
 use crate::decompose;
 use crate::lanes::{self, LaneManager};
 use crate::runner::{RunRequest, Runner};
@@ -140,7 +139,6 @@ fn compose_original_block(original: &str, prompt: &str) -> String {
 pub struct Orchestrator {
     runner: Arc<Runner>,
     store: Arc<Store>,
-    concurrency: Arc<ConcurrencyController>,
     active: Arc<RwLock<HashMap<String, ActiveAgent>>>,
     lanes: Option<Arc<LaneManager>>,
     /// Session wake rail (R5): fire-and-forget completions send the parent
@@ -184,15 +182,10 @@ fn remember_resumable<T>(
 }
 
 impl Orchestrator {
-    pub fn new(
-        runner: Arc<Runner>,
-        store: Arc<Store>,
-        concurrency: Arc<ConcurrencyController>,
-    ) -> Self {
+    pub fn new(runner: Arc<Runner>, store: Arc<Store>) -> Self {
         Self {
             runner,
             store,
-            concurrency,
             active: Arc::new(RwLock::new(HashMap::new())),
             lanes: None,
             wake_notify: None,
@@ -594,7 +587,6 @@ impl Orchestrator {
 
                 let runner = self.runner.clone();
                 let store = self.store.clone();
-                let concurrency = self.concurrency.clone();
                 let child_task_id = format!("{}-{}", parent_task_id, task_id);
 
                 // Persist child task
@@ -615,9 +607,10 @@ impl Orchestrator {
 
                 let tid = task_id.clone();
                 running.push(Box::pin(async move {
-                    // Acquire LLM permit (blocks if at capacity)
-                    let _permit = concurrency.acquire_llm_permit().await;
-
+                    // No permit here: the sub-task's runner takes an LLM permit
+                    // for each call it makes. Holding one around the whole
+                    // sub-task deadlocked the DAG at the permit floor (auditor
+                    // Rule 15.2).
                     let _ = store.update_task_running(&child_task_id);
 
                     let full_prompt = if dep_context.is_empty() {
