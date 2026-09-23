@@ -1975,7 +1975,7 @@ async fn observe(
     }
     let elements_total = elements.len();
     elements.truncate(max_elements.max(1));
-    assign_element_ids(&mut elements);
+    assign_element_ids(&mut elements, snapshot_store.lock().await.book(app));
 
     // 4. The snapshot the next act resolves against.
     let snapshot = Snapshot {
@@ -2186,7 +2186,7 @@ end tell"#,
             Ok(output) => {
                 let (header, body) = split_ax_app_header(&output);
                 let mut elements = parse_ax_output(body);
-                assign_element_ids(&mut elements);
+                assign_element_ids(&mut elements, &mut desktop_snapshot::RefBook::default());
                 // Fall back to the requested app when the script produced no
                 // header — never silently report an empty app name.
                 let name = if header.app.is_empty() {

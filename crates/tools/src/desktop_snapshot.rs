@@ -170,13 +170,22 @@ pub fn delta_line(before: &Snapshot, after: &Snapshot) -> String {
 /// In-memory LRU snapshot store with time-based expiry.
 pub struct SnapshotStore {
     snapshots: VecDeque<Snapshot>,
+    // ponytail: one book per app for the process's life; a few hundred
+    // labels per app at most. Clear it if that ever shows up in memory.
+    books: std::collections::HashMap<String, RefBook>,
 }
 
 impl SnapshotStore {
     pub fn new() -> Self {
         Self {
             snapshots: VecDeque::new(),
+            books: std::collections::HashMap::new(),
         }
+    }
+
+    /// The ref book for `app` (case-insensitive; "" is the whole screen).
+    pub fn book(&mut self, app: &str) -> &mut RefBook {
+        self.books.entry(app.to_lowercase()).or_default()
     }
 
     /// Insert a snapshot and return its ID. Evicts expired and over-capacity entries.
@@ -270,14 +279,40 @@ fn role_prefix(role: &str) -> &'static str {
 }
 
 /// Assign short element IDs (B1, B2, T1, S1, ...) to a list of UI elements.
-pub fn assign_element_ids(elements: &mut [UIElement]) {
-    use std::collections::HashMap;
-    let mut counters: HashMap<&str, usize> = HashMap::new();
+/// The refs one app's elements have been given so far. A labelled element
+/// keeps its ref across captures ("Continue with email" is B6 on every
+/// screen it appears on), and a number once used is never handed to a
+/// different element. Renumbering per capture made a remembered "B6" press
+/// "Save Screen", then the Watch app, in the Simulator (2026-09-22): the model
+/// carried refs forward and the tool, correctly, pressed whatever B6 now was.
+/// A stale ref is now either the same element or absent, and absent is
+/// refused before anything moves.
+#[derive(Default)]
+pub struct RefBook {
+    ids: std::collections::HashMap<String, String>,
+    high: std::collections::HashMap<&'static str, usize>,
+}
+
+/// Give every element a ref: from `book` when this app has shown the same
+/// role and label before, otherwise the next unused number for its role.
+/// Unlabelled elements always get a fresh number. Pass a fresh book for
+/// refs that start at 1.
+pub fn assign_element_ids(elements: &mut [UIElement], book: &mut RefBook) {
+    let mut taken = std::collections::HashSet::new();
     for elem in elements.iter_mut() {
         let prefix = role_prefix(&elem.role);
-        let counter = counters.entry(prefix).or_insert(0);
-        *counter += 1;
-        elem.id = format!("{}{}", prefix, counter);
+        let key = (!elem.label.is_empty()).then(|| format!("{prefix}|{}", elem.label));
+        let known = key.as_ref().and_then(|k| book.ids.get(k)).filter(|id| !taken.contains(*id)).cloned();
+        elem.id = known.unwrap_or_else(|| {
+            let n = book.high.entry(prefix).or_insert(0);
+            *n += 1;
+            let id = format!("{prefix}{n}");
+            if let Some(k) = &key {
+                book.ids.entry(k.clone()).or_insert_with(|| id.clone());
+            }
+            id
+        });
+        taken.insert(elem.id.clone());
     }
 }
 
@@ -392,6 +427,40 @@ mod tests {
             via: "ax".into(),
             elements,
         }
+    }
+
+    /// A labelled element keeps its ref from capture to capture, and a ref
+    /// that meant one element is never given to another.
+    #[test]
+    fn refs_are_stable_per_label_and_never_reused() {
+        let el = |role: &str, label: &str| UIElement {
+            id: String::new(),
+            role: role.into(),
+            label: label.into(),
+            bounds: rect(0, 0, 10, 10),
+            actionable: true,
+            keyboard_shortcut: None,
+            actions: vec![],
+            path: String::new(),
+            focused: false,
+        };
+        let mut book = RefBook::default();
+        let mut first = vec![el("AXButton", "Home"), el("AXButton", "Continue with email")];
+        assign_element_ids(&mut first, &mut book);
+        assert_eq!((first[0].id.as_str(), first[1].id.as_str()), ("B1", "B2"));
+        // Next screen: the Continue button is gone, other buttons arrive.
+        let mut second = vec![el("AXButton", "Watch"), el("AXButton", "Home"), el("AXButton", "")];
+        assign_element_ids(&mut second, &mut book);
+        assert_eq!(second[1].id, "B1", "Home keeps its ref");
+        assert!(second.iter().all(|e| e.id != "B2"), "B2 still means Continue: {:?}", second.iter().map(|e| &e.id).collect::<Vec<_>>());
+        // Continue comes back: same ref as before.
+        let mut third = vec![el("AXButton", "Continue with email")];
+        assign_element_ids(&mut third, &mut book);
+        assert_eq!(third[0].id, "B2");
+        // Two elements with one label: the second gets its own ref.
+        let mut dup = vec![el("AXButton", "Home"), el("AXButton", "Home")];
+        assign_element_ids(&mut dup, &mut book);
+        assert_ne!(dup[0].id, dup[1].id);
     }
 
     #[test]
@@ -627,7 +696,7 @@ mod tests {
                 focused: false,
             },
         ];
-        assign_element_ids(&mut elements);
+        assign_element_ids(&mut elements, &mut RefBook::default());
         assert_eq!(elements[0].id, "B1");
         assert_eq!(elements[1].id, "T1");
         assert_eq!(elements[2].id, "B2");
