@@ -533,11 +533,28 @@ pub async fn restore_on_boot(api_url: &str) -> Result<(), String> {
         return Ok(());
     };
     let key = backup_key().transpose()?;
+    until_released(&api, comm::lease::RENEW_EVERY).await?;
     match restore(&api, None, &data_dir, key).await? {
         Some(generation) => info!(generation, "bot state restored from NeboAI"),
         None => info!("no committed state: starting as a new bot"),
     }
     Ok(())
+}
+
+/// Resolves once no running copy holds the bot's lease, asking every
+/// `every`. A copy still running may yet commit: a drained pod commits its
+/// last generation and only then hands the lease back, and a killed one's
+/// lease lapses after its last commit. Restoring before that would start this
+/// copy from an older generation, and its commits would bury the newer one.
+async fn until_released(api: &NeboAIApi, every: std::time::Duration) -> Result<(), String> {
+    loop {
+        let st = api.bot_state(None).await.map_err(|e| format!("read committed state: {e}"))?;
+        if !st.lease_live {
+            return Ok(());
+        }
+        info!(head = st.head, "another copy of this bot still holds it; restoring once it hands the bot back");
+        tokio::time::sleep(every).await;
+    }
 }
 
 /// `nebo state restore`: restore a generation (the latest state by default)
@@ -714,6 +731,7 @@ mod tests {
         uploads: usize,
         head: i64,
         gens: BTreeMap<i64, (String, serde_json::Value)>,
+        lease_live: bool,
     }
     type Shared = Arc<Mutex<Hub>>;
 
@@ -762,7 +780,7 @@ mod tests {
         let state = pick.map(|(g, (role, m))| {
             serde_json::json!({"generation": g, "role": role, "lease_epoch": 0, "committed_at": "2026-09-22T12:00:00Z", "manifest": m})
         });
-        Json(serde_json::json!({"head": h.head, "state": state}))
+        Json(serde_json::json!({"head": h.head, "state": state, "lease_live": h.lease_live}))
     }
 
     async fn commit_state(State(hub): State<Shared>, Json(m): Json<serde_json::Value>) -> impl IntoResponse {
@@ -847,6 +865,35 @@ mod tests {
 
     /// Commit, commit again unchanged, change one file, restore: the restored
     /// directory holds the durable set byte for byte, and nothing else.
+    #[tokio::test]
+    async fn a_restore_waits_for_the_running_copy_to_hand_the_bot_back() {
+        let (url, hub) = fake_hub().await;
+        let api = NeboAIApi::new(url.clone(), BOT.into(), "tok".into());
+        let dir = bot_dir();
+        commit_as(&api, dir.path(), Role::State).await.unwrap();
+        hub.lock().unwrap().lease_live = true;
+
+        // The running copy drains: its last generation lands, then the lease
+        // is handed back.
+        let draining = {
+            let (api, hub, dir) = (NeboAIApi::new(url.clone(), BOT.into(), "tok".into()), hub.clone(), dir.path().to_path_buf());
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                std::fs::write(dir.join("files/last-words.txt"), b"written before the drain").unwrap();
+                let m = commit_as(&api, &dir, Role::State).await.unwrap();
+                hub.lock().unwrap().lease_live = false;
+                m.generation
+            })
+        };
+        until_released(&api, std::time::Duration::from_millis(20)).await.unwrap();
+        let last = draining.await.unwrap();
+
+        let into = tempfile::tempdir().unwrap();
+        let restored = restore(&api, None, into.path(), Some(KEY)).await.unwrap();
+        assert_eq!(restored, Some(last), "the restore starts from the drain's generation");
+        assert_eq!(read(&into.path().join("files/last-words.txt")), b"written before the drain");
+    }
+
     #[tokio::test]
     async fn commit_then_restore_round_trips_the_durable_set() {
         let (url, hub) = fake_hub().await;
