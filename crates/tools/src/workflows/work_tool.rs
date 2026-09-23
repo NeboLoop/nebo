@@ -264,10 +264,10 @@ impl WorkTool {
                         // 2026-09-09). Say how to wait on the first answer.
                         if matches!(run.status.as_str(), "running" | "pending") {
                             body.push_str(
-                                "\n\nStill running. Do not call status again to wait: the run \
-                                 reports here when it finishes. To check later, set a timed \
-                                 check with event(action: \"create\", at: \"in 5 minutes\", \
-                                 prompt: \"check the run\"), or go on with other work.",
+                                "\n\nStill running. Do not call status again to wait. To check \
+                                 later, set ONE timed check with event(action: \"create\", at: \
+                                 \"in 5 minutes\", prompt: \"check the run\") — never a repeating \
+                                 cron — or go on with other work.",
                             );
                         }
                         let result = ToolResult::ok(body);

@@ -412,8 +412,24 @@ impl Store {
     }
 
     pub fn delete_agent(&self, id: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM agents WHERE id = ?1", params![id])
+        let mut conn = self.conn()?;
+        // The employee's schedules go with it, in the same transaction:
+        // its bindings' jobs (`agent-<id>-<binding>`) and the jobs it created
+        // for itself (`agent_id = <id>`). `agent_workflows` cascades by FK;
+        // `cron_jobs.agent_id` has none — it also carries ids of employees
+        // that live only on disk, which a FK would refuse.
+        let tx = conn
+            .transaction()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let prefix = format!("agent-{id}-");
+        tx.execute(
+            "DELETE FROM cron_jobs WHERE agent_id = ?1 OR substr(name, 1, length(?2)) = ?2",
+            params![id, prefix],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        tx.execute("DELETE FROM agents WHERE id = ?1", params![id])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        tx.commit()
             .map_err(|e| NeboError::Database(e.to_string()))?;
         // Clean up per-agent state with no FK cascade so deleting an agent doesn't
         // leave orphans: its entity_config rows (tracked bug) and its
@@ -1250,6 +1266,30 @@ mod structure_tests {
             s.get_agent("report").unwrap().unwrap().reports_to,
             Some("boss".to_string())
         );
+    }
+
+    /// Deleting an employee takes every schedule that fires for it — its
+    /// bindings' jobs and the jobs it created for itself — and nobody else's.
+    #[test]
+    fn deleting_an_employee_takes_its_schedules_with_it() {
+        let s = store();
+        seat(&s, "a", "Social");
+        seat(&s, "ab", "Other");
+        let job = |name: &str, task_type: &str, agent: Option<&str>| {
+            s.create_cron_job(name, "0 0 9 * * * *", "", task_type, Some("x"), None, None, true, agent, None)
+                .unwrap();
+        };
+        job("agent-a-plan-week", "agent_workflow", Some("a"));
+        job("check-engagement-desk-status", "agent", Some("a"));
+        job("agent-ab-plan-week", "agent_workflow", Some("ab"));
+        job("wake-up", "agent", None);
+
+        s.delete_agent("a").unwrap();
+
+        let left: Vec<String> = s.list_cron_jobs(50, 0).unwrap().into_iter().map(|j| j.name).collect();
+        assert!(!left.iter().any(|n| n == "agent-a-plan-week" || n == "check-engagement-desk-status"), "{left:?}");
+        assert!(left.iter().any(|n| n == "agent-ab-plan-week"), "a prefix-sharing employee keeps its jobs: {left:?}");
+        assert!(left.iter().any(|n| n == "wake-up"), "an unbound job stays: {left:?}");
     }
 
     /// The same contract, applied to the seat's declaration, through the real

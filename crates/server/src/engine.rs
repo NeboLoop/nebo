@@ -466,6 +466,114 @@ fn cron_target(job: &CronJob) -> String {
     db::cron_ref(job.id)
 }
 
+/// Why a scheduled job has nothing left to do, if it hasn't: the employee
+/// or workflow it fires is gone, the workflow run it was set to check on
+/// has ended, or its schedule has no occurrence after `after` (a one-shot
+/// whose moment passed). Such a job is retired — disabled, never deleted,
+/// so what it was stays visible.
+pub(crate) fn retire_reason(store: &Store, job: &CronJob, after: i64) -> Option<String> {
+    let gone = |agent_id: &str| matches!(store.get_agent(agent_id), Ok(None));
+    if let Some(agent_id) = job.agent_id.as_deref().filter(|a| !a.is_empty() && gone(a)) {
+        return Some(format!("its employee {agent_id} was removed"));
+    }
+    match job.task_type.as_str() {
+        "agent_workflow" | "role_workflow" => {
+            if let [_, agent_id, binding] = job.command.splitn(3, ':').collect::<Vec<_>>()[..] {
+                if gone(agent_id) {
+                    return Some(format!("its employee {agent_id} was removed"));
+                }
+                let bound = store.list_agent_workflows(agent_id).map(|b| b.iter().any(|w| w.binding_name == binding));
+                if matches!(bound, Ok(false)) {
+                    return Some(format!("its workflow {binding} was removed"));
+                }
+            }
+        }
+        "workflow" if matches!(store.get_workflow(&job.command), Ok(None)) => {
+            return Some(format!("its workflow {} was removed", job.command));
+        }
+        "agent" => {
+            if let Some(reason) = checked_run_ended(store, job) {
+                return Some(reason);
+            }
+        }
+        _ => {}
+    }
+    matches!(next_occurrence(&job.schedule, after), Ok(None)).then(|| "its last scheduled time has passed".to_string())
+}
+
+/// An employee that starts a workflow run has no way to be told when it
+/// ends, so it schedules a job to check on it ("check the status of run
+/// <id>"). Once every run the job names has ended, the job has nothing left
+/// to check. A job that names no known run, or a run still going, is kept.
+fn checked_run_ended(store: &Store, job: &CronJob) -> Option<String> {
+    let text = [job.message.as_deref(), job.instructions.as_deref(), Some(job.command.as_str())]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let runs: Vec<db::models::WorkflowRun> = text
+        .split(|c: char| !(c.is_ascii_hexdigit() || c == '-'))
+        .filter(|w| uuid::Uuid::try_parse(w).is_ok())
+        .filter_map(|id| store.get_workflow_run(id).ok().flatten())
+        .collect();
+    let ended = |status: &str| matches!(status, "completed" | "failed" | "cancelled" | "exited" | "denied");
+    if runs.is_empty() || !runs.iter().all(|r| ended(&r.status)) {
+        return None;
+    }
+    let what: Vec<String> = runs.iter().map(|r| format!("{} {}", r.id, r.status)).collect();
+    Some(format!("the run it checks on has ended ({})", what.join(", ")))
+}
+
+/// The employee a job fires for is switched off, or the binding it fires
+/// is. Its fires are skipped, not retired: switching it back on resumes them.
+fn employee_is_off(store: &Store, job: &CronJob) -> bool {
+    if let "agent_workflow" | "role_workflow" = job.task_type.as_str() {
+        if let [_, agent_id, binding] = job.command.splitn(3, ':').collect::<Vec<_>>()[..] {
+            return matches!(store.is_agent_workflow_active(agent_id, binding), Ok(false));
+        }
+    }
+    job.agent_id
+        .as_deref()
+        .filter(|a| !a.is_empty())
+        .and_then(|a| store.get_agent(a).ok().flatten())
+        .is_some_and(|a| a.is_enabled == 0)
+}
+
+/// Disable a job that has nothing left to do and say so once: after this
+/// it is no longer armed.
+fn retire(store: &Store, job: &CronJob, reason: &str) -> bool {
+    match store.set_cron_job_enabled(job.id, false) {
+        Ok(()) => {
+            warn!(job_id = job.id, job = job.name.as_str(), agent = job.agent_id.as_deref().unwrap_or(""), reason, "engine: schedule retired");
+            true
+        }
+        Err(e) => {
+            warn!(job_id = job.id, job = job.name.as_str(), error = %e, "engine: could not retire schedule");
+            false
+        }
+    }
+}
+
+/// Boot sweep for schedules: every enabled job with nothing left to do is
+/// retired before the first tick arms it. Returns how many were retired.
+pub fn retire_finished_schedules(store: &Store, t: i64) -> usize {
+    let jobs = match store.list_enabled_cron_jobs() {
+        Ok(j) => j,
+        Err(e) => {
+            warn!(error = %e, "engine: could not read schedules to retire");
+            return 0;
+        }
+    };
+    let retired = jobs
+        .iter()
+        .filter(|job| retire_reason(store, job, t).is_some_and(|reason| retire(store, job, &reason)))
+        .count();
+    if retired > 0 {
+        info!(retired, "engine: schedules with nothing left to do were retired");
+    }
+    retired
+}
+
 /// The next occurrence of a cron expression after `floor`, evaluated on the
 /// machine's wall clock — the owner's clock. None: a one-shot whose moment
 /// has passed. Err: the expression does not parse.
@@ -663,6 +771,18 @@ fn fire_schedule(store: &Store, event: &EngineEvent, t: i64, report: &mut TickRe
         skip(store, "skipped: job gone or disabled", report);
         return;
     };
+    // What the job fires is gone, or the run it checks on has ended: it
+    // retires instead of firing, and is not armed again. A one-shot is not
+    // caught here — its moment is this fire; it retires once queued below.
+    if let Some(reason) = retire_reason(store, &job, event.due_at.unwrap_or(t) - 1) {
+        retire(store, &job, &reason);
+        skip(store, &format!("retired: {reason}"), report);
+        return;
+    }
+    if employee_is_off(store, &job) {
+        skip(store, "skipped: its employee or workflow is switched off", report);
+        return;
+    }
     let late = t - event.due_at.unwrap_or(t);
     if late > CATCH_UP_SECS {
         info!(job = job.name.as_str(), late_secs = late, "engine: scheduled fire missed the catch-up window; skipped");
@@ -685,6 +805,13 @@ fn fire_schedule(store: &Store, event: &EngineEvent, t: i64, report: &mut TickRe
         Ok(()) => {
             report.fired += 1;
             info!(job = job.name.as_str(), "dispatching scheduled task");
+            // A one-shot has just had its only fire: done, not armed again.
+            if matches!(next_occurrence(&job.schedule, event.due_at.unwrap_or(t)), Ok(None)) {
+                match store.set_cron_job_enabled(job.id, false) {
+                    Ok(()) => info!(job_id = job.id, job = job.name.as_str(), "one-shot schedule fired; retired"),
+                    Err(e) => warn!(job_id = job.id, job = job.name.as_str(), error = %e, "engine: could not retire one-shot schedule"),
+                }
+            }
         }
         Err(e) => warn!(job = job.name.as_str(), error = %e, "engine: could not queue the scheduled run; lease will expire and retry"),
     }
@@ -1349,6 +1476,7 @@ pub fn spawn(state: AppState) {
     let store: Arc<Store> = state.store.clone();
     tokio::spawn(async move {
         recover(&store);
+        retire_finished_schedules(&store, now());
         let mut interval = tokio::time::interval(TICK);
         loop {
             interval.tick().await;
@@ -1920,6 +2048,146 @@ mod tests {
         assert_eq!((r.armed, r.fired), (1, 0));
         assert_eq!(s.engine_pending_timers("binding").unwrap()[0].due_at, Some(local(2026, 8, 23, 16, 0, 0)));
         assert_eq!(s.engine_count_runs_for_ref("cron:1").unwrap(), 2, "9:00 and 15:00 ran; nothing else");
+    }
+
+    fn employee(s: &Store, id: &str, name: &str) {
+        s.create_agent(id, None, name, "", "", "{}", None, None).unwrap();
+    }
+
+    /// An employee's own job at `schedule`, with its floor consumed like
+    /// [`job`]'s.
+    fn employee_job(s: &Store, name: &str, schedule: &str, task_type: &str, command: &str, agent: &str, message: &str, floor: i64) -> CronJob {
+        let j = s.create_cron_job(name, schedule, command, task_type, Some(message), None, None, true, Some(agent), None).unwrap();
+        let target = cron_target(&j);
+        let db::Enqueued::Inserted(id) = s
+            .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
+            .unwrap()
+        else {
+            panic!()
+        };
+        s.engine_complete_event(id, floor).unwrap();
+        j
+    }
+
+    fn enabled(s: &Store, id: i64) -> bool {
+        s.get_cron_job(id).unwrap().unwrap().enabled.unwrap_or(0) != 0
+    }
+
+    /// The owner's desktop, 09-19 → 09-23: an employee scheduled "check the
+    /// engagement-desk run <id>" every two minutes; the run ended the same
+    /// day and the job fired ~2,000 more times. Once the run it checks on has
+    /// ended, the job retires at its next fire and never fires again.
+    #[test]
+    fn a_status_check_whose_run_ended_retires_at_its_next_fire_and_never_fires_again() {
+        let s = store();
+        employee(&s, "smm", "Social Media Manager");
+        let run = "5b11f80b-43f7-4a71-8b56-bbb1a793ad9f";
+        s.create_workflow_run(run, "agent:smm", "heartbeat", Some("engagement-desk"), None, None, None).unwrap();
+        let created = local(2026, 9, 19, 13, 15, 0);
+        let j = employee_job(&s, "check-engagement-desk-status", "*/2 * * * *", "agent", "", "smm",
+            &format!("Check the engagement-desk workflow run (id: {run}) status and report results."), created);
+
+        // While the run is going, the check fires on its cadence.
+        tick(&s, created + 30, &idle, &no_steer);
+        let r = tick(&s, local(2026, 9, 19, 13, 16, 1), &idle, &no_steer);
+        assert_eq!(r.fired, 1, "a live run is still checked");
+        for f in s.engine_queued_runs_of_kind("task", 10).unwrap() {
+            s.engine_set_run_state(&f.id, "done", local(2026, 9, 19, 13, 16, 2), None).unwrap();
+        }
+
+        // The run exits. The next fire retires the job instead of running a turn.
+        s.complete_workflow_run(run, "exited", 0, None, None, Some("nothing to process")).unwrap();
+        tick(&s, local(2026, 9, 19, 13, 16, 10), &idle, &no_steer);
+        let r = tick(&s, local(2026, 9, 19, 13, 18, 1), &idle, &no_steer);
+        assert_eq!((r.fired, r.skipped), (0, 1));
+        assert!(!enabled(&s, j.id), "retired: disabled, not deleted");
+        assert!(s.engine_queued_runs_of_kind("task", 10).unwrap().is_empty());
+
+        // And it stays quiet.
+        for m in [20, 22, 40] {
+            let r = tick(&s, local(2026, 9, 19, 13, m, 1), &idle, &no_steer);
+            assert_eq!((r.armed, r.fired), (0, 0));
+        }
+        assert_eq!(s.engine_count_runs_for_ref(&cron_target(&j)).unwrap(), 1);
+    }
+
+    /// A job whose employee or binding is gone retires at its fire; a job
+    /// whose employee is switched off is skipped and kept for when it is
+    /// switched back on.
+    #[test]
+    fn a_fire_whose_target_is_gone_retires_and_one_for_a_switched_off_employee_is_skipped() {
+        let s = store();
+        employee(&s, "dm", "Direct Mail Specialist");
+        s.upsert_agent_workflow("dm", "postcard-send", "schedule", "0 0 11 * * MON-FRI *", None, None, None, None, None, false).unwrap();
+        let created = local(2026, 9, 21, 8, 0, 0); // a Monday
+        let kept = employee_job(&s, "agent-dm-postcard-send", "0 0 11 * * MON-FRI *", "agent_workflow", "agent:dm:postcard-send", "dm", "", created);
+        let orphan = employee_job(&s, "agent-dm-homeowner-search", "0 0 11 * * MON-FRI *", "agent_workflow", "agent:dm:homeowner-search", "dm", "", created);
+        let ghost = employee_job(&s, "ghost-report", "0 0 11 * * *", "agent", "", "ghost", "weekly report", created);
+
+        s.set_agent_enabled("dm", false).unwrap();
+        tick(&s, created + 30, &idle, &no_steer);
+        let r = tick(&s, local(2026, 9, 21, 11, 0, 1), &idle, &no_steer);
+        assert_eq!((r.fired, r.skipped), (0, 3));
+        assert!(enabled(&s, kept.id), "switched off is not gone");
+        assert!(!enabled(&s, orphan.id), "its binding was removed");
+        assert!(!enabled(&s, ghost.id), "its employee was removed");
+
+        // Switched back on, the kept job fires the next day.
+        s.set_agent_enabled("dm", true).unwrap();
+        tick(&s, local(2026, 9, 21, 11, 0, 10), &idle, &no_steer);
+        let r = tick(&s, local(2026, 9, 22, 11, 0, 1), &idle, &no_steer);
+        assert_eq!(r.fired, 1);
+    }
+
+    /// A one-shot retires once it has fired, so nothing past its moment is
+    /// left looking live.
+    #[test]
+    fn a_one_shot_retires_after_its_fire() {
+        let s = store();
+        let created = local(2026, 9, 18, 1, 40, 0);
+        let j = job(&s, "wake-up-245", "54 50 1 18 9 * 2026", created);
+        tick(&s, created + 30, &idle, &no_steer);
+        let r = tick(&s, local(2026, 9, 18, 1, 50, 55), &idle, &no_steer);
+        assert_eq!(r.fired, 1);
+        assert!(!enabled(&s, j.id));
+        assert_eq!(s.engine_queued_runs_of_kind("task", 10).unwrap().len(), 1, "the fire itself still runs");
+    }
+
+    /// The boot sweep retires what has nothing left to do — a gone employee,
+    /// a finished status check, a one-shot past its moment — and leaves a
+    /// healthy schedule, a live check and a switched-off employee alone.
+    #[test]
+    fn the_boot_sweep_retires_finished_schedules_and_leaves_healthy_ones_alone() {
+        let s = store();
+        employee(&s, "smm", "Social Media Manager");
+        employee(&s, "off", "Direct Mail Specialist");
+        s.upsert_agent_workflow("smm", "plan-week", "schedule", "0 0 8 * * MON *", None, None, None, None, None, false).unwrap();
+        s.set_agent_enabled("off", false).unwrap();
+        let (ended, live) = ("1aba7b85-e71d-4527-864d-bd5d06e5e4bd", "b7c605e5-a90d-43ad-9493-6109160d029f");
+        for id in [ended, live] {
+            s.create_workflow_run(id, "agent:smm", "heartbeat", Some("publish-queue"), None, None, None).unwrap();
+        }
+        s.complete_workflow_run(ended, "completed", 0, None, None, Some("queue paused")).unwrap();
+        let t0 = local(2026, 9, 21, 9, 0, 0);
+        let mk = |name: &str, schedule: &str, task_type: &str, command: &str, agent: &str, message: &str| {
+            employee_job(&s, name, schedule, task_type, command, agent, message, t0).id
+        };
+        let healthy = mk("agent-smm-plan-week", "0 0 8 * * MON *", "agent_workflow", "agent:smm:plan-week", "smm", "");
+        let checking_live = mk("publish-queue-status-check", "0 30 * * * *", "agent", "", "smm", &format!("Check the status of publish-queue workflow run {live}"));
+        let switched_off = mk("off-daily", "0 0 9 * * *", "agent", "", "off", "daily sweep");
+        let checking_ended = mk("publish-queue-check", "*/3 * * * *", "agent", "", "smm", &format!("check the run status of publish-queue workflow id {ended}"));
+        let ghost = mk("ghost-daily", "0 0 9 * * *", "agent", "", "ghost", "daily sweep");
+        let past = mk("check-sweep-result", "13 12 15 20 9 * 2026", "agent", "", "smm", "report");
+
+        assert_eq!(retire_finished_schedules(&s, t0 + 60), 3);
+        for id in [healthy, checking_live, switched_off] {
+            assert!(enabled(&s, id), "job {id} left alone");
+        }
+        for id in [checking_ended, ghost, past] {
+            assert!(!enabled(&s, id), "job {id} retired");
+            assert!(s.get_cron_job(id).unwrap().is_some(), "retired, never deleted");
+        }
+        assert_eq!(retire_finished_schedules(&s, t0 + 120), 0, "idempotent");
     }
 
     /// A heartbeat timer fires ONE run of kind `heartbeat` on the heartbeat

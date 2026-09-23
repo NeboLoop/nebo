@@ -148,7 +148,16 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
     }
 
     let system = job.instructions.as_deref().unwrap_or("").to_string();
-    let session_key = format!("cron-{}", job.name);
+    // A job an employee scheduled runs AS that employee: its session key
+    // carries the employee (tools scope to it — its workflows, its runs),
+    // and its operation policy governs. Run as the owner's front desk, an
+    // employee's check on its own workflow run found no such workflow and
+    // said so every fire.
+    let agent_id = job.agent_id.as_deref().filter(|a| !a.is_empty());
+    let session_key = match agent_id {
+        Some(id) => format!("agent:{}:cron:{}", id, job.name),
+        None => format!("cron-{}", job.name),
+    };
     let cancel_token = tokio_util::sync::CancellationToken::new();
 
     // Register in the global RunRegistry so cron runs are visible and cancellable
@@ -156,7 +165,7 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
         .run_registry
         .register(RegisterParams {
             session_key: session_key.clone(),
-            entity_id: "main".to_string(),
+            entity_id: agent_id.unwrap_or("main").to_string(),
             entity_name: format!("Cron: {}", job.name),
             origin: "cron".to_string(),
             channel: "cron".to_string(),
@@ -167,8 +176,12 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
 
     // A cron run carried no operation policy, and a trusted origin with none
     // passes every gated operation unattended. Resolve it the way chat does.
+    let (entity_type, entity_id) = match agent_id {
+        Some(id) => ("agent", id),
+        None => ("main", "main"),
+    };
     let (_, _, _, _, _, operation_policy) = crate::chat_dispatch::entity_run_params(
-        crate::entity_config::resolve_for_chat(&state.store, "main", "main").as_ref(),
+        crate::entity_config::resolve_for_chat(&state.store, entity_type, entity_id).as_ref(),
     );
     let req = RunRequest {
         session_key: session_key.clone(),
@@ -176,6 +189,7 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
         system,
         origin: Origin::System,
         channel: "cron".to_string(),
+        agent_id: agent_id.unwrap_or_default().to_string(),
         cancel_token,
         operation_policy,
         ..Default::default()
