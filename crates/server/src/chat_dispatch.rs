@@ -1000,12 +1000,24 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // through a Shopify admin hung ~60 near-identical and
                             // blank frames on a single message. Only a screenshot
                             // the model deliberately took attaches.
+                            // The same holds for desktop control: every observe and
+                            // every click/type returns the window, and a Simulator
+                            // session hung three frames on each reply while the
+                            // owner shouted to stop (2026-09-22). Only an explicit
+                            // os screenshot attaches.
                             let is_incidental_browser_frame = event
                                 .tool_call
                                 .as_ref()
                                 .map(|tc| {
-                                    tc.name == "web"
-                                        && tc.input["action"].as_str() != Some("screenshot")
+                                    let action = tc.input["action"].as_str().unwrap_or("");
+                                    (tc.name == "web" && action != "screenshot")
+                                        || (tc.name == "os"
+                                            && matches!(
+                                                action,
+                                                "see" | "find" | "click" | "double_click" | "right_click"
+                                                    | "type" | "press" | "hotkey" | "move" | "scroll"
+                                                    | "drag" | "paste"
+                                            ))
                                 })
                                 .unwrap_or(false);
                             if event.error.is_none() && !is_file_read && !is_incidental_browser_frame {
