@@ -1604,7 +1604,7 @@ pub fn spawn(state: AppState) {
                         event.payload.chars().take(2_000).collect::<String>()
                     ));
                     let taint = serde_json::from_str(&event.provenance).unwrap_or_default();
-                    agent::steering::push_wake(session, agent::steering::WakeEntry { wake_id: event.id, content, taint });
+                    agent::steering::push_wake(session, agent::steering::WakeEntry { wake_id: Some(event.id), content, taint });
                 };
                 tick(&s, now(), &live, &steer)
             })
@@ -1754,7 +1754,7 @@ mod tests {
         let handed = std::sync::Mutex::new(Vec::<(String, i64)>::new());
         let record = |session: &str, e: &EngineEvent| {
             handed.lock().unwrap().push((session.to_string(), e.id));
-            agent::steering::push_wake(session, agent::steering::WakeEntry { wake_id: e.id, content: e.payload.clone(), taint: Default::default() });
+            agent::steering::push_wake(session, agent::steering::WakeEntry { wake_id: Some(e.id), content: e.payload.clone(), taint: Default::default() });
         };
         let r = tick(&s, 200, &live, &record);
         assert_eq!((r.steered, r.children_started), (1, 0));
