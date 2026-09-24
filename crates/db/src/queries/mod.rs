@@ -24,6 +24,7 @@ mod memories;
 mod notifications;
 pub mod pending_writes;
 mod pending_tasks;
+mod permissions;
 mod plugin_account_profiles;
 mod plugins;
 mod provider_models;
@@ -41,11 +42,11 @@ mod teams;
 pub use agents::agent_slug;
 pub use assignments::{Assignment, NewAssignment};
 pub use cron_jobs::cron_ref;
-pub use company_policy::{OperationCounters, COMPANY_COUNTER_KEY};
 pub use engine::{
     AgentChanges, EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,
 };
+pub use permissions::{PermissionActivityRow, PermissionAskRow, PermissionSpend};
 pub use run_usage::cost_microcents;
 pub use license_keys::LicenseKeyRow;
 pub use session_goals::SessionGoal;

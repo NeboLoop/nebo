@@ -90,8 +90,8 @@ async fn a_layer_change_is_parked_then_applied() {
     assert_eq!(layers["pending"][0]["stamp"], "company:acme@1.0.0");
     for id in [&ap, &om, &answered, &paused] {
         assert!(nebo.stamp(id).is_none(), "no seat has read anything yet");
-        let policy = nebo.policy(id);
-        assert!(!policy.operations.contains_key("ledger.billpayment.create"), "no law has landed on {id}: {policy:?}");
+        let rules = nebo.operation_rules(id);
+        assert!(!rules.contains_key("ledger.billpayment.create"), "no law has landed on {id}: {rules:?}");
     }
     assert!(nebo.input_values(&ap).get("net_terms").is_none(), "no standard has landed");
     assert_eq!(nebo.company_policy(), policy_before, "the company policy is untouched until the owner applies");
@@ -124,16 +124,16 @@ async fn a_layer_change_is_parked_then_applied() {
     }
     assert!(nebo.stamp(&paused).is_none(), "a paused seat gets no run");
 
-    // The law: locked Blocked, on every seat, the law named as the source.
+    // The law: a locked deny, on every seat, the law named as the source.
     for id in [&ap, &om, &answered, &paused] {
-        let policy = nebo.policy(id);
-        let rule = policy.operations.get("ledger.billpayment.create").unwrap_or_else(|| panic!("the law is on seat {id}: {policy:?}"));
-        assert_eq!(rule.access, tools::policy::OperationAccess::Blocked);
+        let rules = nebo.operation_rules(id);
+        let rule = rules.get("ledger.billpayment.create").unwrap_or_else(|| panic!("the law is on seat {id}: {rules:?}"));
+        assert_eq!(rule.effect, types::permissions::Effect::Deny);
         assert!(rule.locked);
-        assert_eq!(rule.source.as_deref(), Some("law:Payments"));
-        assert!(rule.is_law());
-        // The reserved law is the owner's hand, not a block.
-        assert!(!policy.operations.contains_key("ledger.transfer.create"), "reserved is not blocked: {policy:?}");
+        assert_eq!(rule.source, types::permissions::RuleSource::Law { pack: "Payments".into() });
+        // The reserved law is the owner's hand, not a block: a locked ask.
+        let reserved = rules.get("ledger.transfer.create").unwrap_or_else(|| panic!("reserved on seat {id}: {rules:?}"));
+        assert_eq!((reserved.effect, reserved.locked), (types::permissions::Effect::Ask, true), "reserved is not blocked");
     }
     // The gate reads it the same way the Approvals screen does.
     let ops = nebo.get_ok(&format!("/agents/{ap}/operations")).await;
@@ -241,7 +241,7 @@ async fn agents_md_renders_and_never_clobbers() {
             json!({ "requires": { "interfaces": ["ledger"] }, "ceiling": { "ledger.invoice.update": "approval" }, "workflows": {} }),
         )
         .await;
-    assert_eq!(nebo.policy(&seat).operations.get("ledger.invoice.update").map(|r| r.access), Some(tools::policy::OperationAccess::Approval));
+    assert_eq!(nebo.operation_rules(&seat).get("ledger.invoice.update").map(|r| r.effect), Some(types::permissions::Effect::Ask));
 
     let files = company_pack(
         &[

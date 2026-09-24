@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use axum::extract::{Path, State};
 use axum::response::Json;
 
@@ -13,7 +11,7 @@ pub async fn get_entity_config(
     State(state): State<AppState>,
     Path((entity_type, entity_id)): Path<(String, String)>,
 ) -> HandlerResult<serde_json::Value> {
-    let (settings, global_permissions, heartbeat_md) = load_globals(&state)?;
+    let (settings, heartbeat_md) = load_globals(&state)?;
     let entity = state
         .store
         .get_entity_config(&entity_type, &entity_id)
@@ -23,7 +21,7 @@ pub async fn get_entity_config(
         &entity_id,
         entity.as_ref(),
         &settings,
-        &global_permissions,
+        entity_config::permission_view(&state.store, &entity_type, &entity_id),
         &heartbeat_md,
     );
     Ok(Json(serde_json::json!({ "config": resolved })))
@@ -33,7 +31,7 @@ pub async fn get_entity_config(
 pub async fn update_entity_config(
     State(state): State<AppState>,
     Path((entity_type, entity_id)): Path<(String, String)>,
-    Json(body): Json<serde_json::Value>,
+    Json(mut body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     // Validate entity_type
     if !["main", "agent", "channel"].contains(&entity_type.as_str()) {
@@ -41,13 +39,16 @@ pub async fn update_entity_config(
             "entity_type must be main, agent, or channel".into(),
         )));
     }
+    // Permission edits are the owner's rules; the rest is the config row.
+    entity_config::apply_permission_patch(&state.store, &entity_type, &entity_id, &mut body)
+        .map_err(|e| to_error_response(NeboError::Validation(e.to_string())))?;
     state
         .store
         .upsert_entity_config(&entity_type, &entity_id, &body)
         .map_err(to_error_response)?;
 
     // Return resolved config
-    let (settings, global_permissions, heartbeat_md) = load_globals(&state)?;
+    let (settings, heartbeat_md) = load_globals(&state)?;
     let entity = state
         .store
         .get_entity_config(&entity_type, &entity_id)
@@ -57,7 +58,7 @@ pub async fn update_entity_config(
         &entity_id,
         entity.as_ref(),
         &settings,
-        &global_permissions,
+        entity_config::permission_view(&state.store, &entity_type, &entity_id),
         &heartbeat_md,
     );
     Ok(Json(serde_json::json!({ "config": resolved })))
@@ -75,11 +76,11 @@ pub async fn delete_entity_config(
     Ok(Json(serde_json::json!({ "message": "Config reset" })))
 }
 
-/// Load global settings, permissions, and heartbeat content for resolution.
+/// Load global settings and heartbeat content for resolution.
 fn load_globals(
     state: &AppState,
 ) -> Result<
-    (db::models::Setting, HashMap<String, bool>, String),
+    (db::models::Setting, String),
     (axum::http::StatusCode, Json<types::api::ErrorResponse>),
 > {
     let settings = state
@@ -102,21 +103,11 @@ fn load_globals(
             updated_at: 0,
         });
 
-    // Parse global permissions from user profile tool_permissions
-    let global_permissions: HashMap<String, bool> = state
-        .store
-        .get_user_profile()
-        .ok()
-        .flatten()
-        .and_then(|p| p.tool_permissions)
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default();
-
     // Read heartbeat content from filesystem
     let heartbeat_md = config::data_dir()
         .ok()
         .map(|d| std::fs::read_to_string(d.join("HEARTBEAT.md")).unwrap_or_default())
         .unwrap_or_default();
 
-    Ok((settings, global_permissions, heartbeat_md))
+    Ok((settings, heartbeat_md))
 }

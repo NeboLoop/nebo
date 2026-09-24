@@ -231,10 +231,10 @@ async fn run_flush_inner(
             ai::RequestTrace::new("memory_flush"),
             provider,
             &messages,
-            Some(store),
-            Some(user_id),
+            Some((store.as_ref(), user_id)),
             topics,
             "",
+            None,
         )
         .await
     {

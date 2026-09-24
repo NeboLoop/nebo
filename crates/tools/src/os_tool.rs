@@ -8,7 +8,6 @@ use crate::keychain_tool::KeychainTool;
 use crate::music_tool::MusicTool;
 use crate::organizer;
 use crate::origin::ToolContext;
-use crate::policy::Policy;
 use crate::process::ProcessRegistry;
 use crate::registry::{DynTool, ResourceKind, ToolResult};
 use crate::settings_tool::SettingsTool;
@@ -36,10 +35,10 @@ pub struct OsTool {
 }
 
 impl OsTool {
-    pub fn new(policy: Policy, process_registry: Arc<ProcessRegistry>) -> Self {
+    pub fn new(process_registry: Arc<ProcessRegistry>) -> Self {
         Self {
             file_tool: FileTool::new(),
-            shell_tool: ShellTool::new(policy, process_registry),
+            shell_tool: ShellTool::new(process_registry),
             desktop_tool: DesktopTool::new(),
             app_tool: AppTool::new(),
             settings_tool: SettingsTool::new(),
@@ -1994,9 +1993,7 @@ mod tests {
     }
 
     fn os() -> OsTool {
-        OsTool::new(
-            crate::policy::Policy::default(),
-            Arc::new(crate::process::ProcessRegistry::new()),
+        OsTool::new(Arc::new(crate::process::ProcessRegistry::new()),
         )
     }
 
@@ -2077,7 +2074,7 @@ mod tests {
     /// html, is refused with the mistake named — nothing sent or recorded.
     #[tokio::test]
     async fn a_mail_send_with_the_message_in_the_wrong_field_is_refused_and_steered() {
-        let tool = OsTool::new(crate::policy::Policy::default(), Arc::new(crate::process::ProcessRegistry::new()));
+        let tool = OsTool::new(Arc::new(crate::process::ProcessRegistry::new()));
         let ctx = crate::origin::ToolContext::default();
         let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com", "subject": "Re: quote", "body": "hello"})).await;
         assert!(r.is_error, "{}", r.content);
@@ -2219,9 +2216,7 @@ mod tests {
 
     #[test]
     fn test_schema_requires_resource() {
-        let tool = OsTool::new(
-            crate::policy::Policy::default(),
-            Arc::new(crate::process::ProcessRegistry::new()),
+        let tool = OsTool::new(Arc::new(crate::process::ProcessRegistry::new()),
         );
         let schema = tool.schema();
         let required = schema["required"].as_array().unwrap();
@@ -2241,9 +2236,7 @@ mod tests {
     /// other resource keeps the runner default.
     #[test]
     fn a_file_search_carries_its_own_execution_budget() {
-        let tool = OsTool::new(
-            crate::policy::Policy::default(),
-            Arc::new(crate::process::ProcessRegistry::new()),
+        let tool = OsTool::new(Arc::new(crate::process::ProcessRegistry::new()),
         );
         let search = serde_json::json!({"resource": "search", "action": "search", "query": "*.md"});
         let budget = tool
@@ -2259,9 +2252,7 @@ mod tests {
 
     #[test]
     fn test_schema_has_grep_fields() {
-        let tool = OsTool::new(
-            crate::policy::Policy::default(),
-            Arc::new(crate::process::ProcessRegistry::new()),
+        let tool = OsTool::new(Arc::new(crate::process::ProcessRegistry::new()),
         );
         let schema = tool.schema();
         let props = schema["properties"].as_object().unwrap();

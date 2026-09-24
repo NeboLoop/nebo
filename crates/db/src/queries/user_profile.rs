@@ -157,50 +157,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_tool_permissions(&self, permissions: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        let user_id = self.ensure_local_user_id()?;
-        conn.execute(
-            "INSERT OR IGNORE INTO user_profiles (user_id, created_at, updated_at) VALUES (?1, unixepoch(), unixepoch())",
-            params![user_id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        conn.execute(
-            "UPDATE user_profiles SET tool_permissions = ?1, updated_at = unixepoch() WHERE user_id = ?2",
-            params![permissions, user_id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Read the "Approve Always" shell-command prefix list (JSON array).
-    pub fn get_approved_commands(&self) -> Result<Vec<String>, NeboError> {
-        let raw = self
-            .get_user_profile()?
-            .and_then(|p| p.approved_commands)
-            .unwrap_or_else(|| "[]".to_string());
-        Ok(serde_json::from_str(&raw).unwrap_or_default())
-    }
-
-    /// Persist the full "Approve Always" prefix list (JSON array).
-    pub fn set_approved_commands(&self, patterns: &[String]) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        let user_id = self.ensure_local_user_id()?;
-        conn.execute(
-            "INSERT OR IGNORE INTO user_profiles (user_id, created_at, updated_at) VALUES (?1, unixepoch(), unixepoch())",
-            params![user_id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        let json = serde_json::to_string(patterns)
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        conn.execute(
-            "UPDATE user_profiles SET approved_commands = ?1, updated_at = unixepoch() WHERE user_id = ?2",
-            params![json, user_id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
     pub fn accept_terms(&self) -> Result<(), NeboError> {
         let conn = self.conn()?;
         let user_id = self.ensure_local_user_id()?;

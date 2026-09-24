@@ -686,10 +686,6 @@ mod mcp_auth_tests {
         agent::RunGrant {
             ctx: Default::default(),
             agent_id: "emp-1".into(),
-            approval: None,
-            approval_relay: false,
-            workflow_mode: None,
-            sessions: None,
         }
     }
 

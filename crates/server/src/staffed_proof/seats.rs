@@ -27,18 +27,18 @@ async fn out_of_bounds_work_becomes_an_assignment() {
     // Nobody holds authority and no line is drawn: the row and the policies say so.
     assert!(nebo.agent(&bk).reports_to.is_none());
     for id in [&bk, &lead, &om] {
-        assert!(!nebo.policy(id).operations.contains_key("authority.grant.grant"));
+        assert!(!nebo.operation_rules(id).contains_key("authority.grant.grant"));
     }
     assert!(tools::assignments::assignment_opener().is_some(), "the server installed the opener at boot");
 
     // The owner gives the lead the authority to grant.
-    let mut lead_policy = tools::policy::OperationPolicy::default();
-    lead_policy
-        .apply_edit("authority.grant.grant", tools::policy::OperationRule::access(tools::policy::OperationAccess::Approval))
-        .unwrap();
-    nebo.put_ok(&format!("/entity-config/agent/{lead}"), &json!({ "operationPolicy": lead_policy.to_json() })).await;
-    let holder = nebo.policy(&lead);
-    assert_ne!(holder.operations["authority.grant.grant"].access, tools::policy::OperationAccess::Blocked);
+    nebo.put_ok(
+        &format!("/entity-config/agent/{lead}"),
+        &json!({ "operationPolicy": { "operations": { "authority.grant.grant": "approval" } } }),
+    )
+    .await;
+    let holder = nebo.operation_rules(&lead);
+    assert_ne!(holder["authority.grant.grant"].effect, types::permissions::Effect::Deny);
 
     // The hand-over, as the runner does it: the assign action from an
     // unattended run of the bookkeeper's, carrying the operation, the asking
