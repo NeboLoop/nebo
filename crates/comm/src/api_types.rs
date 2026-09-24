@@ -913,6 +913,10 @@ pub struct BotStateResponse {
     pub head: i64,
     #[serde(default)]
     pub state: Option<BotStateGeneration>,
+    /// Some process holds a live lease on the bot: it may still commit.
+    /// False from a hub that does not say.
+    #[serde(default)]
+    pub lease_live: bool,
 }
 
 /// Response from `POST /api/v1/bots/self/state`.

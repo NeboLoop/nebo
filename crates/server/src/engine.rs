@@ -1508,6 +1508,12 @@ pub fn spawn(state: AppState) {
                 info!("engine: draining — loop stopped");
                 return;
             }
+            // Lease gate: while this cloud bot's lease is not held, no
+            // workflow advances and no timer fires — another running copy
+            // may be the bot now. Both resume on the first tick after.
+            if comm::lease::process().frozen() {
+                continue;
+            }
             let s = store.clone();
             let runner = state.runner.clone();
             let report = tokio::task::spawn_blocking(move || {

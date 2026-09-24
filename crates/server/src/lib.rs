@@ -770,6 +770,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
 
+    // BotLease (comm::lease): a cloud bot freezes itself whenever its lease
+    // is not held; a desktop does not. A bot with NeboAI credentials is
+    // frozen from here until the hub grants it the lease — before any loop
+    // below can fire a timer or send.
+    let lease = comm::lease::process();
+    lease.set_fenced(tools::server_mode());
+    if cfg.is_neboai_enabled() && codes::neboai_token_from(&store).is_some() {
+        lease.claim();
+    }
+    info!(instance = %lease.instance_id(), fenced = tools::server_mode(), "bot lease: this process's instance");
+
     // A Nebo never quietly serves a broken database. The check is quick; a
     // failure is logged and, once the hub exists, told to the owner with the
     // newest copy that does open whole.
@@ -2547,8 +2558,19 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let mcp_refresh_wake = mcp_refresh_wake.clone();
         let plugin_refresh_wake = plugin_refresh_wake.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            let mut backoff_secs: u64 = 30;
+            // Boot connects on its own; this watcher takes over after a
+            // minute — or at once when the hub refused this process the bot
+            // (another copy holds its lease), which is then asked again at
+            // the renewal cadence rather than after the backoff.
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                _ = comm::lease::process().until_lost() => {}
+            }
+            let mut backoff_secs: u64 = if comm::lease::process().is_lost() {
+                comm::lease::RENEW_EVERY.as_secs()
+            } else {
+                30
+            };
             loop {
                 let before_sleep = std::time::SystemTime::now();
 
@@ -2603,6 +2625,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         }
                         backoff_secs = 30;
                     }
+                    Err(_) if comm::lease::process().is_lost() => {
+                        // Another running copy holds the bot. Ask again at
+                        // the renewal cadence: its lease lapses within one
+                        // TTL of it stopping.
+                        backoff_secs = comm::lease::RENEW_EVERY.as_secs();
+                    }
                     Err(_) => {
                         backoff_secs = (backoff_secs * 2).min(600);
                     }
@@ -2621,6 +2649,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         tokio::spawn(async move {
             let mut backoff_secs: u64 = 30;
             loop {
+                // Only the process holding the bot's lease may hold its
+                // tunnel; the dial names that lease (comm::tunnel).
+                comm::lease::process().granted_or_unleased().await;
+                // The token is read after the grant: the AUTH_OK that granted
+                // the lease rotated it, and the one read before is refused.
                 let Some(token) = codes::neboai_token(&tunnel_state) else {
                     // Not activated yet — poll until credentials appear.
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -2904,6 +2937,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let shutdown_registry = state.run_registry.clone();
     let shutdown_store = state.store.clone();
     let shutdown_lifecycles = state.app_lifecycles.clone();
+    let shutdown_state = state.clone();
 
     if !quiet {
         info!("Server ready at http://localhost:{port}");
@@ -2969,7 +3003,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             // whole, so nothing still writes into the data directory.
             shutdown_browser.shutdown().await;
             tools::desktop_session::stop().await;
-            info!("browser and desktop closed, disconnecting comm plugins...");
+            info!("browser and desktop closed, committing bot state...");
+            // Nothing writes now: what changed is committed, the hub's answer
+            // is the proof, then the lease is handed back as the connection
+            // closes (plan 1A-4: commit, verify, release).
+            backup_ship::commit_on_drain(&shutdown_store, &shutdown_state).await;
+            comm::lease::process().release();
+            info!("bot state settled, disconnecting comm plugins...");
             shutdown_comm.shutdown().await;
             // Brief pause for write_loop to send the WebSocket Close frame
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

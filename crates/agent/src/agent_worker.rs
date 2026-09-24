@@ -1975,8 +1975,31 @@ async fn channel_loop(
         let bridge_agent = agent_id.clone();
         let bridge_channel = channel_name.clone();
         let forwarder_threads = participating_threads.clone();
+        // `pending_ops` correlates op req_ids with their `op_result` events
+        // from the bridge's stdout — see `channel_bridge.rs` for the protocol.
+        let pending_ops = tools::new_pending_ops();
+        let forwarder_pending = pending_ops.clone();
         let bridge_forwarder = tokio::spawn(async move {
             while let Some(op) = bridge_rx.recv().await {
+                // Lease gate: while this bot's lease is not held nothing goes
+                // out on the channel. A caller awaiting the op's result is
+                // told it was paused, not left to time out.
+                if comm::lease::process().frozen() {
+                    warn!(
+                        agent = %bridge_agent,
+                        channel = %bridge_channel,
+                        "bridge forwarder: lease not held, op not sent"
+                    );
+                    if let Some(req_id) = op.get("req_id").and_then(|v| v.as_str()) {
+                        if let Some(tx) = forwarder_pending.lock().await.remove(req_id) {
+                            let _ = tx.send(tools::OpResult {
+                                ok: false,
+                                error: Some(comm::lease::PAUSED.to_string()),
+                            });
+                        }
+                    }
+                    continue;
+                }
                 let line = match serde_json::to_string(&op) {
                     Ok(s) => format!("{s}\n"),
                     Err(e) => {
@@ -2014,10 +2037,7 @@ async fn channel_loop(
 
         // Insert into the global bridge registry so plugin_tool can route ops
         // through this bridge. Removed on child exit / cancel below.
-        // `pending_ops` correlates op req_ids with their `op_result` events
-        // from the bridge's stdout — see `channel_bridge.rs` for the protocol.
         let bridge_key = tools::channel_bridge_key(&agent_id, &plugin_slug);
-        let pending_ops = tools::new_pending_ops();
         if let Some(registry) = tools::channel_bridges() {
             let handle = tools::ChannelBridgeHandle {
                 stdin_tx: bridge_tx.clone(),
@@ -2458,6 +2478,18 @@ async fn channel_loop(
                                     serde_json::Value::String(agent_display),
                                 );
 
+                                // Lease gate: while this bot's lease is not
+                                // held, nothing goes out on the channel —
+                                // another running copy may be answering.
+                                if comm::lease::process().frozen() {
+                                    warn!(
+                                        agent = %agent,
+                                        channel = %ch,
+                                        session = %session_key,
+                                        "channel outbound: lease not held, reply not posted"
+                                    );
+                                    return;
+                                }
                                 let reply_line = format!("{}\n", serde_json::Value::Object(reply));
                                 let reply_bytes = reply_line.len();
                                 let write_started = std::time::Instant::now();
@@ -2937,6 +2969,14 @@ async fn shared_channel_loop(
                                             serde_json::Value::String(target_name),
                                         );
 
+                                        // Lease gate (see channel_loop's reply).
+                                        if comm::lease::process().frozen() {
+                                            warn!(
+                                                channel = %ch,
+                                                "shared channel outbound: lease not held, reply not posted"
+                                            );
+                                            return;
+                                        }
                                         let reply_line = format!(
                                             "{}\n",
                                             serde_json::Value::Object(reply)
