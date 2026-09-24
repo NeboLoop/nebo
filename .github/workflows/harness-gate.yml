@@ -52,7 +52,7 @@ name: Harness gate
 # still supplies the fixtures, the suites and the test runner, so two arms
 # are measured by one instrument. `arm` picks the CI bot (a = HARNESS_NEBO_*,
 # p = HARNESS_P_NEBO_*). The old loop is pinned as baseline/pre-harness;
-# docs/harness-arms.md has the commands for an A-vs-P comparison.
+# scripts/arm-report.py has the commands for an A-vs-P comparison.
 #
 # Isolation. Every job gets its own directory (GATE_JOB) with an empty home,
 # /tmp, NEBO_HOME and working directory, and the server and the test runner
