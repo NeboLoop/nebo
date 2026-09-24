@@ -1246,16 +1246,29 @@ impl AgentTool {
                     );
                 };
                 match orch
-                    .send(task_id, message, Some(ctx.cancel_token.clone()), ctx.stream_tx.clone())
+                    .send(
+                        task_id,
+                        message,
+                        &ctx.session_key,
+                        ctx.run_taint.clone(),
+                        Some(ctx.cancel_token.clone()),
+                        ctx.stream_tx.clone(),
+                    )
                     .await
                 {
-                    Ok(result) if result.success => ToolResult::ok(format!(
+                    Ok(crate::orchestrator::FollowUp::Delivered { task_id }) => ToolResult::ok(format!(
+                        "Delivered to sub-agent [{task_id}] while it works; it will see your message \
+                         at its next step. Its result reaches you the way it was spawned to report — \
+                         until then you know nothing about how it went. Check it with \
+                         agent(resource: \"task\", action: \"status\", task_id: \"{task_id}\")."
+                    )),
+                    Ok(crate::orchestrator::FollowUp::Continued(result)) if result.success => ToolResult::ok(format!(
                         "Sub-agent [{}] continued:\n\n{}{}",
                         result.task_id,
                         result.output,
                         continuation_hint(&result.task_id)
                     )),
-                    Ok(result) => ToolResult::error(format!(
+                    Ok(crate::orchestrator::FollowUp::Continued(result)) => ToolResult::error(format!(
                         "Sub-agent [{}] failed: {}",
                         result.task_id,
                         result.error.unwrap_or_default()
@@ -2549,7 +2562,7 @@ impl DynTool for AgentTool {
          - agent(resource: \"task\", action: \"spawn\", prompt: \"...\", wait: false) — Background; result delivered when done\n\
          - agent(resource: \"task\", action: \"status\", task_id: \"...\") — Check background agent status\n\
          - agent(resource: \"task\", action: \"cancel\", task_id: \"...\") — Cancel a running sub-agent\n\
-         - agent(resource: \"task\", action: \"send\", task_id: \"...\", message: \"...\") — Continue a FINISHED sub-agent with a follow-up. It keeps its context and the files it read, so use this to refine, extend, or correct its result; spawn a new one only for unrelated work\n\
+         - agent(resource: \"task\", action: \"send\", task_id: \"...\", message: \"...\") — Message a sub-agent you spawned. While it runs, it sees the message at its next step (add to or correct its task mid-work); once finished, it continues with the message as a follow-up. It keeps its context and the files it read, so use this to refine, extend, or correct its result; spawn a new one only for unrelated work\n\
          - agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"...\", \"tools\": [\"web\"]}, ...]) — Run multiple sub-agents concurrently, return all results. Tasks that EDIT files in one project: add isolate: \"worktree\" (+ workspace: \"/path\" if not the current folder) so each runs in its own copy and the changes are merged back; a file two tasks both changed is reported as a conflict with both versions kept\n\
          IMPORTANT: Always pass plugins and tools the sub-agent needs. Sub-agents are born blind — they only know what you tell them.\n\
          - plugins: install codes for plugins the sub-agent should use (from your agent config or current session)\n\
@@ -2640,7 +2653,7 @@ impl DynTool for AgentTool {
                 "status": { "type": "string", "enum": TASK_UPDATE_STATUSES, "description": "Task status for update. There is no failed: finished work with a bad outcome is completed with the failure in output; unfinished work stays in_progress with a follow-up task." },
                 "output": { "type": "string", "description": "Task update: what the task produced, or what failed and why (kept with the task; shown by get)" },
                 "task_id": { "type": "string", "description": "Task ID for updates, status, cancel, and send" },
-                "message": { "type": "string", "description": "Follow-up for a finished sub-agent (action send)" },
+                "message": { "type": "string", "description": "Message for a sub-agent (action send): a running one sees it at its next step, a finished one continues with it" },
                 "prompt": { "type": "string", "description": "Sub-agent prompt or orchestration task description" },
                 "description": { "type": "string", "description": "Short description (sub-agent task, or the agent's description for registry create/update)" },
                 "agent_type": { "type": "string", "description": "Sub-agent type: general, explore, plan" },
@@ -2911,10 +2924,12 @@ mod spawn_model_inheritance {
             &self,
             _task_id: &str,
             _message: &str,
+            _from_session_key: &str,
+            _taint: Vec<types::provenance::ProvenanceClass>,
             _parent_cancel: Option<CancellationToken>,
             _parent_stream_tx: Option<tokio::sync::mpsc::Sender<ai::StreamEvent>>,
-        ) -> Fut<'_, Result<SpawnResult, String>> {
-            Box::pin(async { Ok(done()) })
+        ) -> Fut<'_, Result<crate::orchestrator::FollowUp, String>> {
+            Box::pin(async { Ok(crate::orchestrator::FollowUp::Continued(done())) })
         }
         fn list_active(&self) -> Fut<'_, Vec<(String, String, String)>> {
             Box::pin(async { Vec::new() })

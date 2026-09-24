@@ -1,0 +1,8 @@
+id: concurrency-a-sub-agent-with-a-message-waiting-can-still-be-cancelled
+name: "A sub-agent with a message waiting can still be cancelled"
+description: |
+  A sub-agent has a message from its parent waiting and is cancelled. It
+  stops, takes no further model call, and is no longer running.
+target_component: engine
+proof: engine::proof::concurrency::a_sub_agent_with_a_message_waiting_can_still_be_cancelled
+conversation: []

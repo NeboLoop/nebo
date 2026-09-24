@@ -1,0 +1,11 @@
+id: concurrency-a-parents-message-reaches-its-running-sub-agent
+name: "A parent's message reaches its running sub-agent"
+description: |
+  A parent sends two messages to a sub-agent while its first step runs. Both
+  are delivered at once, stored in the sub-agent's thread as sent (marked as
+  the parent's, with the parent's taint), and read by its next step in the
+  order sent. Its report reaches the parent as spawned; once finished, a
+  message continues it on its own session.
+target_component: engine
+proof: engine::proof::concurrency::a_parents_message_reaches_its_running_sub_agent
+conversation: []

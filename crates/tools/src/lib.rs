@@ -143,7 +143,7 @@ pub use loop_tool::LoopTool;
 pub use message_tool::MessageTool;
 pub use music_tool::MusicTool;
 pub use orchestrator::{
-    OrchestratorHandle, SpawnRequest, SpawnResult, SubAgentOrchestrator, new_handle,
+    FollowUp, OrchestratorHandle, SpawnRequest, SpawnResult, SubAgentOrchestrator, new_handle,
 };
 pub use origin::{
     ApprovalChannels, AskChannels, ChannelContext, ExecutionMode, Origin, ToolContext,
