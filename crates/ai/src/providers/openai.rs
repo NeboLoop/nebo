@@ -346,12 +346,8 @@ impl OpenAIProvider {
         let mut byte_stream = response.bytes_stream();
         let mut line_buf = String::new();
 
-        // Accumulate tool calls by index
-        let mut tool_calls: HashMap<u32, AccumulatedToolCall> = HashMap::new();
-        let mut emitted_tool_calls = HashSet::new();
-        // Janus dedup: track which tool indices already have name/complete args
-        let mut seen_tool_name: HashSet<u32> = HashSet::new();
-        let mut seen_tool_args: HashSet<u32> = HashSet::new();
+        // Tool calls assembled from their chunks, in arrival order.
+        let mut tool_calls = ToolCallAccumulator::default();
 
         let mut text_chunks = 0u32;
         let mut chunk_count = 0u32;
@@ -486,53 +482,16 @@ impl OpenAIProvider {
                                 }
                             }
 
-                            // Accumulate tool calls by index, with Janus deduplication
+                            // Assemble tool calls (see `ToolCallAccumulator`).
                             if let Some(ref tcs) = choice.delta.tool_calls {
                                 for tc in tcs {
-                                    let idx = tc.index;
-                                    let entry = tool_calls.entry(idx).or_insert_with(|| {
-                                        AccumulatedToolCall {
-                                            id: String::new(),
-                                            name: String::new(),
-                                            arguments: String::new(),
-                                        }
-                                    });
-
-                                    if let Some(id) = tc.id.as_deref() {
-                                        if !id.is_empty() {
-                                            entry.id = id.to_string();
-                                        }
-                                    }
-
-                                    if let Some(ref func) = tc.function {
-                                        // Dedup tool name: Janus sends name in every chunk
-                                        if let Some(name) = func.name.as_deref() {
-                                            if !name.is_empty() && !seen_tool_name.contains(&idx) {
-                                                entry.name = name.to_string();
-                                                seen_tool_name.insert(idx);
-                                            }
-                                        }
-
-                                        // Dedup tool args: Janus sends complete JSON in every chunk
-                                        if let Some(args) = func.arguments.as_deref() {
-                                            if !args.is_empty() {
-                                                if seen_tool_args.contains(&idx) {
-                                                    // Already have complete args, skip duplicate
-                                                } else if serde_json::from_str::<serde_json::Value>(
-                                                    args,
-                                                )
-                                                .is_ok()
-                                                {
-                                                    // Complete JSON in one chunk (Janus style)
-                                                    entry.arguments = args.to_string();
-                                                    seen_tool_args.insert(idx);
-                                                } else {
-                                                    // Partial JSON (standard OpenAI streaming)
-                                                    entry.arguments.push_str(args);
-                                                }
-                                            }
-                                        }
-                                    }
+                                    let func = tc.function.as_ref();
+                                    tool_calls.absorb(
+                                        tc.index,
+                                        tc.id.as_deref(),
+                                        func.and_then(|f| f.name.as_deref()),
+                                        func.and_then(|f| f.arguments.as_deref()),
+                                    );
                                 }
                             }
 
@@ -623,25 +582,22 @@ impl OpenAIProvider {
             );
         }
 
-        // Emit accumulated tool calls (fallback for Janus single-chunk tool calls)
-        for tc in tool_calls.values() {
-            if !tc.id.is_empty() && !tc.name.is_empty() && !emitted_tool_calls.contains(&tc.id) {
-                emitted_tool_calls.insert(tc.id.clone());
-                // Unparseable arguments = the stream was cut off mid-payload.
-                // An empty-object fallback silently forwarded the lie; wrap the
-                // raw text instead so the registry's truncation corrective can
-                // name the cutoff and teach chunked writes (same shape the
-                // gateway's salvage uses — ONE downstream detector).
-                let input: serde_json::Value = serde_json::from_str(&tc.arguments)
-                    .unwrap_or_else(|_| serde_json::json!({ "_raw": tc.arguments }));
-                let _ = tx
-                    .send(StreamEvent::tool_call(ToolCall {
-                        id: tc.id.clone(),
-                        name: tc.name.clone(),
-                        input,
-                    }))
-                    .await;
-            }
+        // Emit the assembled tool calls in the order they arrived.
+        for tc in tool_calls.finish() {
+            // Unparseable arguments = the stream was cut off mid-payload.
+            // An empty-object fallback silently forwarded the lie; wrap the
+            // raw text instead so the registry's truncation corrective can
+            // name the cutoff and teach chunked writes (same shape the
+            // gateway's salvage uses — ONE downstream detector).
+            let input: serde_json::Value = serde_json::from_str(&tc.arguments)
+                .unwrap_or_else(|_| serde_json::json!({ "_raw": tc.arguments }));
+            let _ = tx
+                .send(StreamEvent::tool_call(ToolCall {
+                    id: tc.id,
+                    name: tc.name,
+                    input,
+                }))
+                .await;
         }
 
         // The one Usage event for this stream — final cumulative totals.
@@ -1114,9 +1070,89 @@ fn map_http_error(
 // --- Helper types (kept for history deserialization and tool accumulation) ---
 
 struct AccumulatedToolCall {
+    index: u32,
     id: String,
     name: String,
     arguments: String,
+    /// The arguments arrived whole in one chunk; repeats of it are ignored.
+    arguments_whole: bool,
+}
+
+/// A streamed response's tool calls, assembled from their chunks in the
+/// order they arrived.
+///
+/// Two streaming shapes reach this parser. Standard OpenAI sends a call's id
+/// and name on its first chunk and its arguments as fragments on later
+/// chunks that carry only the call's `index`. Janus sends each call whole
+/// (id, name, complete arguments), may repeat it, and numbers every call
+/// `index: 0`. So a chunk with an id not seen yet is a new call even at an
+/// index already in use, and a chunk without one continues the latest call
+/// at its index. Keying on the index alone merged every Janus call into the
+/// first: 3,988 of 3,988 stored assistant messages carried one call.
+#[derive(Default)]
+struct ToolCallAccumulator {
+    calls: Vec<AccumulatedToolCall>,
+}
+
+impl ToolCallAccumulator {
+    fn absorb(&mut self, index: u32, id: Option<&str>, name: Option<&str>, arguments: Option<&str>) {
+        let id = id.filter(|s| !s.is_empty());
+        let latest_at_index = self.calls.iter().rposition(|c| c.index == index);
+        let pos = match id {
+            Some(id) => self
+                .calls
+                .iter()
+                .position(|c| c.id == id)
+                // The call's id arrived after an id-less first chunk.
+                .or_else(|| latest_at_index.filter(|&i| self.calls[i].id.is_empty())),
+            None => latest_at_index,
+        };
+        let pos = pos.unwrap_or_else(|| {
+            self.calls.push(AccumulatedToolCall {
+                index,
+                id: String::new(),
+                name: String::new(),
+                arguments: String::new(),
+                arguments_whole: false,
+            });
+            self.calls.len() - 1
+        });
+        let call = &mut self.calls[pos];
+        if let Some(id) = id {
+            call.id = id.to_string();
+        }
+        if let Some(name) = name.filter(|n| !n.is_empty())
+            && call.name.is_empty()
+        {
+            call.name = name.to_string();
+        }
+        if let Some(args) = arguments.filter(|a| !a.is_empty())
+            && !call.arguments_whole
+        {
+            if call.arguments.is_empty() && serde_json::from_str::<serde_json::Value>(args).is_ok() {
+                call.arguments = args.to_string();
+                call.arguments_whole = true;
+            } else {
+                call.arguments.push_str(args);
+            }
+        }
+    }
+
+    /// The complete calls (an id and a name), in arrival order.
+    fn finish(self) -> Vec<AccumulatedToolCall> {
+        self.calls
+            .into_iter()
+            .filter(|c| !c.id.is_empty() && !c.name.is_empty())
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.calls.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1221,6 +1257,101 @@ mod tests {
         }
         assert!(saw_error, "truncated stream must emit a retryable Error event");
         assert!(!saw_done, "truncated stream must NOT emit a clean Done");
+    }
+
+    fn calls(acc: ToolCallAccumulator) -> Vec<(String, String, String)> {
+        acc.finish().into_iter().map(|c| (c.id, c.name, c.arguments)).collect()
+    }
+
+    /// Janus sends each call whole, may repeat a chunk, and numbers every
+    /// call index 0: every call survives, once each, in arrival order.
+    #[test]
+    fn janus_calls_at_one_index_stay_separate() {
+        let mut acc = ToolCallAccumulator::default();
+        acc.absorb(0, Some("call_a"), Some("read"), Some(r#"{"path":"/a"}"#));
+        acc.absorb(0, Some("call_a"), Some("read"), Some(r#"{"path":"/a"}"#));
+        acc.absorb(0, Some("call_b"), Some("grep"), Some(r#"{"q":"x"}"#));
+        acc.absorb(0, Some("call_c"), Some("read"), Some(r#"{"path":"/c"}"#));
+        assert_eq!(
+            calls(acc),
+            vec![
+                ("call_a".into(), "read".into(), r#"{"path":"/a"}"#.into()),
+                ("call_b".into(), "grep".into(), r#"{"q":"x"}"#.into()),
+                ("call_c".into(), "read".into(), r#"{"path":"/c"}"#.into()),
+            ]
+        );
+    }
+
+    /// Standard OpenAI: id and name on a call's first chunk, argument
+    /// fragments on id-less chunks carrying its index, calls interleaved.
+    #[test]
+    fn openai_fragments_join_their_own_call() {
+        let mut acc = ToolCallAccumulator::default();
+        acc.absorb(0, Some("call_a"), Some("read"), Some(""));
+        acc.absorb(1, Some("call_b"), Some("grep"), Some(""));
+        acc.absorb(0, None, None, Some(r#"{"pa"#));
+        acc.absorb(1, None, None, Some(r#"{"q":"#));
+        acc.absorb(0, None, None, Some(r#"th":"/a"}"#));
+        acc.absorb(1, None, None, Some("1"));
+        acc.absorb(1, None, None, Some("}"));
+        assert_eq!(
+            calls(acc),
+            vec![
+                ("call_a".into(), "read".into(), r#"{"path":"/a"}"#.into()),
+                ("call_b".into(), "grep".into(), r#"{"q":1}"#.into()),
+            ]
+        );
+    }
+
+    /// A call missing its id or name never reaches the runner.
+    #[test]
+    fn incomplete_calls_are_dropped() {
+        let mut acc = ToolCallAccumulator::default();
+        acc.absorb(0, None, Some("read"), Some("{}"));
+        acc.absorb(1, Some("call_b"), None, Some("{}"));
+        assert!(calls(acc).is_empty());
+    }
+
+    /// End to end over the wire: two Janus-shaped calls in one response are
+    /// two tool-call events.
+    #[tokio::test]
+    async fn stream_with_two_index_zero_calls_emits_both() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let body = concat!(
+                "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"/a\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"grep\",\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+        let response = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        OpenAIProvider::handle_stream(response, tx).await;
+        server.await.unwrap();
+
+        let mut got = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(tc) = ev.tool_call {
+                got.push((tc.id, tc.name, tc.input));
+            }
+        }
+        assert_eq!(
+            got,
+            vec![
+                ("call_a".to_string(), "read".to_string(), serde_json::json!({"path": "/a"})),
+                ("call_b".to_string(), "grep".to_string(), serde_json::json!({"q": "x"})),
+            ]
+        );
     }
 
     #[test]

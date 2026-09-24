@@ -350,14 +350,46 @@ impl DynTool for SkillTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+    fn search_hint(&self) -> &str {
+        "skills instructions load discover install"
+    }
+
+    fn should_defer(&self) -> bool {
         false
     }
 
-    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+    fn read_only(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        matches!(action, "list" | "discover" | "browse" | "read_resource" | "reviews" | "secrets")
         // `rate` is intentionally excluded — it mutates marketplace state.
+        matches!(action, "list" | "discover" | "browse" | "read_resource" | "reviews" | "secrets")
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        match action {
+            "list" | "discover" | "browse" => "find_skills",
+            "read_resource" => "read_skill_file",
+            "create" | "update" => "save_skill",
+            "delete" => "delete_skill",
+            "install" => "install_skill",
+            "configure" | "secrets" => "configure_skill",
+            "rate" => "rate_skill",
+            "reviews" => "read_skill_reviews",
+            "unload" => "skill",
+            // `skill(name: "x")` with no action is a load.
+            _ => "use_skill",
+        }
+        .to_string()
+    }
+
+    fn keeps_content_when_trimmed(&self, input: &serde_json::Value) -> bool {
+        matches!(self.rule_key(input).as_str(), "use_skill")
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(

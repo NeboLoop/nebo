@@ -55,9 +55,6 @@ impl DynTool for AppTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
 
     fn execute_dyn<'a>(
         &'a self,

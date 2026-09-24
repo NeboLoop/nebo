@@ -1705,9 +1705,6 @@ mod engine_tests {
         fn schema(&self) -> serde_json::Value {
             serde_json::json!({})
         }
-        fn requires_approval(&self) -> bool {
-            false
-        }
         fn execute_dyn<'a>(
             &'a self,
             _ctx: &'a tools::ToolContext,

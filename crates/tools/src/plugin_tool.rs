@@ -963,6 +963,22 @@ impl PluginTool {
 
 }
 
+/// A plugin call's owner-facing lines say the SERVICE ("using Gmail"),
+/// never the word "plugin" — the register the whole install flow protects.
+pub(crate) fn plugin_labels(input: &serde_json::Value) -> (String, String) {
+    match input.get("action").and_then(|v| v.as_str()) {
+        Some("discover") => ("browsing the marketplace".to_string(), "Browsed the marketplace".to_string()),
+        Some("list") => ("checking available tools".to_string(), "Checked available tools".to_string()),
+        _ => match input.get("resource").and_then(|v| v.as_str()).filter(|r| !r.is_empty()) {
+            Some(slug) => {
+                let svc = crate::humanize::service_name(slug);
+                (format!("using {svc}"), format!("Used {svc}"))
+            }
+            None => crate::humanize::call_labels("plugin", input),
+        },
+    }
+}
+
 impl DynTool for PluginTool {
     fn name(&self) -> &str {
         "plugin"
@@ -1178,9 +1194,6 @@ impl DynTool for PluginTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
 
     /// A typed port call performs the `operation` it names; everything else
     /// (list, discover, help, exec-by-slug) performs none. This is what the
@@ -1195,16 +1208,15 @@ impl DynTool for PluginTool {
             .map(str::to_string)
     }
 
-    fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
-        // help, services, and events are read-only; exec needs approval
-        let action = input
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("exec");
-        action == "exec"
+    fn search_hint(&self) -> &str {
+        "installed plugins run commands marketplace"
     }
 
-    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+    fn should_defer(&self) -> bool {
+        false
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
         let action = input
             .get("action")
             .and_then(|v| v.as_str())
@@ -1213,8 +1225,41 @@ impl DynTool for PluginTool {
         // (ask_user). A concurrently-executed tool races the model turn's
         // stream teardown: the ask_request lands in a dropped channel and the
         // oneshot waits forever (observed live on the first card test,
-        // 2026-08-22). Anything that may ask must run sequentially.
+        // 2026-08-22). Anything that may ask must run sequentially, and a
+        // parked install is not a read.
         matches!(action, "list" | "events")
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("exec");
+        match action {
+            "discover" => "find_plugins".to_string(),
+            "events" => "read_plugin_events".to_string(),
+            "list" => "plugin".to_string(),
+            _ => match input.get("resource").and_then(|v| v.as_str()).filter(|r| !r.is_empty()) {
+                Some(slug) => format!("plugin__{slug}"),
+                None => "plugin".to_string(),
+            },
+        }
+    }
+
+    /// Plugin payloads (mail, drive, CRM records) are the deliverable.
+    fn keeps_content_when_trimmed(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
+
+    fn activity(&self, input: &serde_json::Value) -> String {
+        plugin_labels(input).0
+    }
+
+    fn outcome(&self, input: &serde_json::Value) -> String {
+        plugin_labels(input).1
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(

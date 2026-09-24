@@ -638,12 +638,22 @@ impl DynTool for CodeTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
+    fn search_hint(&self) -> &str {
+        "code outline symbols definitions references"
     }
 
-    fn is_concurrent_safe(&self, _input: &Value) -> bool {
+    fn read_only(&self, _input: &Value) -> bool {
         true // every action is read-only
+    }
+
+    fn rule_key(&self, _input: &Value) -> String {
+        "code_intel".to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(
@@ -832,11 +842,10 @@ mod tests {
         ));
     }
 
-    /// Every action is read-only and concurrent-safe; none needs approval.
+    /// Every action is read-only and concurrency-safe.
     #[test]
     fn code_tool_is_read_only_tier() {
         let tool = CodeTool::new();
-        assert!(!tool.requires_approval());
         for action in [
             "outline",
             "symbols",
@@ -848,8 +857,8 @@ mod tests {
             "references",
             "hover",
         ] {
-            assert!(tool.is_concurrent_safe(&json!({"action": action})), "{action}");
-            assert!(!tool.requires_approval_for(&json!({"action": action})), "{action}");
+            assert!(tool.read_only(&json!({"action": action})), "{action}");
+            assert!(tool.concurrency_safe(&json!({"action": action})), "{action}");
         }
     }
 

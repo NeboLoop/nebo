@@ -243,7 +243,30 @@ impl DynTool for A2UIDomainTool {
         build_domain_schema(&Self::domain_config())
     }
 
-    fn requires_approval(&self) -> bool {
+
+    fn search_hint(&self) -> &str {
+        "interactive views surfaces ui components"
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        input.get("action").and_then(|v| v.as_str()) == Some("list")
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        match input.get("action").and_then(|v| v.as_str()).unwrap_or("") {
+            "update_components" => "update_view_components",
+            "update_data" => "update_view_data",
+            "navigate" => "navigate_view",
+            "delete" => "delete_view",
+            "list" => "list_views",
+            _ => "create_view",
+        }
+        .to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
         false
     }
 

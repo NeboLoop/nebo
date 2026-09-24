@@ -1952,9 +1952,6 @@ impl DynTool for RegistryTool {
         self.tool_schema.clone()
     }
 
-    fn requires_approval(&self) -> bool {
-        false // Workflows run headless
-    }
 
     fn execute_dyn<'a>(
         &'a self,

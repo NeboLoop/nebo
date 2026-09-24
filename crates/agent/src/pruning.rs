@@ -312,6 +312,7 @@ pub fn micro_compact(
     messages: &[ChatMessage],
     warning_threshold: usize,
     frozen: &mut std::collections::HashMap<String, String>,
+    spec: &TrimSpec,
 ) -> (Vec<ChatMessage>, usize) {
     let total_tokens = estimate_total_tokens(messages);
     // Below the warning threshold the context fits comfortably — touch nothing.
@@ -390,7 +391,7 @@ pub fn micro_compact(
     // Find tool result indices eligible for compaction.
     // ALL tool results are compactable — the keep-recent protection prevents
     // stripping results the model still needs.
-    let mut tool_result_indices: Vec<(usize, usize, String)> = Vec::new(); // (index, age_from_end, tool_name)
+    let mut tool_result_indices: Vec<(usize, usize, String, Trim)> = Vec::new(); // (index, age_from_end, tool_name, spec)
 
     for (i, msg) in result.iter().enumerate() {
         if msg.role != "tool" && msg.role != "assistant" {
@@ -405,14 +406,15 @@ pub fn micro_compact(
 
             let tool_name = find_tool_name_for_result(messages, i);
             let age = messages.len().saturating_sub(i);
-            tool_result_indices.push((i, age, tool_name));
+            let trim = trim_of(spec, messages, i);
+            tool_result_indices.push((i, age, tool_name, trim));
         }
     }
 
     // Sort by trim priority then age (oldest first)
     tool_result_indices.sort_by(|a, b| {
-        let pa = trim_priority(&a.2);
-        let pb = trim_priority(&b.2);
+        let pa = a.3.priority;
+        let pb = b.3.priority;
         pa.cmp(&pb).then(b.1.cmp(&a.1)) // higher priority first, then oldest first
     });
 
@@ -438,7 +440,7 @@ pub fn micro_compact(
         3
     };
 
-    for (idx, age, tool_name) in candidates {
+    for (idx, age, tool_name, trim) in candidates {
         if *age < min_age {
             continue;
         }
@@ -454,12 +456,12 @@ pub fn micro_compact(
         // is the rendering forever (per run). Re-deciding each iteration is
         // how a result rendered fine on pass N became "[os] 0 lines" on pass
         // N+1 — the model must never watch its own history mutate.
-        let (_call_name, call_input) = find_tool_call_for_result(messages, *idx);
+        let (_call_name, call_input, _) = find_tool_call_for_result(messages, *idx);
         let freeze_key = first_tool_call_id(msg);
         let trimmed_content = freeze_key
             .as_ref()
             .and_then(|k| frozen.get(k).cloned())
-            .unwrap_or_else(|| build_tool_summary(tool_name, call_input.as_ref(), &tool_result_text(msg)));
+            .unwrap_or_else(|| build_tool_summary(tool_name, call_input.as_ref(), &tool_result_text(msg), trim.keeps_content));
         if let Some(k) = freeze_key {
             frozen.entry(k).or_insert_with(|| trimmed_content.clone());
         }
@@ -542,6 +544,7 @@ pub fn time_based_micro_compact(
     gap_threshold_secs: i64,
     warning_threshold: usize,
     frozen: &mut std::collections::HashMap<String, String>,
+    spec: &TrimSpec,
 ) -> (Vec<ChatMessage>, usize) {
     // Small contexts re-tokenize for pennies — clearing them saves nothing and
     // deletes working knowledge (loaded skill instructions, fetched data) right
@@ -604,15 +607,7 @@ pub fn time_based_micro_compact(
         // when stale, keep a bounded slice of the real content rather than
         // wiping it to "[cleared]" — the model must still be able to report
         // what was fetched. Side-effecting results clear as before.
-        let (call_name, call_input) = find_tool_call_for_result(messages, idx);
-        let input = call_input.unwrap_or(serde_json::Value::Null);
-        // Same ONE inference the executor and `build_tool_summary` use. Reading
-        // the raw field here left this path with the exact `[os] 0 lines`
-        // defect after the summarizer was fixed: a bare `os {action:"read"}`
-        // carries no `resource`, so it was judged side-effecting and wiped to
-        // `[cleared]`.
-        let resource = tools::OsTool::resolved_resource(&input);
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let keeps_content = trim_of(spec, messages, idx).keeps_content;
         // FROZEN DECISION — same contract as micro_compact: one rendering
         // per tool_use_id per run, shared across both compaction paths.
         let freeze_key = first_tool_call_id(msg);
@@ -620,7 +615,7 @@ pub fn time_based_micro_compact(
             .as_ref()
             .and_then(|k| frozen.get(k).cloned())
             .unwrap_or_else(|| {
-                if is_read_type(call_name.as_str(), resource, action) {
+                if keeps_content {
                     bounded_content(&tool_result_text(msg))
                 } else {
                     "[cleared]".to_string()
@@ -693,15 +688,36 @@ pub fn time_based_micro_compact(
     (result, tokens_saved)
 }
 
-/// Determine trimming order for tool types.
-fn trim_priority(tool_name: &str) -> usize {
-    // `file`/`shell` are OsTool's private sub-tools and never appear as a
-    // registered tool name — those arms were dead. `os` covers both.
-    match tool_name {
-        "web" => 0, // Stale fastest
-        "os" => 2,  // Shell/file output is often large
-        _ => 3,
+/// What trimming needs to know about one tool call, from its tool's spec
+/// (`DynTool::trim_priority`, `DynTool::keeps_content_when_trimmed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Trim {
+    /// Lowest is trimmed first.
+    pub priority: u8,
+    /// The result is something read: an aged copy keeps a bounded slice of
+    /// its content instead of a stub.
+    pub keeps_content: bool,
+}
+
+impl Default for Trim {
+    fn default() -> Self {
+        Self {
+            priority: tools::registry::TRIM_DEFAULT,
+            keeps_content: false,
+        }
     }
+}
+
+/// Each tool call's [`Trim`], by tool call id.
+pub type TrimSpec = std::collections::HashMap<String, Trim>;
+
+/// The trim facts for the result at `idx`, by the call it answers (found
+/// the way every compaction path finds it).
+fn trim_of(spec: &TrimSpec, messages: &[ChatMessage], idx: usize) -> Trim {
+    find_tool_call_for_result(messages, idx)
+        .2
+        .and_then(|id| spec.get(&id).copied())
+        .unwrap_or_default()
 }
 
 /// Find the tool name and input for a tool result message.
@@ -709,14 +725,14 @@ fn trim_priority(tool_name: &str) -> usize {
 /// The result row carries the `tool_call_id` it answers; match on it. The
 /// runner issues tool calls in parallel and stores each result as its own
 /// message, so "walk back and take the first call" attributed results 2..N of a
-/// batch to call 1 — wrong tool, wrong resource, wrong `is_read_type` verdict,
+/// batch to call 1 — wrong tool, wrong resource, wrong keep-content verdict,
 /// and therefore the wrong decision about whether to keep the content. Same
 /// family as the `[os] 0 lines` outage. Falls back to the first call only for
 /// legacy rows with no id.
 fn find_tool_call_for_result(
     messages: &[ChatMessage],
     result_idx: usize,
-) -> (String, Option<serde_json::Value>) {
+) -> (String, Option<serde_json::Value>, Option<String>) {
     let wanted_id: Option<String> = messages[result_idx]
         .tool_results
         .as_deref()
@@ -749,14 +765,15 @@ fn find_tool_call_for_result(
                             .unwrap_or("unknown")
                             .to_string();
                         let input = call.get("input").cloned();
-                        return (name, input);
+                        let id = call.get("id").and_then(|v| v.as_str()).map(str::to_string);
+                        return (name, input, id);
                     }
                 }
             }
             break; // Stop at first assistant message
         }
     }
-    ("unknown".to_string(), None)
+    ("unknown".to_string(), None, None)
 }
 
 /// Name-only convenience over [`find_tool_call_for_result`] — same id-matched
@@ -772,48 +789,6 @@ fn find_tool_name_for_result(messages: &[ChatMessage], result_idx: usize) -> Str
 /// bounded slice (token-budget intent preserved: a few KB, not unbounded).
 const READ_RESULT_KEEP_CHARS: usize = 3500;
 
-/// Whether a tool result's CONTENT is the deliverable (vs. a side-effect
-/// confirmation). Read-type results must keep their actual content through
-/// compaction, not be reduced to a line count.
-///
-/// Read-type:
-///   - `os` PIM resources: calendar, mail, contacts, reminders
-///   - `os` file reads: read, grep, glob, search
-///   - `web` content fetches: search, fetch, sanitize, read_page, get
-///   - `agent` memory reads: recall, search, list — the employee's own memory
-///   - `skill` loads — instructions the model is following
-///   - `plugin` — Gmail/Drive/CRM payloads are the deliverable
-///   - every `mcp__*` tool — including Company Memory
-///
-/// The last four were missing (2026-08-28 audit): once a session passed the
-/// warning threshold, a recalled memory, a loaded skill, an email body, or a
-/// Company Memory hit was replaced with `[tool] N lines` — the identical
-/// failure that produced `[os] 0 lines`, on four more surfaces. Over-including
-/// costs a bounded slice (`READ_RESULT_KEEP_CHARS`); under-including hands the
-/// model a lie. Err toward keeping.
-///
-/// Everything else (shell exec, file write/edit, browser click/type/navigate
-/// mutations, etc.) is side-effecting and keeps a truthful trimmed stub.
-fn is_read_type(tool_name: &str, resource: &str, action: &str) -> bool {
-    if tool_name.starts_with("mcp__") {
-        return true;
-    }
-    match tool_name {
-        "os" => match resource {
-            "calendar" | "mail" | "contacts" | "reminders" => true,
-            "file" => matches!(action, "read" | "grep" | "glob" | "search"),
-            _ => false,
-        },
-        "web" => matches!(
-            action,
-            "search" | "fetch" | "sanitize" | "read_page" | "get"
-        ),
-        "agent" => resource == "memory" && matches!(action, "recall" | "search" | "list"),
-        "skill" => action == "load",
-        "plugin" => true,
-        _ => false,
-    }
-}
 
 /// Keep a bounded slice of real content, truncated at a line boundary near
 /// the cap, with an explicit truncation marker. Preserves the answer while
@@ -861,6 +836,7 @@ fn build_tool_summary(
     tool_name: &str,
     tool_input: Option<&serde_json::Value>,
     tool_result: &str,
+    keeps_content: bool,
 ) -> String {
     let line_count = tool_result.lines().count();
 
@@ -873,7 +849,7 @@ fn build_tool_summary(
 
     // Read-type results: the content IS the deliverable. Keep a bounded slice
     // of the real content instead of discarding it for a line count.
-    if is_read_type(tool_name, resource, action) {
+    if keeps_content {
         return bounded_content(tool_result);
     }
 
@@ -1290,6 +1266,44 @@ turns from this transcript — do not carry over dropped turns from the snapshot
 mod tests {
     use super::*;
 
+    /// Each call's trim facts, read from the real tools' specs (os and web
+    /// here; any other tool gets the default).
+    fn keeps(name: &str, input: Option<&serde_json::Value>) -> bool {
+        trim(name, input.unwrap_or(&serde_json::Value::Null)).keeps_content
+    }
+
+    fn trim(name: &str, input: &serde_json::Value) -> Trim {
+        use tools::registry::DynTool;
+        let tool: Box<dyn DynTool> = match name {
+            "os" => Box::new(tools::OsTool::new(
+                tools::Policy::default(),
+                std::sync::Arc::new(tools::ProcessRegistry::new()),
+            )),
+            "web" => Box::new(tools::WebTool::new()),
+            _ => return Trim::default(),
+        };
+        Trim {
+            priority: tool.trim_priority(),
+            keeps_content: tool.keeps_content_when_trimmed(input),
+        }
+    }
+
+    fn spec(messages: &[ChatMessage]) -> TrimSpec {
+        let mut spec = TrimSpec::new();
+        for m in messages {
+            let calls: Vec<ai::ToolCall> = m
+                .tool_calls
+                .as_deref()
+                .and_then(|j| serde_json::from_str(j).ok())
+                .unwrap_or_default();
+            for c in calls {
+                spec.insert(c.id.clone(), trim(&c.name, &c.input));
+            }
+        }
+        spec
+    }
+
+
     fn make_msg(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1451,7 +1465,7 @@ mod tests {
 
         // gap_threshold of 1 second — all messages are old, so gap is huge.
         // warning_threshold 0 opens the pressure gate (this test exercises clearing).
-        let (result, tokens_saved) = time_based_micro_compact(&messages, 1, 1, 0, &mut std::collections::HashMap::new());
+        let (result, tokens_saved) = time_based_micro_compact(&messages, 1, 1, 0, &mut std::collections::HashMap::new(), &spec(&messages));
         assert!(tokens_saved > 0, "should save tokens on stale session");
 
         // Only the most recent tool result (index 6) should keep its content
@@ -1495,7 +1509,7 @@ mod tests {
         ];
 
         // Stage 1 (stale session): the read is older than keep_recent=1 → bounded, not emptied.
-        let (tb, _) = time_based_micro_compact(&convo, 1, 1, 0, &mut std::collections::HashMap::new());
+        let (tb, _) = time_based_micro_compact(&convo, 1, 1, 0, &mut std::collections::HashMap::new(), &spec(&convo));
         let tb_read = &tb[2];
         assert!(tb_read.content.contains("line 1 of the pasted document"), "time-based kept real text: {:?}", &tb_read.content[..60.min(tb_read.content.len())]);
         assert!(!tb_read.content.is_empty() && tb_read.content != "[cleared]");
@@ -1503,7 +1517,7 @@ mod tests {
         assert!(tr[0]["content"].as_str().unwrap().contains("line 1 of"), "payload rendered into tool_results too");
 
         // Stage 2 (micro-compact): the summary must count the real lines, never "0 lines".
-        let (mc, _) = micro_compact(&convo, 0, &mut std::collections::HashMap::new());
+        let (mc, _) = micro_compact(&convo, 0, &mut std::collections::HashMap::new(), &spec(&convo));
         let mc_read = &mc[2];
         assert!(!mc_read.content.contains("0 lines"), "summary saw the payload: {}", mc_read.content);
     }
@@ -1534,7 +1548,7 @@ mod tests {
             make_tool_result_msg(&big, old_ts), // most recent (kept anyway)
         ];
 
-        let (result, _) = time_based_micro_compact(&messages, 1, 1, 0, &mut std::collections::HashMap::new());
+        let (result, _) = time_based_micro_compact(&messages, 1, 1, 0, &mut std::collections::HashMap::new(), &spec(&messages));
         let tool_results: Vec<&ChatMessage> = result.iter().filter(|m| m.role == "tool").collect();
         // Older calendar result kept content despite being stale + not most-recent
         assert!(
@@ -1560,7 +1574,7 @@ mod tests {
         ];
 
         // gap_threshold of 300 seconds — session is active (10s ago)
-        let (_, tokens_saved) = time_based_micro_compact(&messages, 1, 300, 0, &mut std::collections::HashMap::new());
+        let (_, tokens_saved) = time_based_micro_compact(&messages, 1, 300, 0, &mut std::collections::HashMap::new(), &spec(&messages));
         assert_eq!(tokens_saved, 0, "active session should not be compacted");
     }
 
@@ -1582,7 +1596,7 @@ mod tests {
             messages.push(make_tool_result_msg(&text, 1000));
         }
         let mut frozen = std::collections::HashMap::new();
-        let (result, saved) = micro_compact(&messages, 1_000, &mut frozen);
+        let (result, saved) = micro_compact(&messages, 1_000, &mut frozen, &spec(&messages));
         let stubs = result.iter().filter(|m| m.content.starts_with(DUPLICATE_RESULT_STUB_PREFIX)).count();
         assert_eq!(stubs, 4, "every copy after the first is a stub");
         let original_id = first_tool_call_id(&messages[1]).unwrap();
@@ -1591,7 +1605,7 @@ mod tests {
         assert!(saved > 4 * 1500, "saved {saved} tokens");
         assert_eq!(frozen.len(), 4, "each stub is frozen on its tool_call_id");
         // Second pass over the compacted history is a no-op for the stubs.
-        let (again, _) = micro_compact(&result, 1_000, &mut frozen);
+        let (again, _) = micro_compact(&result, 1_000, &mut frozen, &spec(&result));
         assert_eq!(again.iter().filter(|m| m.content.starts_with(DUPLICATE_RESULT_STUB_PREFIX)).count(), 4);
     }
 
@@ -1611,7 +1625,7 @@ mod tests {
         };
         let messages = vec![make_old_msg("user", "drive the app"), shot(0), shot(1), shot(2)];
         let mut frozen = std::collections::HashMap::new();
-        let (result, saved) = micro_compact(&messages, 1_000, &mut frozen);
+        let (result, saved) = micro_compact(&messages, 1_000, &mut frozen, &spec(&messages));
         assert!(!result_has_image(&result[1]), "the oldest screenshot is dropped");
         assert!(result[1].content.ends_with(IMAGE_REMOVED_NOTE), "and says so: {}", result[1].content);
         assert!(result[1].content.starts_with("Tapped Simulator at (0,0)"), "the step's text stays");
@@ -1619,7 +1633,7 @@ mod tests {
         // The image is ~4K tokens; the note it leaves behind costs a few dozen.
         assert!(saved >= 16_000 / crate::CHARS_PER_TOKEN - 100, "saved {saved} tokens");
         // Idempotent: a second pass over the compacted history changes nothing.
-        let (again, _) = micro_compact(&result, 1_000, &mut frozen);
+        let (again, _) = micro_compact(&result, 1_000, &mut frozen, &spec(&result));
         assert_eq!(again[1].content, result[1].content);
         assert_eq!(again[1].tool_results, result[1].tool_results);
     }
@@ -1649,7 +1663,7 @@ mod tests {
         }
 
         // Threshold below the ~16K estimated total so the pressure gate opens.
-        let (result, tokens_saved) = micro_compact(&messages, 1_000, &mut std::collections::HashMap::new());
+        let (result, tokens_saved) = micro_compact(&messages, 1_000, &mut std::collections::HashMap::new(), &spec(&messages));
         assert!(
             tokens_saved > 0,
             "non-standard tool results should be compactable (universal filter)"
@@ -1690,14 +1704,14 @@ mod tests {
             messages.push(make_tool_result_msg(&big, 1000));
         }
 
-        let (result, saved) = micro_compact(&messages, 100_000, &mut std::collections::HashMap::new());
+        let (result, saved) = micro_compact(&messages, 100_000, &mut std::collections::HashMap::new(), &spec(&messages));
         assert_eq!(saved, 0, "micro_compact must not fire under the threshold");
         assert!(
             result.iter().all(|m| !m.content.contains("[search_emails]")),
             "no result may be summarized under the threshold"
         );
 
-        let (_, tb_saved) = time_based_micro_compact(&messages, 1, 1, 100_000, &mut std::collections::HashMap::new());
+        let (_, tb_saved) = time_based_micro_compact(&messages, 1, 1, 100_000, &mut std::collections::HashMap::new(), &spec(&messages));
         assert_eq!(
             tb_saved, 0,
             "stale-session clear must not fire under the threshold"
@@ -1738,7 +1752,7 @@ mod tests {
 
         // Run 1: decide, then persist what was decided (the runner's step).
         let mut run1 = store.get_chat_renderings("chat-1").unwrap();
-        let (out1, saved) = micro_compact(&convo, 0, &mut run1);
+        let (out1, saved) = micro_compact(&convo, 0, &mut run1, &spec(&convo));
         assert!(saved > 0);
         let new: Vec<(String, String)> = run1.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         store.insert_chat_renderings("chat-1", &new).unwrap();
@@ -1755,12 +1769,12 @@ mod tests {
         }
         // Run 2: a fresh runner loads the frozen map and must agree with run 1.
         let mut run2 = store.get_chat_renderings("chat-1").unwrap();
-        let (out2, _) = micro_compact(&convo, 0, &mut run2);
+        let (out2, _) = micro_compact(&convo, 0, &mut run2, &spec(&convo));
         let idx = convo.iter().position(|m| m.tool_results.as_deref().is_some_and(|t| t.contains("\"c1\""))).unwrap();
         assert_eq!(out2[idx].tool_results, out1[idx].tool_results, "c1 renders as it first did");
         // And without the store, run 2 would have decided differently (the test can fail).
         let mut cold = std::collections::HashMap::new();
-        let (out3, _) = micro_compact(&convo, 0, &mut cold);
+        let (out3, _) = micro_compact(&convo, 0, &mut cold, &spec(&convo));
         assert_ne!(out3[idx].tool_results, out1[idx].tool_results, "a cold decision differs");
     }
 
@@ -1769,7 +1783,7 @@ mod tests {
     fn a_compacted_view_never_shows_zero_lines_for_a_result_whose_bytes_exist() {
         let history = big_history();
         let mut frozen = std::collections::HashMap::new();
-        let (view, saved) = micro_compact(&history, 0, &mut frozen);
+        let (view, saved) = micro_compact(&history, 0, &mut frozen, &spec(&history));
         assert!(saved > 0, "the pipeline must have acted for this test to mean anything");
         for (orig, rendered) in history.iter().zip(view.iter()) {
             if !tool_result_text(orig).trim().is_empty() {
@@ -1789,13 +1803,13 @@ mod tests {
         ];
         pad_past_compaction(&mut convo);
         let mut frozen = std::collections::HashMap::new();
-        let (out1, saved) = micro_compact(&convo, 1_000, &mut frozen);
+        let (out1, saved) = micro_compact(&convo, 1_000, &mut frozen, &spec(&convo));
         assert!(saved > 0, "the test must actually compact something");
         let first_rendering = out1[2].content.clone();
 
         // Mutate the underlying content — a fresh decision would now differ.
         convo[2].content = "totally different\n".repeat(1500);
-        let (out2, _) = micro_compact(&convo, 1_000, &mut frozen);
+        let (out2, _) = micro_compact(&convo, 1_000, &mut frozen, &spec(&convo));
         assert_eq!(
             out2[2].content, first_rendering,
             "the rendering for c1 must be frozen, not re-decided"
@@ -1839,7 +1853,7 @@ mod tests {
             "command": "ls -la /tmp"
         });
         let result = "file1.txt\nfile2.txt\nfile3.txt\n";
-        let summary = build_tool_summary("os", Some(&input), result);
+        let summary = build_tool_summary("os", Some(&input), result, keeps("os", Some(&input)));
         assert!(summary.starts_with("[os:shell]"));
         assert!(summary.contains("ls -la /tmp"));
         assert!(summary.contains("3 lines"));
@@ -1855,7 +1869,7 @@ mod tests {
             "path": "/home/user/code.rs"
         });
         let result = "line1\nline2\n";
-        let summary = build_tool_summary("os", Some(&input), result);
+        let summary = build_tool_summary("os", Some(&input), result, keeps("os", Some(&input)));
         assert_eq!(summary, result, "read-type result content must survive");
         assert!(!summary.contains("lines"));
     }
@@ -1907,7 +1921,7 @@ mod tests {
         // compacted and it passed vacuously.
         pad_past_compaction(&mut convo);
 
-        let (compacted, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new());
+        let (compacted, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new(), &spec(&convo));
         assert!(saved > 0, "the test must actually compact something");
         let read_result = &compacted[2].content;
         assert_ne!(read_result, &body, "the read must have gone through the summarizer");
@@ -1983,7 +1997,7 @@ mod tests {
             tmsg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c3","content":format!("{big}c3")}]).to_string())),
         ];
         pad_past_compaction(&mut convo);
-        let (out, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new());
+        let (out, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new(), &spec(&convo));
         assert!(saved > 0, "the test must actually compact something");
 
         // c1 is a read → content kept. c2 is a shell exec → truthful stub
@@ -2009,7 +2023,7 @@ mod tests {
                  Some(r#"[{"tool_call_id":"c1","content":"...","is_error":true}]"#)),
         ];
         pad_past_compaction(&mut convo);
-        let (out, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new());
+        let (out, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new(), &spec(&convo));
         assert!(saved > 0, "the test must actually compact something");
         assert_ne!(out[2].content, big, "the failure result must have been compacted");
         let tr: Vec<serde_json::Value> =
@@ -2036,7 +2050,7 @@ mod tests {
             tmsg("assistant", "", Some(r#"[{"id":"c2","name":"os","input":{"action":"exec","command":"ls"}}]"#), None),
             tmsg("tool", "a\nb\n", None, Some(r#"[{"tool_call_id":"c2","content":"..."}]"#)),
         ];
-        let (out, _) = time_based_micro_compact(&convo, 1, 1, 0, &mut std::collections::HashMap::new());
+        let (out, _) = time_based_micro_compact(&convo, 1, 1, 0, &mut std::collections::HashMap::new(), &spec(&convo));
         assert_ne!(out[2].content, "[cleared]", "a read must not be wiped");
         assert!(out[2].content.contains("def f()"), "read keeps content: {}", out[2].content);
     }
@@ -2045,33 +2059,20 @@ mod tests {
     /// half-finished rename can never leave a silently dead arm again.
     #[test]
     fn dead_tool_names_get_no_special_treatment() {
-        let baseline = trim_priority("definitely-not-a-tool");
         // (the retired os name is covered by the source-grep guard above; naming it here
         // would trip that guard.)
         for dead in ["file", "shell", "bot"] {
-            assert_eq!(trim_priority(dead), baseline, "{dead} must not have its own priority");
-            let s = build_tool_summary(dead, Some(&serde_json::json!({"action":"x"})), "a\nb\n");
+            assert_eq!(trim(dead, &serde_json::json!({})), Trim::default(), "{dead} has no spec of its own");
+            let s = build_tool_summary(dead, Some(&serde_json::json!({"action":"x"})), "a\nb\n", keeps(dead, Some(&serde_json::json!({"action":"x"}))));
             assert!(!s.starts_with(&format!("[{dead}:")), "{dead} must fall to the catch-all: {s}");
         }
-    }
-
-    /// The four families the audit found still being collapsed.
-    #[test]
-    fn is_read_type_covers_memory_skill_plugin_mcp() {
-        assert!(is_read_type("agent", "memory", "recall"));
-        assert!(is_read_type("agent", "memory", "search"));
-        assert!(!is_read_type("agent", "task", "create"), "a spawn/create is side-effecting");
-        assert!(is_read_type("skill", "", "load"));
-        assert!(is_read_type("plugin", "gws", ""));
-        assert!(is_read_type("mcp__memory__memory_search", "", ""));
-        assert!(!is_read_type("os", "shell", "exec"));
     }
 
     /// A stub states what happened and how to recover; it never reads as the
     /// tool's answer. `[os] 0 lines` read as "the tool returned nothing".
     #[test]
     fn trimmed_stub_states_what_happened() {
-        let s = build_tool_summary("custom_tool", Some(&serde_json::json!({})), "a\nb\nc\n");
+        let s = build_tool_summary("custom_tool", Some(&serde_json::json!({})), "a\nb\nc\n", keeps("custom_tool", Some(&serde_json::json!({}))));
         assert!(s.contains("3 lines were returned"), "{s}");
         assert!(s.contains("trimmed from context"), "{s}");
         assert!(s.contains("re-run"), "{s}");
@@ -2091,7 +2092,7 @@ mod tests {
             "path": "/home/jorgen/Nebo/x96-archive/stream-grabber/grabber.py"
         });
         let result = "#!/usr/bin/env python3\nimport asyncio\nimport json\n";
-        let summary = build_tool_summary("os", Some(&input), result);
+        let summary = build_tool_summary("os", Some(&input), result, keeps("os", Some(&input)));
 
         assert!(
             !summary.contains("0 lines"),
@@ -2107,7 +2108,7 @@ mod tests {
     #[test]
     fn exec_without_explicit_resource_is_identified_as_shell() {
         let input = serde_json::json!({"action": "exec", "command": "ls -la /tmp"});
-        let summary = build_tool_summary("os", Some(&input), "a\nb\nc\n");
+        let summary = build_tool_summary("os", Some(&input), "a\nb\nc\n", keeps("os", Some(&input)));
         assert!(
             !summary.starts_with("[os] "),
             "an exec must not fall to the unidentified catch-all: {summary}"
@@ -2123,7 +2124,7 @@ mod tests {
             "action": "today"
         });
         let result = "9:00 Standup\n13:00 Lunch with client\n15:30 Design review";
-        let summary = build_tool_summary("os", Some(&input), result);
+        let summary = build_tool_summary("os", Some(&input), result, keeps("os", Some(&input)));
         assert_eq!(summary, result);
         assert!(summary.contains("Lunch with client"));
     }
@@ -2133,7 +2134,7 @@ mod tests {
         // Large read-type content is bounded with a truncation marker.
         let input = serde_json::json!({ "resource": "mail", "action": "unread" });
         let result = "x".repeat(10_000);
-        let summary = build_tool_summary("os", Some(&input), &result);
+        let summary = build_tool_summary("os", Some(&input), &result, keeps("os", Some(&input)));
         assert!(summary.len() < result.len(), "should be bounded");
         assert!(summary.len() <= READ_RESULT_KEEP_CHARS + 160);
         assert!(summary.contains("truncated to save context"));
@@ -2148,7 +2149,7 @@ mod tests {
             "query": "rust async tutorial"
         });
         let result = r#"{"title": "Async Rust", "url": "..."}, {"title": "Tokio Guide", "url": "..."}"#;
-        let summary = build_tool_summary("web", Some(&input), result);
+        let summary = build_tool_summary("web", Some(&input), result, keeps("web", Some(&input)));
         assert_eq!(summary, result);
         assert!(summary.contains("Tokio Guide"));
     }
@@ -2157,7 +2158,7 @@ mod tests {
     fn test_build_tool_summary_fallback() {
         let input = serde_json::json!({});
         let result = "some output\n";
-        let summary = build_tool_summary("custom_tool", Some(&input), result);
+        let summary = build_tool_summary("custom_tool", Some(&input), result, keeps("custom_tool", Some(&input)));
         assert!(summary.starts_with("[custom_tool]"));
         assert!(summary.contains("lines"));
     }
