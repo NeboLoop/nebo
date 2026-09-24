@@ -99,7 +99,7 @@ on:
   workflow_dispatch:
     inputs:
       suites:
-        description: "Sweep: space-separated suite and fixture paths (suites/x.yaml, fixtures/.../y.yaml). Empty = the gate."
+        description: "Sweep: space-separated suite and fixture paths (suites/x.yaml, fixtures/.../y.yaml, replays/<set>/suite.yaml). Empty = the gate."
         type: string
         default: ""
       judge:
@@ -355,9 +355,20 @@ jobs:
           failed=""
           for entry in $SUITES; do
             name=$(basename "$entry" .yaml)
+            path="$GITHUB_WORKSPACE/$entry"
             case "$entry" in suites/*) what=--suite ;; *) what=--fixture ;; esac
+            # replays/<set>/suite.yaml: real owner threads, never in git. They
+            # live on the VM (~/harness-replays/<set>, put there by
+            # scripts/export-threads.py push) and are copied into this job's
+            # own directory, so no other run can read them.
+            case "$entry" in replays/*/suite.yaml)
+              set=$(basename "$(dirname "$entry")")
+              [ -d "$HOME/harness-replays/$set" ] || { echo "no replay set $set on this VM"; failed="$failed $entry"; continue; }
+              mkdir -p "$GATE_JOB/replays" && cp -R "$HOME/harness-replays/$set" "$GATE_JOB/replays/"
+              path="$GATE_JOB/$entry"; what=--suite; name="$set" ;;
+            esac
             echo "::group::$entry"
-            scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run "$what" "$GITHUB_WORKSPACE/$entry" "${mode[@]}" --model "$GATE_MODEL" \
+            scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run "$what" "$path" "${mode[@]}" --model "$GATE_MODEL" \
               --server "localhost:$GATE_PORT" --output "$GATE_JOB/traces/$name" || failed="$failed $entry"
             echo "::endgroup::"
           done
