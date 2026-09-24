@@ -19,10 +19,10 @@ use crate::harness::conversation::{
     MidTurnFrom, convert_messages, mid_turn_message_landed, parent_taint, record_interrupt, sanitize_message_order,
     unanswered_mid_turn_message,
 };
-use crate::harness::model_call::{self, prefer_non_gateway, resolve_aux};
+use crate::harness::model_call::{self, prefer_non_gateway};
 use crate::harness::seat;
+use crate::harness::{after_turn, usage};
 use types::keyparser;
-use crate::memory;
 use crate::prompt;
 use crate::pruning::{self, ContextThresholds};
 use crate::selector::{self, ModelSelector};
@@ -93,35 +93,6 @@ fn summary_due(session_id: &str, evicted: usize) -> bool {
     }
     *acc = 0;
     true
-}
-
-/// Minimum gap between background tool-summary labels for one session.
-///
-/// The label is a one-line UX caption ("Read auth config and fixed token
-/// validation"). It was spawned once per tool-executing iteration, which made
-/// it **30.1% of all LLM requests** in the 2026-08-27 incident (3,597 of
-/// 11,946) — a third of the traffic for a caption. At a normal working pace one
-/// label per round still lands; in a fast loop the captions were arriving
-/// faster than a human could read them anyway.
-const TOOL_SUMMARY_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// Last tool-summary label spawned per session.
-static TOOL_SUMMARY_LAST: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
-> = std::sync::LazyLock::new(Default::default);
-
-/// Whether to spawn a tool-summary label for this iteration. Rate-limited per
-/// session; the label is cosmetic, so skipping one costs nothing but the
-/// caption for that round.
-fn tool_summary_due(session_id: &str, now: std::time::Instant) -> bool {
-    let mut last = TOOL_SUMMARY_LAST.lock().unwrap_or_else(|p| p.into_inner());
-    match last.get(session_id) {
-        Some(prev) if now.duration_since(*prev) < TOOL_SUMMARY_MIN_GAP => false,
-        _ => {
-            last.insert(session_id.to_string(), now);
-            true
-        }
-    }
 }
 
 /// Release the in-flight marker when a background summary finishes.
@@ -630,85 +601,6 @@ impl RunState {
 ///
 /// Providers are wrapped in `Arc` so they can be shared across concurrent runs
 /// spawned via `tokio::spawn`.
-/// Sink for a freshly auto-generated chat title. The runner writes the title to
-/// the store itself; the server installs a sink (`set_title_sink`) that
-/// broadcasts the change to connected clients and propagates it to the loop —
-/// concerns the agent crate can't reach. ONE sink, set once at startup, used by
-/// every run path (replaces the per-path title generators + the skip_title_gen
-/// flag). Implementations must not block (spawn for async work).
-pub trait ChatTitleSink: Send + Sync {
-    fn on_title(&self, session_key: String, chat_id: String, title: String);
-}
-
-/// The ONE chat-title generator body (CODE_AUDITOR Rule 8). Names the chat on
-/// its first user turn and refines once at the third — language-independent
-/// (message count, not a default-title string) — and never clobbers a title
-/// the user set. Entered from the run loop after each turn and from
-/// Runner::spawn_title_generation for chats whose turns are persisted outside
-/// a run (voice).
-fn spawn_chat_title_generation(
-    providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
-    store: Arc<Store>,
-    chat_id: String,
-    session_id: String,
-    cheap_model: String,
-    title_sink: Option<Arc<dyn ChatTitleSink>>,
-) {
-    tokio::spawn(async move {
-        let chat = match store.get_chat(&chat_id) {
-            Ok(Some(c)) => c,
-            _ => return,
-        };
-        // Never clobber a title the user explicitly set.
-        if chat.title_custom {
-            return;
-        }
-        // Gate on user turns across the WHOLE chat, not the recent window: a
-        // windowed count kept re-hitting 1 or 3 as the conversation grew,
-        // re-titling the chat from whatever the user said most recently.
-        let user_turns = match store.count_chat_user_messages(&chat_id) {
-            Ok(n) => n as usize,
-            _ => return,
-        };
-        if user_turns != 1 && user_turns != 3 {
-            return; // name once, refine once — at most twice
-        }
-        let messages = match store.get_recent_chat_messages(&chat_id, 8) {
-            Ok(m) => m,
-            _ => return,
-        };
-        if messages.len() < 2 {
-            return; // need a user+assistant exchange to name from
-        }
-        // Use more of the conversation on the count-3 refinement.
-        let take_n = if user_turns >= 3 { 8 } else { 4 };
-        let transcript: String = messages
-            .iter()
-            .take(take_n)
-            .map(|m| {
-                let snippet: String = m.content.chars().take(200).collect();
-                format!("{}: {}", m.role, snippet)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if let Some(title) =
-            crate::summarizer::generate_session_title(
-                RequestTrace::new("title"),
-                &providers,
-                &transcript,
-                &cheap_model,
-            )
-            .await
-        {
-            let _ = store.update_chat_title(&chat_id, &title, false);
-            info!(chat_id = %chat_id, title = %title, "auto-generated chat title");
-            if let Some(sink) = title_sink {
-                sink.on_title(session_id, chat_id, title);
-            }
-        }
-    });
-}
-
 pub struct Runner {
     sessions: SessionManager,
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
@@ -736,7 +628,7 @@ pub struct Runner {
     /// TurboVec index cache) — powers per-message prompt recall.
     hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
     /// Optional broadcast/loop-push sink for auto-generated chat titles.
-    title_sink: std::sync::OnceLock<Arc<dyn ChatTitleSink>>,
+    title_sink: std::sync::OnceLock<Arc<dyn after_turn::ChatTitleSink>>,
     active_turns: ActiveTurns,
 }
 
@@ -775,7 +667,7 @@ impl Runner {
 
     /// Install the chat-title sink (broadcast + loop propagation). Set once at
     /// startup after AppState exists; no-op if already set.
-    pub fn set_title_sink(&self, sink: Arc<dyn ChatTitleSink>) {
+    pub fn set_title_sink(&self, sink: Arc<dyn after_turn::ChatTitleSink>) {
         let _ = self.title_sink.set(sink);
     }
 
@@ -783,7 +675,7 @@ impl Runner {
     /// Runner run (the voice loop persists turns directly). Same gates, same
     /// summarizer, same sink as the run-path call.
     pub fn spawn_title_generation(&self, session_id: &str, chat_id: &str) {
-        spawn_chat_title_generation(
+        after_turn::spawn_chat_title_generation(
             self.providers.clone(),
             self.store.clone(),
             chat_id.to_string(),
@@ -1556,7 +1448,7 @@ impl Runner {
                 // simply have no sink, so they title without broadcasting. The voice
                 // turn loop persists turns without a Runner run and calls the same
                 // generator through Runner::spawn_title_generation.
-                spawn_chat_title_generation(
+                after_turn::spawn_chat_title_generation(
                     providers.clone(),
                     store.clone(),
                     session_mgr.active_chat_id(&session_id),
@@ -3617,10 +3509,10 @@ async fn run_loop(
         let mut wrap_up_turn = false;
         if let Some(m) = workflow_mode {
             if m.spend_cap_microcents > 0 {
-                let spent = run_spend_so_far(store, selector, &session_key, &last_model_name, &state);
-                match spend_cap_verdict(spent, m.spend_cap_microcents, spend_cap_wrap_up_issued) {
-                    SpendCapVerdict::Under => {}
-                    SpendCapVerdict::WrapUp => {
+                let spent = usage::run_spend_so_far(store, selector, &session_key, &last_model_name, &state);
+                match usage::spend_cap_verdict(spent, m.spend_cap_microcents, spend_cap_wrap_up_issued) {
+                    usage::SpendCapVerdict::Under => {}
+                    usage::SpendCapVerdict::WrapUp => {
                         spend_cap_wrap_up_issued = true;
                         wrap_up_turn = true;
                         warn!(session_id, spent_microcents = spent, cap_microcents = m.spend_cap_microcents, "spend cap reached: wrap-up turn");
@@ -3630,7 +3522,7 @@ async fn run_loop(
                              what remains undone, in plain words. Do not start anything new.",
                         ));
                     }
-                    SpendCapVerdict::Stop => {
+                    usage::SpendCapVerdict::Stop => {
                         turn_exit_reason = crate::guardrails::Exit::SpendCapReached;
                         break;
                     }
@@ -4281,33 +4173,16 @@ async fn run_loop(
             }
 
             // Pattern 13: background tool summary generation via cheap model.
-            // Spawns a fire-and-forget task that calls the cheapest provider to
-            // generate a one-line label for the UX showing what the agent did.
-            // Rate-limited per session (see TOOL_SUMMARY_MIN_GAP) — ungated this
-            // was a third of all LLM requests.
-            if tool_summary_due(session_id, std::time::Instant::now()) {
-                let prov_lock = providers.read().await;
-                let prov_snapshot: Vec<Arc<dyn Provider>> = prov_lock.clone();
-                drop(prov_lock);
-                let summary_tx = tx.clone();
-                let summary_assistant = assistant_content.clone();
-                let summary_tcs = summary_tool_calls;
-                let summary_trace = side_trace("tool_summary");
-                let summary_trs = summary_tool_results;
-                tokio::spawn(async move {
-                    if let Some(summary) = crate::summarizer::summarize_tool_batch(
-                        summary_trace,
-                        &prov_snapshot,
-                        &summary_tcs,
-                        &summary_trs,
-                        &summary_assistant,
-                    )
-                    .await
-                    {
-                        let _ = summary_tx.send(StreamEvent::tool_summary(summary)).await;
-                    }
-                });
-            }
+            after_turn::hand_off_tool_summary(
+                session_id,
+                providers,
+                tx,
+                &assistant_content,
+                summary_tool_calls,
+                summary_tool_results,
+                side_trace("tool_summary"),
+            )
+            .await;
 
             // Reset post-tool nudge flag after successful tool execution
             // so it can fire again if the model goes empty on a later tool round.
@@ -4634,110 +4509,29 @@ async fn run_loop(
     cross_turn_save(session_id, &action_call_counts, guard_cfg.same_action_limit);
 
     // Debounced memory extraction: only runs after 5s idle per session.
-    // Extract from last exchange only (last user msg + assistant response + tool
-    // calls) to avoid re-extracting facts from old messages and creating duplicates.
-    let has_providers = !providers.read().await.is_empty();
-    let final_taint: Vec<types::provenance::ProvenanceClass> =
-        run_taint.lock().unwrap().iter().copied().collect();
-    let extraction_barred = final_taint.iter().any(|c| memory_write_bar.contains(c));
-    if extraction_barred {
-        info!(
-            session_id,
-            classes = %types::provenance::label_classes(&final_taint),
-            "memory extraction barred by scope write bar"
-        );
+    after_turn::MemoryExtraction {
+        sessions,
+        session_id,
+        providers,
+        store,
+        concurrency,
+        embedding_provider,
+        decide,
+        memory_user_id: &memory_user_id,
+        memory_topics: &memory_topics,
+        memory_write_bar: &memory_write_bar,
+        run_taint,
+        objective: &active_task,
+        skip_memory,
+        gate_trace: side_trace("memory_gate"),
+        trace: side_trace("memory_extract"),
     }
-    if !skip_memory && has_providers && !extraction_barred {
-        let all_msgs = sessions.get_messages(session_id).unwrap_or_default();
-        // Find the last user message and take everything from there onward.
-        let last_exchange: Vec<_> = {
-            let last_user_idx = all_msgs.iter().rposition(|m| m.role == "user");
-            match last_user_idx {
-                Some(idx) => all_msgs[idx..].to_vec(),
-                None => vec![],
-            }
-        };
-        if last_exchange.len() >= 2 {
-            use crate::memory_debounce::MemoryDebouncer;
-            use std::sync::OnceLock;
-            static DEBOUNCER: OnceLock<MemoryDebouncer> = OnceLock::new();
-            let debouncer = DEBOUNCER.get_or_init(MemoryDebouncer::default);
+    .schedule()
+    .await;
 
-            let providers = providers.clone();
-            let store = store.clone();
-            let mem_uid = memory_user_id.clone();
-            let session_id_owned = session_id.to_string();
-            let embed_prov = embedding_provider.cloned();
-            let topics = memory_topics.clone();
-            let taint = final_taint.clone();
-            let conc = concurrency.clone();
-            // The gate's judge is the runner's own decide handle (the one
-            // client the server builds); the objective line is evidence.
-            let decide = decide.cloned();
-            let objective = active_task.clone();
-            let gate_trace = side_trace("memory_gate");
-            let trace = side_trace("memory_extract");
-
-            debouncer
-                .schedule(session_id, move || async move {
-                    // One typed decision before the chat-model extraction:
-                    // skip only when the new turn plausibly holds nothing
-                    // durable; every doubt runs extraction as before.
-                    let gate_state = crate::memory_gate::gate_state(&last_exchange, &objective);
-                    if !crate::memory_gate::should_extract(decide.as_deref(), &gate_trace, &gate_state).await {
-                        debug!(
-                            session_id = session_id_owned,
-                            "memory extraction skipped: nothing durable in the turn"
-                        );
-                        return;
-                    }
-                    let resolved = {
-                        let prov_lock = providers.read().await;
-                        resolve_aux(&config::ModelsConfig::load(), &prov_lock)
-                            .or_else(|| prefer_non_gateway(&prov_lock).map(|p| (p, String::new())))
-                            .map(|(p, m)| (conc.background(p), m))
-                    };
-                    if let Some((provider, aux_model)) = resolved {
-                        if let Some(facts) = memory::extract_facts(
-                            trace,
-                            provider.as_ref(),
-                            &last_exchange,
-                            Some(&store),
-                            Some(&mem_uid),
-                            &topics,
-                            &aux_model,
-                        )
-                        .await
-                        {
-                            memory::store_facts(
-                                &store, &facts, &mem_uid, embed_prov, &topics, &taint,
-                            );
-                            debug!(
-                                session_id = session_id_owned,
-                                "extracted and stored memory facts"
-                            );
-                        }
-                    }
-                })
-                .await;
-        }
-    }
-
-    // Background personality synthesis: if enough style observations exist,
-    // synthesize a personality directive. Runs at most once per run (spawned
-    // as a background task so it doesn't block the response).
+    // Background personality synthesis (at most once per run).
     if !skip_memory {
-        let store_clone = store.clone();
-        let providers_clone = providers.clone();
-        let uid = memory_user_id.clone();
-        let conc = concurrency.clone();
-        let handle = tokio::spawn(async move {
-            let prov = prefer_non_gateway(&providers_clone.read().await).map(|p| conc.background(p));
-            if let Some(prov) = prov {
-                crate::personality::synthesize_directive(&store_clone, prov.as_ref(), &uid).await;
-            }
-        });
-        crate::memory_flush::track_extraction(handle).await;
+        after_turn::spawn_personality_synthesis(store, providers, &memory_user_id, concurrency).await;
     }
 
     // The run becomes a record: what it cost, and (later, per role) what it
@@ -4751,7 +4545,7 @@ async fn run_loop(
     // By the session KEY, not its UUID: the key names the run
     // (`agent:<id>:workflow:<run>:…`); the UUID classified every workflow
     // turn as a chat with no run id, so no run ever had a cost to sum.
-    record_run_usage(
+    usage::record_run_usage(
         store,
         selector,
         agent_id,
@@ -4763,154 +4557,16 @@ async fn run_loop(
 
     // Context accounting for the owner: one event per turn, rendered as a
     // quiet line under the reply (Stage 8), never as reply text.
-    {
-        let ledger = read_ledger.stats();
-        let _ = tx
-            .send(StreamEvent::context_stats(serde_json::json!({
-                "files": ledger.files,
-                "files_reread": ledger.files_reread,
-                "redundant_reads": ledger.redundant_observations,
-                "compaction_passes": ctx_compaction_passes,
-                "evictions": ctx_evictions,
-                "spilled_results": ctx_spilled_results,
-                "input_tokens": state.total_input_tokens,
-                "cache_read_tokens": state.total_cache_read_tokens,
-            })))
-            .await;
-    }
+    usage::send_context_stats(
+        tx,
+        read_ledger.stats(),
+        ctx_compaction_passes,
+        ctx_evictions,
+        ctx_spilled_results,
+        &state,
+    )
+    .await;
     Ok(turn_exit_reason.label())
-}
-
-/// Persists the finished run's usage. Cost is computed from models.yaml
-/// pricing at write time; a model with no pricing records zero rather than a
-/// wrong number — a silently invented figure is worse than a visibly missing
-/// one, because this number ends up on an invoice.
-fn record_run_usage(
-    store: &Arc<Store>,
-    selector: &ModelSelector,
-    agent_id: &str,
-    session_id: &str,
-    model_name: &str,
-    state: &RunState,
-    exit_reason: &str,
-) {
-    if state.total_input_tokens == 0 && state.total_output_tokens == 0 {
-        // Nothing was spent — a run that never reached a provider (immediate
-        // cancellation, empty prompt) has no cost to record.
-        return;
-    }
-
-    let (run_type, run_id) = classify_run(session_id);
-    let cost = turn_cost_microcents(selector, model_name, state);
-
-    let entry = db::models::RunUsageEntry {
-        agent_id: agent_id.to_string(),
-        session_key: Some(session_id.to_string()),
-        run_id,
-        run_type: run_type.to_string(),
-        model_id: model_name.to_string(),
-        input_tokens: state.total_input_tokens as i64,
-        output_tokens: state.total_output_tokens as i64,
-        cache_read_tokens: state.total_cache_read_tokens as i64,
-        cache_creation_tokens: state.total_cache_creation_tokens as i64,
-        cost_microcents: cost,
-        outcome: None,
-        exit_reason: Some(exit_reason.to_string()),
-    };
-    if let Err(e) = store.record_run_usage(&entry) {
-        // Loudly: this row is money. But the work is already done, and
-        // failing a finished run over its receipt would be worse.
-        tracing::error!(session_id, error = %e, "failed to record run usage");
-    }
-}
-
-/// classify_run derives what kind of run a session key names, and for the
-/// canonical workflow form, which workflow run it was — the join that lets
-/// "what did this workflow cost" be answered at all.
-/// What the owner's limit says about a run at this point in its loop.
-#[derive(Debug, PartialEq)]
-enum SpendCapVerdict {
-    Under,
-    /// Reached, and no wrap-up turn yet: give the model one to report.
-    WrapUp,
-    /// Reached after the wrap-up turn: stop.
-    Stop,
-}
-
-fn spend_cap_verdict(spent_microcents: i64, cap_microcents: i64, wrap_up_issued: bool) -> SpendCapVerdict {
-    if cap_microcents <= 0 || spent_microcents < cap_microcents {
-        SpendCapVerdict::Under
-    } else if wrap_up_issued {
-        SpendCapVerdict::Stop
-    } else {
-        SpendCapVerdict::WrapUp
-    }
-}
-
-/// What one loop's turns cost, in microcents — the ONE pricing rule for the
-/// ledger and the owner's limit. The provider's own figure when it reported
-/// one (Janus prices the model it actually routed to); otherwise the local
-/// price table, which for a routed alias such as nebo-1 knows nothing and
-/// yields 0.
-fn turn_cost_microcents(selector: &ModelSelector, model_name: &str, state: &RunState) -> i64 {
-    if state.cost_microdollars > 0 {
-        // microdollars → microcents
-        return state.cost_microdollars * 100;
-    }
-    selector
-        .get_model_info(model_name)
-        .map(|info| {
-            db::cost_microcents(
-                state.total_input_tokens as i64,
-                state.total_output_tokens as i64,
-                state.total_cache_read_tokens as i64,
-                state.total_cache_creation_tokens as i64,
-                info.input_price,
-                info.output_price,
-                info.cached_input_price,
-            )
-        })
-        .unwrap_or(0)
-}
-
-/// What this run has cost so far: every turn already recorded against its
-/// run id, plus the current turn priced the same way record_run_usage will.
-fn run_spend_so_far(
-    store: &Arc<Store>,
-    selector: &ModelSelector,
-    session_key: &str,
-    model_name: &str,
-    state: &RunState,
-) -> i64 {
-    let (_, run_id) = classify_run(session_key);
-    let recorded = run_id
-        .as_deref()
-        .and_then(|id| store.run_spend_microcents(id).ok())
-        .unwrap_or(0);
-    recorded + turn_cost_microcents(selector, model_name, state)
-}
-
-fn classify_run(session_id: &str) -> (&'static str, Option<String>) {
-    if session_id.starts_with("heartbeat-") {
-        return ("heartbeat", None);
-    }
-    if let Some(idx) = session_id.find(":workflow:") {
-        // `agent:<id>:workflow:<run>:<activity>::<n>` — the run id is the
-        // segment, not the rest of the key; the cost join is on the run.
-        let rest = &session_id[idx + ":workflow:".len()..];
-        let run_id = rest.split(':').next().unwrap_or("");
-        if !run_id.is_empty() {
-            return ("workflow", Some(run_id.to_string()));
-        }
-        return ("workflow", None);
-    }
-    // The engine's legacy key ("workflow-{def}-{run}") is ambiguous — both
-    // segments may contain hyphens — so it classifies without a join rather
-    // than guessing a wrong id into a money table.
-    if session_id.starts_with("workflow-") {
-        return ("workflow", None);
-    }
-    ("chat", None)
 }
 
 /// Load workspace context from `.nebo.md` or `NEBO.md`.
@@ -6103,78 +5759,11 @@ mod tests {
         cancel.cancel();
         assert!(turn_is_closing(&turns, "k"), "a stopped turn is closing too");
     }
-
-    // classify_run feeds a money table: a wrong run_id joins someone's cost
-    // to the wrong workflow, so the parse gets a check rather than a comment.
-    #[test]
-    fn spend_cap_escalates_once_then_stops() {
-        // Off, or under: nothing.
-        assert_eq!(spend_cap_verdict(5_000_000, 0, false), SpendCapVerdict::Under);
-        assert_eq!(spend_cap_verdict(99, 100, false), SpendCapVerdict::Under);
-        // Reached: one wrap-up turn first, never a silent kill.
-        assert_eq!(spend_cap_verdict(100, 100, false), SpendCapVerdict::WrapUp);
-        // Still reached after the wrap-up: stop.
-        assert_eq!(spend_cap_verdict(100, 100, true), SpendCapVerdict::Stop);
-    }
-
-    #[test]
-    fn classify_run_reads_every_session_key_shape() {
-        // Canonical workflow key carries the run id for the cost join.
-        assert_eq!(
-            classify_run("agent:abc:workflow:run-123-xyz"),
-            ("workflow", Some("run-123-xyz".to_string()))
-        );
-        // The real key carries the activity and loop index after the run id.
-        assert_eq!(
-            classify_run("agent:abc:workflow:run-123-xyz:store-snapshot::2"),
-            ("workflow", Some("run-123-xyz".to_string()))
-        );
-        // The legacy engine key is ambiguous (both segments may contain
-        // hyphens) — classified, but never a guessed id in a money table.
-        assert_eq!(classify_run("workflow-def-1-run-2"), ("workflow", None));
-        assert_eq!(classify_run("heartbeat-agent-42"), ("heartbeat", None));
-        assert_eq!(classify_run("agent:abc:desktop"), ("chat", None));
-        assert_eq!(classify_run("subagent:parent:child"), ("chat", None));
-        // A truncated workflow key must not record an empty-string id.
-        assert_eq!(classify_run("agent:abc:workflow:"), ("workflow", None));
-    }
 }
 
 #[cfg(test)]
 mod runaway_backstop_tests {
     use super::*;
-
-    /// The tool-summary label is a caption, not work. Once per iteration made it
-    /// 30.1% of all LLM requests in the incident; it is rate-limited per session.
-    #[test]
-    fn tool_summary_label_is_rate_limited() {
-        let sid = "label-test-session";
-        TOOL_SUMMARY_LAST.lock().unwrap().remove(sid);
-        let t0 = std::time::Instant::now();
-
-        assert!(tool_summary_due(sid, t0), "first label always lands");
-        // A fast loop: ten tool rounds inside the gap produce no further labels.
-        for i in 1..=10 {
-            let t = t0 + std::time::Duration::from_secs(i);
-            assert!(!tool_summary_due(sid, t), "no label {i}s into the gap");
-        }
-        // Past the gap, labelling resumes.
-        assert!(
-            tool_summary_due(sid, t0 + TOOL_SUMMARY_MIN_GAP),
-            "label resumes after the gap"
-        );
-    }
-
-    /// Sessions are rate-limited independently.
-    #[test]
-    fn tool_summary_limit_is_per_session() {
-        let t = std::time::Instant::now();
-        for sid in ["label-a", "label-b"] {
-            TOOL_SUMMARY_LAST.lock().unwrap().remove(sid);
-        }
-        assert!(tool_summary_due("label-a", t));
-        assert!(tool_summary_due("label-b", t));
-    }
 
     /// The compaction gate: an eviction on every iteration must NOT produce an
     /// LLM summary on every iteration. Reproduces the 2026-08-27 ratio (0.97
