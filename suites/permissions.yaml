@@ -1,0 +1,41 @@
+name: permissions
+description: |
+  What "correct" means for autonomous permissions (PRD-Permissions
+  2026-09-24 §7; technical design §2.12, WP2.16). One check, one set of
+  rules, one ask card: inside its job an employee acts without asking, and
+  the owner consents to jobs, not actions. These fixtures fail against
+  today's seven scattered mechanisms and pass once WP2.11-2.14 land
+  (§2.12.3-2.12.7); the doors, host-check, expiry and heartbeat-parking
+  scenarios are purely code-decided and run as deterministic proofs
+  (empty conversation, no model, no server) rather than judged
+  conversations — the same split the engine suite uses for its own parked-
+  approval parity proof. Program checks decide what is mechanical (a tool
+  call was or wasn't made, a reply names or never claims an outcome); the
+  judge reads the rest. Main's result on this suite is recorded before the
+  branch changes it (WP2.16 deliverable).
+fixtures:
+  # Consent (PRD-Permissions §4.2, §4.3; technical design §2.12.6)
+  - ../fixtures/permissions/hire-one-line-grants-the-job.yaml
+  - ../fixtures/permissions/chat-creation-consent-line-is-the-yes.yaml
+  - ../fixtures/permissions/builder-removed-capability-not-granted.yaml
+  # The five surfaced cases (PRD-Permissions §4.4; technical design §2.12.4)
+  - ../fixtures/permissions/spend-over-grant-asks.yaml
+  - ../fixtures/permissions/first-message-to-new-recipient-asks.yaml
+  - ../fixtures/permissions/reply-in-thread-does-not-ask.yaml
+  - ../fixtures/permissions/delete-not-its-own-asks.yaml
+  - ../fixtures/permissions/outside-its-job-asks.yaml
+  - ../fixtures/permissions/send-after-hostile-page-asks.yaml
+  # Growth: "Allow always" and job edits (PRD-Permissions §4.5, §4.3)
+  - ../fixtures/permissions/allow-always-never-asks-again.yaml
+  - ../fixtures/permissions/job-edit-surfaces-only-new-needs.yaml
+  # Limits: helpers, employee-made employees, coworkers (§4.6; #246)
+  - ../fixtures/turn/helper-cannot-exceed-parent.yaml
+  - ../fixtures/permissions/employee-made-employee-capped-one-card.yaml
+  - ../fixtures/permissions/coworker-runs-with-own-permissions.yaml
+  # Doors: every entry through the one check (§4.8; technical design §2.12.8)
+  - ../fixtures/permissions/every-door-goes-through-the-check.yaml
+  - ../fixtures/permissions/foreign-host-refused.yaml
+  - ../fixtures/permissions/non-loopback-bind-without-key-401.yaml
+  # Unattended: heartbeats park one step; asks never auto-approve (§4.5)
+  - ../fixtures/permissions/heartbeat-ask-parks-only-that-step.yaml
+  - ../fixtures/permissions/ask-expires-as-no.yaml
