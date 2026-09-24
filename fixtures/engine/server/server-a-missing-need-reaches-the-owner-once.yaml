@@ -1,0 +1,16 @@
+id: server-a-missing-need-reaches-the-owner-once
+name: "A missing need reaches the owner once"
+description: |
+  An employee's missing need reaches the owner once. Pre-flight holds the fires
+  of a binding whose plugin is missing and hands every held fire's need on; the
+  owner is told the first, never the fires held after it, and a different need
+  is told. The need met (its record clears) is forgotten, so its return is told
+  again. A run blocked for want of an account is told the same way: a repeat is
+  quiet, a failure in between changes nothing, each binding is told for itself,
+  and a run that completes means the need was met, so the next block is news.
+  A need standing from before the owner could be told is told once. Each notice
+  names the employee and the duty in plain words and opens the one place that
+  fixes it; nothing is installed or connected for the owner.
+target_component: engine
+proof: engine::proof::server::a_missing_need_reaches_the_owner_once
+conversation: []

@@ -1132,13 +1132,17 @@ async fn drive(state: &AppState) {
 
 /// Fire-time pre-flight (`crate::preflight`) for a workflow binding's fire:
 /// true runs it. A fire of no binding declares nothing and runs. Checked on
-/// every fire, before triage, at no token cost.
+/// every fire, before triage, at no token cost. The owner hears a missing
+/// need once (`crate::workflow_manager::tell_owner_need`).
 fn preflight_admits(state: &AppState, run: &EngineRun) -> bool {
     let Some((agent_id, binding)) = crate::preflight::fire_binding(&state.store, run) else {
         return true;
     };
     let unmet = crate::preflight::unmet_need_now(&state.store, &state.plugin_store, &agent_id, &binding);
-    crate::preflight::admit(&state.store, run, &agent_id, &binding, unmet, now())
+    let announce = |need: &str| {
+        crate::workflow_manager::tell_owner_need(&state.store, &state.hub, &state.config.neboai.api_url, &agent_id, &binding, need);
+    };
+    crate::preflight::admit(&state.store, run, &agent_id, &binding, unmet, now(), &announce)
 }
 
 // ── heartbeat triage: one decision before a timer fire runs ──────────────

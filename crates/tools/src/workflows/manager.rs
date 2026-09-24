@@ -174,6 +174,12 @@ pub trait WorkflowManager: Send + Sync {
         run_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
+    /// A binding cannot run until the owner supplies what `need` names (a
+    /// plugin its watch trigger needs; its record already says so). The
+    /// server's manager tells the owner once per need. Default no-op so test
+    /// doubles don't have to care.
+    fn announce_binding_need(&self, _agent_id: &str, _binding_name: &str, _need: &str) {}
+
     /// Cancel all running workflows for a given agent. Default no-op.
     fn cancel_runs_for_agent<'a>(
         &'a self,

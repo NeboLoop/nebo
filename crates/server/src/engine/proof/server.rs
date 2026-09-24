@@ -162,3 +162,132 @@ fn the_webhook_door_routes_people_to_their_case_and_the_rest_to_a_plain_run() {
     assert!(matches!(route_webhook(&w.s, "ic", "missing", Some(body), "m", w.t), Err(types::NeboError::Validation(_))));
     assert!(matches!(route_webhook(&w.s, "nobody", "work-lead", Some(body), "m", w.t), Err(types::NeboError::NotFound)));
 }
+
+/// An employee's missing need reaches the owner once. Pre-flight holds the
+/// fires of a binding whose plugin is missing and hands every held fire's
+/// need on; the owner is told the first, never the fires held after it, and
+/// a different need is told. The need met (its record clears) is forgotten,
+/// so its return is told again. A run blocked for want of an account is
+/// told the same way: a repeat is quiet, a failure in between changes
+/// nothing, each binding is told for itself, and a run that completes means
+/// the need was met, so the next block is news. A need standing from before
+/// the owner could be told is told once. Each notice names the employee and
+/// the duty in plain words and opens the one place that fixes it; nothing is
+/// installed or connected for the owner.
+#[test]
+fn a_missing_need_reaches_the_owner_once() {
+    let w = World::new();
+    w.s.create_agent("rcp", None, "Receptionist", "", "", "{}", None, None).unwrap();
+    for binding in ["answer-inbound", "front-desk-report", "callback-watch"] {
+        w.s.upsert_agent_workflow("rcp", binding, "heartbeat", "30m", None, None, None, None, None, false).unwrap();
+    }
+    // What the owner hears: every need handed on, told only when it is news.
+    let told = std::cell::RefCell::new(Vec::<String>::new());
+    let tell = |binding: &str, need: &str| {
+        if w.s.tell_binding_need("rcp", binding, need).unwrap() {
+            told.borrow_mut().push(format!("{binding}: {need}"));
+        }
+    };
+
+    // Pre-flight: a missing plugin.
+    let announce = |need: &str| tell("answer-inbound", need);
+    let fire = |id: &str, unmet: Option<&str>| {
+        w.s.engine_create_run(&NewRun {
+            id,
+            kind: "task",
+            session_key: "heartbeat-binding-rcp-answer-inbound",
+            agent_id: "rcp",
+            lane: "main",
+            inputs: Some(r#"{"command":"agent:rcp:answer-inbound","trigger":"heartbeat"}"#),
+            external_ref: Some("hb:rcp:answer-inbound"),
+            ..Default::default()
+        })
+        .unwrap();
+        crate::preflight::admit(&w.s, &w.run(id), "rcp", "answer-inbound", unmet.map(String::from), w.t, &announce)
+    };
+    let need = "needs a telephony plugin";
+    assert!(!fire("f1", Some(need)));
+    assert!(!fire("f2", Some(need)));
+    assert!(!fire("f3", Some(need)));
+    assert_eq!(*told.borrow(), ["answer-inbound: needs a telephony plugin"], "three held fires, one notice");
+    assert!(!fire("f4", Some("needs the voiceline plugin turned on")));
+    assert_eq!(told.borrow().len(), 2, "a different need is told");
+    assert!(fire("f5", None), "the need is met: the fire runs");
+    assert_eq!(told.borrow().len(), 2, "a met need tells nothing");
+    assert!(!fire("f6", Some(need)));
+    assert_eq!(told.borrow().len(), 3, "the need returns: told again");
+    // A watch trigger's start records the same need on every start (the
+    // agent worker); the owner was told it already.
+    tell("answer-inbound", need);
+    assert_eq!(told.borrow().len(), 3, "a restart tells nothing new");
+
+    // A run blocked for want of an account.
+    let refusal = "No phonecall account is connected for this agent. Connect one in this agent's Settings, Plugins before using phonecall.";
+    let blocked = format!("blocked: {refusal}");
+    let runs = std::cell::Cell::new(0);
+    let end = |binding: &str, status: &str, error: Option<&str>| {
+        runs.set(runs.get() + 1);
+        let id = format!("wf-{}", runs.get());
+        w.s.create_workflow_run(&id, "agent:rcp", "schedule", Some(binding), None, None, None).unwrap();
+        w.s.complete_workflow_run(&id, status, 0, error, None, None).unwrap();
+        if let Some(outcome) = crate::preflight::blocked_outcome(&w.s, &id) {
+            tell(binding, &outcome);
+        }
+    };
+    let told_now = || told.borrow().len();
+    end("front-desk-report", "exited", Some(&blocked));
+    assert_eq!(told_now(), 4, "the first block is told");
+    assert_eq!(told.borrow()[3], format!("front-desk-report: {blocked}"));
+    end("front-desk-report", "exited", Some(&blocked));
+    assert_eq!(told_now(), 4, "the same block again is quiet");
+    end("front-desk-report", "failed", Some("provider error: 503"));
+    end("front-desk-report", "exited", Some("Nothing to report today."));
+    end("front-desk-report", "exited", Some(&blocked));
+    assert_eq!(told_now(), 4, "a failure or a quiet exit in between changes nothing");
+    end("callback-watch", "exited", Some(&blocked));
+    assert_eq!(told_now(), 5, "each binding is told for itself");
+    end("front-desk-report", "completed", None);
+    end("front-desk-report", "exited", Some(&blocked));
+    assert_eq!(told_now(), 6, "met, then back: told again");
+
+    // A need standing from before the owner could be told: its record is
+    // there, nothing was told, so the next held fire tells it once.
+    w.s.upsert_agent_workflow("rcp", "voicemail-sweep", "heartbeat", "15m", None, None, None, None, None, false).unwrap();
+    w.s.set_agent_workflow_degraded_reason("rcp", "voicemail-sweep", need).unwrap();
+    tell("voicemail-sweep", need);
+    tell("voicemail-sweep", need);
+    assert_eq!(told_now(), 7, "a standing need is told once");
+
+    // The words.
+    let n = crate::preflight::plugin_need_notice("Receptionist", "answer-inbound", need);
+    assert!(n.id.starts_with("need:"));
+    assert_eq!(n.title, "Receptionist needs a telephony plugin");
+    assert_eq!(
+        n.body,
+        "Receptionist is holding \"answer inbound\" until then. Add the plugin or turn it on in Plugins. \
+         The duty goes ahead on its own after that."
+    );
+    assert_eq!(n.link, "/settings/plugins");
+    let installed = [("phonecall".to_string(), "Phonecall".to_string()), ("phone".to_string(), "Phone".to_string())];
+    let named = crate::preflight::plugin_named_in(refusal, &installed).map(|(s, n)| (s.as_str(), n.as_str()));
+    assert_eq!(named, Some(("phonecall", "Phonecall")), "the refusal names the plugin by its slug");
+    assert_eq!(crate::preflight::plugin_named_in("No mail account is connected.", &installed), None);
+    let a = crate::preflight::account_need_notice("Receptionist", "rcp", "front-desk-report", named);
+    assert_eq!(a.title, "Receptionist needs Phonecall connected");
+    assert_eq!(
+        a.body,
+        "Receptionist can't do \"front desk report\" until a Phonecall account is connected for it. \
+         Connect one in Receptionist's accounts. The duty goes ahead on its own after that."
+    );
+    assert_eq!(a.link, "/rcp/settings/accounts?plugin=phonecall");
+    let unnamed = crate::preflight::account_need_notice("Receptionist", "rcp", "callback-watch", None);
+    assert_eq!(unnamed.title, "Receptionist needs an account connected");
+    assert_eq!(unnamed.link, "/rcp/settings/accounts");
+    // The owner's words: an employee, never an agent; nothing unsteady.
+    for notice in [&n, &a, &unnamed] {
+        let text = format!("{} {}", notice.title, notice.body).to_lowercase();
+        for banned in ["agent", "wake", "sleep", "restart", "may be"] {
+            assert!(!text.contains(banned), "{banned:?} in {text:?}");
+        }
+    }
+}

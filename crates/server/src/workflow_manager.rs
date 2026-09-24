@@ -1748,6 +1748,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                             }),
                         );
                         record_run_outcome(&store, &agent_id_owned, &binding_name, "completed", &output);
+                        // A standing outcome ends the run Ok; one blocked on a
+                        // missing account is the owner's to fix.
+                        tell_owner_if_blocked(&store, &hub, &neboai_api_url, &agent_id_owned, &binding_name, &run_id_clone);
                         info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow completed");
                     }
                     Err(workflow::WorkflowError::AwaitingApproval { operation, display }) => {
@@ -1790,6 +1793,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                         record_run_end(&store, &run_id_clone, &end);
                         if let RunEnd::Exited(reason) = &end {
                             record_run_outcome(&store, &agent_id_owned, &binding_name, "exited", reason);
+                            tell_owner_if_blocked(&store, &hub, &neboai_api_url, &agent_id_owned, &binding_name, &run_id_clone);
                             hub.broadcast(
                                 "workflow_run_exited",
                                 serde_json::json!({
@@ -1903,6 +1907,10 @@ impl WorkflowManager for WorkflowManagerImpl {
         run_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move { self.cancel_run(run_id).await })
+    }
+
+    fn announce_binding_need(&self, agent_id: &str, binding_name: &str, need: &str) {
+        tell_owner_need(&self.store, &self.hub, &self.config.neboai.api_url, agent_id, binding_name, need);
     }
 
     fn cancel_runs_for_agent<'a>(
@@ -2026,6 +2034,123 @@ fn notify_workflow_approval(
             },
         }),
     );
+}
+
+/// Owner notification that an employee cannot do a duty until the owner
+/// supplies something (`crate::preflight::NeedNotice`). Same Inbox +
+/// broadcast pathway as failure notifications, mirrored to the owner's web
+/// inbox like approvals. Deep-linked to the one place that fixes it; never
+/// installs or connects anything itself.
+pub(crate) fn notify_binding_need(
+    store: &db::Store,
+    hub: &ClientHub,
+    api_url: &str,
+    agent_id: &str,
+    notice: &crate::preflight::NeedNotice,
+) {
+    tools::owner_notify::emit(
+        store,
+        Some(&|ev, payload| hub.broadcast(ev, payload)),
+        &tools::owner_notify::OwnerNotification {
+            id: &notice.id,
+            kind: "warning",
+            title: &notice.title,
+            body: Some(&notice.body),
+            action_url: Some(&notice.link),
+            agent_id: Some(agent_id),
+            loud: false,
+        },
+    );
+    crate::codes::push_inbox_via(
+        store,
+        api_url,
+        serde_json::json!({
+            "id": notice.id,
+            "type": "warning",
+            "title": notice.title,
+            "body": notice.body,
+            "link": notice.link,
+        }),
+    );
+}
+
+/// Tell the owner, once, that an employee's duty stands on `need`: a need
+/// its binding's record names (`needs a telephony plugin`), or the standing
+/// outcome of a run blocked for want of an account (`blocked: No …`). Every
+/// held fire and blocked run comes here; only the first of a need is news
+/// (`db::Store::tell_binding_need`). A blocked run on an account that exists
+/// but stopped working is left to the reconnect notice
+/// (`tools::plugin_tool::notify_plugin_needs_reauth`), which already tells
+/// the owner once per spell.
+pub(crate) fn tell_owner_need(
+    store: &db::Store,
+    hub: &ClientHub,
+    api_url: &str,
+    agent_id: &str,
+    binding_name: &str,
+    need: &str,
+) {
+    match store.tell_binding_need(agent_id, binding_name, need) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            warn!(role = %agent_id, binding = %binding_name, error = %e, "could not record the need told to the owner");
+            return;
+        }
+    }
+    let employee = store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .map(|a| a.name)
+        .unwrap_or_else(|| agent_id.to_string());
+    let notice = match workflow::WorkflowError::blocked_refusal(need) {
+        None => crate::preflight::plugin_need_notice(&employee, binding_name, need),
+        Some(refusal) => {
+            let installed: Vec<(String, String)> = store
+                .list_installed_plugins()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| {
+                    let name = [&p.display_name, &p.name]
+                        .into_iter()
+                        .find(|n| !n.trim().is_empty())
+                        .cloned()
+                        .unwrap_or_else(|| p.slug.clone());
+                    (p.slug, name)
+                })
+                .collect();
+            let plugin = crate::preflight::plugin_named_in(refusal, &installed);
+            if let Some((slug, _)) = plugin {
+                if !store.list_plugin_account_profiles(agent_id, slug).unwrap_or_default().is_empty() {
+                    return;
+                }
+            }
+            crate::preflight::account_need_notice(
+                &employee,
+                agent_id,
+                binding_name,
+                plugin.map(|(slug, name)| (slug.as_str(), name.as_str())),
+            )
+        }
+    };
+    info!(role = %agent_id, binding = %binding_name, %need, "binding stands on a need; owner told");
+    notify_binding_need(store, hub, api_url, agent_id, &notice);
+}
+
+/// After a binding's run ends: a run blocked for want of an account is the
+/// owner's to fix ([`tell_owner_need`]).
+fn tell_owner_if_blocked(
+    store: &db::Store,
+    hub: &ClientHub,
+    api_url: &str,
+    agent_id: &str,
+    binding_name: &str,
+    run_id: &str,
+) {
+    if let Some(outcome) = crate::preflight::blocked_outcome(store, run_id) {
+        tell_owner_need(store, hub, api_url, agent_id, binding_name, &outcome);
+    }
 }
 
 fn notify_workflow_failure(

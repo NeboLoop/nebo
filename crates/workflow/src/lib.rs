@@ -88,6 +88,13 @@ impl WorkflowError {
             _ => None,
         }
     }
+
+    /// The tool's refusal inside a standing outcome that a `Blocked` end
+    /// recorded, or None for every other outcome — the inverse of `Blocked`'s
+    /// display, kept beside it so the two cannot drift.
+    pub fn blocked_refusal(outcome: &str) -> Option<&str> {
+        outcome.strip_prefix("blocked: ")
+    }
 }
 
 impl From<types::NeboError> for WorkflowError {

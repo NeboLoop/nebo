@@ -447,6 +447,11 @@ impl Store {
                 self.record_standing_outcome(id, reason, now())?;
             }
         }
+        // A run that did its work: whatever need its binding was told to
+        // stand on is met, so its return would be news.
+        if status == "completed" {
+            self.forget_told_need_of_run(id)?;
+        }
         Ok(())
     }
 
