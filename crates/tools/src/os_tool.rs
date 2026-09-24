@@ -399,6 +399,11 @@ impl OsTool {
                 "shell"
             }
             "move" if has("app") => "window",
+            // `action: "menu", name: "Edit > Find"` means choose that item.
+            "menu" if has("name") => "menu",
+            // "Edit > Select All" is a menu path, whatever resource was left out.
+            "click" if input.get("name").and_then(|v| v.as_str()).is_some_and(|n| n.contains('>')) => "menu",
+            "list" if has("app") && has("name") => "menu",
             "click" if has("name") => "dialog",
             "click" if has("label") || has("role") => "ui",
             "click" if has("app") && !has_input_target => "ui",
@@ -423,7 +428,7 @@ impl OsTool {
             "click" | "type" | "press" | "move" | "double_click" | "right_click" | "hotkey"
             | "scroll" | "drag" | "paste" => "input",
             // Capture ("capture" is what the desktop straps call a screenshot)
-            "screenshot" | "see" | "capture" => "capture",
+            "screenshot" | "see" | "capture" | "wait" => "capture",
             // Settings: every setting is its own action name
             "volume" | "brightness" | "mute" | "unmute" | "wifi" | "bluetooth" | "darkmode"
             | "battery" => "settings",
@@ -653,12 +658,12 @@ impl DynTool for OsTool {
          - file: read, write, edit, share, glob, grep, convert, checkpoint, checkpoints, restore, plan, plan_check — checkpoint snapshots the files you are about to change (paths: [...]) and restore puts them back (never git stash/reset); plan writes a work document whose steps each carry a verify command, and plan_check runs those commands and ticks only the steps that pass; to list a directory, glob its path (pattern defaults to *); share hands an EXISTING file to the user as a download card (a deck/PDF/binary already on disk — never recite its path or copy it to \"trigger\" a card); convert generates documents via embedded engines: .md→pdf/docx, .csv→xlsx, .jsx/.tsx→html (interactive React) (never use host binaries like wkhtmltopdf/pandoc)\n\
          - shell: exec, list (background sessions; with filter: system processes), poll, log, write (data), kill, info (session_id or pid)\n\
          - window: list, focus, minimize, maximize, resize, close, move\n\
-         - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste\n\
+         - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste — by ref through accessibility; right_click on a [menu] element opens its context menu and lists the items as refs; every act returns the window after it and says whether it was delivered and what changed; wait_for waits for text/an element/a menu instead of guessing a pause\n\
          - clipboard: read, write, clear\n\
-         - capture: screenshot, see\n\
+         - capture: screenshot, see (ref: drills into a +N container), wait (app + text | label | gone | menu | window)\n\
          - notification: send, alert\n\
          - ui: tree, find, click, get_value, set_value, list_apps\n\
-         - menu: list, menus, click, status, click_status\n\
+         - menu: list (name: \"File\" lists that menu), menus, click (name: \"File > Export…\"), status, click_status — the app's menu bar, read and pressed through accessibility\n\
          - dialog: detect, list, click, fill, dismiss\n\
          - space: list, switch, move_window\n\
          - shortcut: list, run\n\
@@ -883,8 +888,27 @@ impl DynTool for OsTool {
             "ref".into(),
             prop(
                 "string",
-                "Input click/type/move target: the element ref from capture(action: see) (e.g. B1, T2)",
+                "Input click/type/move target: the element ref from capture(action: see) (e.g. B1, T2). On capture see: drill into that element (a container marked +N inside) and list only its contents",
             ),
+        );
+        props.insert(
+            "wait_for".into(),
+            serde_json::json!({
+                "type": "object",
+                "description": "Input actions and capture wait: wait for something instead of a fixed pause — {text: \"Saved\"} | {appears: \"Export\"} | {gone: \"Loading\"} | {menu: true|false} | {window: true | \"title\"}, optional timeout_ms (default 5000, max 30000)"
+            }),
+        );
+        props.insert(
+            "target".into(),
+            prop("string", "Input click/type/right_click: the element in words (\"the Save button\") instead of a ref — resolved against the last capture: one element with exactly that label is used; otherwise Jev picks, and when it is not sure the call comes back with the reason and you choose the ref"),
+        );
+        props.insert(
+            "physical".into(),
+            prop("boolean", "Input click/type: use the real mouse and keyboard instead of accessibility. Off by default; an accessibility action that fails is reported, never silently replaced"),
+        );
+        props.insert(
+            "force".into(),
+            prop("boolean", "Input press: send a combo that logs out, locks or force-quits (refused without it)"),
         );
         props.insert(
             "element_id".into(),
@@ -1015,7 +1039,7 @@ impl DynTool for OsTool {
         match OsTool::resolved_resource(input) {
             "file" => matches!(action, "read" | "list" | "glob" | "grep" | "checkpoints"),
             "search" => true,
-            "capture" => matches!(action, "screenshot" | "see"),
+            "capture" => matches!(action, "screenshot" | "see" | "wait"),
             _ => false,
         }
     }
@@ -1629,6 +1653,17 @@ mod tests {
 
     /// Stadium 2026-09-23: `find` with `app` and `label` went to the keychain
     /// ("no password stored under Calculator") instead of the UI.
+    /// Stadium, 2026-09-24: `click name: "Edit > Select All"` and `list app
+    /// name: "Format"` sent without a resource are menu calls.
+    #[test]
+    fn a_menu_path_or_a_named_menu_routes_to_the_menu() {
+        let r = |v: serde_json::Value| OsTool::resolved_resource(&v).to_string();
+        assert_eq!(r(serde_json::json!({"action": "click", "name": "Edit > Select All"})), "menu");
+        assert_eq!(r(serde_json::json!({"action": "click", "app": "TextEdit", "name": "Edit > Select All"})), "menu");
+        assert_eq!(r(serde_json::json!({"action": "list", "app": "TextEdit", "name": "Format"})), "menu");
+        assert_eq!(r(serde_json::json!({"action": "click", "name": "OK"})), "dialog");
+    }
+
     #[test]
     fn a_find_inside_an_app_is_a_ui_search_not_a_keychain_lookup() {
         let input = serde_json::json!({"action": "find", "app": "Calculator", "label": "7"});

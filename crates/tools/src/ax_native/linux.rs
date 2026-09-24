@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn tree_args_carry_every_budget() {
-        let opts = WalkOpts { window: 2, depth: 5, max: 50, timeout: Duration::from_millis(1500) };
+        let opts = WalkOpts { window: 2, depth: 5, max: 50, timeout: Duration::from_millis(1500), root: None };
         assert_eq!(
             tree_args("Firefox", &opts),
             ["tree", "--app", "Firefox", "--window", "2", "--depth", "5", "--max", "50", "--timeout-ms", "1500"]

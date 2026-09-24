@@ -22,7 +22,7 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 pub struct AxNode {
     pub path: String,
     pub role: String,
@@ -42,6 +42,16 @@ pub struct AxNode {
     pub enabled: bool,
     #[serde(default)]
     pub focused: bool,
+    /// Children the walk's depth limit cut off here; drill in to see them.
+    #[serde(default)]
+    pub more: usize,
+    /// An item of the menu open right now (its path starts with "m:").
+    #[serde(default)]
+    pub menu: bool,
+    #[serde(default)]
+    pub shortcut: Option<String>,
+    #[serde(default)]
+    pub submenu: bool,
 }
 
 fn yes() -> bool {
@@ -56,6 +66,10 @@ pub struct AxTree {
     pub nodes: Vec<AxNode>,
     pub truncated: bool,
     pub elapsed_ms: u64,
+    /// Which budget cut a truncated walk ("node budget (400)", "time budget
+    /// (2000 ms)"), and the path it stopped at.
+    pub cut_by: String,
+    pub resume_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -64,11 +78,13 @@ pub struct WalkOpts {
     pub depth: usize,
     pub max: usize,
     pub timeout: Duration,
+    /// Walk only this node's subtree (a drill); paths stay window-relative.
+    pub root: Option<String>,
 }
 
 impl Default for WalkOpts {
     fn default() -> Self {
-        Self { window: 1, depth: 30, max: 400, timeout: Duration::from_secs(2) }
+        Self { window: 1, depth: 30, max: 400, timeout: Duration::from_secs(2), root: None }
     }
 }
 
@@ -90,6 +106,8 @@ pub fn parse_tree(lines: &str) -> Result<AxTree, String> {
         } else if v.get("elapsed_ms").is_some() || v.get("truncated").is_some() {
             tree.truncated = v["truncated"].as_bool().unwrap_or(false);
             tree.elapsed_ms = v["elapsed_ms"].as_u64().unwrap_or(0);
+            tree.cut_by = v["cut_by"].as_str().unwrap_or("").to_string();
+            tree.resume_at = v["resume_at"].as_str().unwrap_or("").to_string();
             saw_footer = true;
         } else {
             let node: AxNode =
@@ -280,6 +298,25 @@ pub async fn window(app: &str, index: usize) -> Result<WindowInfo, String> {
     }
 }
 
+/// Run one helper command (`menu`, `show-menu`, `scroll-to`, `wait`, `click`,
+/// `key`, `hit`, …) and return its JSON lines. `Err` carries the helper's own
+/// words — including "not delivered:" / "wait_timeout:" prefixes — or says
+/// the helper is unavailable on this platform.
+pub async fn run(args: &[String], deadline: Duration) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    return macos::run(args, deadline).await;
+    #[allow(unreachable_code)]
+    {
+        let _ = (args, deadline);
+        Err("the native accessibility helper is macOS-only; this platform uses its own tools".into())
+    }
+}
+
+/// Every JSON object the helper printed, one per line.
+pub fn json_lines(raw: &str) -> Vec<serde_json::Value> {
+    raw.lines().filter_map(|l| serde_json::from_str(l.trim()).ok()).collect()
+}
+
 /// The name of the frontmost app, `""` when none. Parsed from one line.
 pub fn parse_frontmost(line: &str) -> String {
     serde_json::from_str::<serde_json::Value>(line.trim())
@@ -328,6 +365,20 @@ pub async fn text(image: &std::path::Path) -> Result<Vec<TextLine>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cut_walk_names_its_budget_and_marks_menus_and_drillable_nodes() {
+        let t = parse_tree(concat!(
+            "{\"app\":\"Mail\",\"pid\":9,\"windows\":1}\n",
+            "{\"path\":\"m:2\",\"role\":\"AXMenuItem\",\"title\":\"Copy\",\"frame\":[1,2,3,4],\"actions\":[\"AXPress\"],\"menu\":true,\"shortcut\":\"⌘C\"}\n",
+            "{\"path\":\"0.1\",\"role\":\"AXGroup\",\"title\":\"\",\"frame\":[1,2,3,4],\"more\":26}\n",
+            "{\"truncated\":true,\"elapsed_ms\":2001,\"cut_by\":\"time budget (2000 ms)\",\"resume_at\":\"0.4.1\"}\n",
+        ))
+        .unwrap();
+        assert!(t.nodes[0].menu && t.nodes[0].shortcut.as_deref() == Some("⌘C"));
+        assert_eq!(t.nodes[1].more, 26);
+        assert_eq!((t.cut_by.as_str(), t.resume_at.as_str()), ("time budget (2000 ms)", "0.4.1"));
+    }
 
     #[test]
     fn frontmost_line_yields_the_app_name_or_nothing() {

@@ -1,0 +1,48 @@
+id: live-mac-menus-and-keys
+name: "Computer control — menu bar, context menu, keyboard and wait_for, no System Events"
+description: |
+  LIVE, macOS only, not in any suite (needs a logged-in desktop and
+  Accessibility granted to the Nebo behind --server; run it on the Stadium
+  mini). Everything here used to go through System Events or cliclick, which
+  a stock Mac cannot run: the menu bar is read and pressed through
+  accessibility, a context menu opens with AXShowMenu and its items come
+  back as refs, keys and text are CGEvents from the helper, and wait_for
+  waits for the text instead of guessing a pause.
+target_component: os
+setup:
+  - "printf 'first line\n' > /tmp/nebo-live-menus.txt; open -a TextEdit /tmp/nebo-live-menus.txt; sleep 3"
+teardown:
+  - "osascript -e 'tell application \"TextEdit\" to close every document saving no' >/dev/null 2>&1; pkill -x TextEdit; rm -f /tmp/nebo-live-menus.txt"
+
+conversation:
+  - role: user
+    content: "TextEdit is open with /tmp/nebo-live-menus.txt. Do these in order with the computer control tools, and report each result: (1) list TextEdit's Format menu with os(resource: \"menu\", action: \"list\", app: \"TextEdit\", name: \"Format\"). (2) capture TextEdit, click at the end of the document text, and type the words 'typed by nebo' using os(resource: \"input\", action: \"type\", app: \"TextEdit\", text: \"typed by nebo\", physical: true, wait_for: {text: \"typed by nebo\"}). (3) press cmd+a with os(resource: \"input\", action: \"hotkey\", app: \"TextEdit\", key: \"cmd+a\"). (4) right-click the document's text area by its ref and tell me the context menu items you see, then press escape. Do not save the document."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: no-tool-errors
+      text: "No tool result is an error"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: menu-read
+      text: "The Format menu is listed (items like Font, Text, Make Plain Text)"
+      severity: critical
+    - id: typed-and-waited
+      text: "The type result says it waited until 'typed by nebo' appeared, and the text shows in the after-capture"
+      severity: critical
+    - id: context-menu-items
+      text: "The right-click result lists context menu items (e.g. Cut, Copy, Paste) as menu item refs"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 12 tool calls"
+      severity: important
+      check: { max_tool_calls: 12 }
+
+ideal_behavior:
+  tool_calls: 7
+  narrative: "menu list Format → see → click end of text → type (physical, wait_for) → hotkey cmd+a → right_click text area ref (menu items listed) → press escape."
