@@ -16,7 +16,7 @@ use tools::{Origin, Registry};
 use crate::concurrency::ConcurrencyController;
 use crate::db_context;
 use crate::harness::conversation::{
-    MidTurnFrom, convert_messages, mid_turn_message_landed, parent_taint, record_interrupt, sanitize_message_order,
+    InputRow, MidTurnFrom, convert_messages, mid_turn_message_landed, parent_taint, persist_input, record_interrupt, sanitize_message_order,
     unanswered_mid_turn_message,
 };
 use crate::harness::model_call::{self, prefer_non_gateway};
@@ -248,23 +248,6 @@ fn allowlist_admits(allowlist: &HashSet<String>, name: &str) -> bool {
                 || e.strip_suffix('*')
                     .is_some_and(|prefix| !prefix.is_empty() && name.starts_with(prefix))
         })
-}
-
-/// The pictures a user row has to store as bytes: the ones no attachment
-/// covers. An image that arrived as an attachment is already on disk under its
-/// file id, and `convert_messages` reads it back from there when the turn is
-/// replayed, so storing the base64 beside it put the same picture in the
-/// database twice — once as a row a person loads, once as a file.
-fn images_to_store(req: &RunRequest) -> Option<&[ai::ImageContent]> {
-    if req.images.is_empty() {
-        return None;
-    }
-    let stored = req
-        .attachments
-        .iter()
-        .filter(|a| !a.file_id.is_empty() && a.mime_type.starts_with("image/"))
-        .count();
-    (stored < req.images.len()).then_some(req.images.as_slice())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -836,123 +819,21 @@ impl Runner {
         // replaced with an LLM-generated summary so the full document never
         // enters the main chat context.
         if !req.prompt.is_empty() && !continuation {
-            let (effective_content, metadata) = if crate::large_input::is_large(&req.prompt) {
-                info!(
-                    session_id = %session_id,
-                    prompt_len = req.prompt.len(),
-                    "large input detected — saving to file and summarising"
-                );
-
-                let msg_id = uuid::Uuid::new_v4().to_string();
-
-                // 1. Save full content to disk
-                let file_path = crate::large_input::save_to_file(&req.prompt, &msg_id)
-                    .map_err(|e| ProviderError::Request(format!("large input save: {e}")))?;
-                let file_path_str = file_path.to_string_lossy().to_string();
-
-                // 2. Detect content type for prompt tuning
-                let content_type = crate::large_input::detect_content_type(&req.prompt);
-
-                // 3. Summarise in an ISOLATED context (sidecar pattern).
-                //    Acquire provider, drop lock, then call — the full text
-                //    never touches the session or DB.
-                let cheap_model = self.selector.get_cheapest_model();
-                let summary = {
-                    let prov = prefer_non_gateway(&self.providers.read().await);
-                    match prov {
-                        Some(p) => crate::large_input::summarize(
-                            RequestTrace {
-                                agent_id: req.agent_id.clone(),
-                                ..RequestTrace::new("large_input_summary")
-                            },
-                            p.as_ref(),
-                            &req.prompt,
-                            content_type,
-                            &cheap_model,
-                        )
-                        .await
-                        .unwrap_or_else(|e| {
-                            warn!(error = %e, "large input summarisation failed, using fallback");
-                            crate::large_input::fallback_summary(&req.prompt)
-                        }),
-                        None => crate::large_input::fallback_summary(&req.prompt),
-                    }
-                };
-
-                // 4. Build replacement content + metadata
-                let result = crate::large_input::build_replacement(
-                    &req.prompt,
-                    &summary,
-                    &file_path_str,
-                    content_type,
-                );
-
-                // Merge with image metadata when both are present
-                let mut meta_value: serde_json::Value =
-                    serde_json::from_str(&result.metadata_json).unwrap_or_default();
-                if let Some(images) = images_to_store(&req) {
-                    meta_value["images"] = serde_json::json!(images);
-                }
-
-                info!(
-                    session_id = %session_id,
-                    summary_len = result.content.len(),
-                    file = %file_path_str,
-                    "large input replaced with summary"
-                );
-
-                (result.content, Some(meta_value.to_string()))
-            } else {
-                // Normal-sized prompt — pass through as-is
-                let metadata = images_to_store(&req)
-                    .map(|images| serde_json::json!({ "images": images }).to_string());
-                (req.prompt.clone(), metadata)
-            };
-
-            let metadata = if req.attachments.is_empty() {
-                metadata
-            } else {
-                let mut value: serde_json::Value = metadata
-                    .as_deref()
-                    .and_then(|m| serde_json::from_str(m).ok())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                value["attachments"] = serde_json::json!(req.attachments);
-                Some(value.to_string())
-            };
-
-            // A platform-authored prompt stays in the model's history and out
-            // of the owner's transcript — `isMeta` is what the read path
-            // filters on.
-            let metadata = if req.hidden_prompt {
-                let mut value: serde_json::Value = metadata
-                    .as_deref()
-                    .and_then(|m| serde_json::from_str(m).ok())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                value["isMeta"] = serde_json::json!(true);
-                value["hiddenPrompt"] = serde_json::json!(true);
-                Some(value.to_string())
-            } else {
-                metadata
-            };
-
-            let t_msg_save = std::time::Instant::now();
-            info!(session_id = %session_id, prompt_len = effective_content.len(), "appending user message");
-            self.sessions
-                .append_message(
-                    &session_id,
-                    "user",
-                    &effective_content,
-                    None,
-                    None,
-                    metadata.as_deref(),
-                )
-                .map_err(|e| {
-                    warn!(session_id = %session_id, error = %e, "failed to append user message");
-                    ProviderError::Request(format!("failed to store message: {}", e))
-                })?;
-
-            info!(ms = t_msg_save.elapsed().as_millis() as u64, session_id = %session_id, "[telemetry] user message saved");
-
+            persist_input(
+                &self.sessions,
+                &self.providers,
+                &self.selector,
+                &req.agent_id,
+                &session_id,
+                InputRow {
+                    text: &req.prompt,
+                    images: &req.images,
+                    attachments: &req.attachments,
+                    hidden: req.hidden_prompt,
+                },
+            )
+            .await
+            .map_err(ProviderError::Request)?;
             // @mention routing context rides the FIRST LLM call as an
             // ephemeral <system-reminder> (seeded into run_loop's pending
             // reminders) — never persisted to the session.
@@ -2207,180 +2088,19 @@ async fn run_loop(
     // Build static system prompt — use modular prompt when no custom one is provided
     // STRAP docs and tool list are NOT included here — they're injected per-iteration
     // based on which tools pass the context filter (dynamic injection).
-    let active_agent_body = active_agent_entry.as_ref().map(|r| {
-        // Strip YAML frontmatter from AGENT.md — inject only the prose body.
-        // Frontmatter is machine metadata (name, triggers, etc.), not persona instructions.
-        match napp::agent::split_frontmatter(&r.agent_md) {
-            Ok((yaml_str, body)) => {
-                if yaml_str.is_empty() {
-                    body
-                } else {
-                    // Include a compact identity header from frontmatter properties
-                    let mut result = String::new();
-                    if let Ok(mapping) = serde_yaml::from_str::<serde_yaml::Mapping>(&yaml_str) {
-                        let mut identity_parts = Vec::new();
-                        for (k, v) in &mapping {
-                            if let (serde_yaml::Value::String(key), val) = (k, v) {
-                                match key.as_str() {
-                                    "name" | "description" | "triggers" => {
-                                        let val_str = match val {
-                                            serde_yaml::Value::String(s) => s.clone(),
-                                            serde_yaml::Value::Sequence(seq) => seq
-                                                .iter()
-                                                .filter_map(|i| match i {
-                                                    serde_yaml::Value::String(s) => {
-                                                        Some(s.as_str())
-                                                    }
-                                                    _ => None,
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .join(", "),
-                                            _ => continue,
-                                        };
-                                        identity_parts.push(format!("- **{}**: {}", key, val_str));
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        if !identity_parts.is_empty() {
-                            result.push_str(&identity_parts.join("\n"));
-                            result.push_str("\n\n");
-                        }
-                    }
-                    result.push_str(&body);
-                    result
-                }
-            }
-            Err(_) => r.agent_md.clone(),
-        }
-    });
+    let active_agent_body = active_agent_entry.as_ref().map(|r| crate::harness::prompt::inputs::persona_body(&r.agent_md));
     // Build focused context for agent-required plugins (descriptions + skill names).
-    let agent_plugin_context = if let Some(ref agent_entry) = active_agent_entry {
-        if let Some(ref cfg) = agent_entry.config {
-            let mut required = cfg.requires.plugins.clone();
-            // Merge scope-specific plugins
-            if let Some(scope_name) = tool_scope {
-                if let Some(scope) = cfg.scopes.get(scope_name) {
-                    for p in &scope.plugins {
-                        if !required.contains(p) {
-                            required.push(p.clone());
-                        }
-                    }
-                }
-            }
-            skill_loader
-                .as_ref()
-                .map(|l| l.agent_plugin_context(&required))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
+    let agent_plugin_context = active_agent_entry
+        .as_ref()
+        .map(|a| crate::harness::prompt::inputs::plugin_context(a, tool_scope, skill_loader))
+        .unwrap_or_default();
 
     // Build agent self-awareness context: workflows, skills, and capabilities.
     // The agent must know about itself from turn 1.
-    let agent_self_context = if let Some(ref agent_entry) = active_agent_entry {
-        if let Some(ref cfg) = agent_entry.config {
-            let mut parts = Vec::new();
-
-            // Workflows
-            if !cfg.workflows.is_empty() {
-                let mut wf_lines = vec![format!("## Your Workflows ({})\n", cfg.workflows.len())];
-                let mut sorted: Vec<_> = cfg.workflows.iter().collect();
-                sorted.sort_by_key(|(name, _)| name.as_str());
-                for (name, binding) in &sorted {
-                    let trigger_desc = match &binding.trigger {
-                        napp::agent::AgentTrigger::Schedule { schedule, cron, .. } => {
-                            if let Some(s) = schedule {
-                                format!("schedule: {}", s)
-                            } else {
-                                format!("schedule: {}", cron)
-                            }
-                        }
-                        napp::agent::AgentTrigger::Heartbeat { interval, window } => {
-                            if let Some(w) = window {
-                                format!("heartbeat: every {} within {}", interval, w)
-                            } else {
-                                format!("heartbeat: every {}", interval)
-                            }
-                        }
-                        napp::agent::AgentTrigger::Event { sources } => {
-                            format!("event: {}", sources.join(", "))
-                        }
-                        napp::agent::AgentTrigger::Watch { plugin, event, .. } => {
-                            if let Some(ev) = event {
-                                format!("watch: {}.{}", plugin, ev)
-                            } else {
-                                format!("watch: {}", plugin)
-                            }
-                        }
-                        napp::agent::AgentTrigger::Folder { path, .. } => {
-                            format!("folder: {}", path)
-                        }
-                        napp::agent::AgentTrigger::Manual => "manual".to_string(),
-                        napp::agent::AgentTrigger::Call { line } => {
-                            format!(
-                                "call tree for the {} phone line",
-                                if line.is_empty() { "every" } else { line }
-                            )
-                        }
-                    };
-                    let desc = if binding.description.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" — {}", binding.description)
-                    };
-                    let activity_count = binding.activities.len();
-                    wf_lines.push(format!(
-                        "- **{}**{} [{}] ({} activities)",
-                        name, desc, trigger_desc, activity_count
-                    ));
-                }
-                wf_lines.push(String::new());
-                wf_lines.push(
-                    "Use work(resource: \"<name>\", action: \"run\") to trigger a workflow manually. \
-                     Use work(resource: \"<name>\", action: \"status\") to check its last run."
-                        .to_string(),
-                );
-                parts.push(wf_lines.join("\n"));
-            }
-
-            // Skills declared by this agent
-            if !cfg.skills.is_empty() {
-                let mut sk_lines = vec![format!("## Your Skills ({})\n", cfg.skills.len())];
-                for skill_ref in &cfg.skills {
-                    sk_lines.push(format!("- {}", skill_ref));
-                }
-                sk_lines.push(String::new());
-                sk_lines.push(
-                    "These skills are part of your configuration. Use skill(action: \"discover\", query: \"...\") to find one and skill(action: \"load\", name: \"...\") to read it."
-                        .to_string(),
-                );
-                parts.push(sk_lines.join("\n"));
-            }
-
-            // Sidecar tools (custom HTTP endpoint tools defined by this agent)
-            if !cfg.tools.is_empty() {
-                let mut tool_lines = vec![format!("## Your Custom Tools ({})\n", cfg.tools.len())];
-                for tool_def in &cfg.tools {
-                    tool_lines.push(format!(
-                        "- **{}** — {}",
-                        tool_def.name, tool_def.description
-                    ));
-                }
-                parts.push(tool_lines.join("\n"));
-            }
-
-            parts.join("\n\n")
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
+    let agent_self_context = active_agent_entry
+        .as_ref()
+        .map(crate::harness::prompt::inputs::self_context)
+        .unwrap_or_default();
 
     // Compact skill listing (name + capped description per enabled skill).
     // Discovery metadata only — full bodies load on demand via skill(action: "load").
@@ -2421,7 +2141,7 @@ async fn run_loop(
     };
 
     // Load workspace context file (.nebo.md or NEBO.md) — walk up from CWD to git root or home.
-    let context_file = load_context_file();
+    let context_file = crate::harness::prompt::inputs::workspace_notes();
 
     // Resolved model identity for the stable prompt — the run's override when
     // set (the same "provider/model" string ToolContext.model_preference
@@ -4387,44 +4107,6 @@ async fn run_loop(
     Ok(turn_exit_reason.label())
 }
 
-/// Load workspace context from `.nebo.md` or `NEBO.md`.
-/// Walks up from CWD to git root (or home dir), returns the first match.
-fn load_context_file() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-    let mut dir = cwd.as_path();
-
-    loop {
-        for name in &[".nebo.md", "NEBO.md"] {
-            let path = dir.join(name);
-            if path.is_file() {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        let sanitized = crate::sanitize::sanitize_for_prompt(&content);
-                        debug!(path = %path.display(), "loaded workspace context file");
-                        return Some(sanitized);
-                    }
-                    Err(e) => {
-                        warn!(path = %path.display(), error = %e, "failed to read context file");
-                    }
-                }
-            }
-        }
-
-        // Stop at git root
-        if dir.join(".git").exists() {
-            break;
-        }
-
-        // Walk up
-        match dir.parent() {
-            Some(parent) if parent != dir => dir = parent,
-            _ => break,
-        }
-    }
-
-    None
-}
-
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
 /// UTF-8 character. Returns a `&str` that is always valid UTF-8.
 pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
@@ -5122,70 +4804,6 @@ mod named_invocation_tests {
     }
 }
 
-#[cfg(test)]
-mod attachment_storage_tests {
-    use super::{images_to_store, RunRequest};
-
-    fn attachment(mime: &str) -> comm::wire::Attachment {
-        comm::wire::Attachment {
-            file_id: "f-1".into(),
-            filename: "photo.jpg".into(),
-            mime_type: mime.into(),
-            size: 1024,
-            url: String::new(),
-            thumbnail_url: None,
-            width: None,
-            height: None,
-            duration: None,
-        }
-    }
-
-    fn picture() -> ai::ImageContent {
-        ai::ImageContent {
-            media_type: "image/jpeg".into(),
-            data: "aGVsbG8=".into(),
-        }
-    }
-
-    /// A picture that arrived as an attachment is on disk under its file id;
-    /// the row keeps the id alone. Writing the base64 beside it stored the
-    /// same image twice, and the transcript carries both.
-    #[test]
-    fn an_attached_picture_is_not_also_stored_as_bytes() {
-        let req = RunRequest {
-            images: vec![picture()],
-            attachments: vec![attachment("image/jpeg")],
-            ..Default::default()
-        };
-        assert!(images_to_store(&req).is_none());
-    }
-
-    /// A picture no attachment covers — a channel that hands over bytes with
-    /// no file behind them — still has to be stored, or the model loses it on
-    /// the next turn.
-    #[test]
-    fn a_picture_with_no_file_behind_it_is_stored() {
-        let uncovered = RunRequest {
-            images: vec![picture()],
-            ..Default::default()
-        };
-        assert_eq!(images_to_store(&uncovered).map(|i| i.len()), Some(1));
-
-        // A document attachment covers no picture.
-        let document = RunRequest {
-            images: vec![picture()],
-            attachments: vec![attachment("application/pdf")],
-            ..Default::default()
-        };
-        assert_eq!(images_to_store(&document).map(|i| i.len()), Some(1));
-    }
-
-    /// No pictures, nothing to store — the row keeps no `images` key at all.
-    #[test]
-    fn a_message_without_pictures_stores_none() {
-        assert!(images_to_store(&RunRequest::default()).is_none());
-    }
-}
 
 #[cfg(test)]
 mod objective_decision_tests {

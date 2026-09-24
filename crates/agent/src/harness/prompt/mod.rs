@@ -5,6 +5,7 @@
 //! session. There is no per-call state block and no text derived from a
 //! message: facts that change arrive as reminder rows in the conversation.
 
+pub mod inputs;
 pub mod sections;
 
 use sections::Environment;
