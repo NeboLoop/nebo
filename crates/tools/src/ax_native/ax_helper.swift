@@ -300,6 +300,25 @@ func openMenu() -> AXUIElement? {
         if role == "AXMenu" && bool(el, "AXVisible", true) { return el }
         if depth < 3 { queue += children(el).map { ($0, depth + 1) } }
     }
+    // A context menu opens under the pointer, and some (SwiftUI's) are in no
+    // list above: look just below and beside the pointer for a menu item of
+    // this app and take its menu.
+    if let at = CGEvent(source: nil)?.location {
+        for (dx, dy) in [(14.0, 10.0), (14.0, 30.0), (-14.0, 10.0), (14.0, -10.0)] {
+            var hit: AXUIElement?
+            guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(at.x + dx), Float(at.y + dy), &hit) == .success,
+                  let el = hit else { continue }
+            var pid: pid_t = 0
+            AXUIElementGetPid(el, &pid)
+            guard pid == app.processIdentifier else { continue }
+            var cur: AXUIElement? = el
+            var hops = 0
+            while let c = cur, hops < 6 {
+                if str(c, kAXRoleAttribute) == "AXMenu" { return c }
+                cur = parent(c); hops += 1
+            }
+        }
+    }
     return nil
 }
 func menuNorm(_ s: String) -> String {
@@ -339,6 +358,19 @@ func menuPath(_ path: String) -> [AXUIElement] {
     let parts = path.split(separator: ">").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     guard !parts.isEmpty else { fail("menu needs --path like \"File > Export…\"", 2) }
     guard let bar = menuBar() else { fail("\(app.localizedName ?? appSpec) has no menu bar readable through accessibility") }
+    // One name that is not a menu title: the one item with that name in any
+    // menu ("Say Hello" is Fixture > Say Hello).
+    if parts.count == 1, !menuItems(bar).contains(where: { menuNorm(identity($0)) == menuNorm(parts[0]) }) {
+        var hits: [[AXUIElement]] = []
+        for top in menuItems(bar) {
+            guard let sub = submenu(top) else { continue }
+            for item in menuItems(sub) where menuNorm(identity(item)) == menuNorm(parts[0]) { hits.append([top, item]) }
+        }
+        if hits.count == 1 { return hits[0] }
+        if hits.count > 1 {
+            fail("\"\(parts[0])\" is in more than one menu: " + hits.map { "\(identity($0[0])) > \(identity($0[1]))" }.joined(separator: ", ") + "; name the menu too")
+        }
+    }
     var chain: [AXUIElement] = []
     var container = bar
     var where_ = "the menu bar"

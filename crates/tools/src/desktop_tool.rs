@@ -810,7 +810,9 @@ async fn handle_input(
     // last capture, or handed back to the model with the reason.
     let picked_input;
     let mut pick_note = String::new();
-    let input = match input["target"].as_str().map(str::trim).filter(|t| !t.is_empty()) {
+    // `label` on a click means the same thing as `target`.
+    let label_as_target = input["target"].as_str().filter(|t| !t.trim().is_empty()).or_else(|| input["label"].as_str());
+    let input = match label_as_target.map(str::trim).filter(|t| !t.is_empty()) {
         Some(target) if input_target(input).0.is_empty() && input_target(input).1.is_none() => {
             let app = input["app"].as_str().unwrap_or("");
             let Some(snap) = snapshot_for(snapshot_store, input["snapshot_id"].as_str().unwrap_or(""), app).await else {
@@ -1017,11 +1019,19 @@ async fn handle_input(
                     "Not delivered: {key} logs out, locks the screen or force-quits, and a tool does not send it. If the owner asked for exactly that, pass force: true."
                 ));
             }
-            let r = if key.contains('+') { input_hotkey(key).await } else { input_press(key).await };
-            if r.is_error {
-                return r;
+            // `repeat`: the same key n times (pageup ×9), one result.
+            let times = input["repeat"]
+                .as_u64()
+                .or_else(|| input["repeat"].as_str().and_then(|s| s.trim().parse().ok()))
+                .unwrap_or(1)
+                .clamp(1, 30);
+            for _ in 0..times {
+                let r = if key.contains('+') { input_hotkey(key).await } else { input_press(key).await };
+                if r.is_error {
+                    return r;
+                }
             }
-            ToolResult::ok(format!("Pressed {key}"))
+            ToolResult::ok(if times > 1 { format!("Pressed {key} {times} times") } else { format!("Pressed {key}") })
         }
         "click" | "double_click" | "right_click" => {
             let Some((x, y, label)) = &target else {
@@ -1144,7 +1154,20 @@ async fn handle_input(
                 .unwrap_or(3)
                 .clamp(1, 100);
             let step = 100;
-            let direction = input["direction"].as_str().unwrap_or("down");
+            // `dy`/`dx` in wheel ticks, the wheel's own sign (negative dy
+            // scrolls down): what models send when they skip direction.
+            let tick = |k: &str| input[k].as_i64().or_else(|| input[k].as_str().and_then(|s| s.trim().parse().ok())).filter(|n| *n != 0);
+            let from_ticks = if input["direction"].as_str().is_none() {
+                match (tick("dy"), tick("dx")) {
+                    (Some(dy), _) => Some((if dy < 0 { "down" } else { "up" }, dy.abs().clamp(1, 100))),
+                    (None, Some(dx)) => Some((if dx < 0 { "right" } else { "left" }, dx.abs().clamp(1, 100))),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let amount = from_ticks.map_or(amount, |(_, n)| n);
+            let direction = from_ticks.map_or(input["direction"].as_str().unwrap_or("down"), |(d, _)| d);
             let (dx, dy) = match direction {
                 "up" => (0, -amount * step),
                 "left" => (-amount * step, 0),
@@ -2322,7 +2345,15 @@ async fn handle_capture(
         "see" => capture_see(input, snapshot_store, ax_cache).await,
         // Wait for something to be on screen (or gone) instead of guessing a pause.
         "wait" => {
-            let app = input["app"].as_str().unwrap_or("");
+            // No app: the one in front.
+            let front;
+            let app = match input["app"].as_str().filter(|a| !a.is_empty()) {
+                Some(a) => a,
+                None => {
+                    front = ax_native::frontmost().await.unwrap_or_default();
+                    front.as_str()
+                }
+            };
             let mut spec = input.clone();
             if spec.get("wait_for").is_none() {
                 spec["wait_for"] = serde_json::json!({

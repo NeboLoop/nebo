@@ -405,7 +405,10 @@ impl OsTool {
             "click" if input.get("name").and_then(|v| v.as_str()).is_some_and(|n| n.contains('>')) => "menu",
             "list" if has("app") && has("name") => "menu",
             "click" if has("name") => "dialog",
-            "click" if has("label") || has("role") => "ui",
+            // A click by label resolves against the last capture (see input
+            // `target`), not the AppleScript UI path.
+            "click" if has("label") => "input",
+            "click" if has("role") => "ui",
             "click" if has("app") && !has_input_target => "ui",
             // A `find` inside a named app looks for an element, not a secret.
             "find" if has("app") => "ui",
@@ -649,7 +652,7 @@ impl DynTool for OsTool {
          Rules:\n\
          - ALWAYS call this tool for file/system facts — NEVER answer from memory or training data. To read a file, call os(resource: \"file\", action: \"read\"); do NOT claim a file is missing or report its contents without calling first.\n\
          - Prefer file actions over shell: use file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find.\n\
-         - Always pass `action`. `resource` is inferred when the action belongs to one resource (read→file, exec→shell, play→music, volume→settings) or its parameters settle it (session_id→shell, move+app→window, click+label→ui, send+title→notification); pass it for actions several resources share (create, list, search, get, delete).\n\
+         - Always pass `action`. `resource` is inferred when the action belongs to one resource (read→file, exec→shell, play→music, volume→settings) or its parameters settle it (session_id→shell, move+app→window, click+label→input (resolved against the last capture), send+title→notification); pass it for actions several resources share (create, list, search, get, delete).\n\
          - Interactive React (dashboards, charts, visualizations): write the component as a .jsx file, then convert it (action: \"convert\", to: \"html\") — Nebo transpiles it into a self-contained, renderable page. NEVER put JSX or CDN-loaded React (unpkg/esm) directly in a .html; raw JSX has no transpiler in the browser and renders blank.\n\
          - Before edit or overwrite of an EXISTING file, read it first (edit/overwrite are rejected without a prior read). A brand-new file needs no prior read.\n\
          - glob = find files by NAME pattern (*.md, src/**/*.rs); grep = match text INSIDE files by regex. Do not confuse them.\n\
@@ -897,6 +900,10 @@ impl DynTool for OsTool {
                 "type": "object",
                 "description": "Input actions and capture wait: wait for something instead of a fixed pause — {text: \"Saved\"} | {appears: \"Export\"} | {gone: \"Loading\"} | {menu: true|false} | {window: true | \"title\"}, optional timeout_ms (default 5000, max 30000)"
             }),
+        );
+        props.insert(
+            "repeat".into(),
+            prop("integer", "Input press: press the key this many times (max 30)"),
         );
         props.insert(
             "target".into(),
@@ -1439,7 +1446,8 @@ mod tests {
             // Parameters settle a shared action name.
             (serde_json::json!({"action": "move", "app": "Safari", "x": 0, "y": 0}), "window"),
             (serde_json::json!({"action": "move", "coordinate": [10, 10]}), "input"),
-            (serde_json::json!({"action": "click", "app": "Safari", "label": "OK"}), "ui"),
+            (serde_json::json!({"action": "click", "app": "Safari", "label": "OK"}), "input"),
+            (serde_json::json!({"action": "click", "app": "Safari", "role": "AXButton"}), "ui"),
             (serde_json::json!({"action": "click", "role": "AXButton"}), "ui"),
             (serde_json::json!({"action": "click", "app": "Safari"}), "ui"),
             (serde_json::json!({"action": "click", "app": "Safari", "ref": "B3"}), "input"),
