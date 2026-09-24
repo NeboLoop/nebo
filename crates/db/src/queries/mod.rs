@@ -38,7 +38,6 @@ mod workflows;
 mod teams;
 
 pub use agents::agent_slug;
-pub use chats::is_stream_reminder;
 pub use assignments::{Assignment, NewAssignment};
 pub use cron_jobs::cron_ref;
 pub use company_policy::{OperationCounters, COMPANY_COUNTER_KEY};

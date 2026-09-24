@@ -542,11 +542,7 @@ fn insert_messages(
 ) -> Result<usize, NeboError> {
     let mut inserted = 0usize;
     for (i, msg) in c.messages.iter().enumerate() {
-        // Roles outside the constraint, and another tool's stream reminders
-        // (steering for one of its calls, never conversation), are skipped.
-        if !matches!(msg.role.as_str(), "user" | "assistant" | "system" | "tool")
-            || db::is_stream_reminder(&msg.content)
-        {
+        if !matches!(msg.role.as_str(), "user" | "assistant" | "system" | "tool") {
             *skipped_roles += 1;
             continue;
         }

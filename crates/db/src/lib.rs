@@ -11,7 +11,6 @@ pub mod backup;
 pub use backup::Backup;
 pub use pool::create_pool;
 pub use queries::agent_slug;
-pub use queries::is_stream_reminder;
 pub use queries::{Assignment, NewAssignment};
 pub use queries::cron_ref;
 pub use queries::{OperationCounters, COMPANY_COUNTER_KEY};

@@ -4,23 +4,6 @@ use crate::Store;
 use crate::models::{Chat, ChatMessage};
 use types::NeboError;
 
-/// Whether text is a stream reminder — steering, which rides the model call it
-/// was made for and is never a stored message. Every chat-message insert
-/// refuses one: a reminder written to the thread is re-sent on every later
-/// turn and becomes context the model is steered by forever.
-pub fn is_stream_reminder(content: &str) -> bool {
-    content.trim_start().starts_with("<system-reminder>")
-}
-
-fn refuse_stream_reminder(content: &str) -> Result<(), NeboError> {
-    if is_stream_reminder(content) {
-        return Err(NeboError::Validation(
-            "a <system-reminder> is steering for one model call and is never stored".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 /// One full-text search hit across all chats — enough context to cite the
 /// conversation (chat + title + when) without loading it.
 #[derive(Debug, Clone)]
@@ -166,7 +149,6 @@ impl Store {
         content: &str,
         metadata: Option<&str>,
     ) -> Result<ChatMessage, NeboError> {
-        refuse_stream_reminder(content)?;
         let conn = self.conn()?;
         // A message landing IS activity: the chat list orders by updated_at,
         // so bump it here (both inserters), not only on title edits.
@@ -196,7 +178,6 @@ impl Store {
         metadata: Option<&str>,
         session_name: Option<&str>,
     ) -> Result<ChatMessage, NeboError> {
-        refuse_stream_reminder(content)?;
         let conn = self.conn()?;
         // Ensure parent chat row exists (role/channel sessions don't pre-create one).
         conn.execute(
@@ -529,7 +510,6 @@ impl Store {
         message_id: &str,
         summary: &str,
     ) -> Result<(), NeboError> {
-        refuse_stream_reminder(summary)?;
         let mut conn = self.conn()?;
         let tx = conn
             .transaction()
@@ -704,7 +684,6 @@ impl Store {
         metadata: Option<&str>,
         created_at: i64,
     ) -> Result<(), NeboError> {
-        refuse_stream_reminder(content)?;
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO chat_messages (id, chat_id, role, content, metadata, tool_calls, day_marker, created_at)

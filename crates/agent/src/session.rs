@@ -430,10 +430,10 @@ fn extract_chat_id_from_key(key: &str) -> String {
 }
 
 /// Steering an older build wrote into the thread. Steering rides the call it
-/// was made for and is never history (the store now refuses a
-/// `<system-reminder>` row), but four kinds were stored as user rows: the
-/// auto-continue nudge, a `<system-reminder>` briefing queued into a running
-/// turn, a workroom's room briefing, and the budget-exhausted summary request.
+/// was made for and is never history, but four kinds were stored as user
+/// rows: the auto-continue nudge, a `<system-reminder>` briefing queued into a
+/// running turn, a workroom's room briefing, and the budget-exhausted summary
+/// request.
 /// The rows stay on disk (owner data is never deleted); the model's history
 /// never loads them — a stored "keep going" re-sent on every later turn is how
 /// an employee stays fixated on old work.
@@ -456,7 +456,7 @@ fn is_stored_steering(msg: &ChatMessage) -> bool {
             .and_then(|b| b.as_bool())
             .unwrap_or(false)
     };
-    flag("autoContinue") || flag("roomBriefing") || (flag("isMeta") && db::is_stream_reminder(&msg.content))
+    flag("autoContinue") || flag("roomBriefing") || (flag("isMeta") && msg.content.trim_start().starts_with("<system-reminder>"))
 }
 
 /// The model's history: stored steering dropped (see [`is_stored_steering`]),
@@ -548,39 +548,6 @@ mod tests {
         Some(v.to_string())
     }
 
-    /// A user row as an older build stored it, past the store's guard.
-    fn plant_legacy_row(mgr: &SessionManager, session_id: &str, content: &str, metadata: Option<&str>) {
-        let chat_id = mgr.active_chat_id(session_id);
-        mgr.store
-            .conn_exec_for_test(&format!(
-                "INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) \
-                 VALUES ('{}', '{}', 'user', '{}', {}, unixepoch())",
-                uuid::Uuid::new_v4(),
-                chat_id,
-                content.replace('\'', "''"),
-                metadata.map(|m| format!("'{}'", m.replace('\'', "''"))).unwrap_or_else(|| "NULL".into()),
-            ));
-    }
-
-    /// Nothing steering-shaped reaches storage: every chat-message insert
-    /// refuses a `<system-reminder>`, whichever code path calls it.
-    #[test]
-    fn the_store_refuses_a_stream_reminder() {
-        let mgr = test_manager();
-        let session = mgr.get_or_create("agent:a1:web", "").expect("session");
-        let reminder = crate::steering::wrap_system_reminder("keep going");
-        for role in ["user", "assistant", "system", "tool"] {
-            assert!(mgr.append_message(&session.id, role, &reminder, None, None, None).is_err(), "{role} row stored");
-        }
-        let chat_id = mgr.active_chat_id(&session.id);
-        assert!(mgr.store.create_chat_message("m1", &chat_id, "user", &reminder, None).is_err());
-        assert!(mgr.store.create_chat_message_imported("m2", &chat_id, "user", &format!("  {reminder}"), None, None, 1).is_err());
-        assert!(mgr.store.compact_chat_history(&chat_id, "m3", &reminder).is_err());
-        assert!(mgr.store.get_chat_messages(&chat_id).expect("rows").is_empty());
-        // The owner quoting the tag mid-sentence is their words, not a reminder.
-        assert!(mgr.append_message(&session.id, "user", "what is a <system-reminder>?", None, None, None).is_ok());
-    }
-
     /// Steering older builds stored — the auto-continue nudge (stamped
     /// `autoContinue` by migration 0131, or bare), a `<system-reminder>`
     /// briefing queued into a running turn, a room briefing, the
@@ -623,12 +590,7 @@ mod tests {
             ("user", "Thanks".into(), None, None, None),
         ];
         for (role, content, tc, tr, md) in &rows {
-            if db::is_stream_reminder(content) {
-                // The store refuses these now; an older build wrote them.
-                plant_legacy_row(&mgr, &session.id, content, md.as_deref());
-            } else {
-                mgr.append_message(&session.id, role, content, *tc, *tr, md.as_deref()).expect("append");
-            }
+            mgr.append_message(&session.id, role, content, *tc, *tr, md.as_deref()).expect("append");
         }
 
         let history = mgr.get_messages(&session.id).expect("history");
@@ -784,12 +746,17 @@ mod tests {
             .sessions()
             .append_message(&sid, "user", &legacy_nudge, None, None, Some(r#"{"isMeta":true,"autoContinue":true}"#))
             .expect("legacy nudge");
-        plant_legacy_row(
-            runner.sessions(),
-            &sid,
-            &crate::steering::wrap_system_reminder("Team \"Ops\" — mission: ship it."),
-            Some(r#"{"isMeta":true}"#),
-        );
+        runner
+            .sessions()
+            .append_message(
+                &sid,
+                "user",
+                &crate::steering::wrap_system_reminder("Team \"Ops\" — mission: ship it."),
+                None,
+                None,
+                Some(r#"{"isMeta":true}"#),
+            )
+            .expect("legacy briefing");
 
         turn(&runner, key, "Thanks".into(), 0).await;
 
