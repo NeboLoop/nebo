@@ -3505,7 +3505,9 @@ async fn run_loop(
     }
 
     // Get active task (mutable: refreshed periodically to catch async detect_objective)
+    // and its recorded multi-stage answer, which sets how hard it pushes.
     let mut active_task = sessions.get_active_task(session_id).unwrap_or_default();
+    let mut objective_multi_stage = sessions.get_active_task_multi_stage(session_id).unwrap_or_default();
 
     // Skills follow a deferred pattern: NOT auto-loaded into system prompt.
     // Model uses skill(action: "discover") to find skills and skill(action: "load") to
@@ -4052,9 +4054,12 @@ async fn run_loop(
         // 2. Task updates from tool calls (bot:task:update)
         if iteration <= 5 || iteration % 10 == 0 {
             let refreshed = sessions.get_active_task(session_id).unwrap_or_default();
-            if !refreshed.is_empty() && refreshed != active_task {
-                info!(session_id, iteration, old = %active_task, new = %refreshed, "active_task refreshed from DB");
-                active_task = refreshed;
+            if !refreshed.is_empty() {
+                objective_multi_stage = sessions.get_active_task_multi_stage(session_id).unwrap_or_default();
+                if refreshed != active_task {
+                    info!(session_id, iteration, old = %active_task, new = %refreshed, "active_task refreshed from DB");
+                    active_task = refreshed;
+                }
             }
         }
 
@@ -4709,6 +4714,7 @@ async fn run_loop(
             model_name: selected_model_name.to_string(),
             agent_name: agent_name.clone(),
             active_task: active_task.clone(),
+            objective_multi_stage,
             summary: summary.clone(),
             neboai_connected: channel == "neboai",
             channel: channel.to_string(),
@@ -7723,6 +7729,7 @@ async fn run_loop(
                     user_prompt,
                     multi_stage: turn_signals.as_ref().map(|t| t.multi_stage),
                     active_task: &active_task,
+                    objective_multi_stage,
                     recent_tool_result_hashes: &recent_tool_result_hashes,
                     user_presence: &user_presence,
                     user_just_returned,
@@ -8993,42 +9000,55 @@ fn objective_detection_applies(
 }
 
 /// What the objective classifier decided to do with the session's objective.
+/// `multi_stage` is recorded with the objective it arrives with (`None`
+/// keeps the stored answer); it sets how hard the objective pushes (see
+/// [`crate::steering::objective_is_multi_stage`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ObjectiveDecision {
     /// A new task: the objective is the latest message when it stands on
     /// its own, written otherwise (see [`objective_text`]); `mode` applies.
-    Set { mode: String },
+    Set { mode: String, multi_stage: Option<bool> },
     /// A refinement: the objective is rewritten from the current one and
     /// the latest message, never replaced by it; `mode` applies only when
     /// the classifier named one.
-    Update { mode: String },
-    /// The task is done: drop the objective and the mode.
+    Update { mode: String, multi_stage: Option<bool> },
+    /// The task is done: drop the objective, its multi-stage answer and the mode.
     Clear,
     /// No change.
     Keep,
 }
 
-/// Map Jev's `action` choice (with its confidence) and `mode` choice to the
+/// Map Jev's `action` choice (with its confidence), `mode` choice and
+/// `multi_stage` answer (see [`crate::turn_decide::multi_stage`]) to the
 /// decision applied to the session. The priority rule lives here as a
 /// threshold, not in the prompt: a `keep` under [`OBJECTIVE_KEEP_FLOOR`]
 /// while no objective is set is a `set`. An unrecognised action is `Keep`,
 /// the no-op.
+///
+/// A set records the answer as given. An update records only a yes: the
+/// question reads the latest message alone, and a refinement of a
+/// multi-stage job ("sorry, I meant May") is no job of its own, so its no
+/// never makes the job a conversation.
 pub(crate) fn objective_decision(
     action: &str,
     confidence: f64,
     mode: &str,
+    multi_stage: Option<bool>,
     objective_is_none: bool,
 ) -> ObjectiveDecision {
     match action {
         "set" => ObjectiveDecision::Set {
             mode: mode.to_string(),
+            multi_stage,
         },
         "update" => ObjectiveDecision::Update {
             mode: mode.to_string(),
+            multi_stage: multi_stage.filter(|yes| *yes),
         },
         "clear" => ObjectiveDecision::Clear,
         "keep" if objective_is_none && confidence < OBJECTIVE_KEEP_FLOOR => ObjectiveDecision::Set {
             mode: mode.to_string(),
+            multi_stage,
         },
         _ => ObjectiveDecision::Keep,
     }
@@ -9133,24 +9153,24 @@ async fn apply_objective_decision(
     session_id: &str,
 ) {
     match decision {
-        ObjectiveDecision::Set { mode } => {
+        ObjectiveDecision::Set { mode, multi_stage } => {
             let text = objective_text(false, self_contained, ctx);
             let Some(objective) = objective_sentence(agent_id, providers, text).await else {
                 debug!("objective set: no sentence could be written; leaving objective as is");
                 return;
             };
-            info!(objective = %objective, mode = %mode, "objective set");
-            let _ = sessions.set_active_task(session_id, &objective);
+            info!(objective = %objective, mode = %mode, multi_stage = ?multi_stage, "objective set");
+            let _ = sessions.set_active_task(session_id, &objective, multi_stage);
             sessions.set_detected_mode(session_id, &mode);
         }
-        ObjectiveDecision::Update { mode } => {
+        ObjectiveDecision::Update { mode, multi_stage } => {
             let text = objective_text(true, self_contained, ctx);
             let Some(objective) = objective_sentence(agent_id, providers, text).await else {
                 debug!("objective update: no sentence could be written; leaving objective as is");
                 return;
             };
-            info!(objective = %objective, mode = %mode, "objective updated");
-            let _ = sessions.set_active_task(session_id, &objective);
+            info!(objective = %objective, mode = %mode, multi_stage = ?multi_stage, "objective updated");
+            let _ = sessions.set_active_task(session_id, &objective, multi_stage);
             if !mode.is_empty() {
                 sessions.set_detected_mode(session_id, &mode);
             }
@@ -9346,7 +9366,13 @@ async fn detect_objective(
         message: user_prompt,
     };
     apply_objective_decision(
-        objective_decision(picked, confidence, mode, objective_is_none),
+        objective_decision(
+            picked,
+            confidence,
+            mode,
+            crate::turn_decide::multi_stage(&decision),
+            objective_is_none,
+        ),
         self_contained,
         &ctx,
         agent_id,
@@ -9749,45 +9775,70 @@ mod objective_decision_tests {
     fn set(mode: &str) -> ObjectiveDecision {
         ObjectiveDecision::Set {
             mode: mode.to_string(),
+            multi_stage: None,
         }
     }
 
     #[test]
     fn choices_map_straight_through() {
-        assert_eq!(objective_decision("set", 1.0, "research", false), set("research"));
+        assert_eq!(objective_decision("set", 1.0, "research", None, false), set("research"));
         assert_eq!(
-            objective_decision("update", 1.0, "normal", false),
+            objective_decision("update", 1.0, "normal", None, false),
             ObjectiveDecision::Update {
-                mode: "normal".to_string()
+                mode: "normal".to_string(),
+                multi_stage: None,
             }
         );
-        assert_eq!(objective_decision("clear", 1.0, "normal", false), ObjectiveDecision::Clear);
-        assert_eq!(objective_decision("keep", 1.0, "normal", false), ObjectiveDecision::Keep);
+        assert_eq!(objective_decision("clear", 1.0, "normal", None, false), ObjectiveDecision::Clear);
+        assert_eq!(objective_decision("keep", 1.0, "normal", None, false), ObjectiveDecision::Keep);
         // A missing mode answer rides through as the empty mode, as before.
-        assert_eq!(objective_decision("set", 1.0, "", true), set(""));
+        assert_eq!(objective_decision("set", 1.0, "", None, true), set(""));
     }
 
     #[test]
     fn a_doubtful_keep_with_no_objective_is_a_set() {
         // Below the floor and nothing to keep: prefer set.
-        assert_eq!(objective_decision("keep", 0.3, "normal", true), set("normal"));
+        assert_eq!(objective_decision("keep", 0.3, "normal", None, true), set("normal"));
         assert_eq!(
-            objective_decision("keep", OBJECTIVE_KEEP_FLOOR - 0.01, "research", true),
+            objective_decision("keep", OBJECTIVE_KEEP_FLOOR - 0.01, "research", None, true),
             set("research")
         );
         // At the floor the keep stands.
         assert_eq!(
-            objective_decision("keep", OBJECTIVE_KEEP_FLOOR, "normal", true),
+            objective_decision("keep", OBJECTIVE_KEEP_FLOOR, "normal", None, true),
             ObjectiveDecision::Keep
         );
         // With an objective in place a doubtful keep never resets it.
-        assert_eq!(objective_decision("keep", 0.3, "normal", false), ObjectiveDecision::Keep);
+        assert_eq!(objective_decision("keep", 0.3, "normal", None, false), ObjectiveDecision::Keep);
+    }
+
+    /// A set records the multi-stage answer as given; an update records only
+    /// a yes; no answer records nothing.
+    #[test]
+    fn the_multi_stage_answer_rides_the_objective_it_arrived_with() {
+        let set_with = |ms| ObjectiveDecision::Set {
+            mode: "normal".to_string(),
+            multi_stage: ms,
+        };
+        let update_with = |ms| ObjectiveDecision::Update {
+            mode: "normal".to_string(),
+            multi_stage: ms,
+        };
+        assert_eq!(objective_decision("set", 1.0, "normal", Some(true), false), set_with(Some(true)));
+        assert_eq!(objective_decision("set", 1.0, "normal", Some(false), false), set_with(Some(false)));
+        assert_eq!(objective_decision("set", 1.0, "normal", None, false), set_with(None));
+        assert_eq!(objective_decision("keep", 0.3, "normal", Some(true), true), set_with(Some(true)));
+        assert_eq!(objective_decision("update", 1.0, "normal", Some(true), false), update_with(Some(true)));
+        assert_eq!(objective_decision("update", 1.0, "normal", Some(false), false), update_with(None));
+        assert_eq!(objective_decision("update", 1.0, "normal", None, false), update_with(None));
+        assert_eq!(objective_decision("keep", 1.0, "normal", Some(true), false), ObjectiveDecision::Keep);
+        assert_eq!(objective_decision("clear", 1.0, "normal", Some(true), false), ObjectiveDecision::Clear);
     }
 
     #[test]
     fn an_unrecognised_action_is_a_no_op() {
-        assert_eq!(objective_decision("", 0.0, "", true), ObjectiveDecision::Keep);
-        assert_eq!(objective_decision("other", 1.0, "normal", false), ObjectiveDecision::Keep);
+        assert_eq!(objective_decision("", 0.0, "", None, true), ObjectiveDecision::Keep);
+        assert_eq!(objective_decision("other", 1.0, "normal", None, false), ObjectiveDecision::Keep);
     }
 
     // The thread these tests replay, with the names made generic: the first
@@ -9892,7 +9943,7 @@ mod objective_decision_tests {
         let sessions = SessionManager::new(store);
         let id = sessions.get_or_create("agent:a1:web", "").expect("session").id;
         if !objective.is_empty() {
-            sessions.set_active_task(&id, objective).expect("objective");
+            sessions.set_active_task(&id, objective, None).expect("objective");
         }
         (sessions, id)
     }
@@ -9904,6 +9955,7 @@ mod objective_decision_tests {
     fn update() -> ObjectiveDecision {
         ObjectiveDecision::Update {
             mode: "research".to_string(),
+            multi_stage: None,
         }
     }
 
@@ -9957,11 +10009,57 @@ mod objective_decision_tests {
         let c = ctx("", &none, FIRST_ASK);
         let set = ObjectiveDecision::Set {
             mode: "research".to_string(),
+            multi_stage: None,
         };
         apply_objective_decision(set, Some(0.95), &c, "a1", &providers(&writer), &sessions, &id).await;
 
         assert_eq!(sessions.get_active_task(&id).unwrap(), FIRST_ASK);
         assert!(writer.seen.lock().unwrap().is_empty());
+    }
+
+    /// The multi-stage answer is stored with the objective, stands through a
+    /// keep, an unanswered set and a refinement's no, and goes with a clear.
+    #[tokio::test]
+    async fn the_multi_stage_answer_is_set_kept_and_cleared_with_the_objective() {
+        let writer = Arc::new(Writer {
+            reply: Some(CURRENT),
+            seen: Mutex::new(Vec::new()),
+        });
+        let (sessions, id) = session_with("");
+        let none: Vec<String> = Vec::new();
+        let recent = recent();
+        let stored = || sessions.get_active_task_multi_stage(&id).unwrap();
+        assert_eq!(stored(), None, "a new session has no answer: read as a conversation");
+
+        let c = ctx("", &none, FIRST_ASK);
+        let decided = objective_decision("set", 1.0, "research", Some(true), true);
+        apply_objective_decision(decided, Some(0.95), &c, "a1", &providers(&writer), &sessions, &id).await;
+        assert_eq!(stored(), Some(true), "set records the answer");
+
+        let c = ctx(FIRST_ASK, &recent, "how is it going?");
+        let decided = objective_decision("keep", 1.0, "normal", Some(false), false);
+        apply_objective_decision(decided, Some(0.1), &c, "a1", &providers(&writer), &sessions, &id).await;
+        assert_eq!(stored(), Some(true), "keep leaves it");
+
+        let c = ctx(FIRST_ASK, &recent, "no we need another");
+        let decided = objective_decision("update", 1.0, "normal", Some(false), false);
+        apply_objective_decision(decided, Some(0.1), &c, "a1", &providers(&writer), &sessions, &id).await;
+        assert_eq!(sessions.get_active_task(&id).unwrap(), CURRENT);
+        assert_eq!(stored(), Some(true), "a refinement's no never demotes the job");
+
+        let c = ctx(CURRENT, &recent, FIRST_ASK);
+        let decided = objective_decision("set", 1.0, "normal", None, false);
+        apply_objective_decision(decided, Some(0.95), &c, "a1", &providers(&writer), &sessions, &id).await;
+        assert_eq!(stored(), Some(true), "no answer (fail-open) keeps the prior value");
+
+        let decided = objective_decision("set", 1.0, "normal", Some(false), false);
+        apply_objective_decision(decided, Some(0.95), &c, "a1", &providers(&writer), &sessions, &id).await;
+        assert_eq!(stored(), Some(false), "a new task's no is recorded");
+
+        let c = ctx(FIRST_ASK, &recent, "perfect, thanks");
+        apply_objective_decision(ObjectiveDecision::Clear, None, &c, "a1", &providers(&writer), &sessions, &id).await;
+        assert_eq!(sessions.get_active_task(&id).unwrap(), "");
+        assert_eq!(stored(), None, "clear drops it with the objective");
     }
 }
 

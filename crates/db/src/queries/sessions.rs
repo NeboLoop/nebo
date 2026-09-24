@@ -199,7 +199,7 @@ impl Store {
             "UPDATE sessions SET message_count = 0, token_count = 0, summary = NULL,
              last_compacted_at = NULL, compaction_count = 0, memory_flush_at = NULL,
              memory_flush_compaction_count = NULL, active_task = NULL,
-             updated_at = unixepoch() WHERE id = ?1",
+             active_task_multi_stage = NULL, updated_at = unixepoch() WHERE id = ?1",
             params![id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -285,11 +285,32 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    pub fn set_session_active_task(&self, id: &str, active_task: &str) -> Result<(), NeboError> {
+    /// Whether the session's objective is a multi-stage job; `None` when it
+    /// was never answered.
+    pub fn get_session_active_task_multi_stage(&self, id: &str) -> Result<Option<bool>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT active_task_multi_stage FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Store the objective. `multi_stage` is written with it when answered;
+    /// `None` keeps the value already stored.
+    pub fn set_session_active_task(
+        &self,
+        id: &str,
+        active_task: &str,
+        multi_stage: Option<bool>,
+    ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE sessions SET active_task = ?2, updated_at = unixepoch() WHERE id = ?1",
-            params![id, active_task],
+            "UPDATE sessions SET active_task = ?2,
+             active_task_multi_stage = COALESCE(?3, active_task_multi_stage),
+             updated_at = unixepoch() WHERE id = ?1",
+            params![id, active_task, multi_stage],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -298,7 +319,8 @@ impl Store {
     pub fn clear_session_active_task(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE sessions SET active_task = NULL, updated_at = unixepoch() WHERE id = ?1",
+            "UPDATE sessions SET active_task = NULL, active_task_multi_stage = NULL,
+             updated_at = unixepoch() WHERE id = ?1",
             params![id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -368,6 +390,7 @@ impl Store {
                 last_compacted_at = NULL,
                 last_summarized_count = 0,
                 active_task = NULL,
+                active_task_multi_stage = NULL,
                 work_tasks = NULL,
                 updated_at = unixepoch()
              WHERE id = ?1",
@@ -507,7 +530,7 @@ mod counter_tests {
             .unwrap();
         store.set_session_label("s1", Some("My label")).unwrap();
         store.update_session_stats("s1", 5000, 12).unwrap();
-        store.set_session_active_task("s1", "doing things").unwrap();
+        store.set_session_active_task("s1", "doing things", Some(true)).unwrap();
         store.update_session_summary("s1", "old summary").unwrap();
 
         store.reset_session_counters("s1").unwrap();
@@ -517,6 +540,7 @@ mod counter_tests {
         assert_eq!(s.token_count, Some(0));
         assert_eq!(s.summary, None, "stale summary must not carry over");
         assert_eq!(s.active_task, None);
+        assert_eq!(store.get_session_active_task_multi_stage("s1").unwrap(), None);
         assert_eq!(s.last_compacted_at, None);
         // Preferences survive.
         assert_eq!(s.model_override.as_deref(), Some("model-x"));
@@ -559,5 +583,29 @@ mod counter_tests {
         assert_eq!(fetched.scope_id.as_deref(), Some("rt"));
         assert_eq!(fetched.metadata.as_deref(), Some("{}"));
         assert_eq!(fetched.active_chat_id, None);
+    }
+
+    /// The objective's multi-stage answer lives and dies with the objective:
+    /// written when answered, kept when a write carries no answer, cleared
+    /// with it; a new session has none.
+    #[test]
+    fn objective_multi_stage_is_set_kept_and_cleared_with_the_objective() {
+        let (_dir, store) = store();
+        store.create_session("s-ms", Some("agent:ms:web"), None, None, None).unwrap();
+        assert_eq!(store.get_session_active_task_multi_stage("s-ms").unwrap(), None);
+
+        store.set_session_active_task("s-ms", "Plan the launch", Some(true)).unwrap();
+        assert_eq!(store.get_session_active_task_multi_stage("s-ms").unwrap(), Some(true));
+
+        store.set_session_active_task("s-ms", "Plan the launch in May", None).unwrap();
+        assert_eq!(store.get_session_active_task("s-ms").unwrap(), "Plan the launch in May");
+        assert_eq!(store.get_session_active_task_multi_stage("s-ms").unwrap(), Some(true));
+
+        store.set_session_active_task("s-ms", "Pick a name", Some(false)).unwrap();
+        assert_eq!(store.get_session_active_task_multi_stage("s-ms").unwrap(), Some(false));
+
+        store.clear_session_active_task("s-ms").unwrap();
+        assert_eq!(store.get_session_active_task("s-ms").unwrap(), "");
+        assert_eq!(store.get_session_active_task_multi_stage("s-ms").unwrap(), None);
     }
 }

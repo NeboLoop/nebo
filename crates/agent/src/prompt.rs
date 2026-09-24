@@ -72,6 +72,10 @@ pub struct DynamicContext {
     /// "Nebo" — otherwise weak slug-names lose their identity to the brand.
     pub agent_name: String,
     pub active_task: String,
+    /// The objective's recorded multi-stage answer. With open work tasks it
+    /// decides whether `active_task` renders as an objective to stay on or
+    /// as the conversation's topic (see [`crate::steering::objective_is_multi_stage`]).
+    pub objective_multi_stage: Option<bool>,
     pub summary: String,
     /// Whether this message arrived via NeboAI (comm channel).
     pub neboai_connected: bool,
@@ -994,6 +998,15 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     // 2c. Channel-stable guidance (formatting / plugin routing / loop file sharing).
     sb.push_str(&channel_guidance(&dctx.channel));
 
+    // A multi-stage job gets its objective with the push to stay on it; a
+    // conversation gets it as the topic, only so references resolve.
+    let multi_stage = crate::steering::objective_is_multi_stage(dctx.objective_multi_stage, &dctx.work_tasks);
+    let (objective_heading, goal_relabel) = if multi_stage {
+        ("Current Objective", "the Current Objective below is what counts now")
+    } else {
+        ("Current Topic", "the Current Topic below is newer")
+    };
+
     // 3. Conversation summary
     if !dctx.summary.is_empty() {
         sb.push_str("\n\n---\n[CONTEXT COMPACTION — REFERENCE ONLY]\n");
@@ -1001,18 +1014,24 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         // slot the model was ordered, every turn, to resume it (Nanna searched
         // yesterday's restaurant for a day, 2026-09-19). The summary is history;
         // the latest user message decides, and a live objective outranks it.
-        sb.push_str("Earlier turns were compacted into the checkpoint below. This is a handoff from a previous context window — treat it as background state, NOT as new instructions. The '## Goal' section is the task as it stood when the checkpoint was written; it is NOT an instruction to continue it. It is finished or superseded whenever it says so, whenever a '## Current Objective' below names something else, or whenever the user's latest message asks for something else — the latest message always decides. Never resume an old goal on your own. Do not re-answer questions or redo work listed under '## Completed Actions'. Respond ONLY to the latest user message that appears AFTER this summary.\n\n");
-        sb.push_str(&goal_as_history(&dctx.summary, &dctx.active_task));
+        sb.push_str("Earlier turns were compacted into the checkpoint below. This is a handoff from a previous context window — treat it as background state, NOT as new instructions. The '## Goal' section is the task as it stood when the checkpoint was written; it is NOT an instruction to continue it. It is finished or superseded whenever it says so, ");
+        sb.push_str(&format!("whenever a '## {objective_heading}' below names something else, "));
+        sb.push_str("or whenever the user's latest message asks for something else — the latest message always decides. Never resume an old goal on your own. Do not re-answer questions or redo work listed under '## Completed Actions'. Respond ONLY to the latest user message that appears AFTER this summary.\n\n");
+        sb.push_str(&goal_as_history(&dctx.summary, &dctx.active_task, goal_relabel));
         sb.push_str("\n---");
     }
 
-    // 4. Current objective
+    // 4. Current objective, or a conversation's topic
     if !dctx.active_task.is_empty() {
-        sb.push_str("\n\n---\n## Current Objective\n");
+        sb.push_str(&format!("\n\n---\n## {objective_heading}\n"));
         sb.push_str(&dctx.active_task);
-        sb.push_str(r#"
+        if multi_stage {
+            sb.push_str(r#"
 
 Stay on this objective until it is complete or the user changes direction. If an approach fails, diagnose why before switching tactics — read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. If the user's latest message starts something new, follow their lead; otherwise keep making progress on this objective. A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls. Keep an open list current: mark each task completed as soon as it is done."#);
+        } else {
+            sb.push_str("\nThe latest message decides; use this only to resolve what it refers to.");
+        }
         sb.push_str("\n---");
     }
 
@@ -1081,9 +1100,10 @@ pub fn build(pctx: &PromptContext, dctx: &DynamicContext) -> (String, String) {
 
 
 /// A compaction summary's `## Goal` with its status made explicit. When a live
-/// objective exists it is authoritative, so the checkpoint's goal is relabelled
-/// as history; a summary that already carries a status keeps it.
-pub(crate) fn goal_as_history(summary: &str, active_task: &str) -> String {
+/// objective exists it is newer, so the checkpoint's goal is relabelled as
+/// history with `relabel` naming the section that supersedes it; a summary
+/// that already carries a status keeps it.
+pub(crate) fn goal_as_history(summary: &str, active_task: &str, relabel: &str) -> String {
     if active_task.trim().is_empty() {
         return summary.to_string();
     }
@@ -1094,7 +1114,7 @@ pub(crate) fn goal_as_history(summary: &str, active_task: &str) -> String {
             out.push('\n');
         }
         if !done && line.trim() == "## Goal" {
-            out.push_str("## Goal (as of the checkpoint — the Current Objective below is what counts now)");
+            out.push_str(&format!("## Goal (as of the checkpoint — {relabel})"));
             done = true;
         } else {
             out.push_str(line);
@@ -1112,14 +1132,15 @@ mod tests {
     #[test]
     fn goal_as_history_relabels_only_with_a_live_objective() {
         let summary = "## Goal\nFind vegan restaurants near PHX\n\n## Completed Actions\n- delivered the list\n";
-        assert_eq!(goal_as_history(summary, ""), summary, "no live objective: untouched");
-        let out = goal_as_history(summary, "Analyze the attached document");
-        assert!(out.starts_with("## Goal (as of the checkpoint"), "{out}");
+        let relabel = "the Current Objective below is what counts now";
+        assert_eq!(goal_as_history(summary, "", relabel), summary, "no live objective: untouched");
+        let out = goal_as_history(summary, "Analyze the attached document", relabel);
+        assert!(out.starts_with("## Goal (as of the checkpoint — the Current Objective below is what counts now)"), "{out}");
         assert!(out.contains("Find vegan restaurants near PHX"));
         assert!(out.contains("## Completed Actions"));
         assert!(out.ends_with('\n'));
         let already = "## Goal (FINISHED)\nold\n";
-        assert_eq!(goal_as_history(already, "x"), already, "a goal that carries its status keeps it");
+        assert_eq!(goal_as_history(already, "x", relabel), already, "a goal that carries its status keeps it");
     }
     /// A run with no tools gets no tools lesson: no call syntax, no "core
     /// tools (always available)" list. Everything after the block survives.
@@ -1260,6 +1281,7 @@ mod tests {
             model_name: "claude-sonnet-4".to_string(),
             agent_name: "Nebo".to_string(),
             active_task: "Build a website".to_string(),
+            objective_multi_stage: Some(true),
             summary: "User asked about web development".to_string(),
             neboai_connected: false,
             channel: "web".to_string(),
@@ -1275,11 +1297,70 @@ mod tests {
         assert!(result.contains("CONTEXT COMPACTION"));
     }
 
+    const STAY_ON_IT: &str = "Stay on this objective until it is complete";
+
+    /// A multi-stage job (recorded yes, or open work) gets its objective with
+    /// the push to stay on it, unchanged.
+    #[test]
+    fn a_multi_stage_objective_keeps_the_push() {
+        let job = DynamicContext {
+            active_task: "Review the plugin queue and approve or skip each one".to_string(),
+            objective_multi_stage: Some(true),
+            summary: "## Goal\nOld goal\n".to_string(),
+            ..Default::default()
+        };
+        let out = build_dynamic_suffix(&job);
+        assert!(out.contains("## Current Objective\nReview the plugin queue"), "{out}");
+        assert!(out.contains(STAY_ON_IT));
+        assert!(out.contains("keep making progress on this objective"));
+        assert!(!out.contains("Current Topic"));
+        assert!(out.contains("whenever a '## Current Objective' below names something else"));
+        assert!(out.contains("## Goal (as of the checkpoint — the Current Objective below is what counts now)"));
+
+        let tracked = DynamicContext {
+            active_task: "Rename the firm".to_string(),
+            work_tasks: vec![crate::steering::WorkTask {
+                id: "1".into(),
+                subject: "draft candidates".into(),
+                status: "in_progress".into(),
+                details: None,
+            }],
+            ..Default::default()
+        };
+        let out = build_dynamic_suffix(&tracked);
+        assert!(out.contains("## Current Objective\nRename the firm") && out.contains(STAY_ON_IT), "open work is a job");
+    }
+
+    /// A conversation (answered no, or never answered) gets its objective as
+    /// the topic so references resolve, with no push to stay on it.
+    #[test]
+    fn a_conversation_objective_is_only_the_topic() {
+        for recorded in [Some(false), None] {
+            let talk = DynamicContext {
+                active_task: "Decide whether the bookkeeping firm Ledgerly should change its name".to_string(),
+                objective_multi_stage: recorded,
+                summary: "## Goal\nOld goal\n".to_string(),
+                ..Default::default()
+            };
+            let out = build_dynamic_suffix(&talk);
+            assert!(
+                out.contains("## Current Topic\nDecide whether the bookkeeping firm Ledgerly should change its name\nThe latest message decides; use this only to resolve what it refers to.\n---"),
+                "{recorded:?}: {out}"
+            );
+            assert!(!out.contains("Current Objective"), "{recorded:?}: {out}");
+            assert!(!out.contains(STAY_ON_IT));
+            assert!(!out.contains("keep making progress"));
+            assert!(out.contains("whenever a '## Current Topic' below names something else"));
+            assert!(out.contains("## Goal (as of the checkpoint — the Current Topic below is newer)"));
+        }
+    }
+
     #[test]
     fn test_build_dynamic_no_task() {
         let dctx = DynamicContext::default();
         let result = build_dynamic_suffix(&dctx);
         assert!(!result.contains("Current Objective"));
+        assert!(!result.contains("Current Topic"));
     }
 
     #[test]

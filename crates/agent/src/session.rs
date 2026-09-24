@@ -253,12 +253,24 @@ impl SessionManager {
         self.store.get_session_active_task(session_id)
     }
 
-    /// Set the active task.
-    pub fn set_active_task(&self, session_id: &str, task: &str) -> Result<(), NeboError> {
-        self.store.set_session_active_task(session_id, task)
+    /// Whether the objective is a multi-stage job, as the turn decision
+    /// answered it when the objective was set; `None` when never answered.
+    pub fn get_active_task_multi_stage(&self, session_id: &str) -> Result<Option<bool>, NeboError> {
+        self.store.get_session_active_task_multi_stage(session_id)
     }
 
-    /// Clear the active task.
+    /// Set the active task. `multi_stage` is stored with it when answered;
+    /// `None` keeps the stored value.
+    pub fn set_active_task(
+        &self,
+        session_id: &str,
+        task: &str,
+        multi_stage: Option<bool>,
+    ) -> Result<(), NeboError> {
+        self.store.set_session_active_task(session_id, task, multi_stage)
+    }
+
+    /// Clear the active task and its multi-stage answer.
     pub fn clear_active_task(&self, session_id: &str) -> Result<(), NeboError> {
         self.store.clear_session_active_task(session_id)
     }

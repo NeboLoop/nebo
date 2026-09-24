@@ -49,7 +49,8 @@ const SHOW_FLOOR: f64 = 0.3;
 /// Jev returns no confidence on a Noul today (the value is the certainty),
 /// so this bites only if one is returned.
 const SHOW_CONFIDENCE_FLOOR: f64 = 0.6;
-/// The task-tracking nudge fires at or above this.
+/// The task-tracking nudge fires at or above this, and the objective set in
+/// the same call is recorded as a multi-stage job at or above it.
 const NUDGE_FLOOR: f64 = 0.7;
 /// Question-key prefix for a context group (`show_web`, `show_code`).
 const GROUP_KEY_PREFIX: &str = "show_";
@@ -110,10 +111,14 @@ pub fn signals_from(decision: &Decision, groups: &[(&str, &str)]) -> TurnSignals
             .filter(|(name, _)| show_group(decision.answer(&format!("{GROUP_KEY_PREFIX}{name}"))))
             .map(|(name, _)| name.to_string())
             .collect(),
-        multi_stage: decision
-            .answer(MULTI_STAGE)
-            .is_some_and(|a| a.yes() >= NUDGE_FLOOR),
+        multi_stage: multi_stage(decision).unwrap_or(false),
     }
+}
+
+/// The decision's answer to "is this a multi-stage job", thresholded;
+/// `None` when the question was not asked or not answered.
+pub fn multi_stage(decision: &Decision) -> Option<bool> {
+    decision.answer(MULTI_STAGE).map(|a| a.yes() >= NUDGE_FLOOR)
 }
 
 /// Take the turn decision for the call fired at `fired`. An answer already
@@ -258,6 +263,14 @@ mod tests {
         assert!(!at(0.5));
         // A missing answer never nudges.
         assert!(!signals_from(&decision(&[]), GROUPS).multi_stage);
+    }
+
+    #[test]
+    fn the_objective_records_the_same_answer_or_none() {
+        assert_eq!(multi_stage(&decision(&[("multi_stage", noul(0.7))])), Some(true));
+        assert_eq!(multi_stage(&decision(&[("multi_stage", noul(0.69))])), Some(false));
+        // Not asked or not answered: nothing to record, the stored value stands.
+        assert_eq!(multi_stage(&decision(&[])), None);
     }
 
     #[tokio::test]
