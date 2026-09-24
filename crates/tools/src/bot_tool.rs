@@ -285,7 +285,54 @@ fn continuation_hint(task_id: &str) -> String {
     )
 }
 
+/// A spawn call's own choices over what the child inherits: a model or a
+/// skills list named on the call replaces the parent's. Limits have no
+/// override here — they come only from the parent (`SpawnRequest::child_of`).
+fn with_task(
+    mut req: crate::orchestrator::SpawnRequest,
+    call: &serde_json::Value,
+) -> crate::orchestrator::SpawnRequest {
+    if let Some(model) = call["model_override"].as_str().filter(|m| !m.is_empty()) {
+        req.model_override = model.to_string();
+    }
+    let skills: Vec<String> = call["skills"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    if !skills.is_empty() {
+        req.skills = skills;
+    }
+    req
+}
+
 impl AgentTool {
+    /// A spawn has no name: one that names an employee is work for a
+    /// coworker, and an anonymous sub-agent would impersonate them (smoke,
+    /// 2026-09-05: "Chief of Staff" got a blank sub-agent). `call` is a spawn
+    /// call or one task of a parallel batch; the refusal says what to do.
+    fn names_an_employee(&self, call: &serde_json::Value) -> Option<String> {
+        let who = ["name", "to", "employee", "agent"]
+            .iter()
+            .find_map(|k| call[*k].as_str().filter(|v| !v.trim().is_empty()))
+            .map(String::from)
+            .or_else(|| {
+                let names: Vec<String> = self
+                    .store
+                    .list_agents(500, 0)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|a| a.name)
+                    .collect();
+                employee_named_in_prompt(call["prompt"].as_str().unwrap_or(""), &names)
+            })?;
+        Some(format!(
+            "spawn creates an anonymous sub-agent; \"{who}\" is a named employee. \
+             Work for a named employee is a message: message(resource: \"coworker\", \
+             action: \"send\", to: \"{who}\", text: \"<what you need>\"). Not retried \
+             here."
+        ))
+    }
+
     /// An employee by id, exact name, or case-insensitive name.
     fn find_agent(&self, who: &str) -> Option<db::models::Agent> {
         if let Ok(Some(a)) = self.store.get_agent(who) {
@@ -911,66 +958,16 @@ impl AgentTool {
 
         match action {
             "spawn" => {
-                // spawn has no name: a spawn that names someone is work for a
-                // coworker, and an anonymous sub-agent would impersonate them
-                // (smoke, 2026-09-05: "Chief of Staff" got a blank sub-agent).
-                let named_in_prompt: Option<String> = {
-                    let names: Vec<String> = self
-                        .store
-                        .list_agents(500, 0)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|a| a.name)
-                        .collect();
-                    employee_named_in_prompt(input["prompt"].as_str().unwrap_or(""), &names)
-                };
-                if let Some(who) = ["name", "to", "employee", "agent"]
-                    .iter()
-                    .find_map(|k| input[*k].as_str().filter(|v| !v.trim().is_empty()))
-                    .map(String::from)
-                    .or(named_in_prompt)
-                {
-                    return ToolResult::error(format!(
-                        "spawn creates an anonymous sub-agent; \"{who}\" is a named employee. \
-                         Work for a named employee is a message: message(resource: \"coworker\", \
-                         action: \"send\", to: \"{who}\", text: \"<what you need>\"). Not retried \
-                         here."
-                    ));
+                if let Some(refusal) = self.names_an_employee(input) {
+                    return ToolResult::error(refusal);
                 }
                 let task_prompt = input["prompt"].as_str().unwrap_or("");
                 let agent_type = input["agent_type"].as_str().unwrap_or("general");
                 let description = input["description"]
                     .as_str()
                     .unwrap_or(crate::truncate_str(task_prompt, 80));
-                // No explicit override → inherit the parent run's model so the
-                // sub-agent uses the same provider as the conversation that
-                // spawned it (not the global default).
-                let model_override = match input["model_override"].as_str() {
-                    Some(m) if !m.is_empty() => m.to_string(),
-                    _ => ctx.model_preference.clone().unwrap_or_default(),
-                };
                 let wait = input["wait"].as_bool().unwrap_or(true);
                 let max_iterations = input["max_iterations"].as_u64().unwrap_or(0) as usize;
-                let mut skills: Vec<String> = input["skills"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                // A delegate does not see its parent's context, so skills the
-                // parent loaded this run — the instructions the delegated work
-                // is supposed to follow — vanish at the handoff unless they
-                // travel with it. Observed live: a parent loaded the deck
-                // design system, spawned the deck build, and the sub-agent
-                // worked without it. An explicit skills list still wins.
-                if skills.is_empty() {
-                    if let Ok(read) = ctx.skills_read.lock() {
-                        skills = read.iter().cloned().collect();
-                        skills.sort();
-                    }
-                }
                 let plugins: Vec<String> = input["plugins"]
                     .as_array()
                     .map(|arr| {
@@ -1004,25 +1001,19 @@ impl AgentTool {
                     ),
                 };
 
-                let req = crate::orchestrator::SpawnRequest {
-                    prompt: task_prompt.to_string(),
-                    description: description.to_string(),
-                    agent_type: agent_type.to_string(),
-                    model_override: model_override.to_string(),
-                    parent_session_id: ctx.session_id.clone(),
-                    parent_session_key: ctx.session_key.clone(),
-                    user_id: ctx.user_id.clone(),
-                    wait,
-                    parent_cancel: Some(ctx.cancel_token.clone()),
-                    max_iterations,
-                    skills,
-                    plugins,
-                    tools,
-                    parent_stream_tx: ctx.stream_tx.clone(),
-                    handoff_depth: ctx.handoff_depth,
-                    isolate: String::new(),
-                    workspace: String::new(),
-                };
+                let req = with_task(
+                    crate::orchestrator::SpawnRequest {
+                        prompt: task_prompt.to_string(),
+                        description: description.to_string(),
+                        agent_type: agent_type.to_string(),
+                        wait,
+                        max_iterations,
+                        plugins,
+                        tools,
+                        ..crate::orchestrator::SpawnRequest::child_of(ctx)
+                    },
+                    input,
+                );
 
                 match orch.spawn(req).await {
                     Ok(result) => {
@@ -1095,6 +1086,11 @@ impl AgentTool {
                     }
                 };
 
+                for t in tasks {
+                    if let Some(refusal) = self.names_an_employee(t) {
+                        return ToolResult::error(refusal);
+                    }
+                }
                 let batch_isolate = input["isolate"].as_str().unwrap_or("").to_string();
                 let batch_workspace = input["workspace"].as_str().unwrap_or("").to_string();
                 if !batch_isolate.is_empty() && batch_isolate != "worktree" {
@@ -1110,10 +1106,6 @@ impl AgentTool {
                             .as_str()
                             .unwrap_or(crate::truncate_str(&prompt, 80))
                             .to_string();
-                        let task_skills: Vec<String> = t["skills"]
-                            .as_array()
-                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                            .unwrap_or_default();
                         let task_plugins: Vec<String> = t["plugins"]
                             .as_array()
                             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
@@ -1122,25 +1114,21 @@ impl AgentTool {
                             .as_array()
                             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                             .unwrap_or_default();
-                        crate::orchestrator::SpawnRequest {
-                            prompt,
-                            description,
-                            agent_type: t["agent_type"].as_str().unwrap_or("general").to_string(),
-                            model_override: t["model_override"].as_str().unwrap_or("").to_string(),
-                            parent_session_id: ctx.session_id.clone(),
-                            parent_session_key: ctx.session_key.clone(),
-                            user_id: ctx.user_id.clone(),
-                            wait: true, // spawn_parallel always waits for all
-                            parent_cancel: Some(ctx.cancel_token.clone()),
-                            max_iterations: t["max_iterations"].as_u64().unwrap_or(0) as usize,
-                            skills: task_skills,
-                            plugins: task_plugins,
-                            tools: task_tools,
-                            parent_stream_tx: ctx.stream_tx.clone(),
-                            handoff_depth: ctx.handoff_depth,
-                            isolate: t["isolate"].as_str().map(str::to_string).unwrap_or_else(|| batch_isolate.clone()),
-                            workspace: t["workspace"].as_str().map(str::to_string).unwrap_or_else(|| batch_workspace.clone()),
-                        }
+                        with_task(
+                            crate::orchestrator::SpawnRequest {
+                                prompt,
+                                description,
+                                agent_type: t["agent_type"].as_str().unwrap_or("general").to_string(),
+                                wait: true, // spawn_parallel always waits for all
+                                max_iterations: t["max_iterations"].as_u64().unwrap_or(0) as usize,
+                                plugins: task_plugins,
+                                tools: task_tools,
+                                isolate: t["isolate"].as_str().map(str::to_string).unwrap_or_else(|| batch_isolate.clone()),
+                                workspace: t["workspace"].as_str().map(str::to_string).unwrap_or_else(|| batch_workspace.clone()),
+                                ..crate::orchestrator::SpawnRequest::child_of(ctx)
+                            },
+                            t,
+                        )
                     })
                     .collect();
 
@@ -1188,17 +1176,10 @@ impl AgentTool {
                     ),
                 };
 
+                // The children of a decomposition are this run's own work: they
+                // sit, run at the model, and are limited like a plain spawn.
                 match orch
-                    .execute_dag(
-                        task_prompt,
-                        "",
-                        &ctx.session_id,
-                        // The children of a decomposition are this run's own
-                        // work — they run at this conversation's model, the
-                        // same way a plain spawn inherits it.
-                        ctx.model_preference.as_deref().unwrap_or(""),
-                        Some(ctx.cancel_token.clone()),
-                    )
+                    .execute_dag(task_prompt, crate::orchestrator::SpawnRequest::child_of(ctx))
                     .await
                 {
                     Ok(result) => {
@@ -2914,12 +2895,9 @@ mod spawn_model_inheritance {
         fn execute_dag(
             &self,
             _prompt: &str,
-            _user_id: &str,
-            _parent_session_id: &str,
-            model_override: &str,
-            _parent_cancel: Option<CancellationToken>,
+            parent: SpawnRequest,
         ) -> Fut<'_, Result<SpawnResult, String>> {
-            self.dag_models.lock().unwrap().push(model_override.to_string());
+            self.dag_models.lock().unwrap().push(parent.model_override.clone());
             Box::pin(async { Ok(done()) })
         }
 
@@ -3021,6 +2999,52 @@ mod spawn_model_inheritance {
         let rec = spawn_with(&ctx_at(None), serde_json::json!({})).await;
         let spawned = rec.spawned.lock().unwrap();
         assert_eq!(spawned[0].model_override, "", "an empty override is the selector's cue");
+    }
+
+    /// A parallel batch is refused the same way a single spawn is when a
+    /// task names an employee: that work is a message to them.
+    #[tokio::test]
+    async fn a_parallel_task_that_names_an_employee_is_refused() {
+        let rec = Arc::new(Recorder::default());
+        let (_dir, tool) = tool_with(rec.clone());
+        tool.store
+            .create_agent("cos", None, "Chief of Staff", "", "", "", None, None)
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let ctx = ToolContext { stream_tx: Some(tx), ..ctx_at(None) };
+        let result = tool
+            .execute_dyn(
+                &ctx,
+                serde_json::json!({
+                    "resource": "task",
+                    "action": "spawn_parallel",
+                    "tasks": [{"prompt": "draft the memo"}, {"prompt": "ask Chief of Staff for the plan"}],
+                }),
+            )
+            .await;
+        assert!(result.is_error && result.content.contains("named employee"), "{}", result.content);
+        assert!(rec.spawned.lock().unwrap().is_empty(), "the batch still spawned");
+    }
+
+    /// spawn_parallel members run at the conversation's model like a single
+    /// spawn, unless the task names its own.
+    #[tokio::test]
+    async fn parallel_members_inherit_the_conversations_model() {
+        let rec = Arc::new(Recorder::default());
+        let (_dir, tool) = tool_with(rec.clone());
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let ctx = ToolContext { stream_tx: Some(tx), ..ctx_at(Some("janus/nebo-1-pro")) };
+        tool.execute_dyn(
+            &ctx,
+            serde_json::json!({
+                "resource": "task",
+                "action": "spawn_parallel",
+                "tasks": [{"prompt": "a"}, {"prompt": "b", "model_override": "janus/nebo-1-flash"}],
+            }),
+        )
+        .await;
+        let models: Vec<String> = rec.spawned.lock().unwrap().iter().map(|r| r.model_override.clone()).collect();
+        assert_eq!(models, ["janus/nebo-1-pro", "janus/nebo-1-flash"]);
     }
 
     /// A decomposition's children are this run's own work too — the whole DAG

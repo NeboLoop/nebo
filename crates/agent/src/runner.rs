@@ -94,6 +94,20 @@ pub fn slow_first_token_notice(waited_secs: u64) -> String {
 }
 
 #[cfg(test)]
+mod grant_counter_tests {
+    /// A sub-agent runs under its parent's operation policy, so a standing
+    /// grant it spends counts against the parent seat's day — it gets no
+    /// fresh allowance of its own. Other runs are keyed as before.
+    #[test]
+    fn a_sub_agent_spends_its_parent_seats_counters() {
+        assert_eq!(super::grant_counter_seat("", "subagent:agent:bk:web:sa-1"), "bk");
+        assert_eq!(super::grant_counter_seat("", "subagent:subagent:agent:bk:web:sa-1:sa-2"), "bk");
+        assert_eq!(super::grant_counter_seat("bk", "agent:bk:web"), "bk");
+        assert_eq!(super::grant_counter_seat("", "agent:assistant:web"), "");
+    }
+}
+
+#[cfg(test)]
 mod notice_tests {
     /// The outside fence: a run whose words come from a stranger (a QR scan,
     /// an embedded widget, a phone line) never keeps Full Access and always
@@ -2774,6 +2788,17 @@ fn authority_seat(store: &Arc<Store>, asking_agent_id: &str) -> Option<db::model
         .collect();
     holders.sort_by(|a, b| a.name.cmp(&b.name));
     holders.into_iter().next()
+}
+
+/// The seat whose day counters a standing grant spends. A sub-agent carries
+/// no agent id of its own and runs under its parent's operation policy, so it
+/// spends its parent seat's counters — never a fresh allowance of its own.
+fn grant_counter_seat(agent_id: &str, session_key: &str) -> String {
+    if agent_id.is_empty() && session_key.starts_with("subagent:") {
+        keyparser::extract_agent_id(session_key)
+    } else {
+        agent_id.to_string()
+    }
 }
 
 /// Whether this seat may grant standing authority: the owner's own rule on
@@ -5867,6 +5892,7 @@ async fn run_loop(
                 memory_matter: memory_matter.clone(),
                 // Populated by the approval gate below, before tool execution.
                 approved_categories: std::collections::HashSet::new(),
+                full_access,
                 // Restricted-run allowlist: the review fork's whitelist, or
                 // the request's explicit allowlist (phone callers). None for
                 // every normal run.
@@ -6429,8 +6455,11 @@ async fn run_loop(
                         .flatten()
                         .map(|j| tools::policy::CompanyPolicy::from_json(Some(&j)));
                     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-                    let rule_key =
-                        format!("{}:{}", agent_id, tools::plugin_tool::port_suffix(&op));
+                    let rule_key = format!(
+                        "{}:{}",
+                        grant_counter_seat(agent_id, &ctx.session_key),
+                        tools::plugin_tool::port_suffix(&op)
+                    );
                     let counters = {
                         let cp = params.counterparty.clone().unwrap_or_default();
                         let mine = store.day_counters(&rule_key, &today, &cp).ok();

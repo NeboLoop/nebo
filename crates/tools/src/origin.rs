@@ -267,6 +267,10 @@ pub struct ToolContext {
     /// callers that don't run the approval gate (their OFF capabilities still
     /// hard-block, preserving enforcement).
     pub approved_categories: std::collections::HashSet<String>,
+    /// The owner's Full Access switch as this run has it (after the outside
+    /// fence). Engine-set; a sub-agent inherits it with the rest of the
+    /// parent's limits, and it never overrides a per-employee operation gate.
+    pub full_access: bool,
     /// Engine-stamped provenance snapshot of the run at this iteration — the
     /// classes of untrusted content the run has touched so far (accumulated by
     /// the runner from the static tool→class table). Read-only for tools; the
