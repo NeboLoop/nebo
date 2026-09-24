@@ -76,7 +76,7 @@ WRONG_CONTINUATION = {
 }
 
 VM_FETCH = ("ssh -o ConnectTimeout=20 stadium 'export PATH=/opt/homebrew/bin:$PATH; "
-            "limactl shell ci -- tar -C ~/harness-runs -cz {id}' | tar -xz -C {dest}")
+            "limactl shell ci -- bash -c \"tar -C ~/harness-runs -cz {id}\"' | tar -xz -C {dest}")
 REPLAYS = os.path.expanduser("~/.cache/nebo-replays")
 JUDGE_MODEL = "claude-opus-5"
 JUDGE_PROMPT = """You are judging two assistants that each received the same messages from the owner of a small business, one message per turn, in order. You see the owner's messages and each assistant's replies (all turns, joined). Tool calls are not shown.
