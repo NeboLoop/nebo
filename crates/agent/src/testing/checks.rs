@@ -354,6 +354,8 @@ mod tests {
             },
             grade: None,
             failure_reason: None,
+            session_id: String::new(),
+            turns: Vec::new(),
         }
     }
 

@@ -21,6 +21,45 @@ pub struct Trace {
     /// the rest of its fixture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
+    /// The chat session the run used, so a trace can be found again in the
+    /// server log and the provider's usage rows.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub session_id: String,
+    /// One row per owner turn, in order. Empty in traces from before it
+    /// existed and in a run that never completed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<TurnMetrics>,
+}
+
+/// One owner turn's numbers, so two builds can be compared turn by turn:
+/// how long before the owner saw a word, how many model calls and tool calls
+/// the turn took, how large its biggest request was, and how often it
+/// stopped to ask.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct TurnMetrics {
+    /// 1-based owner turn.
+    pub turn: usize,
+    /// From sending the turn to its `chat_complete` (or `chat_error`).
+    pub latency_ms: u64,
+    /// From sending the turn to the first reply text. None: no text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_reply_ms: Option<u64>,
+    /// `usage` events: one per model call the turn made (its steps).
+    pub model_calls: usize,
+    pub tool_calls: usize,
+    pub tool_errors: usize,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub cache_read_tokens: usize,
+    pub cache_creation_tokens: usize,
+    /// The largest single request: input + cache read + cache creation.
+    pub max_prompt_tokens: usize,
+    /// Parked questions (install, connect or plan cards) the turn raised.
+    pub cards: usize,
+    /// Tool calls the turn asked the owner to approve.
+    pub approvals: usize,
+    /// How the turn ended: `complete`, `cancelled` or `error`.
+    pub end: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,6 +314,8 @@ impl Trace {
             metrics: TraceMetrics::default(),
             grade: None,
             failure_reason: Some(reason.to_string()),
+            session_id: String::new(),
+            turns: Vec::new(),
         }
     }
 
@@ -320,5 +361,47 @@ impl Trace {
         }
         traces.sort_by(|a, b| a.run_id.cmp(&b.run_id));
         Ok(traces)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Traces kept from before per-turn numbers existed still load, and a
+    /// trace with them keeps every field through a save and a load.
+    #[test]
+    fn per_turn_numbers_are_optional_and_round_trip() {
+        let old = r#"{"fixture_id":"f","run_id":"run-1","model":"m","timestamp":"t",
+            "tool_calls":[],"final_response":{"content":"hi","tokens":1},
+            "metrics":{"total_tool_calls":0,"total_tokens":1,"input_tokens":0,"output_tokens":1,"total_latency_ms":5}}"#;
+        let t: Trace = serde_json::from_str(old).expect("an old trace loads");
+        assert!(t.turns.is_empty() && t.session_id.is_empty());
+        assert!(!serde_json::to_string(&t).unwrap().contains("\"turns\""), "empty rows are not written");
+
+        let mut t = t;
+        t.session_id = "eval:f:run-1:1".into();
+        t.turns = vec![TurnMetrics {
+            turn: 1,
+            latency_ms: 4200,
+            first_reply_ms: Some(900),
+            model_calls: 3,
+            tool_calls: 2,
+            tool_errors: 1,
+            input_tokens: 30_000,
+            output_tokens: 400,
+            cache_read_tokens: 20_000,
+            cache_creation_tokens: 0,
+            max_prompt_tokens: 18_000,
+            cards: 0,
+            approvals: 1,
+            end: "complete".into(),
+        }];
+        let dir = std::env::temp_dir().join(format!("nebo-trace-turns-{}", std::process::id()));
+        t.save(&dir).unwrap();
+        let back = Trace::load(&dir.join("f_run-1.json")).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(back.turns, t.turns);
+        assert_eq!(back.session_id, t.session_id);
     }
 }
