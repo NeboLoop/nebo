@@ -316,7 +316,7 @@ impl ShellTool {
         let result = crate::process::output_within(cmd, std::time::Duration::from_secs(timeout_secs)).await;
 
         match result {
-            Ok(crate::process::Outcome::TimedOut { stdout, stderr }) => ToolResult { payload: None,
+            Ok(crate::process::Outcome::TimedOut { stdout, stderr }) => ToolResult { payload: None, need: None,
                 content: format!(
                     "Command killed after {}s (its timeout): `{}`\n\
                      Output before the kill:\n{}\
@@ -411,7 +411,7 @@ impl ShellTool {
                         result.push_str(&msg);
                     }
                     if is_error {
-                        return ToolResult { payload: None,
+                        return ToolResult { payload: None, need: None,
                             content: format!("{}\n{}", exit_header(&output.status), result),
                             is_error: true,
                             image_url: None,

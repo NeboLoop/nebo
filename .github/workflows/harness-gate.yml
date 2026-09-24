@@ -16,6 +16,15 @@ name: Harness gate
 #   HARNESS_NEBO_BOT_TOKEN      that bot's token; seeds the NeboAI profile the
 #                               way a cloud pod's does, so the agent runs on
 #                               Janus (nebo-1), the same backend customers get
+#   HARNESS_NEBO_BOOT_TOKEN     that bot's boot credential (NEBO_BOOT_TOKEN), the
+#                               one a rebuilt cloud pod boots with. Every run
+#                               starts from an empty home, and the plain token
+#                               goes stale on the first connect (rotation), so
+#                               the state read before CONNECT and CONNECT itself
+#                               need it. Minted by an admin with the NeboAI MCP
+#                               cloud(resource: bot, action: boot_credential),
+#                               sealed to this repo's Actions secrets key; minting
+#                               again revokes the previous one
 #   HARNESS_CLAUDE_OAUTH_TOKEN  nightly only: login for the claude CLI that
 #                               judges the transcripts (CLAUDE_CODE_OAUTH_TOKEN)
 #
@@ -33,6 +42,13 @@ name: Harness gate
 # instead of failing on it (2026-09-20: every gate run for two weeks was
 # exit 100 on the apt lock or "Cannot connect to Nebo" because both jobs
 # started a server on 27895 and the first cleanup killed the other's).
+#
+# A sweep is the gate dispatched by hand with a `suites` list: any suites and
+# fixtures, program checks by default or judged three runs each with `judge`.
+# It replaces the gate's own two suites for that run only; with the inputs
+# left empty, a dispatch is exactly the gate. A sweep has its own concurrency
+# group and a longer timeout, so a push to the branch never cancels an
+# hours-long sweep and a sweep never cancels the branch's gate.
 #
 # The concurrency group below drops superseded PR runs: on a pull_request
 # event github.ref is refs/pull/<n>/merge, which is the same for every push
@@ -65,9 +81,18 @@ on:
   schedule:
     - cron: "17 7 * * *"   # 07:17 UTC nightly
   workflow_dispatch:
+    inputs:
+      suites:
+        description: "Sweep: space-separated suite and fixture paths (suites/x.yaml, fixtures/.../y.yaml). Empty = the gate."
+        type: string
+        default: ""
+      judge:
+        description: "Sweep only: judge with the claude CLI, three runs each (default: program checks, one run)"
+        type: boolean
+        default: false
 
 concurrency:
-  group: harness-gate-${{ github.ref }}
+  group: harness-gate-${{ github.ref }}${{ inputs.suites && '-sweep' || '' }}
   cancel-in-progress: true
 
 env:
@@ -84,7 +109,7 @@ jobs:
     # group was tried (#151) and dropped: GitHub keeps ONE pending job per
     # group, so a PR's queued run was silently replaced by the next PR's —
     # 35589080672 never ran. Queueing is the runners' job, not a group's.
-    timeout-minutes: ${{ github.event_name == 'schedule' && 120 || 60 }}
+    timeout-minutes: ${{ github.event_name == 'schedule' && 120 || inputs.suites && 600 || 60 }}
     env:
       RUSTC_WRAPPER: ""
     steps:
@@ -137,7 +162,8 @@ jobs:
       # A fresh NEBO_HOME so nothing on the runner leaks in. NEBO_SERVER_MODE
       # marks setup complete on boot (there is no desktop to click through);
       # NEBO_BOT_ID and NEBO_BOT_TOKEN seed the NeboAI profile with Janus
-      # enabled, the same first-boot path a cloud pod takes.
+      # enabled, the same first-boot path a cloud pod takes; NEBO_BOOT_TOKEN
+      # is what the hub accepts once that token has gone stale.
       - name: Start a headless server
         env:
           NEBO_HOME: ${{ runner.temp }}/nebo-home
@@ -145,6 +171,7 @@ jobs:
           NEBO_PORT: ${{ env.GATE_PORT }}
           NEBO_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
           NEBO_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          NEBO_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
           # No company Memory on the gate: the shared KB at kb.neboai.com is
           # keyed on the bot, so every earlier gate run leaked into each fixture
           # (2026-09-23: "you declined the X card" on a fixture's FIRST run, and
@@ -154,8 +181,8 @@ jobs:
           NEBOAI_MEMORY_URL: ""
           RUST_LOG: info,nebo_agent=debug
         run: |
-          test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" \
-            || { echo "HARNESS_NEBO_BOT_ID and HARNESS_NEBO_BOT_TOKEN are not set"; exit 1; }
+          test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" && test -n "$NEBO_BOOT_TOKEN" \
+            || { echo "HARNESS_NEBO_BOT_ID, HARNESS_NEBO_BOT_TOKEN and HARNESS_NEBO_BOOT_TOKEN must be set"; exit 1; }
           mkdir -p "$NEBO_HOME"
           # A job cancelled mid-suite leaves its server on this runner's port
           # (the runner's orphan sweep does not always reach a nohup'd child):
@@ -195,18 +222,18 @@ jobs:
             || { echo "no active NeboAI profile; the bot token did not seed"; exit 1; }
 
       - name: Smoke suite, program checks
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' && !inputs.suites
         run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --no-judge --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
 
       - name: Error-correction suite, program checks
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' && !inputs.suites
         run: ./target/debug/nebo-cli test run --suite suites/error-correction.yaml --no-judge --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/correction
 
       # The VM has no node. Anthropic's native installer puts a standalone
       # `claude` in ~/.local/bin; it persists on the runner, so this is a
       # no-op after the first nightly.
       - name: Install the judge
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || (inputs.suites && inputs.judge)
         run: |
           command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -226,6 +253,27 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
         run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --grader claude-opus-5 --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
+
+      # Each entry runs to the end whatever the one before it did; the step
+      # fails if any entry did. Traces land in traces/<entry name>.
+      - name: Sweep the listed suites and fixtures
+        if: inputs.suites
+        env:
+          SUITES: ${{ inputs.suites }}
+          JUDGE: ${{ inputs.judge }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.judge && secrets.HARNESS_CLAUDE_OAUTH_TOKEN || '' }}
+        run: |
+          if [ "$JUDGE" = "true" ]; then mode=(--grader claude-opus-5 --runs 3); else mode=(--no-judge --runs 1); fi
+          failed=""
+          for entry in $SUITES; do
+            name=$(basename "$entry" .yaml)
+            case "$entry" in suites/*) what=--suite ;; *) what=--fixture ;; esac
+            echo "::group::$entry"
+            ./target/debug/nebo-cli test run "$what" "$entry" "${mode[@]}" --model "$GATE_MODEL" \
+              --server "localhost:$GATE_PORT" --output "traces/$name" || failed="$failed $entry"
+            echo "::endgroup::"
+          done
+          [ -z "$failed" ] || { echo "failed:$failed"; exit 1; }
 
       - name: Stop this job's server
         if: always()

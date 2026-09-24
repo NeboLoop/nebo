@@ -4,9 +4,11 @@ description: |
   LIVE, macOS only, not in any suite: needs a logged-in desktop session and
   Accessibility granted to the Nebo that serves --server. Run it on the
   Stadium mini (see docs/sme/COMPUTER_CONTROL_SME.md). The model must observe
-  Calculator, press 7, +, 8, = by ref through accessibility, and report the
+  Calculator, press AC, 9, ×, 6, −, 4, = by ref through accessibility, and report the
   display. The checks pin the pathway: a capture happens before any click, the
-  presses go by ref, and the final reply reads 15. A prologue of launch /
+  presses go by ref, and the final reply reads 50. (Calculator keeps its last
+  display across launches, so the sum must be one no earlier run leaves: 15
+  was on screen before the first press on 2026-09-24 and passed vacuously.) A prologue of launch /
   list / activate is allowed — that is how nebo-1 gets there.
 target_component: os
 setup:
@@ -16,7 +18,7 @@ teardown:
 
 conversation:
   - role: user
-    content: "Using the computer control tools on this Mac, capture the Calculator app, then press 7, +, 8 and = by clicking the buttons by ref, and tell me what the display shows afterwards. Do not use the keyboard or pixel coordinates."
+    content: "Using the computer control tools on this Mac, capture the Calculator app, press AC (All Clear), then press 9, ×, 6, −, 4 and = by clicking the buttons by ref, and tell me what the display shows afterwards. Do not use the keyboard or pixel coordinates."
 
 tool_config:
   os:
@@ -30,17 +32,17 @@ prompt_assertions:
     - id: presses-by-ref
       text: "Every click carries a ref and its result says it was pressed via accessibility; none is by pixel coordinate"
       severity: critical
-    - id: reports-15
-      text: "The final reply says the display shows 15"
+    - id: reports-50
+      text: "The final reply says the display shows 50, and the presses before it include AC, 9, Multiply, 6, Subtract, 4 and Equals by ref"
       severity: critical
   cost:
     - id: bounded
-      text: "At most 12 tool calls (prologue, one capture, four presses, one look, slack)"
+      text: "At most 14 tool calls (prologue, one capture, seven presses, one look, slack)"
       severity: important
-      check: { max_tool_calls: 12 }
+      check: { max_tool_calls: 14 }
 
 ideal_behavior:
-  tool_calls: 5
+  tool_calls: 9
   narrative: |
-    os(capture see Calculator) → click ref "7" → click ref "+" (Add) → click ref "8"
-    → click ref "=" (Equals); each press returns the window; the last shows 15.
+    os(capture see Calculator) → click ref AC → 9 → Multiply → 6 → Subtract
+    → 4 → Equals; each press returns the window; the last shows 50.

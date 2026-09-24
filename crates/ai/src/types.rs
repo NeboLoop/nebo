@@ -106,7 +106,9 @@ pub struct StreamEvent {
     /// to auto-attach run-produced files to outbound comm replies.
     pub image_url: Option<String>,
     /// Structured rendering payload from ToolResult.payload (ToolResult events
-    /// only) — forwarded to the app so known kinds render as rich cards.
+    /// only) — forwarded to the app so known kinds render as rich cards. On a
+    /// `terminal_tool_error` ControlNotice: the refusing tool's
+    /// `types::OwnerNeed`, when it named one ([`StreamEvent::owner_need`]).
     pub payload: Option<serde_json::Value>,
     /// Engine-stamped provenance classes of the run (Done events only) — the
     /// final taint set the runner accumulated. Consumed by the coworker rail
@@ -115,6 +117,21 @@ pub struct StreamEvent {
 }
 
 impl StreamEvent {
+    /// Carry what only the owner can supply on a `terminal_tool_error`
+    /// ControlNotice (the refusing tool named it).
+    pub fn with_owner_need(mut self, need: Option<types::OwnerNeed>) -> Self {
+        self.payload = need.and_then(|n| serde_json::to_value(n).ok());
+        self
+    }
+
+    /// The owner need a `terminal_tool_error` ControlNotice carries.
+    pub fn owner_need(&self) -> Option<types::OwnerNeed> {
+        if self.event_type != StreamEventType::ControlNotice {
+            return None;
+        }
+        self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
+    }
+
     /// Attach the run's final provenance classes (Done events).
     pub fn with_provenance(mut self, classes: Vec<types::provenance::ProvenanceClass>) -> Self {
         self.provenance = Some(classes);

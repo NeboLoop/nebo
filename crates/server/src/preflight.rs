@@ -119,6 +119,10 @@ pub(crate) fn unmet_need_now(
 /// (said once at warn; later fires with the same need at debug), the fire
 /// is closed `done` with the summary tag `skipped` (triage's history passes
 /// over it) and does not run. The binding is never retired here. True runs.
+///
+/// `announce` is handed the need of every held fire; the owner hears it
+/// once ([`db::Store::tell_binding_need`]), and clearing the record here
+/// forgets it, so a need that returns is told again.
 pub(crate) fn admit(
     store: &Store,
     run: &EngineRun,
@@ -126,6 +130,7 @@ pub(crate) fn admit(
     binding_name: &str,
     unmet: Option<String>,
     t: i64,
+    announce: &dyn Fn(&str),
 ) -> bool {
     let recorded = store
         .agent_workflow_degraded_reason(agent_id, binding_name)
@@ -148,6 +153,7 @@ pub(crate) fn admit(
             warn!(site = "preflight", binding = %key, error = %e, "could not record the missing need");
         }
     }
+    announce(&missing);
     if let Err(e) = store
         .engine_set_run_result_tag(&run.id, "skipped")
         .and_then(|_| store.engine_set_run_state(&run.id, "done", t, None))
@@ -156,6 +162,113 @@ pub(crate) fn admit(
         return true;
     }
     false
+}
+
+// ── Telling the owner ────────────────────────────────────────────────────
+
+/// One Inbox item telling the owner an employee cannot do a duty until
+/// something only the owner supplies is in place, and the one place to
+/// supply it. Nothing is installed or connected for them: a connection can
+/// provision something (a phone line, a paid account), so the owner decides.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NeedNotice {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub link: String,
+}
+
+/// A duty's name in plain words: `front-desk-report` → `front desk report`.
+fn duty_words(binding_name: &str) -> String {
+    binding_name.replace(['-', '_'], " ")
+}
+
+/// The notice for a need a binding's record names (`needs a telephony
+/// plugin`, `needs the ledgerly plugin turned on`), from pre-flight or a
+/// watch trigger's start. Each is met in Plugins, where a plugin is added
+/// from the marketplace or turned on.
+pub(crate) fn plugin_need_notice(employee: &str, binding_name: &str, need: &str) -> NeedNotice {
+    NeedNotice {
+        id: format!("need:{}", uuid::Uuid::new_v4()),
+        title: format!("{employee} {need}"),
+        body: format!(
+            "{employee} is holding \"{duty}\" until then. Add the plugin or turn it on in Plugins. \
+             The duty goes ahead on its own after that.",
+            duty = duty_words(binding_name)
+        ),
+        link: crate::handlers::plugins::PLUGINS_SETTINGS_PATH.to_string(),
+    }
+}
+
+/// The notice for a missing account on an installed plugin: open that
+/// employee's accounts at that plugin. `plugin` is (slug, name).
+pub(crate) fn account_need_notice(employee: &str, agent_id: &str, binding_name: &str, plugin: (&str, &str)) -> NeedNotice {
+    let (slug, name) = plugin;
+    NeedNotice {
+        id: format!("need:{}", uuid::Uuid::new_v4()),
+        title: format!("{employee} needs {name} connected"),
+        body: format!(
+            "{employee} can't do \"{duty}\" until a {name} account is connected for it. \
+             Connect one in {employee}'s accounts. The duty goes ahead on its own after that.",
+            duty = duty_words(binding_name)
+        ),
+        link: format!("/{agent_id}/settings/accounts?plugin={}", urlencoding::encode(slug)),
+    }
+}
+
+/// The notice when a run's own words say the duty cannot be done until
+/// something is connected, and what is not known. `clause` is the one short
+/// piece of the run's words the owner is shown, quoted.
+pub(crate) fn something_needed_notice(employee: &str, agent_id: &str, binding_name: &str, clause: &str) -> NeedNotice {
+    let duty = duty_words(binding_name);
+    let said = if clause.is_empty() { String::new() } else { format!(" Its last run said: \"{clause}\"") };
+    NeedNotice {
+        id: format!("need:{}", uuid::Uuid::new_v4()),
+        title: format!("{employee} needs something connected"),
+        body: format!(
+            "{employee} can't do \"{duty}\" until something is added or connected.{said} \
+             Check {employee}'s accounts and Plugins. The duty goes ahead on its own after that."
+        ),
+        link: format!("/{agent_id}/settings/accounts"),
+    }
+}
+
+/// What a binding's duty stands on, from whichever source knows it.
+pub(crate) enum Need<'a> {
+    /// The reason the binding's record names (pre-flight, a watch trigger's
+    /// start): `needs a telephony plugin`.
+    Recorded(&'a str),
+    /// What the tool that blocked a run named, as data.
+    Known(&'a types::OwnerNeed),
+    /// What heartbeat triage read the last outcome as standing on.
+    Judged(&'a agent::heartbeat_triage::HeldNeed),
+}
+
+impl Need<'_> {
+    /// The key "the owner was told this" is kept under.
+    pub(crate) fn key(&self) -> String {
+        use agent::heartbeat_triage::Declared;
+        match self {
+            Need::Recorded(text) => text.to_string(),
+            Need::Known(need) => need.key(),
+            Need::Judged(held) => match &held.which {
+                Some(Declared::Capability(c)) => format!("judged:capability:{c}"),
+                Some(Declared::Plugin(p)) => format!("judged:plugin:{p}"),
+                None => "judged:something".to_string(),
+            },
+        }
+    }
+}
+
+/// The owner need a binding's run ended blocked on, as the refusing tool
+/// named it, or None: the run did not end blocked (`exited`), or the tool
+/// named nothing the owner supplies.
+pub(crate) fn blocked_need(store: &Store, run_id: &str) -> Option<types::OwnerNeed> {
+    let run = store.get_workflow_run(run_id).ok().flatten()?;
+    if run.status != "exited" {
+        return None;
+    }
+    store.workflow_run_owner_need(run_id).ok().flatten()
 }
 
 #[cfg(test)]
@@ -283,7 +396,8 @@ mod tests {
             "emp",
             "sweep",
             Some("needs the ledgerly plugin".into()),
-            100
+            100,
+            &|_| {}
         ));
         assert_eq!(
             s.agent_workflow_degraded_reason("emp", "sweep")
@@ -309,12 +423,13 @@ mod tests {
             "emp",
             "sweep",
             Some("needs the ledgerly plugin".into()),
-            200
+            200,
+            &|_| {}
         ));
 
         // The plugin appears: the next fire runs and the record clears.
         let third = fire(&s, "f3");
-        assert!(admit(&s, &third, "emp", "sweep", None, 300));
+        assert!(admit(&s, &third, "emp", "sweep", None, 300, &|_| {}));
         assert_eq!(
             s.agent_workflow_degraded_reason("emp", "sweep").unwrap(),
             None

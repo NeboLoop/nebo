@@ -399,8 +399,16 @@ impl OsTool {
                 "shell"
             }
             "move" if has("app") => "window",
+            // `action: "menu", name: "Edit > Find"` means choose that item.
+            "menu" if has("name") => "menu",
+            // "Edit > Select All" is a menu path, whatever resource was left out.
+            "click" if input.get("name").and_then(|v| v.as_str()).is_some_and(|n| n.contains('>')) => "menu",
+            "list" if has("app") && has("name") => "menu",
             "click" if has("name") => "dialog",
-            "click" if has("label") || has("role") => "ui",
+            // A click by label resolves against the last capture (see input
+            // `target`), not the AppleScript UI path.
+            "click" if has("label") => "input",
+            "click" if has("role") => "ui",
             "click" if has("app") && !has_input_target => "ui",
             // A `find` inside a named app looks for an element, not a secret.
             "find" if has("app") => "ui",
@@ -423,7 +431,7 @@ impl OsTool {
             "click" | "type" | "press" | "move" | "double_click" | "right_click" | "hotkey"
             | "scroll" | "drag" | "paste" => "input",
             // Capture ("capture" is what the desktop straps call a screenshot)
-            "screenshot" | "see" | "capture" => "capture",
+            "screenshot" | "see" | "capture" | "wait" => "capture",
             // Settings: every setting is its own action name
             "volume" | "brightness" | "mute" | "unmute" | "wifi" | "bluetooth" | "darkmode"
             | "battery" => "settings",
@@ -540,6 +548,81 @@ impl OsTool {
         ""
     }
 
+    /// Every resource the os tool dispatches to.
+    const RESOURCE_NAMES: &'static [&'static str] = &[
+        "file", "shell", "window", "input", "clipboard", "capture", "notification",
+        "ui", "menu", "dialog", "space", "shortcut", "tts", "dock",
+        "app", "settings", "music", "keychain", "search",
+        "mail", "contacts", "calendar", "reminders",
+    ];
+
+    /// The call as it will run: shorthand accepted (first-call doctrine: fix
+    /// the API, not the client), the action a call plainly means filled in,
+    /// and the resource it resolves to written into `resource`.
+    ///
+    /// This is the ONE place a call's shape is settled, and the registry
+    /// applies it (`DynTool::normalize_input`) BEFORE any gate reads the
+    /// call: safeguard, path fence, origin deny list, capability and approval
+    /// all see the action and resource that execute, whichever shape the
+    /// model wrote. Idempotent, so running it again changes nothing.
+    pub(crate) fn normalized(input: serde_json::Value) -> serde_json::Value {
+        let mut v = input;
+        // dir / directory / folder are the path (live 2026-09-05: a
+        // listing sent {command: "", dir: ...} and failed to parse).
+        if v.get("path").and_then(|p| p.as_str()).unwrap_or("").is_empty() {
+            if let Some(dir) = ["dir", "directory", "folder"]
+                .iter()
+                .find_map(|k| v.get(*k).and_then(|d| d.as_str()).filter(|d| !d.is_empty()))
+                .map(String::from)
+            {
+                v["path"] = serde_json::json!(dir);
+            }
+        }
+        // resource: "shell" with the command in `pattern` (live
+        // 2026-09-05: {command: "", pattern: "ls ... | wc -l"}).
+        if v.get("resource").and_then(|r| r.as_str()) == Some("shell")
+            && v.get("command").and_then(|c| c.as_str()).unwrap_or("").is_empty()
+        {
+            if let Some(cmd) = v.get("pattern").and_then(|c| c.as_str()).filter(|c| !c.is_empty()).map(String::from) {
+                v["command"] = serde_json::json!(cmd);
+                v.as_object_mut().map(|o| o.remove("pattern"));
+            }
+        }
+        if let Some(action) = Self::infer_missing_action(&v) {
+            v["action"] = serde_json::json!(action);
+        }
+        // A call with no action is refused by the tool; a file-management
+        // verb is answered with a shell correction and names no resource.
+        let Ok(domain_input) = serde_json::from_value::<DomainInput>(v.clone()) else {
+            return v;
+        };
+        if Self::is_file_mgmt_redirect(&v) {
+            return v;
+        }
+        let corrected =
+            crate::domain::auto_correct_resource(&domain_input, &mut v, Self::RESOURCE_NAMES);
+        let resource = if corrected.is_empty() {
+            Self::resolved_resource(&v).to_string()
+        } else {
+            corrected
+        };
+        if resource.is_empty() {
+            return v;
+        }
+        // Settings VALUES models guess as resources: `os(resource:
+        // "battery", action: "info")` is the natural first shape, but
+        // battery/volume/brightness are ACTIONS on the settings
+        // resource. Honor the guess instead of erroring.
+        let resource = if matches!(resource.as_str(), "battery" | "volume" | "brightness") {
+            v["action"] = serde_json::Value::String(resource);
+            "settings".to_string()
+        } else {
+            resource
+        };
+        v["resource"] = serde_json::Value::String(resource);
+        v
+    }
+
     /// The action a call plainly means when it names none (the agent tool's
     /// `infer_missing_action` precedent). A live run wrote
     /// os({glob: "*.md", path: ...}) and got "missing field `action`"; the
@@ -652,7 +735,7 @@ impl DynTool for OsTool {
          Rules:\n\
          - ALWAYS call this tool for file/system facts — NEVER answer from memory or training data. To read a file, call os(resource: \"file\", action: \"read\"); do NOT claim a file is missing or report its contents without calling first.\n\
          - Prefer file actions over shell: use file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find.\n\
-         - Always pass `action`. `resource` is inferred when the action belongs to one resource (read→file, exec→shell, play→music, volume→settings) or its parameters settle it (session_id→shell, move+app→window, click+label→ui, send+title→notification); pass it for actions several resources share (create, list, search, get, delete).\n\
+         - Always pass `action`. `resource` is inferred when the action belongs to one resource (read→file, exec→shell, play→music, volume→settings) or its parameters settle it (session_id→shell, move+app→window, click+label→input (resolved against the last capture), send+title→notification); pass it for actions several resources share (create, list, search, get, delete).\n\
          - Interactive React (dashboards, charts, visualizations): write the component as a .jsx file, then convert it (action: \"convert\", to: \"html\") — Nebo transpiles it into a self-contained, renderable page. NEVER put JSX or CDN-loaded React (unpkg/esm) directly in a .html; raw JSX has no transpiler in the browser and renders blank.\n\
          - Before edit or overwrite of an EXISTING file, read it first (edit/overwrite are rejected without a prior read). A brand-new file needs no prior read.\n\
          - glob = find files by NAME pattern (*.md, src/**/*.rs); grep = match text INSIDE files by regex. Do not confuse them.\n\
@@ -661,12 +744,12 @@ impl DynTool for OsTool {
          - file: read, write, edit, share, glob, grep, convert, checkpoint, checkpoints, restore, plan, plan_check — checkpoint snapshots the files you are about to change (paths: [...]) and restore puts them back (never git stash/reset); plan writes a work document whose steps each carry a verify command, and plan_check runs those commands and ticks only the steps that pass; to list a directory, glob its path (pattern defaults to *); share hands an EXISTING file to the user as a download card (a deck/PDF/binary already on disk — never recite its path or copy it to \"trigger\" a card); convert generates documents via embedded engines: .md→pdf/docx, .csv→xlsx, .jsx/.tsx→html (interactive React) (never use host binaries like wkhtmltopdf/pandoc)\n\
          - shell: exec, list (background sessions; with filter: system processes), poll, log, write (data), kill, info (session_id or pid)\n\
          - window: list, focus, minimize, maximize, resize, close, move\n\
-         - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste\n\
+         - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste — by ref through accessibility; right_click on a [menu] element opens its context menu and lists the items as refs; every act returns the window after it and says whether it was delivered and what changed; wait_for waits for text/an element/a menu instead of guessing a pause\n\
          - clipboard: read, write, clear\n\
-         - capture: screenshot, see\n\
+         - capture: screenshot, see (ref: drills into a +N container), wait (app + text | label | gone | menu | window)\n\
          - notification: send, alert\n\
          - ui: tree, find, click, get_value, set_value, list_apps\n\
-         - menu: list, menus, click, status, click_status\n\
+         - menu: list (name: \"File\" lists that menu), menus, click (name: \"File > Export…\"), status, click_status — the app's menu bar, read and pressed through accessibility\n\
          - dialog: detect, list, click, fill, dismiss\n\
          - space: list, switch, move_window\n\
          - shortcut: list, run\n\
@@ -891,8 +974,31 @@ impl DynTool for OsTool {
             "ref".into(),
             prop(
                 "string",
-                "Input click/type/move target: the element ref from capture(action: see) (e.g. B1, T2)",
+                "Input click/type/move target: the element ref from capture(action: see) (e.g. B1, T2). On capture see: drill into that element (a container marked +N inside) and list only its contents",
             ),
+        );
+        props.insert(
+            "wait_for".into(),
+            serde_json::json!({
+                "type": "object",
+                "description": "Input actions and capture wait: wait for something instead of a fixed pause — {text: \"Saved\"} | {appears: \"Export\"} | {gone: \"Loading\"} | {menu: true|false} | {window: true | \"title\"}, optional timeout_ms (default 5000, max 30000)"
+            }),
+        );
+        props.insert(
+            "repeat".into(),
+            prop("integer", "Input press: press the key this many times (max 30)"),
+        );
+        props.insert(
+            "target".into(),
+            prop("string", "Input click/type/right_click: the element in words (\"the Save button\") instead of a ref — resolved against the last capture: one element with exactly that label is used; otherwise Jev picks, and when it is not sure the call comes back with the reason and you choose the ref"),
+        );
+        props.insert(
+            "physical".into(),
+            prop("boolean", "Input click/type: use the real mouse and keyboard instead of accessibility. Off by default; an accessibility action that fails is reported, never silently replaced"),
+        );
+        props.insert(
+            "force".into(),
+            prop("boolean", "Input press: send a combo that logs out, locks or force-quits (refused without it)"),
         );
         props.insert(
             "element_id".into(),
@@ -982,6 +1088,10 @@ impl DynTool for OsTool {
         false
     }
 
+    fn normalize_input(&self, input: serde_json::Value) -> serde_json::Value {
+        Self::normalized(input)
+    }
+
     fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
         let resource = Self::resolved_resource(input);
         // Organizer resources: only write actions need approval
@@ -1023,7 +1133,7 @@ impl DynTool for OsTool {
         match OsTool::resolved_resource(input) {
             "file" => matches!(action, "read" | "list" | "glob" | "grep" | "checkpoints"),
             "search" => true,
-            "capture" => matches!(action, "screenshot" | "see"),
+            "capture" => matches!(action, "screenshot" | "see" | "wait"),
             _ => false,
         }
     }
@@ -1034,37 +1144,7 @@ impl DynTool for OsTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            // Shorthand acceptance (first-call doctrine: fix the API, not the
-            // client): a call that names no action but plainly means one is
-            // normalized instead of rejected.
-            let input = {
-                let mut v = input;
-                // dir / directory / folder are the path (live 2026-09-05: a
-                // listing sent {command: "", dir: ...} and failed to parse).
-                if v.get("path").and_then(|p| p.as_str()).unwrap_or("").is_empty() {
-                    if let Some(dir) = ["dir", "directory", "folder"]
-                        .iter()
-                        .find_map(|k| v.get(*k).and_then(|d| d.as_str()).filter(|d| !d.is_empty()))
-                        .map(String::from)
-                    {
-                        v["path"] = serde_json::json!(dir);
-                    }
-                }
-                // resource: "shell" with the command in `pattern` (live
-                // 2026-09-05: {command: "", pattern: "ls ... | wc -l"}).
-                if v.get("resource").and_then(|r| r.as_str()) == Some("shell")
-                    && v.get("command").and_then(|c| c.as_str()).unwrap_or("").is_empty()
-                {
-                    if let Some(cmd) = v.get("pattern").and_then(|c| c.as_str()).filter(|c| !c.is_empty()).map(String::from) {
-                        v["command"] = serde_json::json!(cmd);
-                        v.as_object_mut().map(|o| o.remove("pattern"));
-                    }
-                }
-                if let Some(action) = Self::infer_missing_action(&v) {
-                    v["action"] = serde_json::json!(action);
-                }
-                v
-            };
+            let input = Self::normalized(input);
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
                 Err(e) => {
@@ -1082,15 +1162,6 @@ impl DynTool for OsTool {
                 }
             };
 
-            const RESOURCE_NAMES: &[&str] = &[
-                "file", "shell", "window", "input", "clipboard", "capture", "notification",
-                "ui", "menu", "dialog", "space", "shortcut", "tts", "dock",
-                "app", "settings", "music", "keychain", "search",
-                "mail", "contacts", "calendar", "reminders",
-            ];
-
-            let mut input = input;
-
             // File-management verbs (move/copy/rename/delete/mkdir) with file-shaped
             // args are file operations, NOT a mouse "move" — but action-name inference
             // resolves bare "move" to the desktop "input" resource, which then gated on
@@ -1105,18 +1176,12 @@ impl DynTool for OsTool {
                 }
             }
 
-            let resource = {
-                let corrected = crate::domain::auto_correct_resource(
-                    &domain_input,
-                    &mut input,
-                    RESOURCE_NAMES,
-                );
-                if corrected.is_empty() {
-                    Self::resolved_resource(&input).to_string()
-                } else {
-                    corrected
-                }
-            };
+            // `normalized` wrote the resource when the call settles one.
+            let resource = input
+                .get("resource")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             if resource.is_empty() {
                 return ToolResult::error(format!(
@@ -1126,27 +1191,6 @@ impl DynTool for OsTool {
                      reminders) or use one of the documented actions.",
                     domain_input.action
                 ));
-            }
-
-            // Settings VALUES models guess as resources: `os(resource:
-            // "battery", action: "info")` is the natural first shape, but
-            // battery/volume/brightness are ACTIONS on the settings
-            // resource. Honor the guess instead of erroring.
-            let resource = if matches!(resource.as_str(), "battery" | "volume" | "brightness") {
-                input["action"] = serde_json::Value::String(resource.clone());
-                "settings".to_string()
-            } else {
-                resource
-            };
-            input["resource"] = serde_json::Value::String(resource.clone());
-
-            // Ensure resource is present in input for downstream tools
-            if !input
-                .get("resource")
-                .and_then(|v| v.as_str())
-                .is_some_and(|s| !s.is_empty())
-            {
-                input["resource"] = serde_json::Value::String(resource.clone());
             }
 
             // Desktop-bound resources have no counterpart in a cloud deploy —
@@ -1423,7 +1467,8 @@ mod tests {
             // Parameters settle a shared action name.
             (serde_json::json!({"action": "move", "app": "Safari", "x": 0, "y": 0}), "window"),
             (serde_json::json!({"action": "move", "coordinate": [10, 10]}), "input"),
-            (serde_json::json!({"action": "click", "app": "Safari", "label": "OK"}), "ui"),
+            (serde_json::json!({"action": "click", "app": "Safari", "label": "OK"}), "input"),
+            (serde_json::json!({"action": "click", "app": "Safari", "role": "AXButton"}), "ui"),
             (serde_json::json!({"action": "click", "role": "AXButton"}), "ui"),
             (serde_json::json!({"action": "click", "app": "Safari"}), "ui"),
             (serde_json::json!({"action": "click", "app": "Safari", "ref": "B3"}), "input"),
@@ -1637,6 +1682,17 @@ mod tests {
 
     /// Stadium 2026-09-23: `find` with `app` and `label` went to the keychain
     /// ("no password stored under Calculator") instead of the UI.
+    /// Stadium, 2026-09-24: `click name: "Edit > Select All"` and `list app
+    /// name: "Format"` sent without a resource are menu calls.
+    #[test]
+    fn a_menu_path_or_a_named_menu_routes_to_the_menu() {
+        let r = |v: serde_json::Value| OsTool::resolved_resource(&v).to_string();
+        assert_eq!(r(serde_json::json!({"action": "click", "name": "Edit > Select All"})), "menu");
+        assert_eq!(r(serde_json::json!({"action": "click", "app": "TextEdit", "name": "Edit > Select All"})), "menu");
+        assert_eq!(r(serde_json::json!({"action": "list", "app": "TextEdit", "name": "Format"})), "menu");
+        assert_eq!(r(serde_json::json!({"action": "click", "name": "OK"})), "dialog");
+    }
+
     #[test]
     fn a_find_inside_an_app_is_a_ui_search_not_a_keychain_lookup() {
         let input = serde_json::json!({"action": "find", "app": "Calculator", "label": "7"});

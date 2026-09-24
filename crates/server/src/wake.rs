@@ -87,7 +87,7 @@ pub async fn deliver(state: &AppState, session_key: &str) {
             ));
             agent::steering::push_wake(
                 session_key,
-                agent::steering::WakeEntry { wake_id: w.id, content, taint },
+                agent::steering::WakeEntry { wake_id: Some(w.id), content, taint },
             );
         }
         return;

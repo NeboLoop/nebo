@@ -2113,15 +2113,16 @@ pub(crate) async fn resolve_comm_attachments(
             }
         }
 
-        // Decks can't render in a browser — upload the PDF preview alongside
-        // (same cached conversion the local Work panel uses). The web pairs
-        // "<name>.preview.pdf" to its deck and hides it from cards.
-        let is_deck = matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("pptx" | "ppt")
-        );
-        if is_deck {
-            match crate::handlers::files::ensure_pptx_preview(plugin_store, &path, &files_dir).await
+        // Decks can't render in a browser and Word files can't render on the
+        // phone — upload the PDF preview alongside (same cached conversion the
+        // local Work panel uses). The clients pair "<name>.preview.pdf" to its
+        // document and hide it from cards.
+        let previewable = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(crate::handlers::files::pdf_previewable);
+        if previewable {
+            match crate::handlers::files::ensure_pdf_preview(plugin_store, &path, &files_dir).await
             {
                 Ok(cache) => match tokio::fs::read(&cache).await {
                     Ok(pdf) => {
@@ -2131,15 +2132,15 @@ pub(crate) async fn resolve_comm_attachments(
                             .await
                             .map(|att| out.push(att))
                         {
-                            warn!(filename = %preview_name, error = %e, "failed to upload deck preview");
+                            warn!(filename = %preview_name, error = %e, "failed to upload document preview");
                         }
                     }
-                    Err(e) => warn!(error = %e, "failed to read deck preview cache"),
+                    Err(e) => warn!(error = %e, "failed to read document preview cache"),
                 },
                 Err(e) => {
-                    // Best-effort: the deck still ships; the web shows a
-                    // download card instead of a rendered preview.
-                    warn!(filename = %filename, error = %e, "deck preview generation skipped");
+                    // Best-effort: the document still ships; the clients show
+                    // a download card instead of a rendered preview.
+                    warn!(filename = %filename, error = %e, "document preview generation skipped");
                 }
             }
         }

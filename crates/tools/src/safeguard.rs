@@ -45,6 +45,16 @@ pub fn check_path_scope(
             "shell" => check_shell_path_scope(input, allowed_paths),
             _ => None,
         },
+        // A notebook edit writes its .ipynb: fenced like a file write, and
+        // like a file read, reading it is not.
+        "notebook" => {
+            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let path = input.get("notebook_path").and_then(|v| v.as_str()).unwrap_or("");
+            if action == "read" || path.is_empty() {
+                return None;
+            }
+            outside_allowed("edit", &[crate::file_tool::expand_path(path)], allowed_paths)
+        }
         _ => None,
     }
 }

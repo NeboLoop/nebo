@@ -1742,6 +1742,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
     let decide_client = build_decide_client(store.clone(), &cfg);
+    // Desktop control asks Jev which element "the Save button" is.
+    tools::desktop_tool::set_decider(decide_client.clone());
     let mut runner_builder = agent::Runner::new(
         store.clone(),
         tool_registry.clone(),
@@ -5379,40 +5381,6 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             } else {
                 None
             };
-
-            // Persist the room posture INTO the session (isMeta — hidden from
-            // the owner, present in the model's history on every iteration and
-            // every later turn). The mention_context reminder below is
-            // ephemeral: it rides ONE LLM call and vanishes, which is how the
-            // organizer lost its doctrine after the first tool denial. Seeded
-            // once, on the session's first dispatch.
-            if workroom.is_some() {
-                if let Some(ref briefing) = mention_context {
-                    if let Ok(sess) = state.runner.sessions().get_or_create(&session_key, "") {
-                        let fresh = state
-                            .runner
-                            .sessions()
-                            .get_messages(&sess.id)
-                            .map(|m| m.is_empty())
-                            .unwrap_or(false);
-                        if fresh {
-                            let meta = serde_json::json!({
-                                "isMeta": true,
-                                "roomBriefing": true,
-                            })
-                            .to_string();
-                            let _ = state.runner.sessions().append_message(
-                                &sess.id,
-                                "user",
-                                briefing,
-                                None,
-                                None,
-                                Some(&meta),
-                            );
-                        }
-                    }
-                }
-            }
 
             // The owner's live room view shows who picked the message up —
             // a send must never look like it went into the void. Cleared

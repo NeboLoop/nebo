@@ -1,0 +1,47 @@
+id: live-mac-scroll-menu-drag
+name: "Computer control — real scrolling, a menu choice, a Finder drag with dwell"
+description: |
+  LIVE, macOS only, not in any suite (logged-in desktop + Accessibility; the
+  Stadium mini). Scrolling on macOS used to send cliclick's key up/down
+  commands and never scrolled; drags had no pickup or dwell; menu choices
+  went through System Events. Here the wheel is a CGEvent, a menu item is
+  pressed through accessibility, and a drag holds, moves in steps and dwells
+  over the folder before dropping.
+target_component: os
+setup:
+  - "seq 1 300 | sed 's/^/line /' > /tmp/nebo-live-scroll.txt; open -a TextEdit /tmp/nebo-live-scroll.txt; rm -rf /tmp/nebo-drag; mkdir -p /tmp/nebo-drag/inbox; echo hi > /tmp/nebo-drag/note.txt; open /tmp/nebo-drag; sleep 3"
+teardown:
+  - "osascript -e 'tell application \"TextEdit\" to close every document saving no' >/dev/null 2>&1; pkill -x TextEdit; rm -rf /tmp/nebo-drag /tmp/nebo-live-scroll.txt"
+
+conversation:
+  - role: user
+    content: "Three things with the computer control tools, then report each result. (1) TextEdit has /tmp/nebo-live-scroll.txt open (300 lines). Capture TextEdit, then scroll its document down with os(resource: \"input\", action: \"scroll\", app: \"TextEdit\", direction: \"down\", until: \"line 250\") and tell me whether line 250 is on screen. (2) Choose Edit > Select All in TextEdit with os(resource: \"menu\", action: \"click\", app: \"TextEdit\", name: \"Edit > Select All\"). Do not save anything. (3) A Finder window shows the folder nebo-drag, containing note.txt and a folder named inbox. Capture Finder, then drag note.txt onto the inbox folder by ref (ref for note.txt, to_ref for inbox). Finally run os(resource: \"shell\", action: \"exec\", command: \"ls -R /tmp/nebo-drag\") and tell me where note.txt ended up."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: no-tool-errors
+      text: "No tool result is an error"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: scrolled
+      text: "The scroll result says line 250 is on screen"
+      severity: critical
+    - id: menu-chosen
+      text: "The menu click result says Edit > Select All was chosen via accessibility"
+      severity: critical
+    - id: dropped
+      text: "ls -R shows note.txt inside /tmp/nebo-drag/inbox"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 10 tool calls"
+      severity: important
+      check: { max_tool_calls: 10 }
+
+ideal_behavior:
+  tool_calls: 6
+  narrative: "see TextEdit → scroll until line 250 → menu click Edit > Select All → see Finder → drag note.txt to inbox → ls -R."
