@@ -20,7 +20,9 @@ use db::models::ChatMessage;
 use tracing::{info, warn};
 
 use super::restore::{self, RestoreState};
-use crate::harness::reminders::{AttachmentStore, Reminders};
+use crate::session::SessionManager;
+use crate::harness::events;
+use crate::harness::reminders::Reminders;
 use crate::harness::tool_surface;
 
 /// A written checkpoint.
@@ -100,10 +102,9 @@ impl PreCheckpointHook for MemoryFlush {
 
 /// Everything one checkpoint runs with.
 pub struct CheckpointContext<'a> {
-    pub store: &'a db::Store,
+    pub sessions: &'a SessionManager,
     pub provider: &'a dyn ai::Provider,
     pub session_id: &'a str,
-    pub chat_id: &'a str,
     /// The conversation as the step sends it: loaded since the last
     /// boundary and trimmed. The owner's `/compact` passes it as loaded.
     pub conversation: &'a [ChatMessage],
@@ -112,8 +113,6 @@ pub struct CheckpointContext<'a> {
     /// a request carrying only the model and trace.
     pub fork_of: &'a ChatRequest,
     pub hooks: &'a [Box<dyn PreCheckpointHook>],
-    /// Where the restore rows are written, after the boundary.
-    pub attachments: &'a (dyn AttachmentStore + Sync),
     pub restore: RestoreState<'a>,
 }
 
@@ -191,9 +190,9 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
 
     // The rows as stored, untrimmed: what the tool failures and the restore
     // list are read from.
-    let stored = cx
-        .store
-        .get_chat_messages_since_checkpoint(cx.chat_id)
+    let store = cx.sessions.store();
+    let stored = store
+        .get_chat_messages_since_checkpoint(&cx.sessions.active_chat_id(cx.session_id))
         .map_err(|e| format!("could not load the conversation: {e}"))?;
 
     let (reply, head_cut) = summarize(cx).await?;
@@ -208,29 +207,26 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
     metadata[tool_surface::LOADED_TOOLS_KEY] = serde_json::json!(tool_surface::loaded_names(&stored));
     let text = boundary_text(&summary, head_cut, why);
     let boundary = cx
-        .store
-        .create_chat_message_for_runner(
-            &uuid::Uuid::new_v4().to_string(),
-            cx.chat_id,
-            "user",
-            &text,
-            None,
-            None,
-            Some((text.len() / crate::CHARS_PER_TOKEN) as i64),
-            Some(&metadata.to_string()),
-            None,
-        )
+        .sessions
+        .append_message(cx.session_id, "user", &text, None, None, Some(&metadata.to_string()))
         .map_err(|e| format!("could not write the checkpoint: {e}"))?;
-    if let Err(e) = cx.store.increment_session_compaction_count(cx.session_id) {
+    if let Err(e) = store.increment_session_compaction_count(cx.session_id) {
         warn!(error = %e, "could not count the checkpoint");
     }
 
+    let restore = restore::restore(&stored, &cx.restore);
+    let restored: Vec<String> = restore
+        .iter()
+        .filter_map(events::attachment_for)
+        .map(|a| a.kind.to_string())
+        .collect();
     let mut reminders = Reminders::default();
-    let restored = restore::restore(&stored, &cx.restore, &mut reminders);
+    for event in &restore {
+        reminders.add(event);
+    }
     reminders
-        .attach(cx.attachments)
+        .write(cx.sessions, cx.session_id)
         .map_err(|e| format!("could not write the restore list: {e}"))?;
-    reminders.landed();
 
     info!(
         session_id = cx.session_id,
@@ -243,7 +239,7 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
     Ok(Checkpoint {
         boundary_id: boundary.id,
         summary,
-        restore: restored.into_iter().map(str::to_string).collect(),
+        restore: restored,
     })
 }
 
@@ -363,14 +359,11 @@ mod tests {
     use std::sync::Mutex;
 
     use db::Store;
-    use types::NeboError;
-
     use std::collections::BTreeSet;
 
     use super::*;
     use crate::harness::compact::restore::RunningWork;
     use crate::harness::goal::{AgreedGoal, GoalSource, GoalStatus};
-    use crate::harness::reminders::AttachmentRow;
     use crate::session::SessionManager;
 
     enum Reply {
@@ -416,30 +409,6 @@ mod tests {
             let _ = tx.send(event).await;
             let _ = tx.send(ai::StreamEvent::done()).await;
             Ok(rx)
-        }
-    }
-
-    /// Attachment rows written into the chat, as the turn writes them.
-    struct Rows {
-        store: Arc<Store>,
-        chat_id: String,
-    }
-
-    impl AttachmentStore for Rows {
-        fn append_attachment(&self, row: &AttachmentRow) -> Result<(), NeboError> {
-            self.store
-                .create_chat_message_for_runner(
-                    &uuid::Uuid::new_v4().to_string(),
-                    &self.chat_id,
-                    "user",
-                    &row.content,
-                    None,
-                    None,
-                    None,
-                    Some(&row.metadata().to_string()),
-                    None,
-                )
-                .map(|_| ())
         }
     }
 
@@ -503,16 +472,13 @@ mod tests {
                 model: "model-a".into(),
                 ..ChatRequest::new(ai::RequestTrace::new("agent_turn"))
             };
-            let rows = Rows { store: self.store.clone(), chat_id: self.chat.clone() };
             let cx = CheckpointContext {
-                store: &self.store,
+                sessions: &self.sessions,
                 provider,
                 session_id: &self.sid,
-                chat_id: &self.chat,
                 conversation: &conversation,
                 fork_of: &fork_of,
                 hooks,
-                attachments: &rows,
                 restore,
             };
             checkpoint(&cx, why).await
@@ -699,13 +665,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(done.restore, vec!["invoked_skills", "agreed_goal", "running_work", "plan_mode"]);
+        assert_eq!(done.restore, vec!["invoked_skills", "goal_set", "running_work", "plan_mode"]);
         let rows = s.conversation();
         let text = |k: &str| rows.iter().find(|m| kind(m) == k).unwrap().content.clone();
         let skills = text("invoked_skills");
         assert!(skills.contains("### letters\nLETTERS v2") && !skills.contains("LETTERS v1"), "the newest load");
         assert!(!skills.contains("INVOICES") && !skills.contains("broken"), "unloaded and failed loads stay out");
-        assert!(text("agreed_goal").contains("the letter is sent"));
+        assert!(text("goal_set").contains("the letter is sent"));
         assert!(text("running_work").contains("research the client [task-7]: reading page 3"));
         assert!(rows.iter().all(|m| !metadata(m).is_some_and(|v| v["attachment"].is_object()) || m.content.starts_with("<system-reminder>")));
 
@@ -715,7 +681,7 @@ mod tests {
             .checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState { goal: Some(&paused), ..Default::default() })
             .await
             .unwrap();
-        assert!(!again.restore.contains(&"agreed_goal".to_string()), "a paused goal is not re-attached");
+        assert!(!again.restore.contains(&"goal_set".to_string()), "a paused goal is not re-attached");
     }
 
     /// The owner's `/compact` runs the same checkpoint as the turn's own:
@@ -862,16 +828,13 @@ mod tests {
         let s = Setup::new();
         let provider = Scripted::new(vec![]);
         let fork_of = ChatRequest::new(ai::RequestTrace::new("compaction"));
-        let rows = Rows { store: s.store.clone(), chat_id: s.chat.clone() };
         let cx = CheckpointContext {
-            store: &s.store,
+            sessions: &s.sessions,
             provider: provider.as_ref(),
             session_id: &s.sid,
-            chat_id: &s.chat,
             conversation: &[],
             fork_of: &fork_of,
             hooks: &[],
-            attachments: &rows,
             restore: RestoreState::default(),
         };
         send(&checkpoint(&cx, CheckpointReason::OwnerAsked));

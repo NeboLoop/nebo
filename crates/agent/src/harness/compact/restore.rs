@@ -1,15 +1,17 @@
-//! What a checkpoint re-attaches after its boundary, as attachment rows: the
-//! files read most recently (re-read fresh from disk), the skills loaded
-//! with their instructions, the agreed goal, the work still running and
-//! plan mode. The conversation before the boundary is where the files and
-//! skills are found; the caller supplies what only the turn knows.
+//! What a checkpoint re-attaches after its boundary: the files read most
+//! recently (re-read fresh from disk), the skills loaded with their
+//! instructions, the agreed goal, the work still running and plan mode. Each
+//! is a turn event, so it reaches the conversation the one way every
+//! attachment does (`events::attachment_for`, `Reminders::write`). The
+//! conversation before the boundary is where the files and skills are
+//! found; the caller supplies what only the turn knows.
 
 use std::collections::HashSet;
 
 use db::models::ChatMessage;
 
+use crate::harness::events::TurnEvent;
 use crate::harness::goal::{AgreedGoal, GoalStatus};
-use crate::harness::reminders::Reminders;
 
 /// Most files re-attached.
 pub const MAX_FILES: usize = 5;
@@ -42,15 +44,11 @@ pub struct RestoreState<'a> {
     pub plan_mode: bool,
 }
 
-/// Queue the restore list on `reminders`, newest first within each kind;
-/// `before` is the conversation the checkpoint summarized, as stored. Returns
-/// the name of each queued row in order.
-pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>, reminders: &mut Reminders) -> Vec<&'static str> {
-    let mut names = Vec::new();
-    let mut queue = |name: &'static str, text: String| {
-        reminders.fact(name, text);
-        names.push(name);
-    };
+/// The restore list, in order: files newest first, skills, the goal, running
+/// work, plan mode. `before` is the conversation the checkpoint summarized,
+/// as stored.
+pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>) -> Vec<TurnEvent> {
+    let mut events = Vec::new();
 
     let (mut files, mut files_tokens) = (0, 0);
     for path in recent_file_reads(before) {
@@ -58,53 +56,48 @@ pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>, reminders: &mut
             break;
         }
         let Ok(content) = std::fs::read_to_string(&path) else { continue };
-        let body = clip(&content, FILE_TOKENS);
-        let tokens = tokens(&body);
+        let content = clip(&content, FILE_TOKENS);
+        let tokens = tokens(&content);
         if files_tokens + tokens > FILES_TOKENS {
             continue;
         }
         files += 1;
         files_tokens += tokens;
-        queue(
-            "restored_file",
-            format!("{path} was read earlier in this conversation. Its content now, re-read from disk after the checkpoint:\n\n{body}"),
-        );
+        events.push(TurnEvent::RestoredFile { path, content });
     }
 
     let mut skills_tokens = 0;
     let mut skills = Vec::new();
     for (name, content) in loaded_skills(before) {
-        let body = clip(&content, SKILL_TOKENS);
-        let tokens = tokens(&body);
+        let content = clip(&content, SKILL_TOKENS);
+        let tokens = tokens(&content);
         if skills_tokens + tokens > SKILLS_TOKENS {
             continue;
         }
         skills_tokens += tokens;
-        skills.push(format!("### {name}\n{body}"));
+        skills.push((name, content));
     }
     if !skills.is_empty() {
-        queue(
-            "invoked_skills",
-            format!("Skills loaded earlier in this conversation. Their instructions still apply:\n\n{}", skills.join("\n\n")),
-        );
+        events.push(TurnEvent::InvokedSkills(skills));
     }
 
     if let Some(goal) = state.goal.filter(|g| g.status == GoalStatus::Active) {
-        queue("agreed_goal", format!("The agreed goal for this conversation is still: {}", goal.condition));
+        events.push(TurnEvent::GoalSet(goal.condition.clone()));
     }
 
     for work in state.running {
-        queue(
-            "running_work",
-            format!("Still running from before the checkpoint: {} [{}]: {}", work.description, work.id, work.status),
-        );
+        events.push(TurnEvent::RunningWork {
+            id: work.id.clone(),
+            description: work.description.clone(),
+            status: work.status.clone(),
+        });
     }
 
     if state.plan_mode {
-        queue("plan_mode", "Plan mode is still on: plan the work and propose it; don't make changes yet.".to_string());
+        events.push(TurnEvent::PlanMode { entered: true });
     }
 
-    names
+    events
 }
 
 fn tokens(text: &str) -> usize {
