@@ -34,6 +34,13 @@ name: Harness gate
 # exit 100 on the apt lock or "Cannot connect to Nebo" because both jobs
 # started a server on 27895 and the first cleanup killed the other's).
 #
+# A sweep is the gate dispatched by hand with a `suites` list: any suites and
+# fixtures, program checks by default or judged three runs each with `judge`.
+# It replaces the gate's own two suites for that run only; with the inputs
+# left empty, a dispatch is exactly the gate. A sweep has its own concurrency
+# group and a longer timeout, so a push to the branch never cancels an
+# hours-long sweep and a sweep never cancels the branch's gate.
+#
 # The concurrency group below drops superseded PR runs: on a pull_request
 # event github.ref is refs/pull/<n>/merge, which is the same for every push
 # to the PR, so a force-push cancels the run it replaced. What it cannot do
@@ -65,9 +72,18 @@ on:
   schedule:
     - cron: "17 7 * * *"   # 07:17 UTC nightly
   workflow_dispatch:
+    inputs:
+      suites:
+        description: "Sweep: space-separated suite and fixture paths (suites/x.yaml, fixtures/.../y.yaml). Empty = the gate."
+        type: string
+        default: ""
+      judge:
+        description: "Sweep only: judge with the claude CLI, three runs each (default: program checks, one run)"
+        type: boolean
+        default: false
 
 concurrency:
-  group: harness-gate-${{ github.ref }}
+  group: harness-gate-${{ github.ref }}${{ inputs.suites && '-sweep' || '' }}
   cancel-in-progress: true
 
 env:
@@ -84,7 +100,7 @@ jobs:
     # group was tried (#151) and dropped: GitHub keeps ONE pending job per
     # group, so a PR's queued run was silently replaced by the next PR's —
     # 35589080672 never ran. Queueing is the runners' job, not a group's.
-    timeout-minutes: ${{ github.event_name == 'schedule' && 120 || 60 }}
+    timeout-minutes: ${{ github.event_name == 'schedule' && 120 || inputs.suites && 600 || 60 }}
     env:
       RUSTC_WRAPPER: ""
     steps:
@@ -188,18 +204,18 @@ jobs:
             || { echo "no active NeboAI profile; the bot token did not seed"; exit 1; }
 
       - name: Smoke suite, program checks
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' && !inputs.suites
         run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --no-judge --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
 
       - name: Error-correction suite, program checks
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' && !inputs.suites
         run: ./target/debug/nebo-cli test run --suite suites/error-correction.yaml --no-judge --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/correction
 
       # The VM has no node. Anthropic's native installer puts a standalone
       # `claude` in ~/.local/bin; it persists on the runner, so this is a
       # no-op after the first nightly.
       - name: Install the judge
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || (inputs.suites && inputs.judge)
         run: |
           command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -219,6 +235,27 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
         run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --grader claude-opus-5 --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
+
+      # Each entry runs to the end whatever the one before it did; the step
+      # fails if any entry did. Traces land in traces/<entry name>.
+      - name: Sweep the listed suites and fixtures
+        if: inputs.suites
+        env:
+          SUITES: ${{ inputs.suites }}
+          JUDGE: ${{ inputs.judge }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.judge && secrets.HARNESS_CLAUDE_OAUTH_TOKEN || '' }}
+        run: |
+          if [ "$JUDGE" = "true" ]; then mode=(--grader claude-opus-5 --runs 3); else mode=(--no-judge --runs 1); fi
+          failed=""
+          for entry in $SUITES; do
+            name=$(basename "$entry" .yaml)
+            case "$entry" in suites/*) what=--suite ;; *) what=--fixture ;; esac
+            echo "::group::$entry"
+            ./target/debug/nebo-cli test run "$what" "$entry" "${mode[@]}" --model "$GATE_MODEL" \
+              --server "localhost:$GATE_PORT" --output "traces/$name" || failed="$failed $entry"
+            echo "::endgroup::"
+          done
+          [ -z "$failed" ] || { echo "failed:$failed"; exit 1; }
 
       - name: Stop this job's server
         if: always()
