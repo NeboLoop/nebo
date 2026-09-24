@@ -20,7 +20,7 @@ const ACCOUNT_LOGOUT_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 
 /// Frontend route of the Plugins settings page (the reconnect destination in
 /// owner-facing notices).
-const PLUGINS_SETTINGS_PATH: &str = "/settings/plugins";
+pub(crate) const PLUGINS_SETTINGS_PATH: &str = "/settings/plugins";
 
 use axum::extract::{Path, Query, State};
 use axum::response::Json;

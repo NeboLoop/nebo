@@ -1602,7 +1602,11 @@ impl PluginTool {
                         // failed" sent the owner hunting a broken refresh for a
                         // plugin that was never connected and declares no
                         // refresh command at all (meta-marketing, 2026-09-15).
-                        return ToolResult::terminal(match (had_account, auth.commands.refresh.is_some()) {
+                        // No account at all is the owner's to connect: say
+                        // so as data. An expired one is the reconnect notice's.
+                        let need = (had_account == Some(false))
+                            .then(|| types::OwnerNeed::Account { plugin: pi.resource.clone() });
+                        let refused = ToolResult::terminal(match (had_account, auth.commands.refresh.is_some()) {
                             (Some(false), _) => format!(
                                 "I couldn't reach **{}** — no account is connected for this \
                                  employee. Connect one in the employee's Settings, Plugins, \
@@ -1628,6 +1632,7 @@ impl PluginTool {
                                 pi.resource
                             ),
                         });
+                        return ToolResult { need, ..refused };
                     }
 
                     // A plugin whose account is entered in Nebo's own dialog
@@ -1642,7 +1647,8 @@ impl PluginTool {
                              employee. Connect one in the employee's Settings, Plugins, then ask \
                              me again.",
                             pi.resource
-                        ));
+                        ))
+                        .with_need(types::OwnerNeed::Account { plugin: pi.resource.clone() });
                     }
 
                     // Interactive chat: fall through to today's browser OAuth path.
@@ -1694,7 +1700,9 @@ impl PluginTool {
                     // Terminal: auth genuinely expired and reauth failed. End the
                     // turn and surface to the user — do not let the agent keep
                     // retrying/improvising (FRAMES.md Phase 1).
-                    return ToolResult::terminal(match had_account {
+                    let need = (had_account == Some(false))
+                        .then(|| types::OwnerNeed::Account { plugin: pi.resource.clone() });
+                    let refused = ToolResult::terminal(match had_account {
                         Some(true) => format!(
                             "I couldn't reach **{}** — its account is no longer authenticated and \
                              signing in again didn't work. Please reconnect it in the employee's \
@@ -1713,6 +1721,7 @@ impl PluginTool {
                             pi.resource
                         ),
                     });
+                    return ToolResult { need, ..refused };
                 }
             }
         }
@@ -1967,7 +1976,8 @@ impl PluginTool {
                                 .map(|(op, slug)| format!("{op} (via {slug})"))
                                 .collect();
                             if connected.is_empty() {
-                                return ToolResult::terminal(none_msg);
+                                return ToolResult::terminal(none_msg)
+                                    .with_need(types::OwnerNeed::Account { plugin: pi.resource.clone() });
                             }
                             let mut msg = format!(
                                 "{none_msg} Connected for this employee: {}.",
