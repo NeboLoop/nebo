@@ -388,8 +388,45 @@ impl DynTool for WorkTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        true
+
+    fn search_hint(&self) -> &str {
+        "workflows automations run status install"
+    }
+
+    /// Reads of workflow state change nothing.
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        matches!(input.get("action").and_then(|v| v.as_str()), Some("list" | "status" | "runs"))
+    }
+
+    /// Never alongside other calls, reads included: a status poll's answer
+    /// changes between calls, and a concurrency-safe call is held to the
+    /// identical-read ceiling, which would end a turn waiting on a run.
+    fn concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+        false
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        match input.get("action").and_then(|v| v.as_str()).unwrap_or("") {
+            "list" => "list_workflows",
+            "install" => "install_workflow",
+            "uninstall" => "uninstall_workflow",
+            "cancel" => "stop_task",
+            "create" => "create_workflow",
+            "update" | "edit" => "update_workflow",
+            "delete" => "delete_workflow",
+            "run" => "run_workflow",
+            "status" => "workflow_status",
+            "runs" => "list_workflow_runs",
+            "enable" | "disable" => "set_workflow_enabled",
+            _ => "work",
+        }
+        .to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(

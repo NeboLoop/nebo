@@ -210,7 +210,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::harness::events::{ListingDelta, Threshold};
+    use crate::harness::events::Threshold;
+    use crate::harness::tool_surface::ListingDelta;
 
     struct Conversation {
         store: Arc<db::Store>,
@@ -361,7 +362,7 @@ mod tests {
         r.add(&usage(82));
         c.write(&mut r);
         let before = c.load().into_iter().find(|m| attachment_kind(m).is_some()).unwrap();
-        c.store.compact_chat_history(&c.chat_id, &uuid::Uuid::new_v4().to_string(), "summary").unwrap();
+        c.store.compact_chat_history(&c.chat_id, &uuid::Uuid::new_v4().to_string(), "summary", None).unwrap();
         r.add(&TurnEvent::GoalSet("all tests pass".into()));
         c.write(&mut r);
         assert_eq!(c.kinds(), vec!["goal_set"], "the pre-boundary row is not loaded");
@@ -386,16 +387,15 @@ mod tests {
     }
 
     #[test]
-    fn listing_rows_store_their_set() {
+    fn listing_rows_store_what_they_announced() {
         let c = Conversation::new();
         let mut r = Reminders::default();
-        let now = BTreeMap::from([("mail_send".to_string(), "v1".to_string())]);
-        let delta = ListingDelta::between(&BTreeMap::new(), &now).unwrap();
-        r.add(&TurnEvent::ToolsAvailable(delta));
+        r.add(&TurnEvent::ToolsAvailable(ListingDelta::all(["mail_send".to_string()].into())));
         c.write(&mut r);
-        let row = &c.load()[0];
-        let fields = attachment_fields(row).unwrap();
+        let fields = attachment_fields(&c.load()[0]).unwrap();
         assert_eq!(fields["kind"], "tools_available");
-        assert_eq!(fields["listing"], serde_json::json!({"mail_send": "v1"}));
+        assert_eq!(fields["added"], serde_json::json!({"mail_send": ""}));
+        assert_eq!(fields["removed"], serde_json::json!([]));
+        assert_eq!(events::announced("tools_available", &c.load()).into_keys().collect::<Vec<_>>(), ["mail_send"]);
     }
 }

@@ -441,6 +441,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let presence_tracker = state.presence.clone();
     let proactive_inbox = state.proactive_inbox.clone();
     let cleanup_tools = state.tools.clone();
+    // Each call's owner-facing labels and media flag come from its tool's spec.
+    let spec_tools = state.tools.clone();
     let plugin_store = state.plugin_store.clone();
     let pending_comm_asks = state.pending_comm_asks.clone();
     let pending_comm_approvals = state.pending_comm_approvals.clone();
@@ -915,7 +917,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // Humanize once and feed every consumer: the desktop
                                 // broadcast (friendly label), the loop emission, and the
                                 // typing indicator — one tool-naming source of truth.
-                                let (activity, _) = tools::humanize::tool_call(&tc.name, &tc.input);
+                                let activity = spec_tools.labels(&tc.name, &tc.input).await.0;
                                 hub.broadcast(
                                     "tool_start",
                                     ws_payload!(
@@ -966,15 +968,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 .map(|tc| tc.id.as_str())
                                 .unwrap_or("");
                             // Humanize once for both the desktop broadcast and the loop.
-                            let outcome = event
-                                .tool_call
-                                .as_ref()
-                                .map(|tc| tools::humanize::tool_call(&tc.name, &tc.input).1)
-                                .unwrap_or_else(|| {
-                                    tools::humanize::outcome_label(tool_name)
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_else(|| tools::humanize::raw_name(tool_name).1)
-                                });
+                            let outcome = match event.tool_call.as_ref() {
+                                Some(tc) => spec_tools.labels(&tc.name, &tc.input).await.1,
+                                None => tools::humanize::raw_name(tool_name).1,
+                            };
                             hub.broadcast(
                                 "tool_result",
                                 ws_payload!(
@@ -1018,42 +1015,21 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // reference by /api/v1/files/<name> — for the LOCAL app (always,
                             // rendered inline) and comm replies (when replying to a channel;
                             // resolve_comm_attachments maps the same /api/v1/files prefix).
-                            // Reading an EXISTING image file returns it inline for
-                            // the model, but it is not run-produced media — 34
-                            // frame reads once attached 34 (broken) tiles to one
-                            // message. Only captures/generated media attach.
-                            let is_file_read = event
-                                .tool_call
-                                .as_ref()
-                                .map(|tc| tc.input["action"].as_str() == Some("read"))
-                                .unwrap_or(false);
-                            // The browser screenshots itself after every navigate,
-                            // click, type and scroll. Those are the model's eyes,
-                            // not media the owner asked for: one session clicking
-                            // through a Shopify admin hung ~60 near-identical and
-                            // blank frames on a single message. Only a screenshot
-                            // the model deliberately took attaches.
-                            // The same holds for desktop control: every observe and
-                            // every click/type returns the window, and a Simulator
-                            // session hung three frames on each reply while the
-                            // owner shouted to stop (2026-09-22). Only an explicit
-                            // os screenshot attaches.
-                            let is_incidental_browser_frame = event
-                                .tool_call
-                                .as_ref()
-                                .map(|tc| {
-                                    let action = tc.input["action"].as_str().unwrap_or("");
-                                    (tc.name == "web" && action != "screenshot")
-                                        || (tc.name == "os"
-                                            && matches!(
-                                                action,
-                                                "see" | "find" | "click" | "double_click" | "right_click"
-                                                    | "type" | "press" | "hotkey" | "move" | "scroll"
-                                                    | "drag" | "paste"
-                                            ))
-                                })
-                                .unwrap_or(false);
-                            if event.error.is_none() && !is_file_read && !is_incidental_browser_frame {
+                            // Only media the owner asked for attaches: a capture the
+                            // model took, or a document a call produced. A file read
+                            // returns an EXISTING image for the model, and the browser
+                            // and the desktop return the page or window after every act
+                            // — the tool's eyes (34 frame reads once hung 34 tiles on one
+                            // message; a Simulator session hung three frames on each
+                            // reply, 2026-09-22). The tool's spec says which it is.
+                            let owner_media = match event.tool_call.as_ref() {
+                                Some(tc) => match spec_tools.get(&tc.name).await {
+                                    Some(tool) => tool.emits_image(&tc.input),
+                                    None => true,
+                                },
+                                None => true,
+                            };
+                            if event.error.is_none() && owner_media {
                                 if let Some(url) = &event.image_url {
                                     if let Some(app_url) = to_app_artifact_url(url) {
                                         if !app_file_artifacts.contains(&app_url) {
@@ -1113,7 +1089,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::ApprovalRequest => {
                             if let Some(ref tc) = event.tool_call {
-                                let (summary, _) = tools::humanize::tool_call(&tc.name, &tc.input);
+                                let summary = spec_tools.labels(&tc.name, &tc.input).await.0;
                                 pending_tool_approvals.lock().await.insert(
                                     tc.id.clone(),
                                     crate::state::PendingToolApproval {

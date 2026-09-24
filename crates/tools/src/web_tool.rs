@@ -17,11 +17,24 @@ const SELECT_ALL_KEY: &str = "ctrl+a";
 /// How long a visited page / search result stays reusable by siblings.
 const VISITED_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Inline budget for read_page/evaluate/fetch results. Results beyond this
-/// return a head+tail window inside this budget and spill the FULL text to a
-/// file the model can page through (see `spill_large_result`) — never a
-/// silent cut.
-const MAX_INLINE_CHARS: usize = 15_000;
+/// A web result longer than this is persisted by the registry and
+/// previewed (the one spill path).
+const MAX_RESULT_CHARS: usize = 50_000;
+
+/// Browser actions that change the page or send something.
+const WEB_SIDE_EFFECT_ACTIONS: &[&str] = &[
+    "click",
+    "fill",
+    "fill_form",
+    "type",
+    "select",
+    "press",
+    "drag",
+    "evaluate",
+    "file_upload",
+    "webmcp_call",
+    "browser_batch",
+];
 
 /// Janus `/v1/extract` failure cooldown duration. The extract tier runs on
 /// every HTML GET with a 20s timeout, so when Janus is degraded EVERY fetch
@@ -448,16 +461,15 @@ impl WebTool {
                     Ok(body) => {
                         let is_html = content_type.contains("html");
                         let display_body = if is_html {
-                            // Rendered page: return capped VISIBLE TEXT, not a wall of raw
+                            // Rendered page: return VISIBLE TEXT, not a wall of raw
                             // HTML/markup/scripts. Tier 0 is the Janus clean extract
                             // (clean markdown, no LLM summarization); ANY failure falls
                             // through silently to local `sanitize_html` (same extractor
                             // the `sanitize` action uses) — the same graceful degradation
                             // as search. For the full page use read_page after navigate;
                             // for structured data fetch a JSON/API endpoint (raw below).
-                            // Small text stays inline; otherwise head+tail window + the
-                            // full text spilled to a file the model can page.
-                            let text = if self.janus_search.is_some() && method_str == "GET" {
+                            // A long page is persisted and previewed by the registry.
+                            if self.janus_search.is_some() && method_str == "GET" {
                                 match self.extract_via_janus(url).await {
                                     Ok(content) if !content.trim().is_empty() => content,
                                     Ok(_) => {
@@ -471,8 +483,7 @@ impl WebTool {
                                 }
                             } else {
                                 sanitize_html(&body)
-                            };
-                            spill_large_result(&text, Some(url))
+                            }
                         } else if body.len() > 50_000 {
                             // Non-HTML (e.g. JSON/API) — keep RAW so it stays parseable,
                             // paginated by `offset` for very large responses.
@@ -1892,7 +1903,7 @@ impl WebTool {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             if !page_content.is_empty() {
-                                let content = spill_large_result(page_content, None);
+                                let content = page_content.to_string();
                                 return ToolResult { payload: None, need: None,
                                     content,
                                     is_error: false,
@@ -2019,14 +2030,6 @@ impl WebTool {
                     }
                 }
 
-                // Large reads: preview inline + full text spilled to a file the model
-                // can page through (os read), instead of a silent cut.
-                if matches!(action, "evaluate" | "snapshot" | "read_page") {
-                    if text_result.len() > MAX_INLINE_CHARS {
-                        text_result = spill_large_result(&text_result, None);
-                    }
-                }
-
                 ToolResult { payload: None, need: None,
                     content: text_result,
                     is_error: false,
@@ -2036,6 +2039,28 @@ impl WebTool {
                 }
             }
             Err(e) => ToolResult::error(friendly_browser_error(action, &e.to_string())),
+        }
+    }
+}
+
+/// A web call's owner-facing lines: fetches and navigations name the site,
+/// so a run that read four pages doesn't read as four searches.
+pub(crate) fn web_labels(input: &serde_json::Value) -> (String, String) {
+    let action = input.get("action").and_then(|v| v.as_str());
+    let host = input
+        .get("url")
+        .and_then(|v| v.as_str())
+        .and_then(|u| url::Url::parse(u).ok())
+        .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()));
+    let site = host.as_deref().unwrap_or("a page");
+    match action {
+        Some("search") | None => ("searching the web".to_string(), "Searched the web".to_string()),
+        Some("fetch") => (format!("reading {site}"), format!("Read {site}")),
+        Some("navigate") => (format!("opening {site}"), format!("Opened {site}")),
+        Some("read_page") => ("reading the page".to_string(), "Read the page".to_string()),
+        Some(a) => {
+            let a = a.replace('_', " ");
+            (format!("{a} (web)"), format!("Web: {a}"))
         }
     }
 }
@@ -2294,9 +2319,6 @@ impl DynTool for WebTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        true
-    }
 
     fn resource_permit(&self, input: &serde_json::Value) -> Option<ResourceKind> {
         let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
@@ -2313,9 +2335,112 @@ impl DynTool for WebTool {
         }
     }
 
-    fn is_concurrent_safe(&self, _input: &serde_json::Value) -> bool {
-        // Web operations are read-only by nature (fetch, search, browse).
+    fn search_hint(&self) -> &str {
+        "search the web fetch pages browse sites"
+    }
+
+    fn should_defer(&self) -> bool {
+        false
+    }
+
+    /// Searches, fetches and page reads look; clicks, typing and a request
+    /// that is not a GET/HEAD send something.
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        if WEB_SIDE_EFFECT_ACTIONS.contains(&action) {
+            return false;
+        }
+        let method = input
+            .get("method")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        method.is_empty() || method == "GET" || method == "HEAD"
+    }
+
+    /// Every web call may run beside the others: the browser is per
+    /// session, so calls never contend.
+    fn concurrency_safe(&self, _input: &serde_json::Value) -> bool {
         true
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let method = input.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
+        match action {
+            "search" | "" => "search_web",
+            "fetch" | "sanitize" | "get"
+                if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD") =>
+            {
+                "fetch_url"
+            }
+            a if a == "fetch" || HTTP_VERB_ACTIONS.contains(&a) => "http_request",
+            "navigate" => "browser_open",
+            "read_page" | "snapshot" => "browser_read",
+            "find" => "browser_find",
+            "fill" | "fill_form" => "browser_fill_form",
+            "evaluate" | "console" => "browser_run_js",
+            "list_tabs" => "browser_list_tabs",
+            "new_tab" => "browser_new_tab",
+            "close_tab" => "browser_close_tab",
+            "read_console_messages" => "browser_console",
+            "read_network_requests" => "browser_network",
+            "file_upload" => "browser_upload",
+            "resize_window" => "browser_resize",
+            "history" => "browser_history",
+            "status" => "browser_status",
+            "browser_batch" => "browser_batch",
+            "webmcp_list" => "browser_page_tools",
+            "webmcp_call" => "browser_call_page_tool",
+            _ => "browser_act",
+        }
+        .to_string()
+    }
+
+    fn rule_field(&self, input: &serde_json::Value) -> Option<types::permissions::RuleField> {
+        let url = input.get("url").and_then(|v| v.as_str())?;
+        let host = url::Url::parse(url).ok()?.host_str()?.to_string();
+        Some(types::permissions::RuleField::Domain(host))
+    }
+
+    fn capability(&self, _input: &serde_json::Value) -> Option<&'static str> {
+        Some("web")
+    }
+
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        if self.read_only(input) {
+            types::permissions::CallEffects::none()
+        } else {
+            // Whether a form submit or a POST publishes can't be read off the
+            // input.
+            types::permissions::CallEffects::unknown()
+        }
+    }
+
+    fn max_result_chars(&self, _input: &serde_json::Value) -> Option<usize> {
+        Some(MAX_RESULT_CHARS)
+    }
+
+    fn taint(&self, _input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
+        Some(types::provenance::ProvenanceClass::Web)
+    }
+
+    fn trim_priority(&self) -> u8 {
+        crate::registry::TRIM_FIRST
+    }
+
+    fn keeps_content_when_trimmed(&self, input: &serde_json::Value) -> bool {
+        matches!(
+            input.get("action").and_then(|v| v.as_str()).unwrap_or(""),
+            "search" | "fetch" | "sanitize" | "read_page" | "get"
+        )
+    }
+
+    /// The browser screenshots itself after every navigate, click, type
+    /// and scroll: the model's eyes. Only a screenshot the model took is
+    /// media for the owner.
+    fn emits_image(&self, input: &serde_json::Value) -> bool {
+        input.get("action").and_then(|v| v.as_str()) == Some("screenshot")
     }
 
     fn execution_timeout(&self, input: &serde_json::Value) -> Option<std::time::Duration> {
@@ -2335,6 +2460,20 @@ impl DynTool for WebTool {
             "http" => Some(std::time::Duration::from_secs(60)),
             _ => None,
         }
+    }
+
+    fn activity(&self, input: &serde_json::Value) -> String {
+        web_labels(input).0
+    }
+
+    fn outcome(&self, input: &serde_json::Value) -> String {
+        web_labels(input).1
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(
@@ -2560,91 +2699,6 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
     serde_json::Value::Object(args)
 }
 
-/// Head/tail split of the inline budget for spilled results: the opening of a
-/// page (title, lede) plus its end (conclusions, footers, latest entries) is
-/// usually enough for the model to decide whether paging the full text is
-/// worth it — the "spill and page" pattern.
-const SPILL_HEAD_BUDGET: usize = MAX_INLINE_CHARS * 60 / 100;
-const SPILL_TAIL_BUDGET: usize = MAX_INLINE_CHARS * 40 / 100;
-
-/// FNV-1a 64-bit — tiny, dependency-free, and stable across builds. Seeds the
-/// spill cache filename so the same URL always maps to the same file
-/// (overwritten on refetch) instead of leaking a fresh file per fetch.
-fn fnv1a_64(data: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for &b in data {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
-/// Cache file for a spilled result, keyed by a short hash of `key`
-/// (deterministic: same key → same path). Lives under the Nebo data dir at
-/// `cache/web/<hash>.txt`.
-fn spill_cache_path(key: &str) -> std::path::PathBuf {
-    let dir = config::data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("cache")
-        .join("web");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join(format!("{:016x}.txt", fnv1a_64(key.as_bytes())))
-}
-
-/// Bound an inline tool result WITHOUT losing data (the "spill
-/// and page" pattern). Short results pass through untouched; large ones return
-/// a head+tail window — the first ~60% of the inline budget from the head and
-/// the last ~40% from the tail, an explicit omission marker in between — and
-/// the FULL text is written to a stable cache file the model can page through
-/// with `os(resource: "file", action: "read", path, offset, limit)`. No LLM
-/// summarization, never a silent cut.
-///
-/// `key` seeds the cache filename: pass `Some(url)` for URL-derived content so
-/// a refetch overwrites the same file; pass `None` to key off the content
-/// itself (browser reads where no single URL is at hand).
-fn spill_large_result(full: &str, key: Option<&str>) -> String {
-    if full.len() <= MAX_INLINE_CHARS {
-        return full.to_string();
-    }
-    let head_end = types::strutil::floor_char_boundary(full, SPILL_HEAD_BUDGET);
-    // Ceil to a char boundary so the tail never starts mid-codepoint. full is
-    // longer than MAX_INLINE_CHARS, so tail_start always lands past head_end.
-    let mut tail_start = full.len() - SPILL_TAIL_BUDGET;
-    while !full.is_char_boundary(tail_start) {
-        tail_start += 1;
-    }
-    let head = &full[..head_end];
-    let tail = &full[tail_start..];
-    let omitted = full[head_end..tail_start].chars().count();
-    let total_bytes = full.len();
-    let total_chars = full.chars().count();
-    let head_chars = head.chars().count();
-    let omitted_end = head_chars + omitted;
-    // The file tool pages by LINE, not by char, so the char positions are
-    // given for orientation and the read instruction speaks in lines.
-    let omitted_lines = full[head_end..tail_start].matches('\n').count();
-    let head_lines = head.matches('\n').count() + 1;
-
-    let path = spill_cache_path(key.unwrap_or(full));
-    match std::fs::write(&path, full) {
-        Ok(()) => {
-            let p = path.display();
-            format!(
-                "{head}\n\n[... {omitted} chars omitted (chars {head_chars}..{omitted_end} of {total_chars}, {total_bytes} bytes total). \
-                 Full text saved to {p}; read it with \
-                 os(resource:\"file\", action:\"read\", path:\"{p}\", offset: {head_lines}, limit: {omitted_lines}) \
-                 where offset and limit are LINE numbers, not chars ...]\n\n{tail}"
-            )
-        }
-        // Spill failed: still show the tail and state the totals rather than
-        // cut silently.
-        Err(e) => format!(
-            "{head}\n\n[... {omitted} chars omitted (chars {head_chars}..{omitted_end} of {total_chars}, {total_bytes} bytes total; \
-             spill to file failed: {e}; the omitted middle is not retrievable, refetch with \
-             browser read_page + refId or a narrower URL) ...]\n\n{tail}"
-        ),
-    }
-}
 
 /// Truncate a snapshot at a line boundary, appending an omission note.
 /// Used by auto-snapshot after navigate to keep output compact.
@@ -3685,106 +3739,6 @@ link "Create account" [ref_5]"#;
         assert!(guard.contains_key("group-b"));
     }
 
-    #[test]
-    fn spill_passes_small_results_through_unchanged() {
-        let small = "just a little content";
-        assert_eq!(spill_large_result(small, Some("https://example.com/small")), small);
-        assert_eq!(spill_large_result(small, None), small);
-    }
-
-    /// Extract the spill file path from the marker footer.
-    fn spill_path_from(out: &str) -> &str {
-        out.rsplit("Full text saved to ")
-            .next()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .trim()
-    }
-
-    #[test]
-    fn spill_large_result_windows_head_and_tail_and_saves_full_text() {
-        let head_mark = "HEADSTART ";
-        let tail_mark = " TAILEND";
-        let big = format!(
-            "{head_mark}{}{tail_mark}",
-            "x".repeat(MAX_INLINE_CHARS + 5_000)
-        );
-        let out = spill_large_result(&big, Some("https://example.com/big"));
-
-        // Inline output is a bounded head+tail window with an explicit marker.
-        assert!(out.len() < big.len(), "inline output should be a window");
-        assert!(out.starts_with(head_mark), "head of the text must open the window");
-        assert!(out.ends_with(tail_mark), "tail of the text must close the window");
-        assert!(out.contains("chars omitted (chars"));
-        assert!(out.contains("Full text saved to"));
-        assert!(out.contains("LINE numbers"));
-        assert!(out.contains("os(resource:\"file\", action:\"read\""));
-        // Footer states totals so the model can plan reads.
-        assert!(out.contains(&format!("of {}, {} bytes total", big.chars().count(), big.len())));
-
-        // The spilled file holds the FULL text (nothing lost).
-        let path = spill_path_from(&out);
-        let saved = std::fs::read_to_string(path).expect("spill file should exist");
-        assert_eq!(saved, big);
-        let _ = std::fs::remove_file(path);
-    }
-
-    /// Head/tail cuts must land on char boundaries — a page of multibyte text
-    /// (CJK, emoji, accents) must window without panicking or splitting a
-    /// codepoint.
-    #[test]
-    fn spill_large_result_char_boundary_safe_on_multibyte() {
-        // 3-byte chars, offset by a 2-byte ASCII prefix and 1-byte suffix so
-        // NEITHER budget cut lands on a char boundary by accident: the head cut
-        // must floor and the tail cut must ceil to the next boundary.
-        let big = format!("ab{}z", "個".repeat(MAX_INLINE_CHARS)); // 45_003 bytes
-        let out = spill_large_result(&big, None);
-        assert!(out.contains("chars omitted (chars"));
-        assert!(out.contains("Full text saved to"));
-        assert!(out.contains("LINE numbers"));
-        // Window halves are intact codepoint sequences (a mid-codepoint slice
-        // would have panicked in the slicing above).
-        let head = out.split("\n\n[...").next().unwrap();
-        assert!(head.starts_with("ab") && head.chars().skip(2).all(|c| c == '個'));
-        let tail = out.rsplit("...]\n\n").next().unwrap();
-        assert!(tail.ends_with('z'));
-        let inner: Vec<char> = tail.chars().collect();
-        assert!(inner[..inner.len() - 1].iter().all(|&c| c == '個'));
-
-        let path = spill_path_from(&out).to_string();
-        let saved = std::fs::read_to_string(&path).expect("spill file should exist");
-        assert_eq!(saved, big);
-        let _ = std::fs::remove_file(path);
-    }
-
-    /// Same URL → same spill file (refetch overwrites); different URL → different file.
-    #[test]
-    fn spill_cache_path_stable_per_url() {
-        let a1 = spill_cache_path("https://example.com/page");
-        let a2 = spill_cache_path("https://example.com/page");
-        let b = spill_cache_path("https://example.com/other");
-        assert_eq!(a1, a2, "same URL must map to the same spill file");
-        assert_ne!(a1, b, "different URLs must not collide");
-        assert!(a1.to_string_lossy().contains("cache"));
-        assert!(a1.extension().is_some_and(|e| e == "txt"));
-    }
-
-    /// Refetching the same URL overwrites the cache file in place.
-    #[test]
-    fn spill_overwrites_on_refetch() {
-        let url = "https://example.com/refetch-test";
-        let v1 = format!("ONE {}", "a".repeat(MAX_INLINE_CHARS + 100));
-        let v2 = format!("TWO {}", "b".repeat(MAX_INLINE_CHARS + 100));
-        let out1 = spill_large_result(&v1, Some(url));
-        let out2 = spill_large_result(&v2, Some(url));
-        let (p1, p2) = (spill_path_from(&out1), spill_path_from(&out2));
-        assert_eq!(p1, p2, "refetch must reuse the same file");
-        let saved = std::fs::read_to_string(p1).expect("spill file should exist");
-        assert_eq!(saved, v2, "refetch must overwrite with the new full text");
-        let _ = std::fs::remove_file(p1);
-    }
 
     // ── Search-result extraction: snippets must be populated (the empty-snippet
     //    regression sent agents into a re-search treadmill — never again). ──

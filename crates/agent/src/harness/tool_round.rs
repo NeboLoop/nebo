@@ -19,8 +19,8 @@ use types::keyparser;
 
 use crate::concurrency::ConcurrencyController;
 use crate::runner::{
-    RunProgress, WorkflowMode, WorkflowPark, convert_messages, desktop_evidence, is_check_run_call,
-    is_desktop_act, is_file_change_call, simple_hash, truncate_str,
+    RunProgress, WorkflowMode, WorkflowPark, convert_messages, desktop_evidence, simple_hash,
+    truncate_str,
 };
 use crate::session::SessionManager;
 
@@ -99,6 +99,8 @@ pub(crate) struct RunToolScope<'a> {
     pub review_fork: Option<&'a crate::review_fork::ReviewForkCtx>,
     pub tool_allowlist: Option<&'a HashSet<String>>,
     pub tool_denial_hint: &'a Option<String>,
+    /// The tools whose definitions this step's request carried.
+    pub declared_tools: &'a Arc<HashSet<String>>,
 }
 
 impl RunToolScope<'_> {
@@ -131,6 +133,7 @@ impl RunToolScope<'_> {
             review_fork,
             tool_allowlist,
             tool_denial_hint,
+            declared_tools,
         } = *self;
         let resolved_key = sessions
             .resolve_session_key(session_id)
@@ -179,6 +182,8 @@ impl RunToolScope<'_> {
                 .as_ref()
                 .map(|r| r.skills_read.clone())
                 .unwrap_or_default(),
+            declared_tools: Some(declared_tools.clone()),
+            tool_call_id: String::new(),
         }
     }
 }
@@ -318,8 +323,6 @@ pub(crate) async fn run_tool_round(
         called_tools.push(tc.name.clone());
     }
 
-    // Launch all tool calls concurrently via FuturesUnordered
-    let mut futures = FuturesUnordered::new();
     // Update progress: count tools and set current tool name
     if let Some(p) = progress {
         p.tool_call_count.fetch_add(
@@ -396,6 +399,13 @@ pub(crate) async fn run_tool_round(
         let input = std::mem::take(&mut tc.input);
         tc.input = tools.normalize_input(&tc.name, input).await;
     }
+    // What each settled call is, from its tool's spec: the guards below read
+    // the job a call does (its rule key and field), never a tool name.
+    let mut targets: Vec<Option<types::permissions::Target>> = Vec::with_capacity(tool_calls.len());
+    for tc in tool_calls.iter() {
+        targets.push(tools.target(&tc.name, &tc.input).await);
+    }
+    let targets = targets;
 
     // Hard guard: block tool calls that keep repeating identical args WITHOUT
     // making progress.
@@ -464,13 +474,13 @@ pub(crate) async fn run_tool_round(
         if blocked_results[idx].is_some() && !*runaway_wrap_up_issued {
             continue;
         }
-        let ceiling = if tools.is_concurrent_safe(&tc.name, &tc.input).await {
+        let ceiling = if tools.concurrency_safe(&tc.name, &tc.input).await {
             IDENTICAL_READONLY_CALL_ABORT
         } else {
             IDENTICAL_CALL_ABORT
         };
         if let Some(repeats) = identical_call_budget.abort_due(&tc.name, &tc.input, ceiling) {
-            identical_call_abort = Some((action_key(tc), repeats));
+            identical_call_abort = Some((action_key(tc, targets[idx].as_ref()), repeats));
             break;
         }
     }
@@ -480,7 +490,7 @@ pub(crate) async fn run_tool_round(
         *runaway_wrap_up_issued = true;
         warn!(session_id, action = %key, repeats, "runaway backstop: identical call refused — wrap-up turn next");
         for (idx, tc) in tool_calls.iter().enumerate() {
-            if blocked_results[idx].is_none() && action_key(tc) == key {
+            if blocked_results[idx].is_none() && action_key(tc, targets[idx].as_ref()) == key {
                 blocked_results[idx] = Some((
                     tc.clone(),
                     ToolResult::error(format!(
@@ -531,7 +541,7 @@ pub(crate) async fn run_tool_round(
         if blocked_results[idx].is_some() {
             continue;
         }
-        if let Some(p) = extract_file_read_path(tc)
+        if let Some(p) = targets[idx].as_ref().and_then(read_path)
             && read_failures.get(&p).copied().unwrap_or(0) >= READ_FAILURE_LIMIT {
             warn!(session_id, path = %p, "blocking read after repeated failures");
             blocked_results[idx] = Some((
@@ -567,7 +577,7 @@ pub(crate) async fn run_tool_round(
         if blocked_results[idx].is_some() {
             continue;
         }
-        let key = action_key(tc);
+        let key = action_key(tc, targets[idx].as_ref());
         let observed = action_call_counts.get(&key).copied().unwrap_or(0);
         if observed >= guard_cfg.same_action_limit {
             warn!(
@@ -788,196 +798,107 @@ pub(crate) async fn run_tool_round(
         return RoundOutcome::Ended(crate::guardrails::Exit::Workflow(reason));
     }
 
-    // Partition tool calls into concurrent-safe and sequential phases.
-    // Concurrent tools run in parallel via FuturesUnordered, then
-    // sequential tools run one at a time to prevent state conflicts.
-    // Beyond read-only calls, path-disjoint os file mutations are also
-    // admitted to the parallel phase — see partition_tool_calls for
-    // the admission rules.
-    let mut live_indices = Vec::new();
-    let mut partition_inputs: Vec<(&str, &serde_json::Value, bool)> = Vec::new();
+    // Claude Code's partitioning: consecutive concurrency-safe calls form
+    // one batch that runs in parallel (at most MAX_PARALLEL_CALLS); every
+    // other call runs alone; the calls' order is kept.
+    let mut live: Vec<(usize, bool)> = Vec::new();
     for (idx, tc) in tool_calls.iter().enumerate() {
-        if blocked_results[idx].is_some() {
-            continue;
+        if blocked_results[idx].is_none() {
+            live.push((idx, tools.concurrency_safe(&tc.name, &tc.input).await));
         }
-        let safe = tools.is_concurrent_safe(&tc.name, &tc.input).await;
-        live_indices.push(idx);
-        partition_inputs.push((tc.name.as_str(), &tc.input, safe));
-    }
-    let (concurrent, sequential) = partition_tool_calls(&partition_inputs);
-    let concurrent_indices: Vec<usize> =
-        concurrent.into_iter().map(|i| live_indices[i]).collect();
-    let sequential_indices: Vec<usize> =
-        sequential.into_iter().map(|i| live_indices[i]).collect();
-
-    // Phase 1: Execute concurrent-safe tools in parallel
-    for &idx in &concurrent_indices {
-        let tools = tools.clone();
-        let ctx = ctx.clone();
-        let tc = tool_calls[idx].clone();
-        let concurrency = concurrency.clone();
-        futures.push(async move {
-            let _permit = concurrency.acquire_tool_permit().await;
-            let input_str = tc.input.to_string();
-            let input_log = truncate_str(&input_str, 500);
-            info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool (concurrent)");
-            let budget = tools
-                .execution_timeout(&tc.name, &tc.input)
-                .await
-                .unwrap_or(TOOL_EXECUTION_TIMEOUT);
-            let started = std::time::Instant::now();
-            let mut ctx = ctx;
-            ctx.parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let parked = ctx.parked.clone();
-            let result = match run_within_budget(
-                budget,
-                parked,
-                tools.execute(&ctx, &tc.name, tc.input.clone()),
-            )
-            .await
-            {
-                Some(r) => r,
-                None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
-            };
-            let duration_ms = started.elapsed().as_millis() as u64;
-            let result_log = truncate_str(&result.content, 300);
-            info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
-            (idx, tc, result, duration_ms)
-        });
     }
 
-    // Collect results as they complete, send events immediately
+    // Results as each completes; events sent immediately.
     let mut results: Vec<Option<(ai::ToolCall, ToolResult)>> = vec![None; tool_calls.len()];
     // The call's wall-clock time per tool id; persisted with the result.
     let mut durations: HashMap<String, u64> = HashMap::new();
     // Tool ids whose result a post-tool hook wrote into (the done gate's
     // "a check ran" signal).
     let mut hook_noted: HashSet<String> = HashSet::new();
-    loop {
-        let item = tokio::select! {
-            _ = cancel_token.cancelled() => {
-                info!(session_id, "run cancelled during tool execution");
-                return RoundOutcome::Cancelled;
+    for batch in partition_tool_calls(&live) {
+        let mut futures = FuturesUnordered::new();
+        for idx in batch {
+            let tools = tools.clone();
+            let mut ctx = ctx.clone();
+            let tc = tool_calls[idx].clone();
+            let concurrency = concurrency.clone();
+            futures.push(async move {
+                let _permit = concurrency.acquire_tool_permit().await;
+                let input_str = tc.input.to_string();
+                let input_log = truncate_str(&input_str, 500);
+                info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool");
+                let budget = tools
+                    .execution_timeout(&tc.name, &tc.input)
+                    .await
+                    .unwrap_or(TOOL_EXECUTION_TIMEOUT);
+                let started = std::time::Instant::now();
+                ctx.tool_call_id = tc.id.clone();
+                ctx.parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let parked = ctx.parked.clone();
+                let result = match run_within_budget(
+                    budget,
+                    parked,
+                    tools.execute(&ctx, &tc.name, tc.input.clone()),
+                )
+                .await
+                {
+                    Some(r) => r,
+                    None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
+                };
+                let duration_ms = started.elapsed().as_millis() as u64;
+                let result_log = truncate_str(&result.content, 300);
+                info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
+                (idx, tc, result, duration_ms)
+            });
+        }
+        loop {
+            let item = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    info!(session_id, "run cancelled during tool execution");
+                    return RoundOutcome::Cancelled;
+                }
+                next = futures.next() => match next {
+                    Some(v) => v,
+                    None => break,
+                }
+            };
+            let (idx, tc, mut result, duration_ms) = item;
+            if let Some(note) = pre_hook_notes.remove(&tc.id) {
+                result.content.push_str("\n\n");
+                result.content.push_str(&note);
             }
-            next = futures.next() => match next {
-                Some(v) => v,
-                None => break,
+            if apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await {
+                hook_noted.insert(tc.id.clone());
             }
-        };
-        let (idx, tc, mut result, duration_ms) = item;
-        if let Some(note) = pre_hook_notes.remove(&tc.id) {
-            result.content.push_str("\n\n");
-            result.content.push_str(&note);
+            // Send tool result event immediately as each completes
+            let _ = tx
+                .send(StreamEvent { payload: result.payload.clone(),
+                    provenance: None,
+                    event_type: StreamEventType::ToolResult,
+                    text: result.content.clone(),
+                    tool_call: Some(ai::ToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        input: tc.input.clone(),
+                    }),
+                    error: if result.is_error {
+                        Some(result.content.clone())
+                    } else {
+                        None
+                    },
+                    usage: None,
+                    rate_limit: None,
+                    // The call's wall-clock time rides in the widgets slot so the
+                    // live timeline and the reloaded one show the same duration.
+                    widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
+                    provider_metadata: None,
+                    stop_reason: None,
+                    image_url: result.image_url.clone(),
+                })
+                .await;
+            durations.insert(tc.id.clone(), duration_ms);
+            results[idx] = Some((tc, result));
         }
-        if apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await {
-            hook_noted.insert(tc.id.clone());
-        }
-        // Send tool result event immediately as each completes
-        let _ = tx
-            .send(StreamEvent { payload: result.payload.clone(),
-                provenance: None,
-                event_type: StreamEventType::ToolResult,
-                text: result.content.clone(),
-                tool_call: Some(ai::ToolCall {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    // Carry the call's input so downstream consumers
-                    // (loop tool-activity labels) can read the STRAP
-                    // resource/action signature.
-                    input: tc.input.clone(),
-                }),
-                error: if result.is_error {
-                    Some(result.content.clone())
-                } else {
-                    None
-                },
-                usage: None,
-                rate_limit: None,
-                // The call's wall-clock time rides in the widgets slot so the
-                // live timeline and the reloaded one show the same duration.
-                widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
-                provider_metadata: None,
-                stop_reason: None,
-                image_url: result.image_url.clone(),
-            })
-            .await;
-        durations.insert(tc.id.clone(), duration_ms);
-        results[idx] = Some((tc, result));
-    }
-
-    // Phase 2: Execute sequential (write) tools one at a time
-    for &idx in &sequential_indices {
-        if cancel_token.is_cancelled() {
-            info!(session_id, "run cancelled during sequential tool execution");
-            return RoundOutcome::Cancelled;
-        }
-        let tc = tool_calls[idx].clone();
-        let _permit = concurrency.acquire_tool_permit().await;
-        let input_str = tc.input.to_string();
-        let input_log = truncate_str(&input_str, 500);
-        info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool (sequential)");
-        let budget = tools
-            .execution_timeout(&tc.name, &tc.input)
-            .await
-            .unwrap_or(TOOL_EXECUTION_TIMEOUT);
-        let started = std::time::Instant::now();
-        let mut ctx = ctx.clone();
-        ctx.parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let parked = ctx.parked.clone();
-        let mut result = match tokio::select! {
-            _ = cancel_token.cancelled() => {
-                info!(session_id, "run cancelled during sequential tool execution");
-                return RoundOutcome::Cancelled;
-            }
-            r = run_within_budget(
-                budget,
-                parked,
-                tools.execute(&ctx, &tc.name, tc.input.clone()),
-            ) => r,
-        } {
-            Some(r) => r,
-            None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
-        };
-        let duration_ms = started.elapsed().as_millis() as u64;
-        if let Some(note) = pre_hook_notes.remove(&tc.id) {
-            result.content.push_str("\n\n");
-            result.content.push_str(&note);
-        }
-        if apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await {
-            hook_noted.insert(tc.id.clone());
-        }
-        let result_log = truncate_str(&result.content, 300);
-        info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
-        let _ = tx
-            .send(StreamEvent { payload: result.payload.clone(),
-                provenance: None,
-                event_type: StreamEventType::ToolResult,
-                text: result.content.clone(),
-                tool_call: Some(ai::ToolCall {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    // Carry the call's input so downstream consumers
-                    // (loop tool-activity labels) can read the STRAP
-                    // resource/action signature.
-                    input: tc.input.clone(),
-                }),
-                error: if result.is_error {
-                    Some(result.content.clone())
-                } else {
-                    None
-                },
-                usage: None,
-                rate_limit: None,
-                // The call's wall-clock time rides in the widgets slot so the
-                // live timeline and the reloaded one show the same duration.
-                widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
-                provider_metadata: None,
-                stop_reason: None,
-                image_url: result.image_url.clone(),
-            })
-            .await;
-        durations.insert(tc.id.clone(), duration_ms);
-        results[idx] = Some((tc, result));
     }
 
     // Inject blocked tool results (from pre_execute hooks).
@@ -1095,10 +1016,12 @@ pub(crate) async fn run_tool_round(
     // os file read gets the read-ledger note below instead (count,
     // read time, disk evidence), so it is only tracked here, never
     // double-noted.
-    for entry in results.iter_mut().flatten() {
-        if let Some(path) = extract_file_read_path(&entry.0) {
+    for (idx, entry) in results.iter_mut().enumerate() {
+        let Some(entry) = entry else { continue };
+        let target = targets[idx].as_ref();
+        if let Some(path) = target.and_then(read_path) {
             let repeat = !files_read_this_session.insert(path.clone());
-            if repeat && !is_full_os_file_read(&entry.0) {
+            if repeat && !target.is_some_and(|t| is_full_file_read(t, &entry.0.input)) {
                 entry.1.content.push_str(
                     "\n\n(Note: a full read of this path was returned earlier this session.)",
                 );
@@ -1106,23 +1029,18 @@ pub(crate) async fn run_tool_round(
         }
     }
 
+    // Each result was shaped by the registry (its tool's threshold, the one
+    // spill path); across the message, the largest go to disk first once
+    // their total passes the per-message budget.
+    apply_message_budget(&mut results, &tools::result_shape::results_dir(session_id));
+    *ctx_spilled_results += results
+        .iter()
+        .flatten()
+        .filter(|(_, r)| r.content.starts_with("<persisted-output>"))
+        .count();
+
     // Save all tool results to session in deterministic order
     // and track whether ALL results in this iteration were errors.
-    //
-    // Context protection:
-    // - Success results: 50K cap (Claude Code's per-tool default). Oversized →
-    //                   persist to file, return preview + path. Every built-in
-    //                   tool caps itself UNDER this (shell 30K, read 100K exempt)
-    //                   so its own footer reaches the model; this tier is for
-    //                   MCP/plugin results with no cap of their own.
-    // - Error results:   10K cap. Oversized → first 5K + last 5K with truncation marker.
-    // - Universal:      128K hard ceiling as final safety net — above the
-    //                   file read budget (100K) plus its outline prefix,
-    //                   so a whole read is never previewed.
-    const RESULT_CAP: usize = 50_000;
-    const ERROR_CAP: usize = 10_000;
-    const ERROR_HALF: usize = 5_000;
-    const UNIVERSAL_TOOL_RESULT_CAP: usize = 128_000;
     let mut all_errors_this_iteration = true;
     // Per-call productivity, indexed alongside the hash push below, so the
     // identical-args guard can count only the repeats that made no progress.
@@ -1140,11 +1058,12 @@ pub(crate) async fn run_tool_round(
     // Lightweight snapshots for the background tool summary generator.
     let mut summary_tool_calls: Vec<ai::ToolCall> = Vec::new();
     let mut summary_tool_results: Vec<ToolResult> = Vec::new();
-    for entry in results.into_iter().flatten() {
-        let (tc, mut result) = entry;
+    for (idx, entry) in results.into_iter().enumerate() {
+        let Some((tc, mut result)) = entry else { continue };
+        let target = targets[idx].as_ref();
         had_results = true;
-        if tc.name == "os"
-            && matches!(tc.input.get("action").and_then(|v| v.as_str()), Some("plan" | "plan_check"))
+        if let Some(t) = target
+            && matches!(t.key.as_str(), "write_plan" | "check_plan")
             && let Some(p) = tc.input.get("path").and_then(|v| v.as_str()) {
             *plan_touch = Some((iteration, p.to_string()));
         }
@@ -1152,13 +1071,13 @@ pub(crate) async fn run_tool_round(
         // verdict on this result, or a check the model ran itself,
         // clears the count (in that order, so an edit whose own hook
         // ran ends at zero).
-        if !result.is_error && is_file_change_call(&tc) {
+        if !result.is_error && target.is_some_and(is_file_change) {
             *edits_since_check += 1;
         }
-        if hook_noted.contains(&tc.id) || is_check_run_call(&tc) {
+        if hook_noted.contains(&tc.id) || target.is_some_and(is_check_run) {
             *edits_since_check = 0;
         }
-        if is_desktop_act(&tc) && !result.is_error {
+        if target.is_some_and(is_desktop_act) && !result.is_error {
             *last_desktop_act = Some(desktop_evidence(&result.content));
         }
         // Terminal error (auth/permission/connection) — narrow, set only by
@@ -1184,20 +1103,14 @@ pub(crate) async fn run_tool_round(
         if !result.is_error {
             all_errors_this_iteration = false;
             // A successful read clears the failure count for that target.
-            if let Some(p) = extract_file_read_path(&tc) {
+            if let Some(p) = target.and_then(read_path) {
                 read_failures.remove(&p);
             }
-        } else if let Some(p) = extract_file_read_path(&tc) {
+        } else if let Some(p) = target.and_then(read_path) {
             // A failed read of a path bumps its counter — even when interleaved
             // with successful discovery calls (which is why the all-errors
             // counter alone misses this).
             *read_failures.entry(p).or_insert(0) += 1;
-        }
-
-        // Empty result guard: prevent models from
-        // interpreting empty tool_result as end-of-output.
-        if result.content.is_empty() && !result.is_error {
-            result.content = format!("({} completed with no output)", tc.name);
         }
 
         // Tool-agnostic redundant-result dedup: if this result's content is
@@ -1234,8 +1147,7 @@ pub(crate) async fn run_tool_round(
         // identical-args block).
         if !flagged_redundant
             && !result.is_error
-            && tc.name == "os"
-            && tc.input.get("action").and_then(|v| v.as_str()) == Some("write")
+            && target.is_some_and(|t| t.key == "write_file")
         {
             let nh = simple_hash(tc.name.as_bytes());
             let ah = simple_hash(tc.input.to_string().as_bytes());
@@ -1263,6 +1175,7 @@ pub(crate) async fn run_tool_round(
         record_action_spiral(
             action_call_counts,
             &tc,
+            target,
             result.is_error,
             flagged_redundant,
         );
@@ -1310,7 +1223,7 @@ pub(crate) async fn run_tool_round(
         // Read-only per the registry's own classifier — the same verdict
         // the concurrency scheduler trusts, so there is exactly one
         // definition of "this call has no side effects".
-        if !no_progress && tools.is_concurrent_safe(&tc.name, &tc.input).await {
+        if !no_progress && tools.concurrency_safe(&tc.name, &tc.input).await {
             let own_hash = simple_hash(result.content.as_bytes());
             if readonly_result_hash_by_call.get(&call_key) == Some(&own_hash) {
                 no_progress = true;
@@ -1329,7 +1242,7 @@ pub(crate) async fn run_tool_round(
         // repeats its arguments on purpose, and the fresh result is the one
         // that matters. Telling the model to reuse the old one there was
         // telling it to distrust a correct result.
-        if !flagged_redundant && tools.is_concurrent_safe(&tc.name, &tc.input).await {
+        if !flagged_redundant && tools.concurrency_safe(&tc.name, &tc.input).await {
             let nh = simple_hash(tc.name.as_bytes());
             let ah = simple_hash(tc.input.to_string().as_bytes());
             if recent_tool_result_hashes
@@ -1342,132 +1255,35 @@ pub(crate) async fn run_tool_round(
             }
         }
 
-        // Error truncation: first 5K + last 5K with marker
-        if result.is_error && result.content.len() > ERROR_CAP {
-            let total_len = result.content.len();
-            let first = truncate_str(&result.content, ERROR_HALF).to_string();
-            let last_start = result.content.len().saturating_sub(ERROR_HALF);
-            // Find char boundary for the tail
-            let mut tail_start = last_start;
-            while tail_start < result.content.len()
-                && !result.content.is_char_boundary(tail_start)
-            {
-                tail_start += 1;
-            }
-            let last = &result.content[tail_start..];
-            result.content = format!(
-                "{}\n\n[{} characters truncated]\n\n{}",
-                first,
-                total_len - first.len() - last.len(),
-                last
-            );
-        }
-
-        // Read ledger: note repeat observations of a file BEFORE the
-        // spill/truncation rewrites below — the spill note embeds a
-        // fresh uuid path every time, which would read as "content
-        // CHANGED" on every identical re-read. Ranged reads (offset/
-        // limit) are partial views and are deliberately not
-        // fingerprinted. The note is appended after truncation so it
-        // always survives.
-        let ledger_note = if !result.is_error && tc.name == "os" {
-            let action = tc.input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            match (tools::OsTool::resolved_resource(&tc.input), action) {
-                ("file", "read")
-                    if tc.input.get("offset").is_none()
-                        && tc.input.get("limit").is_none() =>
-                {
-                    tc.input
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .and_then(|p| read_ledger.observe_read(p, &result.content))
+        // Read ledger: note repeat observations of a file. Ranged reads
+        // (offset/limit) are partial views and are deliberately not
+        // fingerprinted. A file read is never persisted (it pages itself),
+        // so its content here is what the tool returned.
+        let ledger_note = match (result.is_error, target) {
+            (false, Some(t)) if is_full_file_read(t, &tc.input) => tc
+                .input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .and_then(|p| read_ledger.observe_read(p, &result.content)),
+            // A command, or a search over a folder, fingerprinted by what it names.
+            (false, Some(t)) if t.key == "run_command" => match &t.field {
+                Some(types::permissions::RuleField::CommandPrefix(c)) => read_ledger.observe_command(c),
+                Some(types::permissions::RuleField::Folder(p)) => {
+                    read_ledger.observe_command(&p.to_string_lossy())
                 }
-                ("file", "grep") => tc
-                    .input
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .and_then(|p| read_ledger.observe_command(p)),
-                ("shell", _) => tc
-                    .input
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .and_then(|c| read_ledger.observe_command(c)),
                 _ => None,
-            }
-        } else {
-            None
+            },
+            _ => None,
         };
 
-        // Success result truncation: persist to file, return preview + path.
-        // A file read is exempt: it is already capped and paginated by
-        // the tool (see `is_os_file_read`); the universal ceiling below
-        // still bounds it.
-        if !result.is_error && result.content.len() > RESULT_CAP && !is_os_file_read(&tc) {
-            let total_len = result.content.len();
-            // Persist full result to temp file so agent can Read it if needed
-            let result_id = uuid::Uuid::new_v4().to_string();
-            // Under the session's private dir (0700, files 0600), not a
-            // world-readable /tmp: a spilled result is the contents of
-            // something the employee read.
-            let result_dir = tools::checkpoint::session_dir(session_id).join("tool-results");
-            if let Err(e) = std::fs::create_dir_all(&result_dir) {
-                warn!(error = %e, "failed to create the tool-results dir");
-            }
-            tools::checkpoint::restrict_private(&result_dir, true);
-            let result_path = result_dir.join(format!("{}.txt", result_id));
-            match std::fs::write(&result_path, &result.content) {
-                Ok(()) => {
-                    tools::checkpoint::restrict_private(&result_path, false);
-                    *ctx_spilled_results += 1;
-                }
-                Err(e) => warn!(error = %e, "failed to persist large tool result"),
-            }
-            let preview = truncate_str(&result.content, 4_000);
-            // Guidance matters: models follow it literally. Telling them to
-            // "read the file" re-inhales the whole payload into context —
-            // observed live with a 99KB tool list read straight back in.
-            // Point at targeted search, with full reads as the exception.
-            result.content = format!(
-                "{}\n\n[Output too large ({} bytes); preview above. Full output saved to: {}. Search it with os(resource: \"file\", action: \"grep\", path: \"{}\", pattern: \"...\"): extract only what you need; avoid reading the whole file into context. For broad exploration of it, delegate to a subagent and keep only the conclusions.]",
-                preview,
-                total_len,
-                result_path.display(),
-                result_path.display()
-            );
-        }
-
-        // Universal hard ceiling as final safety net
-        if result.content.len() > UNIVERSAL_TOOL_RESULT_CAP {
-            let total_len = result.content.len();
-            let preview = truncate_str(&result.content, 4_000);
-            result.content = format!(
-                "{}\n\n[Result truncated: {} bytes total, showing first 4000. Re-run with a narrower path/pattern/limit; an unchanged re-run returns the same size.]",
-                preview, total_len
-            );
-        }
         if let Some(note) = ledger_note {
             result.content.push_str(&note);
         }
-        // Log tool_search discoveries (activation happens via message-window
-        // scanning on the next iteration — no persistent set needed)
-        if tc.name == "tool_search" && !result.is_error
-            && let Ok(search) = serde_json::from_str::<serde_json::Value>(&result.content)
-                && let Some(matches) = search.get("matches").and_then(|v| v.as_array()) {
-            let names: Vec<&str> =
-                matches.iter().filter_map(|m| m.as_str()).collect();
-            if !names.is_empty() {
-                debug!(tools = ?names, "tool_search discovered tools (active next turn)");
-            }
-        }
-
         // Voluntary skill save: the model updated its library on its
         // own — push the self-improvement review backstop out (the
         // review only fires when organic learning has stalled).
-        if !result.is_error && tc.name == "skill" {
-            let action = tc.input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            if matches!(action, "create" | "update") {
-                crate::review_fork::note_voluntary_save(session_id);
-            }
+        if !result.is_error && target.is_some_and(|t| t.key == "save_skill") {
+            crate::review_fork::note_voluntary_save(session_id);
         }
 
         // Cache tool documentation results so they survive sliding window eviction.
@@ -1491,7 +1307,7 @@ pub(crate) async fn run_tool_round(
 
         let row = ToolResultRow {
             tool_call_id: tc.id.clone(),
-            outcome: Some(tools::humanize::tool_call(&tc.name, &tc.input).1),
+            outcome: Some(tools.labels(&tc.name, &tc.input).await.1),
             duration_ms: durations.get(&tc.id).copied(),
             content: result.content,
             is_error: result.is_error,
@@ -1549,29 +1365,12 @@ pub(crate) async fn run_tool_round(
     })
 }
 
-/// The shell command a tool call would execute, if it's an `os` shell exec —
-/// used by the per-command allowlist. `None` for any non-shell tool call.
-fn shell_command_of(tc: &ai::ToolCall) -> Option<String> {
-    if tc.name != "os" {
-        return None;
-    }
-    let resource = tc
-        .input
-        .get("resource")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let action = tc
-        .input
-        .get("action")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if resource == "shell" || action == "exec" {
-        tc.input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    } else {
-        None
+/// The command a call would run in the shell, for the per-command
+/// allowlist: its rule field when its rule key is `run_command`.
+fn shell_command_of(target: &types::permissions::Target) -> Option<String> {
+    match (&target.field, target.key.as_str()) {
+        (Some(types::permissions::RuleField::CommandPrefix(c)), "run_command") => Some(c.clone()),
+        _ => None,
     }
 }
 
@@ -1664,29 +1463,40 @@ async fn ask_tool_approval_batch(
     }
 }
 
-/// Stable per-turn identity for spiral detection: tool name + action (e.g.
-/// "os:glob", "os:read", "web:navigate"). Resource is omitted — the action alone
-/// distinguishes glob/read/exec/navigate, and the os tool infers resource from
-/// action anyway, so this is stable whether or not `resource` was passed.
-fn action_key(call: &ai::ToolCall) -> String {
-    let action = call
-        .input
-        .get("action")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+/// Hold one message's results to [`tools::result_shape::MESSAGE_RESULT_BUDGET`]
+/// characters: while their total is over it, the largest result not yet
+/// persisted (and carrying no image) is saved under `dir` and previewed.
+fn apply_message_budget(results: &mut [Option<(ai::ToolCall, ToolResult)>], dir: &std::path::Path) {
+    let persisted = |r: &ToolResult| r.content.starts_with("<persisted-output>");
+    loop {
+        let total: usize = results.iter().flatten().map(|(_, r)| r.content.chars().count()).sum();
+        if total <= tools::result_shape::MESSAGE_RESULT_BUDGET {
+            return;
+        }
+        let largest = results
+            .iter_mut()
+            .flatten()
+            .filter(|(_, r)| !r.is_error && r.image_url.is_none() && !persisted(r))
+            .max_by_key(|(_, r)| r.content.len());
+        let Some((_, r)) = largest else { return };
+        r.content = tools::result_shape::persist(dir, &r.content);
+    }
+}
+
+/// The spiral counter's key for a call: its tool and action, or, for a
+/// call that names no action, the job its rule key names when that differs
+/// from the tool. A plugin is keyed on the PLUGIN, not the verb: a run that
+/// fails "payment create", then "batch execute", then "journalentry create"
+/// against the same plugin is one spiral, not three fresh starts (CFO,
+/// 2026-09-06: 20 failed QuickBooks calls in one turn, no guard fired because
+/// each verb stayed under the limit).
+fn action_key(call: &ai::ToolCall, target: Option<&types::permissions::Target>) -> String {
+    let action = call.input.get("action").and_then(|v| v.as_str()).unwrap_or("");
     if !action.is_empty() {
         return format!("{}:{}", call.name, action);
     }
-    // No `action` field. The plugin tool is keyed on the PLUGIN, not the verb:
-    // only unproductive calls count now, and a run that fails "payment
-    // create", then "batch execute", then "journalentry create" against the
-    // same plugin is one spiral, not three fresh starts (CFO, 2026-09-06: 20
-    // failed QuickBooks calls in one turn, no guard fired because each verb
-    // stayed under the limit). Distinct successful commands never counted.
-    if call.name == "plugin"
-        && let Some(slug) = call.input.get("resource").and_then(|v| v.as_str())
-            && !slug.is_empty() {
-        return format!("plugin:{slug}");
+    if let Some(t) = target.filter(|t| t.key != call.name) {
+        return t.key.clone();
     }
     let verb = call
         .input
@@ -1705,91 +1515,64 @@ fn action_key(call: &ai::ToolCall) -> String {
 ///
 /// File-read errors are excluded: per-path `read_failures` already caps retries
 /// on the same target. Counting every failed read across different paths toward
-/// the action-wide limit false-trips legitimate exploration (8 wrong paths →
-/// turn ends with "os:read was called 8 times without progress" even when the
-/// model is about to read a file it just discovered). Redundant content still
-/// counts — re-fetching bytes the model already has is the wander the spiral
-/// is meant to catch for reads.
-fn counts_toward_action_spiral(call: &ai::ToolCall, is_error: bool, flagged_redundant: bool) -> bool {
-    if flagged_redundant {
-        return true;
-    }
-    if is_error && extract_file_read_path(call).is_none() {
-        return true;
-    }
-    false
+/// the action-wide limit false-trips legitimate exploration. Redundant content
+/// still counts — re-fetching bytes the model already has is the wander the
+/// spiral is meant to catch for reads.
+fn counts_toward_action_spiral(
+    target: Option<&types::permissions::Target>,
+    is_error: bool,
+    flagged_redundant: bool,
+) -> bool {
+    flagged_redundant || (is_error && target.and_then(read_path).is_none())
 }
 
-/// Apply one spiral-counter update for a tool result. Mirrors the runner loop
-/// so unit tests can assert the turn-level budget without driving a full run.
+/// Apply one spiral-counter update for a tool result.
 fn record_action_spiral(
     counts: &mut std::collections::HashMap<String, usize>,
     call: &ai::ToolCall,
+    target: Option<&types::permissions::Target>,
     is_error: bool,
     flagged_redundant: bool,
 ) {
-    if counts_toward_action_spiral(call, is_error, flagged_redundant) {
-        *counts.entry(action_key(call)).or_insert(0) += 1;
+    if counts_toward_action_spiral(target, is_error, flagged_redundant) {
+        *counts.entry(action_key(call, target)).or_insert(0) += 1;
     }
 }
 
-/// Extract file path from an os(resource: "file", action: "read") tool call.
-/// Returns None if the call is not a file read.
-fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
-    if call.name != "os" {
-        return None;
+/// The file a call reads: a `read_file` call's path, or the file a shell
+/// command only dumps (cat/head/tail/jq…). `None` for anything else.
+fn read_path(target: &types::permissions::Target) -> Option<String> {
+    use types::permissions::RuleField;
+    match (target.key.as_str(), &target.field) {
+        ("read_file", Some(RuleField::Folder(p))) => Some(p.to_string_lossy().into_owned()),
+        ("run_command", Some(RuleField::CommandPrefix(c))) => extract_shell_read_path(c),
+        _ => None,
     }
-    let action = call.input.get("action").and_then(|v| v.as_str())?;
-    // Resource is frequently omitted — the os tool infers it from the action
-    // (read→file, exec→shell). Mirror that inference here so dedup tracking
-    // works for the no-resource call shape the model actually produces.
-    let resource = call
-        .input
-        .get("resource")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| match action {
-            "read" | "write" | "edit" | "glob" | "grep" => "file".into(),
-            "exec" | "shell" | "poll" | "log" => "shell".into(),
-            _ => String::new(),
-        });
-
-    // Direct file read.
-    if resource == "file" && action == "read" {
-        return call
-            .input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-    }
-
-    // Shell read: cat/head/tail/jq/python json.tool etc. re-reading a file the
-    // model already has. These bypass file-read dedup entirely otherwise.
-    if resource == "shell" {
-        let command = call.input.get("command").and_then(|v| v.as_str())?;
-        return extract_shell_read_path(command);
-    }
-
-    None
 }
 
-/// True for any `os` file read, ranged or not. A file read paginates itself
-/// (its own byte cap, a footer naming the exact `offset` to continue from),
-/// so the runner's spill-to-file preview must never replace it: the preview
-/// cut the footer off and the model saw 4 KB of a 36 KB document on every
-/// read, then read the spill file, which spilled again (2026-09-17).
-fn is_os_file_read(call: &ai::ToolCall) -> bool {
-    call.name == "os"
-        && call.input.get("action").and_then(|v| v.as_str()) == Some("read")
-        && tools::OsTool::resolved_resource(&call.input) == "file"
+/// An unranged `read_file` call: the shape the read ledger fingerprints and
+/// notes itself, so the duplicate-read note must not stack on it.
+fn is_full_file_read(target: &types::permissions::Target, input: &serde_json::Value) -> bool {
+    target.key == "read_file" && input.get("offset").is_none() && input.get("limit").is_none()
 }
 
-/// True for an unranged `os` file read: the shape the read ledger fingerprints
-/// and notes itself, so the duplicate-read note must not stack on it.
-fn is_full_os_file_read(call: &ai::ToolCall) -> bool {
-    is_os_file_read(call)
-        && call.input.get("offset").is_none()
-        && call.input.get("limit").is_none()
+/// A call that writes or edits a file (the done gate counts them).
+fn is_file_change(target: &types::permissions::Target) -> bool {
+    matches!(target.key.as_str(), "write_file" | "edit_file")
+}
+
+/// A shell command that is a project check (`is_check_command`).
+fn is_check_run(target: &types::permissions::Target) -> bool {
+    target.key == "run_command"
+        && matches!(&target.field, Some(types::permissions::RuleField::CommandPrefix(c)) if crate::runner::is_check_command(c))
+}
+
+/// A desktop action whose result is the screen after it.
+fn is_desktop_act(target: &types::permissions::Target) -> bool {
+    matches!(
+        target.key.as_str(),
+        "desktop_click" | "desktop_type" | "desktop_key" | "desktop_scroll" | "desktop_drag"
+    )
 }
 
 /// Detect a shell command whose sole purpose is dumping a file's contents and
@@ -2583,24 +2366,22 @@ pub async fn gate_tool_calls(
                 }
             }
             // The operation gate is the decision for a declared operation:
-            // `plugin` and `pack` are both ungated by the capability gate
-            // (gating_capability returns None for them), so there is nothing
-            // further to ask here.
+            // `plugin` and `pack` belong to no capability, so there is
+            // nothing further to ask here.
             continue;
         }
-        let category = match tools::capabilities::gating_capability(
-            &tool_calls[idx].name,
-            &tool_calls[idx].input,
-        ) {
+        let target = tools.target(&tool_calls[idx].name, &tool_calls[idx].input).await;
+        let category = match target.as_ref().and_then(|t| t.capability.clone()) {
             Some(c) => c,
             None => continue, // ungated (installed extension / non-ambient tool)
         };
+        let category = category.as_str();
         let cap_off = entity_permissions
             .map(|p| p.get(category) == Some(&false))
             .unwrap_or(false);
         // The shell command this call would run, if any (for the per-command
         // allowlist). None for non-shell tools.
-        let shell_cmd = shell_command_of(&tool_calls[idx]);
+        let shell_cmd = target.as_ref().and_then(shell_command_of);
         if !cap_off || full_access {
             // Pre-granted (capability ON), no permission map, or Full Access
             // → proceed without asking.
@@ -2738,66 +2519,24 @@ fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<St
     }
 }
 
-/// Ceiling on path-admitted file mutations in one parallel batch. Read-only
-/// calls don't count against it — their parallelism is unchanged from the
-/// pre-path-scoping behavior and total simultaneous tool execution is already
-/// throttled by the shared tool-permit semaphore (`ConcurrencyControl`,
-/// min 8). This cap only bounds the newly-admitted parallel writes; the
-/// excess spills to the sequential phase.
-const MAX_CONCURRENT_FILE_MUTATIONS: usize = 8;
+/// Most calls one parallel batch runs at once.
+const MAX_PARALLEL_CALLS: usize = 10;
 
-/// Decide which of a turn's tool calls run in the parallel phase.
-///
-/// `calls` holds one `(tool_name, input, concurrent_safe)` tuple per call,
-/// where `concurrent_safe` is the registry's `is_concurrent_safe` verdict.
-/// Returns `(concurrent, sequential)` index lists into `calls`, each
-/// preserving the original call order.
-///
-/// Admission rules — strictly additive over the plain safe/unsafe split:
-/// - `concurrent_safe` calls are admitted exactly as before.
-/// - an os file mutation (write/edit/delete/move/copy — see
-///   [`tools::registry::file_mutation_paths`]) is admitted iff all of its
-///   canonical target paths (source, plus destination for move/copy) are
-///   disjoint — not equal to, not an ancestor of, not a descendant of — every
-///   path reserved by a mutation already admitted in this batch, and fewer
-///   than [`MAX_CONCURRENT_FILE_MUTATIONS`] mutations have been admitted.
-/// - everything else (overlapping or unparseable paths, non-file mutations)
-///   stays sequential, preserving original relative order.
-fn partition_tool_calls(calls: &[(&str, &serde_json::Value, bool)]) -> (Vec<usize>, Vec<usize>) {
-    let mut concurrent = Vec::new();
-    let mut sequential = Vec::new();
-    // Canonical paths reserved by mutations admitted so far in this batch.
-    let mut reserved: Vec<std::path::PathBuf> = Vec::new();
-    let mut admitted_mutations = 0usize;
-    for (i, (name, input, safe)) in calls.iter().enumerate() {
-        if *safe {
-            // Read-only per the registry — runs in parallel exactly as before.
-            concurrent.push(i);
-            continue;
+/// Claude Code's partitioning. `calls` holds `(index, concurrency_safe)` in
+/// call order; consecutive concurrency-safe calls form one batch (at most
+/// [`MAX_PARALLEL_CALLS`]), every other call is a batch of its own, and the
+/// batches keep the calls' order.
+fn partition_tool_calls(calls: &[(usize, bool)]) -> Vec<Vec<usize>> {
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    let mut open_safe = false;
+    for &(idx, safe) in calls {
+        match batches.last_mut() {
+            Some(batch) if safe && open_safe && batch.len() < MAX_PARALLEL_CALLS => batch.push(idx),
+            _ => batches.push(vec![idx]),
         }
-        // Path-scoped admission: a file mutation may join the parallel phase
-        // when its target paths don't overlap anything already reserved.
-        if admitted_mutations < MAX_CONCURRENT_FILE_MUTATIONS
-            && let Some(paths) = tools::registry::file_mutation_paths(name, input) {
-            let disjoint = paths
-                .iter()
-                .all(|p| reserved.iter().all(|r| !paths_overlap(p, r)));
-            if disjoint {
-                reserved.extend(paths);
-                admitted_mutations += 1;
-                concurrent.push(i);
-                continue;
-            }
-        }
-        sequential.push(i);
+        open_safe = safe;
     }
-    (concurrent, sequential)
-}
-
-/// Two canonical paths overlap when they are equal or one contains the other
-/// (ancestor/descendant). Mutations to overlapping paths must not race.
-fn paths_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
-    a.starts_with(b) || b.starts_with(a)
+    batches
 }
 
 #[cfg(test)]
@@ -2817,231 +2556,139 @@ mod grant_counter_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use types::permissions::{CallEffects, RuleField, Target};
 
     /// Spiral tests exercise the counting mechanics at the shipped default.
     const SAME_ACTION_LIMIT: usize = crate::guardrails::DEFAULT_SAME_ACTION_LIMIT;
 
-    fn os_read(path: &str) -> ai::ToolCall {
-        ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "read", "path": path}),
+    fn call(name: &str, input: serde_json::Value) -> ai::ToolCall {
+        ai::ToolCall { id: "c1".into(), name: name.into(), input }
+    }
+
+    fn target(tool: &str, key: &str, field: Option<RuleField>) -> Target {
+        Target {
+            tool: tool.into(),
+            key: key.into(),
+            operation: None,
+            capability: None,
+            field,
+            read_only: false,
+            effects: CallEffects::unknown(),
         }
     }
 
-    fn os_glob(dir: &str) -> ai::ToolCall {
-        ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "glob", "path": dir, "pattern": "*"}),
-        }
+    fn read(path: &str) -> Target {
+        target("os", "read_file", Some(RuleField::Folder(path.into())))
     }
 
-    fn os_exec(command: &str) -> ai::ToolCall {
-        ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "exec", "command": command}),
-        }
+    fn command(cmd: &str) -> Target {
+        target("os", "run_command", Some(RuleField::CommandPrefix(cmd.into())))
     }
 
-    fn web_search(query: &str) -> ai::ToolCall {
-        ai::ToolCall {
-            id: "c1".into(),
-            name: "web".into(),
-            input: serde_json::json!({"action": "search", "query": query}),
-        }
+    /// Claude Code's partitioning: consecutive concurrency-safe calls batch,
+    /// anything else runs alone, order is kept.
+    #[test]
+    fn safe_runs_batch_and_everything_else_runs_alone_in_order() {
+        let calls = [(0, true), (1, true), (2, false), (3, true), (4, false), (5, false), (6, true)];
+        assert_eq!(partition_tool_calls(&calls), vec![vec![0, 1], vec![2], vec![3], vec![4], vec![5], vec![6]]);
+        assert!(partition_tool_calls(&[]).is_empty());
     }
 
     #[test]
-    fn test_partition_disjoint_writes_run_concurrently() {
-        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
-        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/c.txt"});
-        let calls = vec![("os", &w1, false), ("os", &w2, false)];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent, vec![0, 1], "disjoint writes both join the parallel phase");
-        assert!(sequential.is_empty());
-    }
-
-    #[test]
-    fn test_partition_same_path_write_stays_sequential() {
-        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
-        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
-        let calls = vec![("os", &w1, false), ("os", &w2, false)];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent, vec![0]);
-        assert_eq!(sequential, vec![1], "second write to the same path is sequential");
-    }
-
-    #[test]
-    fn test_partition_ancestor_overlap_stays_sequential() {
-        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a"});
-        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/c.txt"});
-        let calls = vec![("os", &w1, false), ("os", &w2, false)];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent, vec![0]);
-        assert_eq!(sequential, vec![1], "write under an already-reserved dir is sequential");
-    }
-
-    #[test]
-    fn test_partition_non_file_mutation_stays_sequential() {
-        let shell = serde_json::json!({"resource": "shell", "action": "exec", "command": "ls"});
-        let calls = vec![("os", &shell, false)];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert!(concurrent.is_empty(), "non-file mutations never join the parallel phase");
-        assert_eq!(sequential, vec![0]);
-    }
-
-    #[test]
-    fn test_partition_reads_unchanged_and_order_preserved() {
-        // Reads (concurrent_safe=true) are admitted as before, even when a
-        // conflicting write is forced sequential; both phases keep original order.
-        let r1 = serde_json::json!({"resource": "file", "action": "read", "path": "/a/b.txt"});
-        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/x/y.txt"});
-        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/x/y.txt"});
-        let r2 = serde_json::json!({"action": "search", "query": "q"});
-        let calls = vec![
-            ("os", &r1, true),
-            ("os", &w1, false),
-            ("os", &w2, false),
-            ("web", &r2, true),
-        ];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent, vec![0, 1, 3]);
-        assert_eq!(sequential, vec![2]);
-    }
-
-    #[test]
-    fn test_partition_move_reserves_destination() {
-        let mv = serde_json::json!({
-            "resource": "file", "action": "move", "path": "/src/a.txt", "destination": "/dst/a.txt"
-        });
-        let w = serde_json::json!({"resource": "file", "action": "write", "path": "/dst/a.txt"});
-        let calls = vec![("os", &mv, false), ("os", &w, false)];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent, vec![0]);
-        assert_eq!(sequential, vec![1], "write to a move's destination is sequential");
-    }
-
-    #[test]
-    fn test_partition_mutation_cap_spills_to_sequential() {
-        let inputs: Vec<serde_json::Value> = (0..10)
-            .map(|i| {
-                serde_json::json!({"resource": "file", "action": "write", "path": format!("/a/f{i}.txt")})
-            })
-            .collect();
-        let calls: Vec<(&str, &serde_json::Value, bool)> =
-            inputs.iter().map(|input| ("os", input, false)).collect();
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent.len(), MAX_CONCURRENT_FILE_MUTATIONS);
-        assert_eq!(sequential, vec![8, 9], "excess past the cap spills to sequential");
+    fn a_safe_batch_holds_at_most_ten() {
+        let calls: Vec<(usize, bool)> = (0..23).map(|i| (i, true)).collect();
+        let batches = partition_tool_calls(&calls);
+        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [10, 10, 3]);
+        assert_eq!(batches.concat(), (0..23).collect::<Vec<_>>(), "order kept");
     }
 
     #[test]
     fn spiral_exploration_read_errors_never_trip_limit() {
-        // Regression: 8+ failed os:reads across different paths used to end the
-        // turn with "os:read was called 8 times without progress" and block the
-        // next real read. Per-path read_failures owns that case; the coarse
-        // spiral must stay at 0 so exploration can continue.
+        // Failed reads across different paths are owned by the per-path
+        // read_failures cap; the coarse spiral stays at 0.
         let mut counts = std::collections::HashMap::new();
         for i in 0..(SAME_ACTION_LIMIT + 4) {
-            record_action_spiral(&mut counts, &os_read(&format!("/tmp/miss-{i}.rs")), true, false);
+            let path = format!("/tmp/miss-{i}.rs");
+            let c = call("os", serde_json::json!({"action": "read", "path": path}));
+            record_action_spiral(&mut counts, &c, Some(&read(&path)), true, false);
         }
         assert_eq!(counts.get("os:read").copied().unwrap_or(0), 0);
-        assert!(
-            counts.get("os:read").copied().unwrap_or(0) < SAME_ACTION_LIMIT,
-            "exploration read errors must not trip the spiral backstop"
-        );
     }
 
     #[test]
     fn spiral_redundant_reads_still_trip_limit() {
         let mut counts = std::collections::HashMap::new();
-        let call = os_read("/tmp/same.rs");
+        let c = call("os", serde_json::json!({"action": "read", "path": "/tmp/same.rs"}));
         for _ in 0..SAME_ACTION_LIMIT {
-            record_action_spiral(&mut counts, &call, false, true);
+            record_action_spiral(&mut counts, &c, Some(&read("/tmp/same.rs")), false, true);
         }
         assert_eq!(counts["os:read"], SAME_ACTION_LIMIT);
     }
 
     #[test]
-    fn spiral_skips_file_read_errors_across_paths() {
-        // Exploring many missing paths must not feed the coarse os:read counter —
-        // read_failures owns per-path caps.
-        let a = os_read("/tmp/a.rs");
-        let b = os_read("/tmp/b.rs");
-        assert!(!counts_toward_action_spiral(&a, true, false));
-        assert!(!counts_toward_action_spiral(&b, true, false));
-        // Redundant content still counts (true wander).
-        assert!(counts_toward_action_spiral(&a, false, true));
-        // Successful novel read never counts.
-        assert!(!counts_toward_action_spiral(&a, false, false));
-        // Error + redundant: redundant still counts (wander via re-fetch).
-        assert!(counts_toward_action_spiral(&a, true, true));
+    fn spiral_counts_what_made_no_progress_except_read_misses() {
+        let r = read("/tmp/a.rs");
+        assert!(!counts_toward_action_spiral(Some(&r), true, false), "a missed read is read_failures' job");
+        assert!(counts_toward_action_spiral(Some(&r), false, true), "a re-fetch is the wander");
+        assert!(!counts_toward_action_spiral(Some(&r), false, false), "a novel read is progress");
+        // A shell dump of a file is a read too.
+        assert!(!counts_toward_action_spiral(Some(&command("cat /tmp/missing.rs")), true, false));
+        // Other failed commands, and unknown tools, count.
+        assert!(counts_toward_action_spiral(Some(&command("ls /nope")), true, false));
+        assert!(counts_toward_action_spiral(None, true, false));
     }
 
     #[test]
-    fn full_os_file_read_is_left_to_the_ledger() {
-        // Unranged os reads get the read-ledger note; the duplicate-read note
-        // must not stack on them. Ranged reads and shell dumps still get it.
-        assert!(is_full_os_file_read(&os_read("/tmp/a.rs")));
-        let ranged = ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "read", "path": "/tmp/a.rs", "offset": 10, "limit": 20}),
-        };
-        assert!(!is_full_os_file_read(&ranged));
-        assert!(!is_full_os_file_read(&os_exec("cat /tmp/a.rs")));
+    fn a_read_is_named_by_its_rule_key_and_field() {
+        assert_eq!(read_path(&read("/tmp/a.rs")).as_deref(), Some("/tmp/a.rs"));
+        assert_eq!(read_path(&command("cat /tmp/a.rs")).as_deref(), Some("/tmp/a.rs"));
+        assert_eq!(read_path(&command("ls /tmp")), None);
+        assert_eq!(read_path(&target("os", "write_file", Some(RuleField::Folder("/tmp/a".into())))), None);
+        // A read with no path is not a tracked target.
+        assert_eq!(read_path(&target("os", "read_file", None)), None);
     }
 
     #[test]
-    fn any_os_file_read_is_never_spilled() {
-        // Ranged or not, a file read paginates itself and must reach the model
-        // whole; shell dumps and greps still go through the spill preview.
-        assert!(is_os_file_read(&os_read("/tmp/a.rs")));
-        let ranged = ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "read", "path": "/tmp/a.rs", "offset": 10, "limit": 20}),
-        };
-        assert!(is_os_file_read(&ranged));
-        assert!(!is_os_file_read(&os_exec("cat /tmp/a.rs")));
-        let grep = ai::ToolCall {
-            id: "c2".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "grep", "path": "/tmp/a.rs", "pattern": "x"}),
-        };
-        assert!(!is_os_file_read(&grep));
+    fn full_file_read_is_left_to_the_ledger() {
+        let r = read("/tmp/a.rs");
+        assert!(is_full_file_read(&r, &serde_json::json!({"path": "/tmp/a.rs"})));
+        assert!(!is_full_file_read(&r, &serde_json::json!({"path": "/tmp/a.rs", "offset": 10, "limit": 20})));
+        assert!(!is_full_file_read(&command("cat /tmp/a.rs"), &serde_json::json!({})));
     }
 
     #[test]
-    fn spiral_skips_shell_dump_read_errors() {
-        // cat/head/tail dump failures are file-reads for dedup / read_failures;
-        // they must not feed the coarse os:exec spiral either.
-        let cat = os_exec("cat /tmp/missing.rs");
-        assert!(extract_file_read_path(&cat).is_some());
-        assert!(!counts_toward_action_spiral(&cat, true, false));
+    fn the_done_gate_reads_the_job_not_the_tool() {
+        assert!(is_file_change(&target("os", "edit_file", None)));
+        assert!(is_file_change(&target("os", "write_file", None)));
+        assert!(!is_file_change(&read("/a.rs")));
+        assert!(is_check_run(&command("cargo test")));
+        assert!(!is_check_run(&command("cargo build")));
+        assert!(!is_check_run(&target("os", "edit_file", Some(RuleField::Folder("cargo test".into())))));
+        assert!(is_desktop_act(&target("os", "desktop_click", None)));
+        assert!(!is_desktop_act(&target("os", "desktop_see", None)));
+        assert!(!is_desktop_act(&command("ls")));
+        assert_eq!(shell_command_of(&command("ls -la")).as_deref(), Some("ls -la"));
+        assert_eq!(shell_command_of(&read("/a")), None);
     }
 
+    /// One message's results are held to the budget by persisting the
+    /// largest first; errors and images stay inline.
     #[test]
-    fn spiral_still_counts_non_read_errors() {
-        let g = os_glob("/tmp");
-        assert!(counts_toward_action_spiral(&g, true, false));
-        assert!(!counts_toward_action_spiral(&g, false, false));
-
-        let mut counts = std::collections::HashMap::new();
-        for i in 0..SAME_ACTION_LIMIT {
-            record_action_spiral(&mut counts, &os_glob(&format!("/tmp/dir-{i}")), true, false);
-        }
-        assert_eq!(counts["os:glob"], SAME_ACTION_LIMIT);
-
-        // Non-dump shell failures still count (true exec retry spiral).
-        let ls = os_exec("ls /nope");
-        assert!(extract_file_read_path(&ls).is_none());
-        assert!(counts_toward_action_spiral(&ls, true, false));
-
-        // Other tools' errors still count.
-        assert!(counts_toward_action_spiral(&web_search("nebo"), true, false));
+    fn a_message_over_its_budget_persists_its_largest_results_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = "x".repeat(150_000);
+        let mid = "y".repeat(80_000);
+        let mut results = vec![
+            Some((call("os", serde_json::json!({})), ToolResult::ok(mid.clone()))),
+            Some((call("web", serde_json::json!({})), ToolResult::ok(big))),
+            Some((call("os", serde_json::json!({})), ToolResult::error("e".repeat(1_000)))),
+            None,
+        ];
+        apply_message_budget(&mut results, dir.path());
+        let content = |i: usize| results[i].as_ref().unwrap().1.content.clone();
+        assert!(content(1).starts_with("<persisted-output>"), "the largest goes first");
+        assert_eq!(content(0), mid, "under budget after one: the rest stay inline");
+        assert!(content(2).starts_with("eee"));
     }
 
     /// The repeated-action backstop is a nudge: it refuses the offending call and
@@ -3065,50 +2712,28 @@ mod tests {
         );
     }
 
-    /// The plugin tool carries no `action` — its verb is the head of `command`.
-    /// Distinct commands must land in distinct buckets, or a turn that ran eight
-    /// different plugin commands trips the backstop as one retried call.
+    /// A plugin call with no `action` is keyed on the plugin (its rule key),
+    /// so every failed verb against one plugin lands on one counter.
     #[test]
     fn action_key_keys_plugin_calls_on_the_plugin() {
-        let call = |cmd: &str| ai::ToolCall {
-            id: String::new(),
-            name: "plugin".into(),
-            input: serde_json::json!({"resource": "quickbooks", "command": cmd}),
+        let plugin = |slug: &str, cmd: &str| {
+            (
+                call("plugin", serde_json::json!({"resource": slug, "command": cmd})),
+                target("plugin", &format!("plugin__{slug}"), None),
+            )
         };
-        // Every failed verb against one plugin lands on one counter.
-        assert_eq!(action_key(&call("payment create --line x")), "plugin:quickbooks");
-        assert_eq!(action_key(&call("batch execute --batch-item-request y")), "plugin:quickbooks");
-        // ...and an explicit action does not change that.
-        let with_action = ai::ToolCall {
-            id: String::new(),
-            name: "plugin".into(),
-            input: serde_json::json!({"resource": "quickbooks", "action": "exec", "command": "query run"}),
-        };
-        assert_eq!(action_key(&with_action), "plugin:exec");
-        // Two plugins stay apart.
-        let other = ai::ToolCall {
-            id: String::new(),
-            name: "plugin".into(),
-            input: serde_json::json!({"resource": "gws", "command": "gmail +send --to a@b.c"}),
-        };
-        assert_ne!(action_key(&call("payment create")), action_key(&other));
-        // Tools that do carry an action are unchanged.
-        assert_eq!(action_key(&os_glob("/tmp")), "os:glob");
+        let (a, ta) = plugin("quickbooks", "payment create --line x");
+        let (b, tb) = plugin("quickbooks", "batch execute --batch-item-request y");
+        assert_eq!(action_key(&a, Some(&ta)), "plugin__quickbooks");
+        assert_eq!(action_key(&b, Some(&tb)), "plugin__quickbooks");
+        let (other, to) = plugin("gws", "gmail +send --to a@b.c");
+        assert_ne!(action_key(&a, Some(&ta)), action_key(&other, Some(&to)));
+        // An explicit action keys on the tool and action.
+        let with_action = call("plugin", serde_json::json!({"resource": "quickbooks", "action": "exec", "command": "q"}));
+        assert_eq!(action_key(&with_action, Some(&ta)), "plugin:exec");
+        let glob = call("os", serde_json::json!({"action": "glob", "path": "/tmp"}));
+        assert_eq!(action_key(&glob, Some(&command("x"))), "os:glob");
     }
-
-    #[test]
-    fn spiral_os_read_without_path_still_counts_as_error() {
-        // Malformed read (no path) is not a tracked file-read target — keep it
-        // on the coarse spiral so a broken call shape cannot loop forever.
-        let bare = ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "read"}),
-        };
-        assert!(extract_file_read_path(&bare).is_none());
-        assert!(counts_toward_action_spiral(&bare, true, false));
-    }
-
 }
 
 #[cfg(test)]

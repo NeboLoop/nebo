@@ -3,7 +3,7 @@ name: "A non-English coding request reaches the tool through discovery"
 description: |
   The request is in Spanish and names no file or tool, so no keyword can
   carry it. The code tool is listed among the deferred stubs; the model finds
-  it with tool_search (or calls it directly) once it decides it needs code
+  it with find_tools (or calls it directly) once it decides it needs code
   intelligence. What matters is that the answer is right and the model never
   says it lacks a way to inspect code.
 target_component: prompt

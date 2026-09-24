@@ -3,11 +3,12 @@
 //! which fires on Claude Code's step counts. A new attachment is one row
 //! here plus its producer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use db::models::ChatMessage;
 
 use super::reminders::{Attachment, attachment_fields};
+use super::tool_surface::{ListingDelta as ToolsDelta, render_listing};
 
 /// Something that happened that the model hears about on its next call.
 #[derive(Debug, Clone)]
@@ -37,13 +38,12 @@ pub enum TurnEvent {
         condition: String,
     },
     Usage(Threshold),
-    /// The deferred-tool set changed. A listing line is the definition's
-    /// fingerprint and is never shown.
-    ToolsAvailable(ListingDelta),
+    /// The listed deferred tools changed; names only (tools doc §4.1).
+    ToolsAvailable(ToolsDelta),
     /// The skill set changed; a line is the skill's one-line description.
-    SkillListing(ListingDelta),
+    SkillListing(LinedDelta),
     /// The helper types changed; a line is the type's use and tool set.
-    HelperTypes(ListingDelta),
+    HelperTypes(LinedDelta),
     /// A proactive inbox item or a presence change.
     BackgroundUpdate(String),
     /// The last reply hit the output limit.
@@ -148,9 +148,13 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             format!("The agreed goal isn't met yet: {}. Keep working toward: {}.", reason.trim(), condition.trim()),
         ),
         TurnEvent::Usage(t) => ("usage", threshold_text(t)),
-        TurnEvent::ToolsAvailable(d) => return d.attachment("tools_available", &TOOL_WORDS, false),
-        TurnEvent::SkillListing(d) => return d.attachment("skill_listing", &SKILL_WORDS, true),
-        TurnEvent::HelperTypes(d) => return d.attachment("helper_types", &HELPER_WORDS, true),
+        TurnEvent::ToolsAvailable(d) => {
+            let text = non_empty(&render_listing(d))?;
+            let added = d.added.iter().map(|n| (n.clone(), String::new())).collect();
+            return Some(listing_row("tools_available", text, &added, &d.removed));
+        }
+        TurnEvent::SkillListing(d) => return d.attachment("skill_listing", &SKILL_WORDS),
+        TurnEvent::HelperTypes(d) => return d.attachment("helper_types", &HELPER_WORDS),
         TurnEvent::BackgroundUpdate(text) => ("background_update", non_empty(text)?),
         TurnEvent::CutoffResume => (
             "cutoff_resume",
@@ -186,147 +190,106 @@ fn threshold_text(t: &Threshold) -> String {
 }
 
 // ── Listings: deferred tools, skills, helper types ──────────────────────
+//
+// A listing row stores what it announced (`added`: name → line, `removed`:
+// names) next to its kind, so the set the conversation was last told is
+// folded back from its rows (Claude Code's delta attachments). A listing is
+// written only when that set differs from the current one; after a
+// checkpoint the fold starts empty and the next step lists the set whole.
 
-/// A listing: name → line.
+/// A listing: name → line (empty for deferred tools, which list names only).
 pub type Listing = BTreeMap<String, String>;
 
-/// How a listing changed since it was last announced. `now` is stored on
-/// the row, so the next comparison reads it back from the conversation.
+/// A change in a listing whose entries carry one line each.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ListingDelta {
-    pub added: Vec<String>,
-    pub updated: Vec<String>,
-    pub removed: Vec<String>,
-    pub now: Listing,
+pub struct LinedDelta {
+    /// New entries and entries whose line changed.
+    pub added: Listing,
+    pub removed: BTreeSet<String>,
 }
 
-impl ListingDelta {
-    /// The change from `before` to `now`, or None when the set is the same.
-    pub fn between(before: &Listing, now: &Listing) -> Option<ListingDelta> {
-        let added: Vec<String> = now.keys().filter(|n| !before.contains_key(*n)).cloned().collect();
-        let updated: Vec<String> = now
+impl LinedDelta {
+    /// The change from `announced` to `now`, or None when nothing changed.
+    pub fn between(announced: &Listing, now: &Listing) -> Option<LinedDelta> {
+        let added: Listing = now
             .iter()
-            .filter(|(n, line)| before.get(*n).is_some_and(|old| old != *line))
-            .map(|(n, _)| n.clone())
+            .filter(|(n, line)| announced.get(*n) != Some(*line))
+            .map(|(n, line)| (n.clone(), line.clone()))
             .collect();
-        let removed: Vec<String> = before.keys().filter(|n| !now.contains_key(*n)).cloned().collect();
-        if added.is_empty() && updated.is_empty() && removed.is_empty() {
-            return None;
-        }
-        Some(ListingDelta {
-            added,
-            updated,
-            removed,
-            now: now.clone(),
-        })
+        let removed: BTreeSet<String> = announced.keys().filter(|n| !now.contains_key(*n)).cloned().collect();
+        (!added.is_empty() || !removed.is_empty()).then_some(LinedDelta { added, removed })
     }
 
-    /// The listing row: names only for tools (grouped past 30), `- name:
-    /// line` for skills and helper types.
-    fn attachment(&self, kind: &'static str, words: &ListingWords, show_lines: bool) -> Option<Attachment> {
-        let render = |names: &[String], with_line: bool| -> Vec<String> {
-            if !show_lines {
-                return group_names(names);
-            }
-            names
+    /// `- name: line` under each header.
+    fn attachment(&self, kind: &'static str, words: &ListingWords) -> Option<Attachment> {
+        let mut sections = Vec::new();
+        if !self.added.is_empty() {
+            let lines: Vec<String> = self
+                .added
                 .iter()
-                .map(|n| match self.now.get(n) {
-                    Some(line) if with_line && !line.is_empty() => format!("- {n}: {line}"),
-                    _ => format!("- {n}"),
-                })
-                .collect()
-        };
-        let sections: Vec<String> = [
-            (words.added, &self.added, true),
-            (words.updated, &self.updated, true),
-            (words.removed, &self.removed, false),
-        ]
-        .into_iter()
-        .filter(|(_, names, _)| !names.is_empty())
-        .map(|(header, names, with_line)| format!("{header}\n{}", render(names, with_line).join("\n")))
-        .collect();
+                .map(|(n, line)| if line.is_empty() { format!("- {n}") } else { format!("- {n}: {line}") })
+                .collect();
+            sections.push(format!("{}\n{}", words.available, lines.join("\n")));
+        }
+        if !self.removed.is_empty() {
+            let lines: Vec<String> = self.removed.iter().map(|n| format!("- {n}")).collect();
+            sections.push(format!("{}\n{}", words.removed, lines.join("\n")));
+        }
         if sections.is_empty() {
             return None;
         }
-        let listing = self
-            .now
-            .iter()
-            .map(|(n, l)| (n.clone(), serde_json::Value::String(l.clone())))
-            .collect();
-        Some(Attachment {
-            kind,
-            text: sections.join("\n\n"),
-            data: serde_json::Map::from_iter([("listing".to_string(), serde_json::Value::Object(listing))]),
-        })
+        Some(listing_row(kind, sections.join("\n\n"), &self.added, &self.removed))
     }
 }
 
 struct ListingWords {
-    added: &'static str,
-    updated: &'static str,
+    available: &'static str,
     removed: &'static str,
 }
 
-const TOOL_WORDS: ListingWords = ListingWords {
-    added: "These deferred tools are now available through find_tools. Their definitions aren't loaded: load them with find_tools(\"select:<name>[,<name>…]\") before calling. One name per line:",
-    updated: "These deferred tools have updated definitions. Load them again with find_tools before calling:",
-    removed: "These deferred tools are no longer available:",
-};
-
 const SKILL_WORDS: ListingWords = ListingWords {
-    added: "These skills are now available through use_skill:",
-    updated: "These skills have updated instructions:",
+    available: "These skills are available through use_skill:",
     removed: "These skills are no longer available:",
 };
 
 const HELPER_WORDS: ListingWords = ListingWords {
-    added: "These helper types are now available to delegate:",
-    updated: "These helper types have changed:",
+    available: "These helper types are available to delegate:",
     removed: "These helper types are no longer available:",
 };
 
-/// Past this many names, the external families group by server or app.
-const GROUP_PAST: usize = 30;
-
-/// Tool names in a listing, one per line. Past 30 names, `mcp__<server>__*`
-/// and `app__<app>__*` names group to one line each with their count.
-fn group_names(names: &[String]) -> Vec<String> {
-    if names.len() <= GROUP_PAST {
-        return names.to_vec();
+fn listing_row(kind: &'static str, text: String, added: &Listing, removed: &BTreeSet<String>) -> Attachment {
+    let added: serde_json::Map<String, serde_json::Value> =
+        added.iter().map(|(n, l)| (n.clone(), serde_json::Value::String(l.clone()))).collect();
+    Attachment {
+        kind,
+        text,
+        data: serde_json::Map::from_iter([
+            ("added".to_string(), serde_json::Value::Object(added)),
+            ("removed".to_string(), serde_json::json!(removed)),
+        ]),
     }
-    let family = |name: &str| -> Option<String> {
-        let rest = name.strip_prefix("mcp__").or_else(|| name.strip_prefix("app__"))?;
-        let (owner, _) = rest.split_once("__")?;
-        Some(format!("{}{owner}__*", &name[..name.len() - rest.len()]))
-    };
-    let mut lines = Vec::new();
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for name in names {
-        match family(name) {
-            Some(group) => *counts.entry(group).or_default() += 1,
-            None => lines.push(name.clone()),
-        }
-    }
-    lines.extend(counts.into_iter().map(|(group, n)| format!("{group} ({n})")));
-    lines
 }
 
-/// The listing of `kind` the conversation last announced: the set stored on
-/// its latest listing row since the boundary, empty when there is none (a
-/// fresh conversation, or one just checkpointed, gets the full listing).
+/// The listing of `kind` the conversation was last told: its listing rows
+/// since the boundary, folded in order.
 pub fn announced(kind: &str, history: &[ChatMessage]) -> Listing {
-    history
-        .iter()
-        .rev()
-        .filter_map(attachment_fields)
-        .find(|f| f.get("kind").and_then(|k| k.as_str()) == Some(kind))
-        .and_then(|f| f.get("listing").and_then(|l| l.as_object()).cloned())
-        .map(|l| {
-            l.into_iter()
-                .map(|(n, line)| (n, line.as_str().unwrap_or_default().to_string()))
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut listing = Listing::new();
+    for fields in history.iter().filter_map(attachment_fields) {
+        if fields.get("kind").and_then(|k| k.as_str()) != Some(kind) {
+            continue;
+        }
+        if let Some(removed) = fields.get("removed").and_then(|r| r.as_array()) {
+            for name in removed.iter().filter_map(|n| n.as_str()) {
+                listing.remove(name);
+            }
+        }
+        if let Some(added) = fields.get("added").and_then(|a| a.as_object()) {
+            for (name, line) in added {
+                listing.insert(name.clone(), line.as_str().unwrap_or_default().to_string());
+            }
+        }
+    }
+    listing
 }
 
 // ── The task reminder ───────────────────────────────────────────────────
@@ -421,7 +384,7 @@ mod tests {
     }
 
     fn every_event() -> Vec<TurnEvent> {
-        let delta = ListingDelta::between(&Listing::new(), &Listing::from([("x".to_string(), "y".to_string())])).unwrap();
+        let lined = LinedDelta::between(&Listing::new(), &Listing::from([("x".to_string(), "y".to_string())])).unwrap();
         vec![
             TurnEvent::DateChanged(chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap()),
             TurnEvent::RunBriefing("team: Ann".into()),
@@ -438,9 +401,9 @@ mod tests {
                 condition: "all tests pass".into(),
             },
             TurnEvent::Usage(Threshold::Context { percent_full: 82 }),
-            TurnEvent::ToolsAvailable(delta.clone()),
-            TurnEvent::SkillListing(delta.clone()),
-            TurnEvent::HelperTypes(delta),
+            TurnEvent::ToolsAvailable(ToolsDelta::all(["vm".to_string()].into())),
+            TurnEvent::SkillListing(lined.clone()),
+            TurnEvent::HelperTypes(lined),
             TurnEvent::BackgroundUpdate("the export finished".into()),
             TurnEvent::CutoffResume,
             TurnEvent::WorkflowContract("call publish once".into()),
@@ -553,57 +516,59 @@ mod tests {
 
     #[test]
     fn listings_written_only_when_the_set_changes() {
-        let tools = |pairs: &[(&str, &str)]| -> Listing {
-            pairs.iter().map(|(n, l)| (n.to_string(), l.to_string())).collect()
-        };
+        let set = |names: &[&str]| -> BTreeSet<String> { names.iter().map(|n| n.to_string()).collect() };
         let mut history = vec![row("user", "hello", None, None)];
-        let step = |history: &mut Vec<ChatMessage>, now: &Listing| -> Option<Attachment> {
-            let delta = ListingDelta::between(&announced("tools_available", history), now)?;
-            let a = attachment_for(&TurnEvent::ToolsAvailable(delta))?;
+        // What a step does: compare the listed set with what the
+        // conversation was told, and write a row only on a change.
+        let step = |history: &mut Vec<ChatMessage>, now: &BTreeSet<String>| -> Option<Attachment> {
+            let told: BTreeSet<String> = announced("tools_available", history).into_keys().collect();
+            let a = attachment_for(&TurnEvent::ToolsAvailable(ToolsDelta::between(&told, now)?))?;
             history.push(stored(&a));
             Some(a)
         };
 
-        let first = step(&mut history, &tools(&[("mail_send", "v1"), ("web_fetch", "v1")])).expect("first listing");
+        let first = step(&mut history, &set(&["mail_send", "web_fetch"])).expect("first listing");
         assert!(first.text.ends_with("One name per line:\nmail_send\nweb_fetch"), "{}", first.text);
-        assert!(!first.text.contains("v1"), "tool lines are names only");
+        assert!(step(&mut history, &set(&["mail_send", "web_fetch"])).is_none(), "same set, no row");
 
-        assert!(step(&mut history, &tools(&[("mail_send", "v1"), ("web_fetch", "v1")])).is_none(), "same set, no row");
+        let changed = step(&mut history, &set(&["mail_send", "calendar_add"])).expect("a change");
+        assert!(changed.text.contains("One name per line:\ncalendar_add"), "{}", changed.text);
+        assert!(changed.text.ends_with("no longer available:\nweb_fetch"), "{}", changed.text);
+        assert!(!changed.text.contains("mail_send"), "only the change is written");
+        assert!(step(&mut history, &set(&["calendar_add", "mail_send"])).is_none());
+        assert_eq!(history.len(), 3, "two listing rows in four steps");
 
-        let changed = step(&mut history, &tools(&[("mail_send", "v2"), ("calendar_add", "v1")])).expect("a change");
+        // Skills: a changed line is a change; the same lines are not.
+        let skills = |pairs: &[(&str, &str)]| -> Listing {
+            pairs.iter().map(|(n, l)| (n.to_string(), l.to_string())).collect()
+        };
+        let mut skill_step = |now: &Listing| -> Option<Attachment> {
+            let a = attachment_for(&TurnEvent::SkillListing(LinedDelta::between(&announced("skill_listing", &history), now)?))?;
+            history.push(stored(&a));
+            Some(a)
+        };
+        assert!(skill_step(&skills(&[("invoice", "Draft an invoice")])).is_some());
+        assert!(skill_step(&skills(&[("invoice", "Draft an invoice")])).is_none());
+        let edited = skill_step(&skills(&[("invoice", "Draft and send an invoice")])).expect("line changed");
+        assert_eq!(edited.text, format!("{}\n- invoice: Draft and send an invoice", SKILL_WORDS.available));
         assert_eq!(
-            changed.text,
-            format!(
-                "{}\ncalendar_add\n\n{}\nmail_send\n\n{}\nweb_fetch",
-                TOOL_WORDS.added, TOOL_WORDS.updated, TOOL_WORDS.removed
-            )
+            announced("tools_available", &history).into_keys().collect::<Vec<_>>(),
+            ["calendar_add", "mail_send"],
+            "each kind folds its own rows"
         );
-        assert!(step(&mut history, &tools(&[("mail_send", "v2"), ("calendar_add", "v1")])).is_none());
 
-        // Another listing kind is announced separately.
-        assert!(announced("skill_listing", &history).is_empty());
-        // After a checkpoint the announced set is gone and the listing is re-sent whole.
-        assert!(ListingDelta::between(&announced("tools_available", &[]), &tools(&[("mail_send", "v2")])).is_some());
+        // After a checkpoint nothing was announced: the next step lists the set whole.
+        assert!(announced("tools_available", &[]).is_empty());
     }
 
     #[test]
     fn skill_and_helper_listings_carry_their_lines() {
         let now = Listing::from([("invoice".to_string(), "Draft an invoice".to_string())]);
-        let delta = ListingDelta::between(&Listing::new(), &now).unwrap();
-        let skills = attachment_for(&TurnEvent::SkillListing(delta.clone())).unwrap();
-        assert_eq!(skills.text, format!("{}\n- invoice: Draft an invoice", SKILL_WORDS.added));
-        let gone = ListingDelta::between(&now, &Listing::new()).unwrap();
+        let delta = LinedDelta::between(&Listing::new(), &now).unwrap();
+        let skills = attachment_for(&TurnEvent::SkillListing(delta)).unwrap();
+        assert_eq!(skills.text, format!("{}\n- invoice: Draft an invoice", SKILL_WORDS.available));
+        let gone = LinedDelta::between(&now, &Listing::new()).unwrap();
         let helpers = attachment_for(&TurnEvent::HelperTypes(gone)).unwrap();
         assert_eq!(helpers.text, format!("{}\n- invoice", HELPER_WORDS.removed));
-    }
-
-    #[test]
-    fn past_thirty_names_external_families_group() {
-        let mut names: Vec<String> = (0..25).map(|i| format!("mcp__crm__op{i:02}")).collect();
-        names.extend((0..6).map(|i| format!("app__books__op{i}")));
-        names.push("mail_send".into());
-        assert_eq!(group_names(&names), vec!["mail_send", "app__books__* (6)", "mcp__crm__* (25)"]);
-        let few: Vec<String> = (0..3).map(|i| format!("mcp__crm__op{i}")).collect();
-        assert_eq!(group_names(&few), few);
     }
 }
