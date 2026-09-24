@@ -1688,22 +1688,18 @@ impl Runner {
                 if let Err(e) = self.sessions.append_message(&session_id, "user", &req.prompt, None, None, Some(&meta)) {
                     warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
                 }
-                // The briefing (team roster, turn rule) is for the model, never
-                // the owner: on the normal path it is an ephemeral reminder, so
-                // here it rides as an owner-invisible isMeta row, not glued
-                // onto the visible post.
+                // The briefing (team roster, turn rule) is steering: it rides
+                // the running turn's next call on the wake rail and is never
+                // written to the thread.
                 if let Some(ctx) = req.mention_context.as_deref() {
-                    let meta = serde_json::json!({ "isMeta": true }).to_string();
-                    if let Err(e) = self.sessions.append_message(
-                        &session_id,
-                        "user",
-                        &steering::wrap_system_reminder(ctx),
-                        None,
-                        None,
-                        Some(&meta),
-                    ) {
-                        warn!(session_id = %session_id, error = %e, "could not queue the briefing into the running turn");
-                    }
+                    steering::push_wake(
+                        &session_key,
+                        steering::WakeEntry {
+                            wake_id: None,
+                            content: steering::wrap_system_reminder(ctx),
+                            taint: Vec::new(),
+                        },
+                    );
                 }
                 info!(session_id = %session_id, channel = %req.channel, "second request on a busy session queued into the running turn");
                 // ponytail: no follow-up turn is started if the running loop ends
@@ -1840,10 +1836,17 @@ impl Runner {
             }
         }
 
+        // An auto-continuation is the house nudging the employee, not the
+        // owner speaking. Steering is per turn: the nudge rides this run's
+        // calls as a stream reminder (see `mention_context` below) and is
+        // never written to the thread — a stored nudge was re-sent on every
+        // later turn, telling the model to press on long after the work ended.
+        let continuation = crate::goals::is_continuation_prompt(&req.prompt);
+
         // Append user message — large inputs are offloaded to a temp file and
         // replaced with an LLM-generated summary so the full document never
         // enters the main chat context.
-        if !req.prompt.is_empty() {
+        if !req.prompt.is_empty() && !continuation {
             let (effective_content, metadata) = if crate::large_input::is_large(&req.prompt) {
                 info!(
                     session_id = %session_id,
@@ -1917,10 +1920,6 @@ impl Runner {
                 (req.prompt.clone(), metadata)
             };
 
-            // An auto-continuation is the house nudging the employee, not the
-            // owner speaking. It stays in the model's history (that is the
-            // whole point) and out of the owner's transcript — `isMeta` is what
-            // the read path filters on.
             let metadata = if req.attachments.is_empty() {
                 metadata
             } else {
@@ -1932,17 +1931,16 @@ impl Runner {
                 Some(value.to_string())
             };
 
-            let metadata = if crate::goals::is_continuation_prompt(&effective_content) || req.hidden_prompt {
+            // A platform-authored prompt stays in the model's history and out
+            // of the owner's transcript — `isMeta` is what the read path
+            // filters on.
+            let metadata = if req.hidden_prompt {
                 let mut value: serde_json::Value = metadata
                     .as_deref()
                     .and_then(|m| serde_json::from_str(m).ok())
                     .unwrap_or_else(|| serde_json::json!({}));
                 value["isMeta"] = serde_json::json!(true);
-                if req.hidden_prompt {
-                    value["hiddenPrompt"] = serde_json::json!(true);
-                } else {
-                    value["autoContinue"] = serde_json::json!(true);
-                }
+                value["hiddenPrompt"] = serde_json::json!(true);
                 Some(value.to_string())
             } else {
                 metadata
@@ -1970,7 +1968,11 @@ impl Runner {
             // ephemeral <system-reminder> (seeded into run_loop's pending
             // reminders) — never persisted to the session.
         }
-        let mention_context = req.mention_context.clone();
+        // The auto-continue nudge rides the same rail as the briefing.
+        let mention_context = [req.mention_context.clone(), continuation.then(|| req.prompt.clone())]
+            .into_iter()
+            .flatten()
+            .reduce(|a, b| format!("{a}\n\n{b}"));
 
         // Create result channel
         let (tx, rx) = mpsc::channel(100);
@@ -4578,13 +4580,22 @@ async fn run_loop(
         // a phrase the runner matches — "stop searching and tell me" was not
         // on the list, and the owner was ignored three times (2026-09-18).
 
-        // Background-results context (the only survivor of the old steering pipeline).
-        let proactive_context = steering::format_proactive_items(&proactive_items);
+        // Every piece of steering below joins `pending_stream_reminders`, the one
+        // channel: it rides this call (and its retry) and is gone once the call
+        // lands (R8). `attach_stream_reminders` puts it into the call, right
+        // before the request is built — nothing steering-shaped is stored or
+        // written into the system prompt.
 
-        // Hook: steering.generate — apps inject additional steering. Delivered as
-        // ephemeral <system-reminder> messages in this turn's stream (R8), re-evaluated
-        // each iteration like the old suffix injection (never persisted to the session).
-        let mut hook_reminders: Vec<String> = Vec::new();
+        // Background results (proactive inbox), drained on the turn's first call.
+        let proactive_context = steering::format_proactive_items(&proactive_items);
+        if !proactive_context.is_empty() {
+            pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+                "[Background Results]\n{}",
+                proactive_context.join("\n")
+            )));
+        }
+
+        // Hook: steering.generate — apps inject steering, re-evaluated each iteration.
         if hooks.has_subscribers("steering.generate") {
             let payload = serde_json::to_vec(&crate::hooks::SteeringGeneratePayload {
                 session_id: session_id.to_string(),
@@ -4596,67 +4607,32 @@ async fn run_loop(
                 serde_json::from_slice::<crate::hooks::SteeringGenerateResponse>(&result)
             {
                 for d in resp.directives {
-                    hook_reminders.push(if d.label.is_empty() {
+                    pending_stream_reminders.push(steering::wrap_system_reminder(&if d.label.is_empty() {
                         d.content
                     } else {
                         format!("{}: {}", d.label, d.content)
-                    });
+                    }));
                 }
             }
         }
 
-        // Continuation steering, plugin affinity, and the research-mode nudge all moved
-        // to the message-stream reminder channel (R8).
-
-        // Convert ChatMessage to ai::Message, then append any app-injected steering as
-        // ephemeral <system-reminder> turns for this iteration only (R8).
-        let mut ai_messages = convert_messages(&window_messages);
-        // Reminders are collected first, then INSERTED BEFORE a fresh user ask
-        // rather than appended after it. When the transcript's tail is the
-        // user's just-sent message, anything placed after it becomes the last
-        // thing the model reads — and weak models answer the tail: a 39-char
-        // ask followed by 1.3k of recalled memory got the ASK echoed back as
-        // text instead of executed. Mid-run (tail = tool results), appending
-        // at the end is correct — a correction should be the freshest signal.
-        let mut reminder_msgs: Vec<Message> = Vec::new();
-        for text in hook_reminders {
-            reminder_msgs.push(Message {
-                role: "user".to_string(),
-                content: steering::wrap_system_reminder(&text),
-                ..Default::default()
-            });
-        }
-        // Queued stream reminders ride THIS call only, then vanish (R8:
-        // reminders are ephemeral — never persisted, never re-sent).
-        for content in pending_stream_reminders.drain(..) {
-            reminder_msgs.push(Message {
-                role: "user".to_string(),
-                content,
-                ..Default::default()
-            });
-        }
-
         // Session wake rail (R3): payloads that arrived while this run was
-        // busy are heard mid-work — injected here, stamped delivered at
-        // injection (same ephemerality contract as every stream reminder).
+        // busy are heard mid-work — they join this call's stream reminders,
+        // stamped delivered at injection (same ephemerality contract).
         let wake_entries = steering::drain_wakes(&session_key);
         if !wake_entries.is_empty() {
-            let ids: Vec<i64> = wake_entries.iter().map(|e| e.wake_id).collect();
+            let ids: Vec<i64> = wake_entries.iter().filter_map(|e| e.wake_id).collect();
             {
                 let mut taint = run_taint.lock().unwrap();
                 for entry in &wake_entries {
                     taint.extend(entry.taint.iter().copied());
                 }
             }
-            for entry in wake_entries {
-                reminder_msgs.push(Message {
-                    role: "user".to_string(),
-                    content: entry.content,
-                    ..Default::default()
-                });
-            }
-            if let Err(e) = store.engine_complete_events(&ids, chrono::Utc::now().timestamp()) {
-                warn!(error = %e, "wake: failed to stamp mid-run delivery");
+            pending_stream_reminders.extend(wake_entries.into_iter().map(|e| e.content));
+            if !ids.is_empty() {
+                if let Err(e) = store.engine_complete_events(&ids, chrono::Utc::now().timestamp()) {
+                    warn!(error = %e, "wake: failed to stamp mid-run delivery");
+                }
             }
         }
 
@@ -4665,15 +4641,11 @@ async fn run_loop(
         // results and its own "on it, I'll let you know") and keeps going down
         // that path instead of answering what was just asked. Claude Code has
         // no such reminder because its transcript is compacted and its model
-        // strong; here the first iteration says it outright. Ephemeral.
+        // strong; here the first iteration says it outright.
         if iteration == 1 {
             if let Some(text) = steering::latest_message_reminder(&all_messages) {
                 info!(session_id, "steering: latest-message-is-the-task reminder injected");
-                reminder_msgs.push(Message {
-                    role: "user".to_string(),
-                    content: steering::wrap_system_reminder(&text),
-                    ..Default::default()
-                });
+                pending_stream_reminders.push(steering::wrap_system_reminder(&text));
             }
         }
 
@@ -4681,46 +4653,26 @@ async fn run_loop(
         // claiming it "isn't connected" and offering to simulate — it has its full
         // toolset, it just doesn't believe it. Ground it on the first iteration with
         // a stream <system-reminder> (which weak models heed where they ignore the
-        // prompt). Ephemeral: this iteration only, never persisted. The post-tool-round
-        // reminder registry can't cover this — it fires too late to shape the first reply.
+        // prompt). The post-tool-round reminder registry can't cover this — it fires
+        // too late to shape the first reply.
         if iteration == 1 && steering::channel_is_external(channel) {
-            reminder_msgs.push(Message {
-                role: "user".to_string(),
-                content: steering::wrap_system_reminder(&format!(
-                    "You are fully connected on the `{channel}` channel with your complete \
-                     toolset — web, files, installed plugins (call them via the `plugin` tool), \
-                     skills, and sub-agents — exactly as in any other channel. When asked to do \
-                     something, actually do it: call the real tools and report what you did with \
-                     concrete results. Never simulate, mock, describe hypothetically, or claim \
-                     you lack access — if you're unsure what's available, discover it with \
-                     `tool_search` or the `plugin` tool first."
-                )),
-                ..Default::default()
-            });
+            pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+                "You are fully connected on the `{channel}` channel with your complete \
+                 toolset — web, files, installed plugins (call them via the `plugin` tool), \
+                 skills, and sub-agents — exactly as in any other channel. When asked to do \
+                 something, actually do it: call the real tools and report what you did with \
+                 concrete results. Never simulate, mock, describe hypothetically, or claim \
+                 you lack access — if you're unsure what's available, discover it with \
+                 `tool_search` or the `plugin` tool first."
+            )));
         }
 
-        // The splice: before the fresh ask when it is the tail, else at the end.
-        if !reminder_msgs.is_empty() {
-            let insert_at = if ai_messages.last().map(|m| m.role == "user").unwrap_or(false) {
-                ai_messages.len() - 1
-            } else {
-                ai_messages.len()
-            };
-            for (i, m) in reminder_msgs.into_iter().enumerate() {
-                ai_messages.insert(insert_at + i, m);
-            }
-        }
+        let mut ai_messages = convert_messages(&window_messages);
 
         // (First-run onboarding is handled proactively + deterministically by the
         // frontend OnboardingTour — the old reactive LLM-reminder kickoff was removed so
         // there's one onboarding pathway. The `nebo-onboarding` skill remains for an
         // explicit "help me get set up" request, matched by its description.)
-
-        let proactive_text = if proactive_context.is_empty() {
-            String::new()
-        } else {
-            proactive_context.join("\n")
-        };
 
         // The governance record of a workflow run names the model that
         // actually ran it, written the moment routing resolves it.
@@ -4739,7 +4691,6 @@ async fn run_loop(
             channel: channel.to_string(),
             work_tasks: work_tasks.clone(),
             tool_doc_cache: tool_doc_cache.clone(),
-            proactive_context: proactive_text,
             user_timezone: user_timezone.clone(),
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
@@ -4873,7 +4824,9 @@ async fn run_loop(
         }
         let forced_choice = if owner_spoke_mid_turn {
             Some(ai::ToolChoice::None)
-        } else if iteration == 1 {
+        } else if iteration == 1 && !crate::goals::is_continuation_prompt(user_prompt) {
+            // A continuation has no ask of its own in the thread; the last
+            // user row is the owner's earlier message, already acted on.
             ai_messages
                 .iter()
                 .rev()
@@ -4898,15 +4851,11 @@ async fn run_loop(
                         spend_cap_wrap_up_issued = true;
                         wrap_up_turn = true;
                         warn!(session_id, spent_microcents = spent, cap_microcents = m.spend_cap_microcents, "spend cap reached: wrap-up turn");
-                        ai_messages.push(Message {
-                            role: "user".to_string(),
-                            content: steering::wrap_system_reminder(
-                                "This run has reached the owner's spending limit. This is your last turn and \
-                                 tools are unavailable: report what you have completed, what you found, and \
-                                 what remains undone, in plain words. Do not start anything new.",
-                            ),
-                            ..Default::default()
-                        });
+                        pending_stream_reminders.push(steering::wrap_system_reminder(
+                            "This run has reached the owner's spending limit. This is your last turn and \
+                             tools are unavailable: report what you have completed, what you found, and \
+                             what remains undone, in plain words. Do not start anything new.",
+                        ));
                     }
                     SpendCapVerdict::Stop => {
                         turn_exit_reason = crate::guardrails::Exit::SpendCapReached;
@@ -4920,12 +4869,11 @@ async fn run_loop(
         // one reminder, the model answers.
         if let Some(text) = runaway_wrap_up.take() {
             wrap_up_turn = true;
-            ai_messages.push(Message {
-                role: "user".to_string(),
-                content: steering::wrap_system_reminder(&text),
-                ..Default::default()
-            });
+            pending_stream_reminders.push(steering::wrap_system_reminder(&text));
         }
+
+        // This call's steering, attached in the one place it enters a call.
+        attach_stream_reminders(&mut ai_messages, &pending_stream_reminders);
 
         // Build ChatRequest
         let chat_req = ChatRequest {
@@ -5621,6 +5569,8 @@ async fn run_loop(
                 }))
                 .await;
         }
+        // The call landed: its stream reminders are spent.
+        pending_stream_reminders.clear();
 
         let stream_total_ms = t_stream_start.elapsed().as_millis() as u64;
         let iter_total_ms = t_iter_start.elapsed().as_millis() as u64;
@@ -8205,20 +8155,15 @@ async fn run_loop(
             turn_exit_reason = crate::guardrails::Exit::MaxIterations { done: final_iteration, max: max_iterations };
             info!(session_id, exit_reason = %turn_exit_reason, "budget exhausted — requesting summary");
 
-            // Append a user message requesting summary, then make one toolless API call
-            let _ = sessions.append_message(
-                session_id, "user",
-                "You've reached the maximum number of tool-calling iterations allowed. \
-                 Please provide a final response summarizing what you've found and accomplished so far, \
-                 without calling any more tools.",
-                None, None, None,
-            );
+            // One toolless call asked for the summary on the one steering channel.
+            pending_stream_reminders.push(steering::wrap_system_reminder(BUDGET_SUMMARY_REQUEST));
 
             // Pick first available provider for the summary call
             let prov_lock = providers.read().await;
             if let Some(summary_provider) = prov_lock.first() {
-                let summary_messages =
+                let mut summary_messages =
                     convert_messages(&sessions.get_messages(session_id).unwrap_or_default());
+                attach_stream_reminders(&mut summary_messages, &pending_stream_reminders);
 
                 let summary_req = ChatRequest {
                     tool_choice: Default::default(),
@@ -8722,11 +8667,15 @@ pub(crate) fn unanswered_mid_turn_message(messages: &[ChatMessage]) -> bool {
     let Some(at) = messages.iter().rposition(|m| m.role == "user" && arrived_mid_turn(m).is_some()) else {
         return false;
     };
-    !messages[at + 1..].iter().any(|m| {
-        m.role == "assistant"
-            && !m.content.trim().is_empty()
-            && m.tool_calls.as_deref().is_none_or(|tc| tc.is_empty() || tc == "[]" || tc == "null")
-    })
+    !messages[at + 1..].iter().any(is_worded_reply)
+}
+
+/// An assistant row that answers in words. One that only calls tools
+/// (narration or not) is not a reply; the model is still on its old plan.
+fn is_worded_reply(m: &ChatMessage) -> bool {
+    m.role == "assistant"
+        && !m.content.trim().is_empty()
+        && m.tool_calls.as_deref().is_none_or(|tc| tc.is_empty() || tc == "[]" || tc == "null")
 }
 
 /// How a message the owner typed mid-turn reads to the model. Claude Code's
@@ -8743,10 +8692,55 @@ pub(crate) fn frame_mid_turn_message(words: &str, via: &str) -> String {
     )
 }
 
+/// What the post-loop summary call asks for when the iteration budget ran
+/// out mid-task. Steering: it rides that one call. Older builds stored it as
+/// a user row, which history load drops by this exact text.
+pub(crate) const BUDGET_SUMMARY_REQUEST: &str = "You've reached the maximum number of tool-calling \
+iterations allowed. Please provide a final response summarizing what you've found and accomplished \
+so far, without calling any more tools.";
+
+/// The one place steering enters a model call. `reminders` is the run's
+/// `pending_stream_reminders` — every reminder, nudge and briefing is queued
+/// there and nowhere else. Each rides as a user-role `<system-reminder>`
+/// message, once (a hook re-evaluated on a retried call queues the same text
+/// again), INSERTED BEFORE a fresh user ask rather than after it: when the
+/// transcript's tail is the user's just-sent message, anything placed after
+/// it becomes the last thing the model reads — and weak models answer the
+/// tail (a 39-char ask followed by 1.3k of recalled memory got the ASK echoed
+/// back as text instead of executed). Mid-run (tail = tool results), appending
+/// at the end is correct — a correction should be the freshest signal.
+fn attach_stream_reminders(messages: &mut Vec<Message>, reminders: &[String]) {
+    let mut seen = HashSet::new();
+    let batch: Vec<Message> = reminders
+        .iter()
+        .filter(|r| seen.insert(r.as_str()))
+        .map(|content| Message {
+            role: "user".to_string(),
+            content: content.clone(),
+            ..Default::default()
+        })
+        .collect();
+    let at = if messages.last().is_some_and(|m| m.role == "user") {
+        messages.len() - 1
+    } else {
+        messages.len()
+    };
+    messages.splice(at..at, batch);
+}
+
 pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
+    // A message the owner typed mid-turn is framed until it is answered in
+    // words; after that it is only their words (steering is per turn).
+    let mut answered = vec![false; messages.len()];
+    let mut reply_seen = false;
+    for (i, m) in messages.iter().enumerate().rev() {
+        answered[i] = reply_seen;
+        reply_seen |= is_worded_reply(m);
+    }
     messages
         .iter()
-        .filter_map(|msg| {
+        .enumerate()
+        .filter_map(|(i, msg)| {
             // Skip empty messages
             if msg.content.is_empty()
                 && msg.tool_calls.as_ref().map_or(true, |tc| tc.is_empty())
@@ -8795,11 +8789,11 @@ pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
                 Some(from_attachments)
             };
             // A message the owner sent while the turn was running is stored as
-            // their words; the model gets it framed: it arrived mid-work and
-            // they are waiting on it.
+            // their words; until it is answered the model gets it framed: it
+            // arrived mid-work and they are waiting on it.
             let content = match arrived_mid_turn(msg) {
-                Some(via) => frame_mid_turn_message(&msg.content, &via),
-                None => msg.content.clone(),
+                Some(via) if !answered[i] => frame_mid_turn_message(&msg.content, &via),
+                _ => msg.content.clone(),
             };
 
             Some(Message {
@@ -9744,9 +9738,9 @@ mod tests {
         assert_eq!(live_session_under(&turns, activity).as_deref(), Some(activity), "the key itself");
         assert_eq!(live_session_under(&turns, "agent:a:workflow:t"), None, "a shared prefix is not a session under it");
         assert!(session_is_busy(&turns, "agent:a:workflow:t1"), "busy by the turn's key");
-        steering::push_wake(activity, steering::WakeEntry { wake_id: 7, content: "11am".into(), taint: Default::default() });
+        steering::push_wake(activity, steering::WakeEntry { wake_id: Some(7), content: "11am".into(), taint: Default::default() });
         let drained = steering::drain_wakes("agent:a:workflow:t1");
-        assert_eq!(drained.iter().map(|w| w.wake_id).collect::<Vec<_>>(), [7]);
+        assert_eq!(drained.iter().map(|w| w.wake_id).collect::<Vec<_>>(), [Some(7)]);
         assert!(steering::drain_wakes(activity).is_empty(), "drained once");
     }
 
@@ -10086,8 +10080,14 @@ mod tests {
         reply.role = "assistant".into();
         assert!(unanswered_mid_turn_message(&[mid.clone()]));
         assert!(unanswered_mid_turn_message(&[mid.clone(), narrating.clone()]));
-        assert!(!unanswered_mid_turn_message(&[mid.clone(), narrating, reply]));
+        assert!(!unanswered_mid_turn_message(&[mid.clone(), narrating.clone(), reply.clone()]));
         assert!(!unanswered_mid_turn_message(&[row("hello", None)]));
+        // The framing is steering: it rides only until the message is answered.
+        // Every later turn reads the owner's words alone.
+        let pending = convert_messages(&[mid.clone(), narrating.clone()]);
+        assert!(pending[0].content.starts_with("The owner sent a new message"), "{}", pending[0].content);
+        let answered = convert_messages(&[mid, narrating, reply]);
+        assert_eq!(answered[0].content, "stop reading");
     }
 
     #[test]
