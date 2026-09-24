@@ -830,6 +830,21 @@ jobs:
       # only reaches the top-level installer + nebo.exe). Unsigned sidecars trip
       # SmartScreen/Defender when extracted and run. This mirrors the macOS
       # inside-out signing of the nested obscura/obscura-worker Mach-O executables.
+      - name: .NET SDK for the signing tool (no admin needed)
+        # azure/trusted-signing-action installs its `sign` CLI as a .NET tool,
+        # which needs an SDK; the house Windows box has only the runtime
+        # ("No .NET SDKs were found", v0.15.0). A portable SDK beside the
+        # runner, like pwsh7 above, installed once and reused.
+        shell: cmd
+        run: |
+          set DOTNET_DIR=%RUNNER_TEMP%\..\..\dotnet-sdk
+          if not exist "%DOTNET_DIR%\dotnet.exe" (
+            pwsh -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; Invoke-WebRequest -Uri https://dot.net/v1/dotnet-install.ps1 -OutFile dotnet-install.ps1; ./dotnet-install.ps1 -Channel 8.0 -InstallDir '%DOTNET_DIR%' -NoPath; Remove-Item dotnet-install.ps1"
+          )
+          echo DOTNET_ROOT=%DOTNET_DIR%>> "%GITHUB_ENV%"
+          echo %DOTNET_DIR%>> "%GITHUB_PATH%"
+          "%DOTNET_DIR%\dotnet.exe" --list-sdks
+
       - name: Sign Obscura sidecars (Authenticode)
         if: vars.AZURE_SIGNING_ENABLED == 'true'
         uses: azure/trusted-signing-action@v1
@@ -917,6 +932,21 @@ jobs:
         run: |
           cp release-artifacts/* . 2>/dev/null || true
           rm -rf release-artifacts
+
+      - name: .NET SDK for the signing tool (no admin needed)
+        # azure/trusted-signing-action installs its `sign` CLI as a .NET tool,
+        # which needs an SDK; the house Windows box has only the runtime
+        # ("No .NET SDKs were found", v0.15.0). A portable SDK beside the
+        # runner, like pwsh7 above, installed once and reused.
+        shell: cmd
+        run: |
+          set DOTNET_DIR=%RUNNER_TEMP%\..\..\dotnet-sdk
+          if not exist "%DOTNET_DIR%\dotnet.exe" (
+            pwsh -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; Invoke-WebRequest -Uri https://dot.net/v1/dotnet-install.ps1 -OutFile dotnet-install.ps1; ./dotnet-install.ps1 -Channel 8.0 -InstallDir '%DOTNET_DIR%' -NoPath; Remove-Item dotnet-install.ps1"
+          )
+          echo DOTNET_ROOT=%DOTNET_DIR%>> "%GITHUB_ENV%"
+          echo %DOTNET_DIR%>> "%GITHUB_PATH%"
+          "%DOTNET_DIR%\dotnet.exe" --list-sdks
 
       - name: Sign binaries (Authenticode)
         uses: azure/trusted-signing-action@v1
