@@ -53,10 +53,11 @@ pub enum TurnExit {
         steps: u32,
     },
     SpendCap,
-    /// A tool ended the turn. WP1.2 adds the owner need it carries once
-    /// #237 (`types::OwnerNeed`) is on main.
+    /// A tool ended the turn, with what only the owner can supply when the
+    /// tool named it.
     TerminalTool {
         notice: String,
+        need: Option<types::OwnerNeed>,
     },
     ProviderFailed(String),
     Refused(String),
