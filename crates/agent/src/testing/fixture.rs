@@ -57,6 +57,19 @@ pub struct Interrupt {
     /// The message text, for `message`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub content: String,
+    /// The owner turn (1-based) it fires in. Default: the first, so a job
+    /// set up by an earlier turn (a `/goal`, a helper launch) can still be
+    /// interrupted mid-way through a later one.
+    #[serde(default = "first_turn", skip_serializing_if = "is_first_turn")]
+    pub turn: usize,
+}
+
+fn first_turn() -> usize {
+    1
+}
+
+fn is_first_turn(turn: &usize) -> bool {
+    *turn == 1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,7 +107,11 @@ pub struct ResponseBudget {
     pub rationale: String,
 }
 
+/// Strict: an unknown section name (`conversation:` for `recovery:`) used to
+/// drop its assertions without a word, and a critical assertion nobody runs
+/// can never fail.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PromptAssertions {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub first_call: Vec<Assertion>,
@@ -119,6 +136,7 @@ impl PromptAssertions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Assertion {
     pub id: String,
     pub text: String,
@@ -142,6 +160,7 @@ pub struct Assertion {
 /// no way to select a call, is a fixture-authoring error — the run fails with
 /// a diagnostic, it never falls open to the judge.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Check {
     /// 1-based tool-call ordinal to inspect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -181,6 +200,15 @@ pub struct Check {
     /// "not a valid install code", "timed out".
     #[serde(default, deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
     pub no_error_contains: Vec<String>,
+    /// Regex that must match the run's reply text: every owner turn's
+    /// streamed reply joined, with the harness's card notes. The way to pin
+    /// what was said: a question asked, a fact reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_matches: Option<String>,
+    /// Regex that must NOT match the reply text: "What's 'it'?", a result
+    /// the employee could not have had, steering words echoed back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_not_matches: Option<String>,
 }
 
 fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {

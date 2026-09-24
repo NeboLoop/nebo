@@ -4,7 +4,7 @@
 //! them `rm -rf`ing it in teardown — and two more creating and deleting the
 //! same employee. Nothing about a single-file run says so; it only shows up
 //! the first time two fixtures run at once, as work deleted underneath a run
-//! that was passing. This test reads both suites and says it out loud: after
+//! that was passing. This test reads the pooled suites and says it out loud: after
 //! [`scratch::bind`], no two fixture runs name the same directory, the same
 //! file or the same employee, and no teardown reaches outside its own scratch.
 
@@ -15,7 +15,7 @@ use super::fixture::{self, Fixture};
 use super::scratch;
 
 /// The suites the gate runs, and the ones a pool would run first.
-const SUITES: [&str; 2] = ["suites/error-correction.yaml", "suites/smoke.yaml"];
+const SUITES: [&str; 3] = ["suites/error-correction.yaml", "suites/smoke.yaml", "suites/turn-controller.yaml"];
 
 /// Two runs is enough to prove runs of one fixture are separated too.
 const RUNS: [&str; 2] = ["run-1", "run-2"];

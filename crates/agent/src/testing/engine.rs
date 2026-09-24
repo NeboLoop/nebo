@@ -120,8 +120,10 @@ pub async fn run_live(
 
         info!(fixture = %fixture.id, run = %run_id, "starting live test run");
 
-        let result =
-            run_single(&ws_url, fixture, &run_id, model, system_override.as_deref()).await;
+        let result = match with_agent_id(fixture, server).await {
+            Ok(bound) => run_single(&ws_url, &bound, &run_id, model, system_override.as_deref()).await,
+            Err(e) => Err(e),
+        };
 
         // Run teardown commands after each run (even if the run failed)
         for cmd in &fixture.teardown {
@@ -311,11 +313,9 @@ async fn run_single(
                             let args = event["data"]["input"].clone();
                             pending_tool = Some((tool_name, args, Instant::now()));
                             tool_starts += 1;
-                            if turn_idx == 0 {
-                                for (n, it) in fixture.interrupts.iter().enumerate() {
-                                    if it.after_tool_calls == tool_starts {
-                                        send_interrupt(&mut ws, it, &session_id, &msg_data, &fixture.id, run_id, n).await?;
-                                    }
+                            for (n, it) in fixture.interrupts.iter().enumerate() {
+                                if it.turn == turn_idx + 1 && it.after_tool_calls == tool_starts {
+                                    send_interrupt(&mut ws, it, &session_id, &msg_data, &fixture.id, run_id, n).await?;
                                 }
                             }
                         }
@@ -490,6 +490,39 @@ async fn run_single(
         grade: None,
         failure_reason: None,
     })
+}
+
+/// The fixture with its employee named by id. A fixture that hires its own
+/// employee in setup knows only the name it gave (`records-clerk-{{tag}}`),
+/// and the chat payload takes an id, so the name is looked up once setup has
+/// run. An id is kept as it is.
+async fn with_agent_id(fixture: &Fixture, server: &str) -> Result<Fixture, String> {
+    let mut bound = fixture.clone();
+    let Some(agent) = fixture.agent.as_deref() else {
+        return Ok(bound);
+    };
+    let url = format!("http://{server}/api/v1/agents");
+    let list: Value = reqwest::get(&url)
+        .await
+        .map_err(|e| format!("list employees: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("list employees: {e}"))?;
+    let id = agent_id_in(&list, agent).ok_or_else(|| format!("no employee with the id or name `{agent}`"))?;
+    bound.agent = Some(id);
+    Ok(bound)
+}
+
+/// The id of the employee in a `GET /agents` listing whose id, or failing
+/// that whose name, is `agent`.
+fn agent_id_in(list: &Value, agent: &str) -> Option<String> {
+    let agents = list["agents"].as_array()?;
+    agents
+        .iter()
+        .find(|a| a["id"].as_str() == Some(agent))
+        .or_else(|| agents.iter().find(|a| a["name"].as_str() == Some(agent)))
+        .and_then(|a| a["id"].as_str())
+        .map(str::to_string)
 }
 
 /// Apply prompt overrides by replacing STRAP tool doc sections.
@@ -795,5 +828,22 @@ mod session_filter_tests {
             assert!(!is_progress(Some(traffic)), "{traffic} is not progress");
         }
         assert!(!is_progress(None));
+    }
+}
+
+#[cfg(test)]
+mod agent_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn an_employee_is_found_by_id_then_by_name() {
+        let list = json!({ "agents": [
+            { "id": "a1", "name": "records-clerk-1f2e" },
+            { "id": "records-clerk-1f2e", "name": "odd" },
+        ]});
+        assert_eq!(agent_id_in(&list, "a1").as_deref(), Some("a1"));
+        assert_eq!(agent_id_in(&list, "records-clerk-1f2e").as_deref(), Some("records-clerk-1f2e"), "an id wins over a name");
+        assert_eq!(agent_id_in(&list, "odd").as_deref(), Some("records-clerk-1f2e"));
+        assert_eq!(agent_id_in(&list, "nobody"), None);
     }
 }
