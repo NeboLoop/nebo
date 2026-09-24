@@ -1,0 +1,62 @@
+id: job-edit-surfaces-only-new-needs
+name: "Editing the job surfaces only the added needs, not the whole list again"
+description: |
+  PRD-Permissions §4.3 / §7 (Growth): "Editing the job runs the step again.
+  Only new needs are surfaced, in one line." Technical design §2.12.6:
+  "Editing the job runs the step again and surfaces only the added needs, in
+  one line, in the same places." The needs step (`tools::needs::
+  work_out_needs`) is the same one hire, chat creation and the builder use;
+  re-running it on a job edit must diff against what the employee already
+  holds, not re-ask for consent to things it was already granted at
+  creation — repeating the whole list on every edit is exactly the kind of
+  noise PRD-Permissions §6 ("near zero asks... trending to near zero") is
+  built to avoid.
+  An employee already has mail-reading and mail-sending as its job (granted
+  at creation). The owner asks it to also start managing the calendar. The
+  right behaviour names only the calendar capability as new — it doesn't
+  re-state or re-ask about the mail capabilities it already has.
+target_component: permissions
+
+agent: "order-support-{{tag}}"
+
+setup:
+  - "curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"order-support-{{tag}}\"}' > /dev/null"
+teardown:
+  - "python3 -c \"import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'; ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','').startswith('order-support-{{tag}}')]; [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for i in ids]\""
+
+conversation:
+  - role: user
+    content: "This employee's job today is reading our support inbox and replying to customers by email. I'd like to also have it put follow-up calls on our calendar when a customer asks for one."
+  - role: user
+    content: "Yes, add that."
+
+tool_config:
+  agent:
+    enabled: true
+  message:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: names-only-the-new-capability
+      text: "The reply states, in one line, only the newly needed capability — managing the calendar — and does not re-list or re-ask about reading the support inbox or sending email, which the job already has"
+      severity: critical
+      check:
+        reply_not_matches: "(?i)(will (also |still )?(be able to |)read (your |the )?(support )?inbox|will (also |still )?send (email|replies)|reading (your |the )?inbox and sending)"
+  recovery:
+    - id: confirms-the-addition
+      text: "After the owner's yes, the job edit is applied and the employee now has the calendar capability"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most 4 tool calls"
+      severity: important
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 2000
+  narrative: |
+    "Adding: putting follow-up calls on your calendar. Reading and replying
+    to your support inbox stays as it is. Add it?" — one new line, not a
+    restatement of the whole job.
