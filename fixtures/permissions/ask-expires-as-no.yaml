@@ -1,0 +1,20 @@
+id: ask-expires-as-no
+name: "An unanswered ask expires as No, never as a silent yes"
+description: |
+  PRD-Permissions §4.5 / §7 (Unattended): "an ask that goes unanswered for a
+  set time (default 72 h) expires as a 'No' and the employee is told. It
+  never auto-approves." Technical design §2.12.5: "the sweep runs on the
+  scheduler tick and at boot." §2.12.4's parallel case — both judges down —
+  is explicit that following Claude Code a call proceeds only when marked
+  unreviewed, never silently allowed; expiry is the same discipline applied
+  to an owner-facing ask instead of a judge call.
+  This proof creates a `permission_asks` row, advances the clock past the
+  company's expiry window (default 72 h) without an answer, runs the sweep,
+  and asserts the row's status becomes `expired`/`no` (never `allowed`),
+  the parked step's stored call is told it was refused, and the employee's
+  next step is a plain refusal it can plan around rather than a repeat ask
+  or a silent retry.
+  A clock-driven sweep, not a conversation, so it is a deterministic proof.
+target_component: permissions
+proof: harness::permissions::proof::ask_expires_as_no
+conversation: []
