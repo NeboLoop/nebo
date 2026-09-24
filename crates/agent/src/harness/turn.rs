@@ -1471,8 +1471,6 @@ mod tests {
         Cut(&'static str),
         /// A dropped connection.
         Transient,
-        /// The provider says the request is over the window.
-        Overflow,
         /// The step, with what the call cost in microdollars.
         Paid(Box<Step>, i64),
         /// Run the hook while the call is in flight, then answer.
@@ -1535,7 +1533,6 @@ mod tests {
             ),
             Step::Cut(text) => (vec![StreamEvent::text(text)], Some("max_tokens")),
             Step::Transient => return Err(ai::ProviderError::Request("connection reset".into())),
-            Step::Overflow => return Err(ai::ProviderError::ContextOverflow),
             Step::Paid(inner, microdollars) => {
                 let (mut list, stop) = answer(*inner)?;
                 list.push(StreamEvent::usage(ai::UsageInfo {
