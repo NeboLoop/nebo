@@ -81,6 +81,12 @@ pub struct ToolResult {
     /// for every producer; never a second text format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
+    /// On a terminal result: what only the owner can supply before this can
+    /// work (a plugin, an account on one), named by the tool that knows it.
+    /// A workflow run blocked on it tells the owner from this, never from
+    /// `content`'s words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub need: Option<types::OwnerNeed>,
 }
 
 impl ToolResult {
@@ -122,6 +128,12 @@ impl ToolResult {
     /// and surfaces it to the app as a "Work" artifact.
     pub fn with_image_url(mut self, url: impl Into<String>) -> Self {
         self.image_url = Some(url.into());
+        self
+    }
+
+    /// Name what only the owner can supply (builder; chains off `terminal`).
+    pub fn with_need(mut self, need: types::OwnerNeed) -> Self {
+        self.need = Some(need);
         self
     }
 

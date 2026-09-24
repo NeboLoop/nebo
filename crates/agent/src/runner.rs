@@ -7201,7 +7201,7 @@ async fn run_loop(
             // Terminal tool error (auth/permission/connection) → end the turn after
             // this batch and surface to the user, instead of feeding it back for the
             // model to retry/improvise (the death-spiral fix; FRAMES.md Phase 1).
-            let mut terminal_error: Option<String> = None;
+            let mut terminal_error: Option<(String, Option<types::OwnerNeed>)> = None;
             let mut same_error_stop: Option<(String, String)> = None;
             // Highest-signal rate-limit status seen this iteration (429/403) — feeds the
             // RateLimit reminder so the model backs off instead of hammer-retrying a host.
@@ -7238,14 +7238,14 @@ async fn run_loop(
                 // workflows: there's no human to ask or to hit stop, so a dead
                 // account must fail the run cleanly, not spiral. (FRAMES Phase 1.)
                 if result.terminal && terminal_error.is_none() {
-                    terminal_error = Some(result.content.clone());
+                    terminal_error = Some((result.content.clone(), result.need.clone()));
                 }
                 if matches!(result.http_status, Some(429) | Some(403)) {
                     iteration_rate_limited = result.http_status;
                 }
                 // Capture pre-truncation snapshots for the summarizer (only name + short content)
                 summary_tool_calls.push(tc.clone());
-                summary_tool_results.push(ToolResult { payload: None,
+                summary_tool_results.push(ToolResult { payload: None, need: None,
                     content: crate::runner::truncate_str(&result.content, 300).to_string(),
                     is_error: result.is_error,
                     image_url: None,
@@ -7606,11 +7606,11 @@ async fn run_loop(
                     .await;
                 break;
             }
-            if let Some(msg) = terminal_error {
+            if let Some((msg, need)) = terminal_error {
                 warn!(session_id, iteration, "terminal tool error — ending run");
                 turn_exit_reason = crate::guardrails::Exit::TerminalToolError;
                 let _ = tx
-                    .send(StreamEvent::control_notice(msg, "terminal_tool_error"))
+                    .send(StreamEvent::control_notice(msg, "terminal_tool_error").with_owner_need(need))
                     .await;
                 break;
             }

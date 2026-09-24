@@ -486,6 +486,11 @@ pub async fn execute_workflow(
             // A standing outcome (an exit, a terminal refusal) ends the run
             // cleanly with its reason — never a failure.
             Err(e) if let Some(reason) = e.standing_outcome() => {
+                // What the owner must supply, when the refusing tool named it:
+                // kept on the run as data for whoever tells the owner.
+                if let Some(need) = e.owner_need() {
+                    let _ = store.set_workflow_run_owner_need(&run_id, need);
+                }
                 total_tokens += activity_spent;
                 let completed_at = chrono::Utc::now().timestamp();
                 let _ = store.create_activity_result(
@@ -730,7 +735,7 @@ pub(crate) async fn execute_activity_with_retry(
             Err(
                 e @ (WorkflowError::Exited(_)
                 | WorkflowError::Cancelled
-                | WorkflowError::Blocked(_)
+                | WorkflowError::Blocked(..)
                 | WorkflowError::AwaitingApproval { .. }),
             ) => return Err(e),
             Err(e) if attempt + 1 < max_attempts => {
