@@ -18,9 +18,9 @@ use tools::{Origin, Registry, ToolContext, ToolResult};
 use types::keyparser;
 
 use crate::concurrency::ConcurrencyController;
+use crate::harness::conversation::convert_messages;
 use crate::runner::{
-    RunProgress, WorkflowMode, WorkflowPark, convert_messages, desktop_evidence, simple_hash,
-    truncate_str,
+    RunProgress, WorkflowMode, WorkflowPark, desktop_evidence, simple_hash, truncate_str,
 };
 use crate::session::SessionManager;
 

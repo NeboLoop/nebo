@@ -87,10 +87,7 @@ impl EndCheck for WorkflowContractCheck {
 }
 
 fn continue_with(text: String) -> EndVerdict {
-    EndVerdict::Continue(TurnEvent::EndCheckContinue {
-        check: WORKFLOW_CONTRACT,
-        text,
-    })
+    EndVerdict::Continue(TurnEvent::WorkflowContract(text))
 }
 
 /// Tools with at least one call whose result was not an error.
@@ -148,7 +145,7 @@ pub fn registry(mode: &TurnMode, checks: EndChecks) -> Vec<Box<dyn EndCheck>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::events::reminder_for;
+    use crate::harness::events::attachment_for;
 
     fn end(transcript: &[ai::Message], step: u32) -> TurnEnd<'_> {
         TurnEnd {
@@ -223,8 +220,9 @@ mod tests {
         let EndVerdict::Continue(ev) = check.check(&end(&[], 1)).await else {
             panic!("under min_iterations continues");
         };
-        let (name, _, text) = reminder_for(&ev).unwrap();
-        assert_eq!(name, "workflow_contract");
+        let row = attachment_for(&ev).unwrap();
+        let text = row.text;
+        assert_eq!(row.kind, "workflow_contract");
         assert!(text.contains("at least 2 rounds"), "{text}");
 
         // Enough rounds, but the required call failed: continue.
@@ -232,7 +230,7 @@ mod tests {
         let EndVerdict::Continue(ev) = check.check(&end(&failed, 2)).await else {
             panic!("a failed required call is not the effect");
         };
-        assert!(reminder_for(&ev).unwrap().2.contains("send_mail"));
+        assert!(attachment_for(&ev).unwrap().text.contains("send_mail"));
 
         // The required call landed: the turn may end.
         let landed = [

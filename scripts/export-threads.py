@@ -46,6 +46,17 @@ VM_PUSH = ("COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -C {src} -cz {s
            "limactl shell ci -- bash -c \"mkdir -p ~/harness-replays && rm -rf ~/harness-replays/{set} && "
            "tar -xz -C ~/harness-replays\"'")
 CONTINUATION_PREFIX = "Continue — your previous response committed to more work that isn't done yet:"
+# User-role rows the owner never typed: a helper's brief (orchestrator.rs
+# `agent_type_prefix`) and the budget-exhausted summary request older builds
+# stored (runner.rs BUDGET_SUMMARY_REQUEST).
+NOT_OWNER_PREFIXES = (CONTINUATION_PREFIX, "[Execute the task using whatever tools are needed.]",
+                      "[EXPLORE agent", "[PLANNING agent",
+                      "You've reached the maximum number of tool-calling iterations allowed.")
+# An owner message that arrived mid-turn is stored framed; the owner's words
+# are what gets replayed. Current builds (runner.rs frame_mid_turn_message)
+# and older ones ("[Arrived while you were working, via web] ...").
+MID_TURN_FRAMES = (re.compile(r"^The owner sent a new message while you were working \(via [^)]*\):\n(.*?)\n\nIMPORTANT: reply to the owner now", re.S),
+                   re.compile(r"^\[Arrived while you were working, via [^\]]*\]\s*(.*)$", re.S))
 OWNER_GENERIC = "Sam Rivera"
 
 # Threads worth replaying are the owner's own: not helpers, workflows or evals.
@@ -80,13 +91,24 @@ def owner_turns(source, chat_id):
     turns = []
     for r in rows:
         text = (r.get("content") or "").strip()
-        if not text or text.startswith(CONTINUATION_PREFIX):
+        if not text or text.startswith(NOT_OWNER_PREFIXES):
             continue
         try:
             if json.loads(r.get("metadata") or "{}").get("isMeta"):
                 continue
         except (ValueError, AttributeError):
             pass
+        for frame in MID_TURN_FRAMES:
+            m = frame.match(text)
+            if m:
+                text = m.group(1).strip()
+                break
+        # Voice stores each growing transcript of one utterance as its own row
+        # ("Okay, let's say" then "Okay, let's say we built this"): keep the
+        # last. A message sent twice ("try again", "try again") is two turns.
+        if turns and len(text) > len(turns[-1]) and text.startswith(turns[-1]):
+            turns[-1] = text
+            continue
         turns.append(text)
     return turns
 

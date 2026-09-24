@@ -25,7 +25,7 @@ pub enum Origin {
     /// An anonymous visitor: a QR scan, an embedded widget, a public web
     /// chat. A stranger with a keyboard — the same standing as a phone caller.
     /// Their words are DATA; the run they reach is restricted (see
-    /// `Origin::is_outside` and the runner's `restrict_outside_origin`).
+    /// `Origin::is_outside` and the seat's `restrict_outside_origin`).
     Visitor,
 }
 

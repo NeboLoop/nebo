@@ -15,8 +15,8 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use types::NeboError;
 
-use super::events::{TurnEvent, reminder_for};
-use super::reminders::{Reminders, SessionTranscript};
+use super::events::TurnEvent;
+use super::reminders::Reminders;
 use super::turn::TurnExit;
 use super::turn_end::{EndCheck, EndVerdict, TurnEnd};
 use crate::session::SessionManager;
@@ -218,7 +218,7 @@ impl<'a> GoalStore<'a> {
             source.as_str(),
             GoalStatus::Active.as_str(),
         )?;
-        self.announce(TurnEvent::GoalSet { condition })?;
+        self.announce(TurnEvent::GoalSet(condition))?;
         Ok(AgreedGoal::from_row(row))
     }
 
@@ -275,17 +275,9 @@ impl<'a> GoalStore<'a> {
     /// calls (a slash command, an approval card, a tool call), and the next
     /// call loads the row with the rest of the conversation.
     fn announce(&self, event: TurnEvent) -> Result<(), NeboError> {
-        let Some((name, _, text)) = reminder_for(&event) else {
-            return Ok(());
-        };
         let mut reminders = Reminders::default();
-        reminders.fact(name, text);
-        reminders.attach(&SessionTranscript {
-            sessions: self.sessions,
-            session_id: self.session_id,
-        })?;
-        reminders.landed();
-        Ok(())
+        reminders.add(&event);
+        reminders.write(self.sessions, self.session_id)
     }
 }
 
@@ -558,12 +550,9 @@ impl EndCheck for GoalCheck {
             return self.pause(Pause::UnmetTooOften, Some(&reason), true);
         }
         self.record(GoalStatus::Active, Some(&reason), true);
-        EndVerdict::Continue(TurnEvent::EndCheckContinue {
-            check: GOAL_CHECK,
-            text: format!(
-                "The agreed goal isn't met yet: {reason}. Keep working toward: {}",
-                goal.condition
-            ),
+        EndVerdict::Continue(TurnEvent::GoalCheck {
+            reason,
+            condition: goal.condition,
         })
     }
 }
@@ -835,19 +824,15 @@ mod tests {
             said("user", "Send the three invoices."),
             said("assistant", "Sent invoice 1 of 3."),
         ];
-        let EndVerdict::Continue(TurnEvent::EndCheckContinue { check: name, text }) =
-            check.check(&end(&transcript, 0)).await
-        else {
+        let EndVerdict::Continue(event) = check.check(&end(&transcript, 0)).await else {
             panic!("an unmet goal continues the turn");
         };
-        assert_eq!(name, GOAL_CHECK);
+        let row = crate::harness::events::attachment_for(&event).unwrap();
+        assert_eq!(row.kind, GOAL_CHECK);
         assert_eq!(
-            text,
-            "The agreed goal isn't met yet: \"Sent invoice 1 of 3\" - two are still unsent. Keep working toward: all three invoices are sent"
+            row.text,
+            "The agreed goal isn't met yet: \"Sent invoice 1 of 3\" - two are still unsent. Keep working toward: all three invoices are sent."
         );
-        let (reminder, _, _) =
-            reminder_for(&TurnEvent::EndCheckContinue { check: name, text }).unwrap();
-        assert_eq!(reminder, "goal_check");
 
         // The check read the transcript and nothing else: no tools.
         let req = judge.seen.lock().unwrap()[0].clone();

@@ -593,7 +593,7 @@ mod tests {
                 meta(serde_json::json!({"isMeta": true, "roomBriefing": true})),
             ),
             ("user", crate::runner::BUDGET_SUMMARY_REQUEST.into(), None, None, None),
-            ("user", crate::runner::INTERRUPT_MESSAGE.into(), None, None, meta(serde_json::json!({"isMeta": true}))),
+            ("user", crate::harness::conversation::INTERRUPT_MESSAGE.into(), None, None, meta(serde_json::json!({"isMeta": true}))),
             ("user", "[Loading skill: plan]\n\nsteps".into(), None, None, meta(serde_json::json!({"isMeta": true, "skillPreload": "plan"}))),
             ("user", "[Background event — not an owner message]".into(), None, None, meta(serde_json::json!({"isMeta": true, "hiddenPrompt": true}))),
             ("user", "Thanks".into(), None, None, None),
@@ -612,7 +612,7 @@ mod tests {
             "a stored <system-reminder> loaded into history"
         );
         let contents: Vec<&str> = history.iter().map(|m| m.content.as_str()).collect();
-        for kept in ["Draft the plan", "Step one is done.", crate::runner::INTERRUPT_MESSAGE, "Thanks"] {
+        for kept in ["Draft the plan", "Step one is done.", crate::harness::conversation::INTERRUPT_MESSAGE, "Thanks"] {
             assert!(contents.contains(&kept), "conversation row dropped: {kept}");
         }
         assert!(history.iter().any(|m| m.role == "tool"), "the tool result is conversation");

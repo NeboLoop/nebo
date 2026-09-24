@@ -1450,7 +1450,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // and never a file — the fences stop execution, this
                             // stops disclosure.
                             content: if origin.is_outside() {
-                                agent::runner::scrub_outside_reply(&strip_progress_heartbeats(&comm_segment))
+                                agent::harness::seat::scrub_outside_reply(&strip_progress_heartbeats(&comm_segment))
                             } else {
                                 strip_progress_heartbeats(&comm_segment)
                             },
