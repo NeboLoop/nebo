@@ -209,6 +209,7 @@ async fn run_single(
     let mut total_cache_read = 0usize;
     let mut total_cache_creation = 0usize;
     let mut total_output_tokens = 0usize;
+    let mut turns: Vec<TurnMetrics> = Vec::new();
 
     // Send each conversation turn
     let user_turns: Vec<_> = fixture
@@ -248,6 +249,9 @@ async fn run_single(
         });
         // Tool calls started in this turn; the fixture's interrupts fire on it.
         let mut tool_starts = 0usize;
+        let turn_start = Instant::now();
+        let mut tm = TurnMetrics { turn: turn_idx + 1, ..TurnMetrics::default() };
+        let mut cancelled = false;
 
         ws.send(Message::Text(msg.to_string().into()))
             .await
@@ -301,6 +305,9 @@ async fn run_single(
                                 .as_str()
                                 .or_else(|| event["data"]["text"].as_str())
                             {
+                                if tm.first_reply_ms.is_none() && !t.trim().is_empty() {
+                                    tm.first_reply_ms = Some(turn_start.elapsed().as_millis() as u64);
+                                }
                                 all_text.push(t.to_string());
                             }
                         }
@@ -331,6 +338,8 @@ async fn run_single(
                                     .as_bool()
                                     .unwrap_or(false);
                                 let char_count = content.len();
+                                tm.tool_calls += 1;
+                                tm.tool_errors += usize::from(is_error);
 
                                 all_tool_calls.push(TracedToolCall {
                                     sequence: tool_seq,
@@ -346,18 +355,19 @@ async fn run_single(
                             }
                         }
                         Some("usage") => {
-                            if let Some(input) = event["data"]["input_tokens"].as_u64() {
-                                total_input_tokens += input as usize;
-                            }
-                            if let Some(output) = event["data"]["output_tokens"].as_u64() {
-                                total_output_tokens += output as usize;
-                            }
-                            if let Some(n) = event["data"]["cache_read_input_tokens"].as_u64() {
-                                total_cache_read += n as usize;
-                            }
-                            if let Some(n) = event["data"]["cache_creation_input_tokens"].as_u64() {
-                                total_cache_creation += n as usize;
-                            }
+                            let n = |k: &str| event["data"][k].as_u64().unwrap_or(0) as usize;
+                            let (input, output) = (n("input_tokens"), n("output_tokens"));
+                            let (read, created) = (n("cache_read_input_tokens"), n("cache_creation_input_tokens"));
+                            total_input_tokens += input;
+                            total_output_tokens += output;
+                            total_cache_read += read;
+                            total_cache_creation += created;
+                            tm.model_calls += 1;
+                            tm.input_tokens += input;
+                            tm.output_tokens += output;
+                            tm.cache_read_tokens += read;
+                            tm.cache_creation_tokens += created;
+                            tm.max_prompt_tokens = tm.max_prompt_tokens.max(input + read + created);
                         }
                         // A parked question (an install card, a connect card, a
                         // plan to approve). Nobody is at this keyboard: the card
@@ -369,6 +379,7 @@ async fn run_single(
                         // 2026-09-20.
                         Some("ask_request") => {
                             let (note, reply) = decline_card(&event);
+                            tm.cards += 1;
                             all_text.push(note);
                             if ws.send(Message::Text(reply.to_string().into())).await.is_err() {
                                 warn!(fixture = %fixture.id, run = %run_id, "could not answer a card; the run will stall");
@@ -382,6 +393,7 @@ async fn run_single(
                         // (Stadium, 2026-09-23).
                         Some("approval_request") => {
                             for (note, reply) in approve_calls(&event) {
+                                tm.approvals += 1;
                                 all_text.push(note);
                                 if ws.send(Message::Text(reply.to_string().into())).await.is_err() {
                                     warn!(fixture = %fixture.id, run = %run_id, "could not answer an approval; the run will stall");
@@ -395,6 +407,7 @@ async fn run_single(
                             if event["data"]["stop_reason"].as_str() == Some("queued_into_running_turn") {
                                 continue;
                             }
+                            tm.end = if cancelled { "cancelled" } else { "complete" }.to_string();
                             break;
                         }
                         // The stop landed. The cancelled turn still closes with
@@ -402,6 +415,7 @@ async fn run_single(
                         // it ends the NEXT turn's collection instead.
                         Some("chat_cancelled") => {
                             info!(fixture = %fixture.id, run = %run_id, "run cancelled by the fixture's interrupt");
+                            cancelled = true;
                             continue;
                         }
                         Some("chat_error")
@@ -424,6 +438,7 @@ async fn run_single(
                             warn!(fixture = %fixture.id, run = %run_id, error = %err, "run stopped by the server; keeping the partial trace");
                             cancel_run(&mut ws, &session_id).await;
                             all_text.insert(0, format!("[run stopped: {err}]\n"));
+                            tm.end = "error".to_string();
                             break;
                         }
                         _ => {}
@@ -444,6 +459,8 @@ async fn run_single(
                 }
             }
         }
+        tm.latency_ms = turn_start.elapsed().as_millis() as u64;
+        turns.push(tm);
     }
 
     let final_text = all_text.join("");
@@ -489,6 +506,8 @@ async fn run_single(
         },
         grade: None,
         failure_reason: None,
+        session_id,
+        turns,
     })
 }
 
