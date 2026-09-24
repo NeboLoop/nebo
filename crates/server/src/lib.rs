@@ -2873,7 +2873,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route(
             "/agent/mcp",
             axum::routing::post(handlers::mcp_server::agent_mcp_handler)
-                .layer(axum::middleware::from_fn(middleware::mcp_api_key_auth)),
+                .layer(axum::middleware::from_fn_with_state(
+                    middleware::McpAuth {
+                        install_key: middleware::install_key(),
+                        credentials: state.tool_credentials.clone(),
+                    },
+                    middleware::mcp_api_key_auth,
+                )),
         )
         // The OpenAI-shaped door: employees and workflows as models, behind a
         // key minted on the employee's Connect tab. Root-level because every
