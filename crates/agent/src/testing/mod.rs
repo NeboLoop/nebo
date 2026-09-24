@@ -6,5 +6,6 @@ pub mod grader;
 pub mod reporter;
 pub mod replay;
 pub mod scratch;
+pub mod tool_map;
 #[cfg(test)]
 mod isolation;
