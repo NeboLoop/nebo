@@ -18,6 +18,9 @@ pub struct CLIProvider {
     name: String,
     command: String,
     args: Vec<String>,
+    /// The Nebo server port whose `/agent/mcp` serves this CLI's tools, for
+    /// the CLIs that are wired to it (Claude Code).
+    mcp_port: Option<u16>,
 }
 
 impl CLIProvider {
@@ -34,11 +37,6 @@ impl CLIProvider {
             server_port
         };
 
-        let mcp_config = format!(
-            r#"{{"mcpServers":{{"nebo-agent":{{"type":"http","url":"http://localhost:{}/agent/mcp"}}}}}}"#,
-            port
-        );
-
         let mut args = vec![
             "--print".to_string(),
             "--verbose".to_string(),
@@ -48,8 +46,6 @@ impl CLIProvider {
             "--dangerously-skip-permissions".to_string(),
             "--tools".to_string(),
             "".to_string(), // Disable ALL built-in tools
-            "--mcp-config".to_string(),
-            mcp_config,
             "--strict-mcp-config".to_string(),
             "--allowedTools".to_string(),
             "mcp__nebo-agent__*".to_string(),
@@ -64,6 +60,7 @@ impl CLIProvider {
             name: "claude-code".to_string(),
             command: "claude".to_string(),
             args,
+            mcp_port: Some(port),
         }
     }
 
@@ -74,6 +71,7 @@ impl CLIProvider {
             name: "gemini-cli".to_string(),
             command: "gemini".to_string(),
             args: Vec::new(),
+            mcp_port: None,
         }
     }
 
@@ -84,8 +82,23 @@ impl CLIProvider {
             name: "codex-cli".to_string(),
             command: "codex".to_string(),
             args: vec!["--full-auto".to_string()],
+            mcp_port: None,
         }
     }
+}
+
+/// The MCP config that points the CLI at Nebo's `/agent/mcp`. With the run's
+/// tool credential, every tool call the CLI makes carries it, so the server
+/// executes it as that run; without one it is an outside MCP client.
+fn mcp_config(port: u16, credential: Option<&str>) -> String {
+    let mut server = serde_json::json!({
+        "type": "http",
+        "url": format!("http://localhost:{port}/agent/mcp"),
+    });
+    if let Some(credential) = credential {
+        server["headers"] = serde_json::json!({ "X-Nebo-Run-Credential": credential });
+    }
+    serde_json::json!({ "mcpServers": { "nebo-agent": server } }).to_string()
 }
 
 #[async_trait]
@@ -102,6 +115,10 @@ impl Provider for CLIProvider {
         let prompt = build_prompt_from_messages(&req.messages);
 
         let mut args = self.args.clone();
+        if let Some(port) = self.mcp_port {
+            args.push("--mcp-config".to_string());
+            args.push(mcp_config(port, req.tool_credential.as_deref()));
+        }
 
         // Add model flag if specified
         if !req.model.is_empty() && (self.name == "claude-code" || self.name == "codex-cli") {
@@ -595,6 +612,18 @@ struct ToolResultEntry {
 
 #[cfg(test)]
 mod tests {
+    // The run's credential rides every MCP call as a header; with none the
+    // CLI reaches /agent/mcp as an outside client.
+    #[test]
+    fn mcp_config_carries_the_runs_credential() {
+        let with: serde_json::Value = serde_json::from_str(&super::mcp_config(27895, Some("c-1"))).unwrap();
+        let server = &with["mcpServers"]["nebo-agent"];
+        assert_eq!(server["url"], "http://localhost:27895/agent/mcp");
+        assert_eq!(server["headers"]["X-Nebo-Run-Credential"], "c-1");
+        let without: serde_json::Value = serde_json::from_str(&super::mcp_config(1, None)).unwrap();
+        assert!(without["mcpServers"]["nebo-agent"].get("headers").is_none());
+    }
+
     use super::*;
 
     #[test]

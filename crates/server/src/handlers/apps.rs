@@ -889,6 +889,7 @@ async fn start_janus_stream(
         cache_breakpoints: vec![],
         cancel_token: Some(CancellationToken::new()),
         trace: ai::RequestTrace::new("app_llm"),
+        tool_credential: None,
     };
     provider
         .stream(&req)

@@ -123,8 +123,9 @@ pub struct AppState {
     pub update_pending: Arc<Mutex<Option<(std::path::PathBuf, String)>>>,
     /// Hook dispatcher for napp hook subscriptions
     pub hooks: Arc<napp::HookDispatcher>,
-    /// Shared MCP context for CLI provider tool calls (set by runner before each agentic loop)
-    pub mcp_context: Arc<tokio::sync::Mutex<tools::ToolContext>>,
+    /// Live per-run tool credentials: a CLI provider's /agent/mcp calls
+    /// execute as the run that issued theirs.
+    pub tool_credentials: agent::ToolCredentials,
     /// Event bus for workflow-to-workflow and system events
     pub event_bus: tools::EventBus,
     /// Event dispatcher that matches events to role subscriptions

@@ -1327,7 +1327,9 @@ pub struct Runner {
     selector: Arc<ModelSelector>,
     concurrency: Arc<ConcurrencyController>,
     hooks: Arc<napp::HookDispatcher>,
-    mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
+    /// Issues the credential a CLI provider's tool calls carry back over
+    /// /agent/mcp (see `tool_credentials`).
+    tool_credentials: Option<crate::tool_credentials::ToolCredentials>,
     agent_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
     ask_channels: Option<tools::AskChannels>,
@@ -1356,7 +1358,7 @@ impl Runner {
         selector: ModelSelector,
         concurrency: Arc<ConcurrencyController>,
         hooks: Arc<napp::HookDispatcher>,
-        mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
+        tool_credentials: Option<crate::tool_credentials::ToolCredentials>,
         agent_registry: tools::AgentRegistry,
         skill_loader: Option<Arc<tools::skills::Loader>>,
     ) -> Self {
@@ -1370,7 +1372,7 @@ impl Runner {
             selector: Arc::new(selector),
             concurrency,
             hooks,
-            mcp_context,
+            tool_credentials,
             agent_registry,
             skill_loader,
             embedding_provider: None,
@@ -1928,24 +1930,7 @@ impl Runner {
         let preactivate_tools = req.preactivate_tools.clone();
         let channel_ctx = req.channel_ctx.clone();
 
-        // Set MCP context so CLI providers can access tools with the right session info.
-        // The origin is not stamped: whoever calls /agent/mcp is an MCP client.
-        // user_id is NOT stamped here: the raw request user_id must never reach
-        // memory (see the memory-owner derivation in run_loop). run_loop stamps
-        // the RESOLVED memory scope once it exists; until then the context is
-        // fail-closed so an external /mcp call between runs can't write memory
-        // under a stale or caller-chosen scope.
-        if let Some(ref mcp_ctx) = self.mcp_context {
-            let mut ctx = mcp_ctx.lock().await;
-            ctx.session_key = session_key.clone();
-            ctx.session_id = session_id.clone();
-            ctx.user_id = String::new();
-            ctx.memory_writes_disabled = true;
-            // Sub-agents spawned from this run inherit its model unless
-            // explicitly overridden.
-            ctx.model_preference = (!model_override.is_empty()).then(|| model_override.clone());
-        }
-        let mcp_context = self.mcp_context.clone();
+        let tool_credentials = self.tool_credentials.clone();
 
         tokio::spawn(async move {
             // Releases the session for the next turn when this task ends.
@@ -2039,7 +2024,7 @@ impl Runner {
                         None, // command forks are not review forks
                         req.tool_allowlist.as_ref(),
                         req.tool_denial_hint.clone(),
-                        mcp_context.as_ref(),
+                        tool_credentials.as_ref(),
                         &fork_taint,
                         None, // forks never reply to a coworker audience
                         None, // forks are chat, never workflow mode
@@ -2146,7 +2131,7 @@ impl Runner {
                 None, // top-level runs are never review forks
                 req.tool_allowlist.as_ref(),
                 req.tool_denial_hint.clone(),
-                mcp_context.as_ref(),
+                tool_credentials.as_ref(),
                 &run_taint,
                 req.audience.as_deref(),
                 req.workflow.as_ref(),
@@ -2390,6 +2375,7 @@ impl Runner {
         }
 
         let req = ChatRequest {
+            tool_credential: None,
             tool_choice: Default::default(),
             messages: vec![Message {
                 role: "user".to_string(),
@@ -3446,7 +3432,7 @@ async fn run_loop(
     review_fork: Option<crate::review_fork::ReviewForkCtx>,
     tool_allowlist: Option<&std::collections::HashSet<String>>,
     tool_denial_hint: Option<String>,
-    mcp_context: Option<&Arc<tokio::sync::Mutex<ToolContext>>>,
+    tool_credentials: Option<&crate::tool_credentials::ToolCredentials>,
     run_taint: &std::sync::Mutex<std::collections::BTreeSet<types::provenance::ProvenanceClass>>,
     audience: Option<&str>,
     workflow_mode: Option<&WorkflowMode>,
@@ -3815,15 +3801,6 @@ async fn run_loop(
     } else {
         (memory_user_id, memory_writes_disabled)
     };
-
-    // CLI providers execute tools out-of-band through the shared MCP context;
-    // stamp it with the RESOLVED scope (never the raw request user_id) so
-    // memory reads/writes on that path land exactly where this run's do.
-    if let Some(mcp_ctx) = mcp_context {
-        let mut ctx = mcp_ctx.lock().await;
-        ctx.user_id = memory_user_id.clone();
-        ctx.memory_writes_disabled = memory_writes_disabled;
-    }
 
     // Company Memory's confidentiality scope for this run. An isolated
     // employee is sealed to ONE matter — the same context its own memory is
@@ -5362,6 +5339,7 @@ async fn run_loop(
 
         // Build ChatRequest
         let chat_req = ChatRequest {
+            tool_credential: None,
             tool_choice: forced_choice.unwrap_or_default(),
             messages: ai_messages,
             tools: if wrap_up_turn { Vec::new() } else { tool_defs },
@@ -5398,6 +5376,81 @@ async fn run_loop(
             iteration, session_id, "[telemetry] pre-LLM overhead (msg load → request built)"
         );
 
+        // The context this run's tool calls carry — the runner's own, and a
+        // CLI provider's over /agent/mcp (through the credential below).
+        let run_tool_context = || {
+            let resolved_key = sessions
+                .resolve_session_key(session_id)
+                .unwrap_or_else(|_| session_id.to_string());
+            ToolContext {
+                origin,
+                session_key: resolved_key,
+                session_id: session_id.to_string(),
+                user_id: memory_user_id.clone(),
+                trusted_plugin_env: false,
+                handoff_depth,
+                entity_permissions: entity_permissions.cloned(),
+                operation_policy: operation_policy.cloned(),
+                resource_grants: entity_resource_grants.cloned(),
+                allowed_paths: allowed_paths.to_vec(),
+                cwd: run_cwd.map(str::to_string),
+                cancel_token: cancel_token.clone(),
+                stream_tx: Some(tx.clone()),
+                run_id: progress.map(|p| p.run_id.clone()),
+                ask_channels: ask_channels.cloned(),
+                parked: Default::default(),
+                channel: channel_ctx.cloned(),
+                model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
+                memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
+                memory_writes_disabled,
+                run_taint: run_taint.lock().unwrap().iter().copied().collect(),
+                memory_write_bar: memory_write_bar.clone(),
+                audience_restricted,
+                memory_matter: memory_matter.clone(),
+                // Populated by the approval gate below, before tool execution.
+                approved_categories: std::collections::HashSet::new(),
+                full_access,
+                // Restricted-run allowlist: the review fork's whitelist, or
+                // the request's explicit allowlist (phone callers). None for
+                // every normal run.
+                tool_whitelist: review_fork
+                    .as_ref()
+                    .map(|r| r.whitelist.clone())
+                    .or_else(|| tool_allowlist.cloned()),
+                whitelist_denial_hint: tool_denial_hint.clone(),
+                learned_write_agent: review_fork.as_ref().map(|r| r.owner_agent_id.clone()),
+                learned_write_staged: review_fork.as_ref().map(|r| r.staged).unwrap_or(false),
+                // A fresh fork learning, not a re-apply — records its audit row.
+                learned_write_reapply: false,
+                skills_read: review_fork
+                    .as_ref()
+                    .map(|r| r.skills_read.clone())
+                    .unwrap_or_default(),
+            }
+        };
+
+        // A CLI provider runs its tools itself, over /agent/mcp. The call
+        // below issues a credential through this when it lands on one; the
+        // provider's tool calls carry it and execute as this run.
+        let issue_tool_credential = tool_credentials.map(|credentials| {
+            move || {
+                credentials.issue(crate::tool_credentials::RunGrant {
+                    ctx: run_tool_context(),
+                    agent_id: agent_id.to_string(),
+                    approval: approval_channels.map(|channels| {
+                        crate::tool_credentials::OwnedApprovalDoor {
+                            channels: channels.clone(),
+                            tx: tx.clone(),
+                            cancel_token: cancel_token.clone(),
+                        }
+                    }),
+                    approval_relay,
+                    workflow_mode: workflow_mode.cloned(),
+                    sessions: Some(sessions.clone()),
+                })
+            }
+        });
+
         let reply = match model_call::call_model(
             model_call::ModelCall {
                 request: chat_req,
@@ -5414,6 +5467,9 @@ async fn run_loop(
                 selected_model: &selected_model,
                 model_override,
                 context_limit: thresholds.auto_compact,
+                tool_credential: issue_tool_credential
+                    .as_ref()
+                    .map(|issue| issue as &(dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)),
             },
             &mut call_state,
             &mut state,
@@ -5664,54 +5720,7 @@ async fn run_loop(
 
         // Execute tool calls in parallel
         if !tool_calls.is_empty() {
-            let resolved_key = sessions
-                .resolve_session_key(session_id)
-                .unwrap_or_else(|_| session_id.to_string());
-            let mut ctx = ToolContext {
-                origin,
-                session_key: resolved_key,
-                session_id: session_id.to_string(),
-                user_id: memory_user_id.clone(),
-                trusted_plugin_env: false,
-                handoff_depth,
-                entity_permissions: entity_permissions.cloned(),
-                operation_policy: operation_policy.cloned(),
-                resource_grants: entity_resource_grants.cloned(),
-                allowed_paths: allowed_paths.to_vec(),
-                cwd: run_cwd.map(str::to_string),
-                cancel_token: cancel_token.clone(),
-                stream_tx: Some(tx.clone()),
-                run_id: progress.map(|p| p.run_id.clone()),
-                ask_channels: ask_channels.cloned(),
-                parked: Default::default(),
-                channel: channel_ctx.cloned(),
-                model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
-                memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
-                memory_writes_disabled,
-                run_taint: run_taint.lock().unwrap().iter().copied().collect(),
-                memory_write_bar: memory_write_bar.clone(),
-                audience_restricted,
-                memory_matter: memory_matter.clone(),
-                // Populated by the approval gate below, before tool execution.
-                approved_categories: std::collections::HashSet::new(),
-                full_access,
-                // Restricted-run allowlist: the review fork's whitelist, or
-                // the request's explicit allowlist (phone callers). None for
-                // every normal run.
-                tool_whitelist: review_fork
-                    .as_ref()
-                    .map(|r| r.whitelist.clone())
-                    .or_else(|| tool_allowlist.cloned()),
-                whitelist_denial_hint: tool_denial_hint.clone(),
-                learned_write_agent: review_fork.as_ref().map(|r| r.owner_agent_id.clone()),
-                learned_write_staged: review_fork.as_ref().map(|r| r.staged).unwrap_or(false),
-                // A fresh fork learning, not a re-apply — records its audit row.
-                learned_write_reapply: false,
-                skills_read: review_fork
-                    .as_ref()
-                    .map(|r| r.skills_read.clone())
-                    .unwrap_or_default(),
-            };
+            let mut ctx = run_tool_context();
 
             // Track tool names for context filtering
             for tc in &tool_calls {
@@ -7460,6 +7469,7 @@ async fn run_loop(
                 attach_stream_reminders(&mut summary_messages, &pending_stream_reminders);
 
                 let summary_req = ChatRequest {
+                    tool_credential: None,
                     tool_choice: Default::default(),
                     messages: summary_messages,
                     tools: vec![], // No tools — text-only response

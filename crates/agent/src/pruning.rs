@@ -1244,6 +1244,7 @@ One line per turn in the transcript being evicted, oldest to newest: role and gi
 turns from this transcript — do not carry over dropped turns from the snapshot.";
 
     let req = ChatRequest {
+        tool_credential: None,
         tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),

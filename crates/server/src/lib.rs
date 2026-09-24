@@ -1728,13 +1728,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // file applies is decided per call from the folder the call works in.
     agent::shell_hooks::register_workspace_hooks(&hooks);
 
-    // Create shared MCP context for CLI provider tool calls
-    let mcp_context = Arc::new(tokio::sync::Mutex::new(tools::ToolContext {
-        origin: tools::Origin::Mcp,
-        user_id: "mcp-client".into(),
-        session_key: "mcp".into(),
-        ..Default::default()
-    }));
+    // Per-run credentials for CLI providers' tool calls over /agent/mcp.
+    let tool_credentials = agent::ToolCredentials::default();
 
     let ask_channels: tools::AskChannels =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
@@ -1751,7 +1746,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         selector,
         concurrency.clone(),
         hooks.clone(),
-        Some(mcp_context.clone()),
+        Some(tool_credentials.clone()),
         active_role_state.clone(),
         Some(skill_loader.clone()),
     )
@@ -2182,7 +2177,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_agent_triggers: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         update_pending: Arc::new(tokio::sync::Mutex::new(None)),
         hooks,
-        mcp_context,
+        tool_credentials,
         event_bus,
         event_dispatcher,
         plan_tier,

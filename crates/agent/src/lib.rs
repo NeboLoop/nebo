@@ -52,6 +52,7 @@ pub mod structured_agent;
 pub mod summarizer;
 pub mod reviewer;
 pub mod task_graph;
+pub mod tool_credentials;
 pub mod tool_filter;
 pub mod tool_guardrail;
 pub mod testing;
@@ -70,6 +71,7 @@ pub use concurrency::ConcurrencyController;
 pub use lanes::LaneManager;
 pub use orchestrator::Orchestrator;
 pub use proactive::{PresenceTracker, ProactiveInbox};
+pub use tool_credentials::{RunGrant, ToolCredentials};
 pub use runner::{
     ApprovalDoor, ChatTitleSink, GateOutcome, GateRun, RunProgress, RunRequest, Runner,
     gate_tool_calls,

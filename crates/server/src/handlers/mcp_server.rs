@@ -66,6 +66,7 @@ impl JsonRpcResponse {
 /// POST /agent/mcp — JSON-RPC 2.0 handler for CLI provider tool access.
 pub async fn agent_mcp_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
     let req: JsonRpcRequest = match serde_json::from_slice(&body) {
@@ -145,13 +146,22 @@ pub async fn agent_mcp_handler(
                     serde_json::json!({ "content": content, "isError": is_error }),
                 )
             } else {
-                let shared = {
-                    let lock = state.mcp_context.lock().await;
-                    lock.clone()
+                // A CLI provider's own tool call carries the credential its
+                // run issued; anything else is an outside MCP client.
+                let credential = headers
+                    .get(agent::tool_credentials::HEADER)
+                    .and_then(|v| v.to_str().ok());
+                let grant = credential.map(|t| state.tool_credentials.grant(t));
+                info!(tool = %name, run = credential.is_some(), "MCP tool call");
+                let result = match grant {
+                    Some(None) => tools::ToolResult::error(
+                        "This run has ended, so its tool access has too. Nothing was run.",
+                    ),
+                    Some(Some(grant)) => {
+                        call_tool(&state.store, &state.tools, Some(&grant), name, arguments).await
+                    }
+                    None => call_tool(&state.store, &state.tools, None, name, arguments).await,
                 };
-
-                info!(tool = %name, "MCP tool call");
-                let result = call_tool(&state.store, &state.tools, shared, name, arguments).await;
 
                 let content = serde_json::json!([{
                     "type": "text",
@@ -177,34 +187,33 @@ pub async fn agent_mcp_handler(
     (StatusCode::OK, axum::Json(resp))
 }
 
-/// Run one `tools/call` for an MCP client — Claude Desktop, Cursor, or a CLI
-/// provider's own tool calls; the server cannot tell them apart, so every one
-/// is `Origin::Mcp`. It acts under the rules of the employee whose session the
-/// shared context names (the main assistant when none), resolved the way a
-/// chat run resolves them, and passes the runner's permission gate before the
-/// registry runs it. Nobody can be asked from here, so what would ask is
-/// refused, exactly as for any unattended run.
+/// Run one `tools/call` that arrived over `/agent/mcp`.
+///
+/// `run` is the run a CLI provider's call carries the credential of: the call
+/// executes as that run — its context, its employee's rules, its approval
+/// card — exactly as the runner's own tool call would. Without one the caller
+/// is an outside MCP client (Claude Desktop, Cursor): `Origin::Mcp`, under
+/// the rules of the main assistant resolved the way a chat run resolves them,
+/// with nobody to ask, so what would ask is refused as for any unattended run.
+/// Either way the call passes the runner's permission gate, then the registry.
 async fn call_tool(
     store: &std::sync::Arc<db::Store>,
     tools: &tools::Registry,
-    shared: tools::ToolContext,
+    run: Option<&agent::RunGrant>,
     name: &str,
     arguments: serde_json::Value,
 ) -> tools::ToolResult {
-    let agent_id = types::keyparser::extract_agent_id(&shared.session_key);
-    let is_employee = !agent_id.is_empty() && matches!(store.get_agent(&agent_id), Ok(Some(_)));
-    let agent_id = if is_employee { agent_id } else { String::new() };
-    let rules = if is_employee {
-        crate::entity_config::resolve_for_chat(store, "agent", &agent_id)
-    } else {
-        crate::entity_config::resolve_for_chat(store, "main", "main")
+    let outside;
+    let run = match run {
+        Some(run) => run,
+        None => {
+            outside = outside_client(store);
+            &outside
+        }
     };
-    let (permissions, resource_grants, _, _, allowed_paths, operation_policy) =
-        crate::chat_dispatch::entity_run_params(rules.as_ref());
-    let full_access = crate::chat_dispatch::resolve_full_access(store);
-
     let call = ai::ToolCall {
-        id: String::new(),
+        // The approval card is keyed by the call id.
+        id: format!("mcp-{}", uuid::Uuid::new_v4().simple()),
         name: name.to_string(),
         input: tools.normalize_input(name, arguments).await,
     };
@@ -213,17 +222,21 @@ async fn call_tool(
         &agent::GateRun {
             tools,
             store,
-            agent_id: &agent_id,
-            session_id: &shared.session_id,
-            session_key: &shared.session_key,
-            origin: Origin::Mcp,
-            full_access,
-            entity_permissions: permissions.as_ref(),
-            operation_policy: operation_policy.as_ref(),
-            approval: None,
-            approval_relay: false,
-            workflow_mode: None,
-            sessions: None,
+            agent_id: &run.agent_id,
+            session_id: &run.ctx.session_id,
+            session_key: &run.ctx.session_key,
+            origin: run.ctx.origin,
+            full_access: run.ctx.full_access,
+            entity_permissions: run.ctx.entity_permissions.as_ref(),
+            operation_policy: run.ctx.operation_policy.as_ref(),
+            approval: run.approval.as_ref().map(|door| agent::ApprovalDoor {
+                channels: &door.channels,
+                tx: &door.tx,
+                cancel_token: &door.cancel_token,
+            }),
+            approval_relay: run.approval_relay,
+            workflow_mode: run.workflow_mode.as_ref(),
+            sessions: run.sessions.as_ref(),
         },
         std::slice::from_ref(&call),
         &mut blocked,
@@ -233,16 +246,36 @@ async fn call_tool(
         return refused;
     }
     let ctx = tools::ToolContext {
-        origin: Origin::Mcp,
-        entity_permissions: permissions,
-        operation_policy,
-        resource_grants,
-        allowed_paths,
-        full_access,
         approved_categories: gate.approved_categories,
-        ..shared
+        ..run.ctx.clone()
     };
     tools.execute(&ctx, &call.name, call.input).await
+}
+
+/// An outside MCP client's standing: the main assistant's rules, as a chat
+/// run resolves them, and no approval door.
+fn outside_client(store: &db::Store) -> agent::RunGrant {
+    let rules = crate::entity_config::resolve_for_chat(store, "main", "main");
+    let (permissions, resource_grants, _, _, allowed_paths, operation_policy) =
+        crate::chat_dispatch::entity_run_params(rules.as_ref());
+    agent::RunGrant {
+        ctx: tools::ToolContext {
+            origin: Origin::Mcp,
+            user_id: "mcp-client".into(),
+            session_key: "mcp".into(),
+            entity_permissions: permissions,
+            operation_policy,
+            resource_grants,
+            allowed_paths,
+            full_access: crate::chat_dispatch::resolve_full_access(store),
+            ..Default::default()
+        },
+        agent_id: String::new(),
+        approval: None,
+        approval_relay: false,
+        workflow_mode: None,
+        sessions: None,
+    }
 }
 
 // ── nebo service tool ────────────────────────────────────────────────
@@ -520,16 +553,6 @@ mod tests {
         (dir, store, registry)
     }
 
-    /// The shared context as the server creates it at boot.
-    fn boot_context() -> ToolContext {
-        ToolContext {
-            origin: Origin::Mcp,
-            user_id: "mcp-client".into(),
-            session_key: "mcp".into(),
-            ..Default::default()
-        }
-    }
-
     #[tokio::test]
     async fn a_capability_the_employee_lacks_is_refused() {
         let (_d, store, registry) = setup(
@@ -537,7 +560,7 @@ mod tests {
             serde_json::json!({ "permissions": r#"{"web":false}"# }),
         )
         .await;
-        let r = call_tool(&store, &registry, boot_context(), "web", serde_json::json!({})).await;
+        let r = call_tool(&store, &registry, None, "web", serde_json::json!({})).await;
         assert!(r.is_error, "ran without the web capability: {}", r.content);
         assert!(r.content.starts_with("PERMISSION_REQUIRED:web"), "{}", r.content);
     }
@@ -549,7 +572,7 @@ mod tests {
             serde_json::json!({ "permissions": r#"{"web":true}"# }),
         )
         .await;
-        let r = call_tool(&store, &registry, boot_context(), "web", serde_json::json!({})).await;
+        let r = call_tool(&store, &registry, None, "web", serde_json::json!({})).await;
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(r.content, "RAN");
     }
@@ -561,19 +584,88 @@ mod tests {
             serde_json::json!({ "operationPolicy": r#"{"operations":{"payments.charge":"blocked"}}"# }),
         )
         .await;
-        let r = call_tool(&store, &registry, boot_context(), "plugin", serde_json::json!({})).await;
+        let r = call_tool(&store, &registry, None, "plugin", serde_json::json!({})).await;
         assert!(r.is_error, "a Blocked operation ran: {}", r.content);
         assert!(r.content.contains("Blocked"), "{}", r.content);
     }
 
-    // A run stamps its origin onto the shared context for CLI providers; an
-    // MCP caller is still an MCP caller — the origin deny list holds.
+    // An outside client is an MCP client, whatever any run is doing.
     #[tokio::test]
-    async fn the_caller_is_always_an_mcp_client() {
+    async fn an_outside_client_is_an_mcp_client() {
         let (_d, store, registry) = setup(Probe { name: "os", operation: None }, serde_json::json!({})).await;
-        let shared = ToolContext { origin: Origin::User, ..boot_context() };
-        let r = call_tool(&store, &registry, shared, "os", serde_json::json!({ "resource": "shell", "action": "exec" })).await;
+        let r = call_tool(&store, &registry, None, "os", shell_call()).await;
         assert!(r.is_error, "shell ran for an MCP client: {}", r.content);
         assert!(r.content.contains("not permitted"), "{}", r.content);
+    }
+
+    fn shell_call() -> serde_json::Value {
+        serde_json::json!({ "resource": "shell", "action": "exec", "command": "true" })
+    }
+
+    /// A chat run on the CLI provider, as the runner issues it: the owner's
+    /// own chat (Origin::User) for an employee with the given rules.
+    fn cli_run(permissions: &[(&str, bool)], door: Option<agent::tool_credentials::OwnedApprovalDoor>) -> agent::RunGrant {
+        agent::RunGrant {
+            ctx: ToolContext {
+                origin: Origin::User,
+                session_key: "agent:emp-1:web".into(),
+                session_id: "s-1".into(),
+                entity_permissions: Some(permissions.iter().map(|(k, v)| (k.to_string(), *v)).collect()),
+                ..Default::default()
+            },
+            agent_id: "emp-1".into(),
+            approval: door,
+            approval_relay: false,
+            workflow_mode: None,
+            sessions: None,
+        }
+    }
+
+    // Claude Code as the model runs its tool calls over /agent/mcp. With its
+    // run's credential they are the run's own calls: shell runs for an
+    // employee allowed shell.
+    #[tokio::test]
+    async fn a_cli_provider_run_calls_as_its_run() {
+        let (_d, store, registry) = setup(Probe { name: "os", operation: None }, serde_json::json!({})).await;
+        let run = cli_run(&[("shell", true)], None);
+        let r = call_tool(&store, &registry, Some(&run), "os", shell_call()).await;
+        assert!(!r.is_error, "the run's own shell call was refused: {}", r.content);
+        assert_eq!(r.content, "RAN");
+    }
+
+    // ...and under that employee's rules: shell off, nobody to ask → refused.
+    #[tokio::test]
+    async fn a_cli_provider_run_keeps_its_employees_rules() {
+        let (_d, store, registry) = setup(Probe { name: "os", operation: None }, serde_json::json!({})).await;
+        let run = cli_run(&[("shell", false)], None);
+        let r = call_tool(&store, &registry, Some(&run), "os", shell_call()).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.starts_with("PERMISSION_REQUIRED:shell"), "{}", r.content);
+    }
+
+    // A capability that is off asks the owner on the run's approval card,
+    // exactly as the runner's own call would; "once" lets it run.
+    #[tokio::test]
+    async fn a_cli_provider_runs_ask_reaches_the_owner() {
+        let (_d, store, registry) = setup(Probe { name: "os", operation: None }, serde_json::json!({})).await;
+        let channels: tools::ApprovalChannels = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let door = agent::tool_credentials::OwnedApprovalDoor {
+            channels: channels.clone(),
+            tx,
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+        };
+        let owner = tokio::spawn(async move {
+            let card = rx.recv().await.expect("an approval card");
+            assert_eq!(card.event_type, ai::StreamEventType::ApprovalRequest);
+            let id = card.tool_call.expect("the call on the card").id;
+            let answer = channels.lock().await.remove(&id).expect("a waiting answer");
+            answer.send("once".to_string()).unwrap();
+        });
+        let run = cli_run(&[("shell", false)], Some(door));
+        let r = call_tool(&store, &registry, Some(&run), "os", shell_call()).await;
+        owner.abort();
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.content, "RAN");
     }
 }
