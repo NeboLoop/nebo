@@ -1,19 +1,52 @@
 //! The General Manager's `authority` tool: standing authority for seats,
 //! inside the constitution.
 //!
-//! It edits the ONE operation policy (`entity_config.operation_policy` on the
-//! seat) through `OperationPolicy::apply_edit`, the same path the settings
-//! page uses. A grant is refused when it exceeds the company policy, names a
-//! reserved operation, or would change a locked rule (a ceiling or a law).
+//! Authority is a permission rule on the seat: an allow on the operation,
+//! with money limits. Only the owner widens: a grant or a widening is
+//! written only when the owner answered this exact call (the operation
+//! `authority.grant.*` asks). Narrowing and suspending are an employee
+//! narrowing another's rules, which the store allows and nothing more.
 
 use std::sync::Arc;
 
+use types::permissions::{Effect, MoneyLimit, Rule, RuleKey, RuleSource, Scope, Writer};
+
 use crate::origin::ToolContext;
-use crate::policy::{Bounds, CompanyPolicy, OperationAccess, OperationPolicy, OperationRule};
+use crate::policy::{Bounds, CompanyPolicy};
 use crate::registry::{DynTool, ToolResult};
 
 pub struct AuthorityTool {
     store: Arc<db::Store>,
+}
+
+/// The standing-grant bounds the tool takes, as money limits.
+fn limit_of(input: &serde_json::Value) -> Result<MoneyLimit, String> {
+    let b: Bounds = serde_json::from_value(input["bounds"].clone()).map_err(|e| format!("`bounds` is malformed: {e}"))?;
+    Ok(MoneyLimit {
+        per_action_cents: b.max_amount_cents,
+        per_day_cents: b.per_day_cents,
+        per_day_count: b.per_day_count,
+        per_counterparty_day_cents: b.per_counterparty_day_cents,
+    })
+}
+
+/// A limit may not state more than the company allows unattended: no day
+/// figure above the company's, and a per-operation bound no larger than the
+/// company's single-operation cap (required when the company has one).
+fn within_company(limit: &MoneyLimit, company: &CompanyPolicy) -> Result<(), String> {
+    let d = &company.daily;
+    let no_larger = |name: &str, inner: Option<i64>, outer: Option<i64>| match (inner, outer) {
+        (Some(i), Some(o)) if i > o => Err(format!("{name} {i} exceeds the company's {o}")),
+        _ => Ok(()),
+    };
+    no_larger("per_day_cents", limit.per_day_cents, d.per_day_cents)?;
+    no_larger("per_day_count", limit.per_day_count, d.per_day_count)?;
+    no_larger("per_counterparty_day_cents", limit.per_counterparty_day_cents, d.per_counterparty_day_cents)?;
+    match (limit.per_action_cents, d.max_amount_cents.or(d.per_day_cents)) {
+        (None, Some(o)) => Err(format!("max_amount_cents is unbounded; the company allows at most {o} per operation")),
+        (Some(i), Some(o)) if i > o => Err(format!("max_amount_cents {i} exceeds the company's {o}")),
+        _ => Ok(()),
+    }
 }
 
 impl AuthorityTool {
@@ -35,32 +68,35 @@ impl AuthorityTool {
         found.ok_or_else(|| format!("no seat named '{agent}'"))
     }
 
-    fn seat_policy(&self, agent_id: &str) -> OperationPolicy {
-        let json = self
-            .store
-            .get_entity_config("agent", agent_id)
-            .ok()
-            .flatten()
-            .and_then(|c| c.operation_policy);
-        OperationPolicy::from_json(json.as_deref())
-    }
-
     fn company(&self) -> CompanyPolicy {
         CompanyPolicy::from_json(self.store.get_company_policy().ok().flatten().as_deref())
     }
 
-    fn save(&self, agent_id: &str, policy: &OperationPolicy) -> Result<(), String> {
+    /// The seat's own rule on an operation.
+    fn seat_rule(&self, seat_id: &str, key: &RuleKey) -> Option<Rule> {
         self.store
-            .upsert_entity_config(
-                "agent",
-                agent_id,
-                &serde_json::json!({ "operationPolicy": policy.to_json() }),
-            )
-            .map(|_| ())
-            .map_err(|e| format!("saving the seat's policy: {e}"))
+            .permission_rules_in(&Scope::Employee(seat_id.to_string()))
+            .ok()?
+            .into_iter()
+            .find(|r| &r.key == key && r.field.is_none())
     }
 
-    fn grant(&self, input: &serde_json::Value, widen: bool) -> ToolResult {
+    fn write(&self, seat_id: &str, key: RuleKey, effect: Effect, money: Option<MoneyLimit>, source: RuleSource, by: &Writer) -> Result<(), String> {
+        let rule = Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: Scope::Employee(seat_id.to_string()),
+            key,
+            field: None,
+            effect,
+            money,
+            source,
+            locked: false,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        self.store.write_permission_rule(&rule, by).map(|_| ()).map_err(|e| format!("refused: {e}"))
+    }
+
+    fn grant(&self, ctx: &ToolContext, input: &serde_json::Value, widen: bool) -> ToolResult {
         let agent = input["agent"].as_str().unwrap_or("");
         let operation = input["operation"].as_str().unwrap_or("");
         if operation.is_empty() {
@@ -72,55 +108,52 @@ impl AuthorityTool {
                 "widening needs evidence from the record: say what the seat did inside the current bound",
             );
         }
-        let bounds: Bounds = match serde_json::from_value(input["bounds"].clone()) {
-            Ok(b) => b,
-            Err(e) => return ToolResult::error(format!("`bounds` is malformed: {e}")),
+        // Only the owner widens: this runs only as the owner's answer to
+        // this exact call.
+        let Some(ask_id) = ctx.answered_ask.clone() else {
+            return ToolResult::error(
+                "Only the owner can give a seat more authority. Tell the owner what you would grant, \
+                 to whom, within what bounds, and why; they decide.",
+            );
+        };
+        let limit = match limit_of(input) {
+            Ok(l) => l,
+            Err(e) => return ToolResult::error(e),
         };
         let seat = match self.seat(agent) {
             Ok(s) => s,
             Err(e) => return ToolResult::error(e),
         };
-        let mut policy = self.seat_policy(&seat.id);
-        let key = crate::plugin_tool::port_suffix(operation);
+        let suffix = crate::plugin_tool::port_suffix(operation);
+        let key = RuleKey::Operation(suffix.clone());
+        let company = self.company();
+        if company.is_reserved(&suffix) {
+            return ToolResult::error(format!("refused: {suffix} is reserved to the owner. Only the owner can change the constitution."));
+        }
+        if let Err(e) = within_company(&limit, &company) {
+            return ToolResult::error(format!("refused: {e}. Only the owner can change the constitution."));
+        }
         if widen {
-            let Some(existing) = policy.operations.get(&key).filter(|r| r.is_standing_grant()) else {
-                return ToolResult::error(format!(
-                    "{} holds no standing grant for {key}; grant first, widen later",
-                    seat.name
-                ));
+            let current = self.seat_rule(&seat.id, &key).filter(|r| r.effect == Effect::Allow && r.money.is_some());
+            let Some(current) = current else {
+                return ToolResult::error(format!("{} holds no standing grant for {suffix}; grant first, widen later", seat.name));
             };
-            if !bounds_wider(existing.bounds.as_ref().unwrap(), &bounds) {
+            if limit.within(current.money.as_ref().unwrap()) {
                 return ToolResult::error("widen must loosen at least one bound; to tighten, use narrow");
             }
         }
-        let rule = OperationRule {
-            access: OperationAccess::Always,
-            bounds: Some(bounds),
-            source: Some("general_manager".into()),
-            evidence: (!evidence.is_empty()).then_some(evidence),
-            granted_at: Some(chrono::Utc::now().timestamp()),
-            locked: false,
-        };
-        if let Err(e) = self.company().permits(operation, &rule) {
-            return ToolResult::error(format!(
-                "refused: {e}. Only the owner can change the constitution."
-            ));
-        }
-        if let Err(e) = policy.apply_edit(operation, rule.clone()) {
-            return ToolResult::error(format!("refused: {e}"));
-        }
-        if let Err(e) = self.save(&seat.id, &policy) {
+        if let Err(e) = self.write(&seat.id, key, Effect::Allow, Some(limit.clone()), RuleSource::AllowAlways { ask_id }, &Writer::Owner) {
             return ToolResult::error(e);
         }
         ToolResult::ok(format!(
-            "{} now runs {key} unattended inside {}. Recorded as standing authority granted by the General Manager{}.",
+            "{} now runs {suffix} unattended inside {}. Recorded as standing authority the owner allowed{}.",
             seat.name,
-            describe(rule.bounds.as_ref().unwrap()),
-            rule.evidence.as_deref().map(|e| format!(" on: {e}")).unwrap_or_default()
+            describe(&limit),
+            if evidence.is_empty() { String::new() } else { format!(" on: {evidence}") }
         ))
     }
 
-    fn narrow(&self, input: &serde_json::Value, suspend: bool) -> ToolResult {
+    fn narrow(&self, ctx: &ToolContext, input: &serde_json::Value, suspend: bool) -> ToolResult {
         let agent = input["agent"].as_str().unwrap_or("");
         let operation = input["operation"].as_str().unwrap_or("");
         if operation.is_empty() {
@@ -130,60 +163,27 @@ impl AuthorityTool {
             Ok(s) => s,
             Err(e) => return ToolResult::error(e),
         };
-        let mut policy = self.seat_policy(&seat.id);
-        let key = crate::plugin_tool::port_suffix(operation);
-        let Some(existing) = policy.operations.get(&key).cloned() else {
-            return ToolResult::error(format!("{} holds no rule for {key}", seat.name));
-        };
-        if existing.locked {
-            return ToolResult::error(format!("{key} is a ceiling or a law on {}; it cannot change", seat.name));
+        let suffix = crate::plugin_tool::port_suffix(operation);
+        let key = RuleKey::Operation(suffix.clone());
+        if self.seat_rule(&seat.id, &key).is_none() {
+            return ToolResult::error(format!("{} holds no rule for {suffix}", seat.name));
         }
-        let reason = input["evidence"].as_str().unwrap_or("").trim().to_string();
-        let rule = if suspend {
-            OperationRule {
-                access: OperationAccess::Approval,
-                bounds: None,
-                source: Some("general_manager".into()),
-                evidence: (!reason.is_empty()).then_some(reason.clone()),
-                granted_at: Some(chrono::Utc::now().timestamp()),
-                locked: false,
-            }
+        let narrower = Writer::Employee { agent_id: ctx.grant.as_ref().map(|g| g.agent_id.clone()).unwrap_or_default() };
+        let result = if suspend {
+            self.write(&seat.id, key, Effect::Ask, None, RuleSource::Owner, &narrower)
         } else {
-            let bounds: Bounds = match serde_json::from_value(input["bounds"].clone()) {
-                Ok(b) => b,
-                Err(e) => return ToolResult::error(format!("`bounds` is malformed: {e}")),
-            };
-            if let Some(cur) = existing.bounds.as_ref() {
-                if bounds_wider(cur, &bounds) {
-                    return ToolResult::error("narrow must not loosen any bound; to loosen, use widen with evidence");
-                }
-            }
-            OperationRule {
-                access: OperationAccess::Always,
-                bounds: Some(bounds),
-                source: Some("general_manager".into()),
-                evidence: (!reason.is_empty()).then_some(reason.clone()),
-                granted_at: Some(chrono::Utc::now().timestamp()),
-                locked: false,
+            match limit_of(input) {
+                Ok(limit) => self.write(&seat.id, key, Effect::Allow, Some(limit), RuleSource::Owner, &narrower),
+                Err(e) => Err(e),
             }
         };
-        if let Err(e) = self.company().permits(operation, &rule) {
-            return ToolResult::error(format!("refused: {e}"));
-        }
-        if let Err(e) = policy.apply_edit(operation, rule.clone()) {
-            return ToolResult::error(format!("refused: {e}"));
-        }
-        if let Err(e) = self.save(&seat.id, &policy) {
+        if let Err(e) = result {
             return ToolResult::error(e);
         }
         ToolResult::ok(if suspend {
-            format!("{}'s standing authority for {key} is suspended; it asks until a new grant.", seat.name)
+            format!("{}'s standing authority for {suffix} is suspended; it asks until the owner grants it again.", seat.name)
         } else {
-            format!(
-                "{} now runs {key} unattended inside {}.",
-                seat.name,
-                describe(rule.bounds.as_ref().unwrap())
-            )
+            format!("{}'s standing authority for {suffix} is narrowed.", seat.name)
         })
     }
 
@@ -193,32 +193,27 @@ impl AuthorityTool {
             Ok(s) => s,
             Err(e) => return ToolResult::error(e),
         };
-        let policy = self.seat_policy(&seat.id);
-        let mut lines: Vec<String> = policy
-            .operations
+        let rules = self.store.permission_rules_in(&Scope::Employee(seat.id.clone())).unwrap_or_default();
+        let mut lines: Vec<String> = rules
             .iter()
+            .filter_map(|r| match &r.key {
+                RuleKey::Operation(op) => Some((op, r)),
+                _ => None,
+            })
             .map(|(op, r)| {
-                let what = match r.access {
-                    OperationAccess::Always => match r.bounds.as_ref() {
-                        Some(b) => format!("unattended inside {}", describe(b)),
-                        None => "unattended, unbounded (owner's setting)".to_string(),
-                    },
-                    OperationAccess::Approval => "asks".to_string(),
-                    OperationAccess::Blocked => "blocked".to_string(),
+                let what = match (r.effect, r.money.as_ref()) {
+                    (Effect::Allow, Some(m)) => format!("unattended inside {}", describe(m)),
+                    (Effect::Allow, None) => "unattended, unbounded (owner's setting)".to_string(),
+                    (Effect::Ask, _) => "asks".to_string(),
+                    (Effect::Deny, _) => "blocked".to_string(),
                 };
-                format!(
-                    "- {op}: {what}{}{}{}",
-                    r.source.as_deref().map(|s| format!(" [{s}]")).unwrap_or_default(),
-                    if r.locked { " (locked)" } else { "" },
-                    r.evidence.as_deref().map(|e| format!(" — {e}")).unwrap_or_default()
-                )
+                format!("- {op}: {what}{}", if r.locked { " (locked)" } else { "" })
             })
             .collect();
         lines.sort();
         ToolResult::ok(format!(
-            "{}: default {}\n{}",
+            "{}\n{}",
             seat.name,
-            policy.default.as_str(),
             if lines.is_empty() { "- no per-operation rules".to_string() } else { lines.join("\n") }
         ))
     }
@@ -227,28 +222,17 @@ impl AuthorityTool {
         match self.store.get_company_policy() {
             Ok(Some(json)) => {
                 let c = CompanyPolicy::from_json(Some(&json));
+                let d = &c.daily;
                 ToolResult::ok(format!(
-                    "Purpose: {}\nCompany-wide per day: {}\nReserved to the owner: {}\nPer-operation: {}",
+                    "Purpose: {}\nCompany-wide per day: {}\nReserved to the owner: {}",
                     if c.purpose.is_empty() { "(unset)" } else { &c.purpose },
-                    describe(&c.daily),
+                    describe(&MoneyLimit {
+                        per_action_cents: d.max_amount_cents,
+                        per_day_cents: d.per_day_cents,
+                        per_day_count: d.per_day_count,
+                        per_counterparty_day_cents: d.per_counterparty_day_cents,
+                    }),
                     if c.reserved.is_empty() { "nothing".to_string() } else { c.reserved.join(", ") },
-                    if c.operations.is_empty() {
-                        "none".to_string()
-                    } else {
-                        let mut v: Vec<String> = c
-                            .operations
-                            .iter()
-                            .map(|(op, r)| {
-                                format!(
-                                    "{op} {}{}",
-                                    r.access.as_str(),
-                                    r.bounds.as_ref().map(|b| format!(" inside {}", describe(b))).unwrap_or_default()
-                                )
-                            })
-                            .collect();
-                        v.sort();
-                        v.join("; ")
-                    }
                 ))
             }
             Ok(None) => ToolResult::ok(
@@ -259,26 +243,9 @@ impl AuthorityTool {
     }
 }
 
-/// True when `next` loosens at least one axis of `cur` (a larger number, or
-/// a bound removed).
-fn bounds_wider(cur: &Bounds, next: &Bounds) -> bool {
-    fn looser(c: Option<i64>, n: Option<i64>) -> bool {
-        match (c, n) {
-            (Some(c), Some(n)) => n > c,
-            (Some(_), None) => true,
-            _ => false,
-        }
-    }
-    looser(cur.max_amount_cents, next.max_amount_cents)
-        || looser(cur.per_day_cents, next.per_day_cents)
-        || looser(cur.per_day_count, next.per_day_count)
-        || looser(cur.per_counterparty_day_cents, next.per_counterparty_day_cents)
-        || (cur.counterparty_class.is_some() && next.counterparty_class.is_none())
-}
-
-fn describe(b: &Bounds) -> String {
+fn describe(b: &MoneyLimit) -> String {
     let mut parts = Vec::new();
-    if let Some(v) = b.max_amount_cents {
+    if let Some(v) = b.per_action_cents {
         parts.push(format!("${:.2} per operation", v as f64 / 100.0));
     }
     if let Some(v) = b.per_day_cents {
@@ -289,12 +256,6 @@ fn describe(b: &Bounds) -> String {
     }
     if let Some(v) = b.per_counterparty_day_cents {
         parts.push(format!("${:.2} per counterparty per day", v as f64 / 100.0));
-    }
-    if let Some(c) = b.counterparty_class.as_deref() {
-        parts.push(format!("counterparties with a {c}"));
-    }
-    if let Some(s) = b.freshness_secs {
-        parts.push(format!("policy fresh within {}h", s / 3600));
     }
     if parts.is_empty() { "no bounds".to_string() } else { parts.join(", ") }
 }
@@ -312,11 +273,10 @@ impl DynTool for AuthorityTool {
          Resources:\n\
          - grant: grant | widen | narrow | suspend | list (agent, operation, bounds, evidence)\n\
          - constitution: show\n\n\
-         bounds: {max_amount_cents, per_day_cents, per_day_count, per_counterparty_day_cents, \
-         counterparty_class: \"ledger_id\", freshness_secs}\n\n\
+         bounds: {max_amount_cents, per_day_cents, per_day_count, per_counterparty_day_cents}\n\n\
          Examples:\n  \
          authority(resource: \"grant\", action: \"grant\", agent: \"Bookkeeper\", operation: \"ledger.billpayment.create\", \
-         bounds: {max_amount_cents: 250000, per_day_count: 20, counterparty_class: \"ledger_id\"}, evidence: \"thirty clean days of approvals\")\n  \
+         bounds: {max_amount_cents: 250000, per_day_count: 20}, evidence: \"thirty clean days of approvals\")\n  \
          authority(resource: \"grant\", action: \"widen\", agent: \"Bookkeeper\", operation: \"ledger.billpayment.create\", \
          bounds: {max_amount_cents: 500000, per_day_count: 20}, evidence: \"41 invoices under $2,500 in 30 days, zero reversals\")\n  \
          authority(resource: \"grant\", action: \"narrow\", agent: \"Bookkeeper\", operation: \"ledger.billpayment.create\", bounds: {max_amount_cents: 100000}, evidence: \"one reversal on 2026-09-12\")\n  \
@@ -339,9 +299,7 @@ impl DynTool for AuthorityTool {
                         "max_amount_cents": { "type": "integer" },
                         "per_day_cents": { "type": "integer" },
                         "per_day_count": { "type": "integer" },
-                        "per_counterparty_day_cents": { "type": "integer" },
-                        "counterparty_class": { "type": "string", "description": "ledger_id: only counterparties carrying a source-system id" },
-                        "freshness_secs": { "type": "integer" }
+                        "per_counterparty_day_cents": { "type": "integer" }
                     }
                 },
                 "evidence": { "type": "string", "description": "What in the record this is granted, widened, or narrowed on. Required for widen." },
@@ -354,7 +312,7 @@ impl DynTool for AuthorityTool {
 
     /// Granting a seat standing authority — and widening it — is how an
     /// employee comes to act unattended at all, so both are gated operations
-    /// the owner stands behind: the per-operation gate decides them like any
+    /// the owner stands behind: the permission check asks for them like any
     /// other (`authority.grant.*`, critical in the interface catalog).
     /// Narrowing, suspending, and reading make an employee less powerful or
     /// nothing at all, and are never gated.
@@ -397,7 +355,7 @@ impl DynTool for AuthorityTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
@@ -405,10 +363,10 @@ impl DynTool for AuthorityTool {
             let action = input["action"].as_str().unwrap_or("");
             match (resource, action) {
                 ("constitution", _) => self.constitution(),
-                ("grant", "grant") => self.grant(&input, false),
-                ("grant", "widen") => self.grant(&input, true),
-                ("grant", "narrow") => self.narrow(&input, false),
-                ("grant", "suspend") => self.narrow(&input, true),
+                ("grant", "grant") => self.grant(ctx, &input, false),
+                ("grant", "widen") => self.grant(ctx, &input, true),
+                ("grant", "narrow") => self.narrow(ctx, &input, false),
+                ("grant", "suspend") => self.narrow(ctx, &input, true),
                 ("grant", "list") => self.list(&input),
                 _ => ToolResult::error(format!("unknown {resource}/{action}")),
             }
@@ -420,21 +378,19 @@ impl DynTool for AuthorityTool {
 mod tests {
     use super::*;
 
-    /// A seat that can grant authority could otherwise grant itself everything
-    /// the company's bounds allow, unsupervised. Granting and widening are
-    /// gated operations and the employee-wide default never confers them;
-    /// narrowing, suspending and reading are free.
+    fn tool() -> (tempfile::TempDir, AuthorityTool, Arc<db::Store>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("a.db").to_string_lossy()).expect("store"));
+        (dir, AuthorityTool::new(store.clone()), store)
+    }
+
+    /// A seat that can grant authority could otherwise grant itself
+    /// everything the company's bounds allow, unsupervised. Granting and
+    /// widening are catalog-gated operations; narrowing, suspending and
+    /// reading are not.
     #[test]
-    fn granting_asks_the_owner_and_narrowing_does_not() {
-        use crate::policy::{OperationParams, OperationPolicy};
-        let tool = AuthorityTool::new(std::sync::Arc::new(
-            db::Store::new(
-                &std::env::temp_dir()
-                    .join(format!("nebo-authority-{}.db", uuid::Uuid::new_v4()))
-                    .to_string_lossy(),
-            )
-            .expect("store"),
-        ));
+    fn granting_is_an_operation_and_narrowing_is_not() {
+        let (_d, tool, _s) = tool();
         let op = |resource: &str, action: &str| {
             tool.operation_performed(&serde_json::json!({"resource": resource, "action": action}))
         };
@@ -444,29 +400,58 @@ mod tests {
             assert_eq!(op("grant", action), None, "{action} is not gated");
         }
         assert_eq!(op("constitution", "show"), None);
-
-        // An employee running with the "do everything" default still asks
-        // before it hands anybody authority — and it may narrow freely.
-        let autonomous = OperationPolicy {
-            default: OperationAccess::Always,
-            operations: std::collections::HashMap::new(),
-        };
-        let decide = |o: &str| {
-            autonomous
-                .decide(o, crate::Origin::Workflow, &OperationParams::default(), None, None, true)
-                .access
-        };
-        assert_eq!(decide("authority.grant.grant"), OperationAccess::Approval);
-        assert_eq!(decide("authority.grant.widen"), OperationAccess::Approval);
-        assert_eq!(decide("authority.grant.narrow"), OperationAccess::Always);
+        assert!(crate::interface_catalog::is_critical("authority.grant.grant"));
     }
 
+    /// A grant may not state more than the company allows unattended.
     #[test]
-    fn wider_means_a_looser_axis_or_a_dropped_class() {
-        let cur = Bounds { max_amount_cents: Some(100), per_day_count: Some(5), counterparty_class: Some("ledger_id".into()), ..Default::default() };
-        assert!(bounds_wider(&cur, &Bounds { max_amount_cents: Some(200), per_day_count: Some(5), counterparty_class: Some("ledger_id".into()), ..Default::default() }));
-        assert!(bounds_wider(&cur, &Bounds { max_amount_cents: Some(100), per_day_count: None, counterparty_class: Some("ledger_id".into()), ..Default::default() }));
-        assert!(bounds_wider(&cur, &Bounds { max_amount_cents: Some(100), per_day_count: Some(5), ..Default::default() }));
-        assert!(!bounds_wider(&cur, &Bounds { max_amount_cents: Some(50), per_day_count: Some(5), counterparty_class: Some("ledger_id".into()), ..Default::default() }));
+    fn a_grant_beyond_the_company_is_refused() {
+        let company = CompanyPolicy {
+            daily: Bounds { per_day_count: Some(20), max_amount_cents: Some(250_000), ..Default::default() },
+            ..Default::default()
+        };
+        let inside = MoneyLimit { per_action_cents: Some(250_000), per_day_count: Some(20), ..Default::default() };
+        assert!(within_company(&inside, &company).is_ok());
+        let over = MoneyLimit { per_action_cents: Some(300_000), per_day_count: Some(20), ..Default::default() };
+        assert!(within_company(&over, &company).is_err());
+        let unbounded = MoneyLimit::default();
+        assert!(within_company(&unbounded, &company).is_err(), "an unbounded grant where the company bounds the day");
+    }
+
+    /// Only the owner widens: without the owner's answer to this exact call,
+    /// nothing is written; with it, the grant is an allow with money limits.
+    #[tokio::test]
+    async fn a_grant_is_written_only_as_the_owners_answer() {
+        let (_d, tool, store) = tool();
+        store
+            .create_agent("seat-1", None, "Bookkeeper", "", "", "{}", None, None)
+            .expect("seat");
+        let input = serde_json::json!({
+            "resource": "grant", "action": "grant", "agent": "seat-1",
+            "operation": "ledger.billpayment.create", "bounds": {"max_amount_cents": 250000, "per_day_count": 20}
+        });
+        let refused = tool.execute_dyn(&ToolContext::default(), input.clone()).await;
+        assert!(refused.is_error && refused.content.contains("Only the owner"), "{}", refused.content);
+        assert!(store.permission_rules_in(&Scope::Employee("seat-1".into())).unwrap().is_empty());
+
+        let answered = ToolContext { answered_ask: Some("ask-1".into()), ..Default::default() };
+        let granted = tool.execute_dyn(&answered, input).await;
+        assert!(!granted.is_error, "{}", granted.content);
+        let rules = store.permission_rules_in(&Scope::Employee("seat-1".into())).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].effect, Effect::Allow);
+        assert_eq!(rules[0].money.as_ref().and_then(|m| m.per_action_cents), Some(250000));
+
+        // Narrowing needs no answer, and cannot loosen.
+        let narrow = serde_json::json!({
+            "resource": "grant", "action": "narrow", "agent": "seat-1",
+            "operation": "ledger.billpayment.create", "bounds": {"max_amount_cents": 100000, "per_day_count": 20}
+        });
+        assert!(!tool.execute_dyn(&ToolContext::default(), narrow).await.is_error);
+        let loosen = serde_json::json!({
+            "resource": "grant", "action": "narrow", "agent": "seat-1",
+            "operation": "ledger.billpayment.create", "bounds": {"max_amount_cents": 900000}
+        });
+        assert!(tool.execute_dyn(&ToolContext::default(), loosen).await.is_error);
     }
 }

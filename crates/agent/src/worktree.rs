@@ -1,7 +1,7 @@
 //! Isolation for mutating fan-out (coding harness P5.3).
 //!
 //! When a parallel batch is spawned with `isolate: "worktree"`, each child
-//! gets its own copy of the project, fenced by `allowed_paths` and `cwd`, and
+//! gets its own copy of the project, fenced by its grant's `fence` and `cwd`, and
 //! the parent merges the copies back when the batch is done. Read-only
 //! fan-out never comes here: it shares the tree.
 //!

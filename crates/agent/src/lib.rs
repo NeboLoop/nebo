@@ -21,8 +21,6 @@ pub mod memory;
 /// defined identically in pruning, memory_flush, and large_input; a budget
 /// change had to land three times).
 pub const CHARS_PER_TOKEN: usize = 4;
-pub mod memory_debounce;
-pub mod memory_gate;
 pub mod memory_flush;
 pub mod orchestrator;
 pub mod workflow_loop;
@@ -70,7 +68,7 @@ pub use lanes::LaneManager;
 pub use orchestrator::Orchestrator;
 pub use proactive::{PresenceTracker, ProactiveInbox};
 pub use tool_credentials::{RunGrant, ToolCredentials};
-pub use harness::tool_round::{ApprovalDoor, GateOutcome, GateRun, gate_tool_calls};
+pub use harness::permissions::{migrate::migrate_legacy, resolve_grant, Check};
 pub use harness::after_turn::ChatTitleSink;
 pub use runner::{RunProgress, RunRequest, Runner};
 pub use selector::ModelSelector;

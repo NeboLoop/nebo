@@ -198,20 +198,15 @@ pub enum WorkflowProgress {
     },
 }
 
-/// Approval-checkpoint context for a run: the employee's per-operation policy
-/// plus, on a post-approval re-run, the one-shot token authorizing exactly the
-/// call the owner saw. Matched on operation suffix + exact input hash — a call
-/// that drifted on re-derivation re-asks rather than executing something the
-/// owner never approved.
+/// Approval-checkpoint context for a run: an activity whose call the
+/// permission check parks suspends here for the owner.
 #[derive(Debug, Clone, Default)]
 pub struct CheckpointCtx {
-    pub operation_policy: Option<tools::policy::OperationPolicy>,
     /// The seat binding name (for the suspension row / notification).
     pub binding_name: String,
-    /// The run's inputs carry untrusted content (a watch/comm payload) —
-    /// the gate decides as `Origin::Comm` instead of trusted Workflow, so a
-    /// gated `Always` floors to Approval (WS2-R7: input taint, not just
-    /// origin; the payload steering the run arrived from outside).
+    /// The run's inputs carry untrusted content (a watch/comm payload): a
+    /// gated operation asks the owner (WS2-R7: input taint, not just origin;
+    /// the payload steering the run arrived from outside).
     pub tainted: bool,
 }
 

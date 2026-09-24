@@ -1,0 +1,291 @@
+//! The rules engine: which rule decides a call, whether a call is inside
+//! the employee's job, and the money a standing allow covers.
+//!
+//! Rules live at two scopes, company defaults and one employee's overrides.
+//! When any employee-scope rule matches a call, the employee scope decides;
+//! otherwise the company's does. Within the deciding scope deny beats ask
+//! and ask beats allow; a more specific field never outranks a broader deny.
+
+use std::path::{Path, PathBuf};
+
+use types::permissions::{
+    Effect, Grant, MoneyLimit, Mode, Rule, RuleField, RuleKey, Scope, Target,
+};
+
+/// An employee's rules for one run, split by scope.
+#[derive(Debug, Clone, Default)]
+pub struct RuleSet {
+    employee: Vec<Rule>,
+    company: Vec<Rule>,
+    /// Folders the run itself adds to a fenced job (the chat's project).
+    run_folders: Vec<PathBuf>,
+}
+
+impl RuleSet {
+    /// The rules that decide for `agent_id`: the company defaults and the
+    /// employee's own.
+    pub fn load(store: &db::Store, agent_id: &str) -> Result<RuleSet, types::NeboError> {
+        Ok(Self::split(store.permission_rules(agent_id)?, Vec::new()))
+    }
+
+    /// The rules a grant carries.
+    pub fn of(grant: &Grant) -> RuleSet {
+        Self::split(grant.rules.clone(), grant.run_folders.clone())
+    }
+
+    fn split(rules: Vec<Rule>, run_folders: Vec<PathBuf>) -> RuleSet {
+        let (employee, company) = rules
+            .into_iter()
+            .partition(|r| matches!(r.scope, Scope::Employee(_)));
+        RuleSet { employee, company, run_folders }
+    }
+
+    /// The rule that decides `t` and its effect, or `None` when no rule
+    /// matches.
+    pub fn decide(&self, t: &Target) -> Option<(&Rule, Effect)> {
+        self.deciding(t)
+            .iter()
+            .filter(|r| matches(r, t))
+            .max_by_key(|r| r.effect)
+            .map(|r| (r, r.effect))
+    }
+
+    /// The scope that decides `t`: the employee's when any of its rules
+    /// matches, else the company's.
+    fn deciding(&self, t: &Target) -> &[Rule] {
+        if self.employee.iter().any(|r| matches(r, t)) { &self.employee } else { &self.company }
+    }
+
+    /// Whether `t` is inside the job: basic work (no capability), or a
+    /// call the rules allow, within the job's folders.
+    pub fn in_job(&self, t: &Target, input: &serde_json::Value) -> bool {
+        if t.capability.is_none() {
+            return true;
+        }
+        self.decide(t).is_some_and(|(_, e)| e == Effect::Allow) && self.outside_folders(t, input).is_none()
+    }
+
+    /// The money the allow that decides `t` covers.
+    pub fn money_limit(&self, t: &Target) -> Option<&MoneyLimit> {
+        match self.decide(t) {
+            Some((rule, Effect::Allow)) => rule.money.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Whether an allow the owner wrote for this key (not the whole
+    /// capability) covers `t`: what Ask mode runs without asking.
+    pub fn owner_allowed(&self, t: &Target) -> bool {
+        matches!(self.decide(t), Some((_, Effect::Allow)))
+            && self
+                .deciding(t)
+                .iter()
+                .any(|r| r.effect == Effect::Allow && !matches!(r.key, RuleKey::Capability(_)) && matches(r, t))
+    }
+
+    /// The job's folders (see [`types::permissions::folders_of`]).
+    pub fn folders(&self) -> Vec<PathBuf> {
+        let rules: Vec<Rule> = self.all().cloned().collect();
+        types::permissions::folders_of(&rules, &self.run_folders)
+    }
+
+    /// Why `t` falls outside the job's folders, or `None` when it is inside
+    /// (or the job has none). File changes and shell working directories
+    /// are fenced; reads are not.
+    pub fn outside_folders(&self, t: &Target, input: &serde_json::Value) -> Option<String> {
+        let folders = self.folders();
+        outside(&folders, t, input)
+    }
+
+    /// Every rule, employee scope first.
+    pub fn all(&self) -> impl Iterator<Item = &Rule> {
+        self.employee.iter().chain(self.company.iter())
+    }
+}
+
+/// Why `t` falls outside `folders` (empty: no fence).
+pub fn outside(folders: &[PathBuf], t: &Target, input: &serde_json::Value) -> Option<String> {
+    if folders.is_empty() {
+        return None;
+    }
+    let strings: Vec<String> = folders.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    tools::safeguard::check_path_scope(&t.key, input, &strings)
+}
+
+/// Whether `rule` applies to `t`: its key names the call's rule key, tool,
+/// operation or capability, and its field (if any) covers the call's.
+pub fn matches(rule: &Rule, t: &Target) -> bool {
+    let key = match &rule.key {
+        RuleKey::Tool(k) => match k.strip_suffix('*') {
+            Some(prefix) => !prefix.is_empty() && (t.key.starts_with(prefix) || t.tool.starts_with(prefix)),
+            None => *k == t.key || *k == t.tool,
+        },
+        RuleKey::Operation(op) => t.operation.as_deref().is_some_and(|o| {
+            tools::plugin_tool::port_suffix(o) == tools::plugin_tool::port_suffix(op)
+        }),
+        RuleKey::Capability(c) => t.capability.as_deref() == Some(c.as_str()),
+    };
+    key && match &rule.field {
+        None => true,
+        Some(field) => field_covers(field, t),
+    }
+}
+
+fn field_covers(field: &RuleField, t: &Target) -> bool {
+    match (field, &t.field) {
+        (RuleField::CommandPrefix(prefix), Some(RuleField::CommandPrefix(cmd))) => {
+            tools::policy::command_matches(std::slice::from_ref(prefix), cmd)
+        }
+        (RuleField::Folder(folder), Some(RuleField::Folder(path))) => within(path, folder),
+        (RuleField::Domain(domain), Some(RuleField::Domain(host))) => {
+            let (d, h) = (domain.to_ascii_lowercase(), host.to_ascii_lowercase());
+            h == d || h.ends_with(&format!(".{d}"))
+        }
+        (RuleField::Recipient(who), Some(RuleField::Recipient(to))) => who.eq_ignore_ascii_case(to),
+        (RuleField::Recipient(who), _) => {
+            !t.effects.recipients.is_empty()
+                && t.effects.recipients.iter().all(|r| r.eq_ignore_ascii_case(who))
+        }
+        _ => false,
+    }
+}
+
+fn within(path: &Path, folder: &Path) -> bool {
+    let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    abs(path).starts_with(abs(folder))
+}
+
+/// The mode an employee runs in: its own, else the company default, else
+/// Automatic.
+pub fn mode_of(store: &db::Store, agent_id: &str) -> Result<Mode, types::NeboError> {
+    if !agent_id.is_empty()
+        && let Some(mode) = store.permission_mode(&Scope::Employee(agent_id.to_string()))?
+    {
+        return Ok(mode);
+    }
+    Ok(store.permission_mode(&Scope::Company)?.unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use types::permissions::{CallEffects, RuleSource};
+
+    fn rule(scope: Scope, key: RuleKey, field: Option<RuleField>, effect: Effect) -> Rule {
+        Rule {
+            id: format!("{}-{}-{:?}", key.value(), effect.as_str(), field),
+            scope,
+            key,
+            field,
+            effect,
+            money: None,
+            source: RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        }
+    }
+
+    fn target(key: &str, capability: Option<&str>, field: Option<RuleField>) -> Target {
+        Target {
+            tool: "os".into(),
+            key: key.into(),
+            operation: None,
+            capability: capability.map(str::to_string),
+            field,
+            read_only: false,
+            effects: CallEffects::unknown(),
+        }
+    }
+
+    fn set(rules: Vec<Rule>) -> RuleSet {
+        RuleSet::split(rules, Vec::new())
+    }
+
+    #[test]
+    fn deny_beats_ask_beats_allow() {
+        let emp = || Scope::Employee("a".into());
+        let shell = || RuleKey::Capability("shell".into());
+        let t = target("run_command", Some("shell"), Some(RuleField::CommandPrefix("git status".into())));
+        let allow = rule(emp(), shell(), None, Effect::Allow);
+        let ask = rule(emp(), RuleKey::Tool("run_command".into()), None, Effect::Ask);
+        let deny = rule(
+            emp(),
+            RuleKey::Tool("run_command".into()),
+            Some(RuleField::CommandPrefix("git".into())),
+            Effect::Deny,
+        );
+        assert_eq!(set(vec![allow.clone()]).decide(&t).map(|d| d.1), Some(Effect::Allow));
+        assert_eq!(set(vec![allow.clone(), ask.clone()]).decide(&t).map(|d| d.1), Some(Effect::Ask));
+        assert_eq!(set(vec![allow, ask, deny]).decide(&t).map(|d| d.1), Some(Effect::Deny));
+        // A narrower allow never outranks a broader deny.
+        let broad_deny = rule(emp(), shell(), None, Effect::Deny);
+        let narrow_allow = rule(
+            emp(),
+            RuleKey::Tool("run_command".into()),
+            Some(RuleField::CommandPrefix("git status".into())),
+            Effect::Allow,
+        );
+        assert_eq!(set(vec![broad_deny, narrow_allow]).decide(&t).map(|d| d.1), Some(Effect::Deny));
+    }
+
+    #[test]
+    fn employee_rule_overrides_company_default() {
+        let t = target("fetch_url", Some("web"), None);
+        let company_deny = rule(Scope::Company, RuleKey::Capability("web".into()), None, Effect::Deny);
+        let employee_allow = rule(Scope::Employee("a".into()), RuleKey::Capability("web".into()), None, Effect::Allow);
+        assert_eq!(set(vec![company_deny.clone()]).decide(&t).map(|d| d.1), Some(Effect::Deny));
+        assert_eq!(set(vec![company_deny, employee_allow]).decide(&t).map(|d| d.1), Some(Effect::Allow));
+    }
+
+    #[test]
+    fn capability_rule_is_the_job() {
+        let t = target("run_command", Some("shell"), None);
+        let none = set(vec![]);
+        assert!(!none.in_job(&t, &serde_json::json!({})), "a capability no rule grants is outside the job");
+        let job = set(vec![rule(Scope::Company, RuleKey::Capability("shell".into()), None, Effect::Allow)]);
+        assert!(job.in_job(&t, &serde_json::json!({})));
+        // Basic work (memory, tasks, delegation) is always inside the job.
+        assert!(none.in_job(&target("recall", None, None), &serde_json::json!({})));
+    }
+
+    #[test]
+    fn folder_outside_every_rule_is_outside_the_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let inside = dir.path().join("inside");
+        let file_allow = rule(Scope::Company, RuleKey::Capability("file".into()), None, Effect::Allow);
+        let folder = rule(
+            Scope::Employee("a".into()),
+            RuleKey::Capability("file".into()),
+            Some(RuleField::Folder(inside.clone())),
+            Effect::Allow,
+        );
+        let rules = set(vec![file_allow, folder]);
+        let write = |p: &Path| {
+            let input = serde_json::json!({"path": p.to_string_lossy(), "content": "x"});
+            (target("write_file", Some("file"), Some(RuleField::Folder(p.to_path_buf()))), input)
+        };
+        let (t, input) = write(&inside.join("a.txt"));
+        assert!(rules.in_job(&t, &input));
+        let (t, input) = write(&dir.path().join("outside.txt"));
+        assert!(!rules.in_job(&t, &input), "a write outside every folder rule is outside the job");
+        // Reads are not fenced.
+        let read_input = serde_json::json!({"path": dir.path().join("outside.txt").to_string_lossy()});
+        let read = target("read_file", Some("file"), Some(RuleField::Folder(dir.path().join("outside.txt"))));
+        assert!(rules.in_job(&read, &read_input));
+    }
+
+    #[test]
+    fn a_family_key_and_an_operation_match_their_calls() {
+        let mut t = target("mcp__acme__search", None, None);
+        t.tool = "mcp__acme__search".into();
+        let family = rule(Scope::Company, RuleKey::Tool("mcp__acme__*".into()), None, Effect::Ask);
+        assert!(matches(&family, &t));
+        assert!(!matches(&rule(Scope::Company, RuleKey::Tool("mcp__other__*".into()), None, Effect::Ask), &t));
+        let mut op = target("plugin__ledger", None, None);
+        op.operation = Some("accounting.ap.ledger.billpayment.create".into());
+        assert!(matches(
+            &rule(Scope::Company, RuleKey::Operation("ledger.billpayment.create".into()), None, Effect::Ask),
+            &op
+        ));
+    }
+}

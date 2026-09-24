@@ -190,6 +190,7 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         user_id: String::new(),
         channel,
         origin: tools::Origin::System,
+        door: types::permissions::Door::Chat,
         agent_id,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::COMM.to_string(),

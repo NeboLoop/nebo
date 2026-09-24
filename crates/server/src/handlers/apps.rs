@@ -784,6 +784,7 @@ async fn start_app_agent_run(
             user_id: String::new(),
             channel: "app".to_string(),
             origin: tools::Origin::App,
+            door: types::permissions::Door::Chat,
             agent_id: agent_id.to_string(),
             cancel_token,
             lane: types::constants::lanes::EVENTS.to_string(),

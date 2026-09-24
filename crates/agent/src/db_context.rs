@@ -387,12 +387,45 @@ pub const PROMPT_RECALL_MIN_SCORE: f64 = 0.45;
 /// FTS-only tier.
 const RECALL_VECTOR_BUDGET_MS: u64 = 800;
 
-/// Join the recall search that the runner spawned before prompt assembly,
-/// enforcing [`RECALL_VECTOR_BUDGET_MS`]. Within budget → hybrid results flow
-/// unchanged. Past budget → degrade to a synchronous FTS-only search over the
-/// same read-scope chain — the documented fallback tier of the ONE recall
-/// pathway (this function), not a competing implementation. Both arms funnel
-/// through [`format_prompt_relevant_memories`] for dedupe/budget/formatting.
+/// Start the per-message recall search: the ONE hybrid pathway the memory
+/// tool uses (`agent::search::hybrid_search` behind the
+/// [`tools::HybridSearcher`] adapter — FTS + vector when an embedding
+/// provider exists, FTS-only otherwise) with the unrequested-recall floor.
+/// Spawned so it runs while the rest of the turn is assembled: its cost is a
+/// query-embedding network round trip (~650ms steady-state). Joined through
+/// [`recall_within_budget`].
+pub fn spawn_prompt_recall(
+    searcher: &std::sync::Arc<dyn tools::HybridSearcher>,
+    user_id: &str,
+    prompt: &str,
+) -> tokio::task::JoinHandle<(Vec<tools::HybridSearchResult>, std::time::Duration)> {
+    let searcher = searcher.clone();
+    let user_id = user_id.to_string();
+    let prompt = prompt.to_string();
+    let t_start = std::time::Instant::now();
+    tokio::spawn(async move {
+        let results = searcher
+            .search(
+                &prompt,
+                &user_id,
+                PROMPT_MEMORY_CANDIDATES,
+                // Relevance floor: with single-leg renormalization and the
+                // corrected BM25 orientation, both installs score real
+                // matches well above this — and a prompt with NO relevant
+                // memories injects NOTHING instead of the best of the
+                // irrelevant (which was 1.2k of noise on every turn, and
+                // what weak models answered instead of the ask).
+                Some(PROMPT_RECALL_MIN_SCORE),
+            )
+            .await;
+        (results, t_start.elapsed())
+    })
+}
+
+/// Join the recall search [`spawn_prompt_recall`] started, enforcing
+/// [`RECALL_VECTOR_BUDGET_MS`] and formatting the result for the prompt.
+/// Both arms of the budget funnel through [`format_prompt_relevant_memories`]
+/// for dedupe/budget/formatting.
 pub async fn join_prompt_recall(
     recall_task: tokio::task::JoinHandle<(Vec<tools::HybridSearchResult>, std::time::Duration)>,
     store: &Store,
@@ -401,6 +434,20 @@ pub async fn join_prompt_recall(
     existing_memory_ids: &HashSet<i64>,
     tacit_only: bool,
 ) -> (String, Vec<i64>) {
+    let results = recall_within_budget(recall_task, store, user_id, prompt).await;
+    format_prompt_relevant_memories(results, existing_memory_ids, tacit_only)
+}
+
+/// The recall search's results under [`RECALL_VECTOR_BUDGET_MS`]. Within
+/// budget → the hybrid results unchanged. Past budget → a synchronous
+/// FTS-only search over the same read-scope chain — the documented fallback
+/// tier of the ONE recall pathway, not a competing implementation.
+pub async fn recall_within_budget(
+    recall_task: tokio::task::JoinHandle<(Vec<tools::HybridSearchResult>, std::time::Duration)>,
+    store: &Store,
+    user_id: &str,
+    prompt: &str,
+) -> Vec<tools::HybridSearchResult> {
     let t_join = std::time::Instant::now();
     match tokio::time::timeout(
         std::time::Duration::from_millis(RECALL_VECTOR_BUDGET_MS),
@@ -413,10 +460,10 @@ pub async fn join_prompt_recall(
                 net_ms = net.as_millis() as u64,
                 "hybrid recall completed within budget"
             );
-            format_prompt_relevant_memories(results, existing_memory_ids, tacit_only)
+            results
         }
         // Spawned search panicked — no recall this turn.
-        Ok(Err(_)) => (String::new(), Vec::new()),
+        Ok(Err(_)) => Vec::new(),
         Err(_) => {
             warn!(
                 elapsed_ms = t_join.elapsed().as_millis() as u64,
@@ -430,8 +477,7 @@ pub async fn join_prompt_recall(
             let fts = store
                 .search_memories_fts(prompt, &scope_chain, PROMPT_MEMORY_CANDIDATES as i64)
                 .unwrap_or_default();
-            let results: Vec<tools::HybridSearchResult> = fts
-                .iter()
+            fts.iter()
                 .filter_map(|(mem_id, rank)| {
                     // No PROMPT_RECALL_MIN_SCORE here: that floor is
                     // calibrated for cosine similarity, and BM25 magnitudes
@@ -451,32 +497,21 @@ pub async fn join_prompt_recall(
                         }
                     })
                 })
-                .collect();
-            format_prompt_relevant_memories(results, existing_memory_ids, tacit_only)
+                .collect()
         }
     }
 }
 
-/// Filter, budget, and format hybrid-search results into the per-message
-/// recall slice (injected by the runner as an ephemeral stream reminder,
-/// NOT into the system prompt — keeping the prompt prefix byte-stable for
-/// prompt caching). The search itself is issued
-/// by the runner through the ONE hybrid pathway the memory tool uses
-/// (`agent::search::hybrid_search` behind the [`tools::HybridSearcher`]
-/// adapter — FTS + vector when an embedding provider exists, FTS-only
-/// otherwise, requested with `min_score = 0` because FTS-only scores sit
-/// below the vector-scale default floor and the old FTS injection had no
-/// floor either) and runs CONCURRENTLY with the rest of prompt assembly;
-/// this is the synchronous join step. Returns the formatted section
-/// (excluding memories already in the tacit identity slice) plus the ids of
-/// the memories actually injected, so the caller can bump access accounting.
-pub fn format_prompt_relevant_memories(
+/// The recall results that may be shown, best first: durable memories only,
+/// `tacit/` only when the audience is restricted, none in `skip` (the
+/// identity slice, memories already surfaced), within
+/// [`PROMPT_MEMORY_CHAR_BUDGET`].
+pub fn select_prompt_memories(
     results: Vec<tools::HybridSearchResult>,
-    existing_memory_ids: &HashSet<i64>,
+    skip: &HashSet<i64>,
     tacit_only: bool,
-) -> (String, Vec<i64>) {
-    let mut lines = Vec::new();
-    let mut injected_ids: Vec<i64> = Vec::new();
+) -> Vec<tools::HybridSearchResult> {
+    let mut picked: Vec<tools::HybridSearchResult> = Vec::new();
     let mut used_chars = 0usize;
     for r in results {
         // Session chunks with no parent memory are transcript fragments, not
@@ -488,26 +523,39 @@ pub fn format_prompt_relevant_memories(
         if tacit_only && !r.namespace.starts_with("tacit/") {
             continue;
         }
-        if existing_memory_ids.contains(&mem_id) || injected_ids.contains(&mem_id) {
+        if skip.contains(&mem_id) || picked.iter().any(|p| p.memory_id == Some(mem_id)) {
             continue;
         }
-        let line = format!("{}: {}", r.key, r.value);
-        if !lines.is_empty() && used_chars + line.len() > PROMPT_MEMORY_CHAR_BUDGET {
+        let chars = r.key.len() + 2 + r.value.len();
+        if !picked.is_empty() && used_chars + chars > PROMPT_MEMORY_CHAR_BUDGET {
             break;
         }
-        used_chars += line.len();
-        lines.push(line);
-        injected_ids.push(mem_id);
+        used_chars += chars;
+        picked.push(r);
     }
+    picked
+}
 
-    if lines.is_empty() {
+/// Format the selected recall results ([`select_prompt_memories`]) into the
+/// per-message recall slice (delivered on the message side, NOT in the
+/// system prompt — keeping the prompt prefix byte-stable for prompt
+/// caching). Returns the formatted section plus the ids of the memories
+/// actually injected, so the caller can bump access accounting.
+pub fn format_prompt_relevant_memories(
+    results: Vec<tools::HybridSearchResult>,
+    existing_memory_ids: &HashSet<i64>,
+    tacit_only: bool,
+) -> (String, Vec<i64>) {
+    let picked = select_prompt_memories(results, existing_memory_ids, tacit_only);
+    if picked.is_empty() {
         return (String::new(), Vec::new());
     }
+    let lines: Vec<String> = picked.iter().map(|r| format!("{}: {}", r.key, r.value)).collect();
+    let injected_ids: Vec<i64> = picked.iter().filter_map(|r| r.memory_id).collect();
 
     debug!(count = lines.len(), "injected prompt-relevant memories");
-    // No prompt heading here: the runner delivers this slice as an ephemeral
-    // stream reminder on the message side (keeping the system prompt
-    // byte-stable for prompt caching), so it supplies its own framing.
+    // No prompt heading here: the caller delivers this slice on the message
+    // side and supplies its own framing.
     (group_memories_by_section(&lines), injected_ids)
 }
 

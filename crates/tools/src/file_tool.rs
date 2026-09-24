@@ -214,7 +214,7 @@ impl FileTool {
         if paths.is_empty() && !fi.path.is_empty() {
             paths.push(fi.path.clone());
         }
-        if let Some(blocked) = crate::safeguard::outside_allowed("checkpoint", &paths, &ctx.allowed_paths) {
+        if let Some(blocked) = ctx.outside_folders("checkpoint", &paths) {
             return ToolResult::error(blocked);
         }
         match crate::checkpoint::create(&ctx.session_id, &fi.label, &paths) {
@@ -232,7 +232,7 @@ impl FileTool {
             Err(e) => return ToolResult::error(e),
         };
         let targets = if fi.paths.is_empty() { crate::checkpoint::paths(&cp) } else { fi.paths.clone() };
-        if let Some(blocked) = crate::safeguard::outside_allowed("restore", &targets, &ctx.allowed_paths) {
+        if let Some(blocked) = ctx.outside_folders("restore", &targets) {
             return ToolResult::error(blocked);
         }
         match crate::checkpoint::restore(&ctx.session_id, &fi.checkpoint, &fi.paths) {

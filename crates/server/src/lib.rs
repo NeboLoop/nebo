@@ -769,6 +769,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
+    // The old permission settings become rules once, before anything runs a
+    // tool: every call is decided by the rules from here on.
+    agent::migrate_legacy(&store)?;
 
     // BotLease (comm::lease): a cloud bot freezes itself whenever its lease
     // is not held; a desktop does not. A bot with NeboAI credentials is
@@ -1045,7 +1048,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let mut providers = build_providers(&store, &cfg, Some(&cli_statuses));
 
     // Build tool registry with default tools
-    let policy = tools::Policy::new();
     // No-op: Nebo uses the platform-native data directory (see config::data_dir).
     migration::migrate_data_dir();
 
@@ -1082,7 +1084,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
-    let tool_registry = Arc::new(tools::Registry::new(policy));
+    // Every tool call passes the one permission check.
+    let tool_registry = Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone()))));
 
     // Create empty orchestrator handle (filled after Runner is built)
     let orch_handle = tools::new_handle();
@@ -4076,6 +4079,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             user_id: String::new(),
             channel: "neboai".to_string(),
             origin: comm_origin(is_personal && !is_webhook),
+            door: types::permissions::Door::Chat,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -4249,6 +4253,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             // Access, an allowlist that is empty until the channel's policy
             // says otherwise — enforced in the runner, not by prompt.
             origin: tools::Origin::Visitor,
+            door: types::permissions::Door::Chat,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -4531,6 +4536,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 user_id: String::new(),
                 channel: "neboai".to_string(),
                 origin: comm_origin(is_personal),
+                door: types::permissions::Door::Chat,
                 agent_id: agent_id.clone(),
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
@@ -4642,6 +4648,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             user_id: String::new(),
             channel: "neboai".to_string(),
             origin: tools::Origin::Comm,
+            door: types::permissions::Door::Chat,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
@@ -5408,6 +5415,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 user_id: String::new(),
                 channel: "neboai".to_string(),
                 origin: tools::Origin::Comm,
+                door: types::permissions::Door::Chat,
                 agent_id: agent_id.clone(),
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
