@@ -23,6 +23,12 @@ pub struct NeboAIApi {
 /// Default production API server.
 pub const DEFAULT_API_SERVER: &str = "https://api.neboai.com";
 
+/// How long a REST call may take before it is abandoned.
+const REST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long one file may take through the files door, either way.
+const FILE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// ONE process-wide HTTP client (connection pool). `NeboAIApi` values are
 /// constructed per call site (73 of them) — giving each its own `Client` gave
 /// each an EMPTY pool, so every NeboAI request paid a fresh TCP+TLS handshake
@@ -31,7 +37,7 @@ pub const DEFAULT_API_SERVER: &str = "https://api.neboai.com";
 static HTTP_CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| {
     Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(REST_TIMEOUT)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
         .build()
         .unwrap_or_else(|_| Client::new())
@@ -1378,7 +1384,7 @@ impl NeboAIApi {
         } else {
             format!("{}{}", self.api_server, url)
         };
-        self.fetch_raw(&full_url).await
+        self.fetch_raw(&full_url, REST_TIMEOUT).await
     }
 
     // ── Content Protection ─────────────────────────────────────────
@@ -1595,7 +1601,7 @@ impl NeboAIApi {
         // Use a client with a longer timeout for uploads
         let upload_client = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(FILE_TRANSFER_TIMEOUT)
             .build()
             .unwrap_or_else(|_| Client::new());
 
@@ -1610,10 +1616,7 @@ impl NeboAIApi {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(CommError::Other(format!(
-                "upload returned {}: {}",
-                status, body
-            )));
+            return Err(CommError::Http { status: status.as_u16(), body });
         }
 
         resp.json::<crate::wire::Attachment>()
@@ -1621,19 +1624,41 @@ impl NeboAIApi {
             .map_err(|e| CommError::Other(format!("decode upload response: {}", e)))
     }
 
-    /// Download a file by ID. Returns raw bytes.
+    /// Download a file by ID. Returns raw bytes. Files are as large as the
+    /// upload door allows, so the download gets the upload's time.
     pub async fn download_file(&self, file_id: &str) -> Result<Vec<u8>, CommError> {
         let url = format!("{}/api/v1/files/{}", self.api_server, file_id);
-        self.fetch_raw(&url).await
+        self.fetch_raw(&url, FILE_TRANSFER_TIMEOUT).await
+    }
+
+    // ── BotState ────────────────────────────────────────────────────
+
+    /// This bot's committed state: the head generation a next commit must
+    /// follow, and the latest role=state generation (or `generation`, when
+    /// asked for one).
+    pub async fn bot_state(&self, generation: Option<i64>) -> Result<BotStateResponse, CommError> {
+        let path = match generation {
+            Some(g) => format!("/api/v1/bots/self/state?generation={g}"),
+            None => "/api/v1/bots/self/state".to_string(),
+        };
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
+    /// Commit a BotState manifest. The hub moves the head only from
+    /// `generation - 1`; another writer having moved it first is a 409.
+    pub async fn commit_bot_state(&self, manifest: &serde_json::Value) -> Result<BotStateCommitResponse, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/bots/self/state", Some(manifest))
+            .await
     }
 
     // ── Raw Fetch ───────────────────────────────────────────────────
 
     /// Download raw content from a URL using the client's auth header.
-    pub async fn fetch_raw(&self, url: &str) -> Result<Vec<u8>, CommError> {
+    pub async fn fetch_raw(&self, url: &str, timeout: std::time::Duration) -> Result<Vec<u8>, CommError> {
         let resp = self
             .client
             .get(url)
+            .timeout(timeout)
             .bearer_auth(self.token())
             .send()
             .await
