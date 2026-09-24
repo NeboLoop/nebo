@@ -2299,13 +2299,18 @@ mod tests {
     }
 
     /// Characters of every always-loaded definition (description + schema),
-    /// measured at WP0: the pre-interface core tools plus find_tools, 52,728
-    /// (agent 17,451 · os 14,219 · web 8,361 · message 3,270 · skill 3,102 ·
-    /// team 2,747 · event 2,229 · find_tools 704 · mcp 645). The plugin tool
-    /// (core too, and sized by the installed plugins) needs a plugin store
-    /// and is not in this roster. Each package that lands lowers the
-    /// number; it never rises.
+    /// measured at WP0: the pre-interface core tools plus find_tools. The os
+    /// tool describes the desktop surfaces its platform has, so the number is
+    /// per platform: 52,728 on macOS (agent 17,451 · os 14,219 · web 8,361 ·
+    /// message 3,270 · skill 3,102 · team 2,747 · event 2,229 · find_tools
+    /// 704 · mcp 645) and 53,032 on Linux (os 14,524 · web 8,362 · mcp 643).
+    /// The plugin tool (core too, and sized by the installed plugins) needs a
+    /// plugin store and is not in this roster. Each package that lands lowers
+    /// the numbers; they never rise.
+    #[cfg(target_os = "macos")]
     const CORE_DEFINITION_CHARS_BUDGET: usize = 52_728;
+    #[cfg(not(target_os = "macos"))]
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 53_032;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
