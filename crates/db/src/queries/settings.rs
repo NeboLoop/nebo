@@ -77,7 +77,6 @@ impl Store {
         comm_plugin: Option<&str>,
         developer_mode: Option<bool>,
         auto_update: Option<bool>,
-        full_access: Option<bool>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         // Ensure settings row exists
@@ -108,7 +107,6 @@ impl Store {
         maybe_set!(comm_plugin, "comm_plugin");
         maybe_set!(developer_mode, "developer_mode");
         maybe_set!(auto_update, "auto_update");
-        maybe_set!(full_access, "full_access");
 
         if updates.is_empty() {
             return Ok(());
@@ -164,11 +162,6 @@ impl Store {
             idx += 1;
         }
         if let Some(v) = auto_update {
-            stmt.raw_bind_parameter(idx, v as i64)
-                .map_err(|e| NeboError::Database(e.to_string()))?;
-            idx += 1;
-        }
-        if let Some(v) = full_access {
             stmt.raw_bind_parameter(idx, v as i64)
                 .map_err(|e| NeboError::Database(e.to_string()))?;
             let _ = idx + 1;
@@ -387,7 +380,7 @@ mod tests {
         store
             .update_settings(
                 Some(true),
-                None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None,
             )
             .unwrap();
         let s = store.get_settings().unwrap().unwrap();

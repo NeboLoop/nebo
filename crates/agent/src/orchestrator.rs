@@ -1230,10 +1230,9 @@ fn is_interactive_session(session_key: &str) -> bool {
 
 /// The ONE builder of a child's run: a single spawn, a background spawn, a
 /// `send` continuation, every member of a parallel batch and every DAG node
-/// come through here. The child runs under its parent's limits (`seat`):
-/// capability toggles, operation policy, resource grants, tool allowlist,
-/// path fence, Full Access and taint so far. It is `Origin::System`, so it
-/// never asks the owner for an approval — an OFF capability stays OFF.
+/// come through here. The child runs under its parent's limits (`seat`): the
+/// parent's grant as its ceiling (mode, rules, money limits), its fence, its
+/// tool allowlist and its taint so far. It can only narrow them.
 fn build_subagent_request(
     spawn_req: &SpawnRequest,
     session_key: &str,
@@ -1255,14 +1254,12 @@ fn build_subagent_request(
         // A sub-agent stays at the parent's hop depth — a spawn must not
         // restart the coworker chain cap at zero.
         handoff_depth: spawn_req.handoff_depth,
-        permissions: seat.permissions.clone(),
-        operation_policy: seat.operation_policy.clone(),
-        resource_grants: seat.resource_grants.clone(),
+        door: types::permissions::Door::Helper,
+        ceiling: seat.grant.as_ref().map(|g| types::permissions::Ceiling::Parent { grant: Box::new((**g).clone()) }),
+        fence: seat.fence.clone(),
         tool_allowlist: seat.tool_allowlist.clone(),
         tool_denial_hint: seat.tool_denial_hint.clone(),
-        allowed_paths: seat.allowed_paths.clone(),
         cwd: seat.cwd.clone(),
-        full_access: seat.full_access,
         seed_taint: seat.taint.clone(),
         ..Default::default()
     };
@@ -1652,46 +1649,63 @@ mod child_limits {
         (dir, tools::AgentTool::new(store, handle))
     }
 
-    /// An employee with shell OFF, the browser denied, one operation blocked,
-    /// a path fence, a tool allowlist, and web content already in its run.
+    fn rule(key: types::permissions::RuleKey, field: Option<types::permissions::RuleField>, effect: types::permissions::Effect) -> types::permissions::Rule {
+        types::permissions::Rule {
+            id: format!("{}-{}", key.value(), effect.as_str()),
+            scope: types::permissions::Scope::Employee("a1".into()),
+            key,
+            field,
+            effect,
+            money: None,
+            source: types::permissions::RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        }
+    }
+
+    /// An employee with shell denied, the browser denied, one operation
+    /// denied, a folder fence, a tool allowlist, and web content already in
+    /// its run.
     fn limited_parent() -> ToolContext {
+        use types::permissions::{Effect, Grant, Mode, RuleField, RuleKey};
         let (tx, _rx) = mpsc::channel(8);
+        let mut grant = Grant::new("a1", Mode::Automatic);
+        grant.rules = vec![
+            rule(RuleKey::Capability("shell".into()), None, Effect::Deny),
+            rule(RuleKey::Tool("browser_*".into()), None, Effect::Deny),
+            rule(RuleKey::Operation("payments.transfer.send".into()), None, Effect::Deny),
+            rule(RuleKey::Capability("file".into()), Some(RuleField::Folder("/work/a".into())), Effect::Allow),
+        ];
+        grant.fence = Some(vec!["/work/a".into()]);
         ToolContext {
             session_id: "s1".into(),
             session_key: "agent:a1:web".into(),
             user_id: "owner:agent:a1".into(),
-            entity_permissions: Some([("shell".to_string(), false)].into_iter().collect()),
-            resource_grants: Some([("browser".to_string(), "deny".to_string())].into_iter().collect()),
-            operation_policy: Some(tools::policy::OperationPolicy::from_json(Some(
-                r#"{"operations":{"payments.transfer.send":{"access":"blocked"}}}"#,
-            ))),
+            grant: Some(std::sync::Arc::new(grant)),
             tool_whitelist: Some(["agent".to_string(), "os".to_string()].into_iter().collect()),
             whitelist_denial_hint: Some("not in this run".into()),
-            allowed_paths: vec!["/work/a".into()],
             cwd: Some("/work/a".into()),
-            full_access: false,
             run_taint: vec![ProvenanceClass::Web, ProvenanceClass::ExternalEmail],
             stream_tx: Some(tx),
             ..Default::default()
         }
     }
 
-    /// The child's run carries every limit its parent ran under.
+    /// The child's run carries every limit its parent ran under: the
+    /// parent's grant is its ceiling.
     fn assert_limited_like(child: &RunRequest, parent: &ToolContext, path: &str) {
-        assert_eq!(child.permissions, parent.entity_permissions, "{path}: capability toggles lost");
-        assert_eq!(child.resource_grants, parent.resource_grants, "{path}: resource grants lost");
-        assert_eq!(
-            serde_json::to_value(&child.operation_policy).unwrap(),
-            serde_json::to_value(&parent.operation_policy).unwrap(),
-            "{path}: operation policy lost"
-        );
+        let ceiling = match &child.ceiling {
+            Some(types::permissions::Ceiling::Parent { grant }) => grant,
+            other => panic!("{path}: the child has no parent ceiling: {other:?}"),
+        };
+        assert_eq!(Some(&**ceiling), parent.grant.as_deref(), "{path}: the parent's grant was not the ceiling");
+        assert_eq!(child.fence, parent.grant.as_ref().and_then(|g| g.fence.clone()), "{path}: fence lost");
         assert_eq!(child.tool_allowlist, parent.tool_whitelist, "{path}: tool allowlist lost");
         assert_eq!(child.tool_denial_hint, parent.whitelist_denial_hint, "{path}: denial hint lost");
-        assert_eq!(child.allowed_paths, parent.allowed_paths, "{path}: path fence lost");
         assert_eq!(child.cwd, parent.cwd, "{path}: working directory lost");
-        assert_eq!(child.full_access, parent.full_access, "{path}: Full Access differs");
         assert_eq!(child.seed_taint, parent.run_taint, "{path}: taint laundered");
         assert_eq!(child.user_id, parent.user_id, "{path}: memory scope lost");
+        assert_eq!(child.door, types::permissions::Door::Helper, "{path}: a child is a helper");
         assert_eq!(child.origin, tools::Origin::System, "{path}: a child never asks the owner");
     }
 
@@ -1710,7 +1724,14 @@ mod child_limits {
         call(&tool, &ctx, serde_json::json!({"resource": "task", "action": "spawn", "prompt": "list the files", "wait": true})).await;
         let req = rec.take().pop().expect("spawn reached the orchestrator");
         let child = build_subagent_request(&req, "subagent:agent:a1:web:sa-1", "p", &CancellationToken::new());
-        assert_eq!(child.permissions.as_ref().and_then(|p| p.get("shell")), Some(&false), "shell came back ON");
+        let denied = match &child.ceiling {
+            Some(types::permissions::Ceiling::Parent { grant }) => grant.rules.iter().any(|r| {
+                r.key == types::permissions::RuleKey::Capability("shell".into())
+                    && r.effect == types::permissions::Effect::Deny
+            }),
+            _ => false,
+        };
+        assert!(denied, "shell came back ON");
         assert_limited_like(&child, &ctx, "spawn");
     }
 
@@ -1771,18 +1792,24 @@ mod child_limits {
     async fn an_unrestricted_parent_has_an_unrestricted_child() {
         let rec = Recorder::default();
         let (_dir, tool) = agent_tool(&rec);
+        let grant = types::permissions::Grant::new("", types::permissions::Mode::FullAccess);
         let ctx = ToolContext {
             session_id: "s1".into(),
             session_key: "agent:assistant:web".into(),
-            full_access: true,
+            grant: Some(std::sync::Arc::new(grant)),
             ..Default::default()
         };
         call(&tool, &ctx, serde_json::json!({"resource": "task", "action": "spawn", "prompt": "a"})).await;
         let req = rec.take().pop().unwrap();
         let child = build_subagent_request(&req, "subagent:agent:assistant:web:sa-1", "p", &CancellationToken::new());
-        assert!(child.permissions.is_none() && child.resource_grants.is_none() && child.operation_policy.is_none());
-        assert!(child.tool_allowlist.is_none() && child.allowed_paths.is_empty() && child.seed_taint.is_empty());
-        assert!(child.full_access, "the owner's Full Access did not reach the child");
+        assert!(child.tool_allowlist.is_none() && child.fence.is_none() && child.seed_taint.is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        assert_eq!(
+            crate::runner::run_grant(&store, &child).mode,
+            types::permissions::Mode::FullAccess,
+            "the owner's Full Access did not reach the child"
+        );
     }
 
     /// Taint the parent picked up travels down: a child of a run that read
@@ -1809,7 +1836,7 @@ mod child_limits {
         let parent = SpawnRequest {
             model_override: "janus/parent".into(),
             parent_session_key: "agent:a1:web".into(),
-            seat: tools::orchestrator::ChildSeat { allowed_paths: vec!["/work/a".into()], ..Default::default() },
+            seat: tools::orchestrator::ChildSeat { fence: Some(vec!["/work/a".into()]), ..Default::default() },
             ..Default::default()
         };
         let mut node = crate::task_graph::TaskNode {
@@ -1827,7 +1854,7 @@ mod child_limits {
         node.model_override = "janus/node".into();
         let req = dag_node_request(&parent, &node);
         assert_eq!(req.model_override, "janus/node");
-        assert_eq!(req.seat.allowed_paths, vec!["/work/a".to_string()]);
+        assert_eq!(req.seat.fence, Some(vec!["/work/a".into()]));
         assert_eq!(req.parent_session_key, "agent:a1:web");
     }
 }

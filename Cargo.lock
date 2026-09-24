@@ -5631,6 +5631,7 @@ dependencies = [
  "nebo-comm",
  "nebo-config",
  "nebo-db",
+ "nebo-mcp",
  "nebo-napp",
  "nebo-notify",
  "nebo-tools",
@@ -5987,6 +5988,7 @@ dependencies = [
 name = "nebo-tools"
 version = "0.15.0"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "dirs",

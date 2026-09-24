@@ -792,7 +792,7 @@ pub(crate) async fn finalize_skill_install(
     state.skill_loader.reload_from_disk().await;
 }
 
-/// Land a seat's declaration on its per-employee approval policy.
+/// Land a seat's declaration on its permission rules.
 ///
 /// The ONE routine for it (CODE_AUDITOR 8.1). Two entry points reach it, and
 /// they must not drift: `finalize_agent_install`, when a package arrives, and
@@ -800,71 +800,46 @@ pub(crate) async fn finalize_skill_install(
 /// settings page. A packaged employee and an owner-built one are the same
 /// object — so the thing that gives their declaration effect is one function,
 /// not two copies that forget different steps.
+///
+/// The package's `ceiling` is its own DECLARATION of what this employee
+/// performs and must not perform unattended — including operations no list
+/// of ours has ever heard of (an owner's own employee, built around their own
+/// capability). Each entry lands as an ask rule on the operation, written by
+/// the package: it asks until the owner says otherwise, and a package never
+/// replaces a rule the owner has written for the operation. A declaration
+/// restricts; it never grants (`napp` refuses any ceiling value but
+/// "approval" when it parses the manifest).
 pub(crate) fn apply_seat_declaration(
     store: &db::Store,
     agent_id: &str,
     config: &napp::agent::AgentConfig,
 ) {
-    // Seed the per-employee approval policy so a fresh install is
-    // protected out of the box: every gated operation of its bound
-    // interfaces defaults to "Needs approval" from install time —
-    // NOT from the first visit to the Approvals page. Seed-if-absent
-    // so a reinstall never clobbers the customer's tuned policy.
-    //
-    // The package's `ceiling` is its own DECLARATION of what this
-    // employee performs and must not perform unattended — including
-    // operations no list of ours has ever heard of (an owner's own
-    // employee, built around their own capability). Each entry lands
-    // as an unlocked `Approval` rule sourced `seat`, which is what
-    // makes the operation gateable at all: it appears on the
-    // Approvals screen, it asks until the owner says otherwise, the
-    // employee-wide default cannot loosen it, and — because it is
-    // NOT locked — the owner and the General Manager can still grant
-    // it. A declaration restricts; it never grants (see
-    // `OperationRule::may_grant`), and `napp` already refuses any
-    // ceiling value but "approval" when it parses the manifest.
-    if !config.requires.interfaces.is_empty() || !config.ceiling.is_empty() {
-        let existing = store
-            .get_entity_config("agent", agent_id)
-            .ok()
-            .flatten()
-            .and_then(|c| c.operation_policy);
-        let seeding = existing.is_none();
-        let mut policy =
-            tools::policy::OperationPolicy::from_json(existing.as_deref());
-        let mut added = 0usize;
-        for op in config.ceiling.keys() {
-            let suffix = tools::plugin_tool::port_suffix(op);
-            if suffix.is_empty() || policy.operations.contains_key(&suffix) {
-                continue; // never overwrite a law, a grant, or the owner's own row
-            }
-            policy.operations.insert(
-                suffix,
-                tools::policy::OperationRule {
-                    access: tools::policy::OperationAccess::Approval,
-                    source: Some("seat".to_string()),
-                    granted_at: Some(chrono::Utc::now().timestamp()),
-                    ..Default::default()
-                },
-            );
-            added += 1;
+    use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
+    let by = Writer::Package { package: agent_id.to_string() };
+    let mut landed = 0usize;
+    for op in config.ceiling.keys() {
+        let suffix = tools::plugin_tool::port_suffix(op);
+        if suffix.is_empty() {
+            continue;
         }
-        if seeding || added > 0 {
-            let patch = serde_json::json!({
-                "operationPolicy": policy.to_json()
-            });
-            if let Err(e) =
-                store.upsert_entity_config("agent", agent_id, &patch)
-            {
-                tracing::warn!(agent = agent_id, error = %e, "failed to seed default operation policy");
-            } else if added > 0 {
-                tracing::info!(
-                    agent = agent_id,
-                    declared = added,
-                    "the employee's declared ceiling landed as operations that ask"
-                );
-            }
+        let rule = Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: Scope::Employee(agent_id.to_string()),
+            key: RuleKey::Operation(suffix),
+            field: None,
+            effect: Effect::Ask,
+            money: None,
+            source: RuleSource::Package { package: agent_id.to_string() },
+            locked: false,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        match store.write_permission_rule(&rule, &by) {
+            Ok(_) => landed += 1,
+            Err(e) => tracing::warn!(agent = agent_id, error = %e, "the declared ceiling did not land"),
         }
+    }
+    if landed > 0 {
+        tracing::info!(agent = agent_id, declared = landed, "the employee's declared ceiling landed as operations that ask");
     }
 }
 
@@ -2861,14 +2836,22 @@ mod tests {
     /// the fs watcher). The learning-mode seed is its first-time signal: it
     /// seeds once and reports true once. Mutation check: with the `has_mode`
     /// early return removed, the second assertion fails.
+    fn operation_rules(store: &db::Store, agent: &str) -> Vec<(String, types::permissions::Effect, types::permissions::RuleSource)> {
+        store
+            .permission_rules_in(&types::permissions::Scope::Employee(agent.to_string()))
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.key.value().to_string(), r.effect, r.source))
+            .collect()
+    }
+
     /// Rule 8.1: an owner-built employee and a packaged one are the same object.
     /// The declaration an owner authors on the settings page and the one a
-    /// package ships go through THIS routine — so the policy they produce is
-    /// byte-identical, not merely similar. Mutation check: point `update_agent`
-    /// at its own copy of the seeding and this test still passes, which is why
-    /// it also asserts the routine is reached with the same argument shape.
+    /// package ships go through THIS routine — so the rules they produce are
+    /// the same, not merely similar.
     #[test]
     fn an_owner_authored_ceiling_lands_exactly_where_a_packaged_one_does() {
+        use types::permissions::{Effect, RuleSource};
         let dir = tempfile::tempdir().expect("tempdir");
         let store =
             db::Store::new(&dir.path().join("t.db").to_string_lossy()).expect("store");
@@ -2891,34 +2874,24 @@ mod tests {
         apply_seat_declaration(&store, "packaged", &packaged);
         apply_seat_declaration(&store, "owner-built", &owner_built);
 
-        let read = |id: &str| {
-            let raw = store
-                .get_entity_config("agent", id)
-                .unwrap()
-                .unwrap()
-                .operation_policy;
-            tools::policy::OperationPolicy::from_json(raw.as_deref())
-        };
-        let from_package = read("packaged");
-        let from_owner = read("owner-built");
-
-        assert_eq!(from_owner.default, from_package.default);
-        assert_eq!(from_owner.operations, from_package.operations);
+        let from_package = operation_rules(&store, "packaged");
+        let from_owner = operation_rules(&store, "owner-built");
+        assert_eq!(from_package.len(), 1);
+        assert_eq!(from_owner.len(), 1);
+        assert_eq!((from_owner[0].0.as_str(), from_owner[0].1), (from_package[0].0.as_str(), from_package[0].1));
 
         // And it is a real gate, not a stored string: the declared operation
-        // asks, and it says the seat is why.
-        let rule = from_owner
-            .operations
-            .get("ledger.payment.apply")
-            .expect("the declared ceiling is on the policy");
-        assert_eq!(rule.access, tools::policy::OperationAccess::Approval);
-        assert_eq!(rule.source.as_deref(), Some("seat"));
+        // asks, and it says the package is why.
+        assert_eq!(from_owner[0].0, "ledger.payment.apply");
+        assert_eq!(from_owner[0].1, Effect::Ask);
+        assert_eq!(from_owner[0].2, RuleSource::Package { package: "owner-built".into() });
     }
 
     /// A second save must not undo what the owner has since decided. The
-    /// declaration seeds a row; it never overwrites one.
+    /// declaration seeds a rule; it never overwrites the owner's.
     #[test]
     fn re_applying_a_declaration_leaves_the_owners_own_decision_alone() {
+        use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
         let dir = tempfile::tempdir().expect("tempdir");
         let store =
             db::Store::new(&dir.path().join("t.db").to_string_lossy()).expect("store");
@@ -2929,51 +2902,31 @@ mod tests {
 
         apply_seat_declaration(&store, "emp", &config);
 
-        // The owner grants it on the Approvals page.
-        let mut policy = tools::policy::OperationPolicy::from_json(
-            store
-                .get_entity_config("agent", "emp")
-                .unwrap()
-                .unwrap()
-                .operation_policy
-                .as_deref(),
-        );
-        policy
-            .apply_edit(
-                "ledger.payment.apply",
-                tools::policy::OperationRule {
-                    access: tools::policy::OperationAccess::Always,
-                    source: Some("owner".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("the owner may grant an unlocked declared operation");
+        // The owner allows it on the employee's Permissions page.
         store
-            .upsert_entity_config(
-                "agent",
-                "emp",
-                &serde_json::json!({ "operationPolicy": policy.to_json() }),
+            .write_permission_rule(
+                &Rule {
+                    id: "owner".into(),
+                    scope: Scope::Employee("emp".into()),
+                    key: RuleKey::Operation("ledger.payment.apply".into()),
+                    field: None,
+                    effect: Effect::Allow,
+                    money: None,
+                    source: RuleSource::Owner,
+                    locked: false,
+                    created_at: 1,
+                },
+                &Writer::Owner,
             )
-            .unwrap();
+            .expect("the owner may allow a declared operation");
 
         // Saving the settings page again re-applies the same declaration.
         apply_seat_declaration(&store, "emp", &config);
 
-        let after = tools::policy::OperationPolicy::from_json(
-            store
-                .get_entity_config("agent", "emp")
-                .unwrap()
-                .unwrap()
-                .operation_policy
-                .as_deref(),
-        );
-        let rule = after.operations.get("ledger.payment.apply").unwrap();
-        assert_eq!(
-            rule.access,
-            tools::policy::OperationAccess::Always,
-            "the owner's grant survives a re-save of the declaration"
-        );
-        assert_eq!(rule.source.as_deref(), Some("owner"));
+        let after = operation_rules(&store, "emp");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].1, Effect::Allow, "the owner's allow survives a re-save of the declaration");
+        assert_eq!(after[0].2, RuleSource::Owner);
     }
 
     #[test]

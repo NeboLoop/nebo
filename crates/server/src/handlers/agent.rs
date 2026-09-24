@@ -117,7 +117,12 @@ pub struct SessionMessagesQuery {
 
 /// GET /api/v1/agent/settings
 pub async fn get_settings(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    let settings = state.store.get_settings().map_err(to_error_response)?;
+    let mut settings = state.store.get_settings().map_err(to_error_response)?;
+    // Full Access is the company's permission mode.
+    if let Some(s) = settings.as_mut() {
+        let mode = state.store.permission_mode(&types::permissions::Scope::Company).map_err(to_error_response)?;
+        s.full_access = (mode == Some(types::permissions::Mode::FullAccess)) as i64;
+    }
     Ok(Json(serde_json::json!({"settings": settings})))
 }
 
@@ -138,9 +143,17 @@ pub async fn update_settings(
             body["commPlugin"].as_str(),
             body["developerMode"].as_bool(),
             body["autoUpdate"].as_bool(),
-            body["fullAccess"].as_bool(),
         )
         .map_err(to_error_response)?;
+    // Full Access is the company's permission mode; every other employee
+    // without its own mode runs Automatic.
+    if let Some(full) = body["fullAccess"].as_bool() {
+        let mode = if full { types::permissions::Mode::FullAccess } else { types::permissions::Mode::Automatic };
+        state
+            .store
+            .set_permission_mode(&types::permissions::Scope::Company, mode)
+            .map_err(to_error_response)?;
+    }
 
     // Loop-guardrail thresholds (Settings → Developer). Round-trip through the
     // typed config so junk fields are dropped and floors are enforced before

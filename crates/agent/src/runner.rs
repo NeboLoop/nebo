@@ -42,23 +42,28 @@ mod notice_tests {
     #[test]
     fn outside_origins_lose_full_access_and_get_a_closed_allowlist() {
         use tools::Origin;
-        let mut req = RunRequest { origin: Origin::Visitor, full_access: true, ..Default::default() };
+        use types::permissions::{Mode, Scope};
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        store.set_permission_mode(&Scope::Company, Mode::FullAccess).unwrap();
+
+        let mut req = RunRequest { origin: Origin::Visitor, ..Default::default() };
         restrict_outside_origin(&mut req);
-        assert!(!req.full_access, "Full Access is an owner-surface concept; a visitor never has it");
+        assert_eq!(run_grant(&store, &req).mode, Mode::Automatic, "Full Access is an owner-surface concept; a visitor never has it");
         assert_eq!(req.tool_allowlist.as_ref().map(|s| s.len()), Some(0), "no channel policy = zero tools");
         assert!(req.tool_denial_hint.as_deref().unwrap_or("").contains("conversation"));
 
         // A channel that enabled something keeps exactly that.
-        let mut caller = RunRequest { origin: Origin::Caller, full_access: true, ..Default::default() };
+        let mut caller = RunRequest { origin: Origin::Caller, ..Default::default() };
         caller.tool_allowlist = Some(["agent:memory".to_string()].into_iter().collect());
         restrict_outside_origin(&mut caller);
-        assert!(!caller.full_access);
+        assert_eq!(run_grant(&store, &caller).mode, Mode::Automatic);
         assert_eq!(caller.tool_allowlist.as_ref().map(|s| s.len()), Some(1));
 
         // The owner's own surfaces are untouched.
-        let mut owner = RunRequest { origin: Origin::User, full_access: true, ..Default::default() };
+        let mut owner = RunRequest { origin: Origin::User, ..Default::default() };
         restrict_outside_origin(&mut owner);
-        assert!(owner.full_access);
+        assert_eq!(run_grant(&store, &owner).mode, Mode::FullAccess);
         assert!(owner.tool_allowlist.is_none());
     }
 
@@ -514,9 +519,9 @@ pub fn scrub_outside_reply(text: &str) -> String {
 }
 
 /// The outside fence. A run whose words come from a stranger — a phone
-/// caller, a visitor from a QR scan or an embedded chat — never keeps Full
-/// Access (that is an owner-surface concept) and always carries a tool
-/// allowlist: the channel's policy when the owner enabled something, empty
+/// caller, a visitor from a QR scan or an embedded chat — always carries a
+/// tool allowlist (and never runs in Full Access: see [`run_grant`]): the
+/// channel's policy when the owner enabled something, empty
 /// otherwise. An empty allowlist means the model is shown no tools at all and
 /// the runner gate and the registry choke point refuse anything it invents.
 /// This is the ONE place the rule is applied; every ingress benefits.
@@ -524,7 +529,6 @@ pub(crate) fn restrict_outside_origin(req: &mut RunRequest) {
     if !req.origin.is_outside() {
         return;
     }
-    req.full_access = false;
     if req.tool_allowlist.is_none() {
         req.tool_allowlist = Some(std::collections::HashSet::new());
     }
@@ -536,6 +540,32 @@ pub(crate) fn restrict_outside_origin(req: &mut RunRequest) {
                 .to_string(),
         );
     }
+}
+
+/// The grant a run holds: its employee's rules and mode (the run's own mode
+/// if it names one), the ceiling and fence it can only narrow, and the
+/// project folder it works in. A stranger's run never holds Full Access:
+/// that is an owner-surface concept.
+pub(crate) fn run_grant(store: &Store, req: &RunRequest) -> types::permissions::Grant {
+    // A helper holds its parent's grant (mode, rules, money limits), under
+    // that grant as its ceiling: it can only narrow.
+    let mut grant = match &req.ceiling {
+        Some(types::permissions::Ceiling::Parent { grant: parent }) => {
+            let mut own = (**parent).clone();
+            if let Some(mode) = req.mode {
+                own.mode = mode;
+            }
+            own
+        }
+        _ => crate::harness::permissions::resolve_grant(store, &req.agent_id, req.mode),
+    };
+    if req.origin.is_outside() && grant.mode == types::permissions::Mode::FullAccess {
+        grant.mode = types::permissions::Mode::Automatic;
+    }
+    grant.ceiling = req.ceiling.clone();
+    grant.fence = req.fence.clone();
+    grant.run_folders = req.cwd.iter().map(std::path::PathBuf::from).collect();
+    grant
 }
 
 /// The pictures a user row has to store as bytes: the ones no attachment
@@ -570,6 +600,15 @@ pub struct RunRequest {
     /// desktop's Interactive runs don't need this; it exists so a run whose
     /// approvals reach the owner over comm isn't treated as unattended.
     pub approval_relay: bool,
+    /// The entry this run came through (chat, helper, workflow, schedule,
+    /// heartbeat, coworker, voice, MCP). Recorded with every decision.
+    pub door: types::permissions::Door,
+    /// A run override of the employee's permission mode; `None` = its own.
+    pub mode: Option<types::permissions::Mode>,
+    /// The grant this run can only narrow: its parent's (a helper).
+    pub ceiling: Option<types::permissions::Ceiling>,
+    /// A hard fence for this run: an isolated helper's own copy.
+    pub fence: Option<Vec<std::path::PathBuf>>,
     /// Agent-to-agent handoff depth for this run's outbound messages (0 = not
     /// a handoff). Stamped on loop-tool sends so receiving bots enforce the
     /// depth cap even on tool-authored messages, not just runner replies.
@@ -583,13 +622,6 @@ pub struct RunRequest {
     /// When set, this run executes as a specific agent (persona). The agent's persona
     /// replaces the default identity, and session history is isolated.
     pub agent_id: String,
-    /// Per-entity permission overrides (tool category → allowed).
-    pub permissions: Option<HashMap<String, bool>>,
-    /// Per-employee three-state approval policy over gated interface operations
-    /// (Always / Approval / Blocked). None = inherit seat defaults.
-    pub operation_policy: Option<tools::policy::OperationPolicy>,
-    /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
-    pub resource_grants: Option<HashMap<String, String>>,
     /// Per-entity model preference (fuzzy-resolved before provider selection).
     pub model_preference: Option<String>,
     /// Per-entity personality snippet prepended to system prompt.
@@ -600,9 +632,6 @@ pub struct RunRequest {
     /// size, url). Kept on the user row so a reloaded transcript still shows
     /// them; the "[Attached: …]" note in the text is for the model.
     pub attachments: Vec<comm::wire::Attachment>,
-    /// Allowed filesystem paths — restricts file writes and shell commands to these directories.
-    /// Empty = unrestricted.
-    pub allowed_paths: Vec<String>,
     /// Default working directory for shell commands and relative file paths
     /// (an isolated sub-agent's worktree). None = the process cwd.
     pub cwd: Option<String>,
@@ -661,10 +690,6 @@ pub struct RunRequest {
     /// plugin tool can inject `NEBO_CHANNEL_*` env vars into plugin processes
     /// (e.g. for `slack upload`). See `docs/publishers-guide/channel-plugins.md`.
     pub channel_ctx: Option<tools::ChannelContext>,
-    /// Master "Full Access" flag (settings.full_access). When true, the runner's
-    /// per-tool approval gate is bypassed entirely — the agent executes without
-    /// asking. When false, an OFF capability prompts via the Approval Modal.
-    pub full_access: bool,
     /// Provenance classes seeding this run's taint set — the taint of the
     /// TRIGGERING input (a coworker envelope's provenance, a remote channel
     /// message). The runner unions tool-derived classes on top and stamps the
@@ -1147,7 +1172,6 @@ impl Runner {
         info!(
             session_key = %req.session_key,
             channel = %req.channel,
-            full_access = req.full_access,
             "Runner.run() called"
         );
         {
@@ -1568,11 +1592,8 @@ impl Runner {
             DEFAULT_MAX_ITERATIONS
         };
         let min_iterations = req.min_iterations;
-        let entity_permissions = req.permissions.clone();
-        let operation_policy = req.operation_policy.clone();
-        let entity_resource_grants = req.resource_grants.clone();
+        let grant = Arc::new(run_grant(&self.store, &req));
         let personality_snippet = req.personality_snippet.clone();
-        let allowed_paths = req.allowed_paths.clone();
         let run_cwd = req.cwd.clone();
         let presence_tracker = req.presence_tracker.clone();
         let proactive_inbox = req.proactive_inbox.clone();
@@ -1580,7 +1601,6 @@ impl Runner {
         let progress = Some(progress);
         let ask_channels = self.ask_channels.clone();
         let approval_channels = self.approval_channels.clone();
-        let full_access = req.full_access;
         let embedding_provider = self.embedding_provider.clone();
         let hybrid_searcher = self.hybrid_searcher.clone();
         let tool_scope = req.tool_scope.clone();
@@ -1654,13 +1674,11 @@ impl Runner {
                         &agent_registry,
                         &agent_id,
                         personality_snippet.as_deref(),
-                        entity_permissions.as_ref(),
-                        operation_policy.as_ref(),
-                        entity_resource_grants.as_ref(),
+                        &grant,
+                        &req.door,
                         &user_prompt,
                         &force_skill,
                         skill_loader.as_deref(),
-                        &allowed_paths,
                         run_cwd.as_deref(),
                         presence_tracker.as_ref(),
                         proactive_inbox.as_ref(),
@@ -1669,7 +1687,6 @@ impl Runner {
                         progress.as_ref(),
                         ask_channels.as_ref(),
                         approval_channels.as_ref(),
-                        full_access,
                         req.approval_relay,
                         req.handoff_depth,
                         embedding_provider.as_ref(),
@@ -1761,13 +1778,11 @@ impl Runner {
                 &agent_registry,
                 &agent_id,
                 personality_snippet.as_deref(),
-                entity_permissions.as_ref(),
-                operation_policy.as_ref(),
-                entity_resource_grants.as_ref(),
+                &grant,
+                &req.door,
                 &user_prompt,
                 &force_skill,
                 skill_loader.as_deref(),
-                &allowed_paths,
                 run_cwd.as_deref(),
                 presence_tracker.as_ref(),
                 proactive_inbox.as_ref(),
@@ -1776,7 +1791,6 @@ impl Runner {
                 progress.as_ref(),
                 ask_channels.as_ref(),
                 approval_channels.as_ref(),
-                full_access,
                 req.approval_relay,
                 req.handoff_depth,
                 embedding_provider.as_ref(),
@@ -1875,11 +1889,9 @@ impl Runner {
                     let agent_registry_rf = agent_registry.clone();
                     let agent_id_rf = agent_id.clone();
                     let personality_snippet_rf = personality_snippet.clone();
-                    let entity_permissions_rf = entity_permissions.clone();
-                    let operation_policy_rf = operation_policy.clone();
-                    let entity_resource_grants_rf = entity_resource_grants.clone();
+                    let grant_rf = grant.clone();
+                    let door_rf = req.door.clone();
                     let skill_loader_rf = skill_loader.clone();
-                    let allowed_paths_rf = allowed_paths.clone();
                     let run_cwd_rf = run_cwd.clone();
                     let embedding_provider_rf = embedding_provider.clone();
                     let hybrid_searcher_rf = hybrid_searcher.clone();
@@ -1962,13 +1974,11 @@ impl Runner {
                             &agent_registry_rf,
                             &agent_id_rf,
                             personality_snippet_rf.as_deref(),
-                            entity_permissions_rf.as_ref(),
-                            operation_policy_rf.as_ref(),
-                            entity_resource_grants_rf.as_ref(),
+                            &grant_rf,
+                            &door_rf,
                             crate::review_fork::REVIEW_PROMPT,
                             "",
                             skill_loader_rf.as_deref(),
-                            &allowed_paths_rf,
                             run_cwd_rf.as_deref(),
                             None,
                             None,
@@ -1977,7 +1987,6 @@ impl Runner {
                             None,
                             None,
                             None,
-                            false, // no full_access — the whitelist blocks shell anyway
                             false, // review forks never relay approvals
                             0,     // review forks never hand off
                             embedding_provider_rf.as_ref(),
@@ -2218,13 +2227,11 @@ async fn run_loop(
     agent_registry: &tools::AgentRegistry,
     agent_id: &str,
     personality_snippet: Option<&str>,
-    entity_permissions: Option<&HashMap<String, bool>>,
-    operation_policy: Option<&tools::policy::OperationPolicy>,
-    entity_resource_grants: Option<&HashMap<String, String>>,
+    grant: &Arc<types::permissions::Grant>,
+    door: &types::permissions::Door,
     user_prompt: &str,
     force_skill: &str,
     skill_loader: Option<&tools::skills::Loader>,
-    allowed_paths: &[String],
     run_cwd: Option<&str>,
     presence_tracker: Option<&Arc<crate::proactive::PresenceTracker>>,
     proactive_inbox: Option<&Arc<crate::proactive::ProactiveInbox>>,
@@ -2233,7 +2240,6 @@ async fn run_loop(
     progress: Option<&RunProgress>,
     ask_channels: Option<&tools::AskChannels>,
     approval_channels: Option<&tools::ApprovalChannels>,
-    full_access: bool,
     approval_relay: bool,
     handoff_depth: u8,
     embedding_provider: Option<&Arc<dyn ai::EmbeddingProvider>>,
@@ -4201,10 +4207,9 @@ async fn run_loop(
             origin,
             memory_user_id: &memory_user_id,
             handoff_depth,
-            entity_permissions,
-            operation_policy,
-            entity_resource_grants,
-            allowed_paths,
+            grant,
+            door,
+            untrusted_input: workflow_mode.is_some_and(|m| m.tainted),
             run_cwd,
             cancel_token,
             tx,
@@ -4218,7 +4223,6 @@ async fn run_loop(
             memory_write_bar: &memory_write_bar,
             audience_restricted,
             memory_matter: &memory_matter,
-            full_access,
             review_fork: review_fork.as_ref(),
             tool_allowlist,
             tool_denial_hint: &tool_denial_hint,
@@ -4233,16 +4237,6 @@ async fn run_loop(
                 credentials.issue(crate::tool_credentials::RunGrant {
                     ctx: tool_scope.tool_context(),
                     agent_id: agent_id.to_string(),
-                    approval: approval_channels.map(|channels| {
-                        crate::tool_credentials::OwnedApprovalDoor {
-                            channels: channels.clone(),
-                            tx: tx.clone(),
-                            cancel_token: cancel_token.clone(),
-                        }
-                    }),
-                    approval_relay,
-                    workflow_mode: workflow_mode.cloned(),
-                    sessions: Some(sessions.clone()),
                 })
             }
         });
@@ -4418,60 +4412,33 @@ async fn run_loop(
                             .join(", ")
                     )
                 };
-
-                let request_id = uuid::Uuid::new_v4().to_string();
                 let tool_names: Vec<String> = tool_calls.iter().map(|tc| tc.name.clone()).collect();
-
-                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                ask_chs.lock().await.insert(request_id.clone(), resp_tx);
-
-                let _ = tx
-                    .send(StreamEvent::plan_approval_request(
-                        &request_id,
-                        &plan_text,
-                        tool_names,
-                    ))
-                    .await;
-
-                info!(session_id, request_id = %request_id, "plan mode: waiting for user approval");
-
-                let approved = tokio::select! {
-                    _ = cancel_token.cancelled() => {
+                use crate::harness::permissions::plan::{approve_plan, PlanAnswer};
+                match approve_plan(ask_chs, tx, cancel_token, session_id, &plan_text, tool_names).await {
+                    PlanAnswer::Cancelled => {
                         info!(session_id, "plan approval cancelled");
-                        ask_chs.lock().await.remove(&request_id);
                         return Ok(turn_exit_reason.label());
                     }
-                    result = resp_rx => {
-                        match result {
-                            Ok(value) => {
-                                let v = value.to_lowercase();
-                                v == "approve" || v == "approved" || v == "yes" || v == "true"
-                            }
-                            Err(_) => false,
-                        }
+                    PlanAnswer::Rejected => {
+                        info!(session_id, "plan rejected by user");
+                        let _ = tx
+                            .send(StreamEvent::text(
+                                "\n\nPlan was rejected. Let me know how you'd like to proceed."
+                                    .to_string(),
+                            ))
+                            .await;
+                        let _ = sessions.append_message(
+                            session_id,
+                            "assistant",
+                            "Plan was rejected. Let me know how you'd like to proceed.",
+                            None,
+                            None,
+                            None,
+                        );
+                        break;
                     }
-                };
-
-                if !approved {
-                    info!(session_id, "plan rejected by user");
-                    let _ = tx
-                        .send(StreamEvent::text(
-                            "\n\nPlan was rejected. Let me know how you'd like to proceed."
-                                .to_string(),
-                        ))
-                        .await;
-                    let _ = sessions.append_message(
-                        session_id,
-                        "assistant",
-                        "Plan was rejected. Let me know how you'd like to proceed.",
-                        None,
-                        None,
-                        None,
-                    );
-                    break;
+                    PlanAnswer::Approved => info!(session_id, "plan approved, proceeding with tool execution"),
                 }
-
-                info!(session_id, "plan approved, proceeding with tool execution");
             }
         }
 
@@ -4520,11 +4487,9 @@ async fn run_loop(
                 &crate::harness::tool_round::RoundContext {
                     scope: tool_scope,
                     tools,
-                    store,
                     providers,
                     concurrency,
                     hooks,
-                    agent_id,
                     user_prompt,
                     iteration,
                     approval_channels,

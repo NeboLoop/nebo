@@ -316,18 +316,39 @@ impl Nebo {
         self.store().get_agent(id).unwrap().unwrap_or_else(|| panic!("no agent {id}"))
     }
 
-    /// The seat's operation policy as the server stores it (`None` = never
-    /// configured).
-    pub fn stored_policy(&self, agent_id: &str) -> Option<tools::policy::OperationPolicy> {
+    /// The seat's own rules on operations, by operation.
+    pub fn operation_rules(&self, agent_id: &str) -> std::collections::HashMap<String, types::permissions::Rule> {
         self.store()
-            .get_entity_config("agent", agent_id)
+            .permission_rules_in(&types::permissions::Scope::Employee(agent_id.to_string()))
             .unwrap()
-            .and_then(|c| c.operation_policy)
-            .map(|j| tools::policy::OperationPolicy::from_json(Some(&j)))
+            .into_iter()
+            .filter_map(|r| match &r.key {
+                types::permissions::RuleKey::Operation(op) if r.field.is_none() => Some((op.clone(), r)),
+                _ => None,
+            })
+            .collect()
     }
 
-    pub fn policy(&self, agent_id: &str) -> tools::policy::OperationPolicy {
-        self.stored_policy(agent_id).unwrap_or_default()
+    /// How the one permission check decides a call on `op` (moving
+    /// `amount_cents`, if any) for the seat, from a run arriving over
+    /// `origin`.
+    pub fn decide(&self, agent_id: &str, op: &str, origin: tools::Origin, amount_cents: Option<i64>) -> types::permissions::Decision {
+        let grant = agent::resolve_grant(&self.store(), agent_id, None);
+        let ctx = Self::ctx(agent_id, origin);
+        let input = json!({});
+        let cx = agent::harness::permissions::CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &self.store() };
+        let mut effects = types::permissions::CallEffects::unknown();
+        effects.money_cents = amount_cents;
+        let target = types::permissions::Target {
+            tool: "plugin".into(),
+            key: tools::plugin_tool::port_suffix(op),
+            operation: Some(op.to_string()),
+            capability: None,
+            field: None,
+            read_only: false,
+            effects,
+        };
+        agent::harness::permissions::decide(&cx, &target)
     }
 
     /// The company level of the policy, as the server stores it.

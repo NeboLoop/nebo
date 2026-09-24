@@ -1230,6 +1230,23 @@ impl DynTool for PluginTool {
         matches!(action, "list" | "events")
     }
 
+    /// A typed operation names what it moves: `amount_cents` and the
+    /// `counterparty` it goes to, when the call states them.
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        let mut effects = if self.read_only(input) {
+            types::permissions::CallEffects::none()
+        } else {
+            types::permissions::CallEffects::unknown()
+        };
+        effects.money_cents = input.get("amount_cents").and_then(|v| v.as_i64());
+        effects.counterparty = input
+            .get("counterparty")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        effects
+    }
+
     fn rule_key(&self, input: &serde_json::Value) -> String {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("exec");
         match action {

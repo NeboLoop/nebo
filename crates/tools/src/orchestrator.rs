@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
@@ -11,43 +11,48 @@ use crate::ToolContext;
 /// The limits a sub-agent runs under: its parent run's, copied from the
 /// parent's `ToolContext` by [`SpawnRequest::child_of`]. Nothing the model
 /// sends reaches these fields, so a child is limited exactly like its parent
-/// (or further, by isolation) and never less. `None`/empty means "no limit"
-/// to the runner's gates, which is why a child must never start from
+/// (or further, by isolation) and never less. A child must never start from
 /// `Default`.
 #[derive(Debug, Clone, Default)]
 pub struct ChildSeat {
-    /// Capability toggles (category → allowed).
-    pub permissions: Option<HashMap<String, bool>>,
-    /// Per-employee approval policy over gated operations.
-    pub operation_policy: Option<crate::policy::OperationPolicy>,
-    /// Resource grants (resource → "allow" | "deny" | "inherit").
-    pub resource_grants: Option<HashMap<String, String>>,
+    /// The parent run's grant: the child's ceiling and the mode it runs in.
+    /// `None` only when the parent ran without one; the child then runs
+    /// under its employee's own grant.
+    pub grant: Option<Arc<types::permissions::Grant>>,
+    /// A hard fence for the child: file writes and shell stay inside these.
+    /// The parent's fence, or an isolated child's own copy.
+    pub fence: Option<Vec<std::path::PathBuf>>,
     /// Restricted-run allowlist (outside callers, review fork).
     pub tool_allowlist: Option<HashSet<String>>,
     /// The denial text that goes with `tool_allowlist`.
     pub tool_denial_hint: Option<String>,
-    /// Path fence: file writes and shell stay inside these. Empty = no fence.
-    pub allowed_paths: Vec<String>,
     /// Default working directory (an isolated parent's copy).
     pub cwd: Option<String>,
-    /// The owner's Full Access switch as the parent ran with it.
-    pub full_access: bool,
     /// Classes of untrusted content the parent had touched when it spawned.
     pub taint: Vec<types::provenance::ProvenanceClass>,
 }
 
 impl ChildSeat {
     /// Fence an isolated child to its own copy of `workspace`. A fenced
-    /// parent may only isolate a project inside its fence: the copy is merged
-    /// back into `workspace`, so isolating anything else would write where
-    /// the parent cannot.
+    /// parent may only isolate a project inside its folders: the copy is
+    /// merged back into `workspace`, so isolating anything else would write
+    /// where the parent cannot.
     pub fn isolate_to(&mut self, workspace: &str, copy: &str) -> Result<(), String> {
-        if let Some(blocked) =
-            crate::safeguard::outside_allowed("isolate", &[workspace.to_string()], &self.allowed_paths)
+        let strings = |v: &[std::path::PathBuf]| -> Vec<String> {
+            v.iter().map(|p| p.to_string_lossy().into_owned()).collect()
+        };
+        let folders = self.grant.as_ref().map(|g| g.folders()).unwrap_or_default();
+        let target = [workspace.to_string()];
+        if let Some(blocked) = crate::safeguard::outside_allowed("isolate", &target, &strings(&folders))
+            .or_else(|| {
+                self.fence
+                    .as_ref()
+                    .and_then(|f| crate::safeguard::outside_allowed("isolate", &target, &strings(f)))
+            })
         {
             return Err(blocked);
         }
-        self.allowed_paths = vec![copy.to_string()];
+        self.fence = Some(vec![std::path::PathBuf::from(copy)]);
         self.cwd = Some(copy.to_string());
         Ok(())
     }
@@ -133,14 +138,11 @@ impl SpawnRequest {
             parent_stream_tx: ctx.stream_tx.clone(),
             handoff_depth: ctx.handoff_depth,
             seat: ChildSeat {
-                permissions: ctx.entity_permissions.clone(),
-                operation_policy: ctx.operation_policy.clone(),
-                resource_grants: ctx.resource_grants.clone(),
+                grant: ctx.grant.clone(),
+                fence: ctx.grant.as_ref().and_then(|g| g.fence.clone()),
                 tool_allowlist: ctx.tool_whitelist.clone(),
                 tool_denial_hint: ctx.whitelist_denial_hint.clone(),
-                allowed_paths: ctx.allowed_paths.clone(),
                 cwd: ctx.cwd.clone(),
-                full_access: ctx.full_access,
                 taint: ctx.run_taint.clone(),
             },
             ..Default::default()
@@ -250,40 +252,62 @@ pub fn new_handle() -> OrchestratorHandle {
 mod tests {
     use super::*;
 
+    fn folder_grant(folders: &[&str]) -> Arc<types::permissions::Grant> {
+        use types::permissions::*;
+        let mut g = Grant::new("emp", Mode::Automatic);
+        for f in folders {
+            g.rules.push(Rule {
+                id: format!("r-{f}"),
+                scope: Scope::Employee("emp".into()),
+                key: RuleKey::Capability("file".into()),
+                field: Some(RuleField::Folder((*f).into())),
+                effect: Effect::Allow,
+                money: None,
+                source: RuleSource::Owner,
+                locked: false,
+                created_at: 0,
+            });
+        }
+        Arc::new(g)
+    }
+
     /// Isolation narrows the fence to the child's own copy. A fenced parent
-    /// can only isolate a project inside its fence; an unfenced one anything.
+    /// can only isolate a project inside its folders; an unfenced one
+    /// anything.
     #[test]
     fn isolation_narrows_and_never_widens_the_fence() {
-        let mut fenced = ChildSeat { allowed_paths: vec!["/work/a".into()], ..Default::default() };
+        let mut fenced = ChildSeat { grant: Some(folder_grant(&["/work/a"])), ..Default::default() };
         fenced.isolate_to("/work/a/app", "/tmp/copy-1").expect("inside the fence");
-        assert_eq!(fenced.allowed_paths, vec!["/tmp/copy-1".to_string()]);
+        assert_eq!(fenced.fence, Some(vec!["/tmp/copy-1".into()]));
         assert_eq!(fenced.cwd.as_deref(), Some("/tmp/copy-1"));
 
-        let mut outside = ChildSeat { allowed_paths: vec!["/work/a".into()], ..Default::default() };
+        let mut outside = ChildSeat { grant: Some(folder_grant(&["/work/a"])), ..Default::default() };
         let refused = outside.isolate_to("/work/b", "/tmp/copy-2").unwrap_err();
         assert!(refused.starts_with("BLOCKED"), "{refused}");
-        assert_eq!(outside.allowed_paths, vec!["/work/a".to_string()], "a refusal leaves the fence as it was");
+        assert_eq!(outside.fence, None, "a refusal leaves the fence as it was");
+
+        let mut nested = ChildSeat { fence: Some(vec!["/tmp/copy-1".into()]), ..Default::default() };
+        assert!(nested.isolate_to("/work/a", "/tmp/copy-4").is_err(), "an isolated parent isolates only inside its copy");
 
         let mut open = ChildSeat::default();
         open.isolate_to("/anywhere", "/tmp/copy-3").unwrap();
-        assert_eq!(open.allowed_paths, vec!["/tmp/copy-3".to_string()]);
+        assert_eq!(open.fence, Some(vec!["/tmp/copy-3".into()]));
     }
 
     /// `child_of` reads every limit from the parent's context.
     #[test]
     fn child_of_copies_the_parents_limits() {
+        let mut grant = (*folder_grant(&["/work/a"])).clone();
+        grant.fence = Some(vec!["/tmp/copy".into()]);
         let ctx = ToolContext {
-            entity_permissions: Some([("browser".to_string(), false)].into_iter().collect()),
-            allowed_paths: vec!["/work/a".into()],
-            full_access: true,
+            grant: Some(Arc::new(grant)),
             run_taint: vec![types::provenance::ProvenanceClass::Phone],
             tool_whitelist: Some(["os".to_string()].into_iter().collect()),
             ..Default::default()
         };
         let seat = SpawnRequest::child_of(&ctx).seat;
-        assert_eq!(seat.permissions, ctx.entity_permissions);
-        assert_eq!(seat.allowed_paths, ctx.allowed_paths);
-        assert!(seat.full_access);
+        assert_eq!(seat.grant, ctx.grant);
+        assert_eq!(seat.fence, Some(vec!["/tmp/copy".into()]));
         assert_eq!(seat.taint, ctx.run_taint);
         assert_eq!(seat.tool_allowlist, ctx.tool_whitelist);
     }

@@ -625,6 +625,7 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
         user_id: String::new(),
         channel: "web".to_string(),
         origin: tools::Origin::User,
+        door: types::permissions::Door::Chat,
         agent_id: agent_id.to_string(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -3008,7 +3009,7 @@ pub async fn duplicate_agent(
         );
     }
 
-    // Clone entity_config (heartbeat / permissions / model / personality / paths).
+    // Clone entity_config (heartbeat / model / personality).
     if let Ok(Some(cfg)) = state.store.get_entity_config("agent", &id) {
         let patch = serde_json::json!({
             "heartbeatEnabled": cfg.heartbeat_enabled,
@@ -3016,15 +3017,32 @@ pub async fn duplicate_agent(
             "heartbeatContent": cfg.heartbeat_content,
             "heartbeatWindowStart": cfg.heartbeat_window_start,
             "heartbeatWindowEnd": cfg.heartbeat_window_end,
-            "permissions": cfg.permissions,
-            "resourceGrants": cfg.resource_grants,
             "modelPreference": cfg.model_preference,
             "personalitySnippet": cfg.personality_snippet,
-            "allowedPaths": cfg.allowed_paths,
             "pinned": cfg.pinned,
             "multiChat": cfg.multi_chat,
         });
         let _ = state.store.upsert_entity_config("agent", &new_id, &patch);
+    }
+    // Clone its permissions: the rules and the mode the owner gave it.
+    let source_scope = types::permissions::Scope::Employee(id.clone());
+    for rule in state.store.permission_rules_in(&source_scope).unwrap_or_default() {
+        let by = match &rule.source {
+            types::permissions::RuleSource::Law { pack } => types::permissions::Writer::Package { package: pack.clone() },
+            types::permissions::RuleSource::Package { package } => types::permissions::Writer::Package { package: package.clone() },
+            _ => types::permissions::Writer::Owner,
+        };
+        let copy = types::permissions::Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: types::permissions::Scope::Employee(new_id.clone()),
+            ..rule
+        };
+        if let Err(e) = state.store.write_permission_rule(&copy, &by) {
+            warn!(agent = %new_id, error = %e, "duplicate: a permission rule did not copy");
+        }
+    }
+    if let Ok(Some(mode)) = state.store.permission_mode(&source_scope) {
+        let _ = state.store.set_permission_mode(&types::permissions::Scope::Employee(new_id.clone()), mode);
     }
 
     // Auto-activate (use the source's soul/rules — the fresh agent row has none yet
@@ -3117,6 +3135,7 @@ pub async fn chat_with_agent(
         user_id: String::new(),
         channel: "web".to_string(),
         origin: tools::Origin::User,
+        door: types::permissions::Door::Chat,
         agent_id: id.clone(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),
@@ -4451,12 +4470,13 @@ pub async fn handle_available(
 ///     itself (`interface_catalog::is_builtin_capability`);
 ///   * everything this employee has been TOLD about — the `ceiling` its package
 ///     declares, and every operation already carrying a rule (a pack's law, the
-///     owner's own setting, the General Manager's grant). So an owner who builds
-///     their own employee around their own capability gets a row for it, and
-///     `decide` gates it, without that operation being in any list of ours.
+///     owner's own setting, a standing grant). So an owner who builds their own
+///     employee around their own capability gets a row for it, and the
+///     permission check decides it, without that operation being in any list
+///     of ours.
 /// Writes go through the ONE canonical pathway — the entity-config PUT
-/// (`operationPolicy` patch key) — this endpoint is the read-side aggregation
-/// only (CODE_AUDITOR Rule 8).
+/// (`operationPolicy` patch key, written as rules) — this endpoint is the
+/// read-side aggregation only (CODE_AUDITOR Rule 8).
 pub async fn get_agent_operations(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -4528,15 +4548,26 @@ pub async fn get_agent_operations(
         })
         .collect();
 
-    // Stored per-employee policy (None = not configured yet).
-    let stored = state
+    // The seat's rules on operations (the old per-employee policy is now
+    // these rules), and the mode it runs in.
+    let rules = agent::harness::permissions::RuleSet::load(&state.store, &id).map_err(to_error_response)?;
+    let own: std::collections::HashMap<String, types::permissions::Rule> = state
         .store
-        .get_entity_config("agent", &id)
-        .ok()
-        .flatten()
-        .and_then(|c| c.operation_policy);
-    let configured = stored.is_some();
-    let policy = tools::policy::OperationPolicy::from_json(stored.as_deref());
+        .permission_rules_in(&types::permissions::Scope::Employee(id.clone()))
+        .map_err(to_error_response)?
+        .into_iter()
+        .filter_map(|r| match &r.key {
+            types::permissions::RuleKey::Operation(op) if r.field.is_none() => Some((op.clone(), r)),
+            _ => None,
+        })
+        .collect();
+    let configured = !own.is_empty();
+    let mode = agent::harness::permissions::rules::mode_of(&state.store, &id).map_err(to_error_response)?;
+    let access = |effect: types::permissions::Effect| match effect {
+        types::permissions::Effect::Allow => "always",
+        types::permissions::Effect::Ask => "approval",
+        types::permissions::Effect::Deny => "blocked",
+    };
 
     // Catalog rows this seat can reach, then the declared ones, in a stable
     // order and never the same operation twice.
@@ -4552,7 +4583,7 @@ pub async fn get_agent_operations(
     let mut declared: Vec<String> = ceiling
         .iter()
         .map(|op| tools::plugin_tool::port_suffix(op))
-        .chain(policy.operations.keys().cloned())
+        .chain(own.keys().cloned())
         .filter(|op| {
             !op.is_empty()
                 && !addresses
@@ -4568,27 +4599,46 @@ pub async fn get_agent_operations(
         .iter()
         .map(|op| {
             let suffix = tools::plugin_tool::port_suffix(op);
+            let rule = own.get(&suffix);
+            let target = types::permissions::Target {
+                tool: String::new(),
+                key: suffix.clone(),
+                operation: Some(op.clone()),
+                capability: None,
+                field: None,
+                read_only: false,
+                effects: types::permissions::CallEffects::unknown(),
+            };
+            // What the owner's own chat would get: the rule that decides the
+            // operation, else it runs inside the job. Untrusted origins
+            // (inbound email/DM, apps, skills, MCP, callers) additionally
+            // ask for gated operations at run time (WS2).
+            let effective = match (rules.decide(&target), mode) {
+                (Some((_, types::permissions::Effect::Deny)), _) => "blocked",
+                (_, types::permissions::Mode::FullAccess) => "always",
+                (Some((_, effect)), _) => access(effect),
+                (None, types::permissions::Mode::Ask | types::permissions::Mode::Plan) => "approval",
+                (None, _) => "always",
+            };
             serde_json::json!({
                 "operation": op,
                 "capability": op.split('.').next().unwrap_or(""),
                 "critical": tools::interface_catalog::is_critical(op),
-                "override": policy.operations.get(&suffix).map(|r| r.access.as_str()),
-                "locked": policy.operations.get(&suffix).map(|r| r.locked).unwrap_or(false),
-                "bounds": policy.operations.get(&suffix).and_then(|r| r.bounds.clone()),
-                // The Controls view shows the policy as configured — the
-                // trusted-origin resolution. Untrusted origins (inbound
-                // email/DM, apps, skills, MCP, callers) additionally floor
-                // gated Always to Approval at run time (WS2).
-                "effective": policy
-                    .decide(op, tools::Origin::User, &tools::policy::OperationParams::default(), None, None, true)
-                    .access
-                    .as_str(),
+                "override": rule.map(|r| access(r.effect)),
+                "locked": rule.map(|r| r.locked).unwrap_or(false),
+                "bounds": rule.and_then(|r| r.money.as_ref()).map(|m| serde_json::json!({
+                    "max_amount_cents": m.per_action_cents,
+                    "per_day_cents": m.per_day_cents,
+                    "per_day_count": m.per_day_count,
+                    "per_counterparty_day_cents": m.per_counterparty_day_cents,
+                })),
+                "effective": effective,
             })
         })
         .collect();
 
     Ok(Json(serde_json::json!({
-        "default": policy.default.as_str(),
+        "default": if mode == types::permissions::Mode::Ask { "approval" } else { "always" },
         "configured": configured,
         "interfaces": interfaces,
         "available": available,

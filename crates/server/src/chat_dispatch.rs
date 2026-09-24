@@ -157,15 +157,6 @@ pub(crate) async fn finish_turn(
     hub.broadcast("chat_complete", payload);
 }
 
-pub(crate) fn resolve_full_access(store: &db::Store) -> bool {
-    store
-        .get_settings()
-        .ok()
-        .flatten()
-        .map(|s| s.full_access == 1)
-        .unwrap_or(false)
-}
-
 /// True when a streamed text chunk is an orchestrator progress heartbeat —
 /// the transient `"\n_Working on: ..._\n"` / `"\n_Working..._\n"` status the
 /// sub-agent runner emits every 30s (`orchestrator.rs`). It's a "still alive"
@@ -212,6 +203,9 @@ pub struct ChatConfig {
     pub user_id: String,
     pub channel: String,
     pub origin: Origin,
+    /// The entry this run came through; recorded with every permission
+    /// decision.
+    pub door: types::permissions::Door,
     pub agent_id: String,
     pub cancel_token: tokio_util::sync::CancellationToken,
     /// Which lane to enqueue on (e.g., lanes::MAIN, lanes::COMM).
@@ -372,36 +366,19 @@ async fn register_run(
 /// Derive the per-run permission / grant / model / personality / path values from
 /// an entity's resolved config. Identical in both run entrypoints (the RunRequest
 /// literal differs per entrypoint, so it stays inline). CODE_AUDITOR Rule 8.
-type EntityRunParams = (
-    Option<std::collections::HashMap<String, bool>>,
-    Option<std::collections::HashMap<String, String>>,
-    Option<String>,
-    Option<String>,
-    Vec<String>,
-    Option<tools::policy::OperationPolicy>,
-);
+/// The entity's model preference and personality snippet, for a run.
 pub(crate) fn entity_run_params(
     entity_config: Option<&crate::entity_config::ResolvedEntityConfig>,
-) -> EntityRunParams {
+) -> (Option<String>, Option<String>) {
     match entity_config {
-        Some(ec) => (
-            Some(ec.permissions.clone()),
-            Some(ec.resource_grants.clone()),
-            ec.model_preference.clone(),
-            ec.personality_snippet.clone(),
-            ec.allowed_paths.clone(),
-            ec.operation_policy
-                .as_deref()
-                .map(|j| tools::policy::OperationPolicy::from_json(Some(j))),
-        ),
-        None => (None, None, None, None, Vec::new(), None),
+        Some(ec) => (ec.model_preference.clone(), ec.personality_snippet.clone()),
+        None => (None, None),
     }
 }
 
-/// The run's working directory as `RunRequest` carries it, joined into the
-/// entity's `allowed_paths` when that list restricts the run. An empty list
-/// means unrestricted (`safeguard::check_path_scope`), and adding the cwd to
-/// it would turn "anywhere" into "only here", so an empty list stays empty.
+/// The run's working directory as `RunRequest` carries it. The runner joins
+/// it to a folder-fenced job's folders (`types::permissions::folders_of`), so
+/// the file tools may work there; a job with no folders stays unfenced.
 /// Shared by both run entrypoints (CODE_AUDITOR Rule 8).
 ///
 /// This is also the one moment Nebo learns which repository an employee is
@@ -410,17 +387,10 @@ pub(crate) fn entity_run_params(
 /// reads that repository (`agents_export::place_known`). The render itself
 /// happened when the layers were applied; this only places it, and it never
 /// writes over the project's own `AGENTS.md`.
-pub(crate) fn run_cwd(
-    cwd: Option<&std::path::Path>,
-    allowed_paths: &mut Vec<String>,
-) -> Option<String> {
+pub(crate) fn run_cwd(cwd: Option<&std::path::Path>) -> Option<String> {
     let path = cwd?;
     crate::agents_export::place_known(path);
-    let cwd = path.to_string_lossy().into_owned();
-    if !allowed_paths.is_empty() && !allowed_paths.iter().any(|p| p == &cwd) {
-        allowed_paths.push(cwd.clone());
-    }
-    Some(cwd)
+    Some(path.to_string_lossy().into_owned())
 }
 
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
@@ -503,6 +473,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let tool_scope = config.tool_scope;
     let plan_mode = config.plan_mode;
     let run_cwd_path = config.cwd.clone();
+    let door = config.door.clone();
     // Which model this turn runs at. Precedence, highest first:
     //   1. an explicit override on the request (the harness's `--model`),
     //   2. the conversation's own model — what the owner picked in the
@@ -519,11 +490,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         .filter(|m| !m.is_empty())
         .or_else(|| chat_model_for_session(&runner, &sid))
         .unwrap_or_default();
-
-    // "Full Access" master flag (settings.full_access) — when on, the runner's
-    // per-tool approval gate is bypassed. Loaded here (state in scope) and moved
-    // into the run closure as a plain Copy bool. Default off (safe).
-    let full_access = resolve_full_access(&state.store);
 
     // For registering run-produced documents in the owner's web library
     // (fire-and-forget push after versioning).
@@ -577,9 +543,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         }
 
         // Extract per-entity overrides from resolved config
-        let (permissions, resource_grants, model_preference, personality_snippet, mut allowed_paths, operation_policy) =
-            entity_run_params(entity_cfg.as_ref());
-        let cwd = run_cwd(run_cwd_path.as_deref(), &mut allowed_paths);
+        let (model_preference, personality_snippet) = entity_run_params(entity_cfg.as_ref());
+        let cwd = run_cwd(run_cwd_path.as_deref());
 
         // Build progress tracker from RunHandle's shared Arcs
         let progress = agent::RunProgress {
@@ -598,13 +563,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             origin,
             cancel_token: cancel_token.clone(),
             agent_id: agent_id.clone(),
-            permissions,
-            operation_policy,
-            resource_grants,
+            door: door.clone(),
             model_preference,
             personality_snippet,
             images,
-            allowed_paths,
             cwd,
             model_override: run_model_override,
             presence_tracker: Some(presence_tracker.clone()),
@@ -626,7 +588,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             }),
             tool_scope,
             plan_mode,
-            full_access,
             approval_relay: comm_reply.as_ref().map(|c| c.approval_relay).unwrap_or(false),
             handoff_depth: comm_reply
                 .as_ref()
@@ -1851,6 +1812,7 @@ fn maybe_auto_continue(
             user_id: p.user_id,
             channel: p.channel,
             origin: p.origin,
+            door: types::permissions::Door::Chat,
             agent_id: p.agent_id,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: p.lane,
@@ -1903,14 +1865,12 @@ pub async fn run_chat_events(
     let agent_id = config.agent_id.clone();
     let cancel_token = config.cancel_token.clone();
     let lane = config.lane.clone();
-    let full_access = resolve_full_access(&state.store);
 
     // Resolve display name + register the run (shared with run_chat).
     let (_agent_display_name, run_handle) = register_run(state, &config).await;
 
-    let (permissions, resource_grants, model_preference, personality_snippet, mut allowed_paths, operation_policy) =
-        entity_run_params(config.entity_config.as_ref());
-    let cwd = run_cwd(config.cwd.as_deref(), &mut allowed_paths);
+    let (model_preference, personality_snippet) = entity_run_params(config.entity_config.as_ref());
+    let cwd = run_cwd(config.cwd.as_deref());
 
     let progress = agent::RunProgress {
         run_id: run_handle.run_id.clone(),
@@ -1928,14 +1888,11 @@ pub async fn run_chat_events(
         origin: config.origin,
         cancel_token: cancel_token.clone(),
         agent_id: agent_id.clone(),
-        permissions,
-        operation_policy,
-        resource_grants,
+        door: config.door,
         model_preference,
         personality_snippet,
         images: config.images,
         attachments: config.attachments,
-        allowed_paths,
         cwd,
         model_override: config
             .model_override
@@ -1948,7 +1905,6 @@ pub async fn run_chat_events(
         mention_context: config.mention_context,
         tool_scope: config.tool_scope,
         channel_ctx: config.channel_ctx,
-        full_access,
         handoff_depth: config.handoff_depth,
         seed_taint: config.seed_taint,
         tool_allowlist: config.tool_allowlist,
@@ -2842,41 +2798,3 @@ mod session_key_contract_tests {
     }
 }
 
-#[cfg(test)]
-mod run_cwd_tests {
-    //! Locks how an owner-chosen cwd meets the entity's path restriction.
-    use super::run_cwd;
-    use std::path::Path;
-
-    /// A restricted run gains the cwd (once), so the file tools may work
-    /// there; the cwd is returned as the run's working directory.
-    #[test]
-    fn restricted_list_gains_the_cwd_once() {
-        let mut allowed = vec!["/home/me/docs".to_string()];
-        let cwd = run_cwd(Some(Path::new("/home/me/proj")), &mut allowed);
-        assert_eq!(cwd.as_deref(), Some("/home/me/proj"));
-        assert_eq!(allowed, vec!["/home/me/docs".to_string(), "/home/me/proj".to_string()]);
-
-        let mut already = vec!["/home/me/proj".to_string()];
-        run_cwd(Some(Path::new("/home/me/proj")), &mut already);
-        assert_eq!(already, vec!["/home/me/proj".to_string()], "no duplicate entry");
-    }
-
-    /// An empty list means unrestricted; adding the cwd would turn
-    /// "anywhere" into "only here", so it stays empty.
-    #[test]
-    fn unrestricted_run_stays_unrestricted() {
-        let mut allowed: Vec<String> = Vec::new();
-        let cwd = run_cwd(Some(Path::new("/home/me/proj")), &mut allowed);
-        assert_eq!(cwd.as_deref(), Some("/home/me/proj"));
-        assert!(allowed.is_empty());
-    }
-
-    /// No cwd: nothing changes and the run keeps the process cwd.
-    #[test]
-    fn no_cwd_changes_nothing() {
-        let mut allowed = vec!["/home/me/docs".to_string()];
-        assert_eq!(run_cwd(None, &mut allowed), None);
-        assert_eq!(allowed, vec!["/home/me/docs".to_string()]);
-    }
-}

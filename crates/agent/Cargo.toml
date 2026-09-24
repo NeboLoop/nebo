@@ -10,6 +10,7 @@ ai = { workspace = true }
 comm = { workspace = true }
 db = { workspace = true }
 tools = { workspace = true }
+mcp = { workspace = true }
 config = { workspace = true }
 a2ui-validation = { workspace = true }
 napp = { workspace = true }
