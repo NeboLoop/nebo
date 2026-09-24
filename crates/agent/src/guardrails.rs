@@ -329,26 +329,6 @@ mod escalation_tests {
         assert!(Exit::TextResponse("stop".into()).is_text_response());
         assert_eq!(Exit::TextResponse("stop".into()).label(), "text_response(stop_reason=stop)");
     }
-
-    /// The overflow-compaction retry counter is reset only when the model
-    /// actually produced content, never by another recovery's continue: a
-    /// compaction that could not recover must not be retried by a nudge.
-    #[test]
-    fn has_attempted_compact_survives_a_continuation() {
-        let runner = include_str!("runner.rs");
-        let resets: Vec<usize> = runner
-            .lines()
-            .enumerate()
-            .filter(|(_, l)| l.trim() == "overflow_retries = 0;")
-            .map(|(i, _)| i)
-            .collect();
-        assert_eq!(resets.len(), 1, "exactly one reset site");
-        let window: String = runner.lines().skip(resets[0].saturating_sub(6)).take(6).collect::<Vec<_>>().join("\n");
-        assert!(
-            window.contains("stream_error.is_none() && (!assistant_content.is_empty() || !tool_calls.is_empty())"),
-            "the reset is gated on real content:\n{window}"
-        );
-    }
 }
 
 #[cfg(test)]

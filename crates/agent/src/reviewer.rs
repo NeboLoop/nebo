@@ -162,7 +162,7 @@ pub async fn review(
     steps: &[String],
     finding: &str,
 ) -> Option<Verdict> {
-    let (provider, aux_model) = match crate::runner::resolve_aux(&ModelsConfig::load(), providers) {
+    let (provider, aux_model) = match crate::harness::model_call::resolve_aux(&ModelsConfig::load(), providers) {
         Some(routed) => routed,
         None => (crate::summarizer::pick_cheapest(providers)?, String::new()),
     };

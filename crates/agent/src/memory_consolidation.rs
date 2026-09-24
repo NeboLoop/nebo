@@ -115,8 +115,8 @@ pub struct ConsolidationResult {
 /// when configured, otherwise prefer a non-gateway provider with its default
 /// model — the sweep's historical selection.
 fn curation_provider(providers: &[Arc<dyn Provider>]) -> Option<(Arc<dyn Provider>, String)> {
-    crate::runner::resolve_aux(&config::ModelsConfig::load(), providers)
-        .or_else(|| crate::runner::prefer_non_gateway(providers).map(|p| (p, String::new())))
+    crate::harness::model_call::resolve_aux(&config::ModelsConfig::load(), providers)
+        .or_else(|| crate::harness::model_call::prefer_non_gateway(providers).map(|p| (p, String::new())))
 }
 
 /// Spawn the background consolidation sweep task.
