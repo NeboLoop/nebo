@@ -1,0 +1,33 @@
+name: turn-controller
+description: |
+  What "correct" means for the turn controller (PRD-Turn-Controller
+  2026-09-24 §6; technical design WP0.5). These pass on the new harness;
+  on today's main many fail, and that is the baseline (arm A) the A/B
+  measures against. Program checks decide what is mechanical; the judge
+  reads the rest.
+fixtures:
+  # The conversation is the state
+  - ../fixtures/turn/naming-thread-keeps-referent.yaml
+  - ../fixtures/tools/goal-persistence-across-segue.yaml
+  # One continuation decision
+  - ../fixtures/turn/no-continue-after-question.yaml
+  - ../fixtures/turn/announced-step-not-done.yaml
+  - ../fixtures/tools/proactive-multistep-action.yaml
+  # Agreed goal and done check
+  - ../fixtures/turn/long-multistage-no-drift.yaml
+  - ../fixtures/turn/goal-proposed-approved-and-checked.yaml
+  # Mid-turn owner messages
+  - ../fixtures/turn/mid-turn-owner-message.yaml
+  # Helpers and the owner's free thread
+  - ../fixtures/turn/helper-finishes-while-owner-chats.yaml
+  - ../fixtures/turn/helper-told-to-change-course.yaml
+  - ../fixtures/turn/helper-cannot-exceed-parent.yaml
+  - ../fixtures/tools/agent-spawn-background.yaml
+  - ../fixtures/tools/agent-spawn-explore.yaml
+  - ../fixtures/tools/agent-spawn-parallel.yaml
+  # Checkpoint, recap, one reminder path
+  - ../fixtures/turn/checkpoint-keeps-every-owner-message.yaml
+  - ../fixtures/turn/recap-never-in-context.yaml
+  - ../fixtures/turn/no-steering-in-stored-thread.yaml
+  # Tool surface
+  - ../fixtures/turn/deferred-tool-loaded-and-used.yaml

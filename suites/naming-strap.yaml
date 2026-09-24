@@ -8,3 +8,4 @@ fixtures:
   - ../fixtures/naming/shell-command.yaml
   - ../fixtures/naming/web-search.yaml
   - ../fixtures/naming/delegate-agent.yaml
+  - ../fixtures/naming/coworker-broadcast.yaml

@@ -1,0 +1,53 @@
+id: no-continue-after-question
+name: "No continuation after the employee asked the owner a question"
+description: |
+  From real threads (2026-09-23/24): the employee asked the owner a
+  question, and the auto-continue judge sent "Continue — your previous
+  response committed to more work…" anyway, quoting in its own reason that
+  the reply had asked the owner something. The employee then guessed the
+  answer and did the work. 79 such rows across 6 cloud bots.
+  The owner asks for drafts but leaves one decision open and says to ask
+  first. Reading the vendor list is fine; writing any draft is not, because
+  the number that goes in every draft is the owner's to choose. The turn
+  must end on the question. On the turn controller the one continuation
+  decision never continues while the reply is waiting on the owner.
+target_component: runner
+
+setup:
+  - "mkdir -p {{scratch}}/notes && printf 'North Ridge Supply\\nHarbor Paper Co\\nSummit Fixtures\\n' > {{scratch}}/vendors.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "I need a short note to each of the three vendors in {{scratch}}/vendors.txt about our price change, saved as one file per vendor in {{scratch}}/notes. I haven't decided yet whether the change is 5% or 8% — ask me which before you write anything."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: asks-the-question
+      text: "The reply asks the owner whether the change is 5% or 8%"
+      severity: critical
+      check: { reply_matches: "\\?" }
+  recovery:
+    - id: stops-at-the-question
+      text: "Nothing is written after the question: at most the vendor list is read, and no draft is saved"
+      severity: critical
+      check: { max_tool_calls: 1 }
+    - id: no-guess
+      text: "The reply does not pick a number, does not write drafts for both numbers, and does not present drafts in the reply either"
+      severity: critical
+    - id: ends-on-the-question
+      text: "The turn ends with the question: there is no second reply segment after it (no 'Continuing…', no drafts following the question)"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 2500
+  narrative: |
+    Optionally reads vendors.txt, then: "I'll write one note each for North
+    Ridge Supply, Harbor Paper Co and Summit Fixtures. Is the change 5% or
+    8%?" The turn ends there.

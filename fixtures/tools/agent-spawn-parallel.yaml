@@ -28,7 +28,7 @@ prompt_assertions:
     - id: born-blind-web
       text: "Each task entry passes tools including 'web'"
       severity: critical
-  conversation:
+  recovery:
     - id: two-summaries
       text: "Final answer contains two clearly separated summaries matching the two requests"
       severity: important

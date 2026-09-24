@@ -120,6 +120,23 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
         }
         evidence.push(format!("total_tokens {} ≤ {}", got, max));
     }
+    let reply = &trace.final_response.content;
+    if let Some(pattern) = &check.reply_matches {
+        let re = regex::Regex::new(pattern)
+            .map_err(|e| format!("invalid regex '{}': {}", pattern, e))?;
+        if !re.is_match(reply) {
+            return Ok((false, format!("reply does not match /{}/: {}", pattern, excerpt(reply))));
+        }
+        evidence.push(format!("reply matches /{}/", pattern));
+    }
+    if let Some(pattern) = &check.reply_not_matches {
+        let re = regex::Regex::new(pattern)
+            .map_err(|e| format!("invalid regex '{}': {}", pattern, e))?;
+        if let Some(m) = re.find(reply) {
+            return Ok((false, format!("reply matches /{}/ at '{}'", pattern, m.as_str())));
+        }
+        evidence.push(format!("reply never matches /{}/", pattern));
+    }
 
     // Call-level criteria.
     let ordinal = if check.first_call { Some(1) } else { check.call };
@@ -243,7 +260,9 @@ fn validate(check: &Check) -> Result<(), String> {
         || check.max_tool_calls.is_some()
         || check.max_total_tokens.is_some()
         || check.max_errors.is_some()
-        || !check.no_error_contains.is_empty();
+        || !check.no_error_contains.is_empty()
+        || check.reply_matches.is_some()
+        || check.reply_not_matches.is_some();
 
     if !has_call_selector && !has_trace_predicate {
         return Err("check has no criteria (need call/first_call/tool, or a trace-level predicate)".into());
@@ -259,10 +278,15 @@ fn validate(check: &Check) -> Result<(), String> {
     {
         return Err("equals/contains/matches/exists require an `arg`".into());
     }
-    if let Some(p) = &check.matches {
+    for p in [&check.matches, &check.reply_matches, &check.reply_not_matches].into_iter().flatten() {
         regex::Regex::new(p).map_err(|e| format!("invalid regex '{}': {}", p, e))?;
     }
     Ok(())
+}
+
+/// The first line of a reply, short enough to read in a failure row.
+fn excerpt(text: &str) -> String {
+    text.trim().lines().next().unwrap_or("").chars().take(160).collect()
 }
 
 /// Dot-path lookup into a JSON value.
@@ -430,5 +454,81 @@ mod tests {
     fn numeric_coercion_in_equals() {
         let t = trace_with(vec![("os", serde_json::json!({"count": 1.0}))], 0);
         assert!(evaluate(&check("{ first_call: true, arg: count, equals: 1 }"), &t).unwrap().0);
+    }
+
+    #[test]
+    fn reply_text_is_checked_both_ways() {
+        let mut t = trace_with(vec![], 0);
+        t.final_response.content = "Here are three options.\nWhat's 'it'?".into();
+        let (p, why) = evaluate(&check(r#"{ reply_not_matches: "(?i)what['’]s\\s+['‘]it['’]" }"#), &t).unwrap();
+        assert!(!p && why.contains("What's 'it'"), "evidence quotes the match: {why}");
+        assert!(evaluate(&check(r#"{ reply_matches: "\\?" }"#), &t).unwrap().0);
+        let (p, why) = evaluate(&check(r#"{ reply_matches: "Tallybook" }"#), &t).unwrap();
+        assert!(!p && why.contains("Here are three options"), "{why}");
+        // A reply check alone is a whole criterion; a bad pattern never fails open.
+        assert!(evaluate(&check(r#"{ reply_not_matches: "(" }"#), &t).is_err());
+    }
+
+    #[test]
+    fn a_misspelt_key_is_a_load_error_not_a_dropped_assertion() {
+        assert!(serde_yaml::from_str::<Check>("{ max_tool_call: 2 }").is_err());
+        assert!(serde_yaml::from_str::<crate::testing::fixture::PromptAssertions>(
+            "conversation:\n  - { id: a, text: t }"
+        )
+        .is_err());
+    }
+
+    /// Every suite resolves, every fixture it names loads, and every program
+    /// check in it is well-formed — offline, before any run needs a server.
+    /// Fixtures in no suite are loaded too: a fixture nobody runs must still
+    /// parse the day someone adds it.
+    #[test]
+    fn every_suite_and_fixture_loads_and_every_check_is_well_formed() {
+        use crate::testing::fixture::{load_fixture, load_suite};
+        use std::path::{Path, PathBuf};
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repository root");
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for entry in std::fs::read_dir(root.join("suites")).expect("suites/") {
+            let suite_path = entry.expect("suite entry").path();
+            if suite_path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                continue;
+            }
+            let suite = load_suite(&suite_path).unwrap_or_else(|e| panic!("{e}"));
+            for rel in &suite.fixtures {
+                let path = suite_path.parent().expect("suites dir").join(rel);
+                assert!(path.exists(), "{} names a missing fixture {rel}", suite_path.display());
+                paths.push(path);
+            }
+        }
+        let mut stack = vec![root.join("fixtures")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("fixtures dir") {
+                let path = entry.expect("fixture entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+                    paths.push(path);
+                }
+            }
+        }
+        assert!(paths.len() > 100, "the fixtures went missing: {}", paths.len());
+        for path in paths {
+            let fix = load_fixture(&path).unwrap_or_else(|e| panic!("{e}"));
+            for a in fix.prompt_assertions.all().into_iter().chain(fix.integrated_assertions.iter()) {
+                if let Some(c) = &a.check {
+                    validate(c).unwrap_or_else(|e| panic!("{} / {}: {e}", path.display(), a.id));
+                }
+            }
+            for it in &fix.interrupts {
+                let owner_turns = fix.conversation.iter().filter(|t| t.role == "user").count();
+                assert!(
+                    it.turn >= 1 && it.turn <= owner_turns,
+                    "{}: an interrupt in turn {} of {owner_turns} never fires",
+                    path.display(),
+                    it.turn
+                );
+            }
+        }
     }
 }

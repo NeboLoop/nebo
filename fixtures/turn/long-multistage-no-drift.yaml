@@ -1,0 +1,92 @@
+id: long-multistage-no-drift
+name: "Long multi-stage job with an agreed goal: an aside mid-way, then back to the job"
+description: |
+  The owner sets an agreed goal with `/goal`, starts a job that takes many
+  steps, and asks an unrelated question while the work runs. The employee
+  answers the aside and returns to the job where it left off: it does not
+  treat the job as finished, restart it, or ask what to do next. The agreed
+  goal is the stop condition; the done check keeps the turn going until
+  every file has its line.
+  Today there is no `/goal` (the slash text reaches the model as a message)
+  and the objective is re-derived from each message, so the aside can
+  replace the job. `goal-persistence-across-segue` is the one-turn shape of
+  the same failure.
+target_component: runner
+
+setup:
+  - |
+    python3 - <<'PYEOF'
+    import os
+    base = "{{scratch}}/inbox"
+    os.makedirs(base, exist_ok=True)
+    msgs = [
+        "Customer asks to move Tuesday's delivery to Friday morning.",
+        "Supplier confirms the new price list starts on the first of next month.",
+        "A client wants a copy of last quarter's statement.",
+        "The landlord will inspect the storage room next Wednesday.",
+        "A new hire starts Monday and needs a desk and a laptop.",
+        "The bank flagged a duplicate payment of 240 dollars.",
+        "A customer praised the support team by name in a review.",
+        "The printer lease renews in thirty days unless cancelled.",
+    ]
+    for i, m in enumerate(msgs, 1):
+        open(f"{base}/msg-{i:02d}.txt", "w").write(m + "\n")
+    PYEOF
+teardown:
+  - "rm -rf {{scratch}}"
+
+interrupts:
+  - turn: 2
+    after_tool_calls: 5
+    action: message
+    content: "Quick one while you work: in one sentence, what's the difference between a quote and an invoice?"
+
+conversation:
+  - role: user
+    content: "/goal Every one of the eight files in {{scratch}}/inbox has a one-line summary in {{scratch}}/summaries.md, one line per file, each line starting with the file name."
+  - role: user
+    content: "Go ahead: work through {{scratch}}/inbox one file at a time — read a file, then add its line to {{scratch}}/summaries.md before reading the next."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-the-job
+      text: "The job starts with a read of the first inbox file"
+      severity: important
+      check: { tool: os, arg: path, contains: "msg-01" }
+  recovery:
+    - id: answers-the-aside
+      text: "The quote-vs-invoice question gets a short direct answer while the job is under way"
+      severity: critical
+      check: { reply_matches: "(?i)invoice" }
+    - id: returns-to-the-job
+      text: "After the aside the job continues to the last file: msg-08 is read"
+      severity: critical
+      check: { tool: os, arg: path, contains: "msg-08" }
+    - id: writes-the-summaries
+      text: "The summaries file is written"
+      severity: critical
+      check: { tool: os, arg: path, contains: "summaries.md" }
+    - id: no-restart-no-ask
+      text: "The model does not restart from msg-01 after the aside, does not ask the owner what to do next, and does not treat the aside as the new task"
+      severity: critical
+    - id: done-when-done
+      text: "The final reply says all eight files are summarized, and only then does the turn end"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "No spiral: at most 24 calls for 8 reads and their writes"
+      severity: important
+      check: { max_tool_calls: 24 }
+
+ideal_behavior:
+  tool_calls: 16
+  narrative: |
+    `/goal` is acknowledged. Turn 2: read msg-01, append its line, read
+    msg-02 … the aside lands mid-way: "A quote is an offer before the work;
+    an invoice asks for payment after it." Then straight on from the next
+    unread file to msg-08, and "All eight files are summarized in
+    summaries.md."

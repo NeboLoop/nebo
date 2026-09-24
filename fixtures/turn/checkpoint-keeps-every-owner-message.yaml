@@ -1,0 +1,82 @@
+id: checkpoint-keeps-every-owner-message
+name: "After a checkpoint, the owner's earlier ground rule is still honoured"
+description: |
+  PRD evidence E10: compaction kept only "the user's most recent request"
+  verbatim and a gist of the rest, so an instruction given early was gone
+  once the conversation was summarized. A checkpoint on the turn controller
+  keeps every owner message verbatim ("constraints and security-relevant
+  instructions word for word").
+  Turn 1 states a ground rule. Turn 2 reads fourteen ~44 KB files, which
+  pushes the conversation past the checkpoint threshold; turn 3 is `/compact`,
+  which forces one either way. Turn 4 asks for a file without repeating the
+  rule. The rule is mechanical, so the check is too: the file must be
+  written under out/ with the fz- prefix.
+target_component: prompt
+
+setup:
+  - |
+    python3 - <<'PYEOF'
+    import os, random
+    words = ["CINNABAR","BASALT","LARKSPUR","OBSIDIAN","MARIGOLD","GALENA",
+             "SORREL","FELDSPAR","JUNIPER","CORUNDUM","YARROW","PUMICE",
+             "VERVAIN","SCHIST"]
+    base = "{{scratch}}/logs"
+    os.makedirs(base, exist_ok=True)
+    rng = random.Random(4417)
+    for i in range(1, 15):
+        lines = ["# synthetic worker log — nebo checkpoint fixture (no real data)",
+                 f"BATCH-ID: CK-{i:02d}-{words[i-1]}",
+                 f"# part {i:02d} of 14"]
+        for n in range(460):
+            lines.append(
+                f"2026-09-02T{n//60%24:02d}:{n%60:02d}:{rng.randrange(60):02d}Z "
+                f"svc=queue-sim worker=w{i:02d} event=heartbeat seq={n:05d} "
+                f"latency_ms={rng.randrange(2,900):03d} depth={rng.randrange(0,50):02d}")
+        open(f"{base}/part{i:02d}.txt","w").write("\n".join(lines)+"\n")
+    PYEOF
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Ground rule for everything we do in this conversation: every file you create goes in {{scratch}}/out, and its name starts with fz-. Just say OK for now."
+  - role: user
+    content: "Read each of these fourteen files completely, one file read per file, in order: {{scratch}}/logs/part01.txt through part14.txt. Each has a 'BATCH-ID:' line near the top. When done, list the fourteen BATCH-IDs in order."
+  - role: user
+    content: "/compact"
+  - role: user
+    content: "Now save those fourteen BATCH-IDs to a file, one per line, with a file write."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: reads-happened
+      text: "All fourteen files were read (the trace has a read of part14.txt)"
+      severity: critical
+      check: { tool: os, arg: path, contains: "part14.txt" }
+  recovery:
+    - id: rule-honoured-after-checkpoint
+      text: "The file is written under out/ with a name starting fz-, although the rule was given only in the first message"
+      severity: critical
+      check: { tool: os, arg: path, matches: "/out/fz-[^/]+$" }
+    - id: no-asking-where
+      text: "The model does not ask where to save the file or what to call it, and does not say it no longer knows the rule"
+      severity: critical
+    - id: ids-are-real
+      text: "The saved content is the fourteen real BATCH-IDs (CK-01-CINNABAR … CK-14-SCHIST) in order, or the model honestly re-reads files it no longer has rather than guessing"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most 22 calls: fourteen reads, the write, and room for honest re-reads"
+      severity: important
+      check: { max_tool_calls: 22 }
+
+ideal_behavior:
+  tool_calls: 15
+  narrative: |
+    "OK." Fourteen reads and the list. `/compact` checkpoints. Then one write
+    to {{scratch}}/out/fz-batch-ids.txt with the fourteen ids, and a line
+    saying where it went — no question about where or what to call it.

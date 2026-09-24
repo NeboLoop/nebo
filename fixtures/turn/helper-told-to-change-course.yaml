@@ -1,0 +1,64 @@
+id: helper-told-to-change-course
+name: "The owner changes a running helper's course, and the helper's output reflects it"
+description: |
+  PRD evidence E11: a running helper could not be messaged (the send was
+  refused), so a change of plan meant waiting for the wrong result or
+  starting over. On the turn controller the employee sends the change to
+  the running helper, it is delivered at the helper's next step, and the
+  helper's output follows it. The helper's job is long enough (six notes)
+  to still be running when the second message arrives.
+target_component: agent
+
+setup:
+  - "mkdir -p {{scratch}}/notes && for i in 1 2 3 4 5; do printf \"Note $i: supplier $i delivers on day $i of the month. Now read {{scratch}}/notes/note$((i+1)).txt.\\n\" > {{scratch}}/notes/note$i.txt; done && printf 'Note 6: supplier 6 delivers on day 6 of the month. There are no more notes.\\n' > {{scratch}}/notes/note6.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Start a helper in the background: it should read {{scratch}}/notes/note1.txt, follow the instruction in each note to the end, and write a bullet summary of every note to {{scratch}}/summary.md. Tell me once it has started."
+  - role: user
+    content: "Change of plan for the helper that's running: the summary goes in {{scratch}}/summary-short.md instead, three bullets at most."
+  - role: user
+    content: "When the helper is done, read the file it wrote and show it to me. If it isn't done yet, just say so."
+
+tool_config:
+  agent:
+    enabled: true
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: launches-a-helper
+      text: "The first call launches the helper"
+      severity: critical
+      check: { first_call: true, tool: agent, arg: action, matches: "^spawn" }
+  recovery:
+    - id: messages-the-running-helper
+      text: "The change of plan is sent to the helper that is already running, not handled by starting a second helper"
+      severity: critical
+      check: { tool: agent, arg: action, equals: send }
+    - id: the-message-carries-the-change
+      text: "The message to the helper names the new file"
+      severity: critical
+      check: { tool: agent, arg: message, contains: "summary-short" }
+    - id: no-second-helper
+      text: "Only one helper is launched in the whole thread; the running one is not cancelled and replaced"
+      severity: critical
+    - id: output-reflects-the-change
+      text: "If the helper has finished by the third message, what is shown comes from summary-short.md and has at most three bullets; if it has not, the reply says so and does not invent the contents"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most six calls: launch, send, a status check or two, a read, one spare"
+      severity: important
+      check: { max_tool_calls: 6 }
+
+ideal_behavior:
+  tool_calls: 3
+  narrative: |
+    Launch the helper; "It's started." Turn 2: send the helper "Write the
+    summary to summary-short.md instead, three bullets at most." Turn 3:
+    read summary-short.md once the helper reports done and show its three
+    bullets, or say it's still running.

@@ -29,3 +29,4 @@ fixtures:
   - ../fixtures/correction/read-over-budget-ranged.yaml
   - ../fixtures/correction/stop-means-stop.yaml
   - ../fixtures/correction/message-while-working.yaml
+  - ../fixtures/correction/os-glob-no-action.yaml

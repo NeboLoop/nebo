@@ -29,7 +29,7 @@ prompt_assertions:
     - id: born-blind
       text: "Model passes the tools the sub-agent needs (e.g. tools including 'os' or 'system')"
       severity: critical
-  conversation:
+  recovery:
     - id: uses-result
       text: "Final answer reports what the sub-agent found rather than claiming the model searched itself without any search happening"
       severity: critical
