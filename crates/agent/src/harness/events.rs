@@ -30,6 +30,8 @@ pub enum TurnEvent {
         label: String,
         text: String,
     },
+    /// An end check sent the turn into another step; `check` is the
+    /// reminder's name.
     EndCheckContinue {
         check: &'static str,
         text: String,
@@ -150,7 +152,7 @@ pub fn reminder_for(e: &TurnEvent) -> Option<(&'static str, Kind, String)> {
         TurnEvent::AppDirective { text, .. } => {
             non_empty(text).map(|t| ("app_steering", Kind::Steering, t))
         }
-        TurnEvent::EndCheckContinue { text, .. } => fact("goal_check", text.clone()),
+        TurnEvent::EndCheckContinue { check, text } => fact(check, text.clone()),
         TurnEvent::TasksUntouched { tasks } => {
             if tasks.is_empty() {
                 return None;
@@ -165,7 +167,12 @@ pub fn reminder_for(e: &TurnEvent) -> Option<(&'static str, Kind, String)> {
             )
         }
         TurnEvent::GoalSet { condition } => {
-            fact("goal_set", format!("Agreed goal set: {condition}"))
+            fact(
+                "goal_set",
+                format!(
+                    "Agreed goal: {condition}. Work continues until a separate check confirms it is met."
+                ),
+            )
         }
         TurnEvent::GoalCleared => fact("goal_cleared", "The agreed goal was cleared.".to_string()),
         TurnEvent::HelperLaunched {
@@ -253,7 +260,7 @@ mod tests {
             TurnEvent::LostToolCalls,
             TurnEvent::ToolsLoaded(vec!["mail".into()]),
             TurnEvent::EndCheckContinue {
-                check: "goal",
+                check: "goal_check",
                 text: "not met".into(),
             },
             TurnEvent::MessageTime(chrono::Local::now()),

@@ -58,6 +58,27 @@ pub trait AttachmentStore {
     fn append_attachment(&self, row: &AttachmentRow) -> Result<(), NeboError>;
 }
 
+/// A session's conversation: rows go through the session's one append path.
+pub struct SessionTranscript<'a> {
+    pub sessions: &'a crate::session::SessionManager,
+    pub session_id: &'a str,
+}
+
+impl AttachmentStore for SessionTranscript<'_> {
+    fn append_attachment(&self, row: &AttachmentRow) -> Result<(), NeboError> {
+        self.sessions
+            .append_message(
+                self.session_id,
+                "user",
+                &row.content,
+                None,
+                None,
+                Some(&row.metadata().to_string()),
+            )
+            .map(|_| ())
+    }
+}
+
 #[derive(Debug)]
 struct Queued {
     row: AttachmentRow,

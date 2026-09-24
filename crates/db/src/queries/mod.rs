@@ -29,6 +29,7 @@ mod plugins;
 mod provider_models;
 mod refresh_tokens;
 mod run_usage;
+mod session_goals;
 mod sessions;
 mod settings;
 mod user_profile;
@@ -47,6 +48,7 @@ pub use engine::{
 };
 pub use run_usage::cost_microcents;
 pub use license_keys::LicenseKeyRow;
+pub use session_goals::SessionGoal;
 pub use plugin_account_profiles::PluginAccountProfile;
 pub use work::WorkDocumentListing;
 pub use teams::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};

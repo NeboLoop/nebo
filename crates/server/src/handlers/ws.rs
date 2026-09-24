@@ -1183,6 +1183,16 @@ async fn handle_builtin_slash(
             }
         }
 
+        "/goal" => {
+            // The conversation the owner is in: the key the thread sent.
+            let session_key = if !session_id.is_empty() {
+                session_id.to_string()
+            } else {
+                types::keyparser::build_agent_session_key(agent_id, channel)
+            };
+            Some(super::goal::slash(state, &session_key, args))
+        }
+
         "/help" => {
             let help = [
                 "**Available commands:**\n",
@@ -1191,6 +1201,7 @@ async fn handle_builtin_slash(
                 "| `/new` | Start a new conversation (preserves history) |",
                 "| `/clear` | Clear current conversation messages |",
                 "| `/compact` | Summarize & compress old messages |",
+                "| `/goal [end state \\| clear]` | Keep working until a check confirms the end state |",
                 "| `/model [name]` | Show or switch model |",
                 "| `/status` | Show agent & system status |",
                 "| `/help` | Show this help |",
