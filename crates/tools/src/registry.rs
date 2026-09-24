@@ -181,6 +181,14 @@ pub trait DynTool: Send + Sync {
     fn requires_approval_for(&self, _input: &serde_json::Value) -> bool {
         self.requires_approval()
     }
+    /// The call as it will run, with every shorthand the tool accepts
+    /// resolved (an inferred action or resource written in). The registry
+    /// applies it before any gate reads the call, so a gate never judges a
+    /// different call than the one that executes. Must be idempotent.
+    /// Default: the input unchanged.
+    fn normalize_input(&self, input: serde_json::Value) -> serde_json::Value {
+        input
+    }
     /// Declare which physical resource this tool call needs exclusive access to.
     ///
     /// Return `Some(ResourceKind)` to serialize access — the registry will acquire
@@ -669,8 +677,19 @@ impl Registry {
         let tools = self.tools.read().await;
         tools
             .get(tool_name)
-            .or_else(|| tools.get(strip_mcp_prefix(tool_name)))
             .map_or(false, |tool| tool.is_concurrent_safe(input))
+    }
+
+    /// The call as the named tool will run it (see
+    /// [`DynTool::normalize_input`]). The runner applies this before its
+    /// approval, capability and operation gates; [`Registry::execute`]
+    /// applies it before its own. Unknown tools pass through unchanged.
+    pub async fn normalize_input(&self, tool_name: &str, input: serde_json::Value) -> serde_json::Value {
+        let tools = self.tools.read().await;
+        match tools.get(tool_name) {
+            Some(tool) => tool.normalize_input(input),
+            None => input,
+        }
     }
 
     /// Whether this call changes something outside this process — the ONE
@@ -726,8 +745,6 @@ impl Registry {
         tool_name: &str,
         input: serde_json::Value,
     ) -> ToolResult {
-        // Try full name first (for MCP proxy tools like mcp__monument_sh__project),
-        // then fall back to stripped name (for external MCP clients calling STRAP tools).
         let name = tool_name;
 
         debug!(tool = %name, "executing tool");
@@ -781,10 +798,7 @@ impl Registry {
 
         let permit_kind = {
             let tools = self.tools.read().await;
-            let tool = match tools
-                .get(name)
-                .or_else(|| tools.get(strip_mcp_prefix(name)))
-            {
+            let tool = match tools.get(name) {
                 Some(t) => t,
                 None => {
                     warn!(tool = %name, "unknown tool");
@@ -809,6 +823,11 @@ impl Registry {
             // times this turn without progress"). Coerce once here, at the one
             // dispatch point every tool goes through.
             crate::mcp_tool::coerce_schema_types(&mut input, &tool.schema());
+
+            // Settle the call's shape BEFORE any gate reads it: every check
+            // below (and the tool itself) sees the action and resource that
+            // execute, whichever shape the model wrote.
+            input = tool.normalize_input(input);
 
             // Hard safety guard — unconditional, cannot be overridden
             if let Some(err) = safeguard::check_safeguard(name, &input) {
@@ -925,10 +944,7 @@ impl Registry {
         // deadlocked the install card against its own discover call.
         let tool = {
             let tools = self.tools.read().await;
-            tools
-                .get(name)
-                .or_else(|| tools.get(strip_mcp_prefix(name)))
-                .cloned()
+            tools.get(name).cloned()
         };
         let mut result = match tool {
             Some(tool) => tool.execute_dyn(ctx, input).await,
@@ -1433,20 +1449,6 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
 // (filesystem/memory/plugin) that didn't match the persisted keys
 // (file/shell/system/…), so most toggles silently gated nothing.
 
-/// Strip MCP namespace prefix from tool names.
-/// `mcp__{server}__{tool}` → `{tool}`
-/// Strip MCP namespace prefix for external client tool calls.
-/// e.g. "mcp__nebo-agent__system" → "system" (for STRAP tools called via JSON-RPC).
-/// Used as a fallback — execute() tries the full name first (for proxy tools),
-/// then falls back to the stripped name (for external clients calling STRAP tools).
-fn strip_mcp_prefix(name: &str) -> &str {
-    if !name.starts_with("mcp__") {
-        return name;
-    }
-    let parts: Vec<&str> = name.splitn(3, "__").collect();
-    if parts.len() == 3 { parts[2] } else { name }
-}
-
 /// The canonical absolute paths an `os` file mutation would touch, or `None`
 /// when the call is anything else.
 ///
@@ -1863,12 +1865,158 @@ mod tests {
         assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
-    #[test]
-    fn test_strip_mcp_prefix() {
-        assert_eq!(strip_mcp_prefix("web"), "web");
-        assert_eq!(strip_mcp_prefix("mcp__nebo-agent__web"), "web");
-        assert_eq!(strip_mcp_prefix("mcp__server__file"), "file");
-        assert_eq!(strip_mcp_prefix("mcp__only_one"), "mcp__only_one");
+    /// A registry holding the real `os` tool, and a scratch directory.
+    async fn os_registry() -> (Registry, tempfile::TempDir) {
+        let registry = Registry::new(Policy::default());
+        registry.register_defaults().await;
+        (registry, tempfile::tempdir().unwrap())
+    }
+
+    /// The database directory: any command naming it is refused by the
+    /// safeguard alone (the shell has no check of its own for it), and
+    /// `test -d` on it changes nothing if a gate is missed.
+    fn db_dir() -> String {
+        config::data_dir().unwrap().join("data").to_string_lossy().into_owned()
+    }
+
+    /// Every gate reads the call the tool will run, however the call was
+    /// written: a call that leaves `action` (and `resource`) for the tool
+    /// to infer meets the same safeguard as the explicit shape.
+    #[tokio::test]
+    async fn a_call_without_an_action_meets_the_safeguard() {
+        let (registry, dir) = os_registry().await;
+        let marker = dir.path().join("ran");
+        let command = format!("touch {}; test -d '{}'", marker.display(), db_dir());
+        let result = registry
+            .execute(&ToolContext::default(), "os", serde_json::json!({ "command": command }))
+            .await;
+        assert!(result.is_error && result.content.contains("BLOCKED"), "{}", result.content);
+        assert!(!marker.exists(), "the command ran past the safeguard");
+    }
+
+    /// The path fence holds for a write and a shell command that name no
+    /// action.
+    #[tokio::test]
+    async fn a_call_without_an_action_meets_the_path_fence() {
+        let (registry, dir) = os_registry().await;
+        let inside = dir.path().join("inside");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let ctx = ToolContext {
+            allowed_paths: vec![inside.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+
+        let target = outside.join("x.txt");
+        let write = registry
+            .execute(
+                &ctx,
+                "os",
+                serde_json::json!({ "path": target.to_string_lossy(), "content": "y" }),
+            )
+            .await;
+        assert!(write.is_error && write.content.contains("BLOCKED"), "{}", write.content);
+        assert!(!target.exists(), "the write landed outside the fence");
+
+        let marker = outside.join("ran");
+        let exec = registry
+            .execute(
+                &ctx,
+                "os",
+                serde_json::json!({
+                    "command": format!("touch {}", marker.display()),
+                    "cwd": outside.to_string_lossy(),
+                }),
+            )
+            .await;
+        assert!(exec.is_error && exec.content.contains("BLOCKED"), "{}", exec.content);
+        assert!(!marker.exists(), "the command ran outside the fence");
+    }
+
+    /// A shell command that names no action is gated on Shell, not on the
+    /// Desktop capability an empty action used to resolve to.
+    #[tokio::test]
+    async fn a_call_without_an_action_is_gated_on_its_own_capability() {
+        let (registry, dir) = os_registry().await;
+        let marker = dir.path().join("ran");
+        let ctx = ToolContext {
+            entity_permissions: Some(
+                [("shell".to_string(), false), ("desktop".to_string(), true)].into(),
+            ),
+            ..Default::default()
+        };
+        let result = registry
+            .execute(
+                &ctx,
+                "os",
+                serde_json::json!({ "command": format!("touch {}", marker.display()) }),
+            )
+            .await;
+        assert!(result.content.starts_with("PERMISSION_REQUIRED:shell"), "{}", result.content);
+        assert!(!marker.exists(), "the command ran with Shell off");
+    }
+
+    /// The origin deny list keys on `os:shell`: a shell command from a chat
+    /// channel is refused whether or not the call names its resource.
+    #[tokio::test]
+    async fn a_call_without_an_action_meets_the_origin_deny_list() {
+        let (registry, dir) = os_registry().await;
+        let marker = dir.path().join("ran");
+        let ctx = ToolContext { origin: crate::origin::Origin::Comm, ..Default::default() };
+        let result = registry
+            .execute(
+                &ctx,
+                "os",
+                serde_json::json!({ "command": format!("touch {}", marker.display()) }),
+            )
+            .await;
+        assert!(result.is_error && result.content.contains("not permitted"), "{}", result.content);
+        assert!(!marker.exists(), "a chat channel ran a shell command");
+    }
+
+    /// The runner's gates read the call through the same door: the settled
+    /// call names its action and resource, is gated on its own capability,
+    /// and settling it twice changes nothing.
+    #[tokio::test]
+    async fn the_runner_gates_read_the_settled_call() {
+        let (registry, _dir) = os_registry().await;
+        let settled = registry
+            .normalize_input("os", serde_json::json!({ "command": "ls" }))
+            .await;
+        assert_eq!(settled["action"], "exec");
+        assert_eq!(settled["resource"], "shell");
+        assert_eq!(crate::capabilities::gating_capability("os", &settled), Some("shell"));
+        assert_eq!(registry.normalize_input("os", settled.clone()).await, settled);
+        // A file-management verb stays unresolved: the tool answers it with a
+        // shell correction, and the capability gate leaves it alone.
+        let mv = serde_json::json!({ "action": "move", "path": "/tmp/a", "destination": "/tmp/b" });
+        assert_eq!(registry.normalize_input("os", mv.clone()).await, mv);
+    }
+
+    /// An `mcp__<server>__<tool>` name is an MCP proxy or nothing: it never
+    /// runs a built-in under a name no gate recognises.
+    #[tokio::test]
+    async fn an_mcp_prefixed_name_never_runs_a_built_in() {
+        let (registry, dir) = os_registry().await;
+        let marker = dir.path().join("ran");
+        let result = registry
+            .execute(
+                &ToolContext::default(),
+                "mcp__anything__os",
+                serde_json::json!({
+                    "resource": "shell",
+                    "action": "exec",
+                    "command": format!("touch {}; test -d '{}'", marker.display(), db_dir()),
+                }),
+            )
+            .await;
+        assert!(result.is_error, "{}", result.content);
+        assert!(!marker.exists(), "a built-in ran under an MCP name");
+        assert!(
+            !registry.is_concurrent_safe("mcp__anything__os", &serde_json::json!({"action": "read", "path": "/tmp/x"})).await,
+            "an MCP name answered with a built-in's concurrency"
+        );
     }
 
     /// The request's tool order is a cache key. Two registries built in
