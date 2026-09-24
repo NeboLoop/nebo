@@ -68,12 +68,10 @@ pub fn plugin_context(
     };
     let mut required = cfg.requires.plugins.clone();
     // Merge scope-specific plugins
-    if let Some(scope_name) = tool_scope {
-        if let Some(scope) = cfg.scopes.get(scope_name) {
-            for p in &scope.plugins {
-                if !required.contains(p) {
-                    required.push(p.clone());
-                }
+    if let Some(scope) = tool_scope.and_then(|name| cfg.scopes.get(name)) {
+        for p in &scope.plugins {
+            if !required.contains(p) {
+                required.push(p.clone());
             }
         }
     }
