@@ -145,13 +145,13 @@ pub async fn agent_mcp_handler(
                     serde_json::json!({ "content": content, "isError": is_error }),
                 )
             } else {
-                let ctx = {
+                let shared = {
                     let lock = state.mcp_context.lock().await;
                     lock.clone()
                 };
 
                 info!(tool = %name, "MCP tool call");
-                let result = state.tools.execute(&ctx, name, arguments).await;
+                let result = call_tool(&state.store, &state.tools, shared, name, arguments).await;
 
                 let content = serde_json::json!([{
                     "type": "text",
@@ -175,6 +175,74 @@ pub async fn agent_mcp_handler(
     };
 
     (StatusCode::OK, axum::Json(resp))
+}
+
+/// Run one `tools/call` for an MCP client — Claude Desktop, Cursor, or a CLI
+/// provider's own tool calls; the server cannot tell them apart, so every one
+/// is `Origin::Mcp`. It acts under the rules of the employee whose session the
+/// shared context names (the main assistant when none), resolved the way a
+/// chat run resolves them, and passes the runner's permission gate before the
+/// registry runs it. Nobody can be asked from here, so what would ask is
+/// refused, exactly as for any unattended run.
+async fn call_tool(
+    store: &std::sync::Arc<db::Store>,
+    tools: &tools::Registry,
+    shared: tools::ToolContext,
+    name: &str,
+    arguments: serde_json::Value,
+) -> tools::ToolResult {
+    let agent_id = types::keyparser::extract_agent_id(&shared.session_key);
+    let is_employee = !agent_id.is_empty() && matches!(store.get_agent(&agent_id), Ok(Some(_)));
+    let agent_id = if is_employee { agent_id } else { String::new() };
+    let rules = if is_employee {
+        crate::entity_config::resolve_for_chat(store, "agent", &agent_id)
+    } else {
+        crate::entity_config::resolve_for_chat(store, "main", "main")
+    };
+    let (permissions, resource_grants, _, _, allowed_paths, operation_policy) =
+        crate::chat_dispatch::entity_run_params(rules.as_ref());
+    let full_access = crate::chat_dispatch::resolve_full_access(store);
+
+    let call = ai::ToolCall {
+        id: String::new(),
+        name: name.to_string(),
+        input: tools.normalize_input(name, arguments).await,
+    };
+    let mut blocked = vec![None];
+    let gate = agent::gate_tool_calls(
+        &agent::GateRun {
+            tools,
+            store,
+            agent_id: &agent_id,
+            session_id: &shared.session_id,
+            session_key: &shared.session_key,
+            origin: Origin::Mcp,
+            full_access,
+            entity_permissions: permissions.as_ref(),
+            operation_policy: operation_policy.as_ref(),
+            approval: None,
+            approval_relay: false,
+            workflow_mode: None,
+            sessions: None,
+        },
+        std::slice::from_ref(&call),
+        &mut blocked,
+    )
+    .await;
+    if let Some((_, refused)) = blocked.pop().flatten() {
+        return refused;
+    }
+    let ctx = tools::ToolContext {
+        origin: Origin::Mcp,
+        entity_permissions: permissions,
+        operation_policy,
+        resource_grants,
+        allowed_paths,
+        full_access,
+        approved_categories: gate.approved_categories,
+        ..shared
+    };
+    tools.execute(&ctx, &call.name, call.input).await
 }
 
 // ── nebo service tool ────────────────────────────────────────────────
@@ -402,5 +470,110 @@ async fn handle_session_reset(state: &AppState, session_id: &str) -> (String, bo
     match state.runner.sessions().reset(&key) {
         Ok(_) => (format!("Session '{}' reset", session_id), false),
         Err(e) => (format!("Failed to reset session: {}", e), true),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tools::registry::DynTool;
+    use tools::{ToolContext, ToolResult};
+
+    /// A tool that reports whether it ran. Named after a real tool so the
+    /// capability map gates it the same way.
+    struct Probe {
+        name: &'static str,
+        operation: Option<&'static str>,
+    }
+    impl DynTool for Probe {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn requires_approval(&self) -> bool {
+            false
+        }
+        fn operation_performed(&self, _input: &serde_json::Value) -> Option<String> {
+            self.operation.map(str::to_string)
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            _input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            Box::pin(async { ToolResult::ok("RAN") })
+        }
+    }
+
+    async fn setup(probe: Probe, rules: serde_json::Value) -> (tempfile::TempDir, Arc<db::Store>, tools::Registry) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap());
+        store.upsert_entity_config("main", "main", &rules).unwrap();
+        let registry = tools::Registry::new(tools::Policy::default());
+        registry.register(Box::new(probe)).await;
+        (dir, store, registry)
+    }
+
+    /// The shared context as the server creates it at boot.
+    fn boot_context() -> ToolContext {
+        ToolContext {
+            origin: Origin::Mcp,
+            user_id: "mcp-client".into(),
+            session_key: "mcp".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_capability_the_employee_lacks_is_refused() {
+        let (_d, store, registry) = setup(
+            Probe { name: "web", operation: None },
+            serde_json::json!({ "permissions": r#"{"web":false}"# }),
+        )
+        .await;
+        let r = call_tool(&store, &registry, boot_context(), "web", serde_json::json!({})).await;
+        assert!(r.is_error, "ran without the web capability: {}", r.content);
+        assert!(r.content.starts_with("PERMISSION_REQUIRED:web"), "{}", r.content);
+    }
+
+    #[tokio::test]
+    async fn a_capability_the_employee_has_runs() {
+        let (_d, store, registry) = setup(
+            Probe { name: "web", operation: None },
+            serde_json::json!({ "permissions": r#"{"web":true}"# }),
+        )
+        .await;
+        let r = call_tool(&store, &registry, boot_context(), "web", serde_json::json!({})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.content, "RAN");
+    }
+
+    #[tokio::test]
+    async fn a_blocked_operation_is_refused() {
+        let (_d, store, registry) = setup(
+            Probe { name: "plugin", operation: Some("payments.charge") },
+            serde_json::json!({ "operationPolicy": r#"{"operations":{"payments.charge":"blocked"}}"# }),
+        )
+        .await;
+        let r = call_tool(&store, &registry, boot_context(), "plugin", serde_json::json!({})).await;
+        assert!(r.is_error, "a Blocked operation ran: {}", r.content);
+        assert!(r.content.contains("Blocked"), "{}", r.content);
+    }
+
+    // A run stamps its origin onto the shared context for CLI providers; an
+    // MCP caller is still an MCP caller — the origin deny list holds.
+    #[tokio::test]
+    async fn the_caller_is_always_an_mcp_client() {
+        let (_d, store, registry) = setup(Probe { name: "os", operation: None }, serde_json::json!({})).await;
+        let shared = ToolContext { origin: Origin::User, ..boot_context() };
+        let r = call_tool(&store, &registry, shared, "os", serde_json::json!({ "resource": "shell", "action": "exec" })).await;
+        assert!(r.is_error, "shell ran for an MCP client: {}", r.content);
+        assert!(r.content.contains("not permitted"), "{}", r.content);
     }
 }

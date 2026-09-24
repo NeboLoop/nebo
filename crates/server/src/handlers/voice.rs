@@ -579,7 +579,7 @@ async fn run_delegated_task(
             if c.business.is_empty() { "the business" } else { &c.business },
         ));
     } else {
-        req.full_access = resolve_full_access(state);
+        req.full_access = resolve_full_access(&state.store);
     }
     // The employee's own configuration, resolved the way a chat run resolves
     // it. Owner voice runs used to skip this and ran with no permissions,

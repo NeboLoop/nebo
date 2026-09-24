@@ -35,11 +35,7 @@ async fn validate_app_token(
     agent_id: &str,
     headers: &axum::http::HeaderMap,
 ) -> Result<(), Response> {
-    if headers
-        .get("x-nebo-tunnel-auth")
-        .and_then(|v| v.to_str().ok())
-        == Some(comm::tunnel::tunnel_auth_secret())
-    {
+    if crate::middleware::came_through_tunnel(headers) {
         return Ok(());
     }
 
@@ -483,11 +479,7 @@ fn connected_profile(
 /// The native scheme proxy is a server-side request (no Origin). HTTP app
 /// windows are same-origin; authenticated tunnel requests carry a private stamp.
 fn app_connection_origin_allowed(headers: &axum::http::HeaderMap) -> bool {
-    if headers
-        .get("x-nebo-tunnel-auth")
-        .and_then(|v| v.to_str().ok())
-        == Some(comm::tunnel::tunnel_auth_secret())
-    {
+    if crate::middleware::came_through_tunnel(headers) {
         return true;
     }
     let Some(origin) = headers.get(header::ORIGIN) else {

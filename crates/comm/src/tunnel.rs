@@ -167,7 +167,8 @@ fn is_blocked_path(path: &str) -> bool {
 /// allowed one on the same stream (HTTP keep-alive reuse would otherwise slip
 /// the second request past a first-line-only check). WebSocket upgrades switch
 /// protocols and own the stream, so there is no second request to smuggle and
-/// the head is forwarded untouched.
+/// their `Connection` header is left as it is. Every head, upgrade or not,
+/// carries the tunnel stamp (see [`tunnel_auth_secret`]).
 async fn proxy_stream(stream: yamux::Stream, local_addr: &str) -> io::Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = stream.compat();
@@ -210,13 +211,9 @@ async fn proxy_stream(stream: yamux::Stream, local_addr: &str) -> io::Result<()>
     });
 
     let mut local = TcpStream::connect(local_addr).await?;
-    if is_upgrade {
-        local.write_all(&head).await?;
-    } else {
-        local
-            .write_all(force_connection_close(&head_str).as_bytes())
-            .await?;
-    }
+    local
+        .write_all(forward_head(&head_str, is_upgrade).as_bytes())
+        .await?;
     tokio::io::copy_bidirectional(&mut stream, &mut local).await?;
     Ok(())
 }
@@ -224,7 +221,8 @@ async fn proxy_stream(stream: yamux::Stream, local_addr: &str) -> io::Result<()>
 /// Per-boot secret the tunnel stamps onto requests it forwards to the local
 /// server (`X-Nebo-Tunnel-Auth`). A request carrying it was owner-authenticated
 /// by the hub before entering the tunnel, so local handlers may treat it as the
-/// owner acting remotely (the app-UI invoke gate does). A drive-by web page can
+/// owner acting remotely (the server's Host check and the app-UI invoke gate
+/// do). A drive-by web page can
 /// never learn the value — it exists only in this process — and any incoming
 /// copy of the header is stripped before the stamp, so it cannot be smuggled
 /// through the tunnel either.
@@ -237,11 +235,11 @@ pub fn tunnel_auth_secret() -> &'static str {
     })
 }
 
-/// Rewrite a request head so the local server closes after one response —
-/// replacing any `Connection:` header, or inserting one if absent — and stamp
-/// the tunnel-auth secret (stripping any inbound copy first; see
-/// [`tunnel_auth_secret`]).
-fn force_connection_close(head: &str) -> String {
+/// Rewrite a request head for the local server: stamp the tunnel-auth secret
+/// (stripping any inbound copy first; see [`tunnel_auth_secret`]) and, unless
+/// the request is a WebSocket upgrade, make the server close after one
+/// response — replacing any `Connection:` header, or inserting one if absent.
+fn forward_head(head: &str, upgrade: bool) -> String {
     let mut out = String::with_capacity(head.len() + 80);
     let mut wrote_conn = false;
     for line in head.split_inclusive("\r\n") {
@@ -250,11 +248,11 @@ fn force_connection_close(head: &str) -> String {
         if lower.starts_with("x-nebo-tunnel-auth:") {
             continue; // never trust an inbound copy
         }
-        if lower.starts_with("connection:") {
+        if lower.starts_with("connection:") && !upgrade {
             out.push_str("Connection: close\r\n");
             wrote_conn = true;
         } else if trimmed.is_empty() {
-            if !wrote_conn {
+            if !wrote_conn && !upgrade {
                 out.push_str("Connection: close\r\n");
             }
             out.push_str(&format!("X-Nebo-Tunnel-Auth: {}\r\n", tunnel_auth_secret()));
@@ -322,13 +320,28 @@ mod tests {
         let head = format!(
             "POST /api/v1/apps/x/agents/invoke HTTP/1.1\r\nHost: h\r\nX-Nebo-Tunnel-Auth: forged\r\nConnection: keep-alive\r\n\r\n"
         );
-        let out = force_connection_close(&head);
+        let out = forward_head(&head, false);
         // The forged inbound copy is gone; exactly one stamp with OUR secret.
         assert!(!out.contains("forged"));
         assert_eq!(out.matches("X-Nebo-Tunnel-Auth:").count(), 1);
         assert!(out.contains(&format!("X-Nebo-Tunnel-Auth: {}", tunnel_auth_secret())));
         assert!(out.contains("Connection: close\r\n"));
         assert!(out.ends_with("\r\n\r\n"));
+    }
+
+    // The server's Host check admits tunnel traffic by this stamp (the Host
+    // is the browser's), so the chat stream's upgrade must carry it too —
+    // and stay an upgrade.
+    #[test]
+    fn stamps_websocket_upgrades_and_keeps_them_open() {
+        let h = "GET /ws HTTP/1.1\r\nHost: neboai.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Nebo-Tunnel-Auth: forged\r\n\r\n";
+        assert_eq!(
+            forward_head(h, true),
+            format!(
+                "GET /ws HTTP/1.1\r\nHost: neboai.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Nebo-Tunnel-Auth: {}\r\n\r\n",
+                tunnel_auth_secret()
+            )
+        );
     }
 
     #[test]
@@ -344,14 +357,14 @@ mod tests {
     fn forces_connection_close() {
         // Existing keep-alive header is replaced.
         let h = "GET /x HTTP/1.1\r\nHost: a\r\nConnection: keep-alive\r\n\r\n";
-        let out = force_connection_close(h);
+        let out = forward_head(h, false);
         assert!(out.contains("Connection: close\r\n"));
         assert!(!out.to_ascii_lowercase().contains("keep-alive"));
         assert!(out.ends_with("\r\n\r\n"));
         // Absent header is inserted before the blank line (plus the tunnel
         // auth stamp — see stamps_tunnel_auth_and_strips_inbound_copies).
         let h2 = "GET /x HTTP/1.1\r\nHost: a\r\n\r\n";
-        let out2 = force_connection_close(h2);
+        let out2 = forward_head(h2, false);
         assert_eq!(
             out2,
             format!(
