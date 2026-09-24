@@ -264,11 +264,14 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
 /// Session wake rail (R3): payloads for sessions that were BUSY when a wake
 /// arrived. `wake::deliver` pushes (wake row id, pre-wrapped reminder text);
 /// `run_loop` drains between tool iterations, injects on the message stream,
-/// and stamps the rows delivered. In-memory by design — entries a run never
-/// drained are cleared by the run-completion hook and the still-pending DB
+/// and stamps the rows delivered. A briefing for a message queued into the
+/// running turn rides the same rail with no row behind it. In-memory by
+/// design — entries a run never drained are cleared by the run-completion hook and the still-pending DB
 /// rows redeliver as a normal wake, so the race loses nothing.
 pub struct WakeEntry {
-    pub wake_id: i64,
+    /// The engine event row to stamp delivered; `None` for a reminder with
+    /// no row behind it.
+    pub wake_id: Option<i64>,
     pub content: String,
     /// The payload's provenance — merged into the live run's taint set at
     /// injection so mid-run delivery can't launder content past the WS2 gates.
@@ -285,7 +288,7 @@ static WAKE_INBOX: std::sync::LazyLock<
 pub fn push_wake(session_key: &str, entry: WakeEntry) {
     let mut inbox = WAKE_INBOX.lock().expect("wake inbox lock");
     let queue = inbox.entry(session_key.to_string()).or_default();
-    if queue.iter().any(|e| e.wake_id == entry.wake_id) {
+    if entry.wake_id.is_some() && queue.iter().any(|e| e.wake_id == entry.wake_id) {
         return;
     }
     queue.push(entry);

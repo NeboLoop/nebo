@@ -429,8 +429,36 @@ fn extract_chat_id_from_key(key: &str) -> String {
     }
 }
 
-/// Remove orphaned tool results that have no matching tool call in the conversation.
+/// Steering an older build wrote into the thread. Steering rides the calls of
+/// the turn that produced it and is never history, but two kinds were stored
+/// as user rows: the auto-continue nudge, and a `<system-reminder>` briefing
+/// queued into a running turn. The rows stay on disk (owner data is never
+/// deleted); the model's history never loads them — a stored "keep going"
+/// re-sent on every later turn is how an employee stays fixated on old work.
+fn is_stored_steering(msg: &ChatMessage) -> bool {
+    if msg.role != "user" {
+        return false;
+    }
+    if crate::goals::is_continuation_prompt(&msg.content) {
+        return true;
+    }
+    let meta = msg
+        .metadata
+        .as_deref()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+    let flag = |key: &str| {
+        meta.as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+    };
+    flag("autoContinue") || (flag("isMeta") && msg.content.trim_start().starts_with("<system-reminder>"))
+}
+
+/// The model's history: stored steering dropped (see [`is_stored_steering`]),
+/// then orphaned tool results that have no matching tool call removed.
 fn sanitize_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let messages: Vec<ChatMessage> = messages.into_iter().filter(|m| !is_stored_steering(m)).collect();
     // Collect all tool call IDs from assistant messages
     let mut known_call_ids = std::collections::HashSet::new();
     for msg in &messages {
@@ -510,5 +538,227 @@ mod tests {
         let switched = mgr.store.get_session(&session.id).unwrap().unwrap();
         assert_eq!(switched.summary, None);
         assert_eq!(switched.active_chat_id.as_deref(), Some("chat-matter-b"));
+    }
+
+    fn meta(v: serde_json::Value) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    /// Steering older builds stored — the auto-continue nudge (stamped
+    /// `autoContinue` by migration 0131, or bare) and a `<system-reminder>`
+    /// briefing queued into a running turn — never loads into the model's
+    /// history, and stays on disk. Everything that is conversation loads:
+    /// the owner's words, tool results, the stop record, preloads, hidden
+    /// platform prompts.
+    #[test]
+    fn stored_steering_never_loads_and_is_never_deleted() {
+        let mgr = test_manager();
+        let session = mgr.get_or_create("agent:a1:web", "").expect("session");
+        let nudge = crate::goals::continuation_prompt("unfinished work in the previous response");
+        let calls = r#"[{"id":"c1","name":"os","input":{}}]"#;
+        let results = r#"[{"tool_call_id":"c1","content":"ok"}]"#;
+        let rows: Vec<(&str, String, Option<&str>, Option<&str>, Option<String>)> = vec![
+            ("user", "Draft the plan".into(), None, None, None),
+            ("assistant", "".into(), Some(calls), None, None),
+            ("tool", "".into(), None, Some(results), None),
+            ("assistant", "Step one is done.".into(), None, None, None),
+            ("user", nudge.clone(), None, None, meta(serde_json::json!({"isMeta": true, "autoContinue": true}))),
+            ("user", nudge.clone(), None, None, None),
+            (
+                "user",
+                crate::steering::wrap_system_reminder("Team \"Ops\" — mission: ship it."),
+                None,
+                None,
+                meta(serde_json::json!({"isMeta": true})),
+            ),
+            ("user", crate::runner::INTERRUPT_MESSAGE.into(), None, None, meta(serde_json::json!({"isMeta": true}))),
+            ("user", "[Loading skill: plan]\n\nsteps".into(), None, None, meta(serde_json::json!({"isMeta": true, "skillPreload": "plan"}))),
+            ("user", "[Background event — not an owner message]".into(), None, None, meta(serde_json::json!({"isMeta": true, "hiddenPrompt": true}))),
+            ("user", "Thanks".into(), None, None, None),
+        ];
+        for (role, content, tc, tr, md) in &rows {
+            mgr.append_message(&session.id, role, content, *tc, *tr, md.as_deref()).expect("append");
+        }
+
+        let history = mgr.get_messages(&session.id).expect("history");
+        assert!(
+            history.iter().all(|m| !crate::goals::is_continuation_prompt(&m.content)),
+            "a stored auto-continue nudge loaded into history"
+        );
+        assert!(
+            history.iter().all(|m| !m.content.starts_with("<system-reminder>")),
+            "a stored <system-reminder> loaded into history"
+        );
+        let contents: Vec<&str> = history.iter().map(|m| m.content.as_str()).collect();
+        for kept in ["Draft the plan", "Step one is done.", crate::runner::INTERRUPT_MESSAGE, "Thanks"] {
+            assert!(contents.contains(&kept), "conversation row dropped: {kept}");
+        }
+        assert!(history.iter().any(|m| m.role == "tool"), "the tool result is conversation");
+        assert!(contents.iter().any(|c| c.starts_with("[Loading skill: plan]")), "a preload is not steering");
+        assert!(contents.iter().any(|c| c.starts_with("[Background event")), "a hidden prompt is not steering");
+        assert_eq!(history.len(), rows.len() - 3, "exactly the three steering rows are dropped");
+
+        let chat_id = mgr.active_chat_id(&session.id);
+        let on_disk = mgr.store.get_chat_messages(&chat_id).expect("raw rows");
+        assert_eq!(on_disk.len(), rows.len(), "owner data is filtered at load, never deleted");
+    }
+
+    /// A scripted model: every call's messages are recorded; the main
+    /// loop's calls follow the script, side calls answer "ok".
+    struct Scripted {
+        script: std::sync::Mutex<std::collections::VecDeque<Step>>,
+        calls: std::sync::Mutex<Vec<Vec<ai::Message>>>,
+    }
+
+    enum Step {
+        Say(&'static str),
+        Call,
+        Drop,
+    }
+
+    #[async_trait::async_trait]
+    impl ai::Provider for Scripted {
+        fn id(&self) -> &str {
+            "scripted"
+        }
+        async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            let step = if req.trace.purpose == "agent_turn" {
+                self.calls.lock().unwrap().push(req.messages.clone());
+                self.script.lock().unwrap().pop_front().expect("a main-loop call the script did not expect")
+            } else {
+                Step::Say("ok")
+            };
+            let events = match step {
+                Step::Say(text) => vec![ai::StreamEvent::text(text)],
+                Step::Call => vec![ai::StreamEvent::tool_call(ai::ToolCall {
+                    id: format!("call-{}", uuid::Uuid::new_v4()),
+                    name: "os".into(),
+                    input: serde_json::json!({"resource": "file", "action": "read", "path": "/nonexistent"}),
+                })],
+                Step::Drop => return Err(ai::ProviderError::Request("connection reset".into())),
+            };
+            let (tx, rx) = tokio::sync::mpsc::channel(8);
+            for e in events {
+                let _ = tx.send(e).await;
+            }
+            let _ = tx.send(ai::StreamEvent::done()).await;
+            Ok(rx)
+        }
+    }
+
+    async fn turn(runner: &crate::runner::Runner, key: &str, prompt: String) {
+        let req = crate::runner::RunRequest {
+            session_key: key.to_string(),
+            prompt,
+            skip_memory_extract: true,
+            ..Default::default()
+        };
+        let mut rx = runner.run(req).await.expect("run");
+        while rx.recv().await.is_some() {}
+        for _ in 0..200 {
+            if !runner.is_session_busy(key) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the turn never released its session");
+    }
+
+    fn has_nudge(messages: &[ai::Message]) -> bool {
+        messages.iter().any(|m| m.content.contains(crate::goals::CONTINUATION_PREFIX))
+    }
+
+    /// Steering is per turn. An auto-continuation's nudge rides the calls of
+    /// its own run — the first call and that call's retry — as a stream
+    /// reminder, then is gone: the run's next call does not carry it, the
+    /// thread never stores it, and the next turn's assembled messages hold
+    /// no steering from earlier turns, stored legacy rows included.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_continuation_nudge_rides_its_calls_and_never_reaches_the_thread() {
+        let path = std::env::temp_dir().join(format!("nebo-steering-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(Store::new(path.to_str().unwrap()).expect("store"));
+        let model = Arc::new(Scripted {
+            script: std::sync::Mutex::new(
+                [
+                    Step::Say("Step one is done; next I will write step two."),
+                    Step::Drop,
+                    Step::Call,
+                    Step::Say("Step two is written."),
+                    Step::Say("You're welcome."),
+                ]
+                .into(),
+            ),
+            calls: Default::default(),
+        });
+        let runner = crate::runner::Runner::new(
+            store.clone(),
+            Arc::new(tools::Registry::new(tools::Policy::new())),
+            vec![model.clone() as Arc<dyn ai::Provider>],
+            crate::selector::ModelSelector::new(Default::default()),
+            Arc::new(crate::concurrency::ConcurrencyController::new(Some(2))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        );
+        let key = "agent:ops:web";
+
+        turn(&runner, key, "Draft the plan".into()).await;
+        turn(&runner, key, crate::goals::continuation_prompt("unfinished work in the previous response")).await;
+
+        let sid = runner.sessions().resolve_session_id_by_key(key).expect("session");
+        let chat_id = runner.sessions().active_chat_id(&sid);
+        let stored = store.get_chat_messages(&chat_id).expect("rows");
+        assert!(
+            stored.iter().all(|m| !crate::goals::is_continuation_prompt(&m.content)
+                && !m.content.contains("<system-reminder>")),
+            "steering was written to the thread: {:?}",
+            stored.iter().map(|m| (&m.role, &m.content)).collect::<Vec<_>>()
+        );
+        assert!(stored.iter().any(|m| m.role == "user" && m.content == "Draft the plan"), "the owner's words persist");
+        assert!(stored.iter().any(|m| m.role == "tool"), "the tool result persists");
+        assert!(stored.iter().any(|m| m.role == "assistant" && m.content == "Step two is written."));
+
+        // Rows an older build stored: loaded by nothing, kept on disk.
+        let legacy_nudge = crate::goals::continuation_prompt("unfinished work in the previous response");
+        runner
+            .sessions()
+            .append_message(&sid, "user", &legacy_nudge, None, None, Some(r#"{"isMeta":true,"autoContinue":true}"#))
+            .expect("legacy nudge");
+        runner
+            .sessions()
+            .append_message(
+                &sid,
+                "user",
+                &crate::steering::wrap_system_reminder("Team \"Ops\" — mission: ship it."),
+                None,
+                None,
+                Some(r#"{"isMeta":true}"#),
+            )
+            .expect("legacy briefing");
+
+        turn(&runner, key, "Thanks".into()).await;
+
+        let calls = model.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 5, "turn one, the continuation's dropped call, its retry, its next call, turn three");
+        for (i, call) in calls[1..=2].iter().enumerate() {
+            assert!(has_nudge(call), "continuation call {i} does not carry the nudge");
+            let last = call.last().expect("messages");
+            assert_eq!(last.role, "user", "continuation call {i} ends on the model's own turn");
+            assert!(last.content.starts_with("<system-reminder>"), "the nudge rides as a stream reminder");
+        }
+        assert!(!has_nudge(&calls[3]), "the nudge outlived the call it was for");
+        let next_turn = &calls[4];
+        assert!(!has_nudge(next_turn), "the nudge reached the next turn");
+        assert!(!next_turn.iter().any(|m| m.content.contains("mission: ship it")), "a stored briefing reached the next turn");
+        let timestamps = next_turn.iter().filter(|m| m.content.contains("Message sent at")).count();
+        assert_eq!(timestamps, 1, "only this turn's own stream reminder rides its first call");
+
+        let on_disk = store.get_chat_messages(&chat_id).expect("rows");
+        assert_eq!(
+            on_disk.iter().filter(|m| m.content == legacy_nudge || m.content.contains("mission: ship it")).count(),
+            2,
+            "stored rows are filtered at load, never deleted"
+        );
     }
 }
