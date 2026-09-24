@@ -149,19 +149,21 @@ fn extract_confidence_from_metadata(mem: &Memory) -> Option<f64> {
 }
 
 /// Extract facts from conversation messages.
-/// When `store` and `user_id` are provided, existing memory keys are loaded
+/// When `existing` (the store and the scope's user id) is provided, existing memory keys are loaded
 /// and included in the prompt so the LLM avoids extracting duplicates.
 /// `topics` are the scope's declared memory topics (agent.json `memory.topics`);
 /// when non-empty they replace the generic `project` category in the prompt.
 /// `model` overrides the provider's default model (empty = provider default).
+/// `goal` is the session's agreed goal, when it has one: what the ongoing
+/// work is for.
 pub async fn extract_facts(
     trace: ai::RequestTrace,
     provider: &dyn Provider,
     messages: &[ChatMessage],
-    store: Option<&Store>,
-    user_id: Option<&str>,
+    existing: Option<(&Store, &str)>,
     topics: &[MemoryTopic],
     model: &str,
+    goal: Option<&str>,
 ) -> Option<ExtractedFacts> {
     let conversation = build_conversation_text(messages);
     if conversation.is_empty() {
@@ -169,69 +171,11 @@ pub async fn extract_facts(
     }
 
     // Pattern 9: load existing memory keys to prevent duplicate extraction
-    let existing_memories_section = match (store, user_id) {
-        (Some(s), Some(uid)) => build_existing_memories_section(s, uid),
-        _ => String::new(),
+    let existing_memories_section = match existing {
+        Some((s, uid)) => build_existing_memories_section(s, uid),
+        None => String::new(),
     };
-
-    // Extraction prompt v2 — docs/design/MEMORY_QUALITY.md. Agent-declared
-    // topics replace the generic `project` definition; the description is the
-    // category instruction verbatim.
-    let topic_categories = if topics.is_empty() {
-        "- \"project\" — ongoing work, goals, or constraints the user would expect you to know next time"
-            .to_string()
-    } else {
-        topics
-            .iter()
-            .map(|t| format!("- \"{}\" — {}", t.slug, t.description))
-            .collect::<Vec<_>>()
-            .join("\n            ")
-    };
-
-    let prompt = format!(
-        "Analyze the conversation and extract durable facts worth remembering in FUTURE conversations.\n\n\
-         THE BAR — every fact must pass all three:\n\
-         1. Will this still matter in a month?\n\
-         2. Is it hard to re-derive on demand (not available from the user's files, calendar, tools, or this session)?\n\
-         3. Is it about the user or their ongoing work — not about this conversation's mechanics?\n\n\
-         Empty arrays are normal. Most conversations contain nothing durable.\n\n\
-         Return a JSON object with these arrays:\n\
-         1. \"preferences\" — preferences and corrections about how to work, stated or demonstrated.\n\
-            Include the why when the user gave one.\n\
-         2. \"styles\" — communication/personality style observations (key: \"style/trait-name\")\n\
-         3. \"entities\" — people, organizations, and places with significance beyond the current task\n\
-            (key: \"kind/name\", e.g. \"person/sarah\"). A name mentioned in passing is NOT an entity.\n\
-         4. \"topics\" — ongoing work: goals, decisions, constraints, current status. Convert relative\n\
-            dates to absolute. Each fact names its topic:\n\
-            {topic_categories}\n\
-         5. \"artifacts\" — important produced content worth referencing later (key: \"artifact/description\")\n\n\
-         NEVER extract:\n\
-         - times, dates, counts, quantities, IDs, or file paths standing alone\n\
-         - session mechanics: which tools ran, message/input sizes, the current date, iteration details\n\
-         - anything trivially re-derivable from the user's files, calendar, or connected tools\n\
-         - secrets, credentials, API keys\n\
-         - environment-dependent failures: missing binaries, 'command not found', unconfigured\n\
-           credentials, uninstalled packages, fresh-install errors. These get fixed and are not\n\
-           durable rules. If a tool failed because of setup state, capture the FIX (install\n\
-           command, config step) — never the failure itself\n\
-         - negative claims about tools or features ('X does not work', 'Y is broken', 'cannot\n\
-           use Z'). These harden into refusals cited long after the actual problem was fixed\n\
-         - transient errors that resolved before the conversation ended — if retrying worked,\n\
-           the lesson is the retry pattern, not the original failure\n\
-         - sensitive personal information — protected attributes (race, ethnicity, national origin,\n\
-           religion, age, sex, sexual orientation, gender identity, immigration status, disability,\n\
-           serious illness, union membership), government identifiers, financial account numbers,\n\
-           health information, home addresses — UNLESS the user explicitly asked you to remember it\n\n\
-         Each fact:\n\
-         - \"key\": unique, descriptive, path-like (\"category/name\")\n\
-         - \"value\": 1-2 self-contained sentences (readable without this conversation)\n\
-         - \"topic\": (topics array only) one of the topic slugs above\n\
-         - \"tags\": searchable tags\n\
-         - \"explicit\": true if the user directly stated it, false if inferred\n\n\
-         {existing_memories_section}\
-         Conversation:\n{conversation}\n\n\
-         Return ONLY valid JSON, no markdown fences."
-    );
+    let prompt = extraction_prompt(&conversation, &existing_memories_section, topics, goal);
 
     let req = ai::ChatRequest {
         tool_credential: None,
@@ -278,6 +222,80 @@ pub async fn extract_facts(
             None
         }
     }
+}
+
+/// The extraction prompt over `conversation`: the bar, the categories (the
+/// scope's topics replace the generic `project`), the memories already
+/// stored and, when the session has one, its agreed goal.
+fn extraction_prompt(
+    conversation: &str,
+    existing_memories_section: &str,
+    topics: &[MemoryTopic],
+    goal: Option<&str>,
+) -> String {
+    // Extraction prompt v2 — docs/design/MEMORY_QUALITY.md. Agent-declared
+    // topics replace the generic `project` definition; the description is the
+    // category instruction verbatim.
+    let topic_categories = if topics.is_empty() {
+        "- \"project\" — ongoing work, goals, or constraints the user would expect you to know next time"
+            .to_string()
+    } else {
+        topics
+            .iter()
+            .map(|t| format!("- \"{}\" — {}", t.slug, t.description))
+            .collect::<Vec<_>>()
+            .join("\n            ")
+    };
+
+    let goal_section = match goal.map(str::trim).filter(|g| !g.is_empty()) {
+        Some(goal) => format!("The agreed goal of this work: {goal}\n\n"),
+        None => String::new(),
+    };
+    format!(
+        "Analyze the conversation and extract durable facts worth remembering in FUTURE conversations.\n\n\
+         THE BAR — every fact must pass all three:\n\
+         1. Will this still matter in a month?\n\
+         2. Is it hard to re-derive on demand (not available from the user's files, calendar, tools, or this session)?\n\
+         3. Is it about the user or their ongoing work — not about this conversation's mechanics?\n\n\
+         Empty arrays are normal. Most conversations contain nothing durable.\n\n\
+         Return a JSON object with these arrays:\n\
+         1. \"preferences\" — preferences and corrections about how to work, stated or demonstrated.\n\
+            Include the why when the user gave one.\n\
+         2. \"styles\" — communication/personality style observations (key: \"style/trait-name\")\n\
+         3. \"entities\" — people, organizations, and places with significance beyond the current task\n\
+            (key: \"kind/name\", e.g. \"person/sarah\"). A name mentioned in passing is NOT an entity.\n\
+         4. \"topics\" — ongoing work: goals, decisions, constraints, current status. Convert relative\n\
+            dates to absolute. Each fact names its topic:\n\
+            {topic_categories}\n\
+         5. \"artifacts\" — important produced content worth referencing later (key: \"artifact/description\")\n\n\
+         NEVER extract:\n\
+         - times, dates, counts, quantities, IDs, or file paths standing alone\n\
+         - session mechanics: which tools ran, message/input sizes, the current date, iteration details\n\
+         - anything trivially re-derivable from the user's files, calendar, or connected tools\n\
+         - secrets, credentials, API keys\n\
+         - environment-dependent failures: missing binaries, 'command not found', unconfigured\n\
+           credentials, uninstalled packages, fresh-install errors. These get fixed and are not\n\
+           durable rules. If a tool failed because of setup state, capture the FIX (install\n\
+           command, config step) — never the failure itself\n\
+         - negative claims about tools or features ('X does not work', 'Y is broken', 'cannot\n\
+           use Z'). These harden into refusals cited long after the actual problem was fixed\n\
+         - transient errors that resolved before the conversation ended — if retrying worked,\n\
+           the lesson is the retry pattern, not the original failure\n\
+         - sensitive personal information — protected attributes (race, ethnicity, national origin,\n\
+           religion, age, sex, sexual orientation, gender identity, immigration status, disability,\n\
+           serious illness, union membership), government identifiers, financial account numbers,\n\
+           health information, home addresses — UNLESS the user explicitly asked you to remember it\n\n\
+         Each fact:\n\
+         - \"key\": unique, descriptive, path-like (\"category/name\")\n\
+         - \"value\": 1-2 self-contained sentences (readable without this conversation)\n\
+         - \"topic\": (topics array only) one of the topic slugs above\n\
+         - \"tags\": searchable tags\n\
+         - \"explicit\": true if the user directly stated it, false if inferred\n\n\
+         {existing_memories_section}\
+         {goal_section}\
+         Conversation:\n{conversation}\n\n\
+         Return ONLY valid JSON, no markdown fences."
+    )
 }
 
 /// Store extracted facts in the database.
