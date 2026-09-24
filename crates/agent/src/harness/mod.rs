@@ -34,7 +34,8 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::runner::{ActiveTurns, RunProgress, WorkflowMode};
+use crate::runner::WorkflowMode;
+use session_gate::{ActiveTurns, RunProgress};
 
 /// The facade every caller starts a turn through. WP2.9 gives it the rest of
 /// what `Runner` holds (sessions, tools, store, providers, concurrency,
@@ -52,12 +53,12 @@ impl Harness {
 
     /// Whether a turn is running on `key`.
     pub fn is_session_busy(&self, key: &str) -> bool {
-        crate::runner::session_is_busy(&self.active_turns, key)
+        session_gate::session_is_busy(&self.active_turns, key)
     }
 
     /// The running turn's live counters on `key`, if one is running.
     pub fn active_turn_status(&self, key: &str) -> Option<types::api::ActiveTurnStatus> {
-        crate::runner::active_turn_status(&self.active_turns, key)
+        session_gate::active_turn_status(&self.active_turns, key)
     }
 }
 

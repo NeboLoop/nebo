@@ -21,6 +21,10 @@ use crate::harness::conversation::{
 };
 use crate::harness::model_call::{self, prefer_non_gateway};
 use crate::harness::seat;
+use crate::harness::session_gate::{
+    ActiveTurnStatus, ActiveTurns, Admission, QUEUED_INTO_RUNNING_TURN, RunProgress, active_turn_status,
+    admit_or_queue, live_session_under, session_is_busy,
+};
 use crate::harness::{after_turn, usage};
 use types::keyparser;
 use crate::prompt;
@@ -390,166 +394,6 @@ pub struct RunRequest {
     pub workflow: Option<WorkflowMode>,
 }
 
-/// A turn in flight on one session. The runner admits ONE per session key: a
-/// second request while it runs is appended to the session as the owner's next
-/// message (the loop reloads history every iteration, so the model hears it at
-/// its next step) and the caller gets a status line instead of a second worker
-/// on the same job. Live 2026-09-03: four voice "status?" calls started four
-/// more runs on one thread; they fought over one file for five minutes.
-pub struct ActiveTurn {
-    pub started: std::time::Instant,
-    pub progress: RunProgress,
-    /// The turn's cancel token: set means the owner stopped it and its loop
-    /// is unwinding, so the slot frees in a moment.
-    pub cancel_token: CancellationToken,
-    /// Its loop has ended (`TurnGuard::close`): nothing reads the thread for
-    /// it any more, and the slot frees in a moment.
-    pub closing: bool,
-}
-
-pub type ActiveTurns = Arc<std::sync::Mutex<HashMap<String, ActiveTurn>>>;
-
-/// Admit a turn on `session_key`, or say why not. Check and insert are one
-/// step under the lock so two callers cannot both pass.
-pub fn admit_turn(
-    turns: &ActiveTurns,
-    session_key: &str,
-    progress: RunProgress,
-    cancel_token: CancellationToken,
-) -> Result<TurnGuard, String> {
-    let mut map = turns.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(active) = map.get(session_key) {
-        return Err(busy_status_line(active));
-    }
-    map.insert(
-        session_key.to_string(),
-        ActiveTurn { started: std::time::Instant::now(), progress, cancel_token, closing: false },
-    );
-    Ok(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() })
-}
-
-/// True when the turn holding `session_key` is on its way out — cancelled, or
-/// its loop has ended — so the next message should wait for the slot rather
-/// than be queued into a loop that will not read it.
-pub fn turn_is_closing(turns: &ActiveTurns, session_key: &str) -> bool {
-    turns
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(session_key)
-        .is_some_and(|t| t.closing || t.cancel_token.is_cancelled())
-}
-
-/// The typed stop reason a busy session answers with. Consumers render it as
-/// status (chat: a note under the message, spinner kept; voice: read aloud),
-/// never as the employee's reply.
-pub const QUEUED_INTO_RUNNING_TURN: &str = "queued_into_running_turn";
-
-/// Releases the session when the run's task ends, however it ends.
-pub struct TurnGuard {
-    turns: ActiveTurns,
-    session_key: String,
-}
-
-impl TurnGuard {
-    /// The turn's loop has ended. The task still has its tail to run (the
-    /// report, title, cleanup) before the slot frees; a message arriving now
-    /// waits for the slot and starts the next turn instead of being queued
-    /// into this one, which will not read it.
-    pub fn close(&self) {
-        if let Some(t) = self.turns.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&self.session_key) {
-            t.closing = true;
-        }
-    }
-}
-
-impl Drop for TurnGuard {
-    fn drop(&mut self) {
-        // Recover a poisoned lock: a panic elsewhere must not leave the session
-        // marked busy, which would queue every later message forever.
-        self.turns.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.session_key);
-    }
-}
-
-/// ONE answer to "is a turn running on this session": the same map the
-/// admission check uses, so callers that never register with the server's
-/// run registry (voice, MCP) are seen too.
-pub fn session_is_busy(turns: &ActiveTurns, session_key: &str) -> bool {
-    live_session_under(turns, session_key).is_some()
-}
-
-/// The live session under `session_key`: the key itself, or an activity
-/// session a workflow turn runs under (`<turn session>:<activity>::<n>`).
-/// The engine holds a case turn's own session key; the runner marks the
-/// activity's. Seen live: a reply that landed mid-turn was "not busy" by
-/// exact match, deferred, and the turn closed the case without hearing it.
-pub fn live_session_under(turns: &ActiveTurns, session_key: &str) -> Option<String> {
-    let map = turns.lock().unwrap_or_else(|p| p.into_inner());
-    if map.contains_key(session_key) {
-        return Some(session_key.to_string());
-    }
-    let prefix = format!("{session_key}:");
-    map.keys().find(|k| k.starts_with(&prefix)).cloned()
-}
-
-pub use types::api::ActiveTurnStatus;
-
-pub fn active_turn_status(turns: &ActiveTurns, session_key: &str) -> Option<ActiveTurnStatus> {
-    let map = turns.lock().unwrap_or_else(|p| p.into_inner());
-    map.get(session_key).map(ActiveTurn::status)
-}
-
-impl ActiveTurn {
-    fn status(&self) -> ActiveTurnStatus {
-        ActiveTurnStatus {
-            elapsed_secs: self.started.elapsed().as_secs(),
-            tool_calls: self.progress.tool_call_count.load(std::sync::atomic::Ordering::Relaxed),
-            current_tool: self.progress.current_tool.lock().map(|t| t.clone()).unwrap_or_default(),
-        }
-    }
-}
-
-/// The live counters as one phrase ("3 minutes in, 12 tool calls so far,
-/// currently running os: exec"). The busy line below and voice's `status`
-/// tool both read it, so they never describe the same run differently.
-pub fn progress_phrase(st: &ActiveTurnStatus) -> String {
-    let elapsed = if st.elapsed_secs < 90 {
-        format!("{} seconds", st.elapsed_secs)
-    } else {
-        format!("{} minutes", st.elapsed_secs / 60)
-    };
-    let doing = if st.current_tool.is_empty() {
-        "thinking".to_string()
-    } else {
-        format!("running {}", st.current_tool)
-    };
-    let calls_part = match st.tool_calls {
-        0 => String::new(),
-        1 => ", 1 tool call so far".to_string(),
-        n => format!(", {n} tool calls so far"),
-    };
-    format!("{elapsed} in{calls_part}, currently {doing}")
-}
-
-/// What a second caller hears while a turn is busy. Built from the live
-/// counters, no model call; read aloud by voice, shown as status in chat.
-pub fn busy_status_line(active: &ActiveTurn) -> String {
-    format!(
-        "Still on the last thing, {}. I'll pick this up at my next step; if that work \
-         finishes first, your message is waiting in the thread.",
-        progress_phrase(&active.status())
-    )
-}
-
-/// Shared atomic counters for live run progress reporting.
-/// Created by the server's RunRegistry and threaded into the runner.
-#[derive(Clone, Debug)]
-pub struct RunProgress {
-    pub run_id: String,
-    pub iteration_count: Arc<std::sync::atomic::AtomicU32>,
-    pub tool_call_count: Arc<std::sync::atomic::AtomicU32>,
-    pub current_tool: Arc<std::sync::Mutex<String>>,
-}
-
 /// Per-run mutable state (prevents data races across concurrent runs).
 pub(crate) struct RunState {
     prompt_overhead: usize,
@@ -816,69 +660,52 @@ impl Runner {
             tool_call_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             current_tool: Arc::new(std::sync::Mutex::new(String::new())),
         });
-        let turn_guard = match admit_turn(&self.active_turns, &session_key, progress.clone(), req.cancel_token.clone()) {
-            Ok(guard) => guard,
-            Err(status) => {
-                // The owner pressed stop and typed the next thing at once, or
-                // the turn's loop has just ended. The turn is unwinding;
-                // queuing this message into it would leave it in the thread
-                // unanswered (that queue is read by a loop that has exited or
-                // is about to). Wait for the slot, briefly, and start the new
-                // turn.
-                let mut admitted = None;
-                if turn_is_closing(&self.active_turns, &session_key) {
-                    for _ in 0..100 {
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        if let Ok(g) = admit_turn(&self.active_turns, &session_key, progress.clone(), req.cancel_token.clone()) {
-                            admitted = Some(g);
-                            break;
-                        }
-                    }
-                }
-                if let Some(g) = admitted {
-                    g
-                } else {
-                // The owner's words reach the running turn as its next message.
-                // They are stored as typed (the chat shows them clean) and
-                // marked as having arrived mid-work; the framing the model
-                // needs is added when the window is built (`convert_messages`),
-                // the way Claude Code keeps the transcript clean and frames the
-                // queued message for the model only. Untrusted caller framing
-                // (phone lines) rides along in the briefing below.
-                let via = if req.channel.is_empty() { "chat" } else { req.channel.as_str() };
-                let meta = MidTurnFrom::Owner { via: via.to_string() }.metadata();
-                if let Err(e) = self.sessions.append_message(&session_id, "user", &req.prompt, None, None, Some(&meta)) {
-                    warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
-                }
-                // The briefing (team roster, turn rule) is steering: it rides
-                // the running turn's next call on the wake rail and is never
-                // written to the thread.
-                if let Some(ctx) = req.mention_context.as_deref() {
-                    steering::push_wake(
-                        &session_key,
-                        steering::WakeEntry {
-                            wake_id: None,
-                            content: steering::wrap_system_reminder(ctx),
-                            taint: Vec::new(),
-                        },
-                    );
-                }
-                info!(session_id = %session_id, channel = %req.channel, "second request on a busy session queued into the running turn");
-                // The running loop hears it at its next step, or before it ends
-                // the turn on a reply (`mid_turn_message_landed`); once the loop
-                // has ended the turn is closing and the wait above starts a new
-                // turn.
-                let (tx, rx) = mpsc::channel(4);
-                // A send fails only if the caller already dropped the receiver;
-                // there is nobody left to tell.
-                let _ = tx
-                    .send(StreamEvent::control_notice(status, QUEUED_INTO_RUNNING_TURN))
-                    .await;
-                let _ = tx.send(StreamEvent::done()).await;
-                return Ok(rx);
-                }
+        // The owner's words reach the running turn as its next message. They
+        // are stored as typed (the chat shows them clean) and marked as
+        // having arrived mid-work; the framing the model needs is added when
+        // the window is built (`convert_messages`), the way Claude Code keeps
+        // the transcript clean and frames the queued message for the model
+        // only. Untrusted caller framing (phone lines) rides along in the
+        // briefing below.
+        let via = if req.channel.is_empty() { "chat" } else { req.channel.as_str() };
+        let queue = || {
+            let meta = MidTurnFrom::Owner { via: via.to_string() }.metadata();
+            if let Err(e) = self.sessions.append_message(&session_id, "user", &req.prompt, None, None, Some(&meta)) {
+                warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
             }
         };
+        let turn_guard =
+            match admit_or_queue(&self.active_turns, &session_key, progress.clone(), req.cancel_token.clone(), queue)
+                .await
+            {
+                Admission::Admitted(guard) => guard,
+                Admission::Queued { status } => {
+                    // The briefing (team roster, turn rule) is steering: it rides
+                    // the running turn's next call on the wake rail and is never
+                    // written to the thread.
+                    if let Some(ctx) = req.mention_context.as_deref() {
+                        steering::push_wake(
+                            &session_key,
+                            steering::WakeEntry {
+                                wake_id: None,
+                                content: steering::wrap_system_reminder(ctx),
+                                taint: Vec::new(),
+                            },
+                        );
+                    }
+                    info!(session_id = %session_id, channel = %req.channel, "second request on a busy session queued into the running turn");
+                    // The running loop hears it at its next step, or before it
+                    // ends the turn on a reply (`mid_turn_message_landed`).
+                    let (tx, rx) = mpsc::channel(4);
+                    // A send fails only if the caller already dropped the
+                    // receiver; there is nobody left to tell.
+                    let _ = tx
+                        .send(StreamEvent::control_notice(status, QUEUED_INTO_RUNNING_TURN))
+                        .await;
+                    let _ = tx.send(StreamEvent::done()).await;
+                    return Ok(rx);
+                }
+            };
 
         // Pre-load skills into the sub-agent's conversation.
         // Each skill becomes a user message with isMeta metadata so the UI doesn't
@@ -5643,60 +5470,6 @@ mod objective_decision_tests {
 mod tests {
     use super::*;
 
-    fn progress() -> RunProgress {
-        RunProgress {
-            run_id: "r".into(),
-            iteration_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            tool_call_count: Arc::new(std::sync::atomic::AtomicU32::new(3)),
-            current_tool: Arc::new(std::sync::Mutex::new("os: exec".into())),
-        }
-    }
-
-    /// The live failure: a second request on a busy session must not become a
-    /// second worker. It is refused with a status line, and the session opens
-    /// again the moment the first turn's guard drops.
-    #[test]
-    fn one_turn_per_session_and_the_guard_reopens_it() {
-        let turns: ActiveTurns = Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let first = admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).expect("first turn admitted");
-        let second = admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new());
-        let status = match second {
-            Err(s) => s,
-            Ok(_) => panic!("a second turn was admitted on a busy session"),
-        };
-        assert!(status.contains("3 tool calls") && status.contains("running os: exec"), "{status}");
-        assert!(!status.contains('\u{2014}'), "no em dash in owner copy");
-        assert!(!status.contains("stop") && !status.contains("will answer"), "promises only what the code does: {status}");
-        assert!(session_is_busy(&turns, "agent:a:thread:t"));
-        let st = active_turn_status(&turns, "agent:a:thread:t").expect("status while busy");
-        assert_eq!((st.tool_calls, st.current_tool.as_str()), (3, "os: exec"));
-        assert!(active_turn_status(&turns, "agent:a:thread:other").is_none());
-        assert!(admit_turn(&turns, "agent:a:thread:other", progress(), CancellationToken::new()).is_ok(), "other sessions are unaffected");
-        drop(first);
-        assert!(!session_is_busy(&turns, "agent:a:thread:t"));
-        assert!(admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).is_ok(), "released when the guard drops");
-    }
-
-    /// The engine knows a case turn by its own session; the runner marks
-    /// the activity session under it. The live session under a key is the
-    /// key itself or an activity beneath it — never a key that merely
-    /// shares a prefix — and the wakes queued under that activity drain by
-    /// the turn's key.
-    #[test]
-    fn the_live_session_under_a_turn_key_is_its_activity_session() {
-        let turns: ActiveTurns = Default::default();
-        let activity = "agent:a:workflow:t1:capture::0";
-        let _guard = admit_turn(&turns, activity, progress(), CancellationToken::new()).unwrap();
-        assert_eq!(live_session_under(&turns, "agent:a:workflow:t1").as_deref(), Some(activity));
-        assert_eq!(live_session_under(&turns, activity).as_deref(), Some(activity), "the key itself");
-        assert_eq!(live_session_under(&turns, "agent:a:workflow:t"), None, "a shared prefix is not a session under it");
-        assert!(session_is_busy(&turns, "agent:a:workflow:t1"), "busy by the turn's key");
-        steering::push_wake(activity, steering::WakeEntry { wake_id: Some(7), content: "11am".into(), taint: Default::default() });
-        let drained = steering::drain_wakes("agent:a:workflow:t1");
-        assert_eq!(drained.iter().map(|w| w.wake_id).collect::<Vec<_>>(), [Some(7)]);
-        assert!(steering::drain_wakes(activity).is_empty(), "drained once");
-    }
-
     #[test]
     fn test_build_system_prompt() {
         let prompt = build_system_prompt("", "- favorite color: blue");
@@ -5711,24 +5484,6 @@ mod tests {
         assert!(!prompt.contains("Memory context"));
     }
 
-    /// A turn whose loop has ended is closing: a message arriving then waits
-    /// for the slot and starts the next turn instead of being queued into a
-    /// loop that will not read it.
-    #[test]
-    fn a_turn_whose_loop_ended_is_closing() {
-        let turns: ActiveTurns = Default::default();
-        let guard = admit_turn(&turns, "subagent:p:sa-1", progress(), CancellationToken::new()).unwrap();
-        assert!(!turn_is_closing(&turns, "subagent:p:sa-1"), "running");
-        guard.close();
-        assert!(turn_is_closing(&turns, "subagent:p:sa-1"), "loop ended");
-        assert!(session_is_busy(&turns, "subagent:p:sa-1"), "still holds the slot until its task ends");
-        drop(guard);
-        assert!(!session_is_busy(&turns, "subagent:p:sa-1"));
-        let cancel = CancellationToken::new();
-        let _g = admit_turn(&turns, "k", progress(), cancel.clone()).unwrap();
-        cancel.cancel();
-        assert!(turn_is_closing(&turns, "k"), "a stopped turn is closing too");
-    }
 }
 
 #[cfg(test)]

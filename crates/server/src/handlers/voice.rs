@@ -844,18 +844,18 @@ fn pick_voice_chat(
 }
 
 /// What the `status` voice tool answers, from the live counters.
-fn voice_status_line(st: Option<&agent::runner::ActiveTurnStatus>) -> String {
+fn voice_status_line(st: Option<&agent::harness::session_gate::ActiveTurnStatus>) -> String {
     match st {
-        Some(st) => format!("Still working: {}.", agent::runner::progress_phrase(st)),
+        Some(st) => format!("Still working: {}.", agent::harness::session_gate::progress_phrase(st)),
         None => "Nothing is running right now.".to_string(),
     }
 }
 
 /// What the owner hears after `cancel`: what was stopped, from the counters
 /// read before the token fired, or that nothing was running.
-fn voice_cancel_line(cancelled: bool, before: Option<&agent::runner::ActiveTurnStatus>) -> String {
+fn voice_cancel_line(cancelled: bool, before: Option<&agent::harness::session_gate::ActiveTurnStatus>) -> String {
     match (cancelled, before) {
-        (true, Some(st)) => format!("Stopped the running task; it was {}.", agent::runner::progress_phrase(st)),
+        (true, Some(st)) => format!("Stopped the running task; it was {}.", agent::harness::session_gate::progress_phrase(st)),
         (true, None) => "Stopped the running task.".to_string(),
         (false, _) => "Nothing was running.".to_string(),
     }
@@ -2403,7 +2403,7 @@ mod voice_prompt_tests {
 
     #[test]
     fn status_line_reads_the_counters_or_says_idle() {
-        let st = agent::runner::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "os: exec".into() };
+        let st = agent::harness::session_gate::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "os: exec".into() };
         assert_eq!(
             voice_status_line(Some(&st)),
             "Still working: 3 minutes in, 2 tool calls so far, currently running os: exec."
@@ -2413,7 +2413,7 @@ mod voice_prompt_tests {
 
     #[test]
     fn cancel_line_states_what_was_stopped() {
-        let st = agent::runner::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "os: exec".into() };
+        let st = agent::harness::session_gate::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "os: exec".into() };
         assert_eq!(
             voice_cancel_line(true, Some(&st)),
             "Stopped the running task; it was 3 minutes in, 2 tool calls so far, currently running os: exec."
