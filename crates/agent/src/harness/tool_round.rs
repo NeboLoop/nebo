@@ -23,8 +23,6 @@ use crate::runner::{
 };
 use crate::session::SessionManager;
 
-/// Timeout for individual tool execution.
-const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 /// How often the tool clock checks whether the call is parked on the owner.
 const PARKED_POLL: Duration = Duration::from_millis(250);
 
@@ -731,8 +729,9 @@ pub(crate) async fn run_tool_round(
     }
 
     // Claude Code's partitioning: consecutive concurrency-safe calls form
-    // one batch that runs in parallel (at most MAX_PARALLEL_CALLS); every
-    // other call runs alone; the calls' order is kept.
+    // one batch that runs in parallel, MAX_PARALLEL_CALLS at a time; every
+    // other call runs alone; the calls' order is kept. Invalid input is not
+    // safe (`Registry::concurrency_safe`).
     let mut live: Vec<(usize, bool)> = Vec::new();
     for (idx, tc) in tool_calls.iter().enumerate() {
         if blocked_results[idx].is_none() {
@@ -761,33 +760,34 @@ pub(crate) async fn run_tool_round(
             break;
         }
         let mut futures = FuturesUnordered::new();
+        // A batch of safe calls runs through a pool of MAX_PARALLEL_CALLS;
+        // results still land as each call completes.
+        let pool = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_CALLS));
         for idx in batch {
             let tools = tools.clone();
             let mut ctx = ctx.clone();
             let tc = tool_calls[idx].clone();
             let concurrency = concurrency.clone();
+            let pool = pool.clone();
             futures.push(async move {
+                let _slot = pool.acquire_owned().await;
                 let _permit = concurrency.acquire_tool_permit().await;
                 let input_str = tc.input.to_string();
                 let input_log = truncate_str(&input_str, 500);
                 info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool");
-                let budget = tools
-                    .execution_timeout(&tc.name, &tc.input)
-                    .await
-                    .unwrap_or(TOOL_EXECUTION_TIMEOUT);
+                // Each tool's own timeout; the loop has none of its own.
+                let budget = tools.execution_timeout(&tc.name, &tc.input).await;
                 let started = std::time::Instant::now();
                 ctx.tool_call_id = tc.id.clone();
                 ctx.parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let parked = ctx.parked.clone();
-                let result = match run_within_budget(
-                    budget,
-                    parked,
-                    tools.execute(&ctx, &tc.name, tc.input.clone()),
-                )
-                .await
-                {
-                    Some(r) => r,
-                    None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
+                let run = tools.execute(&ctx, &tc.name, tc.input.clone());
+                let result = match budget {
+                    None => run.await,
+                    Some(budget) => match run_within_budget(budget, parked, run).await {
+                        Some(r) => r,
+                        None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
+                    },
                 };
                 let duration_ms = started.elapsed().as_millis() as u64;
                 let result_log = truncate_str(&result.content, 300);
@@ -1666,19 +1666,19 @@ fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<St
     }
 }
 
-/// Most calls one parallel batch runs at once.
+/// Most calls of one parallel batch that run at once (Claude Code's pool).
 const MAX_PARALLEL_CALLS: usize = 10;
 
 /// Claude Code's partitioning. `calls` holds `(index, concurrency_safe)` in
-/// call order; consecutive concurrency-safe calls form one batch (at most
-/// [`MAX_PARALLEL_CALLS`]), every other call is a batch of its own, and the
-/// batches keep the calls' order.
+/// call order; each run of consecutive concurrency-safe calls is one batch,
+/// every other call is a batch of its own, and the batches keep the calls'
+/// order.
 fn partition_tool_calls(calls: &[(usize, bool)]) -> Vec<Vec<usize>> {
     let mut batches: Vec<Vec<usize>> = Vec::new();
     let mut open_safe = false;
     for &(idx, safe) in calls {
         match batches.last_mut() {
-            Some(batch) if safe && open_safe && batch.len() < MAX_PARALLEL_CALLS => batch.push(idx),
+            Some(batch) if safe && open_safe => batch.push(idx),
             _ => batches.push(vec![idx]),
         }
         open_safe = safe;
@@ -1727,12 +1727,12 @@ mod tests {
         assert!(partition_tool_calls(&[]).is_empty());
     }
 
+    /// A run of safe calls is one batch however long; the pool, not the
+    /// partition, keeps ten running at once.
     #[test]
-    fn a_safe_batch_holds_at_most_ten() {
+    fn a_run_of_safe_calls_is_one_batch() {
         let calls: Vec<(usize, bool)> = (0..23).map(|i| (i, true)).collect();
-        let batches = partition_tool_calls(&calls);
-        assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [10, 10, 3]);
-        assert_eq!(batches.concat(), (0..23).collect::<Vec<_>>(), "order kept");
+        assert_eq!(partition_tool_calls(&calls), vec![(0..23).collect::<Vec<_>>()]);
     }
 
     #[test]
