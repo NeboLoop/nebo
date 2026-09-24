@@ -157,9 +157,8 @@ pub(crate) async fn finish_turn(
     hub.broadcast("chat_complete", payload);
 }
 
-pub(crate) fn resolve_full_access(state: &AppState) -> bool {
-    state
-        .store
+pub(crate) fn resolve_full_access(store: &db::Store) -> bool {
+    store
         .get_settings()
         .ok()
         .flatten()
@@ -522,7 +521,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     // "Full Access" master flag (settings.full_access) — when on, the runner's
     // per-tool approval gate is bypassed. Loaded here (state in scope) and moved
     // into the run closure as a plain Copy bool. Default off (safe).
-    let full_access = resolve_full_access(state);
+    let full_access = resolve_full_access(&state.store);
 
     // For registering run-produced documents in the owner's web library
     // (fire-and-forget push after versioning).
@@ -1928,7 +1927,7 @@ pub async fn run_chat_events(
     let agent_id = config.agent_id.clone();
     let cancel_token = config.cancel_token.clone();
     let lane = config.lane.clone();
-    let full_access = resolve_full_access(state);
+    let full_access = resolve_full_access(&state.store);
 
     // Resolve display name + register the run (shared with run_chat).
     let (_agent_display_name, run_handle) = register_run(state, &config).await;

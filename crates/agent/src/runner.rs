@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -12,11 +11,12 @@ use ai::{
 };
 use db::Store;
 use db::models::ChatMessage;
-use tools::{Origin, Registry, ToolContext, ToolResult};
+use tools::{Origin, Registry};
 
 use crate::concurrency::ConcurrencyController;
 use crate::db_context;
 use crate::harness::model_call::{self, prefer_non_gateway, resolve_aux};
+use crate::harness::tool_round::ToolResultRow;
 use types::keyparser;
 use crate::memory;
 use crate::prompt;
@@ -33,24 +33,6 @@ const DEFAULT_MAX_ITERATIONS: usize = 100;
 const EXTENDED_MAX_ITERATIONS: usize = 200;
 /// Default context token limit for models that don't report one.
 const DEFAULT_CONTEXT_TOKEN_LIMIT: usize = 80_000;
-/// Timeout for individual tool execution.
-const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
-/// How often the tool clock checks whether the call is parked on the owner.
-const PARKED_POLL: Duration = Duration::from_millis(250);
-
-#[cfg(test)]
-mod grant_counter_tests {
-    /// A sub-agent runs under its parent's operation policy, so a standing
-    /// grant it spends counts against the parent seat's day — it gets no
-    /// fresh allowance of its own. Other runs are keyed as before.
-    #[test]
-    fn a_sub_agent_spends_its_parent_seats_counters() {
-        assert_eq!(super::grant_counter_seat("", "subagent:agent:bk:web:sa-1"), "bk");
-        assert_eq!(super::grant_counter_seat("", "subagent:subagent:agent:bk:web:sa-1:sa-2"), "bk");
-        assert_eq!(super::grant_counter_seat("bk", "agent:bk:web"), "bk");
-        assert_eq!(super::grant_counter_seat("", "agent:assistant:web"), "");
-    }
-}
 
 #[cfg(test)]
 mod notice_tests {
@@ -137,17 +119,6 @@ const MAX_AUTO_CONTINUATIONS_DEFAULT: usize = 5;
 #[allow(dead_code)] // used by max_auto_continuations, reserved for auto-continuation logic
 const MAX_AUTO_CONTINUATIONS_CEILING: usize = 50;
 
-/// Absolute per-turn ceiling on repeats of ONE exact call (same tool, same
-/// arguments), counted regardless of whether the result changed.
-///
-/// Every other repetition guard keys on the RESULT being identical
-/// (`counts_toward_action_spiral` → `flagged_redundant` or an error). A polling
-/// loop defeats all of them by construction: `docker compose logs`, `tail`, a
-/// status endpoint — the bytes drift every call, so nothing is ever flagged
-/// unproductive and no counter moves. Live-verified 2026-08-27: 16 identical
-/// polls against a growing log produced ZERO guard firings, and the customer
-/// incident it reproduces ran 12,093 requests in 24h.
-///
 /// Stand-in for a tool_use whose result is missing from history (strict
 /// providers reject an unmatched tool_use).
 ///
@@ -232,24 +203,6 @@ fn record_interrupt(sessions: &SessionManager, session_id: &str) {
     }
     info!(session_id, open_calls = open.len(), "interrupt recorded");
 }
-
-/// This is the backstop for that class: it counts the CALL, not the answer.
-/// The bound is set by EVIDENCE, not vibes: the incident's own legitimate
-/// debugging repeated one `docker compose logs` 13 times in a single turn, so
-/// the ceiling must clear 13 with margin — 12 would have cut that customer
-/// off one call short of finishing real work. 16 sits above every legitimate
-/// repeat we have observed and far below the iteration ceiling, and the abort
-/// ends only the TURN (honest ControlNotice, resumable) — never the session.
-const IDENTICAL_CALL_ABORT: usize = 16;
-
-/// The same ceiling for a call that only LOOKS: a search, a page read, a file
-/// read, a screenshot. Those return the same thing every time (the web tool
-/// even serves them from cache), so the third identical look is never work —
-/// it is the loop. 16 was tuned for `docker compose logs`, which legitimately
-/// changes between calls; the registry's concurrency-safety verdict is the
-/// tool's own declaration that a call does not change anything (Nanna,
-/// 2026-09-19: one search repeated 15 times in a turn, twice more the next).
-const IDENTICAL_READONLY_CALL_ABORT: usize = 3;
 
 /// Evicted messages that must accumulate before another background LLM
 /// compaction is spawned for a session.
@@ -348,198 +301,6 @@ fn should_fork_command(prompt: &str) -> bool {
         .any(|prefix| trimmed.starts_with(prefix))
 }
 
-/// Extract file path from an os(resource: "file", action: "read") tool call.
-/// Returns None if the call is not a file read.
-/// "Approve Always" on the ApprovalModal → grant the capability category for
-/// next time (PERMISSIONS_SME §14). Flips the global `user_profiles.tool_permissions`
-/// entry ON, the same store the Settings → Permissions toggles write.
-/// The shell command a tool call would execute, if it's an `os` shell exec —
-/// used by the per-command allowlist. `None` for any non-shell tool call.
-fn shell_command_of(tc: &ai::ToolCall) -> Option<String> {
-    if tc.name != "os" {
-        return None;
-    }
-    let resource = tc
-        .input
-        .get("resource")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let action = tc
-        .input
-        .get("action")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if resource == "shell" || action == "exec" {
-        tc.input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    } else {
-        None
-    }
-}
-
-fn persist_capability_grant(store: &Store, category: &str) -> Result<(), String> {
-    let raw = store
-        .get_user_profile()
-        .map_err(|e| e.to_string())?
-        .and_then(|p| p.tool_permissions)
-        .unwrap_or_else(|| "{}".to_string());
-    let mut map: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&raw).unwrap_or_default();
-    map.insert(category.to_string(), serde_json::Value::Bool(true));
-    let json = serde_json::to_string(&map).map_err(|e| e.to_string())?;
-    store
-        .update_tool_permissions(&json)
-        .map_err(|e| e.to_string())
-}
-
-/// "Approve Always" on an MCP tool call → pin an explicit Always-allow override
-/// in the server's tool-permission map — the SAME store Settings → MCP → Tool
-/// permissions edits (tools::policy::McpServerPermissions on the integration row).
-fn persist_mcp_tool_allow(store: &Store, integration_id: &str, tool: &str) -> Result<(), String> {
-    let mut perms = tools::policy::McpServerPermissions::from_json(
-        store
-            .get_mcp_tool_permissions(integration_id)
-            .map_err(|e| e.to_string())?
-            .as_deref(),
-    );
-    perms
-        .tools
-        .insert(tool.to_string(), tools::policy::McpToolAccess::Allow);
-    store
-        .set_mcp_tool_permissions(integration_id, &perms.to_json())
-        .map_err(|e| e.to_string())
-}
-
-/// One tool-approval round-trip (PERMISSIONS_SME §11): register a oneshot keyed
-/// by the tool_call id, emit `approval_request`, and await the ApprovalModal
-/// decision ("deny" / "once" / "always"). Run cancellation resolves to "deny".
-/// The ONE ask pathway shared by the capability gate and the MCP tri-state gate.
-async fn ask_tool_approval(
-    channels: &tools::ApprovalChannels,
-    tx: &mpsc::Sender<StreamEvent>,
-    cancel_token: &CancellationToken,
-    tool_call: &ai::ToolCall,
-    session_id: &str,
-    gate: &str,
-) -> String {
-    ask_tool_approval_batch(channels, tx, cancel_token, std::slice::from_ref(tool_call), session_id, gate).await
-}
-
-/// The batch form: one card, one decision, for every gated call in a batch
-/// (a person answering five cards in a row for one parallel step was the
-/// hazard). `calls` is never empty.
-async fn ask_tool_approval_batch(
-    channels: &tools::ApprovalChannels,
-    tx: &mpsc::Sender<StreamEvent>,
-    cancel_token: &CancellationToken,
-    calls: &[ai::ToolCall],
-    session_id: &str,
-    gate: &str,
-) -> String {
-    let tool_call = &calls[0];
-    let request_id = tool_call.id.clone();
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    channels.lock().await.insert(request_id.clone(), resp_tx);
-    let _ = tx
-        .send(if calls.len() > 1 {
-            StreamEvent::approval_request_batch(calls)
-        } else {
-            StreamEvent::approval_request(tool_call.clone())
-        })
-        .await;
-    info!(
-        session_id,
-        request_id = %request_id,
-        gate,
-        tool = %tool_call.name,
-        "tool approval: waiting for user decision"
-    );
-    tokio::select! {
-        _ = cancel_token.cancelled() => {
-            channels.lock().await.remove(&request_id);
-            "deny".to_string()
-        }
-        result = resp_rx => result.unwrap_or_else(|_| "deny".to_string()),
-    }
-}
-
-/// Stable per-turn identity for spiral detection: tool name + action (e.g.
-/// "os:glob", "os:read", "web:navigate"). Resource is omitted — the action alone
-/// distinguishes glob/read/exec/navigate, and the os tool infers resource from
-/// action anyway, so this is stable whether or not `resource` was passed.
-fn action_key(call: &ai::ToolCall) -> String {
-    let action = call
-        .input
-        .get("action")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if !action.is_empty() {
-        return format!("{}:{}", call.name, action);
-    }
-    // No `action` field. The plugin tool is keyed on the PLUGIN, not the verb:
-    // only unproductive calls count now, and a run that fails "payment
-    // create", then "batch execute", then "journalentry create" against the
-    // same plugin is one spiral, not three fresh starts (CFO, 2026-09-06: 20
-    // failed QuickBooks calls in one turn, no guard fired because each verb
-    // stayed under the limit). Distinct successful commands never counted.
-    if call.name == "plugin" {
-        if let Some(slug) = call.input.get("resource").and_then(|v| v.as_str()) {
-            if !slug.is_empty() {
-                return format!("plugin:{slug}");
-            }
-        }
-    }
-    let verb = call
-        .input
-        .get("command")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .split_whitespace()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!("{}:{}", call.name, verb)
-}
-
-/// Whether an unproductive tool attempt should feed the coarse (tool, action)
-/// spiral counter (the same-action limit from `guardrails::GuardrailConfig`).
-///
-/// File-read errors are excluded: per-path `read_failures` already caps retries
-/// on the same target. Counting every failed read across different paths toward
-/// the action-wide limit false-trips legitimate exploration (8 wrong paths →
-/// turn ends with "os:read was called 8 times without progress" even when the
-/// model is about to read a file it just discovered). Redundant content still
-/// counts — re-fetching bytes the model already has is the wander the spiral
-/// is meant to catch for reads.
-fn counts_toward_action_spiral(call: &ai::ToolCall, is_error: bool, flagged_redundant: bool) -> bool {
-    if flagged_redundant {
-        return true;
-    }
-    if is_error && extract_file_read_path(call).is_none() {
-        return true;
-    }
-    false
-}
-
-/// Apply one spiral-counter update for a tool result. Mirrors the runner loop
-/// so unit tests can assert the turn-level budget without driving a full run.
-fn record_action_spiral(
-    counts: &mut std::collections::HashMap<String, usize>,
-    call: &ai::ToolCall,
-    is_error: bool,
-    flagged_redundant: bool,
-) {
-    if counts_toward_action_spiral(call, is_error, flagged_redundant) {
-        *counts.entry(action_key(call)).or_insert(0) += 1;
-    }
-}
-
-/// The identical-call budget itself lives in `ai::call_budget` — ONE
-/// implementation shared with the workflow activity loop (Rule 8). The
-/// evidence-bound ceiling stays here with its incident history.
-
 /// Cross-turn spiral memory. The per-turn counters reset every run, so a model
 /// that resumed the same doomed strategy after each user message ("Let me read
 /// the frames using sub-agents" x7, across turns, until the user gave up) never
@@ -602,119 +363,6 @@ fn cross_turn_save(
         .map(|(k, c)| (k.clone(), c / 2))
         .collect();
     guard.get_or_insert_with(Default::default).save(session_id, hot);
-}
-
-fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
-    if call.name != "os" {
-        return None;
-    }
-    let action = call.input.get("action").and_then(|v| v.as_str())?;
-    // Resource is frequently omitted — the os tool infers it from the action
-    // (read→file, exec→shell). Mirror that inference here so dedup tracking
-    // works for the no-resource call shape the model actually produces.
-    let resource = call
-        .input
-        .get("resource")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| match action {
-            "read" | "write" | "edit" | "glob" | "grep" => "file".into(),
-            "exec" | "shell" | "poll" | "log" => "shell".into(),
-            _ => String::new(),
-        });
-
-    // Direct file read.
-    if resource == "file" && action == "read" {
-        return call
-            .input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-    }
-
-    // Shell read: cat/head/tail/jq/python json.tool etc. re-reading a file the
-    // model already has. These bypass file-read dedup entirely otherwise.
-    if resource == "shell" {
-        let command = call.input.get("command").and_then(|v| v.as_str())?;
-        return extract_shell_read_path(command);
-    }
-
-    None
-}
-
-/// True for any `os` file read, ranged or not. A file read paginates itself
-/// (its own byte cap, a footer naming the exact `offset` to continue from),
-/// so the runner's spill-to-file preview must never replace it: the preview
-/// cut the footer off and the model saw 4 KB of a 36 KB document on every
-/// read, then read the spill file, which spilled again (2026-09-17).
-fn is_os_file_read(call: &ai::ToolCall) -> bool {
-    call.name == "os"
-        && call.input.get("action").and_then(|v| v.as_str()) == Some("read")
-        && tools::OsTool::resolved_resource(&call.input) == "file"
-}
-
-/// True for an unranged `os` file read: the shape the read ledger fingerprints
-/// and notes itself, so the duplicate-read note must not stack on it.
-fn is_full_os_file_read(call: &ai::ToolCall) -> bool {
-    is_os_file_read(call)
-        && call.input.get("offset").is_none()
-        && call.input.get("limit").is_none()
-}
-
-/// Detect a shell command whose sole purpose is dumping a file's contents and
-/// return the target path, so the duplicate-read note can fire for shell reads.
-/// Only matches read-only file-dump commands — not commands with side effects.
-fn extract_shell_read_path(command: &str) -> Option<String> {
-    let trimmed = command.trim();
-    // Bail on anything that pipes, redirects, or chains — too ambiguous to
-    // attribute to a single file read.
-    if trimmed.contains('|') || trimmed.contains('>') || trimmed.contains("&&") {
-        return None;
-    }
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-    let cmd = *tokens.first()?;
-    let base = cmd.rsplit('/').next().unwrap_or(cmd);
-    let is_dump = matches!(
-        base,
-        "cat" | "head" | "tail" | "less" | "more" | "bat" | "nl" | "jq"
-    );
-    if !is_dump {
-        return None;
-    }
-    // Take the last token that is not a flag or a jq filter expression.
-    let path = tokens
-        .iter()
-        .skip(1)
-        .rev()
-        .find(|t| !t.starts_with('-') && **t != "." && !t.starts_with('\''))?;
-    let cleaned = path.trim_matches(|c| c == '"' || c == '\'');
-    if cleaned.is_empty() {
-        return None;
-    }
-    Some(cleaned.to_string())
-}
-
-/// JSON shape for tool results stored in the DB. Includes optional image_url
-/// so vision-capable providers can receive screenshots in tool result content.
-#[derive(serde::Serialize)]
-struct ToolResultRow {
-    tool_call_id: String,
-    content: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    is_error: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    image_url: Option<String>,
-    /// Structured rendering payload (ToolResult::payload) so reloaded history
-    /// renders the same rich cards as the live stream.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    payload: Option<serde_json::Value>,
-    /// The past-tense outcome the live stream showed ("Ran shell"), persisted
-    /// so a reloaded thread reads the same as the live one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    outcome: Option<String>,
-    /// Wall-clock milliseconds the call took, for the same reason.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    duration_ms: Option<u64>,
 }
 
 /// Workflow-mode configuration for a run — the ONE-loop convergence: workflow
@@ -1327,7 +975,9 @@ pub struct Runner {
     selector: Arc<ModelSelector>,
     concurrency: Arc<ConcurrencyController>,
     hooks: Arc<napp::HookDispatcher>,
-    mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
+    /// Issues the credential a CLI provider's tool calls carry back over
+    /// /agent/mcp (see `tool_credentials`).
+    tool_credentials: Option<crate::tool_credentials::ToolCredentials>,
     agent_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
     ask_channels: Option<tools::AskChannels>,
@@ -1356,7 +1006,7 @@ impl Runner {
         selector: ModelSelector,
         concurrency: Arc<ConcurrencyController>,
         hooks: Arc<napp::HookDispatcher>,
-        mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
+        tool_credentials: Option<crate::tool_credentials::ToolCredentials>,
         agent_registry: tools::AgentRegistry,
         skill_loader: Option<Arc<tools::skills::Loader>>,
     ) -> Self {
@@ -1370,7 +1020,7 @@ impl Runner {
             selector: Arc::new(selector),
             concurrency,
             hooks,
-            mcp_context,
+            tool_credentials,
             agent_registry,
             skill_loader,
             embedding_provider: None,
@@ -1928,24 +1578,7 @@ impl Runner {
         let preactivate_tools = req.preactivate_tools.clone();
         let channel_ctx = req.channel_ctx.clone();
 
-        // Set MCP context so CLI providers can access tools with the right session info.
-        // user_id is NOT stamped here: the raw request user_id must never reach
-        // memory (see the memory-owner derivation in run_loop). run_loop stamps
-        // the RESOLVED memory scope once it exists; until then the context is
-        // fail-closed so an external /mcp call between runs can't write memory
-        // under a stale or caller-chosen scope.
-        if let Some(ref mcp_ctx) = self.mcp_context {
-            let mut ctx = mcp_ctx.lock().await;
-            ctx.session_key = session_key.clone();
-            ctx.session_id = session_id.clone();
-            ctx.origin = req.origin;
-            ctx.user_id = String::new();
-            ctx.memory_writes_disabled = true;
-            // Sub-agents spawned from this run inherit its model unless
-            // explicitly overridden.
-            ctx.model_preference = (!model_override.is_empty()).then(|| model_override.clone());
-        }
-        let mcp_context = self.mcp_context.clone();
+        let tool_credentials = self.tool_credentials.clone();
 
         tokio::spawn(async move {
             // Releases the session for the next turn when this task ends.
@@ -2039,7 +1672,7 @@ impl Runner {
                         None, // command forks are not review forks
                         req.tool_allowlist.as_ref(),
                         req.tool_denial_hint.clone(),
-                        mcp_context.as_ref(),
+                        tool_credentials.as_ref(),
                         &fork_taint,
                         None, // forks never reply to a coworker audience
                         None, // forks are chat, never workflow mode
@@ -2146,7 +1779,7 @@ impl Runner {
                 None, // top-level runs are never review forks
                 req.tool_allowlist.as_ref(),
                 req.tool_denial_hint.clone(),
-                mcp_context.as_ref(),
+                tool_credentials.as_ref(),
                 &run_taint,
                 req.audience.as_deref(),
                 req.workflow.as_ref(),
@@ -2390,6 +2023,7 @@ impl Runner {
         }
 
         let req = ChatRequest {
+            tool_credential: None,
             tool_choice: Default::default(),
             messages: vec![Message {
                 role: "user".to_string(),
@@ -2476,44 +2110,6 @@ const PLAN_REMINDER_EVERY: usize = 10;
 
 /// The ONE predicate the loop uses for the plan reminder (tested directly;
 /// the live site calls this, it does not re-implement it).
-/// Runs a tool call under its budget, with the clock stopped while the call
-/// is parked on the owner. `None` means the budget of working time ran out.
-async fn run_within_budget<F>(
-    budget: Duration,
-    parked: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    fut: F,
-) -> Option<ToolResult>
-where
-    F: std::future::Future<Output = ToolResult>,
-{
-    tokio::pin!(fut);
-    let mut spent = Duration::ZERO;
-    loop {
-        let slice = PARKED_POLL.min(budget.saturating_sub(spent));
-        match tokio::time::timeout(slice, &mut fut).await {
-            Ok(result) => return Some(result),
-            Err(_) => {
-                if !parked.load(std::sync::atomic::Ordering::SeqCst) {
-                    spent += slice;
-                }
-                if spent >= budget {
-                    return None;
-                }
-            }
-        }
-    }
-}
-
-/// What the model reads when a tool's working time runs out. Names the
-/// budget as working time, because parked time never counts toward it.
-fn tool_timeout_text(tool: &str, budget: Duration) -> String {
-    format!(
-        "Tool '{}' did not finish within {}s of working time and was stopped. That is the tool's limit, not a verdict on the service behind it; if the same call is needed, say what it was waiting on.",
-        tool,
-        budget.as_secs()
-    )
-}
-
 fn plan_reminder_due(iteration: usize, last_touch: usize) -> bool {
     iteration.saturating_sub(last_touch) >= PLAN_REMINDER_EVERY
 }
@@ -2538,14 +2134,14 @@ fn is_check_command(command: &str) -> bool {
 }
 
 /// An `os` file write or edit: the calls the done gate counts.
-fn is_file_change_call(tc: &ai::ToolCall) -> bool {
+pub(crate) fn is_file_change_call(tc: &ai::ToolCall) -> bool {
     tc.name == "os"
         && tools::OsTool::resolved_resource(&tc.input) == "file"
         && matches!(tc.input.get("action").and_then(|v| v.as_str()), Some("write" | "edit"))
 }
 
 /// An `os` shell call whose command is a project check (`CHECK_VERB_RE`).
-fn is_check_run_call(tc: &ai::ToolCall) -> bool {
+pub(crate) fn is_check_run_call(tc: &ai::ToolCall) -> bool {
     tc.name == "os"
         && tools::OsTool::resolved_resource(&tc.input) == "shell"
         && tc.input.get("command").and_then(|v| v.as_str()).is_some_and(is_check_command)
@@ -2567,7 +2163,7 @@ fn repeats_earlier_reply(reply: &str, history: &[ChatMessage]) -> bool {
 }
 
 /// Desktop actions whose result is the screen after them.
-fn is_desktop_act(tc: &ai::ToolCall) -> bool {
+pub(crate) fn is_desktop_act(tc: &ai::ToolCall) -> bool {
     tc.name == "os"
         && matches!(
             tc.input.get("action").and_then(|v| v.as_str()),
@@ -2578,193 +2174,11 @@ fn is_desktop_act(tc: &ai::ToolCall) -> bool {
 /// What the last desktop act reported, cut to what a reply must agree with:
 /// its first line (what was done), the screen header, and the first lines of
 /// the element list.
-fn desktop_evidence(result: &str) -> String {
+pub(crate) fn desktop_evidence(result: &str) -> String {
     let mut lines = result.lines().filter(|l| !l.trim().is_empty());
     let mut out: Vec<&str> = lines.by_ref().take(2).collect();
     out.extend(lines.take_while(|l| !l.starts_with("Coordinates are")).take(12));
     out.join("\n")
-}
-
-/// Post-tool hooks, applied to a result BEFORE it is streamed or persisted, so
-/// the owner's transcript and the trace carry exactly what the model was
-/// given (a formatter's note, a test runner's verdict). Plugins listen as
-/// actions (fire-and-forget); shell hooks as filters whose response is the
-/// result. Live 2026-09-02: the hook note reached the model but not the trace,
-/// because the event went out first. Returns whether a hook attached
-/// anything to the result (a note or a verdict), which the done gate takes
-/// as "a check ran".
-async fn apply_post_tool_hooks(
-    hooks: &napp::HookDispatcher,
-    tc: &ai::ToolCall,
-    result: &mut ToolResult,
-    session_id: &str,
-    run_cwd: Option<&str>,
-) -> bool {
-    if !hooks.has_subscribers("tool.post_execute") {
-        return false;
-    }
-    let payload = serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
-        tool_name: tc.name.clone(),
-        result: result.content.clone(),
-        is_error: result.is_error,
-        session_id: session_id.to_string(),
-        tool_use_id: tc.id.clone(),
-        tool_input: tc.input.clone(),
-        cwd: run_cwd.map(str::to_string).unwrap_or_default(),
-        agent_id: session_id.strip_prefix("subagent:").map(|_| session_id.to_string()),
-    })
-    .unwrap_or_default();
-    hooks.do_action("tool.post_execute", payload.clone()).await;
-    let (bytes, _) = hooks.apply_filter("tool.post_execute", payload).await;
-    let mut attached = false;
-    if let Ok(resp) = serde_json::from_slice::<crate::hooks::ToolPostExecuteResponse>(&bytes) {
-        attached = resp.result != result.content;
-        result.content = resp.result;
-        result.is_error = resp.is_error;
-    }
-    attached
-}
-
-/// The seat that decides what this one may not: the line the owner drew
-/// (`reports_to`), and failing that a seat the company has actually given the
-/// authority to grant (`authority.grant.grant` — by a rule the owner or the
-/// General Manager wrote, or by its own package declaring it).
-///
-/// Never a name compiled in here. A company may put a Chief Operating Officer
-/// over its seats, a General Manager, a person, or nobody; who holds authority
-/// is the owner's to say, and it is already in the data.
-fn authority_seat(store: &Arc<Store>, asking_agent_id: &str) -> Option<db::models::Agent> {
-    if asking_agent_id.is_empty() {
-        return None;
-    }
-    // 1. The reporting line, as the owner set it.
-    if let Ok(Some(me)) = store.get_agent(asking_agent_id) {
-        if let Some(above) = me
-            .reports_to
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty() && *s != asking_agent_id)
-        {
-            if let Ok(Some(seat)) = store.get_agent(above) {
-                return Some(seat);
-            }
-        }
-    }
-    // 2. A seat that holds the authority to grant authority.
-    let mut holders: Vec<db::models::Agent> = store
-        .list_agents(10_000, 0)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|a| {
-            a.id != asking_agent_id
-                && a.is_app.unwrap_or(0) == 0
-                && a.is_enabled != 0
-                && holds_granting_authority(store, a)
-        })
-        .collect();
-    holders.sort_by(|a, b| a.name.cmp(&b.name));
-    holders.into_iter().next()
-}
-
-/// The seat whose day counters a standing grant spends. A sub-agent carries
-/// no agent id of its own and runs under its parent's operation policy, so it
-/// spends its parent seat's counters — never a fresh allowance of its own.
-fn grant_counter_seat(agent_id: &str, session_key: &str) -> String {
-    if agent_id.is_empty() && session_key.starts_with("subagent:") {
-        keyparser::extract_agent_id(session_key)
-    } else {
-        agent_id.to_string()
-    }
-}
-
-/// Whether this seat may grant standing authority: the owner's own rule on
-/// `authority.grant.grant`, or its package declaring that operation.
-fn holds_granting_authority(store: &Arc<Store>, seat: &db::models::Agent) -> bool {
-    const GRANT: &str = "authority.grant.grant";
-    let stored = store
-        .get_entity_config("agent", &seat.id)
-        .ok()
-        .flatten()
-        .and_then(|c| c.operation_policy);
-    if let Some(rule) = tools::policy::OperationPolicy::from_json(stored.as_deref())
-        .operations
-        .get(GRANT)
-    {
-        if rule.access != tools::policy::OperationAccess::Blocked {
-            return true;
-        }
-    }
-    !seat.frontmatter.is_empty()
-        && napp::agent::parse_agent_config(&seat.frontmatter)
-            .map(|c| {
-                c.ceiling
-                    .keys()
-                    .any(|op| tools::plugin_tool::port_suffix(op).starts_with("authority."))
-                    || c.requires.interfaces.iter().any(|i| i == "authority")
-            })
-            .unwrap_or(false)
-}
-
-/// Out-of-bounds work is somebody's job, not an impossibility.
-///
-/// When a gated operation decides Approval in a run with nobody to ask, the
-/// work is handed to the seat that holds authority as that seat's OWN
-/// assignment — the one hand-over pathway (`open_assignment`, through the
-/// opener the server installs at boot, the same one the `agent` tool uses) —
-/// carrying the operation, the seat that wanted it, the bound it fell outside,
-/// and what is now stopped. Returns the sentence the stopped run tells the
-/// model, or `None` when nobody here holds that authority, in which case the
-/// caller's own fallback stands: park for the owner, or refuse.
-fn hand_off_out_of_bounds(
-    store: &Arc<Store>,
-    agent_id: &str,
-    session_key: &str,
-    operation: &str,
-    display: &str,
-    reason: &str,
-) -> Option<String> {
-    let opener = tools::assignments::assignment_opener()?;
-    let seat = authority_seat(store, agent_id)?;
-    let my_name = store
-        .get_agent(agent_id)
-        .ok()
-        .flatten()
-        .map(|a| a.name)
-        .unwrap_or_else(|| agent_id.to_string());
-    let req = tools::assignments::AssignmentRequest {
-        assigner_agent_id: agent_id.to_string(),
-        assigner_name: my_name.clone(),
-        assigner_session_key: session_key.to_string(),
-        parent_run_id: None,
-        assignee_agent_id: seat.id.clone(),
-        subject: format!("{my_name} is stopped on {operation}: {display}"),
-        done_means: format!(
-            "Decide {operation} for {my_name}. It fell outside what {my_name} may do unattended: \
-             {reason}. The work that is stopped: {display}. Either grant {my_name} standing \
-             authority for {operation} within bounds you can stand behind, do it yourself if it is \
-             yours to do, or close this saying it will not happen and why."
-        ),
-        due: None,
-    };
-    match opener.open(&req) {
-        Ok(id) => {
-            tracing::info!(
-                agent = %agent_id, op = %operation, assignee = %seat.id, assignment = %id,
-                "out of bounds: handed to the seat that holds authority"
-            );
-            Some(format!(
-                "'{operation}' is outside what you may do unattended ({reason}), so it was handed to \
-                 {} as an assignment: the operation, the bound it fell outside, and the work that is \
-                 stopped. Do not retry it and do not work around it — say plainly that it is now {}'s \
-                 to decide, and carry on with anything else you can finish.",
-                seat.name, seat.name
-            ))
-        }
-        Err(e) => {
-            warn!(agent = %agent_id, op = %operation, error = %e, "handing out-of-bounds work on failed");
-            None
-        }
-    }
 }
 
 async fn run_loop(
@@ -2817,7 +2231,7 @@ async fn run_loop(
     review_fork: Option<crate::review_fork::ReviewForkCtx>,
     tool_allowlist: Option<&std::collections::HashSet<String>>,
     tool_denial_hint: Option<String>,
-    mcp_context: Option<&Arc<tokio::sync::Mutex<ToolContext>>>,
+    tool_credentials: Option<&crate::tool_credentials::ToolCredentials>,
     run_taint: &std::sync::Mutex<std::collections::BTreeSet<types::provenance::ProvenanceClass>>,
     audience: Option<&str>,
     workflow_mode: Option<&WorkflowMode>,
@@ -2945,7 +2359,6 @@ async fn run_loop(
     let mut ctx_spilled_results: usize = 0;
     let mut read_failures: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
-    const READ_FAILURE_LIMIT: usize = 3;
     // Spiral backstop (FRAMES Phase 2): UNPRODUCTIVE repeats of the SAME (tool,
     // action) within a turn — errored or returning already-seen content — are the
     // wander-spiral the identical-args and read-failure guards both miss (glob
@@ -2973,8 +2386,6 @@ async fn run_loop(
     // Cache for tool documentation (help/schema results) — survives sliding window eviction
     // via injection into the dynamic suffix. Max 5 entries, LRU-evict oldest.
     let mut tool_doc_cache: Vec<(String, String)> = Vec::new();
-    const MAX_TOOL_DOC_ENTRIES: usize = 5;
-    const MAX_TOOL_DOC_CONTENT: usize = 4_000;
     let mut consecutive_error_iterations = 0usize;
     let mut post_tool_empty_nudges = 0usize;
     let mut pseudo_call_nudges: usize = 0;
@@ -3186,15 +2597,6 @@ async fn run_loop(
     } else {
         (memory_user_id, memory_writes_disabled)
     };
-
-    // CLI providers execute tools out-of-band through the shared MCP context;
-    // stamp it with the RESOLVED scope (never the raw request user_id) so
-    // memory reads/writes on that path land exactly where this run's do.
-    if let Some(mcp_ctx) = mcp_context {
-        let mut ctx = mcp_ctx.lock().await;
-        ctx.user_id = memory_user_id.clone();
-        ctx.memory_writes_disabled = memory_writes_disabled;
-    }
 
     // Company Memory's confidentiality scope for this run. An isolated
     // employee is sealed to ONE matter — the same context its own memory is
@@ -4733,6 +4135,7 @@ async fn run_loop(
 
         // Build ChatRequest
         let chat_req = ChatRequest {
+            tool_credential: None,
             tool_choice: forced_choice.unwrap_or_default(),
             messages: ai_messages,
             tools: if wrap_up_turn { Vec::new() } else { tool_defs },
@@ -4769,6 +4172,59 @@ async fn run_loop(
             iteration, session_id, "[telemetry] pre-LLM overhead (msg load → request built)"
         );
 
+        // The context this run's tool calls carry — the runner's own, and a
+        // CLI provider's over /agent/mcp (through the credential below).
+        let tool_scope = &crate::harness::tool_round::RunToolScope {
+            sessions,
+            session_id,
+            origin,
+            memory_user_id: &memory_user_id,
+            handoff_depth,
+            entity_permissions,
+            operation_policy,
+            entity_resource_grants,
+            allowed_paths,
+            run_cwd,
+            cancel_token,
+            tx,
+            progress,
+            ask_channels,
+            channel_ctx,
+            model_override,
+            memory_topics: &memory_topics,
+            memory_writes_disabled,
+            run_taint,
+            memory_write_bar: &memory_write_bar,
+            audience_restricted,
+            memory_matter: &memory_matter,
+            full_access,
+            review_fork: review_fork.as_ref(),
+            tool_allowlist,
+            tool_denial_hint: &tool_denial_hint,
+        };
+
+        // A CLI provider runs its tools itself, over /agent/mcp. The call
+        // below issues a credential through this when it lands on one; the
+        // provider's tool calls carry it and execute as this run.
+        let issue_tool_credential = tool_credentials.map(|credentials| {
+            move || {
+                credentials.issue(crate::tool_credentials::RunGrant {
+                    ctx: tool_scope.tool_context(),
+                    agent_id: agent_id.to_string(),
+                    approval: approval_channels.map(|channels| {
+                        crate::tool_credentials::OwnedApprovalDoor {
+                            channels: channels.clone(),
+                            tx: tx.clone(),
+                            cancel_token: cancel_token.clone(),
+                        }
+                    }),
+                    approval_relay,
+                    workflow_mode: workflow_mode.cloned(),
+                    sessions: Some(sessions.clone()),
+                })
+            }
+        });
+
         let reply = match model_call::call_model(
             model_call::ModelCall {
                 request: chat_req,
@@ -4785,6 +4241,9 @@ async fn run_loop(
                 selected_model: &selected_model,
                 model_override,
                 context_limit: thresholds.auto_compact,
+                tool_credential: issue_tool_credential
+                    .as_ref()
+                    .map(|issue| issue as &(dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)),
             },
             &mut call_state,
             &mut state,
@@ -5035,1817 +4494,65 @@ async fn run_loop(
 
         // Execute tool calls in parallel
         if !tool_calls.is_empty() {
-            let resolved_key = sessions
-                .resolve_session_key(session_id)
-                .unwrap_or_else(|_| session_id.to_string());
-            let mut ctx = ToolContext {
-                origin,
-                session_key: resolved_key,
-                session_id: session_id.to_string(),
-                user_id: memory_user_id.clone(),
-                trusted_plugin_env: false,
-                handoff_depth,
-                entity_permissions: entity_permissions.cloned(),
-                operation_policy: operation_policy.cloned(),
-                resource_grants: entity_resource_grants.cloned(),
-                allowed_paths: allowed_paths.to_vec(),
-                cwd: run_cwd.map(str::to_string),
-                cancel_token: cancel_token.clone(),
-                stream_tx: Some(tx.clone()),
-                run_id: progress.map(|p| p.run_id.clone()),
-                ask_channels: ask_channels.cloned(),
-                parked: Default::default(),
-                channel: channel_ctx.cloned(),
-                model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
-                memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
-                memory_writes_disabled,
-                run_taint: run_taint.lock().unwrap().iter().copied().collect(),
-                memory_write_bar: memory_write_bar.clone(),
-                audience_restricted,
-                memory_matter: memory_matter.clone(),
-                // Populated by the approval gate below, before tool execution.
-                approved_categories: std::collections::HashSet::new(),
-                full_access,
-                // Restricted-run allowlist: the review fork's whitelist, or
-                // the request's explicit allowlist (phone callers). None for
-                // every normal run.
-                tool_whitelist: review_fork
-                    .as_ref()
-                    .map(|r| r.whitelist.clone())
-                    .or_else(|| tool_allowlist.cloned()),
-                whitelist_denial_hint: tool_denial_hint.clone(),
-                learned_write_agent: review_fork.as_ref().map(|r| r.owner_agent_id.clone()),
-                learned_write_staged: review_fork.as_ref().map(|r| r.staged).unwrap_or(false),
-                // A fresh fork learning, not a re-apply — records its audit row.
-                learned_write_reapply: false,
-                skills_read: review_fork
-                    .as_ref()
-                    .map(|r| r.skills_read.clone())
-                    .unwrap_or_default(),
-            };
-
-            // Track tool names for context filtering
-            for tc in &tool_calls {
-                called_tools.push(tc.name.clone());
-            }
-
-            // Launch all tool calls concurrently via FuturesUnordered
-            let mut futures = FuturesUnordered::new();
-            // Update progress: count tools and set current tool name
-            if let Some(p) = progress {
-                p.tool_call_count.fetch_add(
-                    tool_calls.len() as u32,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                if let Ok(mut ct) = p.current_tool.lock() {
-                    ct.clear();
-                    if tool_calls.len() == 1 {
-                        ct.push_str(&tool_calls[0].name);
-                    } else {
-                        ct.push_str(&format!("{} tools", tool_calls.len()));
-                    }
-                }
-            }
-            // Apply tool.pre_execute filter hooks — may block individual tools.
-            let mut blocked_results: Vec<Option<(ai::ToolCall, ToolResult)>> =
-                vec![None; tool_calls.len()];
-            // Workflow `exit` is a loop primitive, not a real tool: the first
-            // exit call ends the turn before anything in the batch executes.
-            let mut wf_break_reason: Option<String> = None;
-            if workflow_mode.is_some() {
-                if let Some(tc) = tool_calls.iter().find(|tc| tc.name == "exit") {
-                    let reason = tc
-                        .input
-                        .get("reason")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    wf_break_reason = Some(format!("workflow_exit:{reason}"));
-                }
-            }
-            // A pre hook that failed without blocking: its note rides on the
-            // call's result, after the tool's own output, keyed by tool id.
-            let mut pre_hook_notes: HashMap<String, String> = HashMap::new();
-            let has_pre_hook = hooks.has_subscribers("tool.pre_execute");
-            if has_pre_hook {
-                for idx in 0..tool_calls.len() {
-                    let payload = serde_json::to_vec(&crate::hooks::ToolPreExecutePayload {
-                        tool_name: tool_calls[idx].name.clone(),
-                        input: tool_calls[idx].input.clone(),
-                        session_id: session_id.to_string(),
-                        tool_use_id: tool_calls[idx].id.clone(),
-                        cwd: run_cwd.map(str::to_string).unwrap_or_default(),
-                        agent_id: session_id.strip_prefix("subagent:").map(|_| session_id.to_string()),
-                    })
-                    .unwrap_or_default();
-                    let (result, _handled) = hooks.apply_filter("tool.pre_execute", payload).await;
-                    if let Ok(resp) =
-                        serde_json::from_slice::<crate::hooks::ToolPreExecuteResponse>(&result)
-                    {
-                        if resp.blocked {
-                            let msg = resp
-                                .blocked_message
-                                .unwrap_or_else(|| "Blocked by plugin hook".into());
-                            blocked_results[idx] =
-                                Some((tool_calls[idx].clone(), ToolResult::error(msg)));
-                        } else {
-                            if let Some(note) = resp.note {
-                                pre_hook_notes.insert(tool_calls[idx].id.clone(), note);
-                            }
-                            if let Some(mutated_input) = resp.input {
-                                tool_calls[idx].input = mutated_input;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Every gate below judges the call as it will run: the tool
-            // settles an inferred action or resource here (after any hook
-            // rewrote the input), so no call shape reaches execution past a
-            // gate that read a different call.
-            for tc in tool_calls.iter_mut() {
-                let input = std::mem::take(&mut tc.input);
-                tc.input = tools.normalize_input(&tc.name, input).await;
-            }
-
-            // Hard guard: block tool calls that keep repeating identical args WITHOUT
-            // making progress.
-            //
-            // Only UNPRODUCTIVE repeats count — a call that errored, or returned content
-            // the model already had. This guard used to count every repeat including
-            // successes, and "the result will not change" is simply false for a tool that
-            // changes the world: re-running `pptx create` after editing its input spec
-            // produces a different file every time. Blocking it stranded a model
-            // mid-iteration and, because the block says to "use different parameters",
-            // pushed it into renaming its own output to get past the guard — which is how
-            // one deck became `deck.pptx`, `deck-v2.pptx`, `deck-final.pptx`.
-            //
-            // This is the same correction already applied to the spiral backstop (see
-            // `counts_toward_action_spiral`): failures accrue, successes reset, and a tool
-            // that mutates state is never held to a no-progress rule.
-            for (idx, tc) in tool_calls.iter().enumerate() {
-                if blocked_results[idx].is_some() {
-                    continue;
-                }
-                let name_hash = simple_hash(tc.name.as_bytes());
-                let args_hash = simple_hash(tc.input.to_string().as_bytes());
-                let unproductive_repeats = recent_tool_result_hashes
-                    .iter()
-                    .filter(|&&(nh, ah, _, unproductive)| {
-                        nh == name_hash && ah == args_hash && unproductive
-                    })
-                    .count();
-                if unproductive_repeats >= guard_cfg.identical_args_block_after {
-                    blocked_results[idx] = Some((
-                        tc.clone(),
-                        ToolResult::error(format!(
-                            "Blocked: {name} has been called {n} times with identical arguments \
-                             and returned the same thing each time, or errored each time. \
-                             Calling it the same way again, or the same way through a \
-                             different command, returns the same thing. If you are waiting \
-                             for a file or a process to change, wait in ONE bounded shell \
-                             command instead of re-reading: os(action: \"exec\", command: \
-                             \"for i in $(seq 1 12); do wc -l < FILE; test $(wc -l < FILE) -ge N && break; \
-                             sleep 5; done; cat FILE\", timeout: 90), then report what you \
-                             saw, changed or not, with the count and the time. Keep the loop \
-                             shorter than the timeout you pass, or the command is killed and \
-                             its output is discarded. If you need \
-                             something different, change the arguments. Do NOT work around \
-                             this by renaming an output file.",
-                            name = tc.name,
-                            n = unproductive_repeats + 1
-                        )),
-                    ));
-                }
-            }
-
-            // ── Runaway backstop: the same exact call, over and over ──────────
-            // Checked BEFORE execution and independent of every productivity
-            // signal. This is the only guard that can see a drifting-output poll
-            // loop, because it never looks at the result. It ENDS the turn rather
-            // than nudging: the spiral backstop below resets its own budget when
-            // it fires, which is precisely how a loop earns an unlimited number of
-            // nudges and still runs to the iteration ceiling.
-            let mut identical_call_abort: Option<(String, usize)> = None;
-            for (idx, tc) in tool_calls.iter().enumerate() {
-                // After the wrap-up turn a repeat ends the turn even when an
-                // earlier guard already refused it: the 3-strike block kept
-                // refusing the same search for ten more iterations until the
-                // same-error guard finally ended the run (2026-09-19).
-                if blocked_results[idx].is_some() && !runaway_wrap_up_issued {
-                    continue;
-                }
-                let ceiling = if tools.is_concurrent_safe(&tc.name, &tc.input).await {
-                    IDENTICAL_READONLY_CALL_ABORT
-                } else {
-                    IDENTICAL_CALL_ABORT
-                };
-                if let Some(repeats) = identical_call_budget.abort_due(&tc.name, &tc.input, ceiling) {
-                    identical_call_abort = Some((action_key(tc), repeats));
+            let round = crate::harness::tool_round::run_tool_round(
+                &crate::harness::tool_round::RoundContext {
+                    scope: tool_scope,
+                    tools,
+                    store,
+                    providers,
+                    concurrency,
+                    hooks,
+                    agent_id,
+                    user_prompt,
+                    iteration,
+                    approval_channels,
+                    approval_relay,
+                    workflow_mode,
+                    decide,
+                    active_task: &active_task,
+                    guard_cfg: &guard_cfg,
+                    side_trace: &side_trace,
+                },
+                crate::harness::tool_round::RoundGuards {
+                    called_tools: &mut called_tools,
+                    recent_tool_result_hashes: &recent_tool_result_hashes,
+                    identical_call_budget: &identical_call_budget,
+                    runaway_wrap_up: &mut runaway_wrap_up,
+                    runaway_wrap_up_issued: &mut runaway_wrap_up_issued,
+                    read_failures: &mut read_failures,
+                    action_call_counts: &mut action_call_counts,
+                    spiral_escalator: &mut spiral_escalator,
+                    error_streak: &mut error_streak,
+                    files_read_this_session: &mut files_read_this_session,
+                    recent_result_content_hashes: &mut recent_result_content_hashes,
+                    readonly_result_hash_by_call: &mut readonly_result_hash_by_call,
+                    read_ledger: &mut read_ledger,
+                    tool_doc_cache: &mut tool_doc_cache,
+                    plan_touch: &mut plan_touch,
+                    edits_since_check: &mut edits_since_check,
+                    last_desktop_act: &mut last_desktop_act,
+                    ctx_spilled_results: &mut ctx_spilled_results,
+                },
+                &mut tool_calls,
+            )
+            .await;
+            let crate::harness::tool_round::RoundResults {
+                all_errors_this_iteration,
+                had_results,
+                unproductive_this_iteration,
+                iteration_rate_limited,
+                summary_tool_calls,
+                summary_tool_results,
+            } = match round {
+                crate::harness::tool_round::RoundOutcome::Ran(results) => results,
+                crate::harness::tool_round::RoundOutcome::Ended(exit) => {
+                    turn_exit_reason = exit;
                     break;
                 }
-            }
-            if let Some((key, repeats)) = identical_call_abort.clone().filter(|_| !runaway_wrap_up_issued) {
-                // First trip: refuse the call, and make the next turn a
-                // tool-less wrap-up so the user gets an answer, not a banner.
-                runaway_wrap_up_issued = true;
-                warn!(session_id, action = %key, repeats, "runaway backstop: identical call refused — wrap-up turn next");
-                for (idx, tc) in tool_calls.iter().enumerate() {
-                    if blocked_results[idx].is_none() && action_key(tc) == key {
-                        blocked_results[idx] = Some((
-                            tc.clone(),
-                            ToolResult::error(format!(
-                                "Refused: this exact call has already been made {} times with identical \
-                                 arguments and returned the same thing each time. Do not call it again. \
-                                 Reply to the user now with what you have.",
-                                repeats
-                            )),
-                        ));
-                    }
-                }
-                runaway_wrap_up = Some(format!(
-                    "You called '{}' {} times with identical arguments; repeating it will not change \
-                     the result. Tools are unavailable this turn: answer the user's latest message \
-                     now, in plain words, with what you already have. If something is missing, say \
-                     what it is and ask one question.",
-                    key, repeats
-                ));
-                identical_call_abort = None;
-            }
-            if let Some((key, repeats)) = identical_call_abort {
-                warn!(
-                    session_id,
-                    action = %key,
-                    repeats,
-                    "runaway backstop: identical call repeated past ceiling — ending turn"
-                );
-                turn_exit_reason = crate::guardrails::Exit::RunawayToolLoop;
-                let _ = tx
-                    .send(StreamEvent::control_notice(
-                        format!(
-                            "Stopped: '{}' was called {} times with identical arguments \
-                             without resolving. Ending the run so it cannot continue \
-                             indefinitely.",
-                            key, repeats
-                        ),
-                        "runaway_tool_loop",
-                    ))
-                    .await;
-                break;
-            }
-
-            // Defense-in-depth: block repeated reads of the SAME target that keep
-            // FAILING via different methods/args (which the identical-args guard above
-            // misses — the #research read-loop). After READ_FAILURE_LIMIT failures of a
-            // path, force the model to report instead of retrying. NOT a substitute for
-            // the file-read fix.
-            for (idx, tc) in tool_calls.iter().enumerate() {
-                if blocked_results[idx].is_some() {
-                    continue;
-                }
-                if let Some(p) = extract_file_read_path(tc) {
-                    if read_failures.get(&p).copied().unwrap_or(0) >= READ_FAILURE_LIMIT {
-                        warn!(session_id, path = %p, "blocking read after repeated failures");
-                        blocked_results[idx] = Some((
-                            tc.clone(),
-                            ToolResult::error(format!(
-                                "Blocked: reading {} has failed {} times via different methods. \
-                                 Stop retrying — tell the user the file could not be read and ask \
-                                 how they'd like to proceed.",
-                                p, READ_FAILURE_LIMIT
-                            )),
-                        ));
-                    }
-                }
-            }
-
-            // Spiral backstop (see action_call_counts): once one (tool, action) has
-            // racked up the same-action limit of UNPRODUCTIVE attempts this turn (errored or
-            // returning content the model already had — glob-wander / browser re-read /
-            // shell-retry), nudge the model off that action. Productive calls that
-            // return novel results don't count, so legitimate bulk work (create N
-            // todos, write N files) never trips this. (FRAMES Phase 2.)
-            //
-            // This is a NUDGE, not a stop. It used to end the run with a terminal
-            // result, which turned every false positive into a dead turn the user saw
-            // as a red "Stopped: … called 8 times without progress" banner — the model
-            // had more to do and no way to say so. The offending call is refused with a
-            // corrective error; every other tool, and the turn, carries on.
-            //
-            // The budget resets when it fires, so a model that changes approach isn't
-            // locked out of the action for the rest of the turn — a genuine loop simply
-            // earns another nudge after another limit's worth of unproductive calls.
-            let mut spiral_hard_stop: Option<(String, usize)> = None;
-            for (idx, tc) in tool_calls.iter().enumerate() {
-                if blocked_results[idx].is_some() {
-                    continue;
-                }
-                let key = action_key(tc);
-                let observed = action_call_counts.get(&key).copied().unwrap_or(0);
-                if observed >= guard_cfg.same_action_limit {
-                    warn!(
-                        session_id,
-                        action = %key,
-                        limit = guard_cfg.same_action_limit,
-                        hard_stop = guard_cfg.hard_stop,
-                        "spiral backstop: nudging model off repeated action"
-                    );
-                    // Hard-stop opt-in (Settings → Developer) ends the turn on the
-                    // first trip. Otherwise the first trip is a nudge and the
-                    // SECOND trip for the same action is the stop: a nudge that
-                    // did not help is never repeated (guardrails::Escalator).
-                    if guard_cfg.hard_stop
-                        || spiral_escalator.fire(&key) == crate::guardrails::Verdict::Stop
-                    {
-                        spiral_hard_stop = Some((key, observed));
-                        break;
-                    }
-                    action_call_counts.insert(key.clone(), 0);
-                    blocked_results[idx] = Some((
-                        tc.clone(),
-                        ToolResult::error(format!(
-                            "'{}' has been called {} times this turn without resolving. \
-                             Do not repeat it unchanged — change the arguments, use a \
-                             different tool, or tell the user what you have so far and \
-                             what is blocking you.",
-                            key, guard_cfg.same_action_limit
-                        )),
-                    ));
-                }
-            }
-            if let Some((key, observed)) = spiral_hard_stop {
-                turn_exit_reason = crate::guardrails::Exit::RepeatedToolCalls;
-                let notice = if guard_cfg.hard_stop {
-                    format!(
-                        "Stopped: '{key}' was repeated {observed} times without progress \
-                         (hard stop is on)."
-                    )
-                } else {
-                    format!(
-                        "Stopped: '{key}' was repeated {observed} times without progress, \
-                         and again after being told to change approach."
-                    )
-                };
-                let _ = tx
-                    .send(StreamEvent::control_notice(notice, "repeated_tool_calls"))
-                    .await;
-                break;
-            }
-
-            // ── Restricted-run allowlist ─────────────────────────────────────
-            // Review fork (docs/design/SELF_IMPROVEMENT.md WS2) and phone-
-            // caller runs: only allowlisted tools may EXECUTE; everything
-            // else is denied here with a corrective error. Matching is
-            // `tool:resource`-aware and shared with the registry choke point
-            // (ToolContext::whitelist_allows) so the two fences can't drift.
-            if ctx.tool_whitelist.is_some() {
-                for (idx, tc) in tool_calls.iter().enumerate() {
-                    if blocked_results[idx].is_none() && !ctx.whitelist_allows(&tc.name, &tc.input)
-                    {
-                        let msg = if review_fork.is_some() {
-                            format!(
-                                "Background review denied non-whitelisted tool: {}. \
-                                 Only the skill tool is available in this review pass — \
-                                 save the learning with it or reply 'Nothing to save.'",
-                                tc.name
-                            )
-                        } else if let Some(ref hint) = ctx.whitelist_denial_hint {
-                            format!("'{}' is not available in this run. {}", tc.name, hint)
-                        } else {
-                            format!(
-                                "'{}' is not available in this call. Use the tools you \
-                                 were given, or tell the caller plainly that you can't \
-                                 do that and offer to take a message.",
-                                tc.name
-                            )
-                        };
-                        blocked_results[idx] = Some((tc.clone(), ToolResult::error(msg)));
-                    }
-                }
-            }
-
-            // ── Per-tool approval gate (PERMISSIONS_SME §11) ──────────────────
-            // A capability that's OFF means ASK the user, not hard-fail. We wire
-            // the previously-dangling producer: emit `approval_request` and await
-            // the ApprovalModal decision via the shared `approval_channels`
-            // round-trip (the SAME pathway plan-mode uses). Autonomous mode and
-            // pre-granted (ON) categories proceed without asking; Deny returns a
-            // clean declined result; "Always" flips the capability ON for next
-            // time. Categories cleared here are recorded on the ToolContext so the
-            // registry permission gate (Phase 1c) treats them as allowed.
-            let mut approved_cats: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            // Per-command allowlist: prefixes the user chose "Approve Always" for.
-            // Loaded once; appended on an "always" decision for a shell command.
-            let mut approved_cmds: Vec<String> = store.get_approved_commands().unwrap_or_default();
-            // Gated calls in one batch get ONE approval card (Stage 7): the first
-            // pass collects them, one ask covers the lot, the second pass applies
-            // the decision through the same grant code as a single ask.
-            #[derive(Clone, Copy, PartialEq)]
-            enum GatePass { Collect, Apply }
-            let mut to_ask: Vec<usize> = Vec::new();
-            let mut batch_decision: Option<String> = None;
-            // Calls the owner answered on a card in this batch: the decide
-            // guardrail below never asks about them a second time.
-            let mut owner_answered: std::collections::HashSet<usize> =
-                std::collections::HashSet::new();
-            for gate_pass in [GatePass::Collect, GatePass::Apply] {
-            if gate_pass == GatePass::Apply {
-                if to_ask.is_empty() { break; }
-                let calls: Vec<ai::ToolCall> = to_ask.iter().map(|&i| tool_calls[i].clone()).collect();
-                let chs = approval_channels.expect("collect pass only records calls with a channel");
-                batch_decision = Some(ask_tool_approval_batch(chs, tx, cancel_token, &calls, session_id, "capability").await);
-                owner_answered.extend(to_ask.iter().copied());
-            }
-            for idx in 0..tool_calls.len() {
-                if blocked_results[idx].is_some() {
-                    continue;
-                }
-                // ── MCP tri-state gate (Settings → MCP → Tool permissions) ────
-                // Per-server default + per-tool override, decided by
-                // tools::policy::McpServerPermissions: Allow auto-approves,
-                // Ask runs the SAME ApprovalGate round-trip as capabilities,
-                // Deny refuses with an error naming the setting. This gate is
-                // the ONE enforcement site for MCP tool permissions; MCP
-                // proxies carry no ambient capability, so the loop `continue`s
-                // here and never reaches the capability gate below.
-                if tool_calls[idx].name.starts_with("mcp__") {
-                    if let Some((integration_id, original)) =
-                        tools.mcp_proxy_info(&tool_calls[idx].name).await
-                    {
-                        // Company Memory (the platform-authenticated server,
-                        // auth_type "neboai") is governed on the KB page —
-                        // the owner grants or revokes each Nebo there and the
-                        // shard enforces it with a 401. Asking again here
-                        // would leave every unattended run (a shopper on a
-                        // code, a workflow) with no one to answer. One gate.
-                        let platform_memory = store
-                            .get_mcp_integration(&integration_id)
-                            .ok()
-                            .flatten()
-                            .map(|i| i.auth_type == "neboai")
-                            .unwrap_or(false);
-                        if platform_memory {
-                            continue;
-                        }
-                        let perms = tools::policy::McpServerPermissions::from_json(
-                            store
-                                .get_mcp_tool_permissions(&integration_id)
-                                .unwrap_or_default()
-                                .as_deref(),
-                        );
-                        // mcp__<server>__<tool> — the server slug, for messages.
-                        let server = tool_calls[idx]
-                            .name
-                            .split("__")
-                            .nth(1)
-                            .unwrap_or("server")
-                            .to_string();
-                        match perms.decide(&original) {
-                            tools::policy::McpToolAccess::Allow => {}
-                            tools::policy::McpToolAccess::Deny => {
-                                blocked_results[idx] = Some((
-                                    tool_calls[idx].clone(),
-                                    ToolResult::error(format!(
-                                        "Blocked: the MCP tool '{original}' on server \
-                                         '{server}' is set to Blocked in Settings → MCP → \
-                                         Tool permissions. Tell the user this tool is \
-                                         blocked by that setting and stop — do not retry \
-                                         or work around it."
-                                    )),
-                                ));
-                            }
-                            tools::policy::McpToolAccess::Ask if full_access => {
-                                // Full Access bypasses the ask, same as the
-                                // capability gate. Blocked above still blocks.
-                            }
-                            tools::policy::McpToolAccess::Ask => {
-                                match approval_channels {
-                                    Some(chs)
-                                        if tools::ExecutionMode::from(origin)
-                                            == tools::ExecutionMode::Interactive
-                                            || approval_relay =>
-                                    {
-                                        let decision = ask_tool_approval(
-                                            chs,
-                                            tx,
-                                            cancel_token,
-                                            &tool_calls[idx],
-                                            session_id,
-                                            "mcp",
-                                        )
-                                        .await;
-                                        owner_answered.insert(idx);
-                                        match decision.as_str() {
-                                            "always" => {
-                                                if let Err(e) = persist_mcp_tool_allow(
-                                                    store,
-                                                    &integration_id,
-                                                    &original,
-                                                ) {
-                                                    warn!(session_id, tool = %original, error = %e, "failed to persist MCP tool grant");
-                                                }
-                                            }
-                                            "once" | "approve" | "approved" | "yes" | "true" => {}
-                                            _ => {
-                                                blocked_results[idx] = Some((
-                                                    tool_calls[idx].clone(),
-                                                    ToolResult::error(format!(
-                                                        "The user declined to allow the MCP \
-                                                         tool '{original}' on server \
-                                                         '{server}'. Tell the user it needs \
-                                                         their approval and stop — do not \
-                                                         retry or work around it."
-                                                    )),
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    // Unattended (cron/workflow/comm/subagent) or no
-                                    // channel: nobody can answer — refuse instead of
-                                    // hanging on a prompt nobody sees. Unlike the
-                                    // capability gate there is no registry backstop
-                                    // for MCP tools, so the refusal happens here.
-                                    _ => {
-                                        blocked_results[idx] = Some((
-                                            tool_calls[idx].clone(),
-                                            ToolResult::error(format!(
-                                                "The MCP tool '{original}' on server \
-                                                 '{server}' needs the user's approval \
-                                                 (Settings → MCP → Tool permissions) and no \
-                                                 one is available to approve it in this \
-                                                 run. Report this and stop."
-                                            )),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                        continue;
-                    }
-                }
-                // ── Per-operation approval gate (per-employee three-state policy) ──
-                // A gated interface operation is decided by the employee's
-                // OperationPolicy: Always runs, Approval asks the owner
-                // (interactive) / refuses when unattended, Blocked is refused (the
-                // toolset also omits it — this is the hard backstop). Origin-aware
-                // (WS2): an untrusted origin floors gated Always to Approval, and
-                // with NO policy set a trusted origin keeps "installation is the
-                // grant" (except a critical operation, which always asks) while an
-                // untrusted one falls back to the safe default — the decision lives
-                // in decide/decide_optional, shared with the workflow checkpoint
-                // (Rule 8.1).
-                //
-                // WHICH operation a call performs is the TOOL's to declare
-                // (`DynTool::operation_performed`), never this gate's to infer from
-                // a tool name: the `plugin` tool answers with its typed
-                // `operation`, the `pack` tool with the layer write or removal it
-                // performs, and any tool that grows a gated operation is decided
-                // here without touching this code. A call that performs no typed
-                // operation (plugin list/discover/exec-by-slug, pack list/show)
-                // falls through ungated.
-                if let Some(op) = tools
-                    .operation_performed(&tool_calls[idx].name, &tool_calls[idx].input)
-                    .await
-                {
-                    // The operation's parameters, as far as the call states
-                    // them: a standing grant is checked against amount,
-                    // counterparty, and today's counters (R16). A call that
-                    // states no amount is checked against count and freshness
-                    // only.
-                    let params = tools::policy::OperationParams {
-                        amount_cents: tool_calls[idx]
-                            .input
-                            .get("amount_cents")
-                            .and_then(|v| v.as_i64()),
-                        counterparty: tool_calls[idx]
-                            .input
-                            .get("counterparty")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_string),
-                        counterparty_has_source_id: tool_calls[idx]
-                            .input
-                            .get("counterparty_id")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|s| !s.is_empty()),
-                        irreversible: tools::interface_catalog::is_critical(&op),
-                    };
-                    let company_policy = store
-                        .get_company_policy()
-                        .ok()
-                        .flatten()
-                        .map(|j| tools::policy::CompanyPolicy::from_json(Some(&j)));
-                    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-                    let rule_key = format!(
-                        "{}:{}",
-                        grant_counter_seat(agent_id, &ctx.session_key),
-                        tools::plugin_tool::port_suffix(&op)
-                    );
-                    let counters = {
-                        let cp = params.counterparty.clone().unwrap_or_default();
-                        let mine = store.day_counters(&rule_key, &today, &cp).ok();
-                        let company = store.day_counters(db::COMPANY_COUNTER_KEY, &today, "").ok();
-                        mine.map(|m| tools::policy::DayCounters {
-                            count: m.count,
-                            cents: m.cents,
-                            counterparty_cents: m.counterparty_cents,
-                            company_count: company.as_ref().map(|c| c.count).unwrap_or(0),
-                            company_cents: company.as_ref().map(|c| c.cents).unwrap_or(0),
-                        })
-                    };
-                    let decision = tools::policy::OperationPolicy::decide_optional(
-                        operation_policy,
-                        &op,
-                        // Tainted workflow inputs decide as Comm: a gated
-                        // Always floors to Approval (WS2-R7), the same
-                        // rule the engine checkpoint applied.
-                        if workflow_mode.map_or(false, |m| m.tainted) {
-                            tools::Origin::Comm
-                        } else {
-                            origin
-                        },
-                        &params,
-                        company_policy.as_ref(),
-                        counters.as_ref(),
-                        // The projection is proven current once the cache
-                        // exists (Playbook PRD 6.4); until then local policy
-                        // is the only copy and is current by definition.
-                        true,
-                    );
-                    if let Some(decision) = decision {
-                        match decision.access {
-                            tools::policy::OperationAccess::Always => {
-                                // A standing grant spent: count it against the
-                                // day before the call runs, so a crash between
-                                // decision and execution can never under-count.
-                                if decision.layer == tools::policy::PolicyLayer::StandingAuthority {
-                                    let cp = params.counterparty.clone().unwrap_or_default();
-                                    let cents = params.amount_cents.unwrap_or(0);
-                                    let _ = store.bump_counters(&rule_key, &today, &cp, cents);
-                                    let _ = store.bump_counters(db::COMPANY_COUNTER_KEY, &today, "", cents);
-                                    tracing::info!(
-                                        agent = %agent_id, op = %op, rule = %rule_key, reason = %decision.reason,
-                                        "operation approved by standing authority"
-                                    );
-                                }
-                            }
-                            tools::policy::OperationAccess::Blocked => {
-                                blocked_results[idx] = Some((
-                                    tool_calls[idx].clone(),
-                                    ToolResult::error(format!(
-                                        "The operation '{op}' is Blocked for this AI employee \
-                                         ({layer}: {reason}). Tell the user it's blocked and \
-                                         stop — do not retry or work around it.",
-                                        layer = decision.layer.as_str(),
-                                        reason = decision.reason,
-                                    )),
-                                ));
-                            }
-                            tools::policy::OperationAccess::Approval => {
-                                // NOTE: deliberately NO full_access bypass here. The
-                                // per-employee operation policy is an explicit setting;
-                                // the whole point is that a global convenience (Full
-                                // Access) never overrides a per-employee gate on money/
-                                // outbound/irreversible operations. decide() rules.
-                                //
-                                // The approval prompt must be comprehensible to a
-                                // non-technical owner: require the `display` sentence
-                                // (real names + formatted amounts, not ids/cents).
-                                // Missing → corrective retry, never a raw-JSON prompt.
-                                let display = tool_calls[idx]
-                                    .input
-                                    .get("display")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .trim()
-                                    .to_string();
-                                if display.is_empty() {
-                                    blocked_results[idx] = Some((
-                                        tool_calls[idx].clone(),
-                                        ToolResult::error(format!(
-                                            "The operation '{op}' needs the owner's approval, and \
-                                             the approval prompt requires a `display` sentence. \
-                                             Retry the SAME call adding display: one plain-language \
-                                             sentence a non-technical person understands — real \
-                                             names and formatted amounts (e.g. \"Pay Acme Supplies \
-                                             $2,500.00 for bill #1042\"), never raw ids or cents."
-                                        )),
-                                    ));
-                                } else if tools::ExecutionMode::from(origin)
-                                    == tools::ExecutionMode::Interactive
-                                    || approval_relay
-                                {
-                                    match approval_channels {
-                                        Some(chs) => {
-                                            let decision = ask_tool_approval(
-                                                chs,
-                                                tx,
-                                                cancel_token,
-                                                &tool_calls[idx],
-                                                session_id,
-                                                "operation",
-                                            )
-                                            .await;
-                                            owner_answered.insert(idx);
-                                            match decision.as_str() {
-                                                "always" => {
-                                                    // Approve Always → persist this op as
-                                                    // Always in the employee's policy so the
-                                                    // button does what it says.
-                                                    if !agent_id.is_empty() {
-                                                        let mut policy = operation_policy
-                                                            .cloned()
-                                                            .unwrap_or_default();
-                                                        // A locked entry (the seat's
-                                                        // ceiling or a law) refuses the
-                                                        // edit: the button cannot loosen it.
-                                                        if let Err(e) = policy.apply_edit(
-                                                            &tools::plugin_tool::port_suffix(&op),
-                                                            tools::policy::OperationRule::access(
-                                                                tools::policy::OperationAccess::Always,
-                                                            ),
-                                                        ) {
-                                                            tracing::warn!(op = %op, error = %e, "Approve Always refused by the policy");
-                                                        }
-                                                        let patch = serde_json::json!({
-                                                            "operationPolicy": policy.to_json()
-                                                        });
-                                                        if let Err(e) = store
-                                                            .upsert_entity_config(
-                                                                "agent", agent_id, &patch,
-                                                            )
-                                                        {
-                                                            warn!(session_id, op, error = %e, "failed to persist operation Always grant");
-                                                        }
-                                                    }
-                                                }
-                                                "once" | "approve" | "approved" | "yes"
-                                                | "true" => {}
-                                                _ => {
-                                                    blocked_results[idx] = Some((
-                                                        tool_calls[idx].clone(),
-                                                        ToolResult::error(format!(
-                                                            "The user declined to approve the \
-                                                             operation '{op}'. Tell the user it \
-                                                             needs their approval and stop — do \
-                                                             not retry or work around it."
-                                                        )),
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                        None => {
-                                            // Nobody to ask on this surface: the
-                                            // work goes to whoever holds the
-                                            // authority for it, or waits for the
-                                            // owner if nobody does.
-                                            blocked_results[idx] = Some((
-                                                tool_calls[idx].clone(),
-                                                match hand_off_out_of_bounds(
-                                                    store,
-                                                    agent_id,
-                                                    session_id,
-                                                    op.as_str(),
-                                                    &display,
-                                                    &decision.reason,
-                                                ) {
-                                                    Some(handed) => ToolResult::ok(handed),
-                                                    None => ToolResult::error(format!(
-                                                        "The operation '{op}' needs approval and no \
-                                                         one is available to approve it in this run. \
-                                                         Report this and stop."
-                                                    )),
-                                                },
-                                            ));
-                                        }
-                                    }
-                                } else if let Some(park) =
-                                    workflow_mode.and_then(|m| m.park.as_ref())
-                                {
-                                    // Workflow suspend/resume: park the run for the
-                                    // owner instead of refusing — the closure persists
-                                    // the suspension row; the loop exits parked.
-                                    let snapshot = convert_messages(
-                                        &sessions.get_messages(session_id).unwrap_or_default(),
-                                    );
-                                    match park(WorkflowPark {
-                                        messages: snapshot,
-                                        call: &tool_calls[idx],
-                                        operation: tools::plugin_tool::port_suffix(&op),
-                                        display: display.clone(),
-                                    }) {
-                                        Ok(()) => {
-                                            wf_break_reason =
-                                                Some("awaiting_approval".to_string());
-                                        }
-                                        Err(e) => {
-                                            // Can't persist the suspension → fail loud,
-                                            // never silent-run the gated call.
-                                            wf_break_reason =
-                                                Some(format!("suspension_failed:{e}"));
-                                        }
-                                    }
-                                    break;
-                                } else {
-                                    // Unattended chat origin (cron/comm/subagent): the chat
-                                    // gate can't pause, and the workflow path already parks
-                                    // at its checkpoint. Work that fell outside this seat's
-                                    // bounds is not impossible work — it is somebody's to
-                                    // decide, so it is handed to the seat that holds that
-                                    // authority and this run stops cleanly. With nobody
-                                    // holding it, it waits for the owner as before.
-                                    blocked_results[idx] = Some((
-                                        tool_calls[idx].clone(),
-                                        match hand_off_out_of_bounds(
-                                            store,
-                                            agent_id,
-                                            session_id,
-                                            op.as_str(),
-                                            &display,
-                                            &decision.reason,
-                                        ) {
-                                            Some(handed) => ToolResult::ok(handed),
-                                            None => ToolResult::error(format!(
-                                                "The operation '{op}' needs your approval and this is \
-                                                 an unattended run. It was not performed."
-                                            )),
-                                        },
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    // The operation gate is the decision for a declared operation:
-                    // `plugin` and `pack` are both ungated by the capability gate
-                    // (gating_capability returns None for them), so there is nothing
-                    // further to ask here.
-                    continue;
-                }
-                let category = match tools::capabilities::gating_capability(
-                    &tool_calls[idx].name,
-                    &tool_calls[idx].input,
-                ) {
-                    Some(c) => c,
-                    None => continue, // ungated (installed extension / non-ambient tool)
-                };
-                let cap_off = entity_permissions
-                    .map(|p| p.get(category) == Some(&false))
-                    .unwrap_or(false);
-                // The shell command this call would run, if any (for the per-command
-                // allowlist). None for non-shell tools.
-                let shell_cmd = shell_command_of(&tool_calls[idx]);
-                if !cap_off || full_access {
-                    // Pre-granted (capability ON), no permission map, or Full Access
-                    // → proceed without asking.
-                    approved_cats.insert(category.to_string());
-                    continue;
-                }
-                // Capability OFF, but this exact shell command was "approved always"
-                // (matched by prefix; compound/interpreter commands never match) →
-                // run without asking. Hard safeguards still apply unconditionally.
-                if let Some(ref c) = shell_cmd {
-                    if tools::policy::command_matches(&approved_cmds, c) {
-                        approved_cats.insert(category.to_string());
-                        continue;
-                    }
-                }
-                // Capability OFF + not Full Access + not pre-approved → ask, but ONLY
-                // when a human is present. Unattended runs (cron/heartbeat/workflow/
-                // comm/subagent) have no one to answer, so it's denied (left ungranted
-                // → Phase 1c blocks) rather than hanging on a prompt nobody sees.
-                if tools::ExecutionMode::from(origin) != tools::ExecutionMode::Interactive
-                    && !approval_relay
-                {
-                    continue;
-                }
-                if approval_channels.is_none() {
-                    // No channel to ask through: leave the category ungranted so
-                    // registry Phase 1c hard-blocks (safe).
-                    continue;
-                }
-                // Collect pass: remember the call and move on; the batch is
-                // asked once below and the decision applied in the apply pass.
-                let decision = match gate_pass {
-                    GatePass::Collect => {
-                        to_ask.push(idx);
-                        continue;
-                    }
-                    GatePass::Apply => batch_decision.clone().unwrap_or_else(|| "deny".to_string()),
-                };
-                match decision.as_str() {
-                    "always" => {
-                        approved_cats.insert(category.to_string());
-                        match &shell_cmd {
-                            // Shell command → remember just this command's PREFIX
-                            // (not all of Shell). Interpreters/compound commands
-                            // yield None → no durable grant (approved once only).
-                            Some(c) => {
-                                if let Some(prefix) = tools::policy::command_prefix(c) {
-                                    if !approved_cmds.iter().any(|p| p == &prefix) {
-                                        approved_cmds.push(prefix.clone());
-                                        if let Err(e) = store.set_approved_commands(&approved_cmds)
-                                        {
-                                            warn!(session_id, error = %e, "failed to persist approved command");
-                                        }
-                                    }
-                                }
-                            }
-                            // Non-shell capability → grant the whole capability for
-                            // next time (per-item grants aren't meaningful there).
-                            None => {
-                                if let Err(e) = persist_capability_grant(store, category) {
-                                    warn!(session_id, category, error = %e, "failed to persist capability grant");
-                                }
-                            }
-                        }
-                    }
-                    "once" | "approve" | "approved" | "yes" | "true" => {
-                        approved_cats.insert(category.to_string());
-                    }
-                    _ => {
-                        // Deny → skip execution with a clean, non-spiraling result.
-                        blocked_results[idx] = Some((
-                            tool_calls[idx].clone(),
-                            ToolResult::error(format!(
-                                "The user declined to allow this action (the \"{}\" capability \
-                                 is off). Tell the user it needs their approval and stop — do \
-                                 not retry or work around it.",
-                                tools::capabilities::capability_label(category)
-                            )),
-                        ));
-                    }
-                }
-            }
-            }
-            ctx.approved_categories = approved_cats;
-
-            // ── Decide guardrail (crate::tool_guardrail) ──────────────────────
-            // Last, after every gate above, and only for calls that are about
-            // to run without the owner having answered a card for them: one
-            // typed decision per side-effecting call judges risk and scope,
-            // and the band is allow, ask (the SAME approval door as the gates
-            // above, one card for the batch) or block. Off by default
-            // (`NEBO_DECIDE_GUARDRAIL=1`; `=shadow` logs the band without
-            // acting). Fail-open: no client, error or timeout leaves the
-            // decision above unchanged.
-            let guardrail_mode = crate::tool_guardrail::mode();
-            if guardrail_mode != crate::tool_guardrail::Mode::Off && wf_break_reason.is_none() {
-                // A workflow turn has no session objective and an empty
-                // prompt; its task is the step it was given.
-                let (objective, last_message, context) = match workflow_mode {
-                    Some(m) => (
-                        m.objective.as_str(),
-                        m.instruction.as_str(),
-                        crate::tool_guardrail::Context::WorkflowStep,
-                    ),
-                    None => (active_task.as_str(), user_prompt, crate::tool_guardrail::Context::Chat),
-                };
-                let mut judged = Vec::new();
-                for (idx, tc) in tool_calls.iter().enumerate() {
-                    if blocked_results[idx].is_some() || owner_answered.contains(&idx) {
-                        continue;
-                    }
-                    if !tools.has_side_effects(&tc.name, &tc.input).await {
-                        continue;
-                    }
-                    let trace = side_trace("tool_guardrail");
-                    judged.push(async move {
-                        let judgment = crate::tool_guardrail::judge(
-                            decide.map(|d| d.as_ref()),
-                            &trace,
-                            guardrail_mode,
-                            &tc.name,
-                            &tc.input,
-                            objective,
-                            last_message,
-                            context,
-                        )
-                        .await;
-                        (idx, judgment)
-                    });
-                }
-                let mut guardrail_asks: Vec<usize> = Vec::new();
-                for (idx, judgment) in futures::future::join_all(judged).await {
-                    let Some(judgment) = judgment else { continue };
-                    match crate::tool_guardrail::action_for(guardrail_mode, judgment.band) {
-                        crate::tool_guardrail::Band::Allow => {}
-                        crate::tool_guardrail::Band::Block => {
-                            blocked_results[idx] = Some((
-                                tool_calls[idx].clone(),
-                                ToolResult::error(crate::tool_guardrail::BLOCKED_RESULT),
-                            ));
-                        }
-                        crate::tool_guardrail::Band::Ask => guardrail_asks.push(idx),
-                    }
-                }
-                if !guardrail_asks.is_empty() {
-                    let attended = tools::ExecutionMode::from(origin)
-                        == tools::ExecutionMode::Interactive
-                        || approval_relay;
-                    match approval_channels {
-                        Some(chs) if attended => {
-                            let calls: Vec<ai::ToolCall> =
-                                guardrail_asks.iter().map(|&i| tool_calls[i].clone()).collect();
-                            let decision = ask_tool_approval_batch(
-                                chs, tx, cancel_token, &calls, session_id, "guardrail",
-                            )
-                            .await;
-                            // "always" has nothing to persist here: the
-                            // guardrail holds no per-tool grant, so it is an
-                            // approval for this batch only.
-                            if !matches!(
-                                decision.as_str(),
-                                "always" | "once" | "approve" | "approved" | "yes" | "true"
-                            ) {
-                                for idx in guardrail_asks {
-                                    blocked_results[idx] = Some((
-                                        tool_calls[idx].clone(),
-                                        ToolResult::error(crate::tool_guardrail::DECLINED_RESULT),
-                                    ));
-                                }
-                            }
-                        }
-                        // Unattended (cron/workflow/comm/subagent) or no
-                        // channel: nobody can answer, so the call does not
-                        // run, the same as the gates above.
-                        _ => {
-                            for idx in guardrail_asks {
-                                blocked_results[idx] = Some((
-                                    tool_calls[idx].clone(),
-                                    ToolResult::error(crate::tool_guardrail::UNATTENDED_RESULT),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Workflow break (exit primitive / approval park): the turn ends
-            // now — nothing in this batch executes.
-            if let Some(reason) = wf_break_reason {
-                turn_exit_reason = crate::guardrails::Exit::Workflow(reason);
-                break;
-            }
-
-            // Partition tool calls into concurrent-safe and sequential phases.
-            // Concurrent tools run in parallel via FuturesUnordered, then
-            // sequential tools run one at a time to prevent state conflicts.
-            // Beyond read-only calls, path-disjoint os file mutations are also
-            // admitted to the parallel phase — see partition_tool_calls for
-            // the admission rules.
-            let mut live_indices = Vec::new();
-            let mut partition_inputs: Vec<(&str, &serde_json::Value, bool)> = Vec::new();
-            for (idx, tc) in tool_calls.iter().enumerate() {
-                if blocked_results[idx].is_some() {
-                    continue;
-                }
-                let safe = tools.is_concurrent_safe(&tc.name, &tc.input).await;
-                live_indices.push(idx);
-                partition_inputs.push((tc.name.as_str(), &tc.input, safe));
-            }
-            let (concurrent, sequential) = partition_tool_calls(&partition_inputs);
-            let concurrent_indices: Vec<usize> =
-                concurrent.into_iter().map(|i| live_indices[i]).collect();
-            let sequential_indices: Vec<usize> =
-                sequential.into_iter().map(|i| live_indices[i]).collect();
-
-            // Phase 1: Execute concurrent-safe tools in parallel
-            for &idx in &concurrent_indices {
-                let tools = tools.clone();
-                let ctx = ctx.clone();
-                let tc = tool_calls[idx].clone();
-                let concurrency = concurrency.clone();
-                futures.push(async move {
-                    let _permit = concurrency.acquire_tool_permit().await;
-                    let input_str = tc.input.to_string();
-                    let input_log = truncate_str(&input_str, 500);
-                    info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool (concurrent)");
-                    let budget = tools
-                        .execution_timeout(&tc.name, &tc.input)
-                        .await
-                        .unwrap_or(TOOL_EXECUTION_TIMEOUT);
-                    let started = std::time::Instant::now();
-                    let mut ctx = ctx;
-                    ctx.parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    let parked = ctx.parked.clone();
-                    let result = match run_within_budget(
-                        budget,
-                        parked,
-                        tools.execute(&ctx, &tc.name, tc.input.clone()),
-                    )
-                    .await
-                    {
-                        Some(r) => r,
-                        None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
-                    };
-                    let duration_ms = started.elapsed().as_millis() as u64;
-                    let result_log = truncate_str(&result.content, 300);
-                    info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
-                    (idx, tc, result, duration_ms)
-                });
-            }
-
-            // Collect results as they complete, send events immediately
-            let mut results: Vec<Option<(ai::ToolCall, ToolResult)>> = vec![None; tool_calls.len()];
-            // The call's wall-clock time per tool id; persisted with the result.
-            let mut durations: HashMap<String, u64> = HashMap::new();
-            // Tool ids whose result a post-tool hook wrote into (the done gate's
-            // "a check ran" signal).
-            let mut hook_noted: HashSet<String> = HashSet::new();
-            loop {
-                let item = tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        info!(session_id, "run cancelled during tool execution");
-                        return Ok(turn_exit_reason.label());
-                    }
-                    next = futures.next() => match next {
-                        Some(v) => v,
-                        None => break,
-                    }
-                };
-                let (idx, tc, mut result, duration_ms) = item;
-                if let Some(note) = pre_hook_notes.remove(&tc.id) {
-                    result.content.push_str("\n\n");
-                    result.content.push_str(&note);
-                }
-                if apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await {
-                    hook_noted.insert(tc.id.clone());
-                }
-                // Send tool result event immediately as each completes
-                let _ = tx
-                    .send(StreamEvent { payload: result.payload.clone(),
-                        provenance: None,
-                        event_type: StreamEventType::ToolResult,
-                        text: result.content.clone(),
-                        tool_call: Some(ai::ToolCall {
-                            id: tc.id.clone(),
-                            name: tc.name.clone(),
-                            // Carry the call's input so downstream consumers
-                            // (loop tool-activity labels) can read the STRAP
-                            // resource/action signature.
-                            input: tc.input.clone(),
-                        }),
-                        error: if result.is_error {
-                            Some(result.content.clone())
-                        } else {
-                            None
-                        },
-                        usage: None,
-                        rate_limit: None,
-                        // The call's wall-clock time rides in the widgets slot so the
-                        // live timeline and the reloaded one show the same duration.
-                        widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
-                        provider_metadata: None,
-                        stop_reason: None,
-                        image_url: result.image_url.clone(),
-                    })
-                    .await;
-                durations.insert(tc.id.clone(), duration_ms);
-                results[idx] = Some((tc, result));
-            }
-
-            // Phase 2: Execute sequential (write) tools one at a time
-            for &idx in &sequential_indices {
-                if cancel_token.is_cancelled() {
-                    info!(session_id, "run cancelled during sequential tool execution");
+                crate::harness::tool_round::RoundOutcome::Cancelled => {
                     return Ok(turn_exit_reason.label());
                 }
-                let tc = tool_calls[idx].clone();
-                let _permit = concurrency.acquire_tool_permit().await;
-                let input_str = tc.input.to_string();
-                let input_log = truncate_str(&input_str, 500);
-                info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool (sequential)");
-                let budget = tools
-                    .execution_timeout(&tc.name, &tc.input)
-                    .await
-                    .unwrap_or(TOOL_EXECUTION_TIMEOUT);
-                let started = std::time::Instant::now();
-                let mut ctx = ctx.clone();
-                ctx.parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let parked = ctx.parked.clone();
-                let mut result = match tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        info!(session_id, "run cancelled during sequential tool execution");
-                        return Ok(turn_exit_reason.label());
-                    }
-                    r = run_within_budget(
-                        budget,
-                        parked,
-                        tools.execute(&ctx, &tc.name, tc.input.clone()),
-                    ) => r,
-                } {
-                    Some(r) => r,
-                    None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
-                };
-                let duration_ms = started.elapsed().as_millis() as u64;
-                if let Some(note) = pre_hook_notes.remove(&tc.id) {
-                    result.content.push_str("\n\n");
-                    result.content.push_str(&note);
-                }
-                if apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await {
-                    hook_noted.insert(tc.id.clone());
-                }
-                let result_log = truncate_str(&result.content, 300);
-                info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
-                let _ = tx
-                    .send(StreamEvent { payload: result.payload.clone(),
-                        provenance: None,
-                        event_type: StreamEventType::ToolResult,
-                        text: result.content.clone(),
-                        tool_call: Some(ai::ToolCall {
-                            id: tc.id.clone(),
-                            name: tc.name.clone(),
-                            // Carry the call's input so downstream consumers
-                            // (loop tool-activity labels) can read the STRAP
-                            // resource/action signature.
-                            input: tc.input.clone(),
-                        }),
-                        error: if result.is_error {
-                            Some(result.content.clone())
-                        } else {
-                            None
-                        },
-                        usage: None,
-                        rate_limit: None,
-                        // The call's wall-clock time rides in the widgets slot so the
-                        // live timeline and the reloaded one show the same duration.
-                        widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
-                        provider_metadata: None,
-                        stop_reason: None,
-                        image_url: result.image_url.clone(),
-                    })
-                    .await;
-                durations.insert(tc.id.clone(), duration_ms);
-                results[idx] = Some((tc, result));
-            }
-
-            // Inject blocked tool results (from pre_execute hooks).
-            for (idx, blocked) in blocked_results.into_iter().enumerate() {
-                if let Some((tc, result)) = blocked {
-                    let _ = tx
-                        .send(StreamEvent { payload: None,
-                            provenance: None,
-                            event_type: StreamEventType::ToolResult,
-                            text: result.content.clone(),
-                            tool_call: Some(ai::ToolCall {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                                input: tc.input.clone(),
-                            }),
-                            error: Some(result.content.clone()),
-                            usage: None,
-                            rate_limit: None,
-                            widgets: None,
-                            provider_metadata: None,
-                            stop_reason: None,
-                            image_url: None,
-                        })
-                        .await;
-                    results[idx] = Some((tc, result));
-                }
-            }
-
-            // Sidecar vision verification — only for providers that can't include
-            // images directly in tool results. Vision-capable providers (Anthropic,
-            // Gemini) get the raw image passed through instead.
-            let mut had_image: Vec<usize> = Vec::new();
-            {
-                let main_supports_images = {
-                    let prov_lock = providers.read().await;
-                    prov_lock
-                        .first()
-                        .map_or(false, |p| p.supports_tool_result_images())
-                };
-
-                if !main_supports_images {
-                    let sidecar_provider = {
-                        let prov_lock = providers.read().await;
-                        prov_lock.first().cloned()
-                    };
-                    if let Some(provider) = sidecar_provider {
-                        let mut sidecar_futures = FuturesUnordered::new();
-
-                        for (idx, entry) in results.iter().enumerate() {
-                            if let Some((tc, result)) = entry {
-                                if let Some(ref image_url) = result.image_url {
-                                    had_image.push(idx);
-                                    let image_url = image_url.clone();
-                                    let action_ctx = format!("{} — {}", tc.name, result.content);
-                                    let prov = provider.clone();
-                                    let trace = side_trace("screenshot_verify");
-                                    sidecar_futures.push(async move {
-                                        let verification = crate::sidecar::verify_screenshot(
-                                            trace,
-                                            prov.as_ref(),
-                                            &image_url,
-                                            &action_ctx,
-                                        )
-                                        .await;
-                                        (idx, verification)
-                                    });
-                                }
-                            }
-                        }
-
-                        while let Some((idx, verification)) = tokio::select! {
-                            _ = cancel_token.cancelled() => {
-                                info!(session_id, "run cancelled during sidecar verification");
-                                return Ok(turn_exit_reason.label());
-                            }
-                            next = sidecar_futures.next() => next
-                        } {
-                            if let Some((_, ref mut result)) = results[idx] {
-                                match verification {
-                                    Some(text) => result
-                                        .content
-                                        .push_str(&format!("\n\n[Screen Visual]\n{}", text)),
-                                    // Sidecar couldn't describe it — still tell the model an
-                                    // image exists, so it never claims "no image was returned."
-                                    None => result.content.push_str(
-                                        "\n\n[Screen Visual] A screenshot was captured (saved and \
-                                         available to the user), but automatic description was \
-                                         unavailable. Acknowledge the capture — do NOT say the tool \
-                                         returned no image.",
-                                    ),
-                                }
-                                // The main model is non-vision, so the raw image is useless to it;
-                                // always drop it (otherwise the provider silently strips it and the
-                                // model is left blind with no signal).
-                                result.image_url = None;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // For comm-origin runs, tell the model that screenshots will be
-            // delivered as attachments — otherwise it has no way to know.
-            if origin == tools::Origin::Comm && !had_image.is_empty() {
-                for idx in &had_image {
-                    if let Some((_, ref mut result)) = results[*idx] {
-                        result.content.push_str(
-                            "\n\n✓ Screenshot captured and will be delivered as an attachment in your reply to the user."
-                        );
-                    }
-                }
-            }
-
-            // Duplicate file read detection: if the model re-reads a file it
-            // already read this session, append a note so it knows. A full
-            // os file read gets the read-ledger note below instead (count,
-            // read time, disk evidence), so it is only tracked here, never
-            // double-noted.
-            for entry in results.iter_mut().flatten() {
-                if let Some(path) = extract_file_read_path(&entry.0) {
-                    let repeat = !files_read_this_session.insert(path.clone());
-                    if repeat && !is_full_os_file_read(&entry.0) {
-                        entry.1.content.push_str(
-                            "\n\n(Note: a full read of this path was returned earlier this session.)",
-                        );
-                    }
-                }
-            }
-
-            // Save all tool results to session in deterministic order
-            // and track whether ALL results in this iteration were errors.
-            //
-            // Context protection:
-            // - Success results: 50K cap (Claude Code's per-tool default). Oversized →
-            //                   persist to file, return preview + path. Every built-in
-            //                   tool caps itself UNDER this (shell 30K, read 100K exempt)
-            //                   so its own footer reaches the model; this tier is for
-            //                   MCP/plugin results with no cap of their own.
-            // - Error results:   10K cap. Oversized → first 5K + last 5K with truncation marker.
-            // - Universal:      128K hard ceiling as final safety net — above the
-            //                   file read budget (100K) plus its outline prefix,
-            //                   so a whole read is never previewed.
-            const RESULT_CAP: usize = 50_000;
-            const ERROR_CAP: usize = 10_000;
-            const ERROR_HALF: usize = 5_000;
-            const UNIVERSAL_TOOL_RESULT_CAP: usize = 128_000;
-            let mut all_errors_this_iteration = true;
-            // Per-call productivity, indexed alongside the hash push below, so the
-            // identical-args guard can count only the repeats that made no progress.
-            let mut unproductive_this_iteration: std::collections::HashMap<(u64, u64), bool> =
-                std::collections::HashMap::new();
-            let mut had_results = false;
-            // Terminal tool error (auth/permission/connection) → end the turn after
-            // this batch and surface to the user, instead of feeding it back for the
-            // model to retry/improvise (the death-spiral fix; FRAMES.md Phase 1).
-            let mut terminal_error: Option<(String, Option<types::OwnerNeed>)> = None;
-            let mut same_error_stop: Option<(String, String)> = None;
-            // Highest-signal rate-limit status seen this iteration (429/403) — feeds the
-            // RateLimit reminder so the model backs off instead of hammer-retrying a host.
-            let mut iteration_rate_limited: Option<u16> = None;
-            // Lightweight snapshots for the background tool summary generator.
-            let mut summary_tool_calls: Vec<ai::ToolCall> = Vec::new();
-            let mut summary_tool_results: Vec<ToolResult> = Vec::new();
-            for entry in results.into_iter().flatten() {
-                let (tc, mut result) = entry;
-                had_results = true;
-                if tc.name == "os"
-                    && matches!(tc.input.get("action").and_then(|v| v.as_str()), Some("plan" | "plan_check"))
-                {
-                    if let Some(p) = tc.input.get("path").and_then(|v| v.as_str()) {
-                        plan_touch = Some((iteration, p.to_string()));
-                    }
-                }
-                // Done gate bookkeeping: a landed write/edit counts; a hook
-                // verdict on this result, or a check the model ran itself,
-                // clears the count (in that order, so an edit whose own hook
-                // ran ends at zero).
-                if !result.is_error && is_file_change_call(&tc) {
-                    edits_since_check += 1;
-                }
-                if hook_noted.contains(&tc.id) || is_check_run_call(&tc) {
-                    edits_since_check = 0;
-                }
-                if is_desktop_act(&tc) && !result.is_error {
-                    last_desktop_act = Some(desktop_evidence(&result.content));
-                }
-                // Terminal error (auth/permission/connection) — narrow, set only by
-                // ToolResult::terminal(). End the run after this batch instead of
-                // letting the model retry/improvise. Critical for autonomous
-                // workflows: there's no human to ask or to hit stop, so a dead
-                // account must fail the run cleanly, not spiral. (FRAMES Phase 1.)
-                if result.terminal && terminal_error.is_none() {
-                    terminal_error = Some((result.content.clone(), result.need.clone()));
-                }
-                if matches!(result.http_status, Some(429) | Some(403)) {
-                    iteration_rate_limited = result.http_status;
-                }
-                // Capture pre-truncation snapshots for the summarizer (only name + short content)
-                summary_tool_calls.push(tc.clone());
-                summary_tool_results.push(ToolResult { payload: None, need: None,
-                    content: crate::runner::truncate_str(&result.content, 300).to_string(),
-                    is_error: result.is_error,
-                    image_url: None,
-                    http_status: None,
-                    terminal: result.terminal,
-                });
-                if !result.is_error {
-                    all_errors_this_iteration = false;
-                    // A successful read clears the failure count for that target.
-                    if let Some(p) = extract_file_read_path(&tc) {
-                        read_failures.remove(&p);
-                    }
-                } else if let Some(p) = extract_file_read_path(&tc) {
-                    // A failed read of a path bumps its counter — even when interleaved
-                    // with successful discovery calls (which is why the all-errors
-                    // counter alone misses this).
-                    *read_failures.entry(p).or_insert(0) += 1;
-                }
-
-                // Empty result guard: prevent models from
-                // interpreting empty tool_result as end-of-output.
-                if result.content.is_empty() && !result.is_error {
-                    result.content = format!("({} completed with no output)", tc.name);
-                }
-
-                // Tool-agnostic redundant-result dedup: if this result's content is
-                // identical to one returned earlier this session — by ANY tool or args
-                // (e.g. the same file read via os(read), then cat, then jq) — tell the
-                // model it already has this instead of letting it re-fetch in a loop.
-                // Hash is taken pre-truncation so it reflects the full original content.
-                let mut flagged_redundant = false;
-                if !result.is_error && result.content.len() > 200 {
-                    let content_hash = simple_hash(result.content.as_bytes());
-                    if recent_result_content_hashes.contains(&content_hash) {
-                        result.content.push_str(
-                            "\n\n(Note: this is identical to a result you already received earlier in this session. You already have this content — use it instead of fetching it again.)",
-                        );
-                        flagged_redundant = true;
-                    } else {
-                        recent_result_content_hashes.push(content_hash);
-                        if recent_result_content_hashes.len() > 20 {
-                            recent_result_content_hashes.remove(0);
-                        }
-                    }
-                }
-
-                // Idempotent-mutation dedup: os(write) carries its ENTIRE effect
-                // (path + content) in its arguments, so a successful re-write with
-                // byte-identical args leaves the file exactly as it was — no
-                // progress by construction. Mutating tools are rightly exempt from
-                // no-progress rules in general (re-running a build after editing
-                // its input is legitimate), but that exemption let the
-                // promise → write-same-JSON → rebuild-same-deck spiral run for an
-                // hour: every cycle "succeeded", every counter stayed at zero.
-                // Flagging it as redundant feeds the same downstream guards as a
-                // redundant read (spiral counter, no-progress ledger, 3-strike
-                // identical-args block).
-                if !flagged_redundant
-                    && !result.is_error
-                    && tc.name == "os"
-                    && tc.input.get("action").and_then(|v| v.as_str()) == Some("write")
-                {
-                    let nh = simple_hash(tc.name.as_bytes());
-                    let ah = simple_hash(tc.input.to_string().as_bytes());
-                    if recent_tool_result_hashes
-                        .iter()
-                        .any(|&(n, a, _, unproductive)| n == nh && a == ah && !unproductive)
-                    {
-                        result.content.push_str(
-                            "\n\n(Note: this wrote byte-identical content to the same path as an earlier write this turn — the file is unchanged. If you meant to expand or modify it, actually change the content before writing again.)",
-                        );
-                        flagged_redundant = true;
-                    }
-                }
-
-                // Spiral backstop counter: only UNPRODUCTIVE attempts count. A call
-                // that errored or returned content the model already had is a
-                // wander-loop step (glob-wander / browser re-read / shell-retry); a
-                // call that succeeded with a NOVEL result made progress. Counting
-                // successes cut legitimate bulk work off at 8 (e.g. creating N
-                // distinct todos, writing N files) — the false-trip this guard's own
-                // comment warned about. File-read errors are excluded here — the
-                // per-path read_failures map already stops same-target retry spirals;
-                // counting cross-path failures toward os:read false-tripped codebase
-                // exploration after 8 misses.
-                record_action_spiral(
-                    &mut action_call_counts,
-                    &tc,
-                    result.is_error,
-                    flagged_redundant,
-                );
-
-                // Remember whether THIS call made progress, keyed the same way the
-                // identical-args guard looks calls up. A call that succeeded with a
-                // novel result is progress and must never count toward a block.
-                //
-                // For a READ-ONLY call, "novel" is checked against its own previous
-                // result under the same arguments: a browse that answers the same
-                // "no resources found" for the twentieth time is a loop even though
-                // every response was a success. (The general content-dedup above
-                // ignores results under 200 chars, which is exactly the size of
-                // such answers.) A mutating call is judged only by errors —
-                // re-running a build after editing its input legitimately repeats
-                // the same args AND the same "Created: <path>" result.
-                let call_key = (
-                    simple_hash(tc.name.as_bytes()),
-                    simple_hash(tc.input.to_string().as_bytes()),
-                );
-                // Same-error streak: the identical-args block never sees a model
-                // that varies its arguments against the same wall (2026-09-02:
-                // "restore needs `checkpoint`" 49 times). Three identical error
-                // texts nudge; three more after the nudge stop the turn.
-                if result.is_error && !result.terminal {
-                    match error_streak.record(&tc.name, &result.content) {
-                        Some(crate::guardrails::Verdict::Nudge) => {
-                            result.content.push_str(&format!(
-                                "\n\n'{}' has returned this same error {} times this turn \
-                                 (with the same or different arguments). Read the error, use a \
-                                 different tool or approach, or tell the user what is blocking you.",
-                                tc.name,
-                                error_streak.count(&tc.name, &result.content)
-                            ));
-                        }
-                        Some(crate::guardrails::Verdict::Stop) => {
-                            same_error_stop.get_or_insert_with(|| {
-                                (tc.name.clone(), tools::plan::first_line(&result.content, 120))
-                            });
-                        }
-                        None => {}
-                    }
-                }
-                let mut no_progress = result.is_error || flagged_redundant;
-                // Read-only per the registry's own classifier — the same verdict
-                // the concurrency scheduler trusts, so there is exactly one
-                // definition of "this call has no side effects".
-                if !no_progress && tools.is_concurrent_safe(&tc.name, &tc.input).await {
-                    let own_hash = simple_hash(result.content.as_bytes());
-                    if readonly_result_hash_by_call.get(&call_key) == Some(&own_hash) {
-                        no_progress = true;
-                    }
-                    readonly_result_hash_by_call.insert(call_key, own_hash);
-                }
-                unproductive_this_iteration.insert(call_key, no_progress);
-
-                // Arg-identity dedup (complements the content check above, which only
-                // fires on byte-identical output): the model repeated a call it already
-                // made this turn — same tool, identical arguments. Results that drift
-                // slightly (mtime ordering, timestamps) slip past the content hash, so
-                // flag the repeated CALL itself. The 3+ hard guard still blocks loops;
-                // this annotates the second call so it never gets that far.
-                // Only for read-only calls: a build or test re-run after an edit
-                // repeats its arguments on purpose, and the fresh result is the one
-                // that matters. Telling the model to reuse the old one there was
-                // telling it to distrust a correct result.
-                if !flagged_redundant && tools.is_concurrent_safe(&tc.name, &tc.input).await {
-                    let nh = simple_hash(tc.name.as_bytes());
-                    let ah = simple_hash(tc.input.to_string().as_bytes());
-                    if recent_tool_result_hashes
-                        .iter()
-                        .any(|&(n, a, _, _)| n == nh && a == ah)
-                    {
-                        result.content.push_str(
-                            "\n\n(Note: this is the same read-only call, same arguments, as one earlier this turn. The result above is the fresh one; if it matches what you already had, nothing changed.)",
-                        );
-                    }
-                }
-
-                // Error truncation: first 5K + last 5K with marker
-                if result.is_error && result.content.len() > ERROR_CAP {
-                    let total_len = result.content.len();
-                    let first = truncate_str(&result.content, ERROR_HALF).to_string();
-                    let last_start = result.content.len().saturating_sub(ERROR_HALF);
-                    // Find char boundary for the tail
-                    let mut tail_start = last_start;
-                    while tail_start < result.content.len()
-                        && !result.content.is_char_boundary(tail_start)
-                    {
-                        tail_start += 1;
-                    }
-                    let last = &result.content[tail_start..];
-                    result.content = format!(
-                        "{}\n\n[{} characters truncated]\n\n{}",
-                        first,
-                        total_len - first.len() - last.len(),
-                        last
-                    );
-                }
-
-                // Read ledger: note repeat observations of a file BEFORE the
-                // spill/truncation rewrites below — the spill note embeds a
-                // fresh uuid path every time, which would read as "content
-                // CHANGED" on every identical re-read. Ranged reads (offset/
-                // limit) are partial views and are deliberately not
-                // fingerprinted. The note is appended after truncation so it
-                // always survives.
-                let ledger_note = if !result.is_error && tc.name == "os" {
-                    let action = tc.input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                    match (tools::OsTool::resolved_resource(&tc.input), action) {
-                        ("file", "read")
-                            if tc.input.get("offset").is_none()
-                                && tc.input.get("limit").is_none() =>
-                        {
-                            tc.input
-                                .get("path")
-                                .and_then(|v| v.as_str())
-                                .and_then(|p| read_ledger.observe_read(p, &result.content))
-                        }
-                        ("file", "grep") => tc
-                            .input
-                            .get("path")
-                            .and_then(|v| v.as_str())
-                            .and_then(|p| read_ledger.observe_command(p)),
-                        ("shell", _) => tc
-                            .input
-                            .get("command")
-                            .and_then(|v| v.as_str())
-                            .and_then(|c| read_ledger.observe_command(c)),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                // Success result truncation: persist to file, return preview + path.
-                // A file read is exempt: it is already capped and paginated by
-                // the tool (see `is_os_file_read`); the universal ceiling below
-                // still bounds it.
-                if !result.is_error && result.content.len() > RESULT_CAP && !is_os_file_read(&tc) {
-                    let total_len = result.content.len();
-                    // Persist full result to temp file so agent can Read it if needed
-                    let result_id = uuid::Uuid::new_v4().to_string();
-                    // Under the session's private dir (0700, files 0600), not a
-                    // world-readable /tmp: a spilled result is the contents of
-                    // something the employee read.
-                    let result_dir = tools::checkpoint::session_dir(session_id).join("tool-results");
-                    if let Err(e) = std::fs::create_dir_all(&result_dir) {
-                        warn!(error = %e, "failed to create the tool-results dir");
-                    }
-                    tools::checkpoint::restrict_private(&result_dir, true);
-                    let result_path = result_dir.join(format!("{}.txt", result_id));
-                    match std::fs::write(&result_path, &result.content) {
-                        Ok(()) => {
-                            tools::checkpoint::restrict_private(&result_path, false);
-                            ctx_spilled_results += 1;
-                        }
-                        Err(e) => warn!(error = %e, "failed to persist large tool result"),
-                    }
-                    let preview = truncate_str(&result.content, 4_000);
-                    // Guidance matters: models follow it literally. Telling them to
-                    // "read the file" re-inhales the whole payload into context —
-                    // observed live with a 99KB tool list read straight back in.
-                    // Point at targeted search, with full reads as the exception.
-                    result.content = format!(
-                        "{}\n\n[Output too large ({} bytes); preview above. Full output saved to: {}. Search it with os(resource: \"file\", action: \"grep\", path: \"{}\", pattern: \"...\"): extract only what you need; avoid reading the whole file into context. For broad exploration of it, delegate to a subagent and keep only the conclusions.]",
-                        preview,
-                        total_len,
-                        result_path.display(),
-                        result_path.display()
-                    );
-                }
-
-                // Universal hard ceiling as final safety net
-                if result.content.len() > UNIVERSAL_TOOL_RESULT_CAP {
-                    let total_len = result.content.len();
-                    let preview = truncate_str(&result.content, 4_000);
-                    result.content = format!(
-                        "{}\n\n[Result truncated: {} bytes total, showing first 4000. Re-run with a narrower path/pattern/limit; an unchanged re-run returns the same size.]",
-                        preview, total_len
-                    );
-                }
-                if let Some(note) = ledger_note {
-                    result.content.push_str(&note);
-                }
-                // Log tool_search discoveries (activation happens via message-window
-                // scanning on the next iteration — no persistent set needed)
-                if tc.name == "tool_search" && !result.is_error {
-                    if let Ok(search) = serde_json::from_str::<serde_json::Value>(&result.content) {
-                        if let Some(matches) = search.get("matches").and_then(|v| v.as_array()) {
-                            let names: Vec<&str> =
-                                matches.iter().filter_map(|m| m.as_str()).collect();
-                            if !names.is_empty() {
-                                debug!(tools = ?names, "tool_search discovered tools (active next turn)");
-                            }
-                        }
-                    }
-                }
-
-                // Voluntary skill save: the model updated its library on its
-                // own — push the self-improvement review backstop out (the
-                // review only fires when organic learning has stalled).
-                if !result.is_error && tc.name == "skill" {
-                    let action = tc.input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                    if matches!(action, "create" | "update") {
-                        crate::review_fork::note_voluntary_save(session_id);
-                    }
-                }
-
-                // Cache tool documentation results so they survive sliding window eviction.
-                // Detect help/schema actions on skill and plugin tools.
-                if !result.is_error && result.content.len() > 100 {
-                    if let Some(cache_key) = detect_tool_doc_call(&tc.name, &tc.input) {
-                        let content = if result.content.len() > MAX_TOOL_DOC_CONTENT {
-                            truncate_str(&result.content, MAX_TOOL_DOC_CONTENT).to_string()
-                        } else {
-                            result.content.clone()
-                        };
-                        // Remove existing entry with same key (LRU refresh)
-                        tool_doc_cache.retain(|(k, _)| k != &cache_key);
-                        // Evict oldest if at capacity
-                        if tool_doc_cache.len() >= MAX_TOOL_DOC_ENTRIES {
-                            tool_doc_cache.remove(0);
-                        }
-                        tool_doc_cache.push((cache_key.clone(), content));
-                        debug!(key = %cache_key, "cached tool documentation");
-                    }
-                }
-
-                let row = ToolResultRow {
-                    tool_call_id: tc.id.clone(),
-                    outcome: Some(tools::humanize::tool_call(&tc.name, &tc.input).1),
-                    duration_ms: durations.get(&tc.id).copied(),
-                    content: result.content,
-                    is_error: result.is_error,
-                    image_url: result.image_url,
-                    payload: result.payload,
-                };
-                let tr_json = serde_json::json!([row]).to_string();
-
-                if let Err(e) =
-                    sessions.append_message(session_id, "tool", "", None, Some(&tr_json), None)
-                {
-                    warn!(session_id = %session_id, error = %e, "failed to save tool message to DB");
-                }
-            }
-
-            // Terminal tool error → end the run now (FRAMES Phase 1). The failure is
-            // unrecoverable (auth/permission/connection) — surface it and stop rather
-            // than feed it back for the model to retry/improvise. This is the
-            // death-spiral fix: in an autonomous workflow there is no human to ask or
-            // to interrupt, so a dead account must stop the run cleanly. (Narrow: only
-            // ToolResult::terminal sets this — healthy long-running tasks never trip it.)
-            //
-            // Typed termination: emitted as a ControlNotice status event, never Text —
-            // the old emit-text-then-break made the notice indistinguishable from
-            // assistant prose and it leaked verbatim into channel replies.
-            if let Some((tool, first_line)) = same_error_stop.take() {
-                warn!(session_id, iteration, tool = %tool, "same-error loop — ending run");
-                turn_exit_reason = crate::guardrails::Exit::SameErrorLoop;
-                let _ = tx
-                    .send(StreamEvent::control_notice(
-                        format!(
-                            "Stopped: '{}' kept returning the same error ({}) after being told \
-                             to change approach. Ending the run so it cannot continue indefinitely.",
-                            tool, first_line
-                        ),
-                        "same_error_loop",
-                    ))
-                    .await;
-                break;
-            }
-            if let Some((msg, need)) = terminal_error {
-                warn!(session_id, iteration, "terminal tool error — ending run");
-                turn_exit_reason = crate::guardrails::Exit::TerminalToolError;
-                let _ = tx
-                    .send(StreamEvent::control_notice(msg, "terminal_tool_error").with_owner_need(need))
-                    .await;
-                break;
-            }
+            };
 
             // Compute tool call hashes for loop detection (OpenClaw-style).
             // Tuple: (name_hash, args_hash, result_hash) — detects same-tool-same-args
@@ -7355,6 +5062,7 @@ async fn run_loop(
                 attach_stream_reminders(&mut summary_messages, &pending_stream_reminders);
 
                 let summary_req = ChatRequest {
+                    tool_credential: None,
                     tool_choice: Default::default(),
                     messages: summary_messages,
                     tools: vec![], // No tools — text-only response
@@ -7740,55 +5448,6 @@ pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &s[..end]
-}
-
-/// Detect if a tool call is requesting documentation (help/schema).
-/// Returns a cache key like "skill:gws-sheets" or "plugin:sheets:help" if so.
-fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<String> {
-    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-    let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-
-    match tool_name {
-        "skill" => {
-            if action == "help" || action == "list" || action == "docs" {
-                let skill_name = input
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                Some(format!("skill:{}", skill_name))
-            } else {
-                None
-            }
-        }
-        "plugin" => {
-            if action == "help" || action == "schema" || action == "services" {
-                let name = if !resource.is_empty() {
-                    resource
-                } else {
-                    input
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                };
-                Some(format!("plugin:{}:{}", name, action))
-            } else {
-                None
-            }
-        }
-        // MCP tool documentation
-        "mcp" => {
-            if action == "help" || action == "list" || action == "schema" {
-                let server = input
-                    .get("server")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                Some(format!("mcp:{}:{}", server, action))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
 }
 
 /// Compute max auto-continuations based on incomplete work tasks.
@@ -8702,76 +6361,13 @@ fn build_system_prompt(custom_system: &str, memory_context: &str) -> String {
 /// "SKIL-ABCD-1234" → "SKIL-ABCD-1234" (passed through)
 /// "gws-gmail" → "gws-gmail" (plain names pass through)
 /// Simple FNV-1a hash for stale-result detection. Not cryptographic.
-fn simple_hash(data: &[u8]) -> u64 {
+pub(crate) fn simple_hash(data: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for &byte in data {
         hash ^= byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
-}
-
-/// Ceiling on path-admitted file mutations in one parallel batch. Read-only
-/// calls don't count against it — their parallelism is unchanged from the
-/// pre-path-scoping behavior and total simultaneous tool execution is already
-/// throttled by the shared tool-permit semaphore (`ConcurrencyControl`,
-/// min 8). This cap only bounds the newly-admitted parallel writes; the
-/// excess spills to the sequential phase.
-const MAX_CONCURRENT_FILE_MUTATIONS: usize = 8;
-
-/// Decide which of a turn's tool calls run in the parallel phase.
-///
-/// `calls` holds one `(tool_name, input, concurrent_safe)` tuple per call,
-/// where `concurrent_safe` is the registry's `is_concurrent_safe` verdict.
-/// Returns `(concurrent, sequential)` index lists into `calls`, each
-/// preserving the original call order.
-///
-/// Admission rules — strictly additive over the plain safe/unsafe split:
-/// - `concurrent_safe` calls are admitted exactly as before.
-/// - an os file mutation (write/edit/delete/move/copy — see
-///   [`tools::registry::file_mutation_paths`]) is admitted iff all of its
-///   canonical target paths (source, plus destination for move/copy) are
-///   disjoint — not equal to, not an ancestor of, not a descendant of — every
-///   path reserved by a mutation already admitted in this batch, and fewer
-///   than [`MAX_CONCURRENT_FILE_MUTATIONS`] mutations have been admitted.
-/// - everything else (overlapping or unparseable paths, non-file mutations)
-///   stays sequential, preserving original relative order.
-fn partition_tool_calls(calls: &[(&str, &serde_json::Value, bool)]) -> (Vec<usize>, Vec<usize>) {
-    let mut concurrent = Vec::new();
-    let mut sequential = Vec::new();
-    // Canonical paths reserved by mutations admitted so far in this batch.
-    let mut reserved: Vec<std::path::PathBuf> = Vec::new();
-    let mut admitted_mutations = 0usize;
-    for (i, (name, input, safe)) in calls.iter().enumerate() {
-        if *safe {
-            // Read-only per the registry — runs in parallel exactly as before.
-            concurrent.push(i);
-            continue;
-        }
-        // Path-scoped admission: a file mutation may join the parallel phase
-        // when its target paths don't overlap anything already reserved.
-        if admitted_mutations < MAX_CONCURRENT_FILE_MUTATIONS {
-            if let Some(paths) = tools::registry::file_mutation_paths(name, input) {
-                let disjoint = paths
-                    .iter()
-                    .all(|p| reserved.iter().all(|r| !paths_overlap(p, r)));
-                if disjoint {
-                    reserved.extend(paths);
-                    admitted_mutations += 1;
-                    concurrent.push(i);
-                    continue;
-                }
-            }
-        }
-        sequential.push(i);
-    }
-    (concurrent, sequential)
-}
-
-/// Two canonical paths overlap when they are equal or one contains the other
-/// (ancestor/descendant). Mutations to overlapping paths must not race.
-fn paths_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
-    a.starts_with(b) || b.starts_with(a)
 }
 
 #[cfg(test)]
@@ -9338,9 +6934,6 @@ mod tests {
         assert!(steering::drain_wakes(activity).is_empty(), "drained once");
     }
 
-    /// Spiral tests exercise the counting mechanics at the shipped default.
-    const SAME_ACTION_LIMIT: usize = crate::guardrails::DEFAULT_SAME_ACTION_LIMIT;
-
     #[test]
     fn test_convert_messages() {
         let messages = vec![
@@ -9392,90 +6985,6 @@ mod tests {
         assert!(!prompt.contains("Memory context"));
     }
 
-    #[test]
-    fn test_partition_disjoint_writes_run_concurrently() {
-        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
-        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/c.txt"});
-        let calls = vec![("os", &w1, false), ("os", &w2, false)];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent, vec![0, 1], "disjoint writes both join the parallel phase");
-        assert!(sequential.is_empty());
-    }
-
-    #[test]
-    fn test_partition_same_path_write_stays_sequential() {
-        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
-        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
-        let calls = vec![("os", &w1, false), ("os", &w2, false)];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent, vec![0]);
-        assert_eq!(sequential, vec![1], "second write to the same path is sequential");
-    }
-
-    #[test]
-    fn test_partition_ancestor_overlap_stays_sequential() {
-        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a"});
-        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/c.txt"});
-        let calls = vec![("os", &w1, false), ("os", &w2, false)];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent, vec![0]);
-        assert_eq!(sequential, vec![1], "write under an already-reserved dir is sequential");
-    }
-
-    #[test]
-    fn test_partition_non_file_mutation_stays_sequential() {
-        let shell = serde_json::json!({"resource": "shell", "action": "exec", "command": "ls"});
-        let calls = vec![("os", &shell, false)];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert!(concurrent.is_empty(), "non-file mutations never join the parallel phase");
-        assert_eq!(sequential, vec![0]);
-    }
-
-    #[test]
-    fn test_partition_reads_unchanged_and_order_preserved() {
-        // Reads (concurrent_safe=true) are admitted as before, even when a
-        // conflicting write is forced sequential; both phases keep original order.
-        let r1 = serde_json::json!({"resource": "file", "action": "read", "path": "/a/b.txt"});
-        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/x/y.txt"});
-        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/x/y.txt"});
-        let r2 = serde_json::json!({"action": "search", "query": "q"});
-        let calls = vec![
-            ("os", &r1, true),
-            ("os", &w1, false),
-            ("os", &w2, false),
-            ("web", &r2, true),
-        ];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent, vec![0, 1, 3]);
-        assert_eq!(sequential, vec![2]);
-    }
-
-    #[test]
-    fn test_partition_move_reserves_destination() {
-        let mv = serde_json::json!({
-            "resource": "file", "action": "move", "path": "/src/a.txt", "destination": "/dst/a.txt"
-        });
-        let w = serde_json::json!({"resource": "file", "action": "write", "path": "/dst/a.txt"});
-        let calls = vec![("os", &mv, false), ("os", &w, false)];
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent, vec![0]);
-        assert_eq!(sequential, vec![1], "write to a move's destination is sequential");
-    }
-
-    #[test]
-    fn test_partition_mutation_cap_spills_to_sequential() {
-        let inputs: Vec<serde_json::Value> = (0..10)
-            .map(|i| {
-                serde_json::json!({"resource": "file", "action": "write", "path": format!("/a/f{i}.txt")})
-            })
-            .collect();
-        let calls: Vec<(&str, &serde_json::Value, bool)> =
-            inputs.iter().map(|input| ("os", input, false)).collect();
-        let (concurrent, sequential) = partition_tool_calls(&calls);
-        assert_eq!(concurrent.len(), MAX_CONCURRENT_FILE_MUTATIONS);
-        assert_eq!(sequential, vec![8, 9], "excess past the cap spills to sequential");
-    }
-
     fn make_msg(id: &str, role: &str, content: &str) -> ChatMessage {
         ChatMessage {
             id: id.into(),
@@ -9490,81 +6999,6 @@ mod tests {
             token_estimate: None,
             html: None,
         }
-    }
-
-    fn os_read(path: &str) -> ai::ToolCall {
-        ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "read", "path": path}),
-        }
-    }
-
-    fn os_glob(dir: &str) -> ai::ToolCall {
-        ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "glob", "path": dir, "pattern": "*"}),
-        }
-    }
-
-    fn os_exec(command: &str) -> ai::ToolCall {
-        ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "exec", "command": command}),
-        }
-    }
-
-    fn web_search(query: &str) -> ai::ToolCall {
-        ai::ToolCall {
-            id: "c1".into(),
-            name: "web".into(),
-            input: serde_json::json!({"action": "search", "query": query}),
-        }
-    }
-
-    #[test]
-    fn spiral_exploration_read_errors_never_trip_limit() {
-        // Regression: 8+ failed os:reads across different paths used to end the
-        // turn with "os:read was called 8 times without progress" and block the
-        // next real read. Per-path read_failures owns that case; the coarse
-        // spiral must stay at 0 so exploration can continue.
-        let mut counts = std::collections::HashMap::new();
-        for i in 0..(SAME_ACTION_LIMIT + 4) {
-            record_action_spiral(&mut counts, &os_read(&format!("/tmp/miss-{i}.rs")), true, false);
-        }
-        assert_eq!(counts.get("os:read").copied().unwrap_or(0), 0);
-        assert!(
-            counts.get("os:read").copied().unwrap_or(0) < SAME_ACTION_LIMIT,
-            "exploration read errors must not trip the spiral backstop"
-        );
-    }
-
-    #[test]
-    fn spiral_redundant_reads_still_trip_limit() {
-        let mut counts = std::collections::HashMap::new();
-        let call = os_read("/tmp/same.rs");
-        for _ in 0..SAME_ACTION_LIMIT {
-            record_action_spiral(&mut counts, &call, false, true);
-        }
-        assert_eq!(counts["os:read"], SAME_ACTION_LIMIT);
-    }
-
-    #[test]
-    fn spiral_skips_file_read_errors_across_paths() {
-        // Exploring many missing paths must not feed the coarse os:read counter —
-        // read_failures owns per-path caps.
-        let a = os_read("/tmp/a.rs");
-        let b = os_read("/tmp/b.rs");
-        assert!(!counts_toward_action_spiral(&a, true, false));
-        assert!(!counts_toward_action_spiral(&b, true, false));
-        // Redundant content still counts (true wander).
-        assert!(counts_toward_action_spiral(&a, false, true));
-        // Successful novel read never counts.
-        assert!(!counts_toward_action_spiral(&a, false, false));
-        // Error + redundant: redundant still counts (wander via re-fetch).
-        assert!(counts_toward_action_spiral(&a, true, true));
     }
 
     /// A mid-turn message is stored as the owner typed it and framed for the
@@ -9692,135 +7126,6 @@ mod tests {
     }
 
     #[test]
-    fn full_os_file_read_is_left_to_the_ledger() {
-        // Unranged os reads get the read-ledger note; the duplicate-read note
-        // must not stack on them. Ranged reads and shell dumps still get it.
-        assert!(is_full_os_file_read(&os_read("/tmp/a.rs")));
-        let ranged = ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "read", "path": "/tmp/a.rs", "offset": 10, "limit": 20}),
-        };
-        assert!(!is_full_os_file_read(&ranged));
-        assert!(!is_full_os_file_read(&os_exec("cat /tmp/a.rs")));
-    }
-
-    #[test]
-    fn any_os_file_read_is_never_spilled() {
-        // Ranged or not, a file read paginates itself and must reach the model
-        // whole; shell dumps and greps still go through the spill preview.
-        assert!(is_os_file_read(&os_read("/tmp/a.rs")));
-        let ranged = ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "read", "path": "/tmp/a.rs", "offset": 10, "limit": 20}),
-        };
-        assert!(is_os_file_read(&ranged));
-        assert!(!is_os_file_read(&os_exec("cat /tmp/a.rs")));
-        let grep = ai::ToolCall {
-            id: "c2".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "grep", "path": "/tmp/a.rs", "pattern": "x"}),
-        };
-        assert!(!is_os_file_read(&grep));
-    }
-
-    #[test]
-    fn spiral_skips_shell_dump_read_errors() {
-        // cat/head/tail dump failures are file-reads for dedup / read_failures;
-        // they must not feed the coarse os:exec spiral either.
-        let cat = os_exec("cat /tmp/missing.rs");
-        assert!(extract_file_read_path(&cat).is_some());
-        assert!(!counts_toward_action_spiral(&cat, true, false));
-    }
-
-    #[test]
-    fn spiral_still_counts_non_read_errors() {
-        let g = os_glob("/tmp");
-        assert!(counts_toward_action_spiral(&g, true, false));
-        assert!(!counts_toward_action_spiral(&g, false, false));
-
-        let mut counts = std::collections::HashMap::new();
-        for i in 0..SAME_ACTION_LIMIT {
-            record_action_spiral(&mut counts, &os_glob(&format!("/tmp/dir-{i}")), true, false);
-        }
-        assert_eq!(counts["os:glob"], SAME_ACTION_LIMIT);
-
-        // Non-dump shell failures still count (true exec retry spiral).
-        let ls = os_exec("ls /nope");
-        assert!(extract_file_read_path(&ls).is_none());
-        assert!(counts_toward_action_spiral(&ls, true, false));
-
-        // Other tools' errors still count.
-        assert!(counts_toward_action_spiral(&web_search("nebo"), true, false));
-    }
-
-    /// The repeated-action backstop is a nudge: it refuses the offending call and
-    /// lets the turn continue. Making it terminal again would resurrect the dead
-    /// turns users saw as "Stopped: … called 8 times without progress".
-    #[test]
-    fn spiral_backstop_is_a_nudge_not_a_stop() {
-        let src = include_str!("runner.rs");
-        let block = src
-            .split("racked up the same-action limit of UNPRODUCTIVE attempts")
-            .nth(1)
-            .expect("spiral backstop block");
-        let block = &block[..block.find("\n            // ──").unwrap_or(block.len())];
-        assert!(
-            !block.contains("ToolResult::terminal"),
-            "spiral backstop must not end the run — use ToolResult::error"
-        );
-        assert!(
-            block.contains("action_call_counts.insert(key.clone(), 0)"),
-            "the budget must reset when the nudge fires, or the action is locked out for the turn"
-        );
-    }
-
-    /// The plugin tool carries no `action` — its verb is the head of `command`.
-    /// Distinct commands must land in distinct buckets, or a turn that ran eight
-    /// different plugin commands trips the backstop as one retried call.
-    #[test]
-    fn action_key_keys_plugin_calls_on_the_plugin() {
-        let call = |cmd: &str| ai::ToolCall {
-            id: String::new(),
-            name: "plugin".into(),
-            input: serde_json::json!({"resource": "quickbooks", "command": cmd}),
-        };
-        // Every failed verb against one plugin lands on one counter.
-        assert_eq!(action_key(&call("payment create --line x")), "plugin:quickbooks");
-        assert_eq!(action_key(&call("batch execute --batch-item-request y")), "plugin:quickbooks");
-        // ...and an explicit action does not change that.
-        let with_action = ai::ToolCall {
-            id: String::new(),
-            name: "plugin".into(),
-            input: serde_json::json!({"resource": "quickbooks", "action": "exec", "command": "query run"}),
-        };
-        assert_eq!(action_key(&with_action), "plugin:exec");
-        // Two plugins stay apart.
-        let other = ai::ToolCall {
-            id: String::new(),
-            name: "plugin".into(),
-            input: serde_json::json!({"resource": "gws", "command": "gmail +send --to a@b.c"}),
-        };
-        assert_ne!(action_key(&call("payment create")), action_key(&other));
-        // Tools that do carry an action are unchanged.
-        assert_eq!(action_key(&os_glob("/tmp")), "os:glob");
-    }
-
-    #[test]
-    fn spiral_os_read_without_path_still_counts_as_error() {
-        // Malformed read (no path) is not a tracked file-read target — keep it
-        // on the coarse spiral so a broken call shape cannot loop forever.
-        let bare = ai::ToolCall {
-            id: "c1".into(),
-            name: "os".into(),
-            input: serde_json::json!({"action": "read"}),
-        };
-        assert!(extract_file_read_path(&bare).is_none());
-        assert!(counts_toward_action_spiral(&bare, true, false));
-    }
-
-    #[test]
     fn test_sanitize_preserves_correct_order() {
         // Already correct: assistant → tool → assistant → tool
         let msg1 = make_msg("1", "user", "hello");
@@ -9923,69 +7228,6 @@ mod tests {
 #[cfg(test)]
 mod runaway_backstop_tests {
     use super::*;
-
-    fn call(name: &str, cmd: &str) -> ai::ToolCall {
-        ai::ToolCall {
-            id: "t".into(),
-            name: name.into(),
-            input: serde_json::json!({"action": "exec", "command": cmd}),
-        }
-    }
-
-    /// The runaway backstop counts the CALL, not the answer. This is the case
-    /// every other guard misses: a poll whose output drifts every time
-    /// (`docker compose logs`, `tail`, a status endpoint) is never flagged
-    /// unproductive, so `counts_toward_action_spiral` never fires and the
-    /// 3-strike identical-args block never accrues. Live-verified 2026-08-27:
-    /// 16 such polls produced ZERO guard firings.
-    #[test]
-    fn identical_call_aborts_even_when_every_result_differs() {
-        let mut budget = ai::call_budget::CallBudget::new();
-        let c = call("os", "tail -30 /var/log/app.log");
-        for i in 0..IDENTICAL_CALL_ABORT {
-            assert!(
-                budget.abort_due(&c.name, &c.input, IDENTICAL_CALL_ABORT).is_none(),
-                "must not abort at {i} repeats"
-            );
-            budget.record(&c.name, &c.input);
-        }
-        assert_eq!(
-            budget.abort_due(&c.name, &c.input, IDENTICAL_CALL_ABORT),
-            Some(IDENTICAL_CALL_ABORT),
-            "the {IDENTICAL_CALL_ABORT}th repeat ends the turn"
-        );
-    }
-
-    /// Distinct work never accrues toward one budget — the guard must not
-    /// punish a model doing many different things with the same tool.
-    #[test]
-    fn different_arguments_do_not_share_a_budget() {
-        let mut budget = ai::call_budget::CallBudget::new();
-        for i in 0..40 {
-            let c = call("os", &format!("echo {i}"));
-            budget.record(&c.name, &c.input);
-        }
-        for i in 0..40 {
-            let c = call("os", &format!("echo {i}"));
-            assert!(
-                budget.abort_due(&c.name, &c.input, IDENTICAL_CALL_ABORT).is_none(),
-                "40 distinct commands must never trip the backstop"
-            );
-        }
-    }
-
-    /// Same command, different tool = different budget.
-    #[test]
-    fn tool_name_is_part_of_the_key() {
-        let mut budget = ai::call_budget::CallBudget::new();
-        let a = call("os", "ls");
-        for _ in 0..IDENTICAL_CALL_ABORT {
-            budget.record(&a.name, &a.input);
-        }
-        let b = call("execute", "ls");
-        assert!(budget.abort_due(&a.name, &a.input, IDENTICAL_CALL_ABORT).is_some());
-        assert!(budget.abort_due(&b.name, &b.input, IDENTICAL_CALL_ABORT).is_none());
-    }
 
     /// The tool-summary label is a caption, not work. Once per iteration made it
     /// 30.1% of all LLM requests in the incident; it is rate-limited per session.
@@ -10123,117 +7365,5 @@ mod cross_turn_spiral_tests {
         // Next turn ends calm — the carry-over clears.
         cross_turn_save(&sid, &std::collections::HashMap::new(), 8);
         assert!(cross_turn_seed(&sid).is_empty());
-    }
-}
-
-#[cfg(test)]
-mod out_of_bounds_tests {
-    use super::*;
-
-    /// Stands in for the case opener the server installs at boot, so the join
-    /// can be proven without the engine: what matters here is that ONE
-    /// hand-over pathway is used and what is put on the assignment.
-    struct Capture {
-        seen: std::sync::Mutex<Vec<tools::assignments::AssignmentRequest>>,
-    }
-
-    impl tools::assignments::AssignmentOpener for Capture {
-        fn open(
-            &self,
-            req: &tools::assignments::AssignmentRequest,
-        ) -> Result<String, String> {
-            self.seen.lock().unwrap().push(req.clone());
-            Ok("assignment-1".to_string())
-        }
-    }
-
-    fn store() -> Arc<Store> {
-        let path = std::env::temp_dir().join(format!("nebo-oob-{}.db", uuid::Uuid::new_v4()));
-        Arc::new(Store::new(&path.to_string_lossy()).expect("store"))
-    }
-
-    fn seat(store: &Arc<Store>, id: &str, name: &str, frontmatter: &str) {
-        store
-            .create_agent(id, None, name, "", "", frontmatter, None, None)
-            .expect("seat");
-    }
-
-    /// Out-of-bounds work in an unattended run is somebody's assignment, not a
-    /// refusal — and who that somebody is comes out of the data, never out of a
-    /// name compiled into Rust.
-    #[test]
-    fn out_of_bounds_work_becomes_the_authority_seats_assignment() {
-        let store = store();
-        let captured = Arc::new(Capture { seen: std::sync::Mutex::new(Vec::new()) });
-        tools::assignments::install_assignment_opener(captured.clone());
-
-        // A seat the owner has given the authority to grant, and a worker.
-        seat(&store, "coo", "Operations Lead", "");
-        let mut policy = tools::policy::OperationPolicy::default();
-        policy
-            .apply_edit(
-                "authority.grant.grant",
-                tools::policy::OperationRule::access(tools::policy::OperationAccess::Approval),
-            )
-            .unwrap();
-        store
-            .upsert_entity_config(
-                "agent",
-                "coo",
-                &serde_json::json!({ "operationPolicy": policy.to_json() }),
-            )
-            .expect("policy");
-        seat(&store, "bk", "Bookkeeper", "");
-
-        // Found from the data: the seat that holds the authority to grant.
-        assert_eq!(
-            authority_seat(&store, "bk").map(|a| a.id).as_deref(),
-            Some("coo")
-        );
-
-        const OP: &str = "ledger.billpayment.create";
-        const DISPLAY: &str = "Pay Acme Supplies $3,000.00 for bill #1042";
-        const REASON: &str = "amount 300000 exceeds the grant's 250000 per operation";
-        let handed = hand_off_out_of_bounds(&store, "bk", "agent:bk:cron", OP, DISPLAY, REASON)
-            .expect("the work is handed on, not refused");
-        assert!(handed.contains("Operations Lead"), "{handed}");
-        assert!(handed.contains("Do not retry"), "{handed}");
-
-        let reqs = captured.seen.lock().unwrap();
-        assert_eq!(reqs.len(), 1, "ONE hand-over, through open_assignment");
-        let req = &reqs[0];
-        assert_eq!(req.assignee_agent_id, "coo");
-        assert_eq!(req.assigner_agent_id, "bk");
-        assert_eq!(req.assigner_session_key, "agent:bk:cron");
-        // The assignment carries the operation, who wanted it, the bound it fell
-        // outside, and what is now stopped.
-        assert!(req.subject.contains("Bookkeeper") && req.subject.contains(OP), "{}", req.subject);
-        assert!(req.subject.contains(DISPLAY), "{}", req.subject);
-        assert!(req.done_means.contains(REASON), "{}", req.done_means);
-        assert!(req.done_means.contains(DISPLAY), "{}", req.done_means);
-        assert!(req.done_means.contains(OP), "{}", req.done_means);
-        drop(reqs);
-
-        // The line the owner drew wins over the search: an Office Manager who
-        // holds no authority of its own still gets the decision when the owner
-        // put it above this seat.
-        seat(&store, "om", "Office Manager", "");
-        store
-            .update_agent(
-                "bk", "", "", "", "", None, None, None, None, None, None, None, None, None,
-                Some("om"),
-            )
-            .expect("reporting line");
-        assert_eq!(
-            authority_seat(&store, "bk").map(|a| a.id).as_deref(),
-            Some("om"),
-        );
-
-        // Nobody above it and nobody holding that authority: the work waits for
-        // the owner, which is what the caller's own fallback does.
-        assert!(
-            hand_off_out_of_bounds(&store, "coo", "agent:coo:cron", OP, DISPLAY, REASON).is_none(),
-            "with no authority seat the owner decides",
-        );
     }
 }

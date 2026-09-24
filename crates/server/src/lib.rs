@@ -1728,13 +1728,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // file applies is decided per call from the folder the call works in.
     agent::shell_hooks::register_workspace_hooks(&hooks);
 
-    // Create shared MCP context for CLI provider tool calls
-    let mcp_context = Arc::new(tokio::sync::Mutex::new(tools::ToolContext {
-        origin: tools::Origin::Mcp,
-        user_id: "mcp-client".into(),
-        session_key: "mcp".into(),
-        ..Default::default()
-    }));
+    // Per-run credentials for CLI providers' tool calls over /agent/mcp.
+    let tool_credentials = agent::ToolCredentials::default();
 
     let ask_channels: tools::AskChannels =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
@@ -1751,7 +1746,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         selector,
         concurrency.clone(),
         hooks.clone(),
-        Some(mcp_context.clone()),
+        Some(tool_credentials.clone()),
         active_role_state.clone(),
         Some(skill_loader.clone()),
     )
@@ -2182,7 +2177,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_agent_triggers: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         update_pending: Arc::new(tokio::sync::Mutex::new(None)),
         hooks,
-        mcp_context,
+        tool_credentials,
         event_bus,
         event_dispatcher,
         plan_tier,
@@ -2878,7 +2873,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route(
             "/agent/mcp",
             axum::routing::post(handlers::mcp_server::agent_mcp_handler)
-                .layer(axum::middleware::from_fn(middleware::mcp_api_key_auth)),
+                .layer(axum::middleware::from_fn_with_state(
+                    middleware::McpAuth {
+                        install_key: middleware::install_key(),
+                        credentials: state.tool_credentials.clone(),
+                    },
+                    middleware::mcp_api_key_auth,
+                )),
         )
         // The OpenAI-shaped door: employees and workflows as models, behind a
         // key minted on the employee's Connect tab. Root-level because every
@@ -2920,6 +2921,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/apps/{agent_id}/ui/{*path}", axum::routing::get(handlers::apps::serve_app_ui))
         .route("/sdk/nebo.global.js", axum::routing::get(handlers::apps::serve_sdk_iife))
         .merge(http_routes)
+        // Before any route: the tunnel, this machine by Host, or the
+        // network with the install key (PRD Permissions §4.8).
+        .layer(axum::middleware::from_fn_with_state(
+            middleware::Boundary::for_bind(&host, port),
+            middleware::local_boundary,
+        ))
         .layer(axum::middleware::from_fn(middleware::security_headers))
         .layer(cors_layer())
         .layer(
@@ -2946,7 +2953,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     }
 
     // Block non-loopback binding unless explicitly opted in
-    if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+    if !middleware::is_loopback_bind(&host) {
         if std::env::var("NEBO_ALLOW_REMOTE").as_deref() != Ok("true") {
             return Err(NeboError::Server(format!(
                 "Refusing to bind to {bind_addr} — Nebo is designed for localhost-only access. \
@@ -2954,13 +2961,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             )));
         }
         eprintln!("WARNING: Server binding to {bind_addr} — remote access enabled");
-        if std::env::var("NEBO_MCP_API_KEY")
-            .ok()
-            .filter(|k| !k.is_empty())
-            .is_none()
-        {
+        if middleware::install_key().is_none() {
             eprintln!(
-                "WARNING: MCP endpoint is UNAUTHENTICATED. Set NEBO_MCP_API_KEY to secure it."
+                "WARNING: NEBO_MCP_API_KEY is not set, so every request from the network is \
+                 refused. Only the NeboAI tunnel, this machine, and /health reach the server."
             );
         }
     }
@@ -2980,7 +2984,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .await
         .map_err(|e| NeboError::Server(format!("failed to bind: {e}")))?;
 
-    axum::serve(listener, app)
+    // Connect info: the boundary tells this machine from the network by the
+    // peer address.
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(async move {
             shutdown.await;
             info!("shutdown signal received — pausing scheduler, draining in-flight runs...");

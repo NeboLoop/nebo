@@ -582,6 +582,11 @@ pub struct ChatRequest {
     /// never serialized.
     #[serde(skip)]
     pub trace: RequestTrace,
+    /// The run's tool credential, for a provider that runs tools itself over
+    /// the server's MCP endpoint (the CLI providers): its tool calls carry it
+    /// back so they execute as this run. Never serialized.
+    #[serde(skip)]
+    pub tool_credential: Option<String>,
 }
 
 impl ChatRequest {
@@ -602,6 +607,7 @@ impl ChatRequest {
             cache_breakpoints: Vec::new(),
             cancel_token: None,
             trace,
+            tool_credential: None,
         }
     }
 }

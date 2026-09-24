@@ -167,6 +167,7 @@ pub async fn review(
         None => (crate::summarizer::pick_cheapest(providers)?, String::new()),
     };
     let req = ChatRequest {
+        tool_credential: None,
         tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
