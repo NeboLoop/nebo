@@ -65,6 +65,8 @@ pub struct Harness {
     /// The hybrid search the memory tool uses: the turn's recall runs on it.
     pub(crate) hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
     pub(crate) title_sink: Option<Arc<dyn after_turn::ChatTitleSink>>,
+    /// Owner-facing events outside a turn's stream (`turn_recap`).
+    pub(crate) broadcast: Option<crate::agent_worker::NotifyFn>,
     pub(crate) active_turns: ActiveTurns,
 }
 
@@ -97,6 +99,7 @@ impl Harness {
             embedding_provider: None,
             hybrid_searcher: None,
             title_sink: None,
+            broadcast: None,
             active_turns: Default::default(),
         }
     }

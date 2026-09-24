@@ -1056,3 +1056,16 @@ pub struct OutcomeCount {
     pub count: i64,
     pub cost_microcents: i64,
 }
+
+/// The owner recap written after a chat turn (Turn-Controller Technical
+/// Design SS2.7 / WP2.5): one or two plain sentences for the owner coming
+/// back to the thread. Stored and emitted over WS as `turn_recap`; never
+/// read back into a model request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRecap {
+    pub chat_id: String,
+    pub turn_id: String,
+    pub text: String,
+    pub created_at: i64,
+}

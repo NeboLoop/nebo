@@ -150,6 +150,9 @@ pub struct TurnState {
     pub model: String,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
+    /// The last call's request and the provider that answered it: the recap
+    /// forks them.
+    last_call: Option<(ChatRequest, Arc<dyn ai::Provider>)>,
     persisted_renderings: HashSet<String>,
     trim_spec: pruning::TrimSpec,
     round: RoundCarry,
@@ -572,6 +575,7 @@ pub(crate) async fn prepare(
         seen: Vec::new(),
         model: model.clone(),
         checkpoints: 0,
+        last_call: None,
         persisted_renderings: HashSet::new(),
         trim_spec: pruning::TrimSpec::new(),
         round: RoundCarry::default(),
@@ -884,6 +888,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             block_order,
             provider,
         } = reply;
+        st.last_call = Some((fork_of.clone(), provider.clone()));
         let text = post_receive(cx, text, tool_calls.len()).await;
         if stream_error.is_some() {
             // Calls that arrived on a broken stream are not run or stored.
@@ -1392,7 +1397,28 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     );
     usage::record_run_usage(&h.store, &h.selector, cx.agent_id(), &cx.request.session_key, &st.model, &st.usage, &exit.label());
     usage::send_context_stats(&cx.tx, st.read_ledger.stats(), 0, st.checkpoints, st.round.spilled_results, &st.usage).await;
-    if !cx.after_turn || *exit == TurnExit::Cancelled {
+    if *exit == TurnExit::Cancelled {
+        return;
+    }
+    if matches!(cx.request.mode, TurnMode::Chat)
+        && let Some((request, provider)) = st.last_call.take()
+    {
+        // The recap forks the turn's own conversation, ending with its
+        // answer; it is stored and emitted, never read back.
+        let messages = conversation::convert_messages(&h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default());
+        let recap = super::recap::RecapRequest {
+            chat_id: h.sessions.active_chat_id(&cx.session_id),
+            turn_id: cx.progress.run_id.clone(),
+            system: request.system,
+            cache_breakpoints: request.cache_breakpoints,
+            messages,
+            model: request.model,
+            provider,
+            agent_id: (!cx.agent_id().is_empty()).then(|| cx.agent_id().to_string()),
+        };
+        tokio::spawn(super::recap::write_recap(h.store.clone(), h.concurrency.clone(), h.broadcast.clone(), recap));
+    }
+    if !cx.after_turn {
         return;
     }
     super::after_turn::MemoryExtraction {
@@ -1479,6 +1505,9 @@ mod tests {
         }
 
         async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            if req.trace.purpose == "owner_recap" {
+                return Ok(events(vec![StreamEvent::text(RECAP)], None));
+            }
             if req.trace.purpose != "agent_turn" {
                 return Ok(events(vec![StreamEvent::text("ok")], None));
             }
@@ -1585,6 +1614,7 @@ mod tests {
     }
 
     const KEY: &str = "agent:ops:web";
+    const RECAP: &str = "You asked for the plan; it is drafted. Next: review it.";
 
     fn owner(text: &str) -> TurnRequest {
         TurnRequest {
@@ -1845,5 +1875,29 @@ mod tests {
         });
         assert!(calls_open, "every call has a result");
         assert_eq!(model.calls().len(), 1, "no step after the stop");
+    }
+
+    /// The recap is written after a chat turn and stored, and no later
+    /// request ever carries it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recap_never_enters_a_request() {
+        let model = Scripted::new(vec![Step::Say("Drafted."), Step::Say("Thanks!")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("Draft the plan")).await;
+        let sid = h.sessions.resolve_session_id_by_key(KEY).unwrap();
+        let chat_id = h.sessions.active_chat_id(&sid);
+        let mut stored_recap = None;
+        for _ in 0..200 {
+            stored_recap = h.store.latest_chat_recap(&chat_id).unwrap();
+            if stored_recap.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(stored_recap.expect("the recap is stored").text, RECAP);
+        run_turn(&h, owner("Thank you")).await;
+        for call in model.calls() {
+            assert!(!call.system.contains(RECAP) && !texts(&call).iter().any(|t| t.contains(RECAP)), "a recap entered a request");
+        }
     }
 }
