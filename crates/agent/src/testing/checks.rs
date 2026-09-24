@@ -9,8 +9,12 @@
 //!   model that agrees with itself.
 //! - **Evidence over verdicts.** Every failure names what the trace actually
 //!   contained, so a red row is directly actionable.
+//! - **One fixture, both arms.** A call is matched as itself and as the same
+//!   call in the other tool vocabulary ([`tool_map`]), so a check written with
+//!   the old names decides the rewrite's run the same way, and back.
 
 use super::fixture::{Assertion, Check, Fixture};
+use super::tool_map;
 use super::trace::{AssertionResult, Trace, TracedToolCall};
 
 pub const MODE_VERIFIED: &str = "verified";
@@ -154,7 +158,7 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
         let candidates: Vec<&TracedToolCall> = trace
             .tool_calls
             .iter()
-            .filter(|c| check.tool.iter().any(|t| t == &c.tool))
+            .filter(|c| views(c).iter().any(|(tool, _)| check.tool.iter().any(|t| t == tool)))
             .collect();
         if candidates.is_empty() {
             let seen: Vec<&str> = trace.tool_calls.iter().map(|c| c.tool.as_str()).collect();
@@ -183,29 +187,60 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
     Ok((true, evidence.join("; ")))
 }
 
-/// Check tool-name and arg predicates against one call.
+/// A traced call as itself, then as the same call in the other tool
+/// vocabulary when the map has a row for it.
+fn views(call: &TracedToolCall) -> Vec<(String, serde_json::Value)> {
+    let mut out = vec![(call.tool.clone(), call.arguments.clone())];
+    out.extend(tool_map::translate(&call.tool, &call.arguments));
+    out
+}
+
+/// Check tool-name and arg predicates against one call: it passes when any
+/// of its views does. A failure is reported from the view the check named
+/// (its args are what the check was about), else from the call as made.
 /// Outer `Err` = malformed matcher; inner `Err` = predicate failed (why).
 fn check_one_call(
     check: &Check,
     call: &TracedToolCall,
 ) -> Result<Result<String, String>, String> {
-    if !check.tool.is_empty() && !check.tool.iter().any(|t| t == &call.tool) {
+    let mut why_named = None;
+    let mut why_as_made = None;
+    for (i, (tool, args)) in views(call).iter().enumerate() {
+        match check_one_view(check, tool, args)? {
+            Ok(ev) if i == 0 => return Ok(Ok(ev)),
+            Ok(ev) => return Ok(Ok(format!("{ev} (called as '{}')", call.tool))),
+            Err(why) if check.tool.is_empty() || check.tool.iter().any(|t| t == tool) => {
+                why_named.get_or_insert(why);
+            }
+            Err(why) => {
+                why_as_made.get_or_insert(why);
+            }
+        }
+    }
+    Ok(Err(why_named.or(why_as_made).unwrap_or_default()))
+}
+
+fn check_one_view(
+    check: &Check,
+    tool: &str,
+    arguments: &serde_json::Value,
+) -> Result<Result<String, String>, String> {
+    if !check.tool.is_empty() && !check.tool.iter().any(|t| t == tool) {
         return Ok(Err(format!(
             "tool is '{}', expected one of {:?}",
-            call.tool, check.tool
+            tool, check.tool
         )));
     }
     let mut ev = if check.tool.is_empty() {
-        format!("tool '{}'", call.tool)
+        format!("tool '{}'", tool)
     } else {
-        format!("tool '{}' ∈ {:?}", call.tool, check.tool)
+        format!("tool '{}' ∈ {:?}", tool, check.tool)
     };
 
     if let Some(arg_path) = &check.arg {
-        let value = lookup(&call.arguments, arg_path);
+        let value = lookup(arguments, arg_path);
         let Some(value) = value else {
-            let keys = call
-                .arguments
+            let keys = arguments
                 .as_object()
                 .map(|o| o.keys().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
@@ -434,6 +469,64 @@ mod tests {
         assert!(evaluate(&c, &t).unwrap().0);
         let (p, _) = evaluate(&check("{ call: 2, tool: os }"), &t).unwrap();
         assert!(!p, "missing ordinal is a failure, not an error");
+    }
+
+    /// Checks from real fixtures, written with the old names, decide the
+    /// rewrite's calls the same way, and checks in the new names decide the
+    /// old loop's calls: one fixture, both arms.
+    #[test]
+    fn one_check_decides_both_vocabularies() {
+        let old_arm = trace_with(
+            vec![
+                ("os", serde_json::json!({"resource": "file", "action": "read", "path": "/s/msg-01.txt"})),
+                ("message", serde_json::json!({"resource": "coworker", "action": "send", "to": "chief-of-staff", "text": "hi"})),
+            ],
+            0,
+        );
+        let new_arm = trace_with(
+            vec![
+                ("read_file", serde_json::json!({"path": "/s/msg-01.txt"})),
+                ("send_message", serde_json::json!({"to": "chief-of-staff", "message": "hi"})),
+            ],
+            0,
+        );
+        for c in [
+            r#"{ first_call: true, tool: os }"#,
+            r#"{ tool: os, arg: path, contains: "msg-01" }"#,
+            r#"{ first_call: true, tool: [os, file_read] }"#,
+            r#"{ call: 2, arg: to, contains: "chief" }"#,
+            r#"{ call: 2, arg: action, equals: "send" }"#,
+            r#"{ tool: read_file, arg: path, contains: "msg-01" }"#,
+            r#"{ tool: send_message, arg: message, equals: "hi" }"#,
+        ] {
+            let (a, why_a) = evaluate(&check(c), &old_arm).unwrap();
+            let (p, why_p) = evaluate(&check(c), &new_arm).unwrap();
+            assert!(a && p, "{c}: old arm {a} ({why_a}), new arm {p} ({why_p})");
+        }
+    }
+
+    /// The map renames a call; it never turns one call into another. A wrong
+    /// file, a wrong recipient or an old-only shape still fails on both arms.
+    #[test]
+    fn the_map_never_passes_a_different_call() {
+        let new_arm = trace_with(
+            vec![
+                ("read_file", serde_json::json!({"path": "/s/other.txt"})),
+                ("run_command", serde_json::json!({"command": "grep -rn TODO ."})),
+            ],
+            0,
+        );
+        let (p, why) = evaluate(&check(r#"{ call: 1, tool: os, arg: path, contains: "msg-01" }"#), &new_arm).unwrap();
+        assert!(!p && why.contains("other.txt"), "{why}");
+        assert!(!evaluate(&check(r#"{ tool: os, arg: path, contains: "msg-01" }"#), &new_arm).unwrap().0);
+        let (p, why) = evaluate(&check(r#"{ first_call: true, tool: write_file }"#), &new_arm).unwrap();
+        assert!(!p && why.contains("'read_file'"), "evidence names the call the model made: {why}");
+        // `action: grep` is the old tool's shape, not the outcome
+        assert!(!evaluate(&check(r#"{ call: 2, tool: os, arg: action, equals: grep }"#), &new_arm).unwrap().0);
+        assert!(evaluate(&check(r#"{ call: 2, tool: os, arg: command, contains: "TODO" }"#), &new_arm).unwrap().0);
+        // a tool in neither vocabulary is matched only by its own name
+        let (p, _) = evaluate(&check("{ tool: propose_goal }"), &new_arm).unwrap();
+        assert!(!p);
     }
 
     #[test]
