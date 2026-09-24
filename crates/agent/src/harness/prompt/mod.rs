@@ -1,14 +1,12 @@
-//! The system prompt: the fixed part in our words, the employee, the cache
-//! boundary, then the per-session part (environment with the date, the
-//! employee's memory, coworkers, workspace notes, the employee's own setup).
-//! Built once per turn; the part above the boundary is byte-stable across a
-//! session. There is no per-call state block and no text derived from a
-//! message: facts that change arrive as reminder rows in the conversation.
+//! The system prompt: the fixed part in our words, the cache boundary, then
+//! the employee. Byte-stable across a session: it changes only when the
+//! owner edits the employee. There is no per-call state block and no session
+//! fact in it; the environment, the model and mode, the employee's memory
+//! and the session context arrive as attachment rows written when they are
+//! first told and when they change (`events::SessionFacts`).
 
 pub mod inputs;
 pub mod sections;
-
-use sections::Environment;
 
 /// Whose turn the prompt is for.
 pub enum Role {
@@ -18,8 +16,7 @@ pub enum Role {
     Helper { parent: String },
 }
 
-/// Everything the system prompt is built from. The caller resolves each
-/// input once per turn (WP2.3).
+/// Everything the system prompt is built from.
 pub struct PromptInputs {
     /// The employee's name.
     pub name: String,
@@ -32,24 +29,14 @@ pub struct PromptInputs {
     pub rules: Option<String>,
     /// The employee's AGENT.md body.
     pub persona: Option<String>,
-    pub environment: Environment,
-    /// `memory_context::EmployeeMemory::section`.
-    pub employee_memory: String,
-    /// Installed employees as (name, description).
-    pub team: Vec<(String, String)>,
-    /// The workspace's `.nebo.md`, when there is one.
-    pub workspace_notes: Option<String>,
-    /// The employee's workflows, skills and plugin details.
-    pub self_context: String,
 }
 
 /// A turn's system prompt, in the order it is sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemPrompt {
     pub fixed: String,
-    pub employee: String,
     pub boundary: &'static str,
-    pub per_session: String,
+    pub employee: String,
 }
 
 /// Characters in each part, for the turn's telemetry line.
@@ -57,7 +44,6 @@ pub struct SystemPrompt {
 pub struct PromptSizes {
     pub fixed: usize,
     pub employee: usize,
-    pub per_session: usize,
     pub total: usize,
 }
 
@@ -83,75 +69,34 @@ impl SystemPrompt {
             inputs.rules.as_deref(),
             inputs.persona.as_deref(),
         );
-
-        let mut per_session = vec![sections::environment(&inputs.environment)];
-        let mut push = |s: String| {
-            if !s.trim().is_empty() {
-                per_session.push(s);
-            }
-        };
-        push(inputs.employee_memory.clone());
-        push(sections::coworkers(&inputs.name, &inputs.team));
-        if let Some(notes) = inputs.workspace_notes.as_deref().filter(|n| !n.trim().is_empty()) {
-            push(sections::workspace_notes(notes));
-        }
-        push(inputs.self_context.clone());
-
         SystemPrompt {
             fixed,
-            employee,
             boundary: crate::prompt::CACHE_BOUNDARY,
-            per_session: per_session.join("\n\n"),
+            employee,
         }
     }
 
     /// The prompt as sent.
     pub fn text(&self) -> String {
-        let mut out = String::with_capacity(
-            self.fixed.len() + self.employee.len() + self.boundary.len() + self.per_session.len() + 2,
-        );
-        out.push_str(&self.fixed);
-        if !self.employee.is_empty() {
-            out.push_str("\n\n");
-            out.push_str(&self.employee);
-        }
-        out.push_str(self.boundary);
-        out.push_str(&self.per_session);
-        out
+        format!("{}{}{}", self.fixed, self.boundary, self.employee)
     }
 
     /// Byte offsets into `text()` where the provider may cache: after the
-    /// fixed part and the employee (stable for the session), and at the end
-    /// (stable for the turn's steps).
+    /// fixed part (shared by every employee) and at the end.
     pub fn cache_breakpoints(&self) -> Vec<usize> {
-        let stable = self.fixed.len() + if self.employee.is_empty() { 0 } else { 2 + self.employee.len() };
-        vec![stable, stable + self.boundary.len() + self.per_session.len()]
+        vec![self.fixed.len(), self.fixed.len() + self.boundary.len() + self.employee.len()]
     }
 
     pub fn sizes(&self) -> PromptSizes {
         let fixed = self.fixed.chars().count();
         let employee = self.employee.chars().count();
-        let per_session = self.per_session.chars().count();
-        PromptSizes { fixed, employee, per_session, total: self.text().chars().count() }
+        PromptSizes { fixed, employee, total: self.text().chars().count() }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::sections::{Environment, Watching};
     use super::*;
-
-    fn env() -> Environment {
-        Environment {
-            date: chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap(),
-            timezone: Some("America/Denver".to_string()),
-            model: "janus/nebo-1".to_string(),
-            cwd: Some("/work/project".to_string()),
-            channel: "web".to_string(),
-            watching: Watching::Live,
-            permission_mode: "Automatic".to_string(),
-        }
-    }
 
     fn inputs(role: Role) -> PromptInputs {
         PromptInputs {
@@ -161,36 +106,35 @@ mod tests {
             soul: Some("Warm, direct, precise.".to_string()),
             rules: Some("Never book travel over $500 without checking.".to_string()),
             persona: Some("You run the owner's calendar and inbox.".to_string()),
-            environment: env(),
-            employee_memory: "# User Information\nName: Sam".to_string(),
-            team: vec![
-                ("Ava".to_string(), "Office manager".to_string()),
-                ("Ben".to_string(), "Bookkeeper".to_string()),
-            ],
-            workspace_notes: Some("Files live in ~/Clients.".to_string()),
-            self_context: "## Your Workflows (1)\n- weekly-report: schedule: Mondays 9am".to_string(),
         }
     }
 
     #[test]
     fn fixed_part_is_byte_stable_across_calls() {
         let a = SystemPrompt::build(&inputs(Role::Employee));
-        let b = SystemPrompt::build(&inputs(Role::Employee));
-        assert_eq!(a, b);
-        // What sits below the boundary never moves the part above it.
-        let mut later = inputs(Role::Employee);
-        later.environment.date = chrono::NaiveDate::from_ymd_opt(2026, 9, 25).unwrap();
-        later.employee_memory = "# User Information\nName: Sam\nGoals: new".to_string();
-        later.team.push(("Cy".to_string(), "Researcher".to_string()));
-        let c = SystemPrompt::build(&later);
-        assert_eq!(a.fixed, c.fixed);
-        assert_eq!(a.employee, c.employee);
-        let (at, ct) = (a.text(), c.text());
-        let cut = a.cache_breakpoints()[0];
-        assert_eq!(at[..cut], ct[..cut], "the cached prefix is the same bytes");
-        assert!(at[cut..].starts_with(crate::prompt::CACHE_BOUNDARY));
-        assert_eq!(a.cache_breakpoints()[1], at.len());
-        assert_eq!(c.cache_breakpoints()[1], ct.len());
+        assert_eq!(a, SystemPrompt::build(&inputs(Role::Employee)));
+        let text = a.text();
+        let [shared, end] = a.cache_breakpoints()[..] else { panic!("two breakpoints") };
+        assert!(text[shared..].starts_with(crate::prompt::CACHE_BOUNDARY), "the shared part ends at the boundary");
+        assert_eq!(end, text.len());
+        // Another employee shares the part above the boundary only when its
+        // name is the same; its own section sits below.
+        let mut other = inputs(Role::Employee);
+        other.persona = Some("You keep the books.".to_string());
+        let b = SystemPrompt::build(&other);
+        assert_eq!(a.fixed, b.fixed);
+        assert_ne!(a.employee, b.employee);
+    }
+
+    /// Nothing a session changes is in the prompt: the date, the mode, the
+    /// working folder and the employee's memory are rows, so none of them
+    /// is an input here and the prompt holds none of their text.
+    #[test]
+    fn system_prompt_unchanged_by_date_mode_folder_or_memory_changes() {
+        let text = SystemPrompt::build(&inputs(Role::Employee)).text();
+        for fact in ["# Environment", "Date:", "Permission mode", "Working folder", "Model:", "# User Information", "# Workspace notes", "# Your coworkers"] {
+            assert!(!text.contains(fact), "{fact:?} is a session fact in the prompt");
+        }
     }
 
     #[test]
@@ -210,17 +154,6 @@ mod tests {
         for block in ["[System Context]", "Current Work Tasks", "Current Objective", "CONTEXT COMPACTION", "Time:", "Reference Documentation"] {
             assert!(!text.contains(block), "{block:?} is a per-call block");
         }
-        // The only date is the environment's day: no clock time.
-        assert!(text.contains("- Date: Thursday, September 24, 2026 (America/Denver)"));
-        assert!(!text.contains(" AM") && !text.contains(" PM"));
-        // Every section sits in the part it belongs to.
-        assert!(p.per_session.starts_with("# Environment"));
-        assert!(p.per_session.contains("- Permission mode: Automatic"));
-        assert!(p.per_session.contains("- Model: janus/nebo-1"));
-        assert!(p.per_session.contains("- Working folder: /work/project"));
-        assert!(p.per_session.contains("# User Information"));
-        assert!(p.per_session.contains("# Workspace notes\n\nFiles live in ~/Clients."));
-        assert!(p.per_session.contains("- Ben: Bookkeeper") && !p.per_session.contains("- Ava:"), "self is not a coworker");
         assert!(p.employee.starts_with("Keep it light."));
         assert!(p.employee.contains("# Your rules") && p.employee.contains("# Your job"));
         assert!(p.fixed.starts_with("You are Ava, an AI employee"));
@@ -262,7 +195,7 @@ mod tests {
         let e = SystemPrompt::build(&inputs(Role::Employee)).sizes();
         let h = SystemPrompt::build(&inputs(Role::Helper { parent: "Nanna".to_string() })).sizes();
         assert_eq!((e.fixed, h.fixed), (FIXED_CHARS, HELPER_FIXED_CHARS), "{e:?} {h:?}");
-        assert_eq!(e.total, e.fixed + 2 + e.employee + crate::prompt::CACHE_BOUNDARY.chars().count() + e.per_session);
+        assert_eq!(e.total, e.fixed + crate::prompt::CACHE_BOUNDARY.chars().count() + e.employee);
         assert!(e.fixed < 8_000);
     }
 

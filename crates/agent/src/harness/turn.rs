@@ -73,6 +73,13 @@ pub struct TurnContext {
     pub model: String,
     /// Built once per turn.
     pub prompt: SystemPrompt,
+    /// The employee's name, for its memory's heading.
+    pub name: String,
+    /// The session's environment fields after the date.
+    pub environment: Vec<(String, String)>,
+    pub mode_facts: events::ModeFacts,
+    /// The workspace notes and the employee's own setup.
+    pub session_context: String,
     pub tx: mpsc::Sender<StreamEvent>,
     pub progress: RunProgress,
     pub max_steps: u32,
@@ -134,13 +141,13 @@ pub struct TurnState {
     pub end_checks_this_turn: u8,
     pub frozen_renderings: compact::trim::Frozen,
     pub read_ledger: crate::read_ledger::ReadLedger,
+    /// The relevant-memories search started at Prepare.
+    pub recall: super::memory_context::RecallPrefetch,
     /// The conversation the last step sent: input stored after it is heard
     /// by the next turn.
     pub seen: Vec<ChatMessage>,
     /// The model the last call ran on (`provider/model` or the name).
     pub model: String,
-    /// The date the prompt was built with, moved by a `DateChanged` row.
-    pub date: chrono::NaiveDate,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
     persisted_renderings: HashSet<String>,
@@ -472,54 +479,58 @@ pub(crate) async fn prepare(
         &seat.inherit_scopes,
         &name,
     );
-    let date = sections::owner_today(memory.timezone.as_deref());
+    super::memory_context::record_access(&h.store, memory.identity_ids.clone());
     let memory_timezone = memory.timezone.clone();
     let role = match &req.mode {
         TurnMode::Helper { parent_session_key, .. } => prompt::Role::Helper { parent: parent_name(h, parent_session_key).await },
         _ => prompt::Role::Employee,
     };
-    let self_context = agent
-        .as_ref()
-        .map(|a| {
-            [
-                prompt::inputs::self_context(a),
-                prompt::inputs::plugin_context(a, req.seat.tool_scope.as_deref(), h.skill_loader.as_deref()),
-            ]
-            .into_iter()
-            .filter(|p| !p.trim().is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n")
-        })
-        .unwrap_or_default();
-    let team = h
-        .store
-        .list_agents(100, 0)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|a| a.is_enabled == 1)
-        .map(|a| (a.name, a.description))
-        .collect();
+    let session_context = [
+        prompt::inputs::workspace_notes().map(|n| sections::workspace_notes(&n)).unwrap_or_default(),
+        agent.as_ref().map(prompt::inputs::self_context).unwrap_or_default(),
+        agent
+            .as_ref()
+            .map(|a| prompt::inputs::plugin_context(a, req.seat.tool_scope.as_deref(), h.skill_loader.as_deref()))
+            .unwrap_or_default(),
+    ]
+    .into_iter()
+    .filter(|p| !p.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    let mode_facts = events::ModeFacts {
+        model: if model.is_empty() { h.selector.select(&[]) } else { model.clone() },
+        permission_mode: permission_mode_name(grant.mode).to_string(),
+    };
+    let environment = sections::environment_fields(req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
     let prompt = SystemPrompt::build(&PromptInputs {
-        name,
+        name: name.clone(),
         role,
         personality_snippet: req.seat.personality_snippet.clone(),
         soul: agent.as_ref().and_then(|a| a.soul.clone()),
         rules: agent.as_ref().and_then(|a| a.rules.clone()),
         persona: agent.as_ref().map(|a| prompt::inputs::persona_body(&a.agent_md)),
-        environment: sections::Environment {
-            date,
-            timezone: memory.timezone.clone(),
-            model: if model.is_empty() { h.selector.select(&[]) } else { model.clone() },
-            cwd: req.seat.cwd.clone(),
-            channel: channel.clone(),
-            watching: seat.execution_mode.into(),
-            permission_mode: permission_mode_name(grant.mode).to_string(),
-        },
-        employee_memory: memory.section,
-        team,
-        workspace_notes: prompt::inputs::workspace_notes(),
-        self_context,
     });
+
+    // The relevant-memories search runs while the steps go on; a step lands
+    // it once it has finished.
+    let history = h.sessions.get_messages_since_checkpoint(session_id).unwrap_or_default();
+    let mut surfaced = super::memory_context::surfaced_memories(&history);
+    // Only the owner's words are searched for; other input recalls nothing.
+    let recall_prompt = match &req.input {
+        TurnInput::Owner { text, .. } => text.as_str(),
+        _ => "",
+    };
+    let recall = super::memory_context::RecallPrefetch::start(
+        h.hybrid_searcher.as_ref(),
+        &h.store,
+        super::memory_context::RecallRequest {
+            prompt: recall_prompt,
+            user_id: &seat.memory.user_id,
+            tacit_only: seat.audience_restricted,
+            skip: surfaced.iter().copied().chain(memory.identity_ids.iter().copied()).collect(),
+        },
+    );
+    surfaced.extend(memory.identity_ids.iter().copied());
 
     let always_load = agent.as_ref().and_then(|a| a.config.as_ref()).map(|cfg| {
         let mut set: HashSet<String> = cfg.requires.tools.iter().cloned().collect();
@@ -550,7 +561,8 @@ pub(crate) async fn prepare(
         call: model_call::CallState::default(),
         usage: RunState::new(),
         loaded_tools: BTreeSet::new(),
-        surfaced_memories: HashSet::new(),
+        surfaced_memories: surfaced,
+        recall,
         end_checks_this_turn: 0,
         frozen_renderings: h
             .store
@@ -559,7 +571,6 @@ pub(crate) async fn prepare(
         read_ledger: Default::default(),
         seen: Vec::new(),
         model: model.clone(),
-        date,
         checkpoints: 0,
         persisted_renderings: HashSet::new(),
         trim_spec: pruning::TrimSpec::new(),
@@ -590,6 +601,10 @@ pub(crate) async fn prepare(
         timezone: memory_timezone,
         model,
         prompt,
+        name,
+        environment,
+        mode_facts,
+        session_context,
         tx,
         progress,
         max_steps,
@@ -978,11 +993,38 @@ async fn step_events(
         Err(e) => warn!(error = %e, "the outside-edit sweep panicked; skipped this step"),
     }
 
-    let today = sections::owner_today(cx.timezone.as_deref());
-    if today != st.date {
-        st.date = today;
-        st.reminders.add(&TurnEvent::DateChanged(today));
+    // The session's facts: the whole snapshot when the conversation was told
+    // nothing since its boundary, then one row per fact that changed.
+    let memory = super::memory_context::load_employee_memory(
+        &h.store,
+        &cx.seat.memory.user_id,
+        cx.agent_id(),
+        &cx.seat.inherit_scopes,
+        &cx.name,
+    );
+    let facts = events::SessionFacts {
+        date: sections::owner_today(cx.timezone.as_deref()),
+        timezone: cx.timezone.clone(),
+        environment: cx.environment.clone(),
+        mode: cx.mode_facts.clone(),
+        employee_memory: memory.section,
+        session_context: cx.session_context.clone(),
+    };
+    for event in events::session_fact_events(&facts, conversation) {
+        st.reminders.add(&event);
     }
+    let team: events::Listing = h
+        .store
+        .list_agents(100, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.is_enabled == 1 && a.name != cx.name)
+        .map(|a| (a.name, a.description))
+        .collect();
+    if let Some(delta) = events::LinedDelta::between(&events::announced("agents_listing", conversation), &team) {
+        st.reminders.add(&TurnEvent::AgentsListing(delta));
+    }
+    st.recall.land(&mut st.reminders, &mut st.surfaced_memories, &h.store);
 
     if let Some(delta) = listing {
         st.reminders.add(&TurnEvent::ToolsAvailable(delta));

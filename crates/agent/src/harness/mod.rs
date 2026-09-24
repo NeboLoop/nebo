@@ -62,6 +62,8 @@ pub struct Harness {
     pub(crate) ask_channels: Option<tools::AskChannels>,
     pub(crate) approval_channels: Option<tools::ApprovalChannels>,
     pub(crate) embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    /// The hybrid search the memory tool uses: the turn's recall runs on it.
+    pub(crate) hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
     pub(crate) title_sink: Option<Arc<dyn after_turn::ChatTitleSink>>,
     pub(crate) active_turns: ActiveTurns,
 }
@@ -93,6 +95,7 @@ impl Harness {
             ask_channels: None,
             approval_channels: None,
             embedding_provider: None,
+            hybrid_searcher: None,
             title_sink: None,
             active_turns: Default::default(),
         }
