@@ -24,7 +24,9 @@ pub struct TurnState {
     pub call: model_call::CallState,
     /// Deferred tools loaded this session.
     pub loaded_tools: BTreeSet<String>,
-    pub surfaced_memories: HashSet<String>,
+    /// Memory ids this session was already shown; seeded at Prepare from
+    /// `memory_context::surfaced_memories`.
+    pub surfaced_memories: HashSet<i64>,
     pub end_checks_this_turn: u8,
     pub tokens: usage::TokenLedger,
     pub frozen_renderings: compact::trim::Frozen,

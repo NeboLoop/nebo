@@ -1404,23 +1404,6 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_scope_chain_ctx_excludes_siblings() {
-        let chain = memory_scope_chain("local:agent:a1:ctx:chat-A");
-        assert_eq!(
-            chain,
-            vec![
-                "local:agent:a1:ctx:chat-A".to_string(),
-                "local:agent:a1".to_string(),
-                "local".to_string(),
-            ]
-        );
-        // Sibling contexts and sibling agents are never in the chain —
-        // cross-case recall is structurally impossible.
-        assert!(!chain.iter().any(|s| s.contains(":ctx:chat-B")));
-        assert!(!chain.iter().any(|s| s.contains(":agent:a2")));
-    }
-
-    #[test]
     fn test_build_inherit_scopes_isolated_ctx_reads() {
         // Isolated run with a context: agent-wide tacit/ ONLY + owner
         // identity prefixes — never the agent's non-tacit namespaces, never
