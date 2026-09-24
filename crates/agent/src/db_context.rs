@@ -331,6 +331,32 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     result
 }
 
+/// The owner's configured inputs for an employee (its `input_values` JSON),
+/// as a prompt section. `None` when nothing is set.
+pub fn format_configured_inputs(input_values: &str) -> Option<String> {
+    let vals = serde_json::from_str::<serde_json::Value>(input_values).ok()?;
+    let lines: Vec<String> = vals
+        .as_object()?
+        .iter()
+        .filter_map(|(key, val)| {
+            let display = match val {
+                serde_json::Value::String(s) if !s.is_empty() => s.clone(),
+                serde_json::Value::String(_) => return None,
+                other => other.to_string(),
+            };
+            Some(format!("- **{}**: {}", key, display))
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "# Configured Inputs\nThe user has configured the following inputs for this agent. \
+         Use these values — do NOT ask the user for information that is already provided here.\n{}",
+        lines.join("\n")
+    ))
+}
+
 /// Character budget for the per-message recall slice (delivered as an
 /// ephemeral stream reminder).
 /// ~1,200 chars ≈ 300 tokens: room for roughly 5-8 short facts while keeping
@@ -646,6 +672,17 @@ fn personality_preset_prompt(preset: Option<&str>) -> Option<&'static str> {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn configured_inputs_skip_empty_values() {
+        let out = format_configured_inputs(r#"{"market":"Denver","budget":500,"blank":""}"#).unwrap();
+        assert!(out.starts_with("# Configured Inputs\n"));
+        assert!(out.contains("- **market**: Denver") && out.contains("- **budget**: 500"));
+        assert!(!out.contains("blank"));
+        assert_eq!(format_configured_inputs(r#"{"blank":""}"#), None);
+        assert_eq!(format_configured_inputs("{}"), None);
+        assert_eq!(format_configured_inputs("not json"), None);
+    }
 
     /// Temp-file store: the r2d2 pool would give each `:memory:` connection
     /// its own database, so file-backed is required for cross-connection reads.
