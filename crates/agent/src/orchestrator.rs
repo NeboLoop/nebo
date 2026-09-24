@@ -1621,10 +1621,12 @@ mod child_limits {
             &self,
             _: &str,
             _: &str,
+            _: &str,
+            _: Vec<ProvenanceClass>,
             _: Option<CancellationToken>,
             _: Option<mpsc::Sender<ai::StreamEvent>>,
-        ) -> Fut<'_, Result<SpawnResult, String>> {
-            Box::pin(async { recorded() })
+        ) -> Fut<'_, Result<FollowUp, String>> {
+            Box::pin(async { recorded().map(FollowUp::Continued) })
         }
         fn list_active(&self) -> Fut<'_, Vec<(String, String, String)>> {
             Box::pin(async { Vec::new() })
