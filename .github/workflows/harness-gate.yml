@@ -90,6 +90,10 @@ on:
         description: "Sweep only: judge with the claude CLI, three runs each (default: program checks, one run)"
         type: boolean
         default: false
+      steering:
+        description: "NEBO_STEERING for the server: switch named attachments off to measure them. Empty/on = all on; off = all off; a,b = only those; -a,-b = all but those"
+        type: string
+        default: ""
 
 concurrency:
   group: harness-gate-${{ github.ref }}${{ inputs.suites && '-sweep' || '' }}
@@ -179,6 +183,7 @@ jobs:
           # URL means the server wires no Memory integration; recall is the
           # fresh NEBO_HOME's alone.
           NEBOAI_MEMORY_URL: ""
+          NEBO_STEERING: ${{ inputs.steering }}
           RUST_LOG: info,nebo_agent=debug
         run: |
           test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" && test -n "$NEBO_BOOT_TOKEN" \

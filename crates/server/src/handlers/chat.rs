@@ -217,6 +217,17 @@ fn default_content_blocks(content: &str, call_count: usize) -> Vec<serde_json::V
     blocks
 }
 
+/// Whether the owner's thread shows a stored message: every row but the
+/// ones stamped `isMeta` (the house talking to itself: preloads, hidden
+/// prompts, the harness's attachment rows).
+pub fn is_owner_visible(m: &db::models::ChatMessage) -> bool {
+    m.metadata
+        .as_deref()
+        .and_then(|meta| serde_json::from_str::<serde_json::Value>(meta).ok())
+        .and_then(|v| v.get("isMeta").and_then(|f| f.as_bool()))
+        != Some(true)
+}
+
 /// Prepare stored messages for a human transcript.
 ///
 /// Internal turns are dropped: a message carrying `isMeta` was written by the
@@ -229,13 +240,7 @@ fn default_content_blocks(content: &str, call_count: usize) -> Vec<serde_json::V
 /// 2. New metadata with only contentBlocks (persisted block order) — build toolCalls, use persisted order
 /// 3. No metadata — build everything, fall back to text→tools order
 pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
-    messages.retain(|m| {
-        m.metadata
-            .as_deref()
-            .and_then(|meta| serde_json::from_str::<serde_json::Value>(meta).ok())
-            .and_then(|v| v.get("isMeta").and_then(|f| f.as_bool()))
-            != Some(true)
-    });
+    messages.retain(is_owner_visible);
     // Phase 1: Collect tool result statuses from role="tool" messages — and
     // bound what a listed result carries (see RESULT_PREVIEW_CHARS).
     let mut tool_statuses: HashMap<String, bool> = HashMap::new();
@@ -960,6 +965,33 @@ mod transcript_metadata_tests {
         build_message_metadata(&mut messages);
         assert_eq!(messages.len(), 2);
         assert!(messages.iter().all(|m| m.content != "system nudge"));
+    }
+
+    /// The harness's attachment rows are model history, never the owner's
+    /// thread: written by the one reminder path, dropped by the transcript.
+    #[test]
+    fn owner_thread_hides_attachment_rows() {
+        use agent::harness::events::{Threshold, TurnEvent};
+        let path = std::env::temp_dir().join(format!("nebo-owner-thread-{}.db", uuid::Uuid::new_v4()));
+        let store = std::sync::Arc::new(db::Store::new(path.to_str().unwrap()).unwrap());
+        let sessions = agent::SessionManager::new(store.clone());
+        let session_id = sessions.get_or_create("agent:a1:web", "").unwrap().id;
+        sessions.append_message(&session_id, "user", "Draft the plan", None, None, None).unwrap();
+        let mut reminders = agent::harness::reminders::Reminders::default();
+        reminders.add(&TurnEvent::Usage(Threshold::Context { percent_full: 82 }));
+        reminders.add(&TurnEvent::GoalSet("all tests pass".into()));
+        reminders.write(&sessions, &session_id).unwrap();
+        sessions.append_message(&session_id, "assistant", "On it.", None, None, None).unwrap();
+
+        let mut messages = store.get_chat_messages(&sessions.active_chat_id(&session_id)).unwrap();
+        assert_eq!(
+            messages.iter().filter(|m| agent::harness::reminders::attachment_kind(m).is_some()).count(),
+            2,
+            "the model's history carries both rows"
+        );
+        build_message_metadata(&mut messages);
+        let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(contents, ["Draft the plan", "On it."]);
     }
 
     /// An assistant message with a tool_calls column gets UI metadata built:
