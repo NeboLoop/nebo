@@ -32,9 +32,6 @@ pub const TIME_BASED_GAP_THRESHOLD_SECS: i64 = 300; // 5 minutes
 /// Keep the single most recent so the model retains immediate context.
 pub const TIME_BASED_KEEP_RECENT: usize = 1;
 
-/// Micro-compact: trim old tool results to reduce context size.
-/// Returns modified messages and tokens saved.
-
 /// The text a tool-result row actually carries. In production tool rows keep
 /// `content` EMPTY and the payload in `tool_results[].content`; rendering
 /// from `msg.content` produced empty "bounded slices" and `[os] 0 lines`
@@ -152,16 +149,16 @@ fn stub_result(msg: &ChatMessage, text: &str) -> ChatMessage {
 }
 
 fn tool_result_text(msg: &ChatMessage) -> String {
-    if let Some(tr) = msg.tool_results.as_deref() {
-        if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr) {
-            let joined: Vec<&str> = results
-                .iter()
-                .filter_map(|r| r.get("content").and_then(|c| c.as_str()))
-                .filter(|c| !c.is_empty())
-                .collect();
-            if !joined.is_empty() {
-                return joined.join("\n");
-            }
+    if let Some(tr) = msg.tool_results.as_deref()
+        && let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr)
+    {
+        let joined: Vec<&str> = results
+            .iter()
+            .filter_map(|r| r.get("content").and_then(|c| c.as_str()))
+            .filter(|c| !c.is_empty())
+            .collect();
+        if !joined.is_empty() {
+            return joined.join("\n");
         }
     }
     msg.content.clone()
@@ -176,6 +173,8 @@ fn first_tool_call_id(msg: &ChatMessage) -> Option<String> {
     (!id.is_empty()).then(|| id.to_string())
 }
 
+/// Micro-compact: trim old tool results to reduce context size.
+/// Returns modified messages and tokens saved.
 pub fn micro_compact(
     messages: &[ChatMessage],
     warning_threshold: usize,
@@ -201,8 +200,8 @@ pub fn micro_compact(
     {
         // content hash → tool_call_id of the first (kept) copy
         let mut seen: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
-        for i in 0..result.len() {
-            let msg = &result[i];
+        for slot in result.iter_mut() {
+            let msg = &*slot;
             if msg.role != "tool" && msg.role != "assistant" {
                 continue;
             }
@@ -231,7 +230,7 @@ pub fn micro_compact(
                     }
                     let stub = stub_result(msg, &text);
                     tokens_saved += old_tokens.saturating_sub(estimate_message_tokens(&stub));
-                    result[i] = stub;
+                    *slot = stub;
                 }
             }
         }
@@ -600,25 +599,25 @@ fn find_tool_call_for_result(
     for i in (0..result_idx).rev() {
         let msg = &messages[i];
         if msg.role == "assistant" {
-            if let Some(ref tc_json) = msg.tool_calls {
-                if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) {
-                    let pick = wanted_id
-                        .as_deref()
-                        .and_then(|id| {
-                            calls
-                                .iter()
-                                .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(id))
-                        })
-                        .or_else(|| calls.first());
-                    if let Some(call) = pick {
-                        let name = call
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        let input = call.get("input").cloned();
-                        return (name, input);
-                    }
+            if let Some(ref tc_json) = msg.tool_calls
+                && let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json)
+            {
+                let pick = wanted_id
+                    .as_deref()
+                    .and_then(|id| {
+                        calls
+                            .iter()
+                            .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(id))
+                    })
+                    .or_else(|| calls.first());
+                if let Some(call) = pick {
+                    let name = call
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let input = call.get("input").cloned();
+                    return (name, input);
                 }
             }
             break; // Stop at first assistant message

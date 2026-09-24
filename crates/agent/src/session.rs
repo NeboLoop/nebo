@@ -183,6 +183,16 @@ impl SessionManager {
         Ok(sanitize_messages(messages))
     }
 
+    /// The conversation the harness sends: the active chat from its latest
+    /// checkpoint boundary on (`harness::compact::checkpoint`), orphaned tool
+    /// results removed. The sliding-window path keeps `get_messages` until
+    /// the cutover deletes it.
+    pub fn get_messages_since_checkpoint(&self, session_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
+        let chat_id = self.resolve_chat_id(session_id);
+        let messages = self.store.get_chat_messages_since_checkpoint(&chat_id)?;
+        Ok(drop_orphan_results(messages))
+    }
+
     /// Append a message to the session's active conversation.
     pub fn append_message(
         &self,
@@ -463,6 +473,11 @@ fn is_stored_steering(msg: &ChatMessage) -> bool {
 /// then orphaned tool results that have no matching tool call removed.
 fn sanitize_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let messages: Vec<ChatMessage> = messages.into_iter().filter(|m| !is_stored_steering(m)).collect();
+    drop_orphan_results(messages)
+}
+
+/// Tool results whose call is not in `messages` removed.
+fn drop_orphan_results(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     // Collect all tool call IDs from assistant messages
     let mut known_call_ids = std::collections::HashSet::new();
     for msg in &messages {
@@ -513,6 +528,28 @@ mod tests {
         let path = std::env::temp_dir().join(format!("nebo-session-test-{}.db", uuid::Uuid::new_v4()));
         let store = Arc::new(Store::new(path.to_str().unwrap()).expect("test store"));
         SessionManager::new(store)
+    }
+
+    /// The harness load starts at the boundary, keeps attachment rows (the
+    /// sliding-window load drops them as stored steering) and drops a tool
+    /// result whose call is behind the boundary.
+    #[test]
+    fn harness_load_keeps_attachments_and_drops_results_cut_from_their_call() {
+        let mgr = test_manager();
+        let sid = mgr.get_or_create("agent:a:web", "").unwrap().id;
+        let calls = r#"[{"id":"c1","name":"os","input":{}}]"#;
+        let results = r#"[{"tool_call_id":"c1","content":"ok","is_error":false}]"#;
+        mgr.append_message(&sid, "user", "before", None, None, None).unwrap();
+        mgr.append_message(&sid, "assistant", "", Some(calls), None, None).unwrap();
+        mgr.append_message(&sid, "user", "summary", None, None, Some(r#"{"checkpoint":true}"#)).unwrap();
+        mgr.append_message(&sid, "tool", "", None, Some(results), None).unwrap();
+        let reminder = crate::harness::reminders::wrap("The date is now Friday.");
+        mgr.append_message(&sid, "user", &reminder, None, None, Some(r#"{"attachment":{"kind":"date"},"isMeta":true}"#))
+            .unwrap();
+
+        let loaded = mgr.get_messages_since_checkpoint(&sid).unwrap();
+        assert_eq!(loaded.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), vec!["summary", reminder.as_str()]);
+        assert!(!mgr.get_messages(&sid).unwrap().iter().any(|m| m.content == reminder), "the old load drops it");
     }
 
     /// Switching the active chat is a matter switch under context isolation:
