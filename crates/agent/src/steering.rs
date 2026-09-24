@@ -10,7 +10,7 @@ pub struct WorkTask {
     pub details: Option<String>,
 }
 
-/// Format proactive inbox items into `[Background Results]` lines for the system suffix.
+/// Format proactive inbox items into `[Background Results]` lines for the turn's first call.
 /// (The behavioral Generator/Pipeline machinery was retired in R8; this is the one piece
 /// of the old pipeline that survives — it surfaces background results, not steering.)
 pub fn format_proactive_items(items: &[crate::proactive::ProactiveItem]) -> Vec<String> {
