@@ -82,8 +82,6 @@ pub struct DynamicContext {
     /// Cached tool documentation (key → content). Injected into the dynamic
     /// suffix so it survives sliding window eviction.
     pub tool_doc_cache: Vec<(String, String)>,
-    /// Background proactive results (actual content, not behavioral guidance).
-    pub proactive_context: String,
     /// User-configured IANA timezone (e.g. "America/Denver"). When set, date/time
     /// in the dynamic suffix is computed in this timezone instead of system-local.
     pub user_timezone: Option<String>,
@@ -1018,7 +1016,9 @@ Stay on this objective until it is complete or the user changes direction. If an
 
     // 5. Current work tasks
     if !dctx.work_tasks.is_empty() {
-        sb.push_str("\n\n---\n## Current Work Tasks\nThis is your live task list for the work in progress — what's done, what's in progress, and what's still pending. Pick up from here: continue the next pending task and keep this list updated with agent(resource: \"task\"). Don't recreate items that already exist or redo completed ones.\n");
+        // State only: the list as it stands. What to do with it is steering and
+        // never lives here.
+        sb.push_str("\n\n---\n## Current Work Tasks\n");
         for task in &dctx.work_tasks {
             let icon = match task.status.as_str() {
                 "completed" => "completed",
@@ -1060,13 +1060,6 @@ Stay on this objective until it is complete or the user changes direction. If an
             total_chars += truncated.len() + key.len() + 5;
         }
         sb.push_str("---");
-    }
-
-    // 7. Background results (proactive inbox). Behavioral steering now lives entirely in
-    // the message-stream reminder channel — the `## Agent Directives` suffix was retired (R8).
-    if !dctx.proactive_context.is_empty() {
-        sb.push_str("\n\n[Background Results]\n");
-        sb.push_str(&dctx.proactive_context);
     }
 
     sb
@@ -1265,7 +1258,6 @@ mod tests {
             channel: "web".to_string(),
             work_tasks: vec![],
             tool_doc_cache: vec![],
-            proactive_context: String::new(),
             user_timezone: None,
         };
         let result = build_dynamic_suffix(&dctx);
@@ -1273,6 +1265,26 @@ mod tests {
         assert!(result.contains("Build a website"));
         assert!(result.contains("Current Objective"));
         assert!(result.contains("CONTEXT COMPACTION"));
+    }
+
+    /// The task list is state, re-rendered every call; what to do with it is
+    /// steering and never rides in the system prompt.
+    #[test]
+    fn work_tasks_render_as_state_with_no_directive() {
+        let dctx = DynamicContext {
+            work_tasks: vec![crate::steering::WorkTask {
+                id: "1".to_string(),
+                subject: "Draft the outline".to_string(),
+                status: "pending".to_string(),
+                details: None,
+            }],
+            ..Default::default()
+        };
+        let result = build_dynamic_suffix(&dctx);
+        assert!(result.contains("## Current Work Tasks\n- [pending] Draft the outline\n"), "{result}");
+        for directive in ["Pick up from here", "continue the next pending task", "Don't recreate"] {
+            assert!(!result.contains(directive), "steering in the task list: {directive}");
+        }
     }
 
     #[test]

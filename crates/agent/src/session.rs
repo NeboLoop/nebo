@@ -429,17 +429,21 @@ fn extract_chat_id_from_key(key: &str) -> String {
     }
 }
 
-/// Steering an older build wrote into the thread. Steering rides the calls of
-/// the turn that produced it and is never history, but two kinds were stored
-/// as user rows: the auto-continue nudge, and a `<system-reminder>` briefing
-/// queued into a running turn. The rows stay on disk (owner data is never
-/// deleted); the model's history never loads them — a stored "keep going"
-/// re-sent on every later turn is how an employee stays fixated on old work.
+/// Steering an older build wrote into the thread. Steering rides the call it
+/// was made for and is never history (the store now refuses a
+/// `<system-reminder>` row), but four kinds were stored as user rows: the
+/// auto-continue nudge, a `<system-reminder>` briefing queued into a running
+/// turn, a workroom's room briefing, and the budget-exhausted summary request.
+/// The rows stay on disk (owner data is never deleted); the model's history
+/// never loads them — a stored "keep going" re-sent on every later turn is how
+/// an employee stays fixated on old work.
 fn is_stored_steering(msg: &ChatMessage) -> bool {
     if msg.role != "user" {
         return false;
     }
-    if crate::goals::is_continuation_prompt(&msg.content) {
+    if crate::goals::is_continuation_prompt(&msg.content)
+        || msg.content == crate::runner::BUDGET_SUMMARY_REQUEST
+    {
         return true;
     }
     let meta = msg
@@ -452,7 +456,7 @@ fn is_stored_steering(msg: &ChatMessage) -> bool {
             .and_then(|b| b.as_bool())
             .unwrap_or(false)
     };
-    flag("autoContinue") || (flag("isMeta") && msg.content.trim_start().starts_with("<system-reminder>"))
+    flag("autoContinue") || flag("roomBriefing") || (flag("isMeta") && db::is_stream_reminder(&msg.content))
 }
 
 /// The model's history: stored steering dropped (see [`is_stored_steering`]),
@@ -544,9 +548,43 @@ mod tests {
         Some(v.to_string())
     }
 
+    /// A user row as an older build stored it, past the store's guard.
+    fn plant_legacy_row(mgr: &SessionManager, session_id: &str, content: &str, metadata: Option<&str>) {
+        let chat_id = mgr.active_chat_id(session_id);
+        mgr.store
+            .conn_exec_for_test(&format!(
+                "INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) \
+                 VALUES ('{}', '{}', 'user', '{}', {}, unixepoch())",
+                uuid::Uuid::new_v4(),
+                chat_id,
+                content.replace('\'', "''"),
+                metadata.map(|m| format!("'{}'", m.replace('\'', "''"))).unwrap_or_else(|| "NULL".into()),
+            ));
+    }
+
+    /// Nothing steering-shaped reaches storage: every chat-message insert
+    /// refuses a `<system-reminder>`, whichever code path calls it.
+    #[test]
+    fn the_store_refuses_a_stream_reminder() {
+        let mgr = test_manager();
+        let session = mgr.get_or_create("agent:a1:web", "").expect("session");
+        let reminder = crate::steering::wrap_system_reminder("keep going");
+        for role in ["user", "assistant", "system", "tool"] {
+            assert!(mgr.append_message(&session.id, role, &reminder, None, None, None).is_err(), "{role} row stored");
+        }
+        let chat_id = mgr.active_chat_id(&session.id);
+        assert!(mgr.store.create_chat_message("m1", &chat_id, "user", &reminder, None).is_err());
+        assert!(mgr.store.create_chat_message_imported("m2", &chat_id, "user", &format!("  {reminder}"), None, None, 1).is_err());
+        assert!(mgr.store.compact_chat_history(&chat_id, "m3", &reminder).is_err());
+        assert!(mgr.store.get_chat_messages(&chat_id).expect("rows").is_empty());
+        // The owner quoting the tag mid-sentence is their words, not a reminder.
+        assert!(mgr.append_message(&session.id, "user", "what is a <system-reminder>?", None, None, None).is_ok());
+    }
+
     /// Steering older builds stored — the auto-continue nudge (stamped
-    /// `autoContinue` by migration 0131, or bare) and a `<system-reminder>`
-    /// briefing queued into a running turn — never loads into the model's
+    /// `autoContinue` by migration 0131, or bare), a `<system-reminder>`
+    /// briefing queued into a running turn, a room briefing, the
+    /// budget-exhausted summary request — never loads into the model's
     /// history, and stays on disk. Everything that is conversation loads:
     /// the owner's words, tool results, the stop record, preloads, hidden
     /// platform prompts.
@@ -571,13 +609,26 @@ mod tests {
                 None,
                 meta(serde_json::json!({"isMeta": true})),
             ),
+            (
+                "user",
+                "You are Ada, in the team \"Ops\". A team is where work gets DONE.".into(),
+                None,
+                None,
+                meta(serde_json::json!({"isMeta": true, "roomBriefing": true})),
+            ),
+            ("user", crate::runner::BUDGET_SUMMARY_REQUEST.into(), None, None, None),
             ("user", crate::runner::INTERRUPT_MESSAGE.into(), None, None, meta(serde_json::json!({"isMeta": true}))),
             ("user", "[Loading skill: plan]\n\nsteps".into(), None, None, meta(serde_json::json!({"isMeta": true, "skillPreload": "plan"}))),
             ("user", "[Background event — not an owner message]".into(), None, None, meta(serde_json::json!({"isMeta": true, "hiddenPrompt": true}))),
             ("user", "Thanks".into(), None, None, None),
         ];
         for (role, content, tc, tr, md) in &rows {
-            mgr.append_message(&session.id, role, content, *tc, *tr, md.as_deref()).expect("append");
+            if db::is_stream_reminder(content) {
+                // The store refuses these now; an older build wrote them.
+                plant_legacy_row(&mgr, &session.id, content, md.as_deref());
+            } else {
+                mgr.append_message(&session.id, role, content, *tc, *tr, md.as_deref()).expect("append");
+            }
         }
 
         let history = mgr.get_messages(&session.id).expect("history");
@@ -596,7 +647,9 @@ mod tests {
         assert!(history.iter().any(|m| m.role == "tool"), "the tool result is conversation");
         assert!(contents.iter().any(|c| c.starts_with("[Loading skill: plan]")), "a preload is not steering");
         assert!(contents.iter().any(|c| c.starts_with("[Background event")), "a hidden prompt is not steering");
-        assert_eq!(history.len(), rows.len() - 3, "exactly the three steering rows are dropped");
+        assert!(history.iter().all(|m| !m.content.contains("A team is where work gets DONE")), "a stored room briefing loaded");
+        assert!(history.iter().all(|m| m.content != crate::runner::BUDGET_SUMMARY_REQUEST), "a stored summary request loaded");
+        assert_eq!(history.len(), rows.len() - 5, "exactly the five steering rows are dropped");
 
         let chat_id = mgr.active_chat_id(&session.id);
         let on_disk = mgr.store.get_chat_messages(&chat_id).expect("raw rows");
@@ -608,6 +661,7 @@ mod tests {
     struct Scripted {
         script: std::sync::Mutex<std::collections::VecDeque<Step>>,
         calls: std::sync::Mutex<Vec<Vec<ai::Message>>>,
+        summaries: std::sync::Mutex<Vec<Vec<ai::Message>>>,
     }
 
     enum Step {
@@ -626,6 +680,9 @@ mod tests {
                 self.calls.lock().unwrap().push(req.messages.clone());
                 self.script.lock().unwrap().pop_front().expect("a main-loop call the script did not expect")
             } else {
+                if req.trace.purpose == "budget_summary" {
+                    self.summaries.lock().unwrap().push(req.messages.clone());
+                }
                 Step::Say("ok")
             };
             let events = match step {
@@ -646,10 +703,11 @@ mod tests {
         }
     }
 
-    async fn turn(runner: &crate::runner::Runner, key: &str, prompt: String) {
+    async fn turn(runner: &crate::runner::Runner, key: &str, prompt: String, max_iterations: usize) {
         let req = crate::runner::RunRequest {
             session_key: key.to_string(),
             prompt,
+            max_iterations,
             skip_memory_extract: true,
             ..Default::default()
         };
@@ -689,6 +747,7 @@ mod tests {
                 .into(),
             ),
             calls: Default::default(),
+            summaries: Default::default(),
         });
         let runner = crate::runner::Runner::new(
             store.clone(),
@@ -703,8 +762,8 @@ mod tests {
         );
         let key = "agent:ops:web";
 
-        turn(&runner, key, "Draft the plan".into()).await;
-        turn(&runner, key, crate::goals::continuation_prompt("unfinished work in the previous response")).await;
+        turn(&runner, key, "Draft the plan".into(), 0).await;
+        turn(&runner, key, crate::goals::continuation_prompt("unfinished work in the previous response"), 0).await;
 
         let sid = runner.sessions().resolve_session_id_by_key(key).expect("session");
         let chat_id = runner.sessions().active_chat_id(&sid);
@@ -725,19 +784,14 @@ mod tests {
             .sessions()
             .append_message(&sid, "user", &legacy_nudge, None, None, Some(r#"{"isMeta":true,"autoContinue":true}"#))
             .expect("legacy nudge");
-        runner
-            .sessions()
-            .append_message(
-                &sid,
-                "user",
-                &crate::steering::wrap_system_reminder("Team \"Ops\" — mission: ship it."),
-                None,
-                None,
-                Some(r#"{"isMeta":true}"#),
-            )
-            .expect("legacy briefing");
+        plant_legacy_row(
+            runner.sessions(),
+            &sid,
+            &crate::steering::wrap_system_reminder("Team \"Ops\" — mission: ship it."),
+            Some(r#"{"isMeta":true}"#),
+        );
 
-        turn(&runner, key, "Thanks".into()).await;
+        turn(&runner, key, "Thanks".into(), 0).await;
 
         let calls = model.calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 5, "turn one, the continuation's dropped call, its retry, its next call, turn three");
@@ -760,5 +814,46 @@ mod tests {
             2,
             "stored rows are filtered at load, never deleted"
         );
+    }
+
+    /// When the iteration budget runs out mid-task, one toolless call asks
+    /// for a summary. The ask rides that call on the one steering channel and
+    /// is never stored; the summary the model writes is conversation and is.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_budget_summary_request_rides_its_call_and_is_never_stored() {
+        let path = std::env::temp_dir().join(format!("nebo-steering-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(Store::new(path.to_str().unwrap()).expect("store"));
+        let model = Arc::new(Scripted {
+            script: std::sync::Mutex::new([Step::Call, Step::Call, Step::Call, Step::Call].into()),
+            calls: Default::default(),
+            summaries: Default::default(),
+        });
+        let runner = crate::runner::Runner::new(
+            store.clone(),
+            Arc::new(tools::Registry::new(tools::Policy::new())),
+            vec![model.clone() as Arc<dyn ai::Provider>],
+            crate::selector::ModelSelector::new(Default::default()),
+            Arc::new(crate::concurrency::ConcurrencyController::new(Some(2))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        );
+        let key = "agent:ops:web";
+        turn(&runner, key, "Read every file".into(), 1).await;
+
+        let summaries = model.summaries.lock().unwrap().clone();
+        assert_eq!(summaries.len(), 1, "one summary call after the budget ran out");
+        let ask = summaries[0].last().expect("messages");
+        assert_eq!(ask.role, "user");
+        assert!(ask.content.starts_with("<system-reminder>") && ask.content.contains(crate::runner::BUDGET_SUMMARY_REQUEST));
+
+        let sid = runner.sessions().resolve_session_id_by_key(key).expect("session");
+        let stored = store.get_chat_messages(&runner.sessions().active_chat_id(&sid)).expect("rows");
+        assert!(
+            stored.iter().all(|m| !m.content.contains(crate::runner::BUDGET_SUMMARY_REQUEST)),
+            "the summary request was stored"
+        );
+        assert!(stored.iter().any(|m| m.role == "assistant" && m.content == "ok"), "the summary is conversation");
     }
 }
