@@ -1419,3 +1419,429 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         h.title_sink.clone(),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    //! The turn end to end against a scripted model: every main-loop call is
+    //! recorded and answered from the script; side calls answer "ok".
+
+    use std::collections::VecDeque;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    use super::*;
+    use crate::harness::{Delivery, SeatRequest};
+
+    type Hook = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    enum Step {
+        Say(&'static str),
+        Call(&'static str, serde_json::Value),
+        /// Text the output cap cut off.
+        Cut(&'static str),
+        /// A dropped connection.
+        Transient,
+        /// The provider says the request is over the window.
+        Overflow,
+        /// The step, with what the call cost in microdollars.
+        Paid(Box<Step>, i64),
+        /// Run the hook while the call is in flight, then answer.
+        During(Box<Step>, Hook),
+    }
+
+    #[derive(Default)]
+    struct Scripted {
+        script: Mutex<VecDeque<Step>>,
+        calls: Mutex<Vec<ChatRequest>>,
+    }
+
+    impl Scripted {
+        fn new(steps: Vec<Step>) -> Arc<Self> {
+            Arc::new(Self {
+                script: Mutex::new(steps.into()),
+                calls: Default::default(),
+            })
+        }
+
+        fn calls(&self) -> Vec<ChatRequest> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ai::Provider for Scripted {
+        fn id(&self) -> &str {
+            "scripted"
+        }
+
+        async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            if req.trace.purpose != "agent_turn" {
+                return Ok(events(vec![StreamEvent::text("ok")], None));
+            }
+            self.calls.lock().unwrap().push(req.clone());
+            let mut step = self.script.lock().unwrap().pop_front().expect("a call the script did not expect");
+            if let Step::During(inner, hook) = step {
+                hook.await;
+                step = *inner;
+            }
+            let (list, stop) = answer(step)?;
+            Ok(events(list, stop))
+        }
+    }
+
+    fn answer(step: Step) -> Result<(Vec<StreamEvent>, Option<&'static str>), ai::ProviderError> {
+        Ok(match step {
+            Step::Say(text) => (vec![StreamEvent::text(text)], None),
+            Step::Call(name, input) => (
+                vec![StreamEvent::tool_call(ai::ToolCall {
+                    id: format!("call-{}", uuid::Uuid::new_v4()),
+                    name: name.into(),
+                    input,
+                })],
+                None,
+            ),
+            Step::Cut(text) => (vec![StreamEvent::text(text)], Some("max_tokens")),
+            Step::Transient => return Err(ai::ProviderError::Request("connection reset".into())),
+            Step::Overflow => return Err(ai::ProviderError::ContextOverflow),
+            Step::Paid(inner, microdollars) => {
+                let (mut list, stop) = answer(*inner)?;
+                list.push(StreamEvent::usage(ai::UsageInfo {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cost_microdollars: Some(microdollars),
+                    ..Default::default()
+                }));
+                (list, stop)
+            }
+            Step::During(..) => unreachable!("hooks do not nest"),
+        })
+    }
+
+    fn events(mut list: Vec<StreamEvent>, stop: Option<&str>) -> ai::EventReceiver {
+        list.push(match stop {
+            Some(stop) => StreamEvent::done_with_reason(stop),
+            None => StreamEvent::done(),
+        });
+        let (tx, rx) = mpsc::channel(list.len());
+        for e in list {
+            tx.try_send(e).expect("room for the scripted events");
+        }
+        rx
+    }
+
+    /// A read-only tool that echoes, and a deferred one `find_tools` loads.
+    struct Echo {
+        name: &'static str,
+        deferred: bool,
+    }
+
+    impl tools::registry::DynTool for Echo {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> String {
+            format!("{} things", self.name)
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn should_defer(&self) -> bool {
+            self.deferred
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::ok(format!("{} ran", self.name)) })
+        }
+    }
+
+    async fn harness(model: &Arc<Scripted>) -> Harness {
+        let path = std::env::temp_dir().join(format!("nebo-turn-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(db::Store::new(path.to_str().unwrap()).expect("store"));
+        let registry = Arc::new(tools::Registry::new(tools::Policy::new()));
+        registry.register(Box::new(Echo { name: "echo", deferred: false })).await;
+        registry.register(Box::new(Echo { name: "weather", deferred: true })).await;
+        registry.register(Box::new(tools::find_tools::FindToolsTool::new(registry.clone()))).await;
+        Harness::new(
+            store,
+            registry,
+            vec![model.clone() as Arc<dyn ai::Provider>],
+            crate::selector::ModelSelector::new(Default::default()),
+            Arc::new(crate::concurrency::ConcurrencyController::new(Some(4))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        )
+    }
+
+    const KEY: &str = "agent:ops:web";
+
+    fn owner(text: &str) -> TurnRequest {
+        TurnRequest {
+            session_key: KEY.into(),
+            input: TurnInput::Owner {
+                text: text.into(),
+                images: Vec::new(),
+                attachments: Vec::new(),
+            },
+            seat: SeatRequest {
+                agent_id: String::new(),
+                user_id: String::new(),
+                origin: tools::Origin::User,
+                permissions: None,
+                operation_policy: None,
+                resource_grants: None,
+                allowed_paths: Vec::new(),
+                cwd: None,
+                seed_taint: Vec::new(),
+                audience: None,
+                tool_allowlist: None,
+                tool_denial_hint: None,
+                approval_mode: ApprovalMode::FullAccess,
+                handoff_depth: 0,
+                model_override: String::new(),
+                model_preference: None,
+                personality_snippet: None,
+                tool_scope: None,
+            },
+            mode: TurnMode::Chat,
+            delivery: Delivery {
+                channel: "web".into(),
+                channel_ctx: None,
+                mention_briefing: None,
+            },
+            cancel: tokio_util::sync::CancellationToken::new(),
+            progress: None,
+        }
+    }
+
+    /// Run the turn to its last event; returns every event.
+    async fn run_turn(h: &Harness, req: TurnRequest) -> Vec<StreamEvent> {
+        let mut handle = h.start_turn(req).await.expect("start");
+        let mut seen = Vec::new();
+        while let Some(e) = handle.events.recv().await {
+            seen.push(e);
+        }
+        for _ in 0..200 {
+            if !h.is_session_busy(KEY) {
+                return seen;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the turn never released its session");
+    }
+
+    fn exit_of(events: &[StreamEvent]) -> String {
+        let done: Vec<&StreamEvent> = events.iter().filter(|e| e.event_type == ai::StreamEventType::Done).collect();
+        assert_eq!(done.len(), 1, "one Done per turn task");
+        done[0].stop_reason.clone().unwrap_or_default()
+    }
+
+    fn stored(h: &Harness) -> Vec<ChatMessage> {
+        let sid = h.sessions.resolve_session_id_by_key(KEY).expect("session");
+        h.store.get_chat_messages(&h.sessions.active_chat_id(&sid)).expect("rows")
+    }
+
+    fn kinds(rows: &[ChatMessage]) -> Vec<String> {
+        rows.iter().filter_map(reminders::attachment_kind).collect()
+    }
+
+    fn texts(req: &ChatRequest) -> Vec<String> {
+        req.messages.iter().map(|m| m.content.clone()).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn text_reply_ends_the_turn() {
+        let model = Scripted::new(vec![Step::Say("Hello.")]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Hi")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(model.calls().len(), 1, "one call, no continuation");
+        let rows = stored(&h);
+        let convo: Vec<(&str, &str)> = rows
+            .iter()
+            .filter(|m| reminders::attachment_kind(m).is_none())
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(convo, [("user", "Hi"), ("assistant", "Hello.")]);
+        let call = &model.calls()[0];
+        let last_words = call.messages.iter().rev().find(|m| !m.content.starts_with("<system-reminder>")).unwrap();
+        assert_eq!(last_words.content, "Hi", "the owner's words, then this step's attachments");
+        assert!(call.system.contains(crate::prompt::CACHE_BOUNDARY));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tool_round_then_answer() {
+        let model = Scripted::new(vec![Step::Call("echo", serde_json::json!({})), Step::Say("It echoed.")]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Echo something")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[0].tools.iter().any(|t| t.name == "echo"), "the core tool is declared");
+        let last = calls[1].messages.last().unwrap();
+        assert_eq!(last.role, "tool");
+        assert!(last.tool_results.as_ref().unwrap().to_string().contains("echo ran"), "the result reaches the next call");
+        assert!(stored(&h).iter().any(|m| m.role == "assistant" && m.content == "It echoed."));
+    }
+
+    /// A dropped call is taken again with the same rows: the step's
+    /// attachments were stored once, before the first call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transient_retry_resends_the_same_rows() {
+        let model = Scripted::new(vec![Step::Transient, Step::Say("Back.")]);
+        let h = harness(&model).await;
+        let mut req = owner("Where were we?");
+        req.delivery.mention_briefing = Some("Team Ops: Ava leads.".into());
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "the dropped call and its retry");
+        assert_eq!(texts(&calls[0]), texts(&calls[1]), "the retry resends the same rows");
+        assert!(texts(&calls[0]).iter().any(|t| t.contains("Team Ops: Ava leads.")), "the briefing is a row");
+        assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "run_briefing").count(), 1, "written once");
+    }
+
+    /// The output cap cuts a reply: the call is taken again at the higher
+    /// cap, and a second cut continues in place from one resume row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cutoff_resumes_once() {
+        let model = Scripted::new(vec![Step::Cut("Part one"), Step::Cut("Part two"), Step::Say("Part three.")]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Write it all")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[1].max_tokens > calls[0].max_tokens, "the first cut escalates the cap");
+        let resume = events::attachment_for(&TurnEvent::CutoffResume).unwrap();
+        let resumes = |c: &ChatRequest| c.messages.iter().filter(|m| m.content.contains(&resume.text)).count();
+        assert_eq!((resumes(&calls[1]), resumes(&calls[2])), (0, 1), "one resume row, after the second cut");
+        assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "cutoff_resume").count(), 1);
+    }
+
+    /// The owner speaks while a tool round runs: the next step's call
+    /// carries their words, and their caller hears the turn is busy.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mid_turn_owner_message_heard_next_step() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let (busy_tx, busy_rx) = tokio::sync::oneshot::channel();
+        let h2 = h.clone();
+        let hook: Hook = Box::pin(async move {
+            let mut handle = h2.start_turn(owner("Also check the calendar")).await.expect("queued");
+            let first = handle.events.recv().await.expect("status");
+            let _ = busy_tx.send(first.stop_reason);
+        });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook),
+            Step::Say("Done, and the calendar is clear."),
+        ]);
+        let events = run_turn(&h, owner("Echo something")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(busy_rx.await.unwrap().as_deref(), Some(session_gate::QUEUED_INTO_RUNNING_TURN));
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "heard inside the same turn");
+        assert!(!texts(&calls[0]).iter().any(|t| t.contains("Also check the calendar")));
+        assert!(texts(&calls[1]).iter().any(|t| t.contains("Also check the calendar")), "heard at the next step");
+    }
+
+    /// Input that lands during the last step was in no call: the next turn
+    /// hears it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn message_after_last_step_starts_next_turn() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let h2 = h.clone();
+        let hook: Hook = Box::pin(async move {
+            let mut handle = h2.start_turn(owner("One more thing")).await.expect("queued");
+            while handle.events.recv().await.is_some() {}
+        });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::During(Box::new(Step::Say("Here you go.")), hook),
+            Step::Say("And the one more thing."),
+        ]);
+        let events = run_turn(&h, owner("First thing")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(events.iter().filter(|e| e.event_type == ai::StreamEventType::Done).count(), 1, "one Done");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "a second turn ran");
+        assert!(!texts(&calls[0]).iter().any(|t| t.contains("One more thing")));
+        assert!(texts(&calls[1]).iter().any(|t| t.contains("One more thing")));
+    }
+
+    /// `find_tools` loads a deferred tool: its schema joins the request from
+    /// the next step, and the step before only listed its name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deferred_tool_loaded_mid_turn_is_callable_next_step() {
+        let model = Scripted::new(vec![
+            Step::Call(tools::find_tools::FIND_TOOLS, serde_json::json!({"query": "select:weather"})),
+            Step::Call("weather", serde_json::json!({})),
+            Step::Say("Sunny."),
+        ]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Weather?")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3);
+        let declared = |c: &ChatRequest| c.tools.iter().any(|t| t.name == "weather");
+        assert!(!declared(&calls[0]), "deferred before it is loaded");
+        assert!(texts(&calls[0]).iter().any(|t| t.contains("available through find_tools") && t.contains("weather")), "listed by name");
+        assert!(declared(&calls[1]) && declared(&calls[2]), "declared from the next step on");
+        let weather_result = calls[2].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+        assert!(weather_result.contains("weather ran"), "{weather_result}");
+    }
+
+    /// The owner's spending limit ends the turn before the next step, with
+    /// a status line that says so.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn budget_limit_ends_the_turn_with_a_status_line() {
+        let model = Scripted::new(vec![Step::Paid(Box::new(Step::Call("echo", serde_json::json!({}))), 50_000)]);
+        let h = harness(&model).await;
+        let mut req = owner("Do the thing");
+        req.mode = TurnMode::Workflow(Box::new(crate::runner::WorkflowMode {
+            trace: RequestTrace::new("agent_turn"),
+            objective: String::new(),
+            instruction: String::new(),
+            advertised_tools: ["echo".to_string()].into(),
+            tainted: false,
+            spend_cap_microcents: 1_000_000,
+            park: None,
+        }));
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), "spend_cap_reached");
+        assert_eq!(model.calls().len(), 1, "no step after the limit");
+        let status = events
+            .iter()
+            .find(|e| e.stop_reason.as_deref() == Some("spend_cap_reached") && e.event_type != ai::StreamEventType::Done)
+            .expect("a status line");
+        assert!(status.text.contains("$0.05 of $0.01"), "{}", status.text);
+    }
+
+    /// Stop means stop: the open call gets an interrupted result and the
+    /// thread records the interrupt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_records_interrupt() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let req = owner("Echo something");
+        let cancel = req.cancel.clone();
+        let hook: Hook = Box::pin(async move { cancel.cancel() });
+        *model.script.lock().unwrap() =
+            VecDeque::from(vec![Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook)]);
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), "cancelled");
+        let rows = stored(&h);
+        assert!(rows.iter().any(|m| m.content == conversation::INTERRUPT_MESSAGE), "the interrupt is recorded");
+        let calls_open = rows.iter().filter(|m| m.role == "tool").all(|m| {
+            m.tool_results.as_deref().is_some_and(|r| r.contains(conversation::INTERRUPTED_TOOL_RESULT) || r.contains("echo ran"))
+        });
+        assert!(calls_open, "every call has a result");
+        assert_eq!(model.calls().len(), 1, "no step after the stop");
+    }
+}
