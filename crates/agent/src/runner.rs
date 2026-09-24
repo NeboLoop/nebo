@@ -3142,6 +3142,12 @@ async fn run_loop(
         .await
         {
             model_call::CallOutcome::Reply(reply) => reply,
+            model_call::CallOutcome::Retry(model_call::RetryWhy::StreamCut) => {
+                if let Some(cut) = crate::harness::events::attachment_for(&crate::harness::events::TurnEvent::StreamCut) {
+                    pending_stream_reminders.push(steering::wrap_system_reminder(&cut.text));
+                }
+                continue;
+            }
             model_call::CallOutcome::Retry(_) => continue,
             model_call::CallOutcome::Cancelled => return Ok(turn_exit_reason.label()),
             model_call::CallOutcome::CancelledInBackoff => return Ok("cancelled".to_string()),
@@ -3647,8 +3653,10 @@ async fn run_loop(
         if let Some(retry) =
             model_call::output_cutoff(&mut call_state, stop_reason.as_deref(), iteration, session_id)
         {
-            if let model_call::StepRetry::WithReminder(reminder) = retry {
-                pending_stream_reminders.push(reminder);
+            if let model_call::StepRetry::Resume = retry
+                && let Some(resume) = crate::harness::events::attachment_for(&crate::harness::events::TurnEvent::CutoffResume)
+            {
+                pending_stream_reminders.push(steering::wrap_system_reminder(&resume.text));
             }
             continue;
         }

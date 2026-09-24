@@ -813,8 +813,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             }
         });
         let fork_of = request.clone();
-        // A call never carries a stream reminder; what `call_model` would
-        // queue for a cut stream is dropped and the step is taken again.
+        // A call never carries a stream reminder: what a retry needs to say
+        // is an attachment row (`StreamCut`, `CutoffResume`).
         let mut no_stream_reminders = Vec::new();
         let outcome = model_call::call_model(
             model_call::ModelCall {
@@ -851,6 +851,14 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                         st.transition = Transition::TransientRetry { attempt: st.call.overflow_retries as u8 };
                     }
                 }
+                st.step -= 1;
+                continue;
+            }
+            CallOutcome::Retry(RetryWhy::StreamCut) => {
+                st.reminders.add(&TurnEvent::StreamCut);
+                st.transition = Transition::TransientRetry {
+                    attempt: (st.call.transient_retries + st.call.retryable_retries) as u8,
+                };
                 st.step -= 1;
                 continue;
             }
@@ -904,7 +912,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 st.transition = Transition::OutputEscalated;
                 continue;
             }
-            Some(model_call::StepRetry::WithReminder(_)) => {
+            Some(model_call::StepRetry::Resume) => {
                 st.reminders.add(&TurnEvent::CutoffResume);
                 st.transition = Transition::CutoffResume {
                     attempt: st.call.output_recovery_attempts as u8,
@@ -924,6 +932,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         }
         if text.trim().is_empty() {
             if model_call::retry_empty_reply(&mut st.call, st.step as usize, sid) {
+                st.reminders.add(&TurnEvent::EmptyReply);
                 st.transition = Transition::TransientRetry {
                     attempt: st.call.empty_content_retries as u8,
                 };

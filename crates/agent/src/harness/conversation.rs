@@ -213,29 +213,19 @@ fn is_worded_reply(m: &ChatMessage) -> bool {
         && m.tool_calls.as_deref().is_none_or(|tc| tc.is_empty() || tc == "[]" || tc == "null")
 }
 
-/// How a message the owner typed mid-turn reads to the model. Claude Code's
-/// framing, plus that the owner is waiting and the next step is the reply:
-/// a changed instruction takes effect now, and the interrupted plan is not
-/// continued past it.
-///
-/// A parent's message is framed as the parent's, not the owner's: it adds to
-/// or changes the task, the sub-agent keeps working, and its report is the
-/// answer — the parent is not waiting on a reply in between.
+/// How a message that arrived mid-turn reads to the model: one fixed frame
+/// naming who sent it, the way Claude Code frames a queued message. The
+/// frame never changes after the row is written, so the conversation's
+/// cached prefix holds.
 pub(crate) fn frame_mid_turn_message(words: &str, from: &MidTurnFrom) -> String {
     match from {
         MidTurnFrom::Owner { via } => format!(
-            "The owner sent a new message while you were working (via {via}):\n{words}\n\n\
-             IMPORTANT: reply to the owner now, in words, before any further tool use. If this \
-             changes what they want, act on the new instruction and do not continue the interrupted \
-             plan. If they asked you to continue or to add something, say so in one line; the work \
-             resumes at your next step. They are waiting."
+            "The owner sent this message while you were working (via {via}):\n{words}\n\n\
+             Address it, then carry on with your work."
         ),
         MidTurnFrom::Parent { .. } => format!(
-            "The employee who gave you this task sent you a message while you were working:\n\
-             {words}\n\n\
-             Take it into the task now. If it changes what they want, follow the new instruction and \
-             drop the part of your plan it replaces; if it adds something, fold it in. Keep working \
-             with your tools and do not delegate it; your final report goes back to them as usual."
+            "The employee who gave you this task sent this message while you were working:\n{words}\n\n\
+             Take it into the task and carry on; your final report goes back to them as usual."
         ),
     }
 }
@@ -401,18 +391,9 @@ pub(crate) async fn persist_input(
 }
 
 pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
-    // A message the owner typed mid-turn is framed until it is answered in
-    // words; after that it is only their words (steering is per turn).
-    let mut answered = vec![false; messages.len()];
-    let mut reply_seen = false;
-    for (i, m) in messages.iter().enumerate().rev() {
-        answered[i] = reply_seen;
-        reply_seen |= is_worded_reply(m);
-    }
     messages
         .iter()
-        .enumerate()
-        .filter_map(|(i, msg)| {
+        .filter_map(|msg| {
             // Skip empty messages
             if msg.content.is_empty()
                 && msg.tool_calls.as_ref().is_none_or(|tc| tc.is_empty())
@@ -460,12 +441,11 @@ pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
             } else {
                 Some(from_attachments)
             };
-            // A message the owner sent while the turn was running is stored as
-            // their words; until it is answered the model gets it framed: it
-            // arrived mid-work and they are waiting on it.
+            // A message that arrived while the turn was running is stored as
+            // sent; the model reads it framed with who sent it.
             let content = match arrived_mid_turn(msg) {
-                Some(from) if !answered[i] => frame_mid_turn_message(&msg.content, &from),
-                _ => msg.content.clone(),
+                Some(from) => frame_mid_turn_message(&msg.content, &from),
+                None => msg.content.clone(),
             };
 
             Some(Message {
@@ -711,8 +691,8 @@ mod tests {
             "stop searching and tell me",
             Some(r#"{"arrivedMidTurn":true,"via":"web"}"#),
         )]);
-        assert!(queued[0].content.starts_with("The owner sent a new message while you were working (via web):\nstop searching and tell me"), "{}", queued[0].content);
-        assert!(queued[0].content.contains("They are waiting"));
+        assert!(queued[0].content.starts_with("The owner sent this message while you were working (via web):\nstop searching and tell me"), "{}", queued[0].content);
+        assert!(!queued[0].content.contains("IMPORTANT"), "no pressure text");
         // Unanswered until a worded reply follows it; a tool-calling row is not one.
         let mid = row("stop reading", Some(r#"{"arrivedMidTurn":true,"via":"web"}"#));
         let mut narrating = row("Reading part 3.", None);
@@ -724,12 +704,12 @@ mod tests {
         assert!(unanswered_mid_turn_message(&[mid.clone(), narrating.clone()]));
         assert!(!unanswered_mid_turn_message(&[mid.clone(), narrating.clone(), reply.clone()]));
         assert!(!unanswered_mid_turn_message(&[row("hello", None)]));
-        // The framing is steering: it rides only until the message is answered.
-        // Every later turn reads the owner's words alone.
+        // One frame, never rewritten: answered or not, the row reads the
+        // same, so the cached prefix holds.
         let pending = convert_messages(&[mid.clone(), narrating.clone()]);
-        assert!(pending[0].content.starts_with("The owner sent a new message"), "{}", pending[0].content);
         let answered = convert_messages(&[mid, narrating, reply]);
-        assert_eq!(answered[0].content, "stop reading");
+        assert_eq!(pending[0].content, answered[0].content);
+        assert!(answered[0].content.starts_with("The owner sent this message"), "{}", answered[0].content);
     }
 
     /// A parent employee's message to its running sub-agent is stored as
@@ -767,7 +747,7 @@ mod tests {
         let msg = row("p", "user", "also cover pricing", Some(meta));
         assert_eq!(arrived_mid_turn(&msg), Some(from));
         let framed = &convert_messages(std::slice::from_ref(&msg))[0].content;
-        assert!(framed.starts_with("The employee who gave you this task sent you a message"), "{framed}");
+        assert!(framed.starts_with("The employee who gave you this task sent this message"), "{framed}");
         assert!(framed.contains("also cover pricing"));
         assert!(!framed.contains("owner") && !framed.contains("They are waiting"), "{framed}");
         assert_eq!(parent_taint(std::slice::from_ref(&msg)), vec![types::provenance::ProvenanceClass::Web]);
