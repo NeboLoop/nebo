@@ -533,7 +533,7 @@ fn count_turns_since_any_tool_use(messages: &[ChatMessage]) -> i32 {
 
 // A stop is never a phrase. The owner's Esc / stop button cancels the run's
 // token, which ends the stream and the tools and records the interrupt
-// (runner::record_interrupt). Two phrase lists lived here until 2026-09-18:
+// (harness::conversation::record_interrupt). Two phrase lists lived here until 2026-09-18:
 // an exact-match stop list that "stop searching and tell me" was not on, and
 // a substring "keep going" list. The model reads the owner's words itself.
 
