@@ -798,7 +798,12 @@ impl AgentTool {
                 }
             }
             "search" => {
-                let query = input["query"].as_str().unwrap_or("");
+                // `key` (the recall/store field) means the words to search for
+                // when there is no `query` (gate run 2026-09-24).
+                let query = ["query", "key", "text"]
+                    .iter()
+                    .find_map(|k| input[*k].as_str().filter(|q| !q.trim().is_empty()))
+                    .unwrap_or("");
                 let limit = input["limit"].as_i64().unwrap_or(20) as usize;
 
                 if query.is_empty() {
