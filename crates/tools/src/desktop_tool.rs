@@ -138,7 +138,8 @@ impl DynTool for DesktopTool {
                 "max_elements": { "type": "integer", "description": "Max elements returned by see (default: 60)" },
                 "until": { "type": "string", "description": "For input scroll: keep scrolling a page at a time until an element whose label contains this text is on screen (case-insensitive), up to max_pages" },
                 "max_pages": { "type": "integer", "description": "For input scroll with until: page budget (default 8, max 30)" },
-                "to_ref": { "type": "string", "description": "For input drag: the element to drop onto (from the last capture); alternative to coordinate" }
+                "to_ref": { "type": "string", "description": "For input drag: the element to drop onto (from the last capture); alternative to coordinate" },
+                "physical": { "type": "boolean", "description": "For input click/type: use the mouse and clipboard instead of accessibility. Off by default; an accessibility action that fails is reported, never silently replaced" }
             },
             "required": ["resource", "action"]
         })
@@ -705,16 +706,31 @@ async fn handle_input(
         ));
     }
 
-    // Where the window is NOW (this also brings the app to the front).
+    // Where the window is NOW, brought to the front. The native helper
+    // answers from the accessibility API; System Events is the fallback, and
+    // it needs an Automation grant the app may not have (Stadium, 2026-09-23:
+    // every AppleEvent hung two minutes waiting for a consent nobody could
+    // click). Acting must not depend on it.
     let now: Option<Rect> = if app.is_empty() {
         None
     } else {
-        match window_frame(&app, true).await {
-            Ok(r) => Some(r),
-            Err(e) if cfg!(target_os = "macos") => {
-                return ToolResult::error(format!("{action}: {e}"));
+        match ax_native::window(&app, 1).await {
+            Ok(w) => {
+                let _ = ax_native::raise(&app, 1).await;
+                Some(Rect { x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3] })
             }
-            Err(_) => snap.as_ref().and_then(|s| s.frame.clone()),
+            // The helper answered: there is nothing to act on. System Events
+            // would only say the same thing worse ("Can't set process to true").
+            Err(e) if is_no_window(&e) => {
+                return ToolResult::error(format!("{action}: {e}; capture again once a window is back"));
+            }
+            Err(_) => match window_frame(&app, true).await {
+                Ok(r) => Some(r),
+                Err(e) if cfg!(target_os = "macos") => {
+                    return ToolResult::error(format!("{action}: {e}"));
+                }
+                Err(_) => snap.as_ref().and_then(|s| s.frame.clone()),
+            },
         }
     };
 
@@ -757,23 +773,42 @@ async fn handle_input(
             if text.is_empty() {
                 return ToolResult::error(errors::missing_param("type", "text", "os(resource: \"input\", action: \"type\", text: \"hello\")"));
             }
+            // A field that accepts AXSetValue gets the text set and read back;
+            // anything else gets the text pasted (one keystroke per character
+            // drops characters and loses capitals). The ref is re-identified
+            // before either.
+            let physical = input["physical"].as_bool().unwrap_or(false);
+            if !physical {
+                if let Some(e) = element.as_ref().filter(|e| !e.path.is_empty() && e.actions.iter().any(|a| a == "AXSetValue")) {
+                    return match ax_native::set_value(&app, 1, &e.path, text, Some((&e.role, &e.label))).await {
+                        Ok(()) => ToolResult::ok(format!("Set {} \"{}\" to {} chars via accessibility (read back)", e.id, e.label, text.chars().count())),
+                        Err(err) => ToolResult::error(format!(
+                            "Setting {} \"{}\" through accessibility failed: {err}. Nothing was typed. \
+                             Capture again and use a current ref, or pass physical: true to click it and paste."
+                        , e.id, e.label)),
+                    };
+                }
+            }
             if let Some((x, y, label)) = &target {
+                if element.is_some() && !app.is_empty() {
+                    let _ = ax_native::raise(&app, 1).await;
+                }
                 let click_result = input_click(*x, *y).await;
                 if click_result.is_error {
                     return click_result;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let r = input_type(text).await;
+                let r = paste_text(text).await;
                 if r.is_error {
-                    return ToolResult::error(format!("Clicked {label} but typing failed: {}", r.content));
+                    return ToolResult::error(format!("Clicked {label} but pasting failed: {}", r.content));
                 }
-                ToolResult::ok(format!("Clicked {label} and typed {} chars", text.chars().count()))
+                ToolResult::ok(format!("Clicked {label} and pasted {} chars", text.chars().count()))
             } else {
-                let r = input_type(text).await;
+                let r = paste_text(text).await;
                 if r.is_error {
                     return r;
                 }
-                ToolResult::ok(format!("Typed {} chars", text.chars().count()))
+                ToolResult::ok(format!("Pasted {} chars into the focused field", text.chars().count()))
             }
         }
         "press" | "hotkey" => {
@@ -796,32 +831,37 @@ async fn handle_input(
             let click_count = if action == "double_click" { 2 } else { input["click_count"].as_u64().unwrap_or(1) };
             let button = if action == "right_click" { "right" } else { input["button"].as_str().unwrap_or("left") };
             // A plain click on an element that accepts AXPress is pressed
-            // through accessibility: no pointer travel, and it works on an
-            // element the pointer could not reach (occluded, off-screen).
-            let mut pressed_via_ax: Option<Result<(), String>> = None;
-            if click_count == 1 && button == "left" {
+            // through accessibility, after the element is re-identified in
+            // the live tree: no pointer travel, and it works on an element
+            // the pointer could not reach. A press that fails is reported,
+            // not replaced by a mouse click on a point that may now hold
+            // something else; the mouse is opt-in (`physical: true`).
+            let physical = input["physical"].as_bool().unwrap_or(false);
+            if click_count == 1 && button == "left" && !physical {
                 if let Some(e) = element.as_ref().filter(|e| !e.path.is_empty() && e.actions.iter().any(|a| a == "AXPress")) {
-                    pressed_via_ax = Some(ax_native::act(&app, 1, &e.path, "AXPress").await);
+                    return match ax_native::act(&app, 1, &e.path, "AXPress", Some((&e.role, &e.label))).await {
+                        Ok(()) => ToolResult::ok(format!("Pressed {label} via accessibility")),
+                        Err(err) => ToolResult::error(format!(
+                            "Press of {label} through accessibility failed: {err}. Nothing was clicked. \
+                             Capture again and use a current ref, or pass physical: true to click its point with the mouse."
+                        )),
+                    };
                 }
             }
-            match pressed_via_ax {
-                Some(Ok(())) => ToolResult::ok(format!("Pressed {label} via accessibility")),
-                other => {
-                    let (r, how) = match (click_count, button) {
-                        (_, "right") => (input_right_click(*x, *y).await, "Right-clicked"),
-                        (2, _) => (input_double_click(*x, *y).await, "Double-clicked"),
-                        _ => (input_click(*x, *y).await, "Clicked"),
-                    };
-                    if r.is_error {
-                        return r;
-                    }
-                    let fallback = match other {
-                        Some(Err(err)) => format!(" (accessibility press failed: {err}; clicked the point instead)"),
-                        _ => String::new(),
-                    };
-                    ToolResult::ok(format!("{how} {label} at screen ({x},{y}){fallback}"))
-                }
+            // Physical input lands on whatever window is on top at the point:
+            // bring the element's own window forward first.
+            if element.is_some() && !app.is_empty() {
+                let _ = ax_native::raise(&app, 1).await;
             }
+            let (r, how) = match (click_count, button) {
+                (_, "right") => (input_right_click(*x, *y).await, "Right-clicked"),
+                (2, _) => (input_double_click(*x, *y).await, "Double-clicked"),
+                _ => (input_click(*x, *y).await, "Clicked"),
+            };
+            if r.is_error {
+                return r;
+            }
+            ToolResult::ok(format!("{how} {label} at screen ({x},{y})"))
         }
         "move" => {
             let Some((x, y, label)) = &target else {
@@ -980,6 +1020,40 @@ async fn handle_input(
     }
 }
 
+/// Put `text` into the focused field through the clipboard, and put the
+/// clipboard back afterwards. On Linux xdotool types directly, which does
+/// not drop characters the way macOS keystrokes do.
+async fn paste_text(text: &str) -> ToolResult {
+    #[cfg(target_os = "macos")]
+    {
+        let before = tokio::process::Command::new("pbpaste").output().await.ok().map(|o| o.stdout);
+        if let Err(e) = pbcopy(text.as_bytes()).await {
+            return ToolResult::error(format!("could not stage the text on the clipboard: {e}"));
+        }
+        let r = input_paste().await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if let Some(b) = before {
+            let _ = pbcopy(&b).await;
+        }
+        return r;
+    }
+    #[allow(unreachable_code)]
+    input_type(text).await
+}
+
+#[cfg(target_os = "macos")]
+async fn pbcopy(bytes: &[u8]) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(bytes).await.map_err(|e| e.to_string())?;
+    }
+    child.wait().await.map_err(|e| e.to_string()).map(|_| ())
+}
+
 async fn input_type(text: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
@@ -1049,6 +1123,25 @@ async fn input_press(key: &str) -> ToolResult {
 
 
 /// `x, y, w, h` as System Events prints a window's `{position, size}`.
+/// The helper's answer when the app is running with no window to act on.
+pub(crate) fn is_no_window(e: &str) -> bool {
+    e.contains("has no open window") || e.contains("there is no window")
+}
+
+/// A window mid-resize (a launch animation, a mode switch) yields an image
+/// that is not the frame's shape, and the elements would land on the wrong
+/// pixels. Five percent covers rounding and a title bar's worth of shadow.
+pub(crate) fn image_matches_frame(frame: Option<&Rect>, dims: Option<(i64, i64)>) -> bool {
+    match (frame, dims) {
+        (Some(f), Some((w, h))) if f.width > 0 && f.height > 0 && w > 0 && h > 0 => {
+            let want = f.width as f64 / f.height as f64;
+            let got = w as f64 / h as f64;
+            ((want - got) / want).abs() <= 0.05
+        }
+        _ => true,
+    }
+}
+
 pub(crate) fn parse_frame(s: &str) -> Option<(i64, i64, i64, i64)> {
     let mut it = s
         .split(|c: char| c == ',' || c.is_whitespace())
@@ -1794,30 +1887,51 @@ async fn capture_see(
 
 /// Walk `app` natively; when that is unavailable, the AppleScript walk. The
 /// layer used is named in the capture, never inferred by the caller.
+/// Roles a person types into: their value is what they typed, never their name.
+fn is_editable_role(role: &str) -> bool {
+    matches!(role, "AXTextField" | "AXTextArea" | "AXComboBox" | "AXSearchField" | "AXSecureTextField")
+}
+
+/// A walked node as the model sees it. The label is what names the element
+/// across captures (title, description, placeholder); a field's contents are
+/// its value, listed beside it. A secure field's contents are never read.
+fn element_from_node(n: &ax_native::AxNode) -> UIElement {
+    let secure = n.role == "AXSecureTextField";
+    let editable = is_editable_role(&n.role);
+    let label = if !n.title.is_empty() {
+        n.title.clone()
+    } else if let Some(d) = n.desc.clone().filter(|d| !d.is_empty()) {
+        d
+    } else if let Some(p) = n.placeholder.clone().filter(|p| !p.is_empty()) {
+        p
+    } else if secure {
+        "[secure field]".to_string()
+    } else if editable {
+        String::new()
+    } else {
+        n.value.clone().unwrap_or_default()
+    };
+    UIElement {
+        id: String::new(),
+        role: n.role.clone(),
+        label,
+        bounds: Rect { x: n.frame[0], y: n.frame[1], width: n.frame[2], height: n.frame[3] },
+        actionable: !n.actions.is_empty(),
+        keyboard_shortcut: None,
+        actions: n.actions.clone(),
+        path: n.path.clone(),
+        focused: n.focused,
+        value: if secure || !editable { None } else { n.value.clone().filter(|v| !v.is_empty()) },
+    }
+}
+
 async fn walk_elements(app: &str) -> (AxCapture, Vec<UIElement>) {
     match ax_native::tree(app, &ax_native::WalkOpts::default()).await {
         Ok(tree) => {
             let elements: Vec<UIElement> = tree
                 .nodes
                 .iter()
-                .map(|n| {
-                    let label = if !n.title.is_empty() {
-                        n.title.clone()
-                    } else {
-                        n.desc.clone().or_else(|| n.value.clone()).unwrap_or_default()
-                    };
-                    UIElement {
-                        id: String::new(),
-                        role: n.role.clone(),
-                        label,
-                        bounds: Rect { x: n.frame[0], y: n.frame[1], width: n.frame[2], height: n.frame[3] },
-                        actionable: !n.actions.is_empty(),
-                        keyboard_shortcut: None,
-                        actions: n.actions.clone(),
-                        path: n.path.clone(),
-                        focused: n.focused,
-                    }
-                })
+                .map(element_from_node)
                 .collect();
             let actionable = elements.iter().filter(|e| e.actionable).count();
             (
@@ -1878,6 +1992,7 @@ fn merge_text_lines(
             actions: Vec::new(),
             path: String::new(),
             focused: false,
+            value: None,
         });
         added += 1;
     }
@@ -1893,42 +2008,72 @@ async fn observe(
     let quality = input["quality"].as_str().unwrap_or("medium");
     let max_elements = input["max_elements"].as_u64().unwrap_or(60).min(500) as usize;
 
+    // No app named means the window in front — what "look" means to a person
+    // — never the whole screen while a window is up. The model on Stadium
+    // (2026-09-23) captured the screen, then every click on it was refused
+    // against the window it had actually meant. The whole screen is what is
+    // left when nothing is in front, or when Nebo itself is.
+    let front;
+    let app: &str = if app.is_empty() {
+        match ax_native::frontmost().await {
+            Ok(a) if ax_native::is_lock_screen(&a) => return Err(ToolResult::error(ax_native::LOCKED_SCREEN)),
+            Ok(a) if !a.is_empty() && a != "Nebo" => {
+                front = a;
+                front.as_str()
+            }
+            _ => app,
+        }
+    } else {
+        app
+    };
+
     // 1. What the image will cover. The window's own pixels by id when the
     //    platform gives one (they are right even under other windows); by
     //    screen region otherwise, which shows whatever is on top there.
-    let mut window_id: Option<u64> = None;
-    let (frame, window_image, frame_note) = if app.is_empty() {
-        (screen_rect().await, false, String::new())
-    } else {
-        match ax_native::window(app, 1).await {
-            Ok(w) => {
-                window_id = w.window_id;
-                let f = Rect { x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3] };
-                let note = if w.window_id.is_some() { String::new() } else { " (captured by screen region; windows on top of it show through)".to_string() };
-                (Some(f), true, note)
+    let mut window_id: Option<u64>;
+    let mut attempt = 0;
+    let (frame, window_image, frame_note, shot, dims) = loop {
+        window_id = None;
+        let (frame, window_image, frame_note) = if app.is_empty() {
+            (screen_rect().await, false, String::new())
+        } else {
+            match ax_native::window(app, 1).await {
+                Ok(w) => {
+                    window_id = w.window_id;
+                    let f = Rect { x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3] };
+                    let note = if w.window_id.is_some() { String::new() } else { " (captured by screen region; windows on top of it show through)".to_string() };
+                    (Some(f), true, note)
+                }
+                Err(_) => match window_frame(app, false).await {
+                    Ok(r) => (Some(r), true, " (captured by screen region; windows on top of it show through)".to_string()),
+                    Err(e) => (screen_rect().await, false, format!(" ({e}; captured the whole screen instead)")),
+                },
             }
-            Err(_) => match window_frame(app, false).await {
-                Ok(r) => (Some(r), true, " (captured by screen region; windows on top of it show through)".to_string()),
-                Err(e) => (screen_rect().await, false, format!(" ({e}; captured the whole screen instead)")),
-            },
-        }
-    };
+        };
 
-    // 2. The image.
-    let shot_input = match (&frame, window_image, window_id) {
-        (_, true, Some(id)) => serde_json::json!({ "window_id": id, "quality": quality }),
-        (Some(f), true, None) => serde_json::json!({ "region": format!("{},{},{},{}", f.x, f.y, f.width, f.height), "quality": quality }),
-        _ => serde_json::json!({ "quality": quality }),
+        // 2. The image.
+        let shot_input = match (&frame, window_image, window_id) {
+            (_, true, Some(id)) => serde_json::json!({ "window_id": id, "quality": quality }),
+            (Some(f), true, None) => serde_json::json!({ "region": format!("{},{},{},{}", f.x, f.y, f.width, f.height), "quality": quality }),
+            _ => serde_json::json!({ "quality": quality }),
+        };
+        let shot = capture_screenshot(&shot_input).await;
+        if shot.is_error {
+            return Err(shot);
+        }
+        let dims = shot
+            .payload
+            .as_ref()
+            .and_then(|p| Some((p["width"].as_u64()? as i64, p["height"].as_u64()? as i64)))
+            .filter(|(w, h)| *w > 0 && *h > 0);
+        // One retake after a beat when the image is not the frame's shape.
+        if attempt == 0 && window_image && !image_matches_frame(frame.as_ref(), dims) {
+            attempt += 1;
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            continue;
+        }
+        break (frame, window_image, frame_note, shot, dims);
     };
-    let shot = capture_screenshot(&shot_input).await;
-    if shot.is_error {
-        return Err(shot);
-    }
-    let dims = shot
-        .payload
-        .as_ref()
-        .and_then(|p| Some((p["width"].as_u64()? as i64, p["height"].as_u64()? as i64)))
-        .filter(|(w, h)| *w > 0 && *h > 0);
     let scale = match (&frame, dims) {
         (Some(f), Some((w, _))) => f.width as f64 / w as f64,
         _ => 1.0,
@@ -1980,7 +2125,10 @@ async fn observe(
     // 4. The snapshot the next act resolves against.
     let snapshot = Snapshot {
         id: generate_snapshot_id(),
-        app: if observed.app.is_empty() { None } else { Some(observed.app.clone()) },
+        // A screen capture belongs to no app: an act that names one must
+        // capture that app's window first, or its pixels would be read
+        // against the wrong frame.
+        app: if observed.app.is_empty() || !window_image { None } else { Some(observed.app.clone()) },
         created_at: Instant::now(),
         elements: elements.clone(),
         frame: frame.clone(),
@@ -2057,7 +2205,8 @@ async fn observe(
         if e.actions.iter().any(|a| a == "AXSetValue") { tags.push("editable"); }
         if e.focused { tags.push("focused"); }
         let tags = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
-        text.push_str(&format!("{}  {}  \"{}\"  at {x},{y} {w}×{h}{tags}\n", e.id, e.role, e.label));
+        let value = e.value.as_deref().map(|v| format!("  = \"{v}\"")).unwrap_or_default();
+        text.push_str(&format!("{}  {}  \"{}\"{value}  at {x},{y} {w}×{h}{tags}\n", e.id, e.role, e.label));
     }
     if !filter.is_empty() || !role_filter.is_empty() {
         text.push_str(&format!(
@@ -4119,6 +4268,17 @@ fn key_name_to_sendkeys(key: &str) -> &str {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_capture_mid_resize_is_not_the_frames_shape() {
+        let f = super::Rect { x: 703, y: 824, width: 230, height: 408 };
+        assert!(!super::image_matches_frame(Some(&f), Some((468, 501))), "Calculator mid-launch on Stadium");
+        assert!(super::image_matches_frame(Some(&f), Some((230, 408))));
+        assert!(super::image_matches_frame(Some(&f), Some((460, 816))), "retina");
+        assert!(super::image_matches_frame(None, Some((10, 10))), "the whole screen has no frame to disagree with");
+        assert!(super::is_no_window("Calculator has no open window"));
+        assert!(!super::is_no_window("ax helper produced no output"));
+    }
+
+    #[test]
     fn parse_frame_reads_system_events_output() {
         assert_eq!(super::parse_frame("868, 60, 447, 950\n"), Some((868, 60, 447, 950)));
         assert_eq!(super::parse_frame("1319,209,447,950"), Some((1319, 209, 447, 950)));
@@ -4352,6 +4512,7 @@ mod tests {
                 actions: vec![],
                 path: String::new(),
                 focused: false,
+                value: None,
             }],
             frame: Some(desktop_snapshot::Rect { x: 0, y: 0, width: 100, height: 100 }),
             scale: 1.0,
@@ -4480,6 +4641,26 @@ mod tests {
         let _ = run_osascript_raw("tell application \"Calculator\" to quit", Some(AX_CAPTURE_TIMEOUT)).await;
     }
 
+    /// A field is named by its placeholder, not its contents; its contents are
+    /// its value; a secure field has neither read.
+    #[test]
+    fn a_fields_name_is_not_its_contents_and_a_secure_field_has_none() {
+        let node = |role: &str, title: &str, value: Option<&str>, placeholder: Option<&str>| ax_native::AxNode {
+            path: "0".into(), role: role.into(), title: title.into(), value: value.map(String::from),
+            desc: None, placeholder: placeholder.map(String::from), frame: [0, 0, 10, 10], actions: vec![], enabled: true, focused: false,
+        };
+        let typed = element_from_node(&node("AXTextField", "", Some("alma@x.com"), Some("you@company.com")));
+        assert_eq!((typed.label.as_str(), typed.value.as_deref()), ("you@company.com", Some("alma@x.com")));
+        let empty = element_from_node(&node("AXTextField", "", Some(""), Some("you@company.com")));
+        assert_eq!(empty.value, None);
+        let secure = element_from_node(&node("AXSecureTextField", "", Some("hunter2"), None));
+        assert_eq!((secure.label.as_str(), secure.value), ("[secure field]", None));
+        let text = element_from_node(&node("AXStaticText", "", Some("Welcome back"), None));
+        assert_eq!((text.label.as_str(), text.value), ("Welcome back", None));
+        let titled = element_from_node(&node("AXButton", "Continue", None, None));
+        assert_eq!(titled.label, "Continue");
+    }
+
     /// A text line inside a labelled element is that element; one outside
     /// becomes an OCRText element in screen points (image px × scale + origin).
     #[test]
@@ -4495,6 +4676,7 @@ mod tests {
             actions: vec!["AXPress".into()],
             path: "0".into(),
             focused: false,
+            value: None,
         }];
         let lines = vec![
             ax_native::TextLine { text: "Save".into(), frame: [12, 22, 40, 12], confidence: 0.9 }, // centre (32,28) px → (164,106) pt: inside Save

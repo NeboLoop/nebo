@@ -811,6 +811,7 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('quota_warning', handleQuotaWarning));
   unsubs.push(onServer('chat_error', handleChatError));
   unsubs.push(onServer('ask_request', handleAskRequest));
+  unsubs.push(onServer('ask_answered', handleAskAnswered));
   unsubs.push(onServer('subagent_progress', handleSubagentProgress));
   unsubs.push(onServer('session_reset', handleSessionReset));
 
@@ -1043,6 +1044,21 @@ export function createChatController(config: ChatControllerConfig) {
 
   function submitAsk(requestId: string, value: string) {
     ws.send('ask_response', { request_id: requestId, value });
+    markAnswered(requestId, value);
+  }
+
+  /** A question was answered — here, on another surface, or by the server
+   *  (an install that landed another way answers its install card). */
+  function handleAskAnswered(data: any) {
+    if (!isMyEvent(data)) return;
+    const requestId = data.request_id as string;
+    if (!requestId) return;
+    askQueue = askQueue.filter((m) => m.requestId !== requestId);
+    markAnswered(requestId, (data.value as string) ?? '');
+  }
+
+  function markAnswered(requestId: string, value: string) {
+    if (!messages.some((m) => m.type === 'ask' && m.requestId === requestId && m.response == null)) return;
     messages = messages.map(msg =>
       msg.type === 'ask' && msg.requestId === requestId
         ? { ...msg, response: value }

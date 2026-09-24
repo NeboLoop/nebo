@@ -19,7 +19,7 @@ pub(super) async fn tree_raw(app: &str, opts: &WalkOpts) -> Result<String, Strin
     run(&tree_args(app, opts), opts.timeout + STARTUP_GRACE).await
 }
 
-pub(super) async fn act_raw(app: &str, window: usize, path: &str, action: &str) -> Result<(), String> {
+pub(super) async fn act_raw(app: &str, window: usize, path: &str, action: &str, _expect: super::Expect<'_>) -> Result<(), String> {
     let w = window.to_string();
     run(
         &["act", "--app", app, "--window", &w, "--path", path, "--action", action].map(String::from),
@@ -29,7 +29,7 @@ pub(super) async fn act_raw(app: &str, window: usize, path: &str, action: &str) 
     .map(|_| ())
 }
 
-pub(super) async fn set_raw(app: &str, window: usize, path: &str, value: &str) -> Result<(), String> {
+pub(super) async fn set_raw(app: &str, window: usize, path: &str, value: &str, _expect: super::Expect<'_>) -> Result<(), String> {
     let w = window.to_string();
     run(
         &["set", "--app", app, "--window", &w, "--path", path, "--value", value].map(String::from),

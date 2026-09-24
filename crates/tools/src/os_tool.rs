@@ -402,6 +402,8 @@ impl OsTool {
             "click" if has("name") => "dialog",
             "click" if has("label") || has("role") => "ui",
             "click" if has("app") && !has_input_target => "ui",
+            // A `find` inside a named app looks for an element, not a secret.
+            "find" if has("app") => "ui",
             "send" if input.get("to").is_none() && (has("title") || has("message")) => {
                 "notification"
             }
@@ -1623,6 +1625,16 @@ mod tests {
         assert_eq!(OsTool::infer_resource("unread"), "mail");
         assert_eq!(OsTool::infer_resource("today"), "calendar");
         assert_eq!(OsTool::infer_resource("unknown_action"), "");
+    }
+
+    /// Stadium 2026-09-23: `find` with `app` and `label` went to the keychain
+    /// ("no password stored under Calculator") instead of the UI.
+    #[test]
+    fn a_find_inside_an_app_is_a_ui_search_not_a_keychain_lookup() {
+        let input = serde_json::json!({"action": "find", "app": "Calculator", "label": "7"});
+        assert_eq!(OsTool::resolved_resource(&input), "ui");
+        let input = serde_json::json!({"action": "find", "service": "myapp"});
+        assert_eq!(OsTool::resolved_resource(&input), "keychain");
     }
 
     /// AT-09's three "Resource is required" errors: a full keychain arg set

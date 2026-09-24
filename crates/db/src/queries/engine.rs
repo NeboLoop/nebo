@@ -101,7 +101,8 @@ pub struct EngineRun {
 /// Local changes for one employee over a window (heartbeat triage's flags).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentChanges {
-    /// Its other runs that started or ended in the window.
+    /// Its other runs that started or ended in the window, less timer fires
+    /// (see `engine_agent_changes_since`).
     pub other_runs: i64,
     /// Messages addressed to it (its chats, threads and channels; not its
     /// own workflow sessions).
@@ -879,7 +880,11 @@ impl Store {
     /// from local rows only, for heartbeat triage. `own_ref` is the firing
     /// binding's timer target and `own_binding` its workflow binding name,
     /// if it has one: the binding's own fires, the workflow runs they
-    /// started, sub-agents and skipped fires are not "other work".
+    /// started, sub-agents and skipped fires are not "other work". Nor are
+    /// the employee's other timer fires — its other schedules' and
+    /// heartbeats' fires and the workflow runs they started: a sibling's
+    /// scheduled run is the clock, not a change in its world. A run-now of
+    /// a schedule (`manual`) is the owner's, and counts.
     pub fn engine_agent_changes_since(
         &self,
         agent_id: &str,
@@ -897,6 +902,13 @@ impl Store {
                  WHERE r.agent_id = ?1 AND r.kind != 'subagent' AND r.summary != 'skipped'
                    AND COALESCE(r.external_ref, '') != ?3
                    AND (r.created_at > ?2 OR r.ended_at > ?2)
+                   AND r.kind != 'heartbeat'
+                   AND NOT (r.kind = 'task'
+                        AND (substr(COALESCE(r.external_ref, ''), 1, 5) = 'cron:' OR substr(COALESCE(r.external_ref, ''), 1, 3) = 'hb:')
+                        AND COALESCE(CASE WHEN json_valid(r.inputs) THEN json_extract(r.inputs, '$.manual') END, 0) != 1)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM workflow_runs w
+                      WHERE w.id = r.id AND w.trigger_type IN ('heartbeat', 'schedule'))
                    AND NOT EXISTS (
                      SELECT 1 FROM workflow_runs w
                       WHERE w.id = r.id AND ?4 != ''
@@ -1903,5 +1915,44 @@ mod tests {
         assert_eq!(changed, AgentChanges { other_runs: 1, new_messages: 1, new_assignments: 1, settings_changed: true });
         // Another employee's prefix never matches this one.
         assert_eq!(s.engine_agent_changes_since("em", 100, "x", None).unwrap().new_messages, 0);
+    }
+
+    #[test]
+    fn sibling_timer_fires_are_not_other_work_but_event_and_owner_runs_are() {
+        let s = store();
+        s.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 10)");
+        let run = |id: &str, kind: &str, session: &str, ext: Option<&str>, inputs: Option<&str>| {
+            s.engine_create_run(&NewRun { id, kind, session_key: session, agent_id: "emp", lane: "main", external_ref: ext, inputs, ..Default::default() }).unwrap();
+            s.conn_exec_for_test(&format!("UPDATE engine_runs SET created_at = 500 WHERE id = '{id}'"));
+        };
+        let changes = || s.engine_agent_changes_since("emp", 100, "hb:emp:publish-queue", Some("publish-queue")).unwrap();
+
+        // The sibling heartbeat's fire and the workflow run it started, a
+        // schedule's fire and its workflow run, and an entity heartbeat of
+        // the employee are the clock, not a change.
+        run("sib-fire", "task", "heartbeat-binding-emp-engagement-desk", Some("hb:emp:engagement-desk"), Some(r#"{"command":"agent:emp:engagement-desk","trigger":"heartbeat"}"#));
+        run("sib-wf", "workflow", "agent:emp:workflow:sib-wf", None, None);
+        s.insert_workflow_run_detail("sib-wf", "agent:emp", "heartbeat", Some("engagement-desk")).unwrap();
+        run("cron-fire", "task", "cron-agent-emp-daily-report", Some("cron:7"), Some(r#"{"job_id":7,"manual":false,"name":"agent-emp-daily-report"}"#));
+        run("cron-wf", "workflow", "agent:emp:workflow:cron-wf", None, None);
+        s.insert_workflow_run_detail("cron-wf", "agent:emp", "schedule", Some("daily-report")).unwrap();
+        run("entity-hb", "heartbeat", "heartbeat-agent-emp", Some("heartbeat:agent:emp"), None);
+        assert_eq!(changes().other_runs, 0, "sibling timer fires never set other_runs");
+
+        // An event-triggered run counts.
+        run("event-wf", "workflow", "agent:emp:workflow:event-wf", None, None);
+        s.insert_workflow_run_detail("event-wf", "agent:emp", "event", Some("crisis-hold:x")).unwrap();
+        assert_eq!(changes().other_runs, 1, "an event-triggered run is a change");
+
+        // So do a watch run, a run the employee or owner started, a
+        // schedule's run-now, a chat turn and a case turn.
+        run("watch-wf", "workflow", "agent:emp:workflow:watch-wf", None, None);
+        s.insert_workflow_run_detail("watch-wf", "agent:emp", "watch", Some("intake:x")).unwrap();
+        run("agent-wf", "workflow", "agent:emp:workflow:agent-wf", None, None);
+        s.insert_workflow_run_detail("agent-wf", "agent:emp", "agent", Some("engagement-desk")).unwrap();
+        run("run-now", "task", "cron-agent-emp-daily-report", Some("cron:7"), Some(r#"{"job_id":7,"manual":true,"name":"agent-emp-daily-report"}"#));
+        run("chat", "chat", "agent:emp:web", None, None);
+        run("turn", "case_turn", "agent:emp:case:k", None, None);
+        assert_eq!(changes().other_runs, 6);
     }
 }

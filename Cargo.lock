@@ -5650,6 +5650,7 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "turbovec",
  "uuid",
  "which 7.0.3",

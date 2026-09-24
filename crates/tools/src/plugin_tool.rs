@@ -23,7 +23,66 @@ const RECOVERY_MIN_REMAINING: Duration = Duration::from_secs(10);
 /// The install card's answer once the plugin is on disk.
 /// What an install/hire card submits once POST /codes has succeeded. Shared
 /// with the employee hire card so both resume the same way.
-pub(crate) const INSTALL_CARD_INSTALLED: &str = "installed";
+pub const INSTALL_CARD_INSTALLED: &str = "installed";
+
+/// What a card submits when its action failed: `failed:<the error the owner
+/// saw>`. Live (2026-09-24): the install card showed the error but answered
+/// nothing, the run stayed parked until the owner stopped it, and the tool
+/// then called that "declined" — so the model offered the broken plugin
+/// eight more times.
+pub const CARD_FAILED_PREFIX: &str = "failed:";
+
+/// How a card (install, hire, connect) ended, read from the parked ask's
+/// answer. `done` is the value the card sends on success.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CardAnswer<'a> {
+    Done,
+    /// The action ran and failed; the reason is the error the owner saw.
+    Failed(&'a str),
+    /// The owner dismissed the card.
+    Skipped,
+    /// No answer: the run was stopped, or there was no channel to ask on.
+    NoAnswer,
+}
+
+impl<'a> CardAnswer<'a> {
+    pub fn read(answer: Option<&'a str>, done: &str) -> Self {
+        match answer {
+            None => Self::NoAnswer,
+            Some(v) if v == done => Self::Done,
+            Some(v) => match v.strip_prefix(CARD_FAILED_PREFIX) {
+                Some(reason) => Self::Failed(reason.trim()),
+                None => Self::Skipped,
+            },
+        }
+    }
+}
+
+/// The install card a discover call parks on: the ONE producer of the
+/// `install_plugin` widget, so [`install_card_plugin`] reads the shape it
+/// writes.
+pub fn install_card_widget(code: &str, name: &str, slug: &str, description: &str) -> serde_json::Value {
+    serde_json::json!([{
+        "type": "install_plugin",
+        "code": code,
+        "name": name,
+        "plugin": slug,
+        "description": description,
+    }])
+}
+
+/// The plugin slug a parked question's widgets offer to install, when the
+/// question is an install card. An install that lands by any other door (a
+/// pasted code, the marketplace, a hub push) answers that card for it.
+pub fn install_card_plugin(widgets: &serde_json::Value) -> Option<&str> {
+    widgets
+        .as_array()?
+        .iter()
+        .find(|w| w.get("type").and_then(|t| t.as_str()) == Some("install_plugin"))?
+        .get("plugin")?
+        .as_str()
+        .filter(|slug| !slug.is_empty())
+}
 
 /// The listing a query most plausibly names. The marketplace ranks by
 /// relevance, but a query that IS a listing's name must beat one that merely
@@ -674,13 +733,7 @@ impl PluginTool {
                                         "**{top_name}** can do this. Install it on the card and \
                                          I'll pick up right where I left off."
                                     ),
-                                    serde_json::json!([{
-                                        "type": "install_plugin",
-                                        "code": top_code,
-                                        "name": top_name,
-                                        "plugin": top_slug,
-                                        "description": top_desc,
-                                    }]),
+                                    install_card_widget(top_code, top_name, top_slug, top_desc),
                                 )
                                 .await
                             };
@@ -715,20 +768,34 @@ impl PluginTool {
                                                 ),
                                             )
                                             .await;
-                                        if connected.as_deref() == Some("connected") {
-                                            return ToolResult::ok(format!(
+                                        return ToolResult::ok(match CardAnswer::read(
+                                            connected.as_deref(),
+                                            "connected",
+                                        ) {
+                                            CardAnswer::Done => format!(
                                                 "{top_name} {state} and its account is \
                                                  connected. Continue the task NOW via \
                                                  plugin(resource: \"{top_slug}\", ...) — no \
                                                  setup narration."
-                                            ));
-                                        }
-                                        return ToolResult::ok(format!(
-                                            "{top_name} {state}; the account was not \
-                                             connected (card skipped). The connect card \
-                                             re-appears on first use — continue, or ask what \
-                                             they'd like to do."
-                                        ));
+                                            ),
+                                            CardAnswer::Failed(reason) => format!(
+                                                "{top_name} {state}, but connecting the \
+                                                 {label} FAILED: {reason}. Tell the owner that \
+                                                 error in plain words and stop. Do NOT offer \
+                                                 the card again and do NOT suggest commands."
+                                            ),
+                                            CardAnswer::Skipped => format!(
+                                                "{top_name} {state}; the owner skipped \
+                                                 connecting the {label}. The connect card \
+                                                 re-appears on first use — continue, or ask \
+                                                 what they'd like to do."
+                                            ),
+                                            CardAnswer::NoAnswer => format!(
+                                                "{top_name} {state}; the {label} was not \
+                                                 connected — no answer (the owner stopped the \
+                                                 run). Do NOT offer the card again."
+                                            ),
+                                        });
                                     }
                                 }
                                 return ToolResult::ok(format!(
@@ -737,14 +804,28 @@ impl PluginTool {
                                      card will appear on first use — no setup narration needed."
                                 ));
                             }
-                            // Skipped/declined: fall through to the listing so the
-                            // conversation can continue (other options, questions).
-                            return ToolResult::ok(format!(
-                                "{listing}\n\nThe user declined the install card for {top_name}. \
-                                 Discuss alternatives or answer questions — do NOT paste install \
-                                 codes into chat; if they change their mind, call discover again \
-                                 to re-offer the card."
-                            ));
+                            // Not installed: say exactly why. Only a skip keeps
+                            // the listing, so the conversation can move on to
+                            // other options.
+                            return ToolResult::ok(
+                                match CardAnswer::read(answer.as_deref(), INSTALL_CARD_INSTALLED) {
+                                    CardAnswer::Failed(reason) => format!(
+                                        "Installing {top_name} FAILED: {reason}. Tell the owner \
+                                         that error in plain words and stop. Do NOT offer the \
+                                         card again and do NOT suggest commands or other ways \
+                                         to install it."
+                                    ),
+                                    CardAnswer::NoAnswer => format!(
+                                        "The install card for {top_name} got no answer (the \
+                                         owner stopped the run). Do NOT offer it again."
+                                    ),
+                                    CardAnswer::Skipped | CardAnswer::Done => format!(
+                                        "{listing}\n\nThe owner skipped the install card for \
+                                         {top_name}. Do NOT offer it again unless they ask. \
+                                         Never paste install codes into chat."
+                                    ),
+                                },
+                            );
                         }
                         if interactive {
                             // Interactive but no usable card (top match had no
@@ -3451,6 +3532,76 @@ mod budget_and_install_tests {
         assert!(known.content.contains("plugin(resource: \"quickbooks\""), "{}", known.content);
         assert!(!known.content.contains("Install it on the card"), "{}", known.content);
         assert!(!known.content.contains("owner's approval"), "{}", known.content);
+    }
+
+    /// Offer an install card in an interactive chat and end it the given
+    /// way: `Some(value)` answers the card with it, `None` stops the run.
+    async fn install_card_ending(answer: Option<&str>) -> ToolResult {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let tool = PluginTool::new(plugin_store, db_store);
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: crate::origin::AskChannels = Default::default();
+        let mut ctx = ToolContext::new(crate::origin::Origin::User);
+        ctx.session_key = "agent:ic:main".into();
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        let cancel = ctx.cancel_token.clone();
+        let products = vec![serde_json::json!({
+            "name": "Email", "slug": "email", "code": "PLUG-ABCD-1234",
+            "description": "Mail", "type": "plugin"
+        })];
+        let offering = tokio::spawn(async move { tool.offer("email", &ctx, &products, 1).await });
+        let request = stream_rx.recv().await.expect("the install card is shown");
+        let request_id = request.error.clone().unwrap();
+        match answer {
+            Some(v) => {
+                let tx = channels.lock().await.remove(&request_id).unwrap();
+                tx.send(v.to_string()).unwrap();
+            }
+            None => cancel.cancel(),
+        }
+        offering.await.unwrap()
+    }
+
+    /// Live (2026-09-24): the install failed on the card, the tool called it
+    /// "declined", and the model offered the broken plugin eight more times.
+    /// A failure now comes back as a failure, with the error the owner saw.
+    #[tokio::test]
+    async fn a_failed_install_is_reported_as_failed_not_declined() {
+        let r = install_card_ending(Some("failed:Email: NeboAI returned 404: not found")).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(
+            r.content,
+            "Installing Email FAILED: Email: NeboAI returned 404: not found. Tell the owner that error in plain \
+             words and stop. Do NOT offer the card again and do NOT suggest commands or other ways to install it."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_skipped_install_card_is_not_offered_again_unasked() {
+        let r = install_card_ending(Some(crate::origin::SKIP_SENTINEL)).await;
+        assert!(r.content.starts_with("Found 1 plugin(s):"), "the listing stays: {}", r.content);
+        assert!(r.content.contains("The owner skipped the install card for Email. Do NOT offer it again unless they ask."), "{}", r.content);
+        assert!(!r.content.contains("declined"), "{}", r.content);
+    }
+
+    #[tokio::test]
+    async fn a_stopped_run_is_no_answer_not_a_decline() {
+        let r = install_card_ending(None).await;
+        assert_eq!(
+            r.content,
+            "The install card for Email got no answer (the owner stopped the run). Do NOT offer it again."
+        );
+    }
+
+    #[test]
+    fn a_card_answer_reads_as_done_failed_skipped_or_none() {
+        assert_eq!(CardAnswer::read(Some("installed"), INSTALL_CARD_INSTALLED), CardAnswer::Done);
+        assert_eq!(CardAnswer::read(Some("failed: boom"), INSTALL_CARD_INSTALLED), CardAnswer::Failed("boom"));
+        assert_eq!(CardAnswer::read(Some(crate::origin::SKIP_SENTINEL), "connected"), CardAnswer::Skipped);
+        assert_eq!(CardAnswer::read(Some("installed"), "connected"), CardAnswer::Skipped);
+        assert_eq!(CardAnswer::read(None, "connected"), CardAnswer::NoAnswer);
     }
 
     /// Every recovery step gets what is left of the one exec budget, a step

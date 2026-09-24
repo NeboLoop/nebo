@@ -159,3 +159,78 @@ async fn a_template_binding_shapes_the_call() {
     assert!(!plain.is_error, "{}", plain.content);
     assert!(plain.content.contains("invoice\nlist\n--limit\n5"), "{}", plain.content);
 }
+
+/// A chat parked on an install card resumes when the plugin lands by another
+/// door. The card is the one the plugin tool's discover parks on, asked
+/// through the real `ask_user` on the server's ask channels and announced the
+/// way the chat pipeline announces it; the owner then pastes the card's code
+/// into another chat, and `codes::handle_code` installs it from the hub
+/// stand-in. The parked call reads "installed" — the answer the card's own
+/// button gives — and the run holds no question any more. A card offering a
+/// different plugin stays parked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_install_by_another_door_answers_the_install_card() {
+    use tools::plugin_tool::{install_card_widget, INSTALL_CARD_INSTALLED};
+
+    const CODE: &str = "PLUG-CARD-0001";
+    const SLUG: &str = "card-office";
+    let nebo = session().await;
+    hub_offers_plugin(CODE, SLUG, "Card Office");
+    // Paired with the stand-in hub for this scenario only.
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+
+    // Two chats, each parked on a card: one for the plugin, one for another.
+    let park = |session_key: &'static str, slug: &'static str| {
+        let state = nebo.state.clone();
+        async move {
+            let run = state
+                .run_registry
+                .register(crate::run_registry::RegisterParams {
+                    session_key: session_key.to_string(),
+                    entity_id: "card-seat".to_string(),
+                    entity_name: "Card Seat".to_string(),
+                    origin: "user".to_string(),
+                    channel: "web".to_string(),
+                    cancel_token: tokio_util::sync::CancellationToken::new(),
+                    parent_run_id: None,
+                })
+                .await;
+            let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(8);
+            let mut ctx = tools::ToolContext::new(Origin::User).with_session(session_key.to_string(), "s1");
+            ctx.stream_tx = Some(stream_tx);
+            ctx.ask_channels = Some(state.ask_channels.clone());
+            let asking = tokio::spawn(async move {
+                ctx.ask_user("Install it on the card.", install_card_widget("PLUG-ANY", slug, slug, "")).await
+            });
+            let event = stream_rx.recv().await.expect("the card was asked");
+            crate::chat_dispatch::announce_ask(&state.hub, &state.run_registry, session_key, &event).await;
+            (run, asking)
+        }
+    };
+    let (_run, card) = park("agent:card-seat:main", SLUG).await;
+    let (_other_run, other_card) = park("agent:card-seat:other", "some-other-plugin").await;
+    assert!(nebo.state.run_registry.pending_ask_for_session("agent:card-seat:main").await.is_some());
+
+    // The owner pastes the code into another chat.
+    crate::codes::handle_code(&nebo.state, crate::codes::CodeType::Plugin, CODE, "agent:card-seat:elsewhere").await;
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the code installed the plugin");
+
+    let answer = tokio::time::timeout(Duration::from_secs(10), card)
+        .await
+        .expect("the parked call resumed")
+        .unwrap();
+    assert_eq!(answer.as_deref(), Some(INSTALL_CARD_INSTALLED));
+    assert!(nebo.state.run_registry.pending_ask_for_session("agent:card-seat:main").await.is_none(), "the run holds no question");
+
+    assert!(!other_card.is_finished(), "a card for another plugin stays parked");
+    assert!(nebo.state.run_registry.pending_ask_for_session("agent:card-seat:other").await.is_some());
+
+    // Leave the shared server as it was found.
+    other_card.abort();
+    let _ = nebo.state.plugin_store.remove(SLUG);
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}

@@ -489,11 +489,24 @@ jobs:
           # --ssh-keys: with no key DigitalOcean emails the owner a root
           # password for every build droplet. Any account key suppresses that;
           # nobody logs in (the runner is registered by user-data).
-          id=$(doctl compute droplet create "nebo-ci-amd64-${{ github.run_id }}" \
-            --region nyc3 --size s-8vcpu-16gb-amd --image "$image" \
-            --tag-names nebo-ci-runner,run-${{ github.run_id }} \
-            --ssh-keys 15:57:9d:98:dc:e4:b9:b5:69:e2:42:d8:08:86:08:86 \
-            --user-data-file user-data.sh --wait --format ID --no-header)
+          # nyc3 capacity comes and goes per size (2026-09-22: no s-8vcpu-16gb;
+          # 2026-09-23: no s-8vcpu-16gb-amd, each a 422 "not available"). Every
+          # candidate is the same 16 GB / 320 GB-disk shape the snapshot needs; the
+          # first one that boots wins. Any other error is fatal.
+          id=""
+          for size in s-8vcpu-16gb s-8vcpu-16gb-amd s-8vcpu-16gb-intel s-4vcpu-16gb-320gb-intel; do
+            if id=$(doctl compute droplet create "nebo-ci-amd64-${{ github.run_id }}" \
+                --region nyc3 --size "$size" --image "$image" \
+              --tag-names nebo-ci-runner,run-${{ github.run_id }} \
+              --ssh-keys 15:57:9d:98:dc:e4:b9:b5:69:e2:42:d8:08:86:08:86 \
+                --user-data-file user-data.sh --wait --format ID --no-header 2>create.err); then
+              echo "droplet size: $size"; break
+            fi
+            grep -q "not available in this region" create.err || { cat create.err; exit 1; }
+            echo "$size is not available in nyc3 right now, trying the next size"
+          done
+          rm -f create.err
+          [ -n "$id" ] || { echo "::error::no droplet size available in nyc3"; exit 1; }
           rm -f user-data.sh
           echo "id=$id" >> "$GITHUB_OUTPUT"
       - name: Wait for the runner to come online

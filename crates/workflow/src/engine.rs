@@ -483,7 +483,9 @@ pub async fn execute_workflow(
                     activity.id, result_text
                 ));
             }
-            Err(WorkflowError::Exited(reason)) => {
+            // A standing outcome (an exit, a terminal refusal) ends the run
+            // cleanly with its reason — never a failure.
+            Err(e) if let Some(reason) = e.standing_outcome() => {
                 total_tokens += activity_spent;
                 let completed_at = chrono::Utc::now().timestamp();
                 let _ = store.create_activity_result(
@@ -962,7 +964,7 @@ pub async fn execute_activity(
             // Exit-by-design (exit tool) is a clean stop, not a step failure —
             // recording it as failed painted successful exited runs red in the UI.
             // A suspension keeps the step pending: it re-runs after approval.
-            let status = if matches!(e, WorkflowError::Exited(_)) {
+            let status = if e.standing_outcome().is_some() {
                 "exited"
             } else if matches!(e, WorkflowError::AwaitingApproval { .. }) {
                 "pending"
@@ -1060,9 +1062,12 @@ pub async fn execute_activity(
                     reason = %reason,
                     "orchestrator exited workflow at step"
                 );
-                return Err(WorkflowError::Exited(
-                    format!("Step {}/{} evaluator: {}", i + 1, total_steps, reason),
-                ));
+                return Err(WorkflowError::Exited(evaluator_exit_reason(
+                    i + 1,
+                    total_steps,
+                    &reason,
+                    &step_result,
+                )));
             }
         }
 
@@ -1096,6 +1101,19 @@ pub async fn execute_activity(
     // Final result is the last step's output (or concatenation if needed for prior_context)
     let final_output = step_outputs.last().cloned().unwrap_or_default();
     Ok((final_output, total_tokens))
+}
+
+/// The reason a run the step evaluator ended records: the step's own words
+/// (the first line of what it produced), which is the run's standing
+/// outcome, or the evaluator's verdict when the step said nothing. The
+/// `Step n/m evaluator:` prefix is what the dashboard strips for the owner.
+fn evaluator_exit_reason(step: usize, total: usize, verdict: &str, step_output: &str) -> String {
+    let said = step_output
+        .lines()
+        .map(|l| l.trim().trim_start_matches('#').trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or(verdict);
+    format!("Step {step}/{total} evaluator: {}", truncate_at_char_boundary(said, 300))
 }
 
 /// Floor on a non-proceed outcome: below it the evaluator proceeds, however

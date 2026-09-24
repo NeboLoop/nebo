@@ -104,21 +104,37 @@ pub(super) async fn text_raw(image: &Path) -> Result<String, String> {
     .await
 }
 
-pub(super) async fn act_raw(app: &str, window: usize, path: &str, action: &str) -> Result<(), String> {
-    let bin = helper().await?;
-    let args: Vec<String> = ["act", "--app", app, "--window", &window.to_string(), "--path", path, "--action", action]
+/// `act`/`set` arguments; `expect` adds the role and label the helper must
+/// re-identify before acting.
+fn target_args(cmd: &str, app: &str, window: usize, path: &str, key: &str, val: &str, expect: super::Expect<'_>) -> Vec<String> {
+    let mut a: Vec<String> = [cmd, "--app", app, "--window", &window.to_string(), "--path", path, key, val]
         .iter()
         .map(|s| s.to_string())
         .collect();
-    run_cmd(&bin, &args, ACTION_DEADLINE).await.map(|_| ())
+    if let Some((role, label)) = expect {
+        a.extend(["--role", role, "--label", label].map(String::from));
+    }
+    a
 }
 
-pub(super) async fn set_raw(app: &str, window: usize, path: &str, value: &str) -> Result<(), String> {
+pub(super) async fn act_raw(app: &str, window: usize, path: &str, action: &str, expect: super::Expect<'_>) -> Result<(), String> {
     let bin = helper().await?;
-    let args: Vec<String> = ["set", "--app", app, "--window", &window.to_string(), "--path", path, "--value", value]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    run_cmd(&bin, &target_args("act", app, window, path, "--action", action, expect), ACTION_DEADLINE).await.map(|_| ())
+}
+
+pub(super) async fn set_raw(app: &str, window: usize, path: &str, value: &str, expect: super::Expect<'_>) -> Result<(), String> {
+    let bin = helper().await?;
+    run_cmd(&bin, &target_args("set", app, window, path, "--value", value, expect), ACTION_DEADLINE).await.map(|_| ())
+}
+
+pub(super) async fn frontmost_raw() -> Result<String, String> {
+    let bin = helper().await?;
+    run_cmd(&bin, &["frontmost".to_string()], ACTION_DEADLINE).await
+}
+
+pub(super) async fn raise_raw(app: &str, window: usize) -> Result<(), String> {
+    let bin = helper().await?;
+    let args: Vec<String> = ["raise", "--app", app, "--window", &window.to_string()].map(String::from).to_vec();
     run_cmd(&bin, &args, ACTION_DEADLINE).await.map(|_| ())
 }
 
@@ -129,6 +145,15 @@ mod tests {
     const SH: &str = "/bin/sh";
     fn sh(script: &str) -> Vec<String> {
         vec!["-c".into(), script.into()]
+    }
+
+    #[test]
+    fn an_expected_role_and_label_ride_along_and_their_absence_means_the_path_alone() {
+        let a = target_args("act", "Simulator", 1, "0.3.2", "--action", "AXPress", Some(("AXButton", "Continue with email")));
+        assert!(a.ends_with(&["--role".into(), "AXButton".into(), "--label".into(), "Continue with email".into()]), "{a:?}");
+        let b = target_args("set", "Simulator", 1, "0.3.2", "--value", "716917", None);
+        assert!(!b.iter().any(|x| x == "--role"), "{b:?}");
+        assert_eq!(&b[..3], &["set", "--app", "Simulator"]);
     }
 
     #[test]

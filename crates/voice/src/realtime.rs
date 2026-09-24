@@ -235,12 +235,7 @@ async fn run_session(
         return;
     }
 
-    let mut initialized = false;
-    // Whether a model response is in flight (response.created seen, no
-    // response.done yet). Barge-in near the end of a response otherwise races
-    // the cancel: the client still hears buffered audio, sends Interrupt, and
-    // upstream rejects the cancel with "no active response found".
-    let mut response_active = false;
+    let mut state = SessionState::default();
 
     loop {
         tokio::select! {
@@ -276,8 +271,8 @@ async fn run_session(
                             // Only cancel when a response is actually in
                             // flight — a barge-in against tail-buffered audio
                             // has nothing upstream to cancel.
-                            Ok(()) if response_active => {
-                                response_active = false;
+                            Ok(()) if state.response_active => {
+                                state.response_active = false;
                                 sink.send(Message::Text(
                                     json!({ "type": "response.cancel" }).to_string().into(),
                                 ))
@@ -329,9 +324,7 @@ async fn run_session(
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        if handle_server_event(&text, &event_tx, &mut initialized, &mut response_active)
-                            .await
-                            .is_err()
+                        if handle_server_event(&text, &event_tx, &mut state).await.is_err()
                         {
                             break;
                         }
@@ -353,7 +346,43 @@ async fn run_session(
         }
     }
 
+    // The session ended mid-utterance: the words so far are all there will be.
+    if state.utterance != Utterance::Closed {
+        let _ = event_tx.send(ConversationEvent::TranscriptionEnd).await;
+    }
+
     debug!("realtime session task ended");
+}
+
+/// Turn-taking state of one realtime session, owned by the session task and
+/// updated by `handle_server_event`.
+#[derive(Default)]
+struct SessionState {
+    /// `SessionInitialized` has been sent.
+    initialized: bool,
+    /// A model response is in flight (response.created seen, no response.done
+    /// yet). Barge-in near the end of a response otherwise races the cancel:
+    /// the client still hears buffered audio, sends Interrupt, and upstream
+    /// rejects the cancel with "no active response found".
+    response_active: bool,
+    /// Where the user's current utterance is. Consumers commit a user turn
+    /// on every `TranscriptionEnd`, so each utterance gets exactly one.
+    utterance: Utterance,
+}
+
+/// The user's utterance, from its first sound to its one `TranscriptionEnd`.
+#[derive(Debug, Default, PartialEq)]
+enum Utterance {
+    /// No utterance in progress; its end has been sent.
+    #[default]
+    Closed,
+    /// Speech started; the finished transcript has not arrived.
+    Open,
+    /// Still open, and the model has started answering it. xAI's finished
+    /// transcript can land after the reply starts, so this is not the end:
+    /// the end is the finished transcript, or, failing that, the reply's
+    /// `response.done`.
+    Answered,
 }
 
 /// Translate one xAI server event into `ConversationEvent`s. Returns Err when
@@ -361,8 +390,7 @@ async fn run_session(
 async fn handle_server_event(
     text: &str,
     event_tx: &mpsc::Sender<ConversationEvent>,
-    initialized: &mut bool,
-    response_active: &mut bool,
+    state: &mut SessionState,
 ) -> Result<(), ()> {
     let Ok(ev) = serde_json::from_str::<Value>(text) else {
         warn!(frame = %text, "unparseable realtime event");
@@ -374,8 +402,8 @@ async fn handle_server_event(
 
     match typ {
         "session.created" | "session.updated" => {
-            if !*initialized {
-                *initialized = true;
+            if !state.initialized {
+                state.initialized = true;
                 send(ConversationEvent::SessionInitialized).await?;
             }
             // session.created may carry the conversation id inline.
@@ -393,6 +421,12 @@ async fn handle_server_event(
             }
         }
         "input_audio_buffer.speech_started" => {
+            // A new utterance: a previous one still open will get no more
+            // words, so it ends here, before this one starts.
+            if state.utterance != Utterance::Closed {
+                send(ConversationEvent::TranscriptionEnd).await?;
+            }
+            state.utterance = Utterance::Open;
             send(ConversationEvent::TranscriptionStart).await?;
         }
         // xAI-specific rename of OpenAI's `...transcription.delta` — the
@@ -400,28 +434,39 @@ async fn handle_server_event(
         // never append.
         "conversation.item.input_audio_transcription.updated" => {
             if let Some(t) = ev.get("transcript").and_then(|v| v.as_str()) {
+                if state.utterance == Utterance::Closed {
+                    state.utterance = Utterance::Open;
+                }
                 send(ConversationEvent::TranscriptionText(t.to_string())).await?;
             }
         }
         // What xAI sends today (2026-09-17, probed against grok-voice-latest):
         // ONE finished transcript per utterance, and it lands AFTER
-        // `speech_stopped`. Without this arm no user transcript ever reached
-        // a client and no voice turn was ever persisted. The finish is
-        // re-announced so a consumer that already closed the utterance on
-        // `speech_stopped` opens it again with the words.
+        // `speech_stopped`, and it can land after the model's reply has
+        // started. This is the utterance's end: the final words, then its one
+        // `TranscriptionEnd`. A transcript for an utterance already closed
+        // (by the next `speech_started`, the reply's `response.done`, or
+        // session end) is dropped — a second end would commit the same
+        // speech as a second user turn.
         "conversation.item.input_audio_transcription.completed" => {
-            if let Some(t) = ev.get("transcript").and_then(|v| v.as_str())
+            if state.utterance == Utterance::Closed {
+                debug!(frame = %text, "transcript for a closed utterance (dropped)");
+            } else if let Some(t) = ev.get("transcript").and_then(|v| v.as_str())
                 && !t.is_empty()
             {
+                state.utterance = Utterance::Closed;
                 send(ConversationEvent::TranscriptionText(t.to_string())).await?;
                 send(ConversationEvent::TranscriptionEnd).await?;
             }
         }
-        "input_audio_buffer.speech_stopped" => {
-            send(ConversationEvent::TranscriptionEnd).await?;
-        }
+        // Not the utterance's end: the finished transcript follows it, and
+        // ending here committed the words heard so far as a turn of their own.
+        "input_audio_buffer.speech_stopped" => {}
         "response.created" => {
-            *response_active = true;
+            state.response_active = true;
+            if state.utterance == Utterance::Open {
+                state.utterance = Utterance::Answered;
+            }
             send(ConversationEvent::PlaybackStart).await?;
         }
         // JSON-transport fallback (binary transport makes these unnecessary,
@@ -455,7 +500,14 @@ async fn handle_server_event(
             }
         }
         "response.done" => {
-            *response_active = false;
+            state.response_active = false;
+            // The reply to the utterance is over and no finished transcript
+            // came: the words already sent are its final words. An utterance
+            // the reply did not answer (a barge-in) stays open.
+            if state.utterance == Utterance::Answered {
+                state.utterance = Utterance::Closed;
+                send(ConversationEvent::TranscriptionEnd).await?;
+            }
             send(ConversationEvent::PlaybackEnd).await?;
         }
         "error" => {
@@ -540,14 +592,12 @@ mod tests {
     #[tokio::test]
     async fn server_events_translate() {
         let (tx, mut rx) = mpsc::channel(8);
-        let mut init = false;
-        let mut active = false;
+        let mut state = SessionState::default();
 
         handle_server_event(
             r#"{"type":"session.created","conversation":{"id":"conv_1"}}"#,
             &tx,
-            &mut init,
-            &mut active,
+            &mut state,
         )
         .await
         .unwrap();
@@ -559,8 +609,7 @@ mod tests {
         handle_server_event(
             r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"hello world"}"#,
             &tx,
-            &mut init,
-            &mut active,
+            &mut state,
         )
         .await
         .unwrap();
@@ -571,8 +620,7 @@ mod tests {
         handle_server_event(
             r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"hello world","status":"completed"}"#,
             &tx,
-            &mut init,
-            &mut active,
+            &mut state,
         )
         .await
         .unwrap();
@@ -584,8 +632,7 @@ mod tests {
         handle_server_event(
             r#"{"type":"response.function_call_arguments.done","call_id":"c1","name":"os","arguments":"{\"action\":\"read\"}"}"#,
             &tx,
-            &mut init,
-            &mut active,
+            &mut state,
         )
         .await
         .unwrap();
@@ -599,33 +646,172 @@ mod tests {
         }
     }
 
+    /// Replays `frames` through one session state and returns every event
+    /// they produced, in order.
+    async fn replay(frames: &[&str]) -> Vec<ConversationEvent> {
+        let (tx, mut rx) = mpsc::channel(32);
+        let mut state = SessionState {
+            initialized: true,
+            ..Default::default()
+        };
+        for frame in frames {
+            handle_server_event(frame, &tx, &mut state).await.unwrap();
+        }
+        drop(tx);
+        let mut events = Vec::new();
+        while let Some(e) = rx.recv().await {
+            events.push(e);
+        }
+        events
+    }
+
+    /// The order xAI sends one utterance in: the finished transcript lands
+    /// after `speech_stopped`. Exactly one end, after the final words, and
+    /// none extra when the model's turn starts.
+    #[tokio::test]
+    async fn one_end_per_utterance_carrying_final_transcript() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"hello"}"#,
+            r#"{"type":"input_audio_buffer.speech_stopped"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"hello world","status":"completed"}"#,
+            r#"{"type":"response.created"}"#,
+        ])
+        .await;
+        let ends: Vec<usize> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, ConversationEvent::TranscriptionEnd))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(ends.len(), 1, "one end per utterance: {events:?}");
+        assert!(
+            matches!(&events[ends[0] - 1], ConversationEvent::TranscriptionText(t) if t == "hello world"),
+            "the end follows the final transcript: {events:?}"
+        );
+        assert!(matches!(events.last(), Some(ConversationEvent::PlaybackStart)));
+    }
+
+    /// The order the owner's phone hit: the model starts answering before
+    /// the finished transcript lands. The utterance stays open through
+    /// `response.created`; the late transcript is its final words and its one
+    /// end.
+    #[tokio::test]
+    async fn late_transcript_after_reply_starts_is_the_end() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"what I want is just"}"#,
+            r#"{"type":"input_audio_buffer.speech_stopped"}"#,
+            r#"{"type":"response.created"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"what I want is just a list","status":"completed"}"#,
+            r#"{"type":"response.done"}"#,
+        ])
+        .await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::TranscriptionText(partial),
+                    ConversationEvent::PlaybackStart,
+                    ConversationEvent::TranscriptionText(full),
+                    ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::PlaybackEnd,
+                ] if partial == "what I want is just" && full == "what I want is just a list"
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// A provider that never sends the finished transcript: the utterance
+    /// ends when the reply to it is done, with the words already sent, and a
+    /// transcript arriving after that is dropped rather than ending it twice.
+    #[tokio::test]
+    async fn utterance_ends_on_response_done_without_completed() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"hello"}"#,
+            r#"{"type":"input_audio_buffer.speech_stopped"}"#,
+            r#"{"type":"response.created"}"#,
+            r#"{"type":"response.done"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"hello world","status":"completed"}"#,
+        ])
+        .await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::TranscriptionText(t),
+                    ConversationEvent::PlaybackStart,
+                    ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::PlaybackEnd,
+                ] if t == "hello"
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// Barge-in: the user speaks over a reply. The earlier utterance, still
+    /// without its finished transcript, ends when the new one starts; the
+    /// interrupted reply's `response.done` does not end the new one.
+    #[tokio::test]
+    async fn barge_in_ends_the_previous_utterance_not_the_new_one() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"first"}"#,
+            r#"{"type":"response.created"}"#,
+            r#"{"type":"input_audio_buffer.speech_started"}"#,
+            r#"{"type":"response.done"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"second","status":"completed"}"#,
+        ])
+        .await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::TranscriptionText(first),
+                    ConversationEvent::PlaybackStart,
+                    ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::PlaybackEnd,
+                    ConversationEvent::TranscriptionText(second),
+                    ConversationEvent::TranscriptionEnd,
+                ] if first == "first" && second == "second"
+            ),
+            "{events:?}"
+        );
+    }
+
     /// Barge-in duplex contract: response lifecycle events track the in-flight
     /// flag, and the benign cancel-race error is swallowed while real errors
     /// still surface as fatal.
     #[tokio::test]
     async fn barge_in_cancel_race_is_benign() {
         let (tx, mut rx) = mpsc::channel(8);
-        let mut init = true;
-        let mut active = false;
+        let mut state = SessionState {
+            initialized: true,
+            ..Default::default()
+        };
 
-        handle_server_event(r#"{"type":"response.created"}"#, &tx, &mut init, &mut active)
+        handle_server_event(r#"{"type":"response.created"}"#, &tx, &mut state)
             .await
             .unwrap();
-        assert!(active);
+        assert!(state.response_active);
         assert!(matches!(rx.recv().await, Some(ConversationEvent::PlaybackStart)));
 
-        handle_server_event(r#"{"type":"response.done"}"#, &tx, &mut init, &mut active)
+        handle_server_event(r#"{"type":"response.done"}"#, &tx, &mut state)
             .await
             .unwrap();
-        assert!(!active);
+        assert!(!state.response_active);
         assert!(matches!(rx.recv().await, Some(ConversationEvent::PlaybackEnd)));
 
         // The cancel race must NOT surface as a client-facing Error.
         handle_server_event(
             r#"{"type":"error","error":{"message":"Cancellation failed: no active response found","type":"invalid_request_error"}}"#,
             &tx,
-            &mut init,
-            &mut active,
+            &mut state,
         )
         .await
         .unwrap();
@@ -633,8 +819,7 @@ mod tests {
         handle_server_event(
             r#"{"type":"error","error":{"message":"insufficient balance","type":"payment_error"}}"#,
             &tx,
-            &mut init,
-            &mut active,
+            &mut state,
         )
         .await
         .unwrap();

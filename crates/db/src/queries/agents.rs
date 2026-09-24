@@ -283,6 +283,11 @@ impl Store {
     /// `memory.context_isolated` (the isolation toggle) previously vanished on
     /// every server restart, silently un-isolating employees. The owner's DB
     /// value always wins over the publisher's shipped default.
+    ///
+    /// A sync that changes nothing writes nothing. Boot runs it for every
+    /// employee, and `updated_at` is the employee's last real change: heartbeat
+    /// triage reads it as "settings changed", so a no-op bump would make every
+    /// binding run once per restart.
     pub fn sync_agent_content(
         &self,
         id: &str,
@@ -308,7 +313,7 @@ impl Store {
         };
         conn.execute(
             "UPDATE agents SET agent_md = ?1, frontmatter = ?2, updated_at = unixepoch()
-             WHERE id = ?3",
+             WHERE id = ?3 AND (agent_md IS NOT ?1 OR frontmatter IS NOT ?2)",
             params![agent_md, merged, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -364,7 +369,8 @@ impl Store {
     /// Only updates if the manifest provides non-empty values, and never
     /// overwrites an owner-renamed (name_locked) name — the boot FS→DB sync
     /// runs on every restart and used to revert christened names to the
-    /// bundled manifest's default.
+    /// bundled manifest's default. Like [`Self::sync_agent_content`], a sync
+    /// that changes nothing writes nothing (`updated_at` stays put).
     pub fn sync_agent_identity(
         &self,
         id: &str,
@@ -376,7 +382,8 @@ impl Store {
             "UPDATE agents SET name = CASE WHEN ?2 != '' AND name_locked = 0 THEN ?2 ELSE name END,
                     description = CASE WHEN ?3 != '' THEN ?3 ELSE description END,
                     updated_at = unixepoch()
-             WHERE id = ?1",
+             WHERE id = ?1
+               AND ((?2 != '' AND name_locked = 0 AND name IS NOT ?2) OR (?3 != '' AND description IS NOT ?3))",
             params![id, name, description],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -443,6 +450,8 @@ impl Store {
         Ok(())
     }
 
+    /// Boot syncs these for every app employee: unchanged fields write
+    /// nothing, so `updated_at` stays the last real change.
     pub fn set_agent_app_fields(
         &self,
         id: &str,
@@ -455,7 +464,8 @@ impl Store {
         conn.execute(
             "UPDATE agents SET is_app = ?1, app_ui_path = ?2, app_binary_path = ?3,
                     app_window_config = ?4, updated_at = unixepoch()
-             WHERE id = ?5",
+             WHERE id = ?5
+               AND (is_app IS NOT ?1 OR app_ui_path IS NOT ?2 OR app_binary_path IS NOT ?3 OR app_window_config IS NOT ?4)",
             params![
                 is_app as i32,
                 app_ui_path,
@@ -1422,5 +1432,47 @@ mod structure_tests {
         assert_eq!(a.department_locked, 1);
         s.set_agent_department("bk", Some("finance")).unwrap();
         assert_eq!(s.get_agent("bk").unwrap().unwrap().department, None);
+    }
+}
+
+/// Boot re-syncs every employee from disk. A sync that changes nothing must
+/// not move `updated_at`: heartbeat triage reads it as "settings changed".
+#[cfg(test)]
+mod boot_sync_tests {
+    use crate::Store;
+
+    #[test]
+    fn a_boot_resync_is_not_a_settings_change_and_a_real_edit_is() {
+        let path = std::env::temp_dir().join(format!("nebo-boot-sync-test-{}.db", uuid::Uuid::new_v4()));
+        let s = Store::new(&path.to_string_lossy()).expect("store");
+        s.create_agent("emp", None, "Clerk", "", "", "{}", None, None).unwrap();
+        let shipped = r#"{"memory":{"context_isolated":false},"workflows":{}}"#;
+        // Boot one: the disk content lands, the owner isolates the employee,
+        // the app fields are recorded.
+        s.sync_agent_content("emp", "# Clerk", shipped).unwrap();
+        s.sync_agent_identity("emp", "Clerk", "Keeps the books").unwrap();
+        s.set_agent_context_isolated("emp", true).unwrap();
+        s.set_agent_app_fields("emp", true, Some("ui"), None, Some("{}")).unwrap();
+        s.conn_exec_for_test("UPDATE agents SET updated_at = 10 WHERE id = 'emp'");
+        let settings_changed = || s.engine_agent_changes_since("emp", 100, "hb:emp:x", Some("x")).unwrap().settings_changed;
+
+        // Boot two, nothing changed on disk: nothing is written.
+        s.sync_agent_content("emp", "# Clerk", shipped).unwrap();
+        s.sync_agent_identity("emp", "Clerk", "Keeps the books").unwrap();
+        s.set_agent_app_fields("emp", true, Some("ui"), None, Some("{}")).unwrap();
+        let a = s.get_agent("emp").unwrap().unwrap();
+        assert_eq!(a.updated_at, 10, "a no-op boot sync leaves updated_at alone");
+        assert!(a.frontmatter.contains(r#""context_isolated":true"#), "the owner's toggle is kept");
+        assert!(!settings_changed());
+
+        // A real change does move it: the owner's edit, a new package on disk.
+        s.update_agent("emp", "Clerk", "Keeps the books and the calendar", "# Clerk", &a.frontmatter, None, None, None, None, None, None, None, None, None, None).unwrap();
+        assert!(settings_changed(), "the owner's edit is a settings change");
+        s.conn_exec_for_test("UPDATE agents SET updated_at = 10 WHERE id = 'emp'");
+        s.sync_agent_content("emp", "# Clerk v2", shipped).unwrap();
+        assert!(settings_changed(), "new instructions on disk are a settings change");
+        s.conn_exec_for_test("UPDATE agents SET updated_at = 10 WHERE id = 'emp'");
+        s.sync_agent_identity("emp", "Clerk", "Keeps the books").unwrap();
+        assert!(settings_changed(), "a new manifest description is a change");
     }
 }

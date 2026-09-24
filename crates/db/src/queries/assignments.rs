@@ -40,6 +40,9 @@ pub struct NewAssignment<'a> {
     pub case_key: &'a str,
 }
 
+/// Characters of a standing outcome kept on its binding.
+pub const STANDING_OUTCOME_CAP: usize = 300;
+
 const COLS: &str = "id, assigner_agent_id, assigner_session_key, assignee_agent_id, subject, done_means, due, state, outcome, parent_run_id, case_key, created_at, closed_at";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Assignment> {
@@ -128,6 +131,42 @@ impl Store {
             "SELECT degraded_reason FROM agent_workflows WHERE agent_id = ?1 AND binding_name = ?2",
             params![agent_id, binding_name],
             |r| r.get::<_, Option<String>>(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// A binding's run ended with a standing outcome (the step evaluator or
+    /// the employee said there is nothing to do, and why): record the reason
+    /// on the binding the run belongs to. A run of no binding (a standalone
+    /// workflow) records nothing. The reason is kept as its first line,
+    /// capped at [`STANDING_OUTCOME_CAP`] characters.
+    pub fn record_standing_outcome(&self, run_id: &str, reason: &str, at: i64) -> Result<(), NeboError> {
+        let line = reason.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+        let outcome: String = line.chars().take(STANDING_OUTCOME_CAP).collect();
+        let conn = self.conn()?;
+        // A binding's runs carry `agent:<id>` as their workflow id and the
+        // binding name (or `<binding>:<detail>`) as their trigger detail.
+        conn.execute(
+            "UPDATE agent_workflows SET last_outcome = ?2, last_outcome_at = ?3
+             WHERE id = (
+                 SELECT aw.id FROM workflow_runs w JOIN agent_workflows aw
+                   ON w.workflow_id = 'agent:' || aw.agent_id
+                  AND (w.trigger_detail = aw.binding_name OR w.trigger_detail LIKE aw.binding_name || ':%')
+                 WHERE w.id = ?1
+                 ORDER BY length(aw.binding_name) DESC LIMIT 1)",
+            params![run_id, outcome, at],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// A binding's last standing outcome and when it was recorded.
+    pub fn agent_workflow_last_outcome(&self, agent_id: &str, binding_name: &str) -> Result<Option<(String, i64)>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT last_outcome, last_outcome_at FROM agent_workflows WHERE agent_id = ?1 AND binding_name = ?2",
+            params![agent_id, binding_name],
+            |r| Ok(r.get::<_, Option<String>>(0)?.zip(r.get::<_, Option<i64>>(1)?)),
         )
         .map_err(|e| NeboError::Database(e.to_string()))
     }

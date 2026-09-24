@@ -22,6 +22,7 @@ mod migration;
 mod plugin_commands;
 pub(crate) mod plugin_oauth;
 mod plugin_provider;
+mod preflight;
 mod redact;
 pub mod routes;
 pub mod run_display;
@@ -684,10 +685,16 @@ async fn handle_comm_install_event(
     match event.event_type.as_str() {
         "tool_installed" | "tool_updated" => {
             let api = codes::build_api_client(state).map_err(|e| e.to_string())?;
-            let detail = api
-                .get_skill(&event.tool_id)
-                .await
-                .map_err(|e| format!("fetch artifact {}: {e}", event.tool_id))?;
+            // GET /skills/{id} is the hub's detail for EVERY artifact type (it
+            // resolves any artifact id and carries the type and install code);
+            // its 404 text says "skill" whatever the type, so name the artifact
+            // from the event.
+            let detail = api.get_skill(&event.tool_id).await.map_err(|e| {
+                let p = &event.payload;
+                let kind = p.get("artifact_type").and_then(|v| v.as_str()).unwrap_or("artifact");
+                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                format!("fetch {kind} {name} ({}): {e}", event.tool_id)
+            })?;
             let item = &detail.item;
             let artifact_type = item.artifact_type.as_deref().unwrap_or("skill");
             // Dedup the self-echo: a fresh "tool_installed" for something already

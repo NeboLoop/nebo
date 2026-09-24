@@ -1063,6 +1063,9 @@ async fn drive(state: &AppState) {
             if i > 0 {
                 tokio::time::sleep(Duration::from_secs(i as u64)).await;
             }
+            if !preflight_admits(&state, &run) {
+                return;
+            }
             if !triage_admits(&state, &run).await {
                 return;
             }
@@ -1123,6 +1126,19 @@ async fn drive(state: &AppState) {
             warn!(run = %turn.id, error = %e, "engine: settle failed");
         }
     }
+}
+
+// ── pre-flight: a binding's declared needs, before anything else ─────────
+
+/// Fire-time pre-flight (`crate::preflight`) for a workflow binding's fire:
+/// true runs it. A fire of no binding declares nothing and runs. Checked on
+/// every fire, before triage, at no token cost.
+fn preflight_admits(state: &AppState, run: &EngineRun) -> bool {
+    let Some((agent_id, binding)) = crate::preflight::fire_binding(&state.store, run) else {
+        return true;
+    };
+    let unmet = crate::preflight::unmet_need_now(&state.store, &state.plugin_store, &agent_id, &binding);
+    crate::preflight::admit(&state.store, run, &agent_id, &binding, unmet, now())
 }
 
 // ── heartbeat triage: one decision before a timer fire runs ──────────────
@@ -1231,12 +1247,15 @@ pub(crate) fn triage_binding(store: &Store, run: &EngineRun, entity: Option<(Str
             last_outcome: String::new(),
             since_last_run: None,
             cadence,
+            standing: false,
             flags: Flags { first_run: true, ..Default::default() },
         });
     };
     let since = last.started_at.unwrap_or(last.created_at);
     // A workflow binding's fire only starts its workflow; the workflow run
-    // says how it ended (`exited` is "nothing to do").
+    // says how it ended. `exited` is a standing outcome: the step evaluator
+    // or the employee ended the run because there was nothing to do, and
+    // the run's error field carries the reason it gave.
     let wf_run = wf.as_ref().and_then(|wf| {
         let prefix = format!("{}:", wf.binding_name);
         store
@@ -1245,11 +1264,14 @@ pub(crate) fn triage_binding(store: &Store, run: &EngineRun, entity: Option<(Str
             .into_iter()
             .find(|w| w.trigger_detail.as_deref().is_some_and(|d| d == wf.binding_name || d.starts_with(&prefix)))
     });
+    let non_empty = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
     let (status, outcome) = match &wf_run {
+        Some(w) if w.status == "exited" => (w.status.clone(), non_empty(&w.error).or_else(|| non_empty(&w.output)).unwrap_or_default()),
         Some(w) => (w.status.clone(), w.output.clone().or_else(|| w.error.clone()).unwrap_or_default()),
         None => (last.state.clone(), last.result.clone().or_else(|| last.error.clone()).unwrap_or_default()),
     };
-    let clean = last.state == "done" && matches!(status.as_str(), "done" | "completed" | "exited");
+    let standing = last.state == "done" && status == "exited";
+    let clean = standing || (last.state == "done" && matches!(status.as_str(), "done" | "completed"));
     let changes = store
         .engine_agent_changes_since(&run.agent_id, since, &key, wf.as_ref().map(|w| w.binding_name.as_str()))
         .ok()?;
@@ -1257,10 +1279,11 @@ pub(crate) fn triage_binding(store: &Store, run: &EngineRun, entity: Option<(Str
         key,
         agent_id: run.agent_id.clone(),
         purpose,
-        last_status: status,
+        last_status: if standing { "done".to_string() } else { status },
         last_outcome: outcome,
         since_last_run: Some(t - since),
         cadence,
+        standing,
         flags: Flags {
             first_run: false,
             last_run_failed: !clean,
@@ -2887,8 +2910,81 @@ mod tests {
         let b = triage_binding(&s, &fire, None, t).expect("a binding heartbeat is triaged");
         assert_eq!(b.purpose, "stock-watch: Pull inventory; Flag low stock");
         assert_eq!(b.cadence, Some(Duration::from_secs(300)));
-        assert_eq!(b.last_status, "exited");
+        assert_eq!(b.last_status, "done", "a standing outcome reads done");
+        assert!(b.standing);
         assert_eq!(b.last_outcome, "Nothing below threshold.");
         assert!(!b.flags.changed_anything(), "its own workflow run is not other work: {:?}", b.flags);
+    }
+
+    /// The shape a real exited run has: the engine run carries the run's
+    /// prior context as its result and the reason it gave as its error. The
+    /// reason is the outcome triage reads; the run is a standing outcome, not
+    /// a failure. A failed run of the same binding is a failure.
+    #[test]
+    fn triage_reads_a_standing_outcome_as_clean_and_a_failed_run_as_a_change() {
+        let setup = |status: &str, error: Option<&str>| {
+            let s = store();
+            let t = now();
+            s.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
+            s.upsert_agent_workflow("emp", "sweep", "heartbeat", "30m", None, None, None, None, None, false).unwrap();
+            let key = "hb:emp:sweep";
+            past_fire(&s, "prev", key, "emp", t, 1900, "done", "inline workflow run started: wf-1");
+            s.create_workflow_run("wf-1", "agent:emp", "heartbeat", Some("sweep"), None, None, None).unwrap();
+            s.complete_workflow_run("wf-1", status, 0, error, Some("a"), Some("\n[Activity 'a' result]: long context")).unwrap();
+            s.conn_exec_for_test(&format!("UPDATE engine_runs SET created_at = {c} WHERE id = 'wf-1'", c = t - 1899));
+            s.engine_create_run(&NewRun { id: "fire", kind: "task", session_key: "heartbeat-binding-emp-sweep", agent_id: "emp", lane: "main", inputs: Some(r#"{"command":"agent:emp:sweep","trigger":"heartbeat"}"#), external_ref: Some(key), ..Default::default() }).unwrap();
+            let fire = s.engine_get_run("fire").unwrap().unwrap();
+            let b = triage_binding(&s, &fire, None, t).unwrap();
+            (s, b)
+        };
+
+        let (s, b) = setup("exited", Some("Step 3/7 evaluator: The list is empty; nothing to act on."));
+        assert!(b.standing);
+        assert_eq!(b.last_status, "done");
+        assert_eq!(b.last_outcome, "Step 3/7 evaluator: The list is empty; nothing to act on.");
+        assert!(!b.flags.last_run_failed && !b.flags.changed_anything(), "{:?}", b.flags);
+        // Past the ordinary 30-minute span, the standing outcome's span holds.
+        assert!(b.since_last_run.unwrap() > 30 * 60);
+        assert!(agent::heartbeat_triage::floor_allows_skip(0, b.since_last_run, b.cadence, b.standing));
+        assert_eq!(
+            s.agent_workflow_last_outcome("emp", "sweep").unwrap().map(|(o, _)| o).as_deref(),
+            Some("Step 3/7 evaluator: The list is empty; nothing to act on.")
+        );
+
+        // A tool's terminal refusal ends the run the same way (the workflow
+        // engine records `WorkflowError::Blocked` as `exited` with the
+        // refusal): the reason is the standing outcome triage reads.
+        let blocked = "blocked: No example account is connected for this agent. Connect one in this agent's Settings, Plugins before using example.";
+        let (s, b) = setup("exited", Some(blocked));
+        assert!(b.standing);
+        assert_eq!(b.last_status, "done");
+        assert_eq!(b.last_outcome, blocked);
+        assert!(!b.flags.last_run_failed && !b.flags.changed_anything(), "{:?}", b.flags);
+        assert_eq!(s.agent_workflow_last_outcome("emp", "sweep").unwrap().map(|(o, _)| o).as_deref(), Some(blocked));
+
+        let (s, b) = setup("failed", Some("provider error: 503 upstream unavailable"));
+        assert!(!b.standing);
+        assert!(b.flags.last_run_failed && b.flags.changed_anything());
+        assert_eq!(s.agent_workflow_last_outcome("emp", "sweep").unwrap(), None, "a failure is no standing outcome");
+    }
+
+    /// A standing outcome is not "nothing left to do": the binding's
+    /// schedule is neither retired at its fire nor by the boot sweep.
+    #[test]
+    fn a_standing_outcome_never_retires_its_schedule() {
+        let s = store();
+        employee(&s, "emp", "Employee");
+        s.upsert_agent_workflow("emp", "sweep", "schedule", "0 0 9 * * *", None, None, None, None, None, false).unwrap();
+        s.create_workflow_run("wf-1", "agent:emp", "schedule", Some("sweep"), None, None, None).unwrap();
+        s.complete_workflow_run("wf-1", "exited", 0, Some("Nothing to act on today."), None, None).unwrap();
+        assert!(s.agent_workflow_last_outcome("emp", "sweep").unwrap().is_some());
+        let t0 = local(2026, 9, 21, 8, 0, 0);
+        let j = employee_job(&s, "agent-emp-sweep", "0 0 9 * * *", "agent_workflow", "agent:emp:sweep", "emp", "", t0);
+        assert_eq!(retire_reason(&s, &j, t0), None);
+        assert_eq!(retire_finished_schedules(&s, t0 + 60), 0);
+        tick(&s, t0 + 90, &idle, &no_steer);
+        let r = tick(&s, local(2026, 9, 21, 9, 0, 1), &idle, &no_steer);
+        assert_eq!(r.fired, 1, "it fires as scheduled");
+        assert!(enabled(&s, j.id));
     }
 }

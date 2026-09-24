@@ -237,7 +237,10 @@ pub(crate) async fn execute_graph(
             info!(workflow = def.id.as_str(), run_id, total_tokens, "workflow completed (graph)");
             Ok((run_id.to_string(), final_context))
         }
-        Err(WorkflowError::Exited(reason)) => {
+        Err(WorkflowError::Cancelled) => Err(WorkflowError::Cancelled),
+        // A standing outcome (an exit, a terminal refusal) ends the run
+        // cleanly with its reason — never a failure.
+        Err(e) if let Some(reason) = e.standing_outcome() => {
             let _ = store.complete_workflow_run(
                 run_id,
                 "exited",
@@ -249,7 +252,6 @@ pub(crate) async fn execute_graph(
             info!(workflow = def.id.as_str(), run_id, reason = %reason, "workflow exited early (graph)");
             Ok((run_id.to_string(), final_context))
         }
-        Err(WorkflowError::Cancelled) => Err(WorkflowError::Cancelled),
         Err(e) => {
             let err_msg = e.to_string();
             if let Err(db_err) = store.complete_workflow_run(
@@ -1503,7 +1505,7 @@ async fn run_llm_activity<'a>(
             record_output(ctx, scope, &activity.id, result_text);
             route(ctx, scope, &activity.id, |_| true).await
         }
-        Err(WorkflowError::Exited(reason)) => {
+        Err(e) if let Some(reason) = e.standing_outcome() => {
             {
                 let mut st = ctx.state.lock().unwrap();
                 st.total_tokens += spent;
@@ -1521,7 +1523,7 @@ async fn run_llm_activity<'a>(
                 started_at,
                 Some(completed_at),
             );
-            Err(WorkflowError::Exited(reason))
+            Err(e)
         }
         Err(e) => {
             {
@@ -1768,6 +1770,10 @@ mod walk_tests {
         /// system-prompt substring -> exit reason. Emits a real `exit` tool
         /// call so the engine takes its genuine EXIT_SENTINEL path.
         exit_scripts: Vec<(String, String)>,
+        /// system-prompt substring -> a tool's terminal refusal. The turn
+        /// ends the way the runner ends it: a control notice carrying the
+        /// refusal and a Done whose stop reason is `terminal_tool_error`.
+        blocked_scripts: Vec<(String, String)>,
         /// user-message substrings whose turn "read outside text": the Done
         /// event carries web provenance, as the runner stamps it.
         tainted_scripts: Vec<String>,
@@ -1785,6 +1791,7 @@ mod walk_tests {
                 rate_limit_failures: StdMutex::new(0),
                 context_scripts: vec![],
                 exit_scripts: vec![],
+                blocked_scripts: vec![],
                 tainted_scripts: vec![],
             }
         }
@@ -1794,6 +1801,13 @@ mod walk_tests {
         }
         fn with_exit_scripts(mut self, scripts: &[(&str, &str)]) -> Self {
             self.exit_scripts = scripts
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            self
+        }
+        fn with_blocked_scripts(mut self, scripts: &[(&str, &str)]) -> Self {
+            self.blocked_scripts = scripts
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
@@ -1848,6 +1862,23 @@ mod walk_tests {
                 .lock()
                 .unwrap()
                 .push(format!("{}\n###SYSTEM###\n{}", user, req.system));
+            if let Some((_, refusal)) = self
+                .blocked_scripts
+                .iter()
+                .find(|(key, _)| req.system.contains(key.as_str()))
+            {
+                let refusal = refusal.clone();
+                let (tx, rx) = tokio::sync::mpsc::channel(4);
+                tokio::spawn(async move {
+                    let _ = tx
+                        .send(ai::StreamEvent::control_notice(refusal, "terminal_tool_error"))
+                        .await;
+                    let _ = tx
+                        .send(ai::StreamEvent::done_with_reason("terminal_tool_error"))
+                        .await;
+                });
+                return Ok(rx);
+            }
             if let Some((_, reason)) = self
                 .exit_scripts
                 .iter()
@@ -1981,6 +2012,8 @@ mod walk_tests {
             let mut text = String::new();
             let (mut ti, mut to) = (0i32, 0i32);
             let mut exit: Option<String> = None;
+            let mut notice = String::new();
+            let mut stop_reason = String::new();
             let mut tainted = false;
             while let Some(ev) = rx.recv().await {
                 match ev.event_type {
@@ -2004,12 +2037,14 @@ mod walk_tests {
                             to = to.max(u.output_tokens);
                         }
                     }
+                    ai::StreamEventType::ControlNotice => notice = ev.text.clone(),
                     ai::StreamEventType::Done => {
                         if let Some(u) = ev.usage {
                             ti = ti.max(u.input_tokens);
                             to = to.max(u.output_tokens);
                         }
                         tainted |= ev.provenance.is_some_and(|p| !p.is_empty());
+                        stop_reason = ev.stop_reason.unwrap_or_default();
                         break;
                     }
                     _ => {}
@@ -2017,6 +2052,9 @@ mod walk_tests {
             }
             if let Some(reason) = exit {
                 return Err(WorkflowError::Exited(reason));
+            }
+            if stop_reason == "terminal_tool_error" {
+                return Err(WorkflowError::Blocked(notice));
             }
             Ok(crate::LoopOutcome {
                 text,
@@ -3254,6 +3292,117 @@ mod walk_tests {
         );
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(ran(&provider, "step-three"));
+    }
+
+    /// A run of an employee's binding, in `store`: the binding row, and the
+    /// run row carrying `agent:<id>` and the binding name as a timer fire's
+    /// run does.
+    async fn run_binding_graph(
+        def_json: &str,
+        provider: &MockProvider,
+        decide: Option<&ai::DecideClient>,
+    ) -> (Result<(String, String), WorkflowError>, Arc<Store>, String) {
+        let def = parse_workflow(def_json).expect("valid def");
+        let store = test_store();
+        store.conn_exec_for_test(
+            "INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)",
+        );
+        store
+            .upsert_agent_workflow("emp", "sweep", "heartbeat", "30m", None, None, None, None, None, false)
+            .unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_workflow_run(&run_id, "agent:emp", "heartbeat", Some("sweep"), None, None, None)
+            .expect("run row");
+        let looper = ScriptedLoop::new(provider);
+        let result = execute_graph(
+            &def, "", "test-owner", false, &serde_json::json!({}), &store, decide, &looper, &[], None,
+            &run_id, None, None, None, None, None, None, None,
+        )
+        .await;
+        (result, store, run_id)
+    }
+
+    const OUTCOME_PRECONDITION: &str = r#"{"model":"jev-1.13.0","answers":{"outcome":{"type":"choice","choice":"precondition_failed","confidence":0.99,"probabilities":{}}},"usage":{"input_tokens":10,"output_tokens":1,"cost_micro":10}}"#;
+
+    /// How a run ends decides what it is, never what its text says. The step
+    /// evaluator ending it after the first step is a clean end with a
+    /// reason: `exited` (engine state `done`), the reason the step's own
+    /// words, the binding's standing outcome recorded, and nothing after it
+    /// runs — not the activity's next step, not the next activity. The
+    /// employee calling `exit` is the same. A provider failure is `failed`
+    /// and records no standing outcome.
+    #[tokio::test]
+    async fn test_a_run_ended_for_nothing_to_do_is_a_standing_outcome_and_a_failure_is_not() {
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","intent":"task-a","steps":["step-one","step-two"]},
+                {"id":"b","intent":"task-b"}],
+            "connections":[{"from":"__trigger__","to":"a"},{"from":"a","to":"b"},{"from":"b","to":"__emit__"}]
+        }"#;
+
+        // The step evaluator ends it.
+        let (client, _hits) = fake_janus(200, OUTCOME_PRECONDITION).await;
+        let provider = MockProvider::new(&[("step-one", "## Check\nThe list is empty; there is nothing to act on.")]);
+        let (result, store, run_id) = run_binding_graph(def, &provider, Some(&client)).await;
+        result.expect("an evaluator exit ends the run cleanly");
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run.status, "exited");
+        assert_eq!(store.engine_get_run(&run_id).unwrap().unwrap().state, "done");
+        assert_eq!(run.error.as_deref(), Some("Step 1/2 evaluator: Check"));
+        assert!(!ran(&provider, "step-two") && !ran(&provider, "task-b"), "{:?}", provider.calls());
+        let (outcome, _at) = store.agent_workflow_last_outcome("emp", "sweep").unwrap().expect("standing outcome");
+        assert_eq!(outcome, "Step 1/2 evaluator: Check");
+
+        // The employee says why and exits.
+        let provider = MockProvider::new(&[]).with_exit_scripts(&[("task-a", "Nothing new since the last run.\nDetail.")]);
+        let one_step = def.replace(r#","steps":["step-one","step-two"]"#, "");
+        let (result, store, run_id) = run_binding_graph(&one_step, &provider, None).await;
+        result.expect("an exit ends the run cleanly");
+        assert_eq!(run_status(&store, &run_id), "exited");
+        assert!(!ran(&provider, "task-b"));
+        let (outcome, _at) = store.agent_workflow_last_outcome("emp", "sweep").unwrap().expect("standing outcome");
+        assert_eq!(outcome, "Nothing new since the last run.");
+
+        // A provider failure is a failure, with no standing outcome.
+        let provider = MockProvider::new(&[]).with_rate_limit_failures(3);
+        let (result, store, run_id) = run_binding_graph(&one_step, &provider, None).await;
+        assert!(result.is_err());
+        assert_eq!(run_status(&store, &run_id), "failed");
+        assert_eq!(store.agent_workflow_last_outcome("emp", "sweep").unwrap(), None);
+    }
+
+    /// A tool's terminal refusal (no account connected) ends every run of
+    /// the binding the same way until the owner changes something: a
+    /// standing outcome, like an exit — `exited` (engine state `done`), the
+    /// refusal as the reason on the run, the activity and the binding, and
+    /// nothing after it runs. Decided by how the turn ended (the runner's
+    /// `terminal_tool_error`), never by the refusal's words.
+    #[tokio::test]
+    async fn test_a_run_a_tool_refused_terminally_is_a_standing_outcome() {
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","intent":"task-a"},
+                {"id":"b","intent":"task-b"}],
+            "connections":[{"from":"__trigger__","to":"a"},{"from":"a","to":"b"},{"from":"b","to":"__emit__"}]
+        }"#;
+        let refusal = "No example account is connected for this agent. Connect one in this agent's Settings, Plugins before using example.";
+        let provider = MockProvider::new(&[]).with_blocked_scripts(&[("task-a", refusal)]);
+        let (result, store, run_id) = run_binding_graph(def, &provider, None).await;
+        result.expect("a terminal refusal ends the run cleanly");
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run.status, "exited");
+        assert_eq!(store.engine_get_run(&run_id).unwrap().unwrap().state, "done");
+        let reason = format!("blocked: {refusal}");
+        assert_eq!(run.error.as_deref(), Some(reason.as_str()));
+        assert!(!ran(&provider, "task-b"), "{:?}", provider.calls());
+        let results = store.list_activity_results(&run_id).unwrap();
+        let a = results.iter().find(|r| r.activity_id == "a").expect("activity a recorded");
+        assert_eq!((a.status.as_str(), a.error.as_deref()), ("exited", Some(reason.as_str())));
+        let (outcome, _at) = store.agent_workflow_last_outcome("emp", "sweep").unwrap().expect("standing outcome");
+        assert_eq!(outcome, reason);
     }
 
     /// on_error.retry is the activity-level retry budget: after

@@ -225,31 +225,53 @@ async fn the_store_and_the_ledger_hold_under_contention() {
 
 /// Given words for every model call: the plan request gets `tasks`
 /// independent sub-tasks, every other call gets "done" after a short think.
-/// The first `reject` calls after the plan are refused with a 429, as Janus
-/// refuses when an upstream provider is limiting it. `live`/`peak` count
-/// the calls in flight at the provider. The permits, the runner's loop and
-/// retries, the store and the DAG scheduler are the product's own.
+/// For `reject_for` after the first call past the plan, every call is
+/// refused with a 429 and Retry-After 1 s — a wave the way Janus sends one:
+/// everyone, for a moment. `live`/`peak` count the calls in flight at the
+/// provider. The permits, the runner's loop and retries, the store and the
+/// DAG scheduler are the product's own.
 struct GivenWords(Arc<Words>);
 
 struct Words {
     tasks: usize,
-    reject: std::sync::atomic::AtomicUsize,
+    reject_for: std::time::Duration,
+    reject_until: std::sync::Mutex<Option<std::time::Instant>>,
+    /// Calls refused in the wave.
+    refused: std::sync::atomic::AtomicUsize,
     live: std::sync::atomic::AtomicUsize,
     peak: std::sync::atomic::AtomicUsize,
-    /// Peak calls in flight after the 429 wave was answered.
+    /// Peak calls in flight after the wave ended.
     peak_after_reject: std::sync::atomic::AtomicUsize,
 }
 
 impl Words {
-    fn new(tasks: usize, reject: usize) -> Arc<Self> {
+    fn new(tasks: usize, reject_for: std::time::Duration) -> Arc<Self> {
         use std::sync::atomic::AtomicUsize;
         Arc::new(Self {
             tasks,
-            reject: AtomicUsize::new(reject),
+            reject_for,
+            reject_until: std::sync::Mutex::new(None),
+            refused: AtomicUsize::new(0),
             live: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             peak_after_reject: AtomicUsize::new(0),
         })
+    }
+
+    /// Whether the wave is on right now, starting it on the first call.
+    fn refusing(&self) -> bool {
+        if self.reject_for.is_zero() {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        let mut until = self.reject_until.lock().unwrap();
+        let end = *until.get_or_insert(now + self.reject_for);
+        now < end
+    }
+
+    fn wave_over(&self) -> bool {
+        let until = self.reject_until.lock().unwrap();
+        matches!(*until, Some(end) if std::time::Instant::now() >= end)
     }
 }
 
@@ -271,9 +293,9 @@ impl ai::Provider for GivenWords {
                 .collect();
             serde_json::to_string(&plan).unwrap()
         } else {
-            let rejecting = words.reject.fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1)).is_ok();
-            if rejecting {
-                return Err(ai::ProviderError::RateLimit { retry_after_secs: Some(0) });
+            if words.refusing() {
+                words.refused.fetch_add(1, SeqCst);
+                return Err(ai::ProviderError::RateLimit { retry_after_secs: Some(1) });
             }
             "done".to_string()
         };
@@ -282,7 +304,7 @@ impl ai::Provider for GivenWords {
         tokio::spawn(async move {
             let now = me.live.fetch_add(1, SeqCst) + 1;
             me.peak.fetch_max(now, SeqCst);
-            if me.reject.load(SeqCst) == 0 {
+            if me.wave_over() {
                 me.peak_after_reject.fetch_max(now, SeqCst);
             }
             tokio::time::sleep(std::time::Duration::from_millis(40)).await;
@@ -326,7 +348,7 @@ async fn a_fan_out_finishes_at_the_permit_floor() {
 
     let concurrency = Arc::new(agent::ConcurrencyController::new(Some(2)));
     assert_eq!(concurrency.ceiling(), 2, "the scenario runs at the permit floor");
-    let (runner, store) = given_words_runner(Words::new(3, 0), concurrency);
+    let (runner, store) = given_words_runner(Words::new(3, std::time::Duration::ZERO), concurrency);
     let orchestrator = agent::Orchestrator::new(runner, store);
 
     let result = tokio::time::timeout(
@@ -344,10 +366,11 @@ async fn a_fan_out_finishes_at_the_permit_floor() {
 
 /// A 429 slows the whole bot, not the one call that got it, and the bot
 /// recovers on its own. Eight sub-tasks fan out over eight permits and
-/// Janus refuses the first wave of eight calls. The pool halves once for
-/// the wave (not eight times), no later moment runs all eight again until
-/// successes rebuild it, every sub-task still finishes, and the pool is back
-/// to eight — with no header from Janus and no resource probe.
+/// Janus refuses everyone for a moment (Retry-After 1 s). The pool halves
+/// once for the wave (not once per refusal), the refused calls wait the
+/// second they were told, no later moment runs all eight again until
+/// successes rebuild the pool, every sub-task still finishes, and the pool
+/// is back to eight — with no header from Janus and no resource probe.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_429_slows_the_whole_bot_and_it_recovers() {
     use std::sync::atomic::Ordering::SeqCst;
@@ -356,7 +379,7 @@ async fn a_429_slows_the_whole_bot_and_it_recovers() {
     let concurrency = Arc::new(agent::ConcurrencyController::new(Some(8)));
     concurrency.set_ceiling(8);
     assert_eq!(concurrency.effective_permits(), 8);
-    let words = Words::new(8, 8);
+    let words = Words::new(8, std::time::Duration::from_millis(300));
     let (runner, store) = given_words_runner(words.clone(), concurrency.clone());
     let orchestrator = agent::Orchestrator::new(runner, store);
 
@@ -372,7 +395,7 @@ async fn a_429_slows_the_whole_bot_and_it_recovers() {
         let part = format!("part-{i}");
         assert!(result.output.contains(&part), "sub-task '{part}' is missing from: {}", result.output);
     }
-    assert_eq!(words.reject.load(SeqCst), 0, "the whole 429 wave was served");
+    assert!(words.refused.load(SeqCst) >= 1, "the wave refused someone");
     let after = words.peak_after_reject.load(SeqCst);
     assert!(
         (1..8).contains(&after),

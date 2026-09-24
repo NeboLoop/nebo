@@ -302,6 +302,16 @@ async fn handle_info(app: &str) -> ToolResult {
 
 #[cfg(target_os = "macos")]
 async fn handle_frontmost() -> ToolResult {
+    // The helper answers without AppleEvents; System Events is the fallback
+    // (on a Mac without the Automation grant it hangs on a consent prompt).
+    if let Ok(name) = crate::ax_native::frontmost().await {
+        if crate::ax_native::is_lock_screen(&name) {
+            return ToolResult::ok(crate::ax_native::LOCKED_SCREEN);
+        }
+        if !name.is_empty() {
+            return ToolResult::ok(name);
+        }
+    }
     let result = run_osascript(
         "tell application \"System Events\" to return name of first process whose frontmost is true",
     )

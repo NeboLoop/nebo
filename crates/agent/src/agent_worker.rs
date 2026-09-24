@@ -229,17 +229,7 @@ impl AgentWorker {
                     if plugin_store.resolve(&watch_cfg.plugin, "*").is_none()
                         && !watch_cfg.plugin.contains('.')
                     {
-                        let installed: Vec<(String, Vec<String>)> = plugin_store
-                            .list_installed()
-                            .into_iter()
-                            .map(|(slug, _, _, _)| {
-                                let ifaces = plugin_store
-                                    .get_manifest(&slug)
-                                    .map(|m| interfaces_of(&m.interface_bindings))
-                                    .unwrap_or_default();
-                                (slug, ifaces)
-                            })
-                            .collect();
+                        let installed = installed_interfaces(&plugin_store);
                         let accounts: Vec<String> = store
                             .list_all_plugin_account_profiles_for_agent(&agent_id)
                             .unwrap_or_default()
@@ -3543,6 +3533,23 @@ pub fn interfaces_of(bindings: &std::collections::HashMap<String, String>) -> Ve
     out
 }
 
+/// Every installed plugin with the interfaces its manifest binds: what a
+/// capability resolves against ([`resolve_capability_plugin`]), read by the
+/// watch trigger at start and by the engine's fire-time pre-flight.
+pub fn installed_interfaces(plugin_store: &napp::plugin::PluginStore) -> Vec<(String, Vec<String>)> {
+    plugin_store
+        .list_installed()
+        .into_iter()
+        .map(|(slug, _, _, _)| {
+            let ifaces = plugin_store
+                .get_manifest(&slug)
+                .map(|m| interfaces_of(&m.interface_bindings))
+                .unwrap_or_default();
+            (slug, ifaces)
+        })
+        .collect()
+}
+
 /// The plugin a capability trigger runs on: among installed plugins that
 /// declare the interface, the one this seat has an account on comes first;
 /// ties and the no-account case resolve alphabetically, so the same package
@@ -3573,9 +3580,9 @@ pub fn capability_degraded_reason(capability: &str, installed: &[(String, Vec<St
         .map(|(slug, _)| slug.as_str())
         .collect();
     if declared.is_empty() {
-        format!("no installed plugin provides the {capability} capability; connect one to run this binding")
+        format!("needs a {capability} plugin")
     } else {
-        format!("no connection for {capability} on this employee (plugins available: {})", declared.join(", "))
+        format!("needs a {capability} connection on this employee (plugins available: {})", declared.join(", "))
     }
 }
 
@@ -3610,7 +3617,7 @@ mod capability_trigger_tests {
         let installed = [plugin("quickbooks", &["ledger"])];
         assert_eq!(resolve_capability_plugin("mail", &installed, &[]), None);
         let reason = capability_degraded_reason("mail", &installed);
-        assert!(reason.contains("no installed plugin provides the mail capability"), "{reason}");
+        assert_eq!(reason, "needs a mail plugin");
     }
 
     #[test]

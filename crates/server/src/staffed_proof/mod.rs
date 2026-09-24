@@ -192,6 +192,9 @@ impl Nebo {
         cfg.host = "127.0.0.1".to_string();
         cfg.database.sqlite_path = home.join("data").join("nebo.db").to_string_lossy().to_string();
         cfg.auth.access_secret = uuid::Uuid::new_v4().to_string();
+        // The hub is the stand-in on loopback: an install through the
+        // product's own doors never leaves this machine.
+        cfg.neboai.api_url = hub_stand_in();
         // The server lives on a runtime of its own: a test's runtime is torn
         // down when the test returns, and this server outlives every test.
         server_runtime().spawn(async move {
@@ -518,6 +521,109 @@ pub fn install_fake_plugin(home: &Path, slug: &str, bindings: Value) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+}
+
+/// A plugin the hub stand-in lists: redeemable by `code`, served as a
+/// `.napp` whose binary echoes its arguments.
+#[derive(Clone)]
+struct HubPlugin {
+    slug: String,
+    name: String,
+}
+
+fn hub_plugins() -> &'static Mutex<std::collections::HashMap<String, HubPlugin>> {
+    static PLUGINS: OnceLock<Mutex<std::collections::HashMap<String, HubPlugin>>> = OnceLock::new();
+    PLUGINS.get_or_init(Default::default)
+}
+
+/// The hub stand-in lists a plugin under `code`, for the product's install
+/// doors (`POST /codes/redeem`, the plugin detail, the `.napp` download).
+pub fn hub_offers_plugin(code: &str, slug: &str, name: &str) {
+    hub_plugins()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(code.to_string(), HubPlugin { slug: slug.to_string(), name: name.to_string() });
+}
+
+fn hub_plugin_by_slug(slug: &str) -> Option<HubPlugin> {
+    hub_plugins()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .find(|p| p.slug == slug)
+        .cloned()
+}
+
+/// The `.napp` the stand-in serves: a raw tar.gz of `plugin.json` and the
+/// echo binary, the layout `install_from_napp` extracts.
+fn napp_of(plugin: &HubPlugin) -> Vec<u8> {
+    use sha2::Digest;
+    let binary = "#!/bin/sh\nprintf '%s\\n' \"$@\"\n";
+    let manifest = json!({
+        "id": plugin.slug, "slug": plugin.slug, "name": plugin.name, "version": "0.1.0",
+        "platforms": { napp::plugin::current_platform_key(): {
+            "binaryName": plugin.slug, "sha256": hex::encode(sha2::Sha256::digest(binary.as_bytes())),
+            "signature": "", "size": binary.len(), "downloadUrl": "",
+        } },
+    })
+    .to_string();
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+    for (path, body, mode) in [("plugin.json", manifest.as_str(), 0o644), (plugin.slug.as_str(), binary, 0o755)] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(mode);
+        header.set_cksum();
+        tar.append_data(&mut header, path, body.as_bytes()).unwrap();
+    }
+    tar.into_inner().unwrap().finish().unwrap()
+}
+
+/// Start the hub stand-in on the server's runtime; returns its URL.
+fn hub_stand_in() -> String {
+    use axum::extract::Path as UrlPath;
+    use axum::http::StatusCode;
+    use axum::routing::{get, post};
+
+    let redeem = |axum::Json(body): axum::Json<Value>| async move {
+        let code = body["code"].as_str().unwrap_or("").to_string();
+        let found = hub_plugins().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned();
+        match found {
+            Some(p) => Ok(axum::Json(json!({
+                "status": "installed",
+                "artifact": { "id": format!("artifact-{}", p.slug), "name": p.name, "slug": p.slug, "type": "plugin", "code": code },
+            }))),
+            None => Err(StatusCode::NOT_FOUND),
+        }
+    };
+    let detail = |UrlPath(slug): UrlPath<String>| async move {
+        let p = hub_plugin_by_slug(&slug).ok_or(StatusCode::NOT_FOUND)?;
+        let napp = napp_of(&p);
+        let platform = napp::plugin::current_platform_key();
+        Ok::<_, StatusCode>(axum::Json(json!({
+            "id": format!("artifact-{}", p.slug), "slug": p.slug, "name": p.name, "version": "0.1.0",
+            "platforms": { platform: {
+                "binaryName": p.slug, "sha256": "", "signature": "", "size": napp.len(),
+                "downloadUrl": format!("/napp/{}", p.slug),
+            } },
+        })))
+    };
+    let download = |UrlPath(slug): UrlPath<String>| async move {
+        let p = hub_plugin_by_slug(&slug).ok_or(StatusCode::NOT_FOUND)?;
+        Ok::<_, StatusCode>(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], napp_of(&p)))
+    };
+    let app = axum::Router::new()
+        .route("/api/v1/codes/redeem", post(redeem))
+        .route("/api/v1/plugins/{slug}", get(detail))
+        .route("/napp/{slug}", get(download));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    server_runtime().spawn(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).expect("hub stand-in listener");
+        let _ = axum::serve(listener, app).await;
+    });
+    url
 }
 
 /// The six standards the runtime reads from a company layer, as files.

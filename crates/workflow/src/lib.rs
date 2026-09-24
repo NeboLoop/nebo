@@ -51,8 +51,10 @@ pub enum WorkflowError {
     Exited(String),
     /// A tool returned a terminal error (auth expired, account not connected,
     /// permission off — see FRAMES.md): the run cannot do its job and retrying
-    /// or improvising won't help. Unlike `Exited`, this IS a failure — it must
-    /// surface to the owner, not read as a clean stop.
+    /// or improvising won't help. Like `Exited`, it is a standing outcome, not
+    /// a failure: every run hits the same wall until the owner changes
+    /// something, so the run ends with this as its reason (see
+    /// [`WorkflowError::standing_outcome`]).
     #[error("blocked: {0}")]
     Blocked(String),
     #[error("workflow cancelled")]
@@ -70,6 +72,22 @@ pub enum WorkflowError {
     CircuitBreak(String),
     #[error("{0}")]
     Other(String),
+}
+
+impl WorkflowError {
+    /// The reason a run ended with a standing outcome — a condition that holds
+    /// until something outside the run changes — or None for every other end.
+    /// `Exited`: the step evaluator or the employee said there is nothing to
+    /// do. `Blocked`: a tool refused terminally, and the next run would be
+    /// refused the same way. Provider errors, timeouts and tool exceptions are
+    /// failures and have none.
+    pub fn standing_outcome(&self) -> Option<String> {
+        match self {
+            WorkflowError::Exited(reason) => Some(reason.clone()),
+            WorkflowError::Blocked(_) => Some(self.to_string()),
+            _ => None,
+        }
+    }
 }
 
 impl From<types::NeboError> for WorkflowError {

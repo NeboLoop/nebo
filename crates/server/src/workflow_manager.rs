@@ -2118,7 +2118,9 @@ fn workflow_memory_scope(store: &db::Store, agent_id: &str) -> (String, bool) {
 /// workflow choosing to stop ("no meetings in the next 24 hours"): that is
 /// the automation working, so it is stored as `exited` with the reason where
 /// the runs panel shows it as information, and it raises no failure message,
-/// no notification and no review. Everything else is `failed`. ONE decision
+/// no notification and no review. A terminal tool refusal (no account
+/// connected) is the same kind of end: the next run meets the same wall
+/// until the owner changes something. Everything else is `failed`. ONE decision
 /// for the scheduled and the inline runner; before this, every exit was
 /// stored as a failure and painted red hourly (live 2026-09-03).
 pub(crate) enum RunEnd {
@@ -2128,9 +2130,9 @@ pub(crate) enum RunEnd {
 
 impl RunEnd {
     pub(crate) fn of(e: &workflow::WorkflowError) -> RunEnd {
-        match e {
-            workflow::WorkflowError::Exited(reason) => RunEnd::Exited(reason.clone()),
-            other => RunEnd::Failed(other.to_string()),
+        match e.standing_outcome() {
+            Some(reason) => RunEnd::Exited(reason),
+            None => RunEnd::Failed(e.to_string()),
         }
     }
     pub(crate) fn status(&self) -> &'static str {
@@ -3108,6 +3110,11 @@ mod run_end_tests {
     fn an_evaluator_exit_is_not_a_failure() {
         let exit = RunEnd::of(&workflow::WorkflowError::Exited("nothing to do".into()));
         assert_eq!((exit.status(), exit.message()), ("exited", "nothing to do"));
+        let blocked = RunEnd::of(&workflow::WorkflowError::Blocked("No example account is connected for this agent.".into()));
+        assert_eq!(
+            (blocked.status(), blocked.message()),
+            ("exited", "blocked: No example account is connected for this agent.")
+        );
         let failed = RunEnd::of(&workflow::WorkflowError::ActivityFailed("triage".into(), "boom".into()));
         assert_eq!(failed.status(), "failed");
         assert!(failed.message().contains("boom"));

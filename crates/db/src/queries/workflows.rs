@@ -428,14 +428,25 @@ impl Store {
             self.engine_set_run_result_tag(id, tag)?;
         }
         self.engine_set_run_state(id, state, now(), error)?;
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE workflow_runs
-             SET total_tokens_used = ?1, error_activity = ?2, completed_at = unixepoch()
-             WHERE id = ?3",
-            params![total_tokens_used, error_activity, id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
+        {
+            let conn = self.conn()?;
+            conn.execute(
+                "UPDATE workflow_runs
+                 SET total_tokens_used = ?1, error_activity = ?2, completed_at = unixepoch()
+                 WHERE id = ?3",
+                params![total_tokens_used, error_activity, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        }
+        // `exited` is how a run ends when the step evaluator or the employee
+        // says there is nothing to do: a clean end (engine state `done`) with
+        // a reason, which is the binding's standing outcome. Every other
+        // status is either real work done or a failure, and records none.
+        if status == "exited" {
+            if let Some(reason) = error.filter(|r| !r.trim().is_empty()) {
+                self.record_standing_outcome(id, reason, now())?;
+            }
+        }
         Ok(())
     }
 
@@ -458,19 +469,23 @@ impl Store {
             .db_err("list_workflow_runs collect")
     }
 
-    /// Check if there is already a running workflow run for the given workflow_id
-    /// whose trigger_detail starts with the given binding name.
+    /// Check if there is already a running workflow run of `binding` under
+    /// the given workflow_id. A binding's runs carry its name in
+    /// trigger_detail in one of two shapes: bare (`<binding>`: heartbeat,
+    /// schedule, manual, webhook) or suffixed (`<binding>:<event source>`:
+    /// event subscriptions). Both match; a binding that merely shares a
+    /// prefix does not.
     pub fn has_running_run(
         &self,
         workflow_id: &str,
-        binding_prefix: &str,
+        binding: &str,
     ) -> Result<bool, NeboError> {
         let conn = self.conn()?;
-        let pattern = format!("{}:%", binding_prefix);
         conn.query_row(
             "SELECT COUNT(*) > 0 FROM workflow_runs w JOIN engine_runs r ON r.id = w.id
-             WHERE w.workflow_id = ?1 AND r.state = 'running' AND w.trigger_detail LIKE ?2",
-            params![workflow_id, pattern],
+             WHERE w.workflow_id = ?1 AND r.state = 'running'
+               AND (w.trigger_detail = ?2 OR substr(w.trigger_detail, 1, length(?2) + 1) = ?2 || ':')",
+            params![workflow_id, binding],
             |row| row.get(0),
         )
         .db_err("has_running_run")
@@ -912,6 +927,37 @@ fn row_to_workflow_run(row: &rusqlite::Row) -> rusqlite::Result<WorkflowRun> {
 mod tests {
     use crate::Store;
 
+    /// An `exited` run records its reason's first line, capped, on the
+    /// binding it belongs to (by the binding name or `<binding>:<detail>`);
+    /// a completed or failed run records nothing, and a run of no binding
+    /// touches no binding.
+    #[test]
+    fn test_an_exited_run_records_its_bindings_standing_outcome() {
+        let path = std::env::temp_dir().join(format!("nebo-wf-standing-{}.db", uuid::Uuid::new_v4()));
+        let store = Store::new(&path.to_string_lossy()).unwrap();
+        store.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
+        for b in ["sweep", "report"] {
+            store.upsert_agent_workflow("emp", b, "heartbeat", "30m", None, None, None, None, None, false).unwrap();
+        }
+        store.create_workflow_run("r1", "agent:emp", "heartbeat", Some("sweep:item-7"), None, None, None).unwrap();
+        let long = format!("{}\nsecond line", "x".repeat(400));
+        store.complete_workflow_run("r1", "exited", 0, Some(&long), None, None).unwrap();
+        let (outcome, at) = store.agent_workflow_last_outcome("emp", "sweep").unwrap().unwrap();
+        assert_eq!(outcome, "x".repeat(super::super::assignments::STANDING_OUTCOME_CAP));
+        assert!(at > 0);
+        assert_eq!(store.agent_workflow_last_outcome("emp", "report").unwrap(), None);
+
+        for (id, status) in [("r2", "completed"), ("r3", "failed")] {
+            store.create_workflow_run(id, "agent:emp", "heartbeat", Some("report"), None, None, None).unwrap();
+            store.complete_workflow_run(id, status, 0, Some("an error"), None, None).unwrap();
+        }
+        assert_eq!(store.agent_workflow_last_outcome("emp", "report").unwrap(), None);
+
+        store.create_workflow_run("r4", "wf-standalone", "manual", None, None, None, None).unwrap();
+        store.complete_workflow_run("r4", "exited", 0, Some("nothing"), None, None).unwrap();
+        assert_eq!(store.agent_workflow_last_outcome("emp", "sweep").unwrap().unwrap().0.len(), 300);
+    }
+
     /// A loop body appends one row per item under the SAME run and activity id.
     /// Both the read and the content write must key on the iteration, or the
     /// resume fast-forward treats item 2 as already done (it ran the body
@@ -1008,6 +1054,29 @@ mod durability_tests {
     /// `interrupted`; recovery claims it with the definition snapshotted at
     /// launch; finished runs are never touched. The run reads as interrupted
     /// until the relaunch flips it back to running.
+    /// A heartbeat run stores the bare binding name, an event run stores
+    /// `<binding>:<source>`; both are "this binding is still running". A
+    /// binding sharing a prefix (`inventory` vs `inventory-alerts`) or a
+    /// LIKE wildcard in the name (`_`) never matches another binding.
+    #[test]
+    fn has_running_run_matches_both_trigger_detail_shapes_and_only_its_binding() {
+        let s = store();
+        s.create_workflow_run("hb", "agent:a1", "heartbeat", Some("inventory"), None, None, Some("{}")).unwrap();
+        assert!(s.has_running_run("agent:a1", "inventory").unwrap(), "bare heartbeat run is detected");
+
+        s.create_workflow_run("ev", "agent:a1", "event", Some("order_intake:mail.received"), None, None, Some("{}")).unwrap();
+        assert!(s.has_running_run("agent:a1", "order_intake").unwrap(), "suffixed event run is detected");
+
+        assert!(!s.has_running_run("agent:a1", "inventory-alerts").unwrap(), "shared prefix is another binding");
+        assert!(!s.has_running_run("agent:a1", "inv").unwrap(), "a prefix of the name is another binding");
+        assert!(!s.has_running_run("agent:a1", "order-intake").unwrap(), "`_` in a stored name is not a wildcard");
+        assert!(!s.has_running_run("agent:a1", "invent_ry").unwrap(), "`_` in the queried name is not a wildcard");
+        assert!(!s.has_running_run("agent:a2", "inventory").unwrap(), "other agent's workflow");
+
+        s.complete_workflow_run("hb", "completed", 0, None, None, None).unwrap();
+        assert!(!s.has_running_run("agent:a1", "inventory").unwrap(), "a finished run is not running");
+    }
+
     #[test]
     fn sweep_stamps_stranded_runs_and_recovery_claims_the_snapshot() {
         let s = store();
