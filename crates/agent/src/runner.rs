@@ -8971,12 +8971,35 @@ const OBJECTIVE_KEEP_FLOOR: f64 = 0.6;
 /// Char-boundary-safe cap on the objective sentence and on each recent
 /// message the classifier sees.
 const OBJECTIVE_MESSAGE_CAP: usize = 200;
-/// Instruction for the cheap model when the message cannot be its own
-/// objective (see [`objective_is_plain`]).
+/// Instruction for the cheap model that writes the objective whenever the
+/// latest message cannot stand as it is (see [`objective_text`]). It reads
+/// the current objective, the recent conversation and the latest message.
 const OBJECTIVE_INSTRUCTION: &str = "Write the person's working objective as ONE sentence of at \
-     most 25 words, in their own words, from this message. Output ONLY the sentence.";
-/// How much of a long or framed message the cheap model reads.
+     most 25 words. Read the latest message against the current objective and the recent \
+     conversation: a message that refines the current objective changes it, it does not replace \
+     it. The sentence must make sense to someone who has not read the conversation: name what \
+     every 'it', 'that', 'another' or bare name refers to, and keep what the conversation has \
+     already settled. Use the person's own words where they fit. Output ONLY the sentence.";
+/// How much of the latest message the cheap model reads.
 const OBJECTIVE_WRITER_INPUT_CAP: usize = 2_000;
+/// UNTUNED. On a `set`, a plain message is stored as it is only when
+/// `self_contained` is at or above this; below it, or with no answer, the
+/// objective is written. Set high because the costs are lopsided: a
+/// fragment stored as the objective loses its referent and the employee
+/// asks "what's 'it'?" at the next turn, while writing a message that could
+/// have stood costs one cheap background call and a paraphrase. Set by
+/// hand from one thread (cloud bot, 2026-09-24), where every message after
+/// the first was stored raw:
+///
+///   "can you find everything you can about <company>"   self-contained
+///   "should it change its name? if so what would you call it?"   not: "it"
+///   "<company>"                                          not: bare name
+///   "sorry I meant <domain>"                             not: a correction
+///   "no we need another"                                 not: "another"
+///
+/// Shadow data from the `objective` site's `self_contained` log field sets
+/// it properly.
+const SELF_CONTAINED_FLOOR: f64 = 0.8;
 /// How many recent messages the classifier sees.
 const OBJECTIVE_RECENT_MESSAGES: usize = 6;
 
@@ -8995,10 +9018,12 @@ fn objective_detection_applies(
 /// What the objective classifier decided to do with the session's objective.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ObjectiveDecision {
-    /// A new task: the latest message becomes the objective, `mode` applies.
+    /// A new task: the objective is the latest message when it stands on
+    /// its own, written otherwise (see [`objective_text`]); `mode` applies.
     Set { mode: String },
-    /// A refinement: the latest message becomes the objective; `mode`
-    /// applies only when the classifier named one.
+    /// A refinement: the objective is rewritten from the current one and
+    /// the latest message, never replaced by it; `mode` applies only when
+    /// the classifier named one.
     Update { mode: String },
     /// The task is done: drop the objective and the mode.
     Clear,
@@ -9032,47 +9057,145 @@ pub(crate) fn objective_decision(
     }
 }
 
-/// A short message with no framing is its own objective. A long one, or one
-/// that opens with a bracketed frame (a coworker note, a background event, a
-/// case event, a hire prompt), is not: its first line would become the
-/// objective, and "[Coworker message from Nebo]" is no objective.
+/// What the objective writer reads besides its instruction: the objective
+/// the classifier saw, its recent conversation, and the latest message.
+pub(crate) struct ObjectiveContext<'a> {
+    pub current_objective: &'a str,
+    pub recent_conversation: &'a [String],
+    pub message: &'a str,
+}
+
+/// Where the stored objective comes from on a set or an update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ObjectiveText {
+    /// The latest message as it is.
+    Verbatim(String),
+    /// One line from the cheap model, given this input.
+    Written(String),
+}
+
+/// Decide where the objective comes from. An update refines the current
+/// objective, so it is always written from it: the message alone ("no we
+/// need another") would discard what it refines. A set keeps the message
+/// only when it is plain and Jev judged it self-contained at or above
+/// [`SELF_CONTAINED_FLOOR`]; no answer is not a yes, so it is written.
+pub(crate) fn objective_text(
+    refines: bool,
+    self_contained: Option<f64>,
+    ctx: &ObjectiveContext<'_>,
+) -> ObjectiveText {
+    let message = ctx.message.trim();
+    if !refines
+        && objective_is_plain(message)
+        && self_contained.is_some_and(|p| p >= SELF_CONTAINED_FLOOR)
+    {
+        return ObjectiveText::Verbatim(message.to_string());
+    }
+    let current = if ctx.current_objective.is_empty() {
+        "none"
+    } else {
+        ctx.current_objective
+    };
+    let recent = if ctx.recent_conversation.is_empty() {
+        "none".to_string()
+    } else {
+        ctx.recent_conversation.join("\n")
+    };
+    ObjectiveText::Written(format!(
+        "Current objective: {current}\n\nRecent conversation:\n{recent}\n\nLatest message:\n{}",
+        truncate_str(message, OBJECTIVE_WRITER_INPUT_CAP)
+    ))
+}
+
+/// A short message with no framing can stand as the objective. A long one,
+/// or one that opens with a bracketed frame (a coworker note, a background
+/// event, a case event, a hire prompt), cannot: its first line would become
+/// the objective, and "[Coworker message from Nebo]" is no objective.
 pub(crate) fn objective_is_plain(text: &str) -> bool {
     let text = text.trim();
     !text.is_empty() && text.len() <= OBJECTIVE_MESSAGE_CAP && !text.starts_with('[')
 }
 
-/// The sentence stored as the objective on a set or an update. Jev decides
-/// and does not write, so a plain message stands as it is and anything else
-/// gets one line from the cheap model.
+/// The sentence stored as the objective. Jev decides and does not write, so
+/// a written objective gets one line from the cheap model; `None` when it
+/// could not write one.
 async fn objective_sentence(
     agent_id: &str,
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
-    user_prompt: &str,
+    text: ObjectiveText,
 ) -> Option<String> {
-    let text = user_prompt.trim();
-    if objective_is_plain(text) {
-        return Some(text.to_string());
+    match text {
+        ObjectiveText::Verbatim(message) => Some(message),
+        ObjectiveText::Written(input) => {
+            crate::summarizer::one_line(
+                RequestTrace {
+                    agent_id: agent_id.to_string(),
+                    ..RequestTrace::new("objective_sentence")
+                },
+                providers,
+                "",
+                OBJECTIVE_INSTRUCTION,
+                &input,
+                60,
+            )
+            .await
+        }
     }
-    crate::summarizer::one_line(
-        RequestTrace {
-            agent_id: agent_id.to_string(),
-            ..RequestTrace::new("objective_sentence")
-        },
-        providers,
-        "",
-        OBJECTIVE_INSTRUCTION,
-        truncate_str(text, OBJECTIVE_WRITER_INPUT_CAP),
-        60,
-    )
-    .await
+}
+
+/// Apply the classifier's decision to the session. On a set or an update
+/// with no sentence written, the objective is left as it is: a fragment is
+/// never stored in its place.
+async fn apply_objective_decision(
+    decision: ObjectiveDecision,
+    self_contained: Option<f64>,
+    ctx: &ObjectiveContext<'_>,
+    agent_id: &str,
+    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    sessions: &SessionManager,
+    session_id: &str,
+) {
+    match decision {
+        ObjectiveDecision::Set { mode } => {
+            let text = objective_text(false, self_contained, ctx);
+            let Some(objective) = objective_sentence(agent_id, providers, text).await else {
+                debug!("objective set: no sentence could be written; leaving objective as is");
+                return;
+            };
+            info!(objective = %objective, mode = %mode, "objective set");
+            let _ = sessions.set_active_task(session_id, &objective);
+            sessions.set_detected_mode(session_id, &mode);
+        }
+        ObjectiveDecision::Update { mode } => {
+            let text = objective_text(true, self_contained, ctx);
+            let Some(objective) = objective_sentence(agent_id, providers, text).await else {
+                debug!("objective update: no sentence could be written; leaving objective as is");
+                return;
+            };
+            info!(objective = %objective, mode = %mode, "objective updated");
+            let _ = sessions.set_active_task(session_id, &objective);
+            if !mode.is_empty() {
+                sessions.set_detected_mode(session_id, &mode);
+            }
+        }
+        ObjectiveDecision::Clear => {
+            info!("objective cleared");
+            let _ = sessions.clear_active_task(session_id);
+            sessions.set_detected_mode(session_id, "");
+        }
+        ObjectiveDecision::Keep => {
+            // No change
+        }
+    }
 }
 
 /// Detect the person's working objective from their latest message.
 /// Runs as a background task (fire-and-forget) before the main loop: one
 /// typed decision (Jev through Janus, [`ai::DecideClient`]) answers whether
 /// the message starts, refines, finishes or continues the current objective,
-/// and whether the work is research or normal. The objective sentence comes
-/// from [`objective_sentence`], only when the decision is set or update. A
+/// whether the work is research or normal, and whether the message makes
+/// sense without the conversation. The objective sentence comes from
+/// [`objective_text`], only when the decision is set or update. A
 /// continuation nudge is never classified: it is not the person speaking.
 /// No client, any error or a timeout leaves the objective untouched.
 ///
@@ -9103,18 +9226,23 @@ async fn detect_objective(
     let current_objective = sessions.get_active_task(session_id).unwrap_or_default();
     let objective_is_none = current_objective.is_empty();
 
-    // Recent conversation (last 6 messages, each capped) for context.
+    // Recent conversation (last 6 spoken messages, each capped) for
+    // context. Tool rows and tool-call-only assistant rows are skipped
+    // before counting: after a research turn they would fill the window and
+    // leave the latest message with nothing to refer back to.
     let recent_conversation: Vec<String> = sessions
         .get_messages(session_id)
         .ok()
         .map(|msgs| {
             msgs.iter()
                 .rev()
+                .filter(|m| {
+                    (m.role == "user" || m.role == "assistant") && !m.content.trim().is_empty()
+                })
                 .take(OBJECTIVE_RECENT_MESSAGES)
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
-                .filter(|m| m.role == "user" || m.role == "assistant")
                 .map(|m| {
                     let content = if m.content.len() > OBJECTIVE_MESSAGE_CAP {
                         format!("{}...", truncate_str(&m.content, OBJECTIVE_MESSAGE_CAP))
@@ -9173,6 +9301,12 @@ async fn detect_objective(
                 ],
             ),
         ),
+        (
+            "self_contained",
+            Question::noul(
+                "`latest_user_message` states a complete task that makes sense to someone who has not read `recent_conversation`: it has no 'it', 'that', 'another' or 'the one' pointing back, and it is not a bare name, a correction or a fragment.",
+            ),
+        ),
     ]);
     let turn_questions = turn
         .as_ref()
@@ -9202,12 +9336,14 @@ async fn detect_objective(
     let picked = action.map(Answer::picked).unwrap_or("");
     let confidence = action.and_then(|a| a.confidence).unwrap_or(1.0);
     let mode = decision.answer("mode").map(Answer::picked).unwrap_or("");
+    let self_contained = decision.answer("self_contained").and_then(|a| a.noul);
     debug!(
         site = "objective",
         model = %decision.model,
         action = picked,
         confidence,
         mode,
+        self_contained = ?self_contained,
         questions = questions.len(),
         call_ms = t_call.elapsed().as_millis() as u64,
         input_tokens = decision.usage.input_tokens,
@@ -9227,36 +9363,21 @@ async fn detect_objective(
         let _ = tx.send(signals);
     }
 
-    match objective_decision(picked, confidence, mode, objective_is_none) {
-        ObjectiveDecision::Set { mode } => {
-            let Some(objective) = objective_sentence(agent_id, providers, user_prompt).await else {
-                debug!("objective set: no sentence could be written; leaving objective as is");
-                return;
-            };
-            info!(objective = %objective, mode = %mode, "objective set");
-            let _ = sessions.set_active_task(session_id, &objective);
-            sessions.set_detected_mode(session_id, &mode);
-        }
-        ObjectiveDecision::Update { mode } => {
-            let Some(objective) = objective_sentence(agent_id, providers, user_prompt).await else {
-                debug!("objective update: no sentence could be written; leaving objective as is");
-                return;
-            };
-            info!(objective = %objective, mode = %mode, "objective updated");
-            let _ = sessions.set_active_task(session_id, &objective);
-            if !mode.is_empty() {
-                sessions.set_detected_mode(session_id, &mode);
-            }
-        }
-        ObjectiveDecision::Clear => {
-            info!("objective cleared");
-            let _ = sessions.clear_active_task(session_id);
-            sessions.set_detected_mode(session_id, "");
-        }
-        ObjectiveDecision::Keep => {
-            // No change
-        }
-    }
+    let ctx = ObjectiveContext {
+        current_objective: &current_objective,
+        recent_conversation: &recent_conversation,
+        message: user_prompt,
+    };
+    apply_objective_decision(
+        objective_decision(picked, confidence, mode, objective_is_none),
+        self_contained,
+        &ctx,
+        agent_id,
+        providers,
+        sessions,
+        session_id,
+    )
+    .await;
 }
 
 /// Build the static system prompt.
@@ -9590,10 +9711,17 @@ mod attachment_storage_tests {
 
 #[cfg(test)]
 mod objective_decision_tests {
+    use std::sync::{Arc, Mutex};
+
+    use ai::{ChatRequest, EventReceiver, Provider, ProviderError};
+    use tokio::sync::RwLock;
+
     use super::{
-        OBJECTIVE_KEEP_FLOOR, ObjectiveDecision, WorkflowMode, objective_decision,
-        objective_detection_applies, objective_is_plain,
+        OBJECTIVE_INSTRUCTION, OBJECTIVE_KEEP_FLOOR, ObjectiveContext, ObjectiveDecision,
+        ObjectiveText, SELF_CONTAINED_FLOOR, WorkflowMode, apply_objective_decision,
+        objective_decision, objective_detection_applies, objective_is_plain, objective_text,
     };
+    use crate::session::SessionManager;
 
     /// Workflow turns and review forks are scratch runs with no person
     /// speaking; only a chat run (a command fork included) classifies.
@@ -9683,6 +9811,180 @@ mod objective_decision_tests {
     fn an_unrecognised_action_is_a_no_op() {
         assert_eq!(objective_decision("", 0.0, "", true), ObjectiveDecision::Keep);
         assert_eq!(objective_decision("other", 1.0, "normal", false), ObjectiveDecision::Keep);
+    }
+
+    // The thread these tests replay, with the names made generic: the first
+    // message stood on its own, and every follow-up was stored raw.
+    const FIRST_ASK: &str = "can you find everything you can about Example Co";
+    const CURRENT: &str = "Find a new, globally pronounceable name for Example Co.";
+
+    fn recent() -> Vec<String> {
+        vec![
+            "[user]: sorry I meant example.ai".to_string(),
+            "[assistant]: example.ai is taken; it has been registered since 2019.".to_string(),
+            "[user]: no we need another".to_string(),
+        ]
+    }
+
+    fn ctx<'a>(current: &'a str, recent: &'a [String], message: &'a str) -> ObjectiveContext<'a> {
+        ObjectiveContext {
+            current_objective: current,
+            recent_conversation: recent,
+            message,
+        }
+    }
+
+    fn written(text: ObjectiveText) -> String {
+        match text {
+            ObjectiveText::Written(input) => input,
+            ObjectiveText::Verbatim(raw) => panic!("stored raw: {raw}"),
+        }
+    }
+
+    /// An update refines the current objective: the writer always gets the
+    /// current objective, the recent turns and the fragment, and the
+    /// fragment is never the objective, however self-contained Jev says it is.
+    #[test]
+    fn an_update_is_always_written_from_the_current_objective() {
+        let recent = recent();
+        for p in [None, Some(0.0), Some(1.0)] {
+            let input = written(objective_text(true, p, &ctx(CURRENT, &recent, "no we need another")));
+            assert!(input.contains(&format!("Current objective: {CURRENT}")), "{input}");
+            assert!(input.contains("example.ai is taken"), "{input}");
+            assert!(input.ends_with("Latest message:\nno we need another"), "{input}");
+        }
+    }
+
+    /// A set keeps the message as it is only when it is plain and judged
+    /// self-contained at the floor or above.
+    #[test]
+    fn a_self_contained_set_stands_as_it_is() {
+        let none: Vec<String> = Vec::new();
+        assert_eq!(
+            objective_text(false, Some(SELF_CONTAINED_FLOOR), &ctx("", &none, &format!("  {FIRST_ASK} "))),
+            ObjectiveText::Verbatim(FIRST_ASK.to_string())
+        );
+    }
+
+    /// A set that leans on the conversation is written, with the recent
+    /// turns; a missing answer is not a yes; a framed message is written
+    /// whatever Jev says.
+    #[test]
+    fn a_set_that_leans_on_the_conversation_is_written() {
+        let recent = recent();
+        let below = SELF_CONTAINED_FLOOR - 0.01;
+        let input = written(objective_text(false, Some(below), &ctx("", &recent, "no we need another")));
+        assert!(input.starts_with("Current objective: none"), "{input}");
+        assert!(input.contains("example.ai is taken"), "{input}");
+        written(objective_text(false, None, &ctx("", &recent, "Example Co")));
+        written(objective_text(
+            false,
+            Some(1.0),
+            &ctx("", &recent, "[Coworker message from Nebo]\n\nDraft a weekly report."),
+        ));
+    }
+
+    /// Answers every stream with `reply` (or fails when `None`) and keeps
+    /// the system and user text of each request it saw.
+    struct Writer {
+        reply: Option<&'static str>,
+        seen: Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Writer {
+        fn id(&self) -> &str {
+            "writer"
+        }
+        async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+            let user = req.messages.first().map(|m| m.content.clone()).unwrap_or_default();
+            self.seen.lock().unwrap().push((req.system.clone(), user));
+            let Some(reply) = self.reply else {
+                return Err(ProviderError::Request("writer down".into()));
+            };
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            let _ = tx.send(ai::StreamEvent::text(reply)).await;
+            let _ = tx.send(ai::StreamEvent::done()).await;
+            Ok(rx)
+        }
+    }
+
+    fn session_with(objective: &str) -> (SessionManager, String) {
+        let path = std::env::temp_dir().join(format!("nebo-objective-test-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(db::Store::new(path.to_str().unwrap()).expect("test store"));
+        let sessions = SessionManager::new(store);
+        let id = sessions.get_or_create("agent:a1:web", "").expect("session").id;
+        if !objective.is_empty() {
+            sessions.set_active_task(&id, objective).expect("objective");
+        }
+        (sessions, id)
+    }
+
+    fn providers(writer: &Arc<Writer>) -> Arc<RwLock<Vec<Arc<dyn Provider>>>> {
+        Arc::new(RwLock::new(vec![writer.clone() as Arc<dyn Provider>]))
+    }
+
+    fn update() -> ObjectiveDecision {
+        ObjectiveDecision::Update {
+            mode: "research".to_string(),
+        }
+    }
+
+    /// The logged failure: "no we need another" arrived as an update. The
+    /// writer is asked with the current objective and its instruction, and
+    /// its sentence is stored; the fragment never is.
+    #[tokio::test]
+    async fn an_update_stores_the_written_sentence_never_the_fragment() {
+        let sentence = "Find another globally pronounceable name for Example Co; example.ai is taken.";
+        let writer = Arc::new(Writer {
+            reply: Some(sentence),
+            seen: Mutex::new(Vec::new()),
+        });
+        let (sessions, id) = session_with(CURRENT);
+        let recent = recent();
+        let c = ctx(CURRENT, &recent, "no we need another");
+        apply_objective_decision(update(), Some(1.0), &c, "a1", &providers(&writer), &sessions, &id).await;
+
+        assert_eq!(sessions.get_active_task(&id).unwrap(), sentence);
+        let seen = writer.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one writer call");
+        assert_eq!(seen[0].0, OBJECTIVE_INSTRUCTION);
+        assert!(seen[0].1.contains(&format!("Current objective: {CURRENT}")), "{}", seen[0].1);
+    }
+
+    /// No sentence written on an update: the current objective stays.
+    #[tokio::test]
+    async fn a_failed_writer_on_an_update_keeps_the_current_objective() {
+        let writer = Arc::new(Writer {
+            reply: None,
+            seen: Mutex::new(Vec::new()),
+        });
+        let (sessions, id) = session_with(CURRENT);
+        let recent = recent();
+        let c = ctx(CURRENT, &recent, "no we need another");
+        apply_objective_decision(update(), Some(1.0), &c, "a1", &providers(&writer), &sessions, &id).await;
+
+        assert_eq!(writer.seen.lock().unwrap().len(), 1, "the writer was asked");
+        assert_eq!(sessions.get_active_task(&id).unwrap(), CURRENT);
+    }
+
+    /// A self-contained set is stored as it is, with no writer call.
+    #[tokio::test]
+    async fn a_self_contained_set_needs_no_writer() {
+        let writer = Arc::new(Writer {
+            reply: None,
+            seen: Mutex::new(Vec::new()),
+        });
+        let (sessions, id) = session_with("");
+        let none: Vec<String> = Vec::new();
+        let c = ctx("", &none, FIRST_ASK);
+        let set = ObjectiveDecision::Set {
+            mode: "research".to_string(),
+        };
+        apply_objective_decision(set, Some(0.95), &c, "a1", &providers(&writer), &sessions, &id).await;
+
+        assert_eq!(sessions.get_active_task(&id).unwrap(), FIRST_ASK);
+        assert!(writer.seen.lock().unwrap().is_empty());
     }
 }
 
