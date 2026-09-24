@@ -1114,8 +1114,17 @@ fn grant_admits(
     Ok(())
 }
 
-/// Running commands on this machine.
-const SHELL_KEYS: &[&str] = &["run_command", "list_processes", "send_input"];
+/// Running commands on this machine, and controlling the background shell
+/// sessions they leave: reading their output, stopping them, writing to
+/// them. Helper status and cancel (`read_output`, `stop_task`) are not shell
+/// control and are not in this set.
+const SHELL_KEYS: &[&str] = &[
+    "run_command",
+    "list_processes",
+    "send_input",
+    "read_command_output",
+    "stop_command",
+];
 /// Reading and changing files on this machine.
 const FILE_KEYS: &[&str] = &[
     "read_file",
@@ -1496,6 +1505,26 @@ mod tests {
         let comm = p.decide("ledger.billpayment.create", Origin::Comm, &params, None, None, true);
         assert_eq!(comm.access, OperationAccess::Approval);
         assert_eq!(comm.layer, PolicyLayer::OriginFloor);
+    }
+
+    /// Another program's origins (a chat channel, an app, a skill, an MCP
+    /// client) never control a shell session — reading it, stopping it or
+    /// writing to it — while the helper status and cancel they already had
+    /// stay theirs.
+    #[test]
+    fn shell_session_control_is_shell_and_helper_control_is_not() {
+        let p = Policy::new();
+        for origin in [Origin::Comm, Origin::App, Origin::Skill, Origin::Mcp] {
+            for key in ["read_command_output", "stop_command", "send_input", "list_processes"] {
+                assert!(p.is_denied_for_origin(origin, key), "{origin:?} must not use {key}");
+            }
+            for key in ["read_output", "stop_task"] {
+                assert!(!p.is_denied_for_origin(origin, key), "{origin:?} keeps {key}");
+            }
+        }
+        for origin in [Origin::User, Origin::System, Origin::Workflow] {
+            assert!(!p.is_denied_for_origin(origin, "stop_command"), "{origin:?}");
+        }
     }
 
     #[test]

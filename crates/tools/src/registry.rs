@@ -2392,4 +2392,18 @@ mod tests {
         assert_eq!(registry.get("os").await.unwrap().trim_priority(), TRIM_EARLY);
     }
 
+
+    /// Through the one door: a chat channel's call to poll or stop a shell
+    /// session is refused before the tool runs.
+    #[tokio::test]
+    async fn a_chat_channel_cannot_poll_or_stop_a_shell_session() {
+        let (registry, _dir) = os_registry().await;
+        let ctx = ToolContext { origin: crate::origin::Origin::Comm, ..Default::default() };
+        for action in ["poll", "kill", "log"] {
+            let call = serde_json::json!({ "resource": "shell", "action": action, "session_id": "s-1" });
+            let result = registry.execute(&ctx, "os", call).await;
+            assert!(result.is_error && result.content.contains("not permitted"), "{action}: {}", result.content);
+        }
+    }
+
 }

@@ -286,9 +286,11 @@ impl OsTool {
             }
             .to_string(),
             "shell" => match action {
-                "poll" | "log" | "status" => "read_output",
-                "info" if has("session_id") => "read_output",
-                "kill" => "stop_task",
+                // A background shell session's own keys: shell control, never
+                // the helper status/cancel keys other origins may hold.
+                "poll" | "log" | "status" => "read_command_output",
+                "info" if has("session_id") => "read_command_output",
+                "kill" => "stop_command",
                 "list" | "info" => "list_processes",
                 "write" => "send_input",
                 _ => "run_command",
@@ -2099,8 +2101,8 @@ mod tests {
             (serde_json::json!({"action": "grep", "path": "/tmp", "pattern": "x"}), "run_command"),
             (serde_json::json!({"action": "exec", "command": "ls"}), "run_command"),
             (serde_json::json!({"command": "rm -rf /"}), "run_command"),
-            (serde_json::json!({"resource": "shell", "action": "kill", "session_id": "s"}), "stop_task"),
-            (serde_json::json!({"resource": "shell", "action": "poll", "session_id": "s"}), "read_output"),
+            (serde_json::json!({"resource": "shell", "action": "kill", "session_id": "s"}), "stop_command"),
+            (serde_json::json!({"resource": "shell", "action": "poll", "session_id": "s"}), "read_command_output"),
             (serde_json::json!({"action": "checkpoint", "paths": ["/tmp/x"]}), "checkpoint_files"),
             (serde_json::json!({"resource": "capture", "action": "screenshot"}), "desktop_screenshot"),
             (serde_json::json!({"action": "click", "x": 1, "y": 2}), "desktop_click"),
