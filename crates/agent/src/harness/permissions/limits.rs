@@ -152,7 +152,7 @@ fn origin_limits() -> &'static HashMap<Origin, HashSet<&'static str>> {
         limits.insert(Origin::Mcp, keys(&[SHELL_KEYS]));
         // Outside origins, a phone caller or a visitor from a QR scan or an
         // embedded chat, are strangers. The allowlist on their run is the
-        // real fence (deny-by-default: the runner's restrict_outside_origin);
+        // real fence (deny-by-default: the seat's restrict_outside_origin);
         // this set is the backstop that holds even if an allowlist is ever
         // mis-built.
         let outside = keys(&[SHELL_KEYS, FILE_KEYS, CAPTURE_KEYS, OUTSIDE_KEYS]);

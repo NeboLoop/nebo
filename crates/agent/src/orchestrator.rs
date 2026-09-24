@@ -95,8 +95,9 @@ fn describe_tool_call(tc: &ToolCall) -> String {
 }
 
 use crate::decompose;
+use crate::harness::conversation::MidTurnFrom;
 use crate::lanes::{self, LaneManager};
-use crate::runner::{MidTurnFrom, RunRequest, Runner};
+use crate::runner::{RunRequest, Runner};
 use crate::task_graph::{AgentType, TaskGraph};
 
 /// Maximum characters of dependency context injected per dependency.
@@ -250,7 +251,7 @@ async fn run_child(
             .sessions()
             .resolve_session_id_by_key(session_key)
             .and_then(|id| runner.sessions().get_messages(&id))
-            .is_ok_and(|messages| crate::runner::parent_message_unheard(&messages));
+            .is_ok_and(|messages| crate::harness::conversation::parent_message_unheard(&messages));
         match result {
             Ok(report) if unheard && !cancel.is_cancelled() => {
                 info!(task_id = %task_id, "a message from the parent landed as the turn ended: running a turn to hear it");
@@ -373,7 +374,7 @@ impl Orchestrator {
 
     /// `agent(task, send)`. A running child hears the message at its next
     /// step: it goes into the child's thread the way an owner's mid-turn
-    /// message goes into theirs (`runner::MidTurnFrom`), and the child keeps
+    /// message goes into theirs (`harness::conversation::MidTurnFrom`), and the child keeps
     /// working. A finished child continues on its own session with the
     /// message as its next user turn, with no task prefix and no
     /// original-request block: it already has both.
@@ -1806,7 +1807,7 @@ mod child_limits {
         let dir = tempfile::tempdir().unwrap();
         let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
         assert_eq!(
-            crate::runner::run_grant(&store, &child).mode,
+            crate::harness::seat::run_grant(&store, &child).mode,
             types::permissions::Mode::FullAccess,
             "the owner's Full Access did not reach the child"
         );

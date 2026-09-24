@@ -2871,8 +2871,15 @@ mod tests {
         )
         .expect("the owner's edit parses");
 
+        // Bound the call window: each of the two calls below stamps its own
+        // grant with its own `now()` (two employees, two separate seatings —
+        // sharing a single timestamp source would be wrong), so the proof
+        // that they're "the same routine" can't demand the same wall-clock
+        // second. It demands the same window instead.
+        let before = chrono::Utc::now().timestamp();
         apply_seat_declaration(&store, "packaged", &packaged);
         apply_seat_declaration(&store, "owner-built", &owner_built);
+        let after = chrono::Utc::now().timestamp();
 
         let from_package = operation_rules(&store, "packaged");
         let from_owner = operation_rules(&store, "owner-built");
@@ -2885,6 +2892,16 @@ mod tests {
         assert_eq!(from_owner[0].0, "ledger.payment.apply");
         assert_eq!(from_owner[0].1, Effect::Ask);
         assert_eq!(from_owner[0].2, RuleSource::Package { package: "owner-built".into() });
+
+        // Both rules landed inside the same call window: they came from the
+        // one routine's `now()`.
+        for id in ["packaged", "owner-built"] {
+            let created = store
+                .permission_rules_in(&types::permissions::Scope::Employee(id.into()))
+                .unwrap()[0]
+                .created_at;
+            assert!((before..=after).contains(&created), "{id}'s rule landed at {created}, outside [{before}, {after}]");
+        }
     }
 
     /// A second save must not undo what the owner has since decided. The

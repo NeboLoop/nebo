@@ -27,6 +27,10 @@ name: Harness gate
 #                               again revokes the previous one
 #   HARNESS_CLAUDE_OAUTH_TOKEN  nightly only: login for the claude CLI that
 #                               judges the transcripts (CLAUDE_CODE_OAUTH_TOKEN)
+#   HARNESS_P_NEBO_BOT_ID       the same three for a second CI bot, used by a
+#   HARNESS_P_NEBO_BOT_TOKEN    dispatch with `arm: p`. A bot has one lease, so
+#   HARNESS_P_NEBO_BOOT_TOKEN   arm A (the old loop) and arm P (the rewrite)
+#                               can only run at once as two bots
 #
 # The agent runs on Janus; Claude Code only measures. GATE_MODEL pins the
 # speed so a routing change cannot move the number.
@@ -42,6 +46,18 @@ name: Harness gate
 # instead of failing on it (2026-09-20: every gate run for two weeks was
 # exit 100 on the apt lock or "Cannot connect to Nebo" because both jobs
 # started a server on 27895 and the first cleanup killed the other's).
+#
+# Arms. A dispatch can test other code than this commit: `ref` names the code
+# under test (a branch, tag or sha), which builds the server; this commit
+# still supplies the fixtures, the suites and the test runner, so two arms
+# are measured by one instrument. `arm` picks the CI bot (a = HARNESS_NEBO_*,
+# p = HARNESS_P_NEBO_*). The old loop is pinned as baseline/pre-harness;
+# scripts/arm-report.py has the commands for an A-vs-P comparison.
+#
+# Isolation. Every job gets its own directory (GATE_JOB) with an empty home,
+# /tmp, NEBO_HOME and working directory, and the server and the test runner
+# run in that view through scripts/gate-sandbox.sh (bubblewrap): no run sees
+# a file an earlier run left, another runner's work, or ~/harness-runs.
 #
 # A sweep is the gate dispatched by hand with a `suites` list: any suites and
 # fixtures, program checks by default or judged three runs each with `judge`.
@@ -83,26 +99,38 @@ on:
   workflow_dispatch:
     inputs:
       suites:
-        description: "Sweep: space-separated suite and fixture paths (suites/x.yaml, fixtures/.../y.yaml). Empty = the gate."
+        description: "Sweep: space-separated suite and fixture paths (suites/x.yaml, fixtures/.../y.yaml, replays/<set>/suite.yaml). Empty = the gate."
         type: string
         default: ""
       judge:
         description: "Sweep only: judge with the claude CLI, three runs each (default: program checks, one run)"
         type: boolean
         default: false
+      ref:
+        description: "Code under test: branch, tag or sha that builds the server (default: this commit). Fixtures, suites and the runner stay this commit's."
+        type: string
+        default: ""
+      arm:
+        description: "CI bot: a = HARNESS_NEBO_* (the default), p = HARNESS_P_NEBO_* (a second bot, so two arms run at once)"
+        type: choice
+        options: [a, p]
+        default: a
       steering:
         description: "NEBO_STEERING for the server: switch named attachments off to measure them. Empty/on = all on; off = all off; a,b = only those; -a,-b = all but those"
         type: string
         default: ""
 
 concurrency:
-  group: harness-gate-${{ github.ref }}${{ inputs.suites && '-sweep' || '' }}
+  # A sweep's group carries its arm and code under test, so the two arms of a
+  # comparison, dispatched from one branch, never cancel each other.
+  group: harness-gate-${{ github.ref }}${{ inputs.suites && format('-sweep-{0}-{1}', inputs.arm, inputs.ref) || '' }}
   cancel-in-progress: true
 
 env:
   GATE_MODEL: janus/nebo-1
   GATE_PORT: "27895"
   MIN_CORRECTION_RATE: "80"
+  LEASE_WAIT_MINUTES: "45"
 
 jobs:
   harness:
@@ -113,9 +141,19 @@ jobs:
     # group was tried (#151) and dropped: GitHub keeps ONE pending job per
     # group, so a PR's queued run was silently replaced by the next PR's —
     # 35589080672 never ran. Queueing is the runners' job, not a group's.
-    timeout-minutes: ${{ github.event_name == 'schedule' && 120 || inputs.suites && 600 || 60 }}
+    # Both jobs are the one CI bot, though, and the bot has one lease: the
+    # second server waits for the first to hand it back (see "Start a
+    # headless server"). That wait is bounded at LEASE_WAIT_MINUTES (45) and
+    # each timeout below carries it on top of the lane's own budget
+    # (60 gate, 120 nightly, 600 sweep).
+    timeout-minutes: ${{ github.event_name == 'schedule' && 165 || inputs.suites && 645 || 105 }}
     env:
       RUSTC_WRAPPER: ""
+      # One target directory for this checkout, the code under test and the
+      # proof fixtures (which build from the job's working directory).
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      GATE_ARM: ${{ inputs.arm || 'a' }}
+      GATE_REF: ${{ inputs.ref }}
     steps:
       - uses: actions/checkout@v4
 
@@ -149,7 +187,8 @@ jobs:
             build-essential \
             protobuf-compiler \
             libopenblas-dev \
-            python3-yaml
+            python3-yaml \
+            bubblewrap
 
       - name: Configure OpenBLAS paths
         run: |
@@ -160,8 +199,44 @@ jobs:
       - name: Satisfy the frontend embed folder
         run: mkdir -p app/build
 
+      # Everything this job writes lives here; nothing an earlier job left is
+      # read. home, tmp and work are what the server and the runner see as
+      # $HOME, /tmp and their working directory (scripts/gate-sandbox.sh).
+      - name: A job directory of its own
+        run: |
+          job="${{ runner.temp }}/gate"
+          rm -rf "$job"
+          mkdir -p "$job"/{home,tmp,work,bin,nebo-home,traces}
+          echo "GATE_JOB=$job" >> "$GITHUB_ENV"
+
+      # The runner (and the fixtures and suites) always come from this commit.
       - name: Build the CLI
-        run: cargo build -p nebo-cli
+        run: |
+          cargo build -p nebo-cli
+          cp target/debug/nebo-cli "$GATE_JOB/bin/nebo-runner"
+
+      - name: Check out the code under test
+        if: inputs.ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          path: under-test
+
+      # Same target directory, so its cache serves both trees.
+      - name: Build the server under test
+        run: |
+          if [ -n "$GATE_REF" ]; then
+            mkdir -p under-test/app/build
+            (cd under-test && cargo build -p nebo-cli)
+            code=under-test
+          else
+            code=.
+          fi
+          cp target/debug/nebo-cli "$GATE_JOB/bin/nebo-server"
+          echo "GATE_CODE_SHA=$(git -C "$code" rev-parse HEAD)" >> "$GITHUB_ENV"
+          # The working directory: the code under test, without the checks.
+          git -C "$code" archive HEAD -- . ':!fixtures' ':!suites' | tar -x -C "$GATE_JOB/work"
+          echo "server: $(git -C "$code" log --oneline -1)"
 
       # A fresh NEBO_HOME so nothing on the runner leaks in. NEBO_SERVER_MODE
       # marks setup complete on boot (there is no desktop to click through);
@@ -170,12 +245,19 @@ jobs:
       # is what the hub accepts once that token has gone stale.
       - name: Start a headless server
         env:
-          NEBO_HOME: ${{ runner.temp }}/nebo-home
+          NEBO_HOME: ${{ runner.temp }}/gate/nebo-home
           NEBO_SERVER_MODE: "1"
           NEBO_PORT: ${{ env.GATE_PORT }}
-          NEBO_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
-          NEBO_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
-          NEBO_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
+          # Each arm's bot by name; the shell picks one and never falls back
+          # to the other (an unset arm-P secret must fail, not run as A).
+          A_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
+          A_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          A_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
+          P_BOT_ID: ${{ secrets.HARNESS_P_NEBO_BOT_ID }}
+          P_BOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOT_TOKEN }}
+          P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
+          GATE_SUITES: ${{ inputs.suites }}
+          GATE_JUDGE: ${{ inputs.judge }}
           # No company Memory on the gate: the shared KB at kb.neboai.com is
           # keyed on the bot, so every earlier gate run leaked into each fixture
           # (2026-09-23: "you declined the X card" on a fixture's FIRST run, and
@@ -186,9 +268,21 @@ jobs:
           NEBO_STEERING: ${{ inputs.steering }}
           RUST_LOG: info,nebo_agent=debug
         run: |
+          case "$GATE_ARM" in
+            a) p=""; export NEBO_BOT_ID="$A_BOT_ID" NEBO_BOT_TOKEN="$A_BOT_TOKEN" NEBO_BOOT_TOKEN="$A_BOOT_TOKEN" ;;
+            p) p="P_"; export NEBO_BOT_ID="$P_BOT_ID" NEBO_BOT_TOKEN="$P_BOT_TOKEN" NEBO_BOOT_TOKEN="$P_BOOT_TOKEN" ;;
+            *) echo "arm must be a or p, not '$GATE_ARM'"; exit 1 ;;
+          esac
+          unset A_BOT_ID A_BOT_TOKEN A_BOOT_TOKEN P_BOT_ID P_BOT_TOKEN P_BOOT_TOKEN
           test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" && test -n "$NEBO_BOOT_TOKEN" \
-            || { echo "HARNESS_NEBO_BOT_ID, HARNESS_NEBO_BOT_TOKEN and HARNESS_NEBO_BOOT_TOKEN must be set"; exit 1; }
-          mkdir -p "$NEBO_HOME"
+            || { echo "HARNESS_${p}NEBO_BOT_ID, HARNESS_${p}NEBO_BOT_TOKEN and HARNESS_${p}NEBO_BOOT_TOKEN must be set"; exit 1; }
+          # The run record the side-by-side report reads (never printed: the
+          # bot id is a secret; it stays on the VM with the traces).
+          jq -n --arg arm "$GATE_ARM" --arg bot "$NEBO_BOT_ID" --arg code "$GATE_CODE_SHA" \
+            --arg ref "$GATE_REF" --arg runner "$GITHUB_SHA" --arg suites "$GATE_SUITES" \
+            --arg judge "$GATE_JUDGE" --arg model "$GATE_MODEL" --arg started "$(date -u +%FT%TZ)" \
+            '{arm: $arm, bot_id: $bot, code_sha: $code, ref: $ref, runner_sha: $runner, suites: $suites,
+              judge: ($judge == "true"), model: $model, started_at: $started}' > "$GATE_JOB/run.json"
           # A job cancelled mid-suite leaves its server on this runner's port
           # (the runner's orphan sweep does not always reach a nohup'd child):
           # 35582848373 died on "port 27891 is already in use" behind the
@@ -204,13 +298,36 @@ jobs:
           done
           echo "GATE_PORT=$GATE_PORT" >> "$GITHUB_ENV"
           export NEBO_PORT="$GATE_PORT"
-          nohup ./target/debug/nebo-cli agent > "${{ runner.temp }}/server.log" 2>&1 &
+          log="${{ runner.temp }}/server.log"
+          nohup scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-server" agent > "$log" 2>&1 &
           server=$!
           echo "server=$server" >> "$GITHUB_ENV"
-          for i in $(seq 1 60); do
-            curl -sf -m 2 "http://localhost:$GATE_PORT/health" >/dev/null && break
+          # Every gate job is the same CI bot, and the bot has one lease.
+          # While another job's server holds it, ours logs `waiting` every
+          # 15 s from backup_ship::until_released and does not listen yet;
+          # once the lease is free it logs one of `past_lease` and boots.
+          # The lease wait is bounded by LEASE_WAIT_MINUTES; the 120 s boot
+          # budget only counts once the lease is ours (36017752499 died at
+          # 120 s behind the push gate 36017093512).
+          waiting="another copy of this bot still holds it"
+          past_lease="bot state restored from NeboAI|no committed state: starting as a new bot"
+          lease_deadline=$((SECONDS + LEASE_WAIT_MINUTES * 60))
+          boot_start=$SECONDS
+          said=""
+          until curl -sf -m 2 "http://localhost:$GATE_PORT/health" >/dev/null; do
+            kill -0 "$server" 2>/dev/null || break
+            if grep -q "$waiting" "$log" && ! grep -Eq "$past_lease" "$log"; then
+              [ -n "$said" ] || { echo "another gate job holds the CI bot; waiting up to $LEASE_WAIT_MINUTES min for it to hand the bot back"; said=1; }
+              if [ "$SECONDS" -ge "$lease_deadline" ]; then
+                echo "the CI bot was not handed back within $LEASE_WAIT_MINUTES min; the server log:"; cat "$log"; exit 1
+              fi
+              boot_start=$SECONDS
+            elif [ $((SECONDS - boot_start)) -ge 120 ]; then
+              echo "the server did not answer /health within 120 s of holding the bot; its log:"; cat "$log"; exit 1
+            fi
             sleep 2
           done
+          [ -z "$said" ] || echo "the CI bot is ours after $((SECONDS / 60)) min"
           # The health probe alone proved nothing: with two jobs on one VM it
           # answered from the OTHER job's server while ours had died on
           # "port already in use", and the fixtures ran against a build that
@@ -228,11 +345,11 @@ jobs:
 
       - name: Smoke suite, program checks
         if: github.event_name != 'schedule' && !inputs.suites
-        run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --no-judge --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
+        run: scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --suite "$GITHUB_WORKSPACE/suites/smoke.yaml" --no-judge --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output "$GATE_JOB/traces/smoke"
 
       - name: Error-correction suite, program checks
         if: github.event_name != 'schedule' && !inputs.suites
-        run: ./target/debug/nebo-cli test run --suite suites/error-correction.yaml --no-judge --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/correction
+        run: scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --suite "$GITHUB_WORKSPACE/suites/error-correction.yaml" --no-judge --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output "$GATE_JOB/traces/correction"
 
       # The VM has no node. Anthropic's native installer puts a standalone
       # `claude` in ~/.local/bin; it persists on the runner, so this is a
@@ -248,19 +365,19 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
         run: |
-          ./target/debug/nebo-cli test run --suite suites/error-correction.yaml --grader claude-opus-5 --runs 3 \
-            --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/correction || true
-          python3 scripts/correction-rate.py traces/correction suites/error-correction.yaml --min "$MIN_CORRECTION_RATE"
-          python3 scripts/error-shapes.py traces/correction --baseline suites/error-shapes.baseline.txt
+          scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --suite "$GITHUB_WORKSPACE/suites/error-correction.yaml" --grader claude-opus-5 --runs 3 \
+            --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output "$GATE_JOB/traces/correction" || true
+          python3 scripts/correction-rate.py "$GATE_JOB/traces/correction" suites/error-correction.yaml --min "$MIN_CORRECTION_RATE"
+          python3 scripts/error-shapes.py "$GATE_JOB/traces/correction" --baseline suites/error-shapes.baseline.txt
 
       - name: Smoke suite, judged
         if: github.event_name == 'schedule'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
-        run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --grader claude-opus-5 --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
+        run: scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --suite "$GITHUB_WORKSPACE/suites/smoke.yaml" --grader claude-opus-5 --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output "$GATE_JOB/traces/smoke"
 
       # Each entry runs to the end whatever the one before it did; the step
-      # fails if any entry did. Traces land in traces/<entry name>.
+      # fails if any entry did. Traces land in $GATE_JOB/traces/<entry name>.
       - name: Sweep the listed suites and fixtures
         if: inputs.suites
         env:
@@ -272,10 +389,21 @@ jobs:
           failed=""
           for entry in $SUITES; do
             name=$(basename "$entry" .yaml)
+            path="$GITHUB_WORKSPACE/$entry"
             case "$entry" in suites/*) what=--suite ;; *) what=--fixture ;; esac
+            # replays/<set>/suite.yaml: real owner threads, never in git. They
+            # live on the VM (~/harness-replays/<set>, put there by
+            # scripts/export-threads.py push) and are copied into this job's
+            # own directory, so no other run can read them.
+            case "$entry" in replays/*/suite.yaml)
+              set=$(basename "$(dirname "$entry")")
+              [ -d "$HOME/harness-replays/$set" ] || { echo "no replay set $set on this VM"; failed="$failed $entry"; continue; }
+              mkdir -p "$GATE_JOB/replays" && cp -R "$HOME/harness-replays/$set" "$GATE_JOB/replays/"
+              path="$GATE_JOB/$entry"; what=--suite; name="$set" ;;
+            esac
             echo "::group::$entry"
-            ./target/debug/nebo-cli test run "$what" "$entry" "${mode[@]}" --model "$GATE_MODEL" \
-              --server "localhost:$GATE_PORT" --output "traces/$name" || failed="$failed $entry"
+            scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run "$what" "$path" "${mode[@]}" --model "$GATE_MODEL" \
+              --server "localhost:$GATE_PORT" --output "$GATE_JOB/traces/$name" || failed="$failed $entry"
             echo "::endgroup::"
           done
           [ -z "$failed" ] || { echo "failed:$failed"; exit 1; }
@@ -285,12 +413,20 @@ jobs:
         run: |
           [ -n "${server:-}" ] && kill "$server" 2>/dev/null || true
           fuser -k -TERM "$GATE_PORT/tcp" 2>/dev/null || true
+          # A server asked to exit hands the bot's lease back on its way out;
+          # let it, so a gate job waiting for the bot starts now rather than
+          # when the lease lapses after the runner reaps the process.
+          for i in $(seq 1 30); do
+            [ -n "${server:-}" ] && kill -0 "$server" 2>/dev/null || break
+            sleep 2
+          done
 
       - name: Keep the traces and the server log on the VM
         if: always()
         run: |
           KEEP="$HOME/harness-runs/${{ github.run_id }}"
           mkdir -p "$KEEP"
-          [ -d traces ] && cp -R traces "$KEEP/"
+          [ -d "$GATE_JOB/traces" ] && cp -R "$GATE_JOB/traces" "$KEEP/"
           cp "${{ runner.temp }}/server.log" "$KEEP/" 2>/dev/null || true
+          [ -f "$GATE_JOB/run.json" ] && jq --arg ended "$(date -u +%FT%TZ)" '. + {ended_at: $ended}' "$GATE_JOB/run.json" > "$KEEP/run.json"
           echo "kept at $KEEP on the stadium VM (limactl shell ci)"
