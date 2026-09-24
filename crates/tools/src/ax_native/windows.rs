@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn scripts_bind_their_arguments_before_the_prelude() {
-        let opts = WalkOpts { window: 2, depth: 4, max: 30, timeout: Duration::from_millis(1500) };
+        let opts = WalkOpts { window: 2, depth: 4, max: 30, timeout: Duration::from_millis(1500), root: None };
         let s = tree_script("It's Me", &opts);
         assert!(s.starts_with("$app = 'It''s Me'; $window = 2; $depth = 4; $max = 30; $timeout = 1500\n"));
         assert!(s.contains("ControlViewWalker") && s.contains("elapsed_ms"));

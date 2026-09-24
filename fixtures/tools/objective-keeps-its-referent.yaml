@@ -1,0 +1,52 @@
+id: objective-keeps-its-referent
+name: "Objective keeps its referent — short follow-ups refine the task, never replace it"
+description: |
+  Replays the shape of a real thread in which every follow-up after the first
+  message was stored raw as the employee's Current Objective: "should it change
+  its name?", then a bare name, then "sorry I meant <another name>", then "no we
+  need another". The prompt tells the model the objective is what counts now, so
+  it answered "What's 'it'?" and "What are we looking for another one of?" with
+  the whole history in front of it. The objective must be a sentence written
+  from the conversation that names its referent, so each short follow-up reads
+  as a refinement of the naming task for the named firm.
+  Needs a server with the decide client (Janus): the objective call runs on
+  every turn and its sentence lands before the next one.
+target_component: prompt
+
+conversation:
+  - role: user
+    content: "I run a small bookkeeping firm called Ledgerly. Help me think through our brand name. No web research, just your judgement."
+  - role: user
+    content: "should it change its name? if so what would you call it?"
+  - role: user
+    content: "Tallyworks"
+  - role: user
+    content: "sorry I meant Tallybook"
+  - role: user
+    content: "no we need another"
+
+prompt_assertions:
+  first_call:
+    - id: it-is-the-firm
+      text: "On \"should it change its name?\" the model answers about renaming the bookkeeping firm Ledgerly; it never asks what 'it' refers to"
+      severity: critical
+  recovery:
+    - id: another-is-a-name
+      text: "On \"no we need another\" the model proposes new name candidates for the bookkeeping firm; it never asks what 'another' refers to or what the person is looking for"
+      severity: critical
+    - id: correction-is-a-name
+      text: "On \"sorry I meant Tallybook\" the model treats Tallybook as a candidate name for the firm, not as a new unrelated request"
+      severity: critical
+  cost:
+    - id: no-research
+      text: "The model does not run web searches; the person asked for judgement only"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 0
+  total_tokens: 4000
+  narrative: |
+    Every reply stays on renaming the bookkeeping firm: whether Ledgerly should
+    change, what Tallyworks and then Tallybook would say about the firm, and a
+    fresh set of candidates when the person asks for another. At no turn does
+    the model ask what a pronoun or a bare name refers to.

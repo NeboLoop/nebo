@@ -16,6 +16,15 @@ name: Harness gate
 #   HARNESS_NEBO_BOT_TOKEN      that bot's token; seeds the NeboAI profile the
 #                               way a cloud pod's does, so the agent runs on
 #                               Janus (nebo-1), the same backend customers get
+#   HARNESS_NEBO_BOOT_TOKEN     that bot's boot credential (NEBO_BOOT_TOKEN), the
+#                               one a rebuilt cloud pod boots with. Every run
+#                               starts from an empty home, and the plain token
+#                               goes stale on the first connect (rotation), so
+#                               the state read before CONNECT and CONNECT itself
+#                               need it. Minted by an admin with the NeboAI MCP
+#                               cloud(resource: bot, action: boot_credential),
+#                               sealed to this repo's Actions secrets key; minting
+#                               again revokes the previous one
 #   HARNESS_CLAUDE_OAUTH_TOKEN  nightly only: login for the claude CLI that
 #                               judges the transcripts (CLAUDE_CODE_OAUTH_TOKEN)
 #
@@ -153,7 +162,8 @@ jobs:
       # A fresh NEBO_HOME so nothing on the runner leaks in. NEBO_SERVER_MODE
       # marks setup complete on boot (there is no desktop to click through);
       # NEBO_BOT_ID and NEBO_BOT_TOKEN seed the NeboAI profile with Janus
-      # enabled, the same first-boot path a cloud pod takes.
+      # enabled, the same first-boot path a cloud pod takes; NEBO_BOOT_TOKEN
+      # is what the hub accepts once that token has gone stale.
       - name: Start a headless server
         env:
           NEBO_HOME: ${{ runner.temp }}/nebo-home
@@ -161,10 +171,11 @@ jobs:
           NEBO_PORT: ${{ env.GATE_PORT }}
           NEBO_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
           NEBO_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          NEBO_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
           RUST_LOG: info,nebo_agent=debug
         run: |
-          test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" \
-            || { echo "HARNESS_NEBO_BOT_ID and HARNESS_NEBO_BOT_TOKEN are not set"; exit 1; }
+          test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" && test -n "$NEBO_BOOT_TOKEN" \
+            || { echo "HARNESS_NEBO_BOT_ID, HARNESS_NEBO_BOT_TOKEN and HARNESS_NEBO_BOOT_TOKEN must be set"; exit 1; }
           mkdir -p "$NEBO_HOME"
           # A job cancelled mid-suite leaves its server on this runner's port
           # (the runner's orphan sweep does not always reach a nohup'd child):

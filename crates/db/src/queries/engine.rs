@@ -918,7 +918,9 @@ impl Store {
                    AND substr(c.session_name, 1, length(?5)) = ?5
                    AND substr(c.session_name, 1, length(?6)) != ?6),
                (SELECT COUNT(*) FROM assignments WHERE assignee_agent_id = ?1 AND created_at > ?2),
-               EXISTS(SELECT 1 FROM agents WHERE id = ?1 AND updated_at > ?2)",
+               EXISTS(SELECT 1 FROM agents WHERE id = ?1 AND updated_at > ?2)
+                 OR EXISTS(SELECT 1 FROM plugin_registry WHERE slug != '' AND updated_at > ?2)
+                 OR EXISTS(SELECT 1 FROM plugin_account_profiles WHERE agent_id = ?1 AND updated_at > ?2)",
             params![agent_id, since, own_ref, own_binding, session_prefix, workflow_prefix],
             |r| {
                 Ok(AgentChanges {

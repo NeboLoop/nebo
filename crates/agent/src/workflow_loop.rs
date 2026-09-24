@@ -148,7 +148,7 @@ impl RunnerActivityLoop {
             .execute(&ctx, &tc.name, tc.input.clone())
             .await;
         if result.terminal {
-            return Err(WorkflowError::Blocked(result.content.clone()));
+            return Err(WorkflowError::Blocked(result.content.clone(), result.need.clone()));
         }
         if !result.is_error {
             if let Some(reason) = result.content.strip_prefix(tools::EXIT_SENTINEL) {
@@ -409,6 +409,7 @@ impl ActivityLoop for RunnerActivityLoop {
         let (mut cur_in, mut cur_out): (i32, i32) = (0, 0);
         let (mut total_in, mut total_out): (u32, u32) = (0, 0);
         let mut notice = String::new();
+        let mut need: Option<types::OwnerNeed> = None;
         let mut error: Option<String> = None;
         let mut exit_reason = String::new();
         let mut tainted = false;
@@ -440,6 +441,7 @@ impl ActivityLoop for RunnerActivityLoop {
                     }
                 }
                 ai::StreamEventType::ControlNotice => {
+                    need = ev.owner_need();
                     notice = ev.text.clone();
                 }
                 ai::StreamEventType::Error => {
@@ -464,11 +466,10 @@ impl ActivityLoop for RunnerActivityLoop {
             return Err(WorkflowError::Exited(rest.to_string()));
         }
         if exit_reason == "terminal_tool_error" {
-            return Err(WorkflowError::Blocked(if notice.is_empty() {
-                "terminal tool error".into()
-            } else {
-                notice
-            }));
+            return Err(WorkflowError::Blocked(
+                if notice.is_empty() { "terminal tool error".into() } else { notice },
+                need,
+            ));
         }
         if exit_reason == "runaway_tool_loop" {
             return Err(WorkflowError::RunawayLoop(if notice.is_empty() {
