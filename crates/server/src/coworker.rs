@@ -258,6 +258,8 @@ pub(crate) async fn send_coworker_message(
         // path: an employee prompt-injected over Slack, email or a web page
         // could hand the work to a coworker that still held shell and files.
         origin: tools::Origin::Comm,
+        // The target acts with its own grant; the requester's is never read.
+        door: types::permissions::Door::Coworker { from: msg.from_agent_id.clone() },
         agent_id: to_id.clone(),
         cancel_token: cancel_token.clone(),
         lane: types::constants::lanes::COMM.to_string(),

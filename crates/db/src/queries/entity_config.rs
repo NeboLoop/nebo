@@ -70,14 +70,10 @@ impl Store {
             ("heartbeat_content", "heartbeatContent"),
             ("heartbeat_window_start", "heartbeatWindowStart"),
             ("heartbeat_window_end", "heartbeatWindowEnd"),
-            ("permissions", "permissions"),
-            ("resource_grants", "resourceGrants"),
             ("model_preference", "modelPreference"),
             ("personality_snippet", "personalitySnippet"),
-            ("allowed_paths", "allowedPaths"),
             ("pinned", "pinned"),
             ("multi_chat", "multiChat"),
-            ("operation_policy", "operationPolicy"),
             ("learning_mode", "learningMode"),
         ];
 
@@ -147,6 +143,19 @@ impl Store {
     }
 
     /// List all entities with heartbeat explicitly enabled.
+    /// Every entity's config row of one type.
+    pub fn list_entity_configs(&self, entity_type: &str) -> Result<Vec<EntityConfig>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT * FROM entity_config WHERE entity_type = ?1")
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([entity_type], row_to_entity_config)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn list_heartbeat_entities(&self) -> Result<Vec<EntityConfig>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn

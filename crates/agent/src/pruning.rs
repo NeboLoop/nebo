@@ -1275,10 +1275,7 @@ mod tests {
     fn trim(name: &str, input: &serde_json::Value) -> Trim {
         use tools::registry::DynTool;
         let tool: Box<dyn DynTool> = match name {
-            "os" => Box::new(tools::OsTool::new(
-                tools::Policy::default(),
-                std::sync::Arc::new(tools::ProcessRegistry::new()),
-            )),
+            "os" => Box::new(tools::OsTool::new(std::sync::Arc::new(tools::ProcessRegistry::new()))),
             "web" => Box::new(tools::WebTool::new()),
             _ => return Trim::default(),
         };

@@ -1292,21 +1292,14 @@ impl WorkflowManager for WorkflowManagerImpl {
                     }
                     None => None,
                 };
-                let policy = self
-                    .store
-                    .get_entity_config("agent", agent_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|c| c.operation_policy)
-                    .map(|j| tools::policy::OperationPolicy::from_json(Some(&j)));
                 let binding = trigger_detail
                     .as_deref()
                     .map(|d| d.split(':').next().unwrap_or(d).to_string())
                     .unwrap_or_default();
                 // WS2-R7: a watch/comm payload in the inputs means untrusted
                 // content steers this run (the live case: inbound factory email
-                // driving approval-gated CRM writes) — the checkpoint decides
-                // as Comm even though the origin is Workflow. The taint check
+                // driving approval-gated CRM writes) — gated operations ask
+                // even though the origin is Workflow. The taint check
                 // is deliberately the reserved keys the launch paths stamp.
                 //
                 // `_event_source` is the canonical envelope key
@@ -1326,15 +1319,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                     || inputs.get("_watch_source").is_some()
                     || inputs.get("_comm_payload").is_some()
                     || external_event;
-                let ctx = if policy.is_some() || tainted {
-                    Some(workflow::engine::CheckpointCtx {
-                        operation_policy: policy,
-                        binding_name: binding,
-                        tainted,
-                    })
-                } else {
-                    None
-                };
+                // Every activity can park: a call the permission check asks
+                // about suspends the run for the owner.
+                let ctx = Some(workflow::engine::CheckpointCtx { binding_name: binding, tainted });
                 (inputs, ctx, resume_state, resume_run, relaunch_run)
             };
 

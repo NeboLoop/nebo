@@ -125,6 +125,13 @@ async fn a_template_binding_shapes_the_call() {
     let nebo = session().await;
     assert!(nebo.state.plugin_store.is_ready(FAKE_LEDGER), "the plugin is installed and ready");
     let seat = nebo.hire("Billing Clerk", json!({ "requires": { "interfaces": ["ledger"] }, "workflows": {} })).await;
+    // Sending an invoice forms a contract: it asks unless the owner allowed
+    // it for this seat, which is what the shaping below runs under.
+    nebo.put_ok(
+        &format!("/entity-config/agent/{seat}"),
+        &json!({ "operationPolicy": { "operations": { "ledger.invoice.send": "always" } } }),
+    )
+    .await;
     let ctx = Nebo::ctx(&seat, Origin::User);
     let argv = |content: &str| -> Vec<String> {
         content.lines().map(str::to_string).filter(|l| !l.is_empty()).collect()
