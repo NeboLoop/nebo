@@ -23,7 +23,7 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: uses-discovery-first
-      text: "Model's first call is tool_search, skill(action: 'discover'), or skill(action: 'list') — a capability lookup, not a browser action"
+      text: "Model's first call is find_tools, skill(action: 'discover'), or skill(action: 'list') — a capability lookup, not a browser action"
       severity: critical
   recovery:
     - id: recognizes-no-capability
@@ -53,6 +53,6 @@ ideal_behavior:
   tool_calls: 2
   total_tokens: 3000
   narrative: |
-    1. skill(action: "discover", query: "twitter") or tool_search(query: "twitter") → no capability found
+    1. skill(action: "discover", query: "twitter") or find_tools(query: "twitter") → no capability found
     2. Report to user: no Twitter capability installed, suggest installing a skill from the marketplace
     Model should NEVER navigate to twitter.com for this task.

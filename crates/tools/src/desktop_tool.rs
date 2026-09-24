@@ -145,9 +145,6 @@ impl DynTool for DesktopTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        true
-    }
 
     fn execute_dyn<'a>(
         &'a self,
@@ -4981,7 +4978,6 @@ mod tests {
         assert!(tool.description().contains("menu"));
         assert!(tool.description().contains("tts"));
         assert!(tool.description().contains("dock"));
-        assert!(tool.requires_approval());
         let schema = tool.schema();
         assert!(schema["properties"]["resource"].is_object());
         assert!(schema["properties"]["action"].is_object());

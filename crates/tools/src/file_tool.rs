@@ -1683,6 +1683,13 @@ fn preserve_quote_style(old_string: &str, actual_old: &str, new_string: &str) ->
 /// Expand `~` to the user's home directory. Tilde-only (no fuzzy
 /// fallback) — call `types::pathres::resolve` directly when the file
 /// must exist. Kept as a thin wrapper for legacy call sites.
+/// True when the path lies under the attachment/ingestion root
+/// (`<data_dir>/files/`) — files the agent pulled in, not files the owner
+/// placed.
+pub(crate) fn is_ingested_file(path: &str) -> bool {
+    std::path::Path::new(path).starts_with(crate::checkpoint::data_dir().join("files"))
+}
+
 pub fn expand_path(path: &str) -> String {
     types::pathres::expand(path).to_string_lossy().into_owned()
 }

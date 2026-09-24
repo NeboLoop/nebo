@@ -183,15 +183,15 @@ Examples:
 - **message** — user communication, notifications, and coworkers: work for a named AI employee is message(resource: "coworker"), never a spawn
 - **skill** — discover and inspect skills (specialized knowledge)
 - **plugin** — run installed plugin binaries (subcommand only — binary auto-resolved)
-- **mcp** — list connected MCP servers: mcp(action: "list"). Each server's tools appear as their own `mcp__<server>__<tool>` tools — call those directly (find them with tool_search).
-- **tool_search** — discover additional tools not listed here
+- **mcp** — list connected MCP servers: mcp(action: "list"). Each server's tools appear as their own `mcp__<server>__<tool>` tools — call those directly (find them with find_tools).
+- **find_tools** — load the deferred tools listed by name: find_tools(query: "select:<name>")
 
 **Tool discipline:**
 - Prefer file tools over shell, and shell over GUI automation; moving, copying and renaming go through the shell.
 - A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls.
 - Call independent tools in parallel — batch them into ONE response and Nebo runs read-only tools (file read/glob/grep, web, search) concurrently. Reading several files, running several searches, or fetching several URLs? Do it in a single message, not one call per turn. Only sequence when a call genuinely depends on a previous result.
 - For several searches at once use web(action: "search", queries: [...]); spawn sub-agents only for independent multi-step investigations. For open-ended searching where you're unsure of the match, a read-only explore sub-agent (agent(resource: "task", action: "spawn", agent_type: "explore")) keeps bulky output out of your context; when you already know the exact path, read it directly.
-- **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Use tool_search(query) for additional tools (short queries, 1–6 words); skill(action: "discover", query) for skills, then skill(action: "load", name) to follow one inline; plugin(action: "list") for installed plugins and plugin(action: "discover", query) for marketplace plugins; agent(resource: "registry", action: "list") for installed agents and apps; mcp(action: "list") for connected MCP servers.
+- **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Load a deferred tool with find_tools(query: "select:<name>"), or search them by keywords (1–6 words); skill(action: "discover", query) for skills, then skill(action: "load", name) to follow one inline; plugin(action: "list") for installed plugins and plugin(action: "discover", query) for marketplace plugins; agent(resource: "registry", action: "list") for installed agents and apps; mcp(action: "list") for connected MCP servers.
 - **Capability questions ("can X do …?", "give X access to …"):** go straight to plugin(action: "list") + plugin(action: "discover", query) — not the registry or filesystem. One short line before the batch; no per-call narration. In chat, discover shows an install card and pauses — the card IS the question: never paste install codes or ask "shall I proceed?" in prose. After install, the connect card appears on first use.
 - **Discover before you act on an unconfirmed capability.** Before invoking a named external service through a plugin or skill (posting, sending, querying a system you haven't used this session), confirm it exists first — skill(action: "discover", query: "...") then skill(action: "load", name: "...") — not a trial execution. And discovery's verdict is final: if it says a capability is unavailable, report that to the user and stop; don't keep hunting through sub-agents, other plugins, or the browser.
 - **Don't guess plugin command syntax — load the skill first.** Command-rich plugins ship skills/recipes that document the exact syntax. When your task maps to a plugin command you haven't run this session, `skill(action: "discover", query: "<what you're doing>")` then `skill(action: "load", name)` BEFORE you run it — the skill carries the precise subcommand, flags, and environment-specific quirks you cannot reliably guess (for example a plugin might expose an operation as `reports generate --period month`, not a bare `generate` — guessing the wrong shape just errors and wastes a turn). Run the raw `plugin` command only with syntax you've confirmed from a skill, its `help`, or this turn's context.
@@ -608,11 +608,7 @@ pub fn strap_context_doc(context_name: &str) -> Option<&'static str> {
 /// their provider `tools`-field declarations (description + JSON schema) — the single
 /// source. This emits ONLY connected-MCP-server discovery, which is the one thing
 /// not already in the `tools` field.
-pub fn build_strap_section(
-    tool_names: &[String],
-    _active_contexts: &[String],
-    _called_tools: &[String],
-) -> String {
+pub fn build_strap_section(tool_names: &[String]) -> String {
     // Each native tool carries its own full declaration (description + JSON schema)
     // in the provider `tools` field — that is the single source. We do NOT
     // re-document tools in prose here; doing so
@@ -670,25 +666,6 @@ pub fn build_strap_section(
     sb
 }
 
-/// Build a compact listing of deferred tools (name + short description).
-/// Included in the system prompt so the LLM knows they exist but doesn't get full schemas.
-pub fn build_deferred_listing(stubs: &[(String, String)]) -> String {
-    if stubs.is_empty() {
-        return String::new();
-    }
-    let mut sb = String::from(
-        "## Additional Tools (available on demand)\n\n\
-         Call tool_search(query) to discover and activate these tools. Query modes:\n\
-         - select:name — activate a specific tool by exact name\n\
-         - keywords — search by capability (e.g., \"gmail\", \"workflow\")\n\n\
-         You can also just call a deferred tool directly — it will activate automatically.\n\n\
-         Available:\n",
-    );
-    for (name, desc) in stubs {
-        sb.push_str(&format!("- **{}**: {}\n", name, desc));
-    }
-    sb
-}
 
 /// Build the registered tools list for only the specified tools.
 /// Called per-iteration with the filtered tool list.
@@ -1205,11 +1182,8 @@ mod tests {
         // build_strap_section never re-documents tools in prose — each tool's full
         // declaration lives in the provider `tools` field (single source, like
         // the strong direct provider). With no MCP tools present, the section is empty.
-        let result = build_strap_section(
-            &["web".to_string(), "os".to_string(), "agent".to_string()],
-            &["app".to_string(), "music".to_string()],
-            &["os".to_string()],
-        );
+        let result =
+            build_strap_section(&["web".to_string(), "os".to_string(), "agent".to_string()]);
         assert!(result.is_empty(), "no prose tool/sub-context docs emitted");
         assert!(!result.contains("### "));
         assert!(!result.contains("Tool Documentation"));
@@ -1225,9 +1199,9 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        let first = build_strap_section(&tools, &[], &[]);
+        let first = build_strap_section(&tools);
         for _ in 0..20 {
-            assert_eq!(build_strap_section(&tools, &[], &[]), first);
+            assert_eq!(build_strap_section(&tools), first);
         }
         assert!(first.find("alpha").unwrap() < first.find("mid").unwrap());
         assert!(first.find("mid").unwrap() < first.find("zeta").unwrap());
@@ -1236,11 +1210,8 @@ mod tests {
     #[test]
     fn test_strap_emits_only_mcp_discovery() {
         // The one thing not already in the `tools` field is MCP-server discovery.
-        let result = build_strap_section(
-            &["os".to_string(), "mcp__monument_sh__comment".to_string()],
-            &[],
-            &[],
-        );
+        let result =
+            build_strap_section(&["os".to_string(), "mcp__monument_sh__comment".to_string()]);
         assert!(result.contains("Connected MCP Servers"));
         assert!(result.contains("monument.sh"));
         assert!(!result.contains("### os"), "os not re-documented in prose");
@@ -1515,28 +1486,6 @@ mod tests {
             "should save >2k chars, saved {} chars",
             full.len() - minimal.len()
         );
-    }
-
-    #[test]
-    fn test_deferred_listing_empty() {
-        let result = build_deferred_listing(&[]);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_deferred_listing_has_tools() {
-        let stubs = vec![
-            ("execute".to_string(), "Script execution engine".to_string()),
-            (
-                "work".to_string(),
-                "Workflow lifecycle management".to_string(),
-            ),
-        ];
-        let result = build_deferred_listing(&stubs);
-        assert!(result.contains("Additional Tools"));
-        assert!(result.contains("**execute**"));
-        assert!(result.contains("**work**"));
-        assert!(result.contains("Script execution engine"));
     }
 
     // --- Level 1: Structural prompt tests ---

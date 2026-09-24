@@ -25,6 +25,8 @@ pub enum TurnEvent {
     LostToolCalls,
     /// Deferred tools became callable.
     ToolsLoaded(Vec<String>),
+    /// The deferred tools listed by name changed (tools doc §4.1).
+    ToolsAvailable(super::tool_surface::ListingDelta),
     /// The `steering.generate` hook's text.
     AppDirective {
         label: String,
@@ -149,6 +151,9 @@ pub fn reminder_for(e: &TurnEvent) -> Option<(&'static str, Kind, String)> {
                 format!("Now callable: {}.", names.join(", ")),
             )
         }
+        TurnEvent::ToolsAvailable(delta) => {
+            non_empty(&super::tool_surface::render_listing(delta)).and_then(|t| fact("tools_available", t))
+        }
         TurnEvent::AppDirective { text, .. } => {
             non_empty(text).map(|t| ("app_steering", Kind::Steering, t))
         }
@@ -259,6 +264,7 @@ mod tests {
             TurnEvent::CutoffResume,
             TurnEvent::LostToolCalls,
             TurnEvent::ToolsLoaded(vec!["mail".into()]),
+            TurnEvent::ToolsAvailable(super::super::tool_surface::ListingDelta::all(["vm".to_string()].into())),
             TurnEvent::EndCheckContinue {
                 check: "goal_check",
                 text: "not met".into(),
@@ -335,5 +341,15 @@ mod tests {
             threshold_text(&Threshold::Context { percent_full: 82 }),
             "Context 82% full."
         );
+    }
+
+    #[test]
+    fn a_listing_change_is_one_names_only_fact_and_no_change_says_nothing() {
+        use super::super::tool_surface::ListingDelta;
+        let delta = ListingDelta::all(["vm".to_string()].into());
+        let (name, kind, text) = reminder_for(&TurnEvent::ToolsAvailable(delta)).unwrap();
+        assert_eq!((name, kind), ("tools_available", Kind::Fact));
+        assert!(text.ends_with(":\nvm"), "{text}");
+        assert!(reminder_for(&TurnEvent::ToolsAvailable(ListingDelta::default())).is_none());
     }
 }

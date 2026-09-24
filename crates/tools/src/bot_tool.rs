@@ -442,6 +442,17 @@ impl AgentTool {
     /// must say (see `resource_required`). `delegate` is not here: it was
     /// removed, and a removed action reaches the generic text, not a special
     /// arm that keeps it alive.
+    /// The call's resource (inferred when left out) and action.
+    fn call_shape(input: &serde_json::Value) -> (&str, &str) {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let resource = input
+            .get("resource")
+            .and_then(|v| v.as_str())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| Self::infer_resource(action, input));
+        (resource, action)
+    }
+
     fn infer_resource(action: &str, input: &serde_json::Value) -> &'static str {
         let has = |k: &str| !input[k].is_null();
         // create/update are ambiguous between task and registry. Registry-shaped
@@ -2712,18 +2723,17 @@ impl DynTool for AgentTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+
+    fn search_hint(&self) -> &str {
+        "memory helpers tasks sessions employees profile"
+    }
+
+    fn should_defer(&self) -> bool {
         false
     }
 
-    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-        let resource = if resource.is_empty() {
-            Self::infer_resource(action, input)
-        } else {
-            resource
-        };
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        let (resource, action) = Self::call_shape(input);
         match resource {
             "task" => matches!(action, "list" | "status"),
             "memory" => matches!(action, "recall" | "search"),
@@ -2733,6 +2743,79 @@ impl DynTool for AgentTool {
             "registry" => matches!(action, "list" | "info" | "stats" | "discover"),
             _ => false,
         }
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        let (resource, action) = Self::call_shape(input);
+        match (resource, action) {
+            ("memory", "store" | "save") => "remember",
+            ("memory", "delete" | "clear") => "forget",
+            ("memory", _) => "recall",
+            ("task", "spawn" | "spawn_parallel") => "delegate",
+            ("task", "orchestrate") => "orchestrate",
+            ("task", "send") => "send_message",
+            ("task", "status") => "read_output",
+            ("task", "cancel") => "stop_task",
+            ("task", "create") => "create_task",
+            ("task", "update" | "delete" | "clear") => "update_task",
+            ("task", "get") => "get_task",
+            ("task", "list") => "list_tasks",
+            ("task", "assign") => "assign_task",
+            ("task", "assignments") => "list_assignments",
+            ("ask", _) => "ask_owner",
+            ("runs", "cancel") => "stop_task",
+            ("runs", _) => "list_runs",
+            ("session", "history") => "read_session",
+            ("session", "query") => "search_history",
+            ("session", _) => "list_sessions",
+            ("advisors", "list") => "list_advisors",
+            ("advisors", _) => "consult_advisors",
+            ("research", "deep_research") => "deep_research",
+            ("research", "submit_findings") => "submit_findings",
+            ("research", _) => "quick_research",
+            ("profile", "update") => "update_profile",
+            ("profile", "open_billing") => "open_billing",
+            ("profile", _) => "get_profile",
+            ("registry", "list") => "list_employees",
+            ("registry", "info") => "get_employee",
+            ("registry", "discover") => "find_employees",
+            ("registry", "install") => "hire_employee",
+            ("registry", "create") => "create_employee",
+            ("registry", "update") => "update_employee",
+            ("registry", "delete") => "delete_employee",
+            ("registry", "activate" | "deactivate") => "set_employee_active",
+            ("registry", "setup") => "setup_employee",
+            ("registry", "repair") => "repair_employee",
+            ("registry", "reload") => "reload_employee",
+            ("registry", "stats") => "employee_stats",
+            _ => "agent",
+        }
+        .to_string()
+    }
+
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        if self.read_only(input) {
+            return types::permissions::CallEffects::none();
+        }
+        let (resource, action) = Self::call_shape(input);
+        match (resource, action) {
+            // The employee's own memory, tasks and helpers: its own work.
+            ("memory" | "task" | "ask" | "advisors" | "research" | "context", _) => {
+                types::permissions::CallEffects::none()
+            }
+            _ => types::permissions::CallEffects::unknown(),
+        }
+    }
+
+    fn keeps_content_when_trimmed(&self, input: &serde_json::Value) -> bool {
+        let (resource, action) = Self::call_shape(input);
+        resource == "memory" && matches!(action, "recall" | "search" | "list")
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(

@@ -821,7 +821,49 @@ impl DynTool for LoopTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+
+    fn search_hint(&self) -> &str {
+        "neboai loops channels direct messages topics"
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let resource = input
+            .get("resource")
+            .and_then(|v| v.as_str())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| self.infer_resource(action));
+        match (resource, action) {
+            (_, "send") => "send_loop_message",
+            (_, "share") => "share_to_loop",
+            (_, "ensure") => "ensure_loop_channel",
+            ("channel", "list") => "list_loop_channels",
+            ("channel", "messages") | (_, "messages") => "read_loop_channel",
+            ("channel", "members") => "loop_channel_members",
+            (_, "members") => "loop_members",
+            ("topic", "subscribe") => "subscribe_topic",
+            ("topic", "unsubscribe") => "unsubscribe_topic",
+            ("topic", _) => "topic_status",
+            (_, "get") => "get_loop",
+            (_, "list") => "list_loops",
+            _ => "loop",
+        }
+        .to_string()
+    }
+
+    fn capability(&self, _input: &serde_json::Value) -> Option<&'static str> {
+        Some("web")
+    }
+
+    /// Loop reads pull other bots' and members' messages into the run.
+    fn taint(&self, input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
+        matches!(input.get("action").and_then(|v| v.as_str()), Some("messages" | "get"))
+            .then_some(types::provenance::ProvenanceClass::Channel)
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
         false
     }
 

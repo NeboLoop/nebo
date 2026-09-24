@@ -381,10 +381,15 @@ impl SessionManager {
         session_id: &str,
         summary: &str,
     ) -> Result<(), NeboError> {
+        // The deferred tools loaded so far ride on the boundary row, so they
+        // stay loaded after the rows that loaded them are compacted away.
+        let loaded = crate::harness::tool_surface::loaded_names(&self.get_messages(session_id)?);
+        let metadata = (!loaded.is_empty())
+            .then(|| serde_json::json!({ crate::harness::tool_surface::LOADED_TOOLS_KEY: loaded }).to_string());
         let chat_id = self.resolve_chat_id(session_id);
         let msg_id = uuid::Uuid::new_v4().to_string();
         self.store
-            .compact_chat_history(&chat_id, &msg_id, summary)?;
+            .compact_chat_history(&chat_id, &msg_id, summary, metadata.as_deref())?;
         self.store.reset_session_counters(session_id)?;
         Ok(())
     }

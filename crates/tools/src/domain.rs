@@ -231,8 +231,3 @@ pub fn build_domain_description(cfg: &DomainSchemaConfig) -> String {
 
     desc
 }
-
-/// Check if an action requires user approval based on a list of dangerous actions.
-pub fn action_requires_approval(action: &str, dangerous_actions: &[&str]) -> bool {
-    dangerous_actions.contains(&action)
-}

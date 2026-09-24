@@ -1069,8 +1069,8 @@
   function plainNote(line: string): string {
     return line.replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim();
   }
-  /** What a tool row says after its label: the search query, the page's
-   *  address (as a link), or the plugin command. */
+  /** What a tool row says after its label: the search query, or the page's
+   *  address (as a link). */
   function stepMeta(tool: ToolMsg): { text: string; href?: string } | null {
     const r = (tool.request ?? {}) as Record<string, unknown>;
     const str = (k: string) => (typeof r[k] === 'string' ? (r[k] as string) : '');
@@ -1078,15 +1078,12 @@
     if (url) return { text: url, href: url };
     const query = str('query') || str('q');
     if (query) return { text: query };
-    if (tool.name !== 'os') {
-      const cmd = str('command');
-      if (cmd) return { text: cmd };
-    }
     return null;
   }
+  /** The command a call ran, shown as code under its row. */
   function shellCommand(tool: ToolMsg): string {
     const r = (tool.request ?? {}) as Record<string, unknown>;
-    return tool.name === 'os' && typeof r.command === 'string' ? r.command : '';
+    return typeof r.command === 'string' ? r.command : '';
   }
   function canExpand(tool: ToolMsg): boolean {
     if (tool.status === 'running') return false;
@@ -1137,15 +1134,6 @@
   function stepOutcome(tool: ToolMsg): string {
     const resource = (tool.request as { resource?: string } | undefined)?.resource;
     return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: resource || tool.name } });
-  }
-  // Correct tool signature: MCP → "slug · tool", STRAP → "name · resource.action".
-  function strapSig(t: ToolMsg): string {
-    if (t.name.startsWith('mcp__')) {
-      return t.name.slice(5).replace('__', ' · ').replaceAll('_', ' ');
-    }
-    const req = t.request as { resource?: string; action?: string } | undefined;
-    if (req?.resource && req?.action) return `${t.name} · ${req.resource}.${req.action}`;
-    return t.name;
   }
   function workLineLabel(tools: ToolMsg[]): string {
     const running = tools.filter((t) => t.status === 'running');
@@ -1457,7 +1445,7 @@
                       <span class="shrink-0 text-base-content/70">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/70 ml-1">{tool.statusText}</span>{/if}</span>
                       {#if tool.status === 'error'}<span class="shrink-0 text-error">{$t('chat.failed')}</span>{/if}
                       {#if meta && !meta.href}<span class="truncate text-base-content/80" title={meta.text}>{meta.text}</span>{/if}
-                      {#if $devMode}<span class="font-mono text-base-content/70 shrink-0">{strapSig(tool)}</span>{/if}
+                      {#if $devMode}<span class="font-mono text-base-content/70 shrink-0">{tool.name}</span>{/if}
                       {#if tool.durationMs}<span class="text-base-content/70 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
                       {#if expandable && !meta?.href}<span class="shrink-0 text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
                     </button>

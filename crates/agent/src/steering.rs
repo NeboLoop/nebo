@@ -1658,7 +1658,7 @@ fn recent_tool_calls(messages: &[ChatMessage], limit: usize) -> Vec<(String, Str
 }
 
 /// Detects when the main agent is in an exploratory research loop —
-/// repeatedly calling discovery-flavored tools (`tool_search`, `skill
+/// repeatedly calling discovery-flavored tools (`find_tools`, `skill
 /// discover`, repeated `plugin` probes) trying to figure out how to do
 /// something — and nudges it to delegate the discovery to a sub-agent instead.
 ///
@@ -1692,7 +1692,7 @@ impl Reminder for ResearchDelegationNudge {
         for (name, action) in &window {
             match (name.as_str(), action.as_str()) {
                 ("skill", "load") | ("plugin", "help") => {} // the prescribed chain
-                ("tool_search", _) | ("skill", _) => discovery_count += 1,
+                ("find_tools", _) | ("skill", _) => discovery_count += 1,
                 ("plugin", _) => plugin_count += 1,
                 _ => {}
             }
@@ -2327,7 +2327,7 @@ mod tests {
 
     #[test]
     fn test_research_delegation_nudge_on_discovery_loop() {
-        let msgs = calls_as_msgs(&[("tool_search", ""), ("skill", "discover"), ("tool_search", "")]);
+        let msgs = calls_as_msgs(&[("find_tools", ""), ("skill", "discover"), ("find_tools", "")]);
         assert!(
             ResearchDelegationNudge
                 .check(&rctx_tools(&msgs, &[], 3))
@@ -2336,7 +2336,7 @@ mod tests {
             "fires after 3 discovery calls"
         );
         // Only one discovery call → no fire.
-        let few = calls_as_msgs(&[("tool_search", ""), ("web", "search"), ("os", "read")]);
+        let few = calls_as_msgs(&[("find_tools", ""), ("web", "search"), ("os", "read")]);
         assert!(ResearchDelegationNudge.check(&rctx_tools(&few, &[], 3)).is_none());
     }
 
@@ -2359,7 +2359,7 @@ mod tests {
             ("skill", "discover"),
             ("skill", "load"),
             ("plugin", "help"),
-            ("tool_search", ""),
+            ("find_tools", ""),
             ("skill", "discover"),
         ]);
         assert!(ResearchDelegationNudge.check(&rctx_tools(&probing, &[], 5)).is_some());

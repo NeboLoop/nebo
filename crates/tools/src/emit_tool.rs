@@ -94,7 +94,28 @@ impl DynTool for EmitTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+
+    fn search_hint(&self) -> &str {
+        "emit event trigger automations"
+    }
+
+    /// The event goes on the local bus and nothing leaves the machine;
+    /// whatever a subscribed workflow then does is judged in its own run.
+    fn read_only(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
+
+    fn concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+        false
+    }
+
+    fn rule_key(&self, _input: &serde_json::Value) -> String {
+        "emit_event".to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
         false
     }
 

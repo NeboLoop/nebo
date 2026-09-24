@@ -509,6 +509,7 @@ impl Store {
         chat_id: &str,
         message_id: &str,
         summary: &str,
+        metadata: Option<&str>,
     ) -> Result<(), NeboError> {
         let mut conn = self.conn()?;
         let tx = conn
@@ -522,9 +523,9 @@ impl Store {
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         tx.execute(
-            "INSERT INTO chat_messages (id, chat_id, role, content, created_at)
-             VALUES (?1, ?2, 'assistant', ?3, unixepoch())",
-            params![message_id, chat_id, summary],
+            "INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at)
+             VALUES (?1, ?2, 'assistant', ?3, ?4, unixepoch())",
+            params![message_id, chat_id, summary, metadata],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         tx.commit()
@@ -1258,7 +1259,7 @@ mod tests {
         for id in ["m1", "m2", "m3"] {
             store.create_chat_message(id, "c1", "user", id, None).unwrap();
         }
-        store.compact_chat_history("c1", "s1", "**Conversation Summary**\nfirst").unwrap();
+        store.compact_chat_history("c1", "s1", "**Conversation Summary**\nfirst", None).unwrap();
         let visible = store.get_chat_messages("c1").unwrap();
         assert_eq!(visible.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["s1"]);
         let on_disk: i64 = store
@@ -1272,7 +1273,7 @@ mod tests {
         assert_eq!(store.get_chat_messages_paginated("c1", 10, None).unwrap().len(), 2);
         assert_eq!(store.get_chat_messages_budgeted("c1", 100_000, None).unwrap().len(), 2);
         // Compact again: one visible summary, floor moved.
-        store.compact_chat_history("c1", "s2", "**Conversation Summary**\nsecond").unwrap();
+        store.compact_chat_history("c1", "s2", "**Conversation Summary**\nsecond", None).unwrap();
         let visible = store.get_chat_messages("c1").unwrap();
         assert_eq!(visible.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["s2"]);
     }

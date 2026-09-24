@@ -513,11 +513,23 @@ mod tests {
     use tools::registry::DynTool;
     use tools::{ToolContext, ToolResult};
 
-    /// A tool that reports whether it ran. Named after a real tool so the
-    /// capability map gates it the same way.
+    /// A tool that reports whether it ran, declaring the rule key and
+    /// capability the gates read.
     struct Probe {
         name: &'static str,
         operation: Option<&'static str>,
+        key: &'static str,
+        capability: Option<&'static str>,
+    }
+    impl Probe {
+        /// A web call: the Web capability.
+        fn web() -> Self {
+            Self { name: "web", operation: None, key: "fetch_url", capability: Some("web") }
+        }
+        /// A shell command: `run_command`, the Shell capability.
+        fn shell() -> Self {
+            Self { name: "os", operation: None, key: "run_command", capability: Some("shell") }
+        }
     }
     impl DynTool for Probe {
         fn name(&self) -> &str {
@@ -529,8 +541,11 @@ mod tests {
         fn schema(&self) -> serde_json::Value {
             serde_json::json!({})
         }
-        fn requires_approval(&self) -> bool {
-            false
+        fn rule_key(&self, _input: &serde_json::Value) -> String {
+            self.key.to_string()
+        }
+        fn capability(&self, _input: &serde_json::Value) -> Option<&'static str> {
+            self.capability
         }
         fn operation_performed(&self, _input: &serde_json::Value) -> Option<String> {
             self.operation.map(str::to_string)
@@ -556,7 +571,7 @@ mod tests {
     #[tokio::test]
     async fn a_capability_the_employee_lacks_is_refused() {
         let (_d, store, registry) = setup(
-            Probe { name: "web", operation: None },
+            Probe::web(),
             serde_json::json!({ "permissions": r#"{"web":false}"# }),
         )
         .await;
@@ -568,7 +583,7 @@ mod tests {
     #[tokio::test]
     async fn a_capability_the_employee_has_runs() {
         let (_d, store, registry) = setup(
-            Probe { name: "web", operation: None },
+            Probe::web(),
             serde_json::json!({ "permissions": r#"{"web":true}"# }),
         )
         .await;
@@ -580,7 +595,7 @@ mod tests {
     #[tokio::test]
     async fn a_blocked_operation_is_refused() {
         let (_d, store, registry) = setup(
-            Probe { name: "plugin", operation: Some("payments.charge") },
+            Probe { name: "plugin", operation: Some("payments.charge"), key: "plugin__payments", capability: None },
             serde_json::json!({ "operationPolicy": r#"{"operations":{"payments.charge":"blocked"}}"# }),
         )
         .await;
@@ -592,7 +607,7 @@ mod tests {
     // An outside client is an MCP client, whatever any run is doing.
     #[tokio::test]
     async fn an_outside_client_is_an_mcp_client() {
-        let (_d, store, registry) = setup(Probe { name: "os", operation: None }, serde_json::json!({})).await;
+        let (_d, store, registry) = setup(Probe::shell(), serde_json::json!({})).await;
         let r = call_tool(&store, &registry, None, "os", shell_call()).await;
         assert!(r.is_error, "shell ran for an MCP client: {}", r.content);
         assert!(r.content.contains("not permitted"), "{}", r.content);
@@ -626,7 +641,7 @@ mod tests {
     // employee allowed shell.
     #[tokio::test]
     async fn a_cli_provider_run_calls_as_its_run() {
-        let (_d, store, registry) = setup(Probe { name: "os", operation: None }, serde_json::json!({})).await;
+        let (_d, store, registry) = setup(Probe::shell(), serde_json::json!({})).await;
         let run = cli_run(&[("shell", true)], None);
         let r = call_tool(&store, &registry, Some(&run), "os", shell_call()).await;
         assert!(!r.is_error, "the run's own shell call was refused: {}", r.content);
@@ -636,7 +651,7 @@ mod tests {
     // ...and under that employee's rules: shell off, nobody to ask → refused.
     #[tokio::test]
     async fn a_cli_provider_run_keeps_its_employees_rules() {
-        let (_d, store, registry) = setup(Probe { name: "os", operation: None }, serde_json::json!({})).await;
+        let (_d, store, registry) = setup(Probe::shell(), serde_json::json!({})).await;
         let run = cli_run(&[("shell", false)], None);
         let r = call_tool(&store, &registry, Some(&run), "os", shell_call()).await;
         assert!(r.is_error, "{}", r.content);
@@ -647,7 +662,7 @@ mod tests {
     // exactly as the runner's own call would; "once" lets it run.
     #[tokio::test]
     async fn a_cli_provider_runs_ask_reaches_the_owner() {
-        let (_d, store, registry) = setup(Probe { name: "os", operation: None }, serde_json::json!({})).await;
+        let (_d, store, registry) = setup(Probe::shell(), serde_json::json!({})).await;
         let channels: tools::ApprovalChannels = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let door = agent::tool_credentials::OwnedApprovalDoor {

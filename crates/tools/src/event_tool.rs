@@ -76,7 +76,39 @@ impl DynTool for EventTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+
+    fn search_hint(&self) -> &str {
+        "schedule reminders recurring jobs cron"
+    }
+
+    fn should_defer(&self) -> bool {
+        false
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        matches!(input.get("action").and_then(|v| v.as_str()), Some("list" | "history"))
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        match input.get("action").and_then(|v| v.as_str()).unwrap_or("") {
+            "list" => "list_schedules",
+            "delete" => "delete_schedule",
+            "pause" | "resume" => "set_schedule_paused",
+            "run" => "run_schedule_now",
+            "history" => "schedule_history",
+            _ => "create_schedule",
+        }
+        .to_string()
+    }
+
+    /// A schedule is the employee's own work.
+    fn effects(&self, _input: &serde_json::Value) -> types::permissions::CallEffects {
+        types::permissions::CallEffects::none()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
         false
     }
 
