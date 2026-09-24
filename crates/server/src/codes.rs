@@ -2888,8 +2888,15 @@ mod tests {
         )
         .expect("the owner's edit parses");
 
+        // Bound the call window: each of the two calls below stamps its own
+        // grant with its own `now()` (two employees, two separate seatings —
+        // sharing a single timestamp source would be wrong), so the proof
+        // that they're "the same routine" can't demand the same wall-clock
+        // second. It demands the same window instead.
+        let before = chrono::Utc::now().timestamp();
         apply_seat_declaration(&store, "packaged", &packaged);
         apply_seat_declaration(&store, "owner-built", &owner_built);
+        let after = chrono::Utc::now().timestamp();
 
         let read = |id: &str| {
             let raw = store
@@ -2903,7 +2910,21 @@ mod tests {
         let from_owner = read("owner-built");
 
         assert_eq!(from_owner.default, from_package.default);
-        assert_eq!(from_owner.operations, from_package.operations);
+
+        // Same shape everywhere except the one field that is legitimately
+        // independent per call: strip `granted_at` before comparing, then
+        // check it separately below.
+        let without_grant_times = |ops: &std::collections::HashMap<String, tools::policy::OperationRule>| {
+            let mut ops = ops.clone();
+            for rule in ops.values_mut() {
+                rule.granted_at = None;
+            }
+            ops
+        };
+        assert_eq!(
+            without_grant_times(&from_owner.operations),
+            without_grant_times(&from_package.operations)
+        );
 
         // And it is a real gate, not a stored string: the declared operation
         // asks, and it says the seat is why.
@@ -2913,6 +2934,20 @@ mod tests {
             .expect("the declared ceiling is on the policy");
         assert_eq!(rule.access, tools::policy::OperationAccess::Approval);
         assert_eq!(rule.source.as_deref(), Some("seat"));
+
+        // Both grants landed inside the same call window — proof they came
+        // from the one routine's `now()`, without requiring the two
+        // independent stamps to be the identical wall-clock second.
+        for (label, ops) in [("owner-built", &from_owner.operations), ("packaged", &from_package.operations)] {
+            let granted_at = ops
+                .get("ledger.payment.apply")
+                .and_then(|r| r.granted_at)
+                .unwrap_or_else(|| panic!("{label}'s rule should carry a granted_at"));
+            assert!(
+                (before..=after).contains(&granted_at),
+                "{label}'s granted_at {granted_at} should land within the call window [{before}, {after}]"
+            );
+        }
     }
 
     /// A second save must not undo what the owner has since decided. The

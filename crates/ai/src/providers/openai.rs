@@ -1282,6 +1282,23 @@ mod tests {
         );
     }
 
+    /// Janus numbering each whole call by its real position (0, 1, …),
+    /// repeats included: every call survives, once each, in order.
+    #[test]
+    fn janus_calls_at_their_own_index_stay_separate() {
+        let mut acc = ToolCallAccumulator::default();
+        acc.absorb(0, Some("call_a"), Some("read"), Some(r#"{"path":"/a"}"#));
+        acc.absorb(1, Some("call_b"), Some("grep"), Some(r#"{"q":"x"}"#));
+        acc.absorb(1, Some("call_b"), Some("grep"), Some(r#"{"q":"x"}"#));
+        assert_eq!(
+            calls(acc),
+            vec![
+                ("call_a".into(), "read".into(), r#"{"path":"/a"}"#.into()),
+                ("call_b".into(), "grep".into(), r#"{"q":"x"}"#.into()),
+            ]
+        );
+    }
+
     /// Standard OpenAI: id and name on a call's first chunk, argument
     /// fragments on id-less chunks carrying its index, calls interleaved.
     #[test]

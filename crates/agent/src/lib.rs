@@ -71,6 +71,7 @@ pub use orchestrator::Orchestrator;
 pub use proactive::{PresenceTracker, ProactiveInbox};
 pub use tool_credentials::{RunGrant, ToolCredentials};
 pub use harness::tool_round::{ApprovalDoor, GateOutcome, GateRun, gate_tool_calls};
-pub use runner::{ChatTitleSink, RunProgress, RunRequest, Runner};
+pub use harness::after_turn::ChatTitleSink;
+pub use runner::{RunProgress, RunRequest, Runner};
 pub use selector::ModelSelector;
 pub use session::SessionManager;
