@@ -20,6 +20,7 @@ import type { ChatMessagesResponse } from '$lib/api/neboComponents';
 import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { parseMessages } from '$lib/chat/history';
+import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { formatTime } from '$lib/time';
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
@@ -220,6 +221,8 @@ export function createChatController(config: ChatControllerConfig) {
   let chatError = $state('');
   let allAgents = $state<AgentInfo[]>([]);
   let activityStatus = $state('');
+  /** Helpers started from this conversation that are still working. */
+  let helpers = $state<HelperLine[]>([]);
 
   // --- Internal tracking ---
   let phaseStartTime = 0;
@@ -665,8 +668,19 @@ export function createChatController(config: ChatControllerConfig) {
     });
   }
 
+  function handleSubagentStart(data: any) {
+    if (!isMyEvent(data)) return;
+    helpers = applyHelperEvent(helpers, 'subagent_start', data);
+  }
+
+  function handleSubagentComplete(data: any) {
+    if (!isMyEvent(data)) return;
+    helpers = applyHelperEvent(helpers, 'subagent_complete', data);
+  }
+
   function handleSubagentProgress(data: any) {
     if (!isMyEvent(data)) return;
+    helpers = applyHelperEvent(helpers, 'subagent_progress', data);
     const op = data.current_operation as string | undefined;
     if (!op) return;
     // The delegate's current step IS this turn's live status: without it a
@@ -767,7 +781,9 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('chat_error', handleChatError));
   unsubs.push(onServer('ask_request', handleAskRequest));
   unsubs.push(onServer('ask_answered', handleAskAnswered));
+  unsubs.push(onServer('subagent_start', handleSubagentStart));
   unsubs.push(onServer('subagent_progress', handleSubagentProgress));
+  unsubs.push(onServer('subagent_complete', handleSubagentComplete));
   unsubs.push(onServer('session_reset', handleSessionReset));
 
   // --- Actions ---
@@ -1104,6 +1120,7 @@ export function createChatController(config: ChatControllerConfig) {
     get quotaWarning() { return quotaWarning; },
     get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },
+    get helpers() { return helpers; },
     set activityStatus(v: string) { activityStatus = v; },
     get askQueueLength() { return askQueue.length; },
     get allAgents() { return allAgents; },

@@ -439,6 +439,12 @@
 	overflow-anchor: none;
 }
 
+/* Helpers still working after the turn that started them ended: one quiet
+   line under the thread, never text in it. */
+.helper-status {
+	@apply max-w-[640px] mt-2 flex items-center gap-2 text-xs text-base-content/70;
+}
+
 /* Chat transcripts: a pasted URL or unbroken token must WRAP, never widen
    the bubble into horizontal scroll ("irregular fitting", 2026-09-01).
    Code blocks keep their own scrollbar; everything else breaks anywhere. */
