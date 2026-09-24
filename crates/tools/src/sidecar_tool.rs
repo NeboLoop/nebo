@@ -91,9 +91,6 @@ impl DynTool for SidecarActionTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
 
     fn execute_dyn<'a>(
         &'a self,

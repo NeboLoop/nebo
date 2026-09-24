@@ -35,22 +35,6 @@ pub struct OsTool {
     plugin_store: Option<Arc<napp::plugin::PluginStore>>,
 }
 
-/// Organizer actions that modify data and require user approval.
-const ORGANIZER_WRITE_ACTIONS: &[&str] =
-    &["send", "create", "delete", "complete", "accept", "decline"];
-
-/// Resources that auto-approve (no user confirmation needed).
-const AUTO_APPROVE_RESOURCES: &[&str] = &[
-    "file",
-    "shell",
-    "clipboard",
-    "capture",
-    "search",
-    "notification",
-    "tts",
-    "dock",
-];
-
 impl OsTool {
     pub fn new(policy: Policy, process_registry: Arc<ProcessRegistry>) -> Self {
         Self {
@@ -271,7 +255,149 @@ impl OsTool {
     /// the shell), so these are redirected to a shell
     /// correction — and the permission gate must NOT treat them as desktop
     /// control. One detection, shared by `execute` (the redirect) and
-    /// `capabilities::gating_capability` (skip the wrong-capability ask).
+    /// `DynTool::capability` (skip the wrong-capability ask).
+    /// The current-set tool name for the job a call does (its permission
+    /// rule key): the file, shell, desktop and organizer tools this call
+    /// stands for.
+    pub fn rule_key_for(input: &serde_json::Value) -> String {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let has = |k: &str| input.get(k).is_some_and(|v| !v.is_null());
+        let named = |family: &str| {
+            if action.is_empty() {
+                family.to_string()
+            } else {
+                format!("{family}_{action}")
+            }
+        };
+        match OsTool::resolved_resource(input) {
+            "file" => match action {
+                "read" => "read_file",
+                "edit" => "edit_file",
+                "glob" | "grep" | "list" | "ls" => "run_command",
+                "share" | "present" | "send" => "share_file",
+                "convert" => "convert_file",
+                "checkpoint" => "checkpoint_files",
+                "checkpoints" => "list_checkpoints",
+                "restore" => "restore_checkpoint",
+                "plan" => "write_plan",
+                "plan_check" => "check_plan",
+                // write, append, and anything else that could change a file.
+                _ => "write_file",
+            }
+            .to_string(),
+            "shell" => match action {
+                "poll" | "log" | "status" => "read_output",
+                "info" if has("session_id") => "read_output",
+                "kill" => "stop_task",
+                "list" | "info" => "list_processes",
+                "write" => "send_input",
+                _ => "run_command",
+            }
+            .to_string(),
+            "capture" => match action {
+                "see" => "desktop_see",
+                _ => "desktop_screenshot",
+            }
+            .to_string(),
+            "input" => match action {
+                "click" | "double_click" | "right_click" | "" => "desktop_click".to_string(),
+                "move" => "desktop_move_mouse".to_string(),
+                "hotkey" | "press" => "desktop_key".to_string(),
+                other => format!("desktop_{other}"),
+            },
+            "tts" => "speak".to_string(),
+            "settings" => "system_settings".to_string(),
+            "music" => "music_control".to_string(),
+            "search" => "search_computer".to_string(),
+            "window" | "clipboard" | "ui" | "menu" | "dialog" | "space" | "shortcut" | "dock"
+            | "app" | "keychain" => named(OsTool::resolved_resource(input)),
+            "mail" => match action {
+                "send" => "mail_message_send",
+                "search" => "mail_inbox_search",
+                "accounts" => "mail_accounts",
+                _ => "mail_inbox_read",
+            }
+            .to_string(),
+            "calendar" => match action {
+                "create" => "calendar_event_create",
+                "update" => "calendar_event_update",
+                "delete" => "calendar_event_cancel",
+                "get" => "calendar_event_get",
+                "availability" => "calendar_availability_get",
+                "list" | "today" | "upcoming" => "calendar_event_list",
+                _ => return named("calendar"),
+            }
+            .to_string(),
+            "contacts" => match action {
+                "search" | "list" => "contacts_search".to_string(),
+                _ => named("contacts"),
+            },
+            "reminders" => match action {
+                "create" => "reminders_create".to_string(),
+                "complete" => "reminders_complete".to_string(),
+                "delete" => "reminders_delete".to_string(),
+                "lists" => "reminders_lists".to_string(),
+                _ => "reminders_list".to_string(),
+            },
+            "notification" => "push_notification".to_string(),
+            _ => "os".to_string(),
+        }
+    }
+
+    /// An os call's owner-facing lines say WHAT was done. "Checked the
+    /// workspace ×17" hid a model tapping the same point seven times and
+    /// never looking (2026-09-19); the command, the app and the point are what
+    /// the owner needs to see.
+    pub(crate) fn labels(input: &serde_json::Value) -> (String, String) {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let short = |s: &str, n: usize| -> String {
+            let t: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            if t.chars().count() > n { format!("{}…", t.chars().take(n).collect::<String>()) } else { t }
+        };
+        let app = input.get("app").and_then(|v| v.as_str()).unwrap_or("");
+        let point = input
+            .get("coordinate")
+            .and_then(|v| v.as_array())
+            .filter(|a| a.len() == 2)
+            .map(|a| format!("({},{})", a[0], a[1]))
+            .or_else(|| Some(format!("({},{})", input.get("x")?.as_i64()?, input.get("y")?.as_i64()?)));
+        let labelled = match action {
+            "exec" => input.get("command").and_then(|v| v.as_str()).map(|c| {
+                let c = short(c, 72);
+                (format!("running `{c}`"), format!("Ran `{c}`"))
+            }),
+            "click" | "double_click" | "right_click" => {
+                let what = input
+                    .get("ref")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or(point)
+                    .unwrap_or_default();
+                let where_ = if app.is_empty() { what } else { format!("{what} in {app}") };
+                Some((format!("clicking {where_}"), format!("Clicked {where_}")))
+            }
+            "screenshot" | "see" | "capture" => {
+                let what = if !app.is_empty() {
+                    app.to_string()
+                } else if let Some(r) = input.get("region").and_then(|v| v.as_str()) {
+                    format!("region {r}")
+                } else {
+                    "the screen".to_string()
+                };
+                Some((format!("capturing {what}"), format!("Captured {what}")))
+            }
+            "activate" | "launch" if !app.is_empty() => Some((format!("opening {app}"), format!("Opened {app}"))),
+            "read" | "write" | "edit" | "append" => input.get("path").and_then(|v| v.as_str()).map(|path| {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                let (g, p) = match action { "read" => ("reading", "Read"), "write" => ("writing", "Wrote"), "append" => ("appending to", "Appended to"), _ => ("editing", "Edited") };
+                (format!("{g} {name}"), format!("{p} {name}"))
+            }),
+            _ => None,
+        };
+        labelled.unwrap_or_else(|| crate::humanize::call_labels("os", input))
+    }
+
+
     pub(crate) fn is_file_mgmt_redirect(input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         let has_explicit_resource = input
@@ -1084,25 +1210,11 @@ impl DynTool for OsTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
 
     fn normalize_input(&self, input: serde_json::Value) -> serde_json::Value {
         Self::normalized(input)
     }
 
-    fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
-        let resource = Self::resolved_resource(input);
-        // Organizer resources: only write actions need approval
-        match resource {
-            "mail" | "contacts" | "calendar" | "reminders" => {
-                let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                ORGANIZER_WRITE_ACTIONS.contains(&action)
-            }
-            _ => !AUTO_APPROVE_RESOURCES.contains(&resource),
-        }
-    }
 
     fn resource_permit(&self, input: &serde_json::Value) -> Option<ResourceKind> {
         match OsTool::resolved_resource(input) {
@@ -1128,7 +1240,15 @@ impl DynTool for OsTool {
         None
     }
 
-    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+    fn search_hint(&self) -> &str {
+        "files shell commands desktop apps mail calendar"
+    }
+
+    fn should_defer(&self) -> bool {
+        false
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match OsTool::resolved_resource(input) {
             "file" => matches!(action, "read" | "list" | "glob" | "grep" | "checkpoints"),
@@ -1136,6 +1256,139 @@ impl DynTool for OsTool {
             "capture" => matches!(action, "screenshot" | "see" | "wait"),
             _ => false,
         }
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        Self::rule_key_for(&Self::normalized(input.clone()))
+    }
+
+    fn rule_field(&self, input: &serde_json::Value) -> Option<types::permissions::RuleField> {
+        let str_of = |k: &str| input.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        match OsTool::resolved_resource(input) {
+            "file" => str_of("path").map(|p| {
+                types::permissions::RuleField::Folder(crate::file_tool::expand_path(p).into())
+            }),
+            "shell" => str_of("command")
+                .map(|c| types::permissions::RuleField::CommandPrefix(c.to_string())),
+            "mail" => str_of("to").map(|t| types::permissions::RuleField::Recipient(t.to_string())),
+            _ => None,
+        }
+    }
+
+    fn capability(&self, input: &serde_json::Value) -> Option<&'static str> {
+        // A file-management verb (move/copy/delete with file args) is
+        // redirected to a shell correction — it never reaches a desktop
+        // resource, so it belongs to no capability; the shell retry gets the
+        // right one.
+        if Self::is_file_mgmt_redirect(input) {
+            return None;
+        }
+        match OsTool::resolved_resource(input) {
+            "file" => Some("file"),
+            "shell" => Some("shell"),
+            "settings" | "keychain" | "platform" | "system" => Some("system"),
+            "capture" | "screenshot" | "see" => Some("media"),
+            "contacts" => Some("contacts"),
+            // Mail, calendar and reminders are not behind a coarse toggle.
+            "mail" | "calendar" | "reminders" => None,
+            // Everything else is desktop control.
+            _ => Some("desktop"),
+        }
+    }
+
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        use types::permissions::{CallEffects, Knowable};
+        if self.read_only(input) {
+            return CallEffects::none();
+        }
+        let path = input.get("path").and_then(|v| v.as_str()).filter(|p| !p.is_empty());
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        match (OsTool::resolved_resource(input), action) {
+            ("file", "write" | "append" | "edit") => CallEffects {
+                overwrites: path.map(crate::file_tool::expand_path).into_iter().collect(),
+                publishes: Knowable::No,
+                ..CallEffects::default()
+            },
+            ("mail", "send") => CallEffects {
+                recipients: input
+                    .get("to")
+                    .and_then(|v| v.as_str())
+                    .map(|t| t.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect())
+                    .unwrap_or_default(),
+                publishes: Knowable::No,
+                ..CallEffects::default()
+            },
+            _ => CallEffects::unknown(),
+        }
+    }
+
+    fn max_result_chars(&self, input: &serde_json::Value) -> Option<usize> {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        match OsTool::resolved_resource(input) {
+            // A file read pages itself: its footer names the offset to go on
+            // from, so a preview must never replace it.
+            "file" if action == "read" => None,
+            "shell" => Some(crate::MAX_SUBPROCESS_OUTPUT),
+            _ => Some(crate::registry::DEFAULT_MAX_RESULT_CHARS),
+        }
+    }
+
+    fn taint(&self, input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        match OsTool::resolved_resource(input) {
+            // Mailbox reads bring in other people's words.
+            "mail" if !matches!(action, "send" | "accounts") => {
+                Some(types::provenance::ProvenanceClass::ExternalEmail)
+            }
+            // A file the agent pulled in (the attachment root), not one the
+            // owner placed.
+            "file" if action == "read" => input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .filter(|p| crate::file_tool::is_ingested_file(p))
+                .map(|_| types::provenance::ProvenanceClass::Document),
+            _ => None,
+        }
+    }
+
+    fn trim_priority(&self) -> u8 {
+        crate::registry::TRIM_EARLY
+    }
+
+    fn keeps_content_when_trimmed(&self, input: &serde_json::Value) -> bool {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        match OsTool::resolved_resource(input) {
+            "calendar" | "mail" | "contacts" | "reminders" => true,
+            "file" => matches!(action, "read" | "grep" | "glob" | "search"),
+            _ => false,
+        }
+    }
+
+    fn emits_image(&self, input: &serde_json::Value) -> bool {
+        // Reading an existing image returns it for the model, and every
+        // observe and click returns the window it acted on: the tool's eyes,
+        // not media the owner asked for. An explicit screenshot, or a file the
+        // call produced, is.
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        !matches!(
+            action,
+            "read" | "see" | "find" | "click" | "double_click" | "right_click" | "type" | "press"
+                | "hotkey" | "move" | "scroll" | "drag" | "paste"
+        )
+    }
+
+    fn activity(&self, input: &serde_json::Value) -> String {
+        Self::labels(input).0
+    }
+
+    fn outcome(&self, input: &serde_json::Value) -> String {
+        Self::labels(input).1
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(
@@ -1833,109 +2086,61 @@ mod tests {
         assert!(r.is_error && r.content.contains("has no text"), "{}", r.content);
     }
 
+    /// Each call names the current-set tool for the job it does, whichever
+    /// shape the model wrote — the key every guard and rule matches.
     #[test]
-    fn test_approval_map() {
-        let tool = OsTool::new(
-            crate::policy::Policy::default(),
-            Arc::new(crate::process::ProcessRegistry::new()),
-        );
-
-        // Auto-approve resources
-        for resource in AUTO_APPROVE_RESOURCES {
-            let input = serde_json::json!({"resource": resource, "action": "test"});
-            assert!(
-                !tool.requires_approval_for(&input),
-                "{} should auto-approve",
-                resource
-            );
-        }
-
-        // Requires-approval resources (non-organizer)
-        let sensitive = [
-            "input", "window", "ui", "menu", "dialog", "app", "settings", "music", "keychain",
-            "space", "shortcut",
-        ];
-        for resource in &sensitive {
-            let input = serde_json::json!({"resource": resource, "action": "test"});
-            assert!(
-                tool.requires_approval_for(&input),
-                "{} should require approval",
-                resource
-            );
+    fn each_call_keys_on_the_job_it_does() {
+        let tool = os();
+        for (input, key) in [
+            (serde_json::json!({"action": "read", "path": "/tmp/x"}), "read_file"),
+            (serde_json::json!({"resource": "file", "action": "write", "path": "/tmp/x"}), "write_file"),
+            (serde_json::json!({"action": "append", "path": "/tmp/x"}), "write_file"),
+            (serde_json::json!({"action": "edit", "path": "/tmp/x"}), "edit_file"),
+            (serde_json::json!({"action": "grep", "path": "/tmp", "pattern": "x"}), "run_command"),
+            (serde_json::json!({"action": "exec", "command": "ls"}), "run_command"),
+            (serde_json::json!({"command": "rm -rf /"}), "run_command"),
+            (serde_json::json!({"resource": "shell", "action": "kill", "session_id": "s"}), "stop_task"),
+            (serde_json::json!({"resource": "shell", "action": "poll", "session_id": "s"}), "read_output"),
+            (serde_json::json!({"action": "checkpoint", "paths": ["/tmp/x"]}), "checkpoint_files"),
+            (serde_json::json!({"resource": "capture", "action": "screenshot"}), "desktop_screenshot"),
+            (serde_json::json!({"action": "click", "x": 1, "y": 2}), "desktop_click"),
+            (serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com"}), "mail_message_send"),
+            (serde_json::json!({"resource": "calendar", "action": "create"}), "calendar_event_create"),
+            (serde_json::json!({"resource": "window", "action": "list"}), "window_list"),
+        ] {
+            assert_eq!(tool.rule_key(&input), key, "{input}");
+            assert!(crate::registry::is_tool_name(&tool.rule_key(&input)), "{input}");
         }
     }
 
     #[test]
-    fn test_infer_resource_approval() {
-        let tool = OsTool::new(
-            crate::policy::Policy::default(),
-            Arc::new(crate::process::ProcessRegistry::new()),
-        );
-        // read → file → auto-approve
-        let input = serde_json::json!({"action": "read", "path": "/tmp/test"});
-        assert!(!tool.requires_approval_for(&input));
-
-        // click → input → requires approval
-        let input = serde_json::json!({"action": "click", "x": 100, "y": 200});
-        assert!(tool.requires_approval_for(&input));
+    fn reads_are_read_only_and_writes_are_not() {
+        let tool = os();
+        assert!(tool.read_only(&serde_json::json!({"action": "read", "path": "/tmp/x"})));
+        assert!(tool.read_only(&serde_json::json!({"action": "grep", "path": "/tmp", "pattern": "x"})));
+        assert!(!tool.read_only(&serde_json::json!({"action": "write", "path": "/tmp/x"})));
+        assert!(!tool.read_only(&serde_json::json!({"action": "exec", "command": "ls"})));
+        let fx = tool.effects(&serde_json::json!({"action": "write", "path": "/tmp/x"}));
+        assert_eq!(fx.overwrites, vec!["/tmp/x".to_string()]);
+        let fx = tool.effects(&serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com, b@example.com"}));
+        assert_eq!(fx.recipients, vec!["a@example.com", "b@example.com"]);
+        assert_eq!(tool.max_result_chars(&serde_json::json!({"action": "read", "path": "/x"})), None);
     }
 
+    /// The capability comes from the resource: file ops gate on file, not
+    /// desktop (the old bug), and mail/calendar sit behind no toggle.
     #[test]
-    fn test_organizer_read_actions_auto_approve() {
-        let tool = OsTool::new(
-            crate::policy::Policy::default(),
-            Arc::new(crate::process::ProcessRegistry::new()),
-        );
-        let read_actions = [
-            ("mail", "unread"),
-            ("mail", "accounts"),
-            ("mail", "read"),
-            ("mail", "search"),
-            ("contacts", "search"),
-            ("contacts", "get"),
-            ("contacts", "groups"),
-            ("calendar", "today"),
-            ("calendar", "upcoming"),
-            ("calendar", "calendars"),
-            ("calendar", "list"),
-            ("calendar", "configure"),
-            ("reminders", "lists"),
-            ("reminders", "list"),
-        ];
-        for (resource, action) in &read_actions {
-            let input = serde_json::json!({"resource": resource, "action": action});
-            assert!(
-                !tool.requires_approval_for(&input),
-                "os(resource: \"{}\", action: \"{}\") should auto-approve",
-                resource,
-                action
-            );
-        }
-    }
-
-    #[test]
-    fn test_organizer_write_actions_require_approval() {
-        let tool = OsTool::new(
-            crate::policy::Policy::default(),
-            Arc::new(crate::process::ProcessRegistry::new()),
-        );
-        let write_actions = [
-            ("mail", "send"),
-            ("contacts", "create"),
-            ("calendar", "create"),
-            ("reminders", "create"),
-            ("reminders", "complete"),
-            ("reminders", "delete"),
-        ];
-        for (resource, action) in &write_actions {
-            let input = serde_json::json!({"resource": resource, "action": action});
-            assert!(
-                tool.requires_approval_for(&input),
-                "os(resource: \"{}\", action: \"{}\") should require approval",
-                resource,
-                action
-            );
-        }
+    fn capability_follows_the_resource() {
+        let tool = os();
+        let cap = |v: serde_json::Value| tool.capability(&v);
+        assert_eq!(cap(serde_json::json!({"action": "write", "path": "/tmp/x"})), Some("file"));
+        assert_eq!(cap(serde_json::json!({"action": "exec", "command": "ls"})), Some("shell"));
+        assert_eq!(cap(serde_json::json!({"resource": "input", "action": "click"})), Some("desktop"));
+        assert_eq!(cap(serde_json::json!({"action": "screenshot"})), Some("media"));
+        assert_eq!(cap(serde_json::json!({"resource": "settings"})), Some("system"));
+        assert_eq!(cap(serde_json::json!({"resource": "contacts", "action": "search"})), Some("contacts"));
+        assert_eq!(cap(serde_json::json!({"resource": "mail", "action": "unread"})), None);
+        assert_eq!(cap(serde_json::json!({"action": "move", "path": "/a", "destination": "/b"})), None);
     }
 
     #[test]
@@ -2001,16 +2206,13 @@ mod tests {
     #[test]
     fn test_resource_as_action_autocorrect() {
         // When LLM puts resource name as action (e.g. os(action: "calendar")),
-        // requires_approval_for should still resolve correctly via inference
-        let tool = OsTool::new(
-            crate::policy::Policy::default(),
-            Arc::new(crate::process::ProcessRegistry::new()),
-        );
+        // the spec should still resolve via inference
+        let tool = os();
         // "calendar" as action → infer_resource returns "" → infer_from_context → ""
         // But in execute_dyn, RESOURCE_NAMES check catches it
         let input = serde_json::json!({"action": "calendar"});
         // Should not panic at minimum
-        let _ = tool.requires_approval_for(&input);
+        let _ = tool.rule_key(&input);
     }
 
     #[test]

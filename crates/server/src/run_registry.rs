@@ -51,8 +51,8 @@ pub struct RunSnapshot {
     pub iteration_count: u32,
     pub tool_call_count: u32,
     pub current_tool: String,
-    /// Owner-facing phrase for `current_tool` ("checking the workspace"), from
-    /// the ONE humanizer the transcript uses; empty when idle or unmapped.
+    /// Owner-facing phrase for `current_tool` ("using web"), from the ONE
+    /// humanizer the transcript uses; empty when idle.
     pub activity: String,
     pub elapsed_secs: u64,
     /// Seconds since the run last showed activity (a stream event, a tool).
@@ -78,9 +78,11 @@ impl RunEntry {
             iteration_count: self.iteration_count.load(Ordering::Relaxed),
             tool_call_count: self.tool_call_count.load(Ordering::Relaxed),
             current_tool: current_tool.clone(),
-            activity: tools::humanize::activity_label(&current_tool)
-                .unwrap_or("")
-                .to_string(),
+            activity: if current_tool.is_empty() {
+                String::new()
+            } else {
+                tools::humanize::call_labels(&current_tool, &serde_json::Value::Null).0
+            },
             elapsed_secs: self.started_at.elapsed().as_secs(),
             idle_secs: self.idle_secs(),
             parent_run_id: self.parent_run_id.clone(),

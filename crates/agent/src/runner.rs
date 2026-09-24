@@ -24,7 +24,6 @@ use crate::pruning::{self, ContextThresholds};
 use crate::selector::{self, ModelSelector};
 use crate::session::SessionManager;
 use crate::steering;
-use crate::tool_filter;
 use crate::transcript;
 
 /// Default maximum agentic loop iterations per run.
@@ -422,6 +421,17 @@ pub struct WorkflowPark<'a> {
     /// Port-suffixed operation name + the owner-facing display sentence.
     pub operation: String,
     pub display: String,
+}
+
+/// Whether a restricted run's allowlist names this tool: by name, as the
+/// tool of a `tool:resource` entry, or by a `prefix*` family.
+fn allowlist_admits(allowlist: &HashSet<String>, name: &str) -> bool {
+    allowlist.contains(name)
+        || allowlist.iter().any(|e| {
+            e.split_once(':').is_some_and(|(tool, _)| tool == name)
+                || e.strip_suffix('*')
+                    .is_some_and(|prefix| !prefix.is_empty() && name.starts_with(prefix))
+        })
 }
 
 /// Input parameters for a run.
@@ -2129,22 +2139,8 @@ static CHECK_VERB_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::n
     .expect("CHECK_VERB_RE is a literal")
 });
 
-fn is_check_command(command: &str) -> bool {
+pub(crate) fn is_check_command(command: &str) -> bool {
     CHECK_VERB_RE.is_match(command)
-}
-
-/// An `os` file write or edit: the calls the done gate counts.
-pub(crate) fn is_file_change_call(tc: &ai::ToolCall) -> bool {
-    tc.name == "os"
-        && tools::OsTool::resolved_resource(&tc.input) == "file"
-        && matches!(tc.input.get("action").and_then(|v| v.as_str()), Some("write" | "edit"))
-}
-
-/// An `os` shell call whose command is a project check (`CHECK_VERB_RE`).
-pub(crate) fn is_check_run_call(tc: &ai::ToolCall) -> bool {
-    tc.name == "os"
-        && tools::OsTool::resolved_resource(&tc.input) == "shell"
-        && tc.input.get("command").and_then(|v| v.as_str()).is_some_and(is_check_command)
 }
 
 /// Does the done gate fire at the text-response exit? Only when edits landed
@@ -2162,15 +2158,6 @@ fn repeats_earlier_reply(reply: &str, history: &[ChatMessage]) -> bool {
     r.len() >= 80 && history.iter().any(|m| m.role == "assistant" && norm(&m.content) == r)
 }
 
-/// Desktop actions whose result is the screen after them.
-pub(crate) fn is_desktop_act(tc: &ai::ToolCall) -> bool {
-    tc.name == "os"
-        && matches!(
-            tc.input.get("action").and_then(|v| v.as_str()),
-            Some("click" | "double_click" | "right_click" | "type" | "press" | "hotkey" | "scroll" | "drag")
-        )
-}
-
 /// What the last desktop act reported, cut to what a reply must agree with:
 /// its first line (what was done), the screen header, and the first lines of
 /// the element list.
@@ -2179,6 +2166,34 @@ pub(crate) fn desktop_evidence(result: &str) -> String {
     let mut out: Vec<&str> = lines.by_ref().take(2).collect();
     out.extend(lines.take_while(|l| !l.starts_with("Coordinates are")).take(12));
     out.join("\n")
+}
+
+/// Add the trim facts of every stored tool call not yet in `spec`, read
+/// from its tool's spec (a call to a tool no longer registered gets the
+/// default).
+async fn extend_trim_spec(tools: &Registry, messages: &[ChatMessage], spec: &mut pruning::TrimSpec) {
+    for msg in messages.iter().filter(|m| m.role == "assistant") {
+        let Some(calls) = msg
+            .tool_calls
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<Vec<ai::ToolCall>>(j).ok())
+        else {
+            continue;
+        };
+        for call in calls {
+            if spec.contains_key(&call.id) {
+                continue;
+            }
+            let trim = match tools.get(&call.name).await {
+                Some(tool) => pruning::Trim {
+                    priority: tool.trim_priority(),
+                    keeps_content: tool.keeps_content_when_trimmed(&call.input),
+                },
+                None => pruning::Trim::default(),
+            };
+            spec.insert(call.id, trim);
+        }
+    }
 }
 
 async fn run_loop(
@@ -2311,6 +2326,8 @@ async fn run_loop(
     // restarts (the reference's `seenIds` + `replacements`, written to the
     // transcript). Loaded here, extended after each compaction pass below.
     let chat_id_for_renderings = store.resolve_session_chat_id(session_id);
+    // Each stored tool call's trim facts, by call id (see `extend_trim_spec`).
+    let mut trim_spec = pruning::TrimSpec::new();
     let mut frozen_renderings: std::collections::HashMap<String, String> = store
         .get_chat_renderings(&chat_id_for_renderings)
         .unwrap_or_else(|e| {
@@ -2410,13 +2427,6 @@ async fn run_loop(
     // Track file paths read during this session to detect duplicate reads.
     // When the model re-reads a file, a short note is appended to the tool result.
     let mut files_read_this_session: HashSet<String> = HashSet::new();
-    // Deferred tool discovery: each turn, `extract_discovered_deferred_tools`
-    // scans window_messages for tool_search results and direct calls to deferred
-    // tools. The results accumulate into this per-run set so a tool stays loaded
-    // for the rest of the run even after compaction evicts its discovery message.
-    // (Snapshotting the discovered set onto the compact boundary would solve the
-    // same eviction race — a monotonic per-run set is equivalent and simpler.)
-    let mut discovered_deferred: HashSet<String> = HashSet::new();
 
     // Resolve agent from registry if agent_id is set
     let active_agent_entry = if !agent_id.is_empty() {
@@ -2635,29 +2645,23 @@ async fn run_loop(
         has_context,
     );
 
-    // The turn decision's questions ride the objective call (one Jev request
-    // per real user message): one per context group registered now, plus the
-    // task-tracking nudge. Fired here, before recall and the rest of setup,
-    // so the round trip (a fresh connection to Janus included) overlaps that
-    // setup and the answer is usually waiting when the first step's tool
-    // filter asks for it; no answer in time, or none at all, and the keyword
-    // filter and keyword nudge run for this turn (see `turn_decide::receive`).
-    // Workflow turns and review forks have no person speaking and run on
-    // scratch sessions: no objective call, so no turn decision rides it.
+    // The turn decision's question (the task-tracking nudge) rides the
+    // objective call (one Jev request per real user message). Fired here,
+    // before recall and the rest of setup, so the round trip (a fresh
+    // connection to Janus included) overlaps that setup and the answer is
+    // usually waiting when the first step asks for it; no answer in time, or
+    // none at all, and the keyword nudge runs for this turn (see
+    // `turn_decide::receive`). Workflow turns and review forks have no person
+    // speaking and run on scratch sessions: no objective call, so no turn
+    // decision rides it.
     let objective_applies = objective_detection_applies(workflow_mode, review_fork.as_ref());
-    let turn_groups = if objective_applies && decide.is_some() && crate::turn_decide::enabled() {
-        let registered: HashSet<String> = tools.get_tool_names().await.into_iter().collect();
-        Some(tool_filter::context_groups(&registered))
-    } else {
-        None
-    };
-    let (turn_tx, mut turn_rx) = match turn_groups {
-        Some(groups) => {
+    let (turn_tx, mut turn_rx) =
+        if objective_applies && decide.is_some() && crate::turn_decide::enabled() {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            (Some((groups, tx)), Some(rx))
-        }
-        None => (None, None),
-    };
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
     let turn_fired = tokio::time::Instant::now();
     let mut turn_signals: Option<crate::turn_decide::TurnSignals> = None;
 
@@ -2900,7 +2904,7 @@ async fn run_loop(
     // into the system prompt (that caused 230KB+ prompt bloat).
 
     // Pre-activate tools declared in agent.json — these are part of the agent's job
-    // definition and must be available from turn 1 (not discovered via tool_search).
+    // definition and must be available from turn 1 (not discovered via find_tools).
     // Agent-declared tools stay active for the entire session.
     // Scope-specific plugins are merged with global requires.plugins.
     let agent_preactivated: std::collections::HashSet<String> = {
@@ -3445,6 +3449,9 @@ async fn run_loop(
         // Stages 1-3 reduce token count BEFORE the sliding window checks.
         // The window becomes a last resort instead of the first response.
 
+        // What each stored call's tool says about trimming it.
+        extend_trim_spec(tools, &all_messages, &mut trim_spec).await;
+
         // Stage 1: Clear stale tool results (cache-cold session)
         let (mut working, tb_saved) = pruning::time_based_micro_compact(
             &all_messages,
@@ -3452,13 +3459,15 @@ async fn run_loop(
             pruning::TIME_BASED_GAP_THRESHOLD_SECS,
             thresholds.warning,
             &mut frozen_renderings,
+            &trim_spec,
         );
         if tb_saved > 0 {
             debug!(tokens_saved = tb_saved, "Stage 1: time-based micro-compact");
         }
 
         // Stage 2: Compress tool results with informative summaries
-        let (compacted, mc_saved) = pruning::micro_compact(&working, thresholds.warning, &mut frozen_renderings);
+        let (compacted, mc_saved) =
+            pruning::micro_compact(&working, thresholds.warning, &mut frozen_renderings, &trim_spec);
         if mc_saved > 0 {
             debug!(
                 tokens_saved = mc_saved,
@@ -3579,29 +3588,14 @@ async fn run_loop(
             sessions.get_summary(session_id).unwrap_or_default()
         };
 
-        // Discover which deferred tools are active by scanning the message window:
-        // tools load when tool_search results or direct calls appear in messages,
-        // and unload when those messages are evicted by sliding window compaction.
+        // The declared set (harness::tool_surface): core ∪ always_load ∪
+        // the deferred tools `find_tools` loaded, derived from the stored
+        // conversation so a load survives compaction of the window.
         let t_tools_start = std::time::Instant::now();
         let deferred_names = tools.get_deferred_names().await;
-        discovered_deferred.extend(tool_filter::extract_discovered_deferred_tools(
-            &window_messages,
-            &deferred_names,
-        ));
-        let mut active_deferred = discovered_deferred.clone();
-
-        // Merge agent-declared dependencies — these stay active for the entire session
-        // regardless of message window state (they're part of the job definition).
-        active_deferred.extend(agent_preactivated.iter().cloned());
-
-        if !active_deferred.is_empty() {
-            debug!(tools = ?active_deferred, "deferred tools active (discovered + agent-declared)");
-        }
-
-        // Get tool definitions: active (non-deferred + active deferred) tools get full schemas
-        let mut all_tool_defs = tools.list_active(&active_deferred).await;
+        let loaded = crate::harness::tool_surface::loaded_tools(&all_messages, &deferred_names);
+        let mut all_tool_defs = tools.list().await;
         let mut agent_tool_names = tools.agent_tool_names(agent_id).await;
-        let mut plugin_offered = all_tool_defs.iter().any(|d| d.name == "plugin");
 
         // Scope filtering: restrict sidecar tools to those listed in the active scope
         if let Some(scope_name) = tool_scope {
@@ -3665,13 +3659,12 @@ async fn run_loop(
                         }
                     }
                 }
-                let (kept, withheld) = tool_filter::withhold_memory_tools(
+                let (kept, withheld) = crate::harness::tool_surface::withhold_memory_tools(
                     all_tool_defs,
                     &mut agent_tool_names,
                     &memory_tool_names,
                 );
                 all_tool_defs = kept;
-                plugin_offered = all_tool_defs.iter().any(|d| d.name == "plugin");
                 if withheld > 0 {
                     debug!(
                         agent = %agent_id,
@@ -3689,13 +3682,28 @@ async fn run_loop(
             turn_signals = crate::turn_decide::receive(rx, turn_fired).await;
         }
 
-        let (mut tool_defs, active_contexts) = tool_filter::filter_tools_with_context(
-            &all_tool_defs,
-            &window_messages,
-            &called_tools,
-            &agent_tool_names,
-            turn_signals.as_ref().map(|t| &t.shown_contexts),
+        // Always loaded for this employee: its `requires.tools` (and the
+        // plugin tool when it requires plugins), its own app tools, and the
+        // tools a parent handed this helper.
+        let always_load: HashSet<String> = agent_preactivated
+            .iter()
+            .chain(agent_tool_names.iter())
+            .chain(preactivate_tools.iter())
+            .cloned()
+            .collect();
+        // What can still be listed: withheld tools are neither sent nor listed.
+        let deferred_names: HashSet<String> = all_tool_defs
+            .iter()
+            .filter(|d| deferred_names.contains(&d.name))
+            .map(|d| d.name.clone())
+            .collect();
+        let mut tool_defs = crate::harness::tool_surface::declared(
+            all_tool_defs,
+            &deferred_names,
+            &always_load,
+            &loaded,
         );
+        let plugin_offered = tool_defs.iter().any(|d| d.name == "plugin");
 
         // Restricted runs (phone callers) declare ONLY their allowlisted
         // tools — an untrusted caller must not even see the rest of the
@@ -3707,15 +3715,7 @@ async fn run_loop(
         // registry choke point) remains the enforcement backstop.
         if review_fork.is_none() {
             if let Some(wl) = tool_allowlist {
-                tool_defs.retain(|td| {
-                    wl.contains(&td.name)
-                        || wl.iter().any(|e| {
-                            e.split_once(':').is_some_and(|(tool, _)| tool == td.name)
-                                || e.strip_suffix('*').is_some_and(|prefix| {
-                                    !prefix.is_empty() && td.name.starts_with(prefix)
-                                })
-                        })
-                });
+                tool_defs.retain(|td| allowlist_admits(wl, &td.name));
             }
         }
         // Told, not merely fenced: a restricted run with nothing left to
@@ -3743,6 +3743,19 @@ async fn run_loop(
                     input_schema: tools::registry::DynTool::schema(&ex),
                 });
             }
+        }
+
+        // The deferred tools listed by name: those not declared, within the
+        // same fences as the declaration. A workflow activity's scoped set
+        // is its whole surface.
+        let mut listed = crate::harness::tool_surface::listed(&deferred_names, &tool_defs);
+        if workflow_mode.is_some() {
+            listed.clear();
+        }
+        if review_fork.is_none()
+            && let Some(wl) = tool_allowlist
+        {
+            listed.retain(|name| allowlist_admits(wl, name));
         }
 
         // Pattern 3: Deterministic sort for prompt cache stability.
@@ -3797,12 +3810,20 @@ async fn run_loop(
 
         // Build per-iteration STRAP discovery (MCP servers) based on filtered tools.
         let filtered_tool_names: Vec<String> = tool_defs.iter().map(|t| t.name.clone()).collect();
-        let strap_section =
-            prompt::build_strap_section(&filtered_tool_names, &active_contexts, &called_tools);
+        let strap_section = prompt::build_strap_section(&filtered_tool_names);
+        let declared_tools: Arc<HashSet<String>> =
+            Arc::new(filtered_tool_names.iter().cloned().collect());
 
-        // Build compact listing of deferred (not yet discovered) tools
-        let deferred_stubs = tools.list_deferred_stubs(&active_deferred).await;
-        let deferred_listing = prompt::build_deferred_listing(&deferred_stubs);
+        // The names-only listing of the deferred tools (tools doc §4.1). It
+        // rides in the system prompt, stable while the listed set is, until
+        // the harness reminder path delivers it as a delta attachment.
+        let deferred_listing = if listed.is_empty() {
+            String::new()
+        } else {
+            crate::harness::tool_surface::render_listing(
+                &crate::harness::tool_surface::ListingDelta::all(listed),
+            )
+        };
         let tools_ms = t_tools_start.elapsed().as_millis() as u64;
         info!(
             ms = tools_ms,
@@ -3926,7 +3947,7 @@ async fn run_loop(
                  something, actually do it: call the real tools and report what you did with \
                  concrete results. Never simulate, mock, describe hypothetically, or claim \
                  you lack access — if you're unsure what's available, discover it with \
-                 `tool_search` or the `plugin` tool first."
+                 `find_tools` or the `plugin` tool first."
             )));
         }
 
@@ -4201,6 +4222,7 @@ async fn run_loop(
             review_fork: review_fork.as_ref(),
             tool_allowlist,
             tool_denial_hint: &tool_denial_hint,
+            declared_tools: &declared_tools,
         };
 
         // A CLI provider runs its tools itself, over /agent/mcp. The call
@@ -4584,13 +4606,10 @@ async fn run_loop(
                 // IDENTICAL_CALL_ABORT).
                 identical_call_budget.record(&tc.name, &tc.input);
                 recent_tool_names.push(tc.name.clone());
-                // Engine-stamped provenance: union this call's classes into
-                // the run's taint set (static table; model-invisible).
-                {
-                    let mut taint = run_taint.lock().unwrap();
-                    for class in crate::provenance::classify_tool(&tc.name, &tc.input) {
-                        taint.insert(class);
-                    }
+                // Engine-stamped provenance: union this call's class into
+                // the run's taint set (the tool's spec; model-invisible).
+                if let Some(class) = tools.get(&tc.name).await.and_then(|t| t.taint(&tc.input)) {
+                    run_taint.lock().unwrap().insert(class);
                 }
                 // Keep last 10 for ping-pong detection
                 if recent_tool_result_hashes.len() > 10 {
@@ -6161,10 +6180,7 @@ async fn detect_objective(
     sessions: &SessionManager,
     session_id: &str,
     user_prompt: &str,
-    turn: Option<(
-        Vec<(&'static str, &'static str)>,
-        tokio::sync::oneshot::Sender<crate::turn_decide::TurnSignals>,
-    )>,
+    turn: Option<tokio::sync::oneshot::Sender<crate::turn_decide::TurnSignals>>,
 ) {
     if user_prompt.trim().is_empty() || crate::goals::is_continuation_prompt(user_prompt) {
         return;
@@ -6259,10 +6275,11 @@ async fn detect_objective(
             ),
         ),
     ]);
-    let turn_questions = turn
-        .as_ref()
-        .map(|(groups, _)| crate::turn_decide::questions(groups))
-        .unwrap_or_default();
+    let turn_questions = if turn.is_some() {
+        crate::turn_decide::questions()
+    } else {
+        Vec::new()
+    };
     questions.extend(turn_questions.iter().map(|(k, q)| (k.as_str(), q.clone())));
 
     let trace = RequestTrace {
@@ -6302,13 +6319,9 @@ async fn detect_objective(
         cost_micro = decision.usage.cost_micro,
         "objective classifier decided"
     );
-    if let Some((groups, tx)) = turn {
-        let signals = crate::turn_decide::signals_from(&decision, &groups);
-        debug!(
-            shown = ?signals.shown_contexts,
-            multi_stage = signals.multi_stage,
-            "turn decision"
-        );
+    if let Some(tx) = turn {
+        let signals = crate::turn_decide::signals_from(&decision);
+        debug!(multi_stage = signals.multi_stage, "turn decision");
         // The runner stops listening once its wait trips; a late answer
         // has nowhere to go and the keyword path already ran.
         let _ = tx.send(signals);
@@ -6417,8 +6430,6 @@ mod done_gate_tests {
         assert!(e.starts_with("Pressed B5 \"Home\""), "{e}");
         assert!(e.contains("Simulator — window") && e.contains("\"Watch\""), "{e}");
         assert!(!e.contains("Coordinates") && !e.contains("never"), "{e}");
-        let tc = |action: &str| ai::ToolCall { id: "1".into(), name: "os".into(), input: serde_json::json!({ "action": action }) };
-        assert!(is_desktop_act(&tc("click")) && !is_desktop_act(&tc("see")) && !is_desktop_act(&tc("exec")));
     }
 
     #[test]
@@ -6471,19 +6482,6 @@ mod done_gate_tests {
         }
     }
 
-    #[test]
-    fn file_changes_and_check_runs_are_recognised_from_the_call() {
-        let call = |input: serde_json::Value| ai::ToolCall { id: "c".into(), name: "os".into(), input };
-        assert!(is_file_change_call(&call(serde_json::json!({"action": "edit", "path": "a.rs"}))));
-        assert!(is_file_change_call(&call(serde_json::json!({"resource": "file", "action": "write", "path": "a.rs"}))));
-        assert!(!is_file_change_call(&call(serde_json::json!({"action": "read", "path": "a.rs"}))));
-        assert!(!is_file_change_call(&call(serde_json::json!({"action": "exec", "command": "cargo test"}))));
-        assert!(is_check_run_call(&call(serde_json::json!({"action": "exec", "command": "cargo test"}))));
-        assert!(!is_check_run_call(&call(serde_json::json!({"action": "exec", "command": "cargo build"}))));
-        assert!(!is_check_run_call(&call(serde_json::json!({"action": "edit", "path": "cargo test"}))));
-        let other = ai::ToolCall { id: "c".into(), name: "web".into(), input: serde_json::json!({"action": "edit", "path": "a"}) };
-        assert!(!is_file_change_call(&other));
-    }
 }
 
 #[cfg(test)]

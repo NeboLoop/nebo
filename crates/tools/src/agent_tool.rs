@@ -3523,9 +3523,6 @@ impl DynTool for PersonaTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
 
     fn execution_timeout(&self, input: &serde_json::Value) -> Option<std::time::Duration> {
         // Deep research runs multi-minute pipelines BY DESIGN (quick ~2min,
@@ -3541,7 +3538,7 @@ impl DynTool for PersonaTool {
         None
     }
 
-    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+    fn read_only(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         matches!(action, "list" | "info" | "stats")
     }

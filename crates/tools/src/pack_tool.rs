@@ -291,9 +291,6 @@ impl DynTool for PackTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
 
     /// Which gated operation this call performs, for the runner's
     /// per-operation gate. Writing a layer is `layers.<layer>.write` and
@@ -335,6 +332,31 @@ impl DynTool for PackTool {
             _ => return None,
         };
         Some(format!("layers.{layer}.{verb}"))
+    }
+
+    fn search_hint(&self) -> &str {
+        "company packs industry franchise"
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        matches!(input.get("action").and_then(|v| v.as_str()), Some("list" | "show"))
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        match input.get("action").and_then(|v| v.as_str()).unwrap_or("") {
+            "add" => "add_to_pack",
+            "list" => "list_packs",
+            "show" => "show_pack",
+            "remove" => "remove_from_pack",
+            _ => "create_pack",
+        }
+        .to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(

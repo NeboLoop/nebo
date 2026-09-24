@@ -570,7 +570,34 @@ impl DynTool for TeamTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+
+    fn search_hint(&self) -> &str {
+        "teams of employees members posts"
+    }
+
+    fn should_defer(&self) -> bool {
+        false
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        matches!(input.get("action").and_then(|v| v.as_str()), Some("list" | "messages" | "members"))
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        match input.get("action").and_then(|v| v.as_str()).unwrap_or("") {
+            "create" => "create_team",
+            "update" => "update_team",
+            "send" => "send_message",
+            "messages" => "team_messages",
+            "members" => "team_members",
+            _ => "list_teams",
+        }
+        .to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
         false
     }
 

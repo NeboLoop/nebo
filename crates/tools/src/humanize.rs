@@ -2,53 +2,8 @@
 //! the collapsed work line, the persisted tool result (so a reloaded thread
 //! reads exactly like the live one), and every client that renders them.
 
-pub fn activity_label(tool_name: &str) -> Option<&'static str> {
-    Some(match tool_name {
-        "bash" => "running a command",
-        "grep" => "searching files",
-        "glob" => "finding files",
-        "read" => "reading a file",
-        "write" => "writing a file",
-        "edit" => "editing a file",
-
-        "web" => "searching the web",
-        "browser" => "reading a page",
-        "bot" => "thinking it through",
-        "desktop" => "using the desktop",
-        "event" => "checking the schedule",
-        "loop" => "sending a message",
-
-        "os" => "checking the workspace",
-        _ => return None,
-    })
-}
-
-/// Past-tense counterpart, sent on the result phase: collapsed work lines
-/// report OUTCOMES ("Ran a command"), not in-progress activity. One source
-/// for every client — web and mobile render these verbatim.
-pub fn outcome_label(tool_name: &str) -> Option<&'static str> {
-    Some(match tool_name {
-        "bash" => "Ran a command",
-        "grep" => "Searched files",
-        "glob" => "Found files",
-        "read" => "Read a file",
-        "write" => "Wrote a file",
-        "edit" => "Edited a file",
-
-        "web" => "Searched the web",
-        "browser" => "Read a page",
-        "bot" => "Thought it through",
-        "desktop" => "Used the desktop",
-        "event" => "Checked the schedule",
-        "loop" => "Sent a message",
-
-        "os" => "Checked the workspace",
-        _ => return None,
-    })
-}
-
 /// Honest fallback for a tool we don't have nice copy for: name it as-is
-/// ("using tool_search" / "Used tool_search") rather than vague filler.
+/// ("using send invoice" / "Used send invoice") rather than vague filler.
 pub fn raw_name(tool_name: &str) -> (String, String) {
     let n = tool_name.replace('_', " ");
     (format!("using {n}"), format!("Used {n}"))
@@ -93,12 +48,13 @@ pub fn strap_verb(action: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// Humanize a tool call from its STRAP signature — `os(resource: file,
-/// action: read)` reads as "reading a file" / "Read a file", which says far
-/// more than the bare domain-tool name ("os"). MCP tools (`mcp__slug__tool`)
-/// humanize from their slug + tool name. Falls back to the name-only maps.
-/// Returns (activity gerund phrase, past-tense outcome).
-pub fn tool_call(tool_name: &str, input: &serde_json::Value) -> (String, String) {
+/// The generic owner-facing lines for a call, the default of every tool's
+/// `DynTool::activity`/`outcome` (a tool with better words says them
+/// itself): MCP tools (`mcp__slug__tool`) read from their slug and tool
+/// name, a `resource`/`action` signature reads as verb + noun, anything
+/// else names the tool. Returns (activity gerund phrase, past-tense
+/// outcome).
+pub fn call_labels(tool_name: &str, input: &serde_json::Value) -> (String, String) {
     // MCP: mcp__github__create_issue → "using GitHub (create issue)".
     if let Some(rest) = tool_name.strip_prefix("mcp__") {
         if let Some((slug, tool)) = rest.split_once("__") {
@@ -112,108 +68,6 @@ pub fn tool_call(tool_name: &str, input: &serde_json::Value) -> (String, String)
     // STRAP: toolName(resource, action, …).
     let resource = input.get("resource").and_then(|v| v.as_str());
     let action = input.get("action").and_then(|v| v.as_str());
-    // The web tool takes an action without a resource, so it used to fall
-    // through to the static "Searched the web" for EVERYTHING — a run that
-    // fetched four pages read as search-only. Label by action (+ host when
-    // there's a URL) so fetches and navigations are visible as page visits.
-    if tool_name == "web" {
-        let host = input
-            .get("url")
-            .and_then(|v| v.as_str())
-            .and_then(|u| url::Url::parse(u).ok())
-            .and_then(|u| {
-                u.host_str()
-                    .map(|h| h.trim_start_matches("www.").to_string())
-            });
-        let site = host.as_deref().unwrap_or("a page");
-        let (gerund, past) = match action {
-            Some("search") | None => ("searching the web".to_string(), "Searched the web".to_string()),
-            Some("fetch") => (format!("reading {site}"), format!("Read {site}")),
-            Some("navigate") => (format!("opening {site}"), format!("Opened {site}")),
-            Some("read_page") => ("reading the page".to_string(), "Read the page".to_string()),
-            Some(a) => {
-                let a = a.replace('_', " ");
-                (format!("{a} (web)"), format!("Web: {a}"))
-            }
-        };
-        return (gerund, past);
-    }
-    // Plugin calls: the chip must say the SERVICE ("using Gmail"), never the
-    // word "plugin" — the register the whole install flow protects. Exec
-    // calls carry the service slug as `resource` with CLI args (no action),
-    // so the generic STRAP branch never fired and these fell to the raw
-    // tool-name fallback ("using plugin").
-    if tool_name == "plugin" {
-        if matches!(action, Some("discover")) {
-            return (
-                "browsing the marketplace".to_string(),
-                "Browsed the marketplace".to_string(),
-            );
-        }
-        if matches!(action, Some("list")) {
-            return (
-                "checking available tools".to_string(),
-                "Checked available tools".to_string(),
-            );
-        }
-        if let Some(slug) = resource {
-            let svc = service_name(slug);
-            return (format!("using {svc}"), format!("Used {svc}"));
-        }
-    }
-    // The os tool: say WHAT was done. "Checked the workspace ×17" hid a model
-    // tapping the same point seven times and never looking (2026-09-19); the
-    // command, the app and the point are what the owner needs to see.
-    if tool_name == "os" {
-        let action = action.unwrap_or("");
-        let short = |s: &str, n: usize| -> String {
-            let t: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-            if t.chars().count() > n { format!("{}…", t.chars().take(n).collect::<String>()) } else { t }
-        };
-        let app = input.get("app").and_then(|v| v.as_str()).unwrap_or("");
-        let point = input
-            .get("coordinate")
-            .and_then(|v| v.as_array())
-            .filter(|a| a.len() == 2)
-            .map(|a| format!("({},{})", a[0], a[1]))
-            .or_else(|| Some(format!("({},{})", input.get("x")?.as_i64()?, input.get("y")?.as_i64()?)));
-        let labelled = match action {
-            "exec" => input.get("command").and_then(|v| v.as_str()).map(|c| {
-                let c = short(c, 72);
-                (format!("running `{c}`"), format!("Ran `{c}`"))
-            }),
-            "click" | "double_click" | "right_click" => {
-                let what = input
-                    .get("ref")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-                    .or(point)
-                    .unwrap_or_default();
-                let where_ = if app.is_empty() { what } else { format!("{what} in {app}") };
-                Some((format!("clicking {where_}"), format!("Clicked {where_}")))
-            }
-            "screenshot" | "see" | "capture" => {
-                let what = if !app.is_empty() {
-                    app.to_string()
-                } else if let Some(r) = input.get("region").and_then(|v| v.as_str()) {
-                    format!("region {r}")
-                } else {
-                    "the screen".to_string()
-                };
-                Some((format!("capturing {what}"), format!("Captured {what}")))
-            }
-            "activate" | "launch" if !app.is_empty() => Some((format!("opening {app}"), format!("Opened {app}"))),
-            "read" | "write" | "edit" | "append" => input.get("path").and_then(|v| v.as_str()).map(|path| {
-                let name = path.rsplit('/').next().unwrap_or(path);
-                let (g, p) = match action { "read" => ("reading", "Read"), "write" => ("writing", "Wrote"), "append" => ("appending to", "Appended to"), _ => ("editing", "Edited") };
-                (format!("{g} {name}"), format!("{p} {name}"))
-            }),
-            _ => None,
-        };
-        if let Some(l) = labelled {
-            return l;
-        }
-    }
     if let (Some(resource), Some(action)) = (resource, action) {
         let noun = resource.replace('_', " ");
         if let Some((gerund, past)) = strap_verb(action) {
@@ -225,41 +79,37 @@ pub fn tool_call(tool_name: &str, input: &serde_json::Value) -> (String, String)
             format!("Ran {action} on {noun}"),
         );
     }
-    match (
-        activity_label(tool_name),
-        outcome_label(tool_name),
-    ) {
-        (Some(a), Some(o)) => (a.to_string(), o.to_string()),
-        // Unknown tool (e.g. tool_search, a skill, a delegate) — name it
-        // honestly instead of "working" / "Did a step".
-        _ => raw_name(tool_name),
-    }
+    // Otherwise name the tool honestly instead of "working" / "Did a step".
+    raw_name(tool_name)
 }
 
 
 #[cfg(test)]
 mod tests {
-    use super::{service_name as humanize_slug, tool_call as humanize_tool_call, strap_verb};
+    use super::{call_labels, service_name as humanize_slug, strap_verb};
+    use crate::os_tool::OsTool;
+    use crate::plugin_tool::plugin_labels;
+    use crate::web_tool::web_labels;
     use serde_json::json;
 
     #[test]
     fn os_calls_say_what_they_did() {
-        let (g, p) = humanize_tool_call("os", &json!({"action":"exec","command":"cliclick c:1091,367 && sleep 1.5 && screencapture -x -R868,60,447,950 /tmp/a.jpg"}));
+        let (g, p) = OsTool::labels(&json!({"action":"exec","command":"cliclick c:1091,367 && sleep 1.5 && screencapture -x -R868,60,447,950 /tmp/a.jpg"}));
         assert!(g.starts_with("running `cliclick c:1091,367"), "{g}");
         assert!(p.starts_with("Ran `cliclick"), "{p}");
         assert!(p.ends_with("…`"), "long commands are cut: {p}");
-        let (_, p) = humanize_tool_call("os", &json!({"action":"click","app":"Simulator","coordinate":[223,900]}));
+        let (_, p) = OsTool::labels(&json!({"action":"click","app":"Simulator","coordinate":[223,900]}));
         assert_eq!(p, "Clicked (223,900) in Simulator");
-        let (_, p) = humanize_tool_call("os", &json!({"action":"click","ref":"B2"}));
+        let (_, p) = OsTool::labels(&json!({"action":"click","ref":"B2"}));
         assert_eq!(p, "Clicked B2");
-        let (_, p) = humanize_tool_call("os", &json!({"resource":"capture","action":"screenshot","app":"Simulator"}));
+        let (_, p) = OsTool::labels(&json!({"resource":"capture","action":"screenshot","app":"Simulator"}));
         assert_eq!(p, "Captured Simulator");
-        let (_, p) = humanize_tool_call("os", &json!({"action":"screenshot"}));
+        let (_, p) = OsTool::labels(&json!({"action":"screenshot"}));
         assert_eq!(p, "Captured the screen");
-        let (_, p) = humanize_tool_call("os", &json!({"action":"read","path":"/Users/x/files/sim-half.png"}));
+        let (_, p) = OsTool::labels(&json!({"action":"read","path":"/Users/x/files/sim-half.png"}));
         assert_eq!(p, "Read sim-half.png");
         // Anything else keeps the STRAP signature wording.
-        let (_, p) = humanize_tool_call("os", &json!({"resource":"app","action":"list"}));
+        let (_, p) = OsTool::labels(&json!({"resource":"app","action":"list"}));
         assert!(p.contains("app"), "{p}");
     }
 
@@ -285,7 +135,7 @@ mod tests {
     /// never leak the raw `mcp__` machinery into the owner's transcript.
     #[test]
     fn mcp_tools_humanize_from_slug_and_tool() {
-        let (act, out) = humanize_tool_call("mcp__github__create_issue", &json!({}));
+        let (act, out) = call_labels("mcp__github__create_issue", &json!({}));
         assert_eq!(act, "using github (create issue)");
         assert_eq!(out, "Used github: create issue");
     }
@@ -295,11 +145,11 @@ mod tests {
     #[test]
     fn strap_signature_reads_as_verb_noun() {
         let (act, out) =
-            humanize_tool_call("os", &json!({"resource": "file", "action": "read"}));
+            OsTool::labels(&json!({"resource": "file", "action": "read"}));
         assert_eq!(act, "reading file");
         assert_eq!(out, "Read file");
         let (act, out) =
-            humanize_tool_call("os", &json!({"resource": "file", "action": "frobnicate"}));
+            OsTool::labels(&json!({"resource": "file", "action": "frobnicate"}));
         assert_eq!(act, "running frobnicate on file");
         assert_eq!(out, "Ran frobnicate on file");
     }
@@ -308,19 +158,15 @@ mod tests {
     /// read four pages doesn't collapse into "Searched the web" for all of it.
     #[test]
     fn web_actions_label_by_host_not_generic_search() {
-        let (act, out) = humanize_tool_call(
-            "web",
-            &json!({"action": "fetch", "url": "https://www.example.com/page"}),
+        let (act, out) = web_labels(&json!({"action": "fetch", "url": "https://www.example.com/page"}),
         );
         assert_eq!(act, "reading example.com");
         assert_eq!(out, "Read example.com");
-        let (act, _) = humanize_tool_call(
-            "web",
-            &json!({"action": "navigate", "url": "https://docs.rs/x"}),
+        let (act, _) = web_labels(&json!({"action": "navigate", "url": "https://docs.rs/x"}),
         );
         assert_eq!(act, "opening docs.rs");
         // No action = search — the default label.
-        let (act, out) = humanize_tool_call("web", &json!({}));
+        let (act, out) = web_labels(&json!({}));
         assert_eq!(act, "searching the web");
         assert_eq!(out, "Searched the web");
     }
@@ -330,22 +176,19 @@ mod tests {
     #[test]
     fn plugin_calls_name_the_service_never_the_word_plugin() {
         let (act, out) =
-            humanize_tool_call("plugin", &json!({"resource": "google-search-console"}));
+            plugin_labels(&json!({"resource": "google-search-console"}));
         assert_eq!(act, "using Google Search Console");
         assert_eq!(out, "Used Google Search Console");
-        let (act, _) = humanize_tool_call("plugin", &json!({"action": "discover"}));
+        let (act, _) = plugin_labels(&json!({"action": "discover"}));
         assert_eq!(act, "browsing the marketplace");
     }
 
-    /// Known bare tool names use the curated copy; unknown tools are named
-    /// as-is ("using tool search") — honest, never vague filler.
+    /// A tool without words of its own is named as-is ("using send invoice")
+    /// — honest, never vague filler.
     #[test]
-    fn bare_tools_use_curated_copy_and_honest_fallback() {
-        let (act, out) = humanize_tool_call("bash", &json!({}));
-        assert_eq!(act, "running a command");
-        assert_eq!(out, "Ran a command");
-        let (act, out) = humanize_tool_call("tool_search", &json!({}));
-        assert_eq!(act, "using tool search");
-        assert_eq!(out, "Used tool search");
+    fn a_tool_without_better_words_is_named_as_is() {
+        let (act, out) = call_labels("send_invoice", &json!({}));
+        assert_eq!(act, "using send invoice");
+        assert_eq!(out, "Used send invoice");
     }
 }

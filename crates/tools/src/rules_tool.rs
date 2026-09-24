@@ -115,7 +115,22 @@ impl DynTool for RulesTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+
+    fn search_hint(&self) -> &str {
+        "employee rules own context section"
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        input.get("action").and_then(|v| v.as_str()) == Some("show")
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        if self.read_only(input) { "read_rules" } else { "write_rules" }.to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
         false
     }
 

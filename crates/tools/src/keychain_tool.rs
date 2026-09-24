@@ -63,9 +63,6 @@ impl DynTool for KeychainTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        true
-    }
 
     fn execute_dyn<'a>(
         &'a self,
@@ -592,7 +589,6 @@ mod tests {
     fn test_tool_metadata() {
         let tool = KeychainTool::new();
         assert_eq!(tool.name(), "keychain");
-        assert!(tool.requires_approval());
         let schema = tool.schema();
         assert!(schema["properties"]["action"].is_object());
     }

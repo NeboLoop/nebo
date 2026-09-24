@@ -1272,7 +1272,7 @@ fn build_subagent_request(
     if !spawn_req.plugins.is_empty() {
         run_req.preload_plugins = spawn_req.plugins.clone();
         // Pre-activate the "plugin" tool so it's available from turn 1
-        // (it's normally deferred and discovered via tool_search).
+        // (it's normally deferred and discovered via find_tools).
         if !run_req.preactivate_tools.contains(&"plugin".to_string()) {
             run_req.preactivate_tools.push("plugin".to_string());
         }

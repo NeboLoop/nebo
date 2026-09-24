@@ -1,7 +1,7 @@
 // History reload for a thread: the persisted rows become the same ChatMessage
 // shapes the live controller builds, so a reloaded thread reads like the live
 // one (same bubbles, same tool timeline, same outcome words and durations).
-import { toolDisplayName, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
+import { artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
 import type { ChatMessage, TeamPost } from '$lib/chat/controller.svelte';
 import { formatTime } from '$lib/time';
 import type { ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
@@ -141,11 +141,11 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
       const request = parseToolInput(tc.input);
       const callId = callIds[callIdx] ?? '';
       (target.tools ??= []).push({
-        // Raw name so the display formats the signature. The persisted outcome
-        // is the same past-tense line the live stream showed; older rows without
-        // one fall back to the static display name.
+        // The persisted outcome is the same past-tense line the live stream
+        // showed (the tool's own words); older rows without one show the
+        // tool's name.
         name: tc.name || 'tool',
-        label: toolDisplayName(tc.name || 'tool', request),
+        label: tc.name || 'tool',
         ...(outcomesById.has(callId) ? { outcome: outcomesById.get(callId) } : {}),
         ...(durationsById.has(callId) ? { durationMs: durationsById.get(callId) } : {}),
         status: tc.status === 'error' ? 'error' : 'success',
