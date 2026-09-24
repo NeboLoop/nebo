@@ -322,8 +322,39 @@ impl DynTool for PublisherTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        true // Publishing should require user approval
+
+    fn search_hint(&self) -> &str {
+        "publish marketplace agent skill"
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        matches!(input.get("action").and_then(|v| v.as_str()), Some("list" | "status"))
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        match input.get("action").and_then(|v| v.as_str()).unwrap_or("") {
+            "list" => "list_publications",
+            "status" => "publication_status",
+            _ => "publish_app",
+        }
+        .to_string()
+    }
+
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        if self.read_only(input) {
+            types::permissions::CallEffects::none()
+        } else {
+            types::permissions::CallEffects {
+                publishes: types::permissions::Knowable::Yes,
+                ..types::permissions::CallEffects::default()
+            }
+        }
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(

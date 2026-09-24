@@ -17,13 +17,10 @@ pub mod channel_bridge;
 pub mod code_tool;
 pub mod coworker;
 
-/// Cap on raw subprocess/tool output surfaced into context, in bytes (the
-/// truncation is byte-based, not character-based). ONE definition: shell and
-/// plugin execution truncate identically.
-/// Inline cap on a subprocess result (shell exec, plugin exec). 30 KB, the
-/// same as Claude Code's Bash default, and UNDER the runner's 50 KB spill
-/// threshold so the tool's own footer (which names where the full output
-/// was saved) is what the model reads — never a second preview on top.
+/// A subprocess result (shell exec, plugin exec) longer than this, in
+/// characters, is persisted and previewed: Claude Code's Bash threshold.
+/// Shell output is persisted by the registry at this size; plugin output
+/// is still cut to it (its own package moves it onto the spill path).
 pub(crate) const MAX_SUBPROCESS_OUTPUT: usize = 30_000;
 pub mod deep_research;
 pub mod desktop_daemon;
@@ -42,7 +39,9 @@ pub mod events;
 pub mod execute_tool;
 pub mod exit_tool;
 pub mod file_tool;
+pub mod find_tools;
 pub mod grep_tool;
+pub mod input_schema;
 pub mod interface_catalog;
 pub mod keychain_tool;
 pub mod loop_tool;
@@ -63,7 +62,9 @@ pub mod policy;
 pub mod process;
 pub mod publisher_tool;
 pub mod registry;
+pub mod rename_map;
 pub mod research;
+pub mod result_shape;
 pub mod run_querier;
 pub mod safeguard;
 pub mod sandbox_policy;
@@ -73,7 +74,6 @@ pub mod sidecar_tool;
 pub mod skill_tool;
 pub mod skills;
 pub mod spotlight_tool;
-pub mod tool_search;
 pub mod vm_tool;
 pub mod walk_bounds;
 pub mod web_tool;
@@ -150,12 +150,12 @@ pub use origin::{
     workflow_session_key,
 };
 pub use os_tool::OsTool;
-pub use policy::{AskMode, Policy, PolicyLevel};
+pub use policy::Policy;
 pub use process::ProcessRegistry;
 pub use registry::{Registry, ResourceKind, ToolResult};
 pub use shell_tool::ShellTool;
 pub use skill_tool::SkillTool;
-pub use tool_search::ToolSearchTool;
+pub use find_tools::FindToolsTool;
 pub use web_tool::WebTool;
 pub use workflows::{WorkTool, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 

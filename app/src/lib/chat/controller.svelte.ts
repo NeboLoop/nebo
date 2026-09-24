@@ -125,52 +125,6 @@ export interface SendOptions {
   silent?: boolean;
 }
 
-/** Build a display-friendly name for a tool call. */
-export function toolDisplayName(tool: string, input: Record<string, unknown>): string {
-  const resource = input.resource as string | undefined;
-  const action = input.action as string | undefined;
-  if (tool === 'plugin') {
-    const command = input.command as string | undefined;
-    const cmdPrefix = command?.split(/[\s+]/)[0];
-    if (resource && cmdPrefix) return `${resource}: ${cmdPrefix}`;
-    return resource || 'plugin';
-  }
-  if (tool === 'app' && action && input.app) return `${action} ${input.app}`;
-  // Sub-agent spawn: show description or truncated prompt instead of "task: spawn"
-  if (tool === 'agent' && resource === 'task' && action === 'spawn') {
-    const desc = input.description as string | undefined;
-    if (desc) return desc;
-    const prompt = input.prompt as string | undefined;
-    if (prompt) return prompt.length > 60 ? prompt.slice(0, 57) + '...' : prompt;
-    return 'spawning sub-agent';
-  }
-  if (resource && action) return `${resource}: ${action}`;
-  if (resource) return resource;
-  if (['event', 'skill'].includes(tool) && action) return action;
-  return tool;
-}
-
-function toolActivityLabel(toolName: string): string {
-  const labels: Record<string, string> = {
-    bash:    'running a command',
-    grep:    'searching files',
-    glob:    'finding files',
-    read:    'reading a file',
-    write:   'writing a file',
-    edit:    'editing a file',
-
-    web:     'searching the web',
-    browser: 'reading a page',
-    bot:     'thinking it through',
-    desktop: 'using the desktop',
-    event:   'checking the schedule',
-    loop:    'sending a message',
-
-    os:      'checking the workspace',
-  };
-  return labels[toolName] || 'working';
-}
-
 const IMAGE_VIDEO_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mov'];
 const urlExt = (url: string) => (url.split('/').pop() || '').split('.').pop()?.toLowerCase() || '';
 const isMedia = (url: string) => IMAGE_VIDEO_EXTS.includes(urlExt(url));
@@ -566,9 +520,9 @@ export function createChatController(config: ChatControllerConfig) {
       };
       messages[idx] = { ...m, tools: [...(m.tools ?? []), tool] };
     }
-    // Prefer the backend's humanized label so the live indicator and the
-    // persisted timeline speak the same vocabulary; static map is the fallback.
-    activityStatus = data.label || toolActivityLabel(data.tool || '');
+    // The backend's label (each tool's own words) is the live indicator, so
+    // it and the persisted timeline speak the same vocabulary.
+    activityStatus = data.label || data.tool || '';
   }
 
   function handleToolResult(data: any) {
@@ -797,7 +751,8 @@ export function createChatController(config: ChatControllerConfig) {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.type !== 'assistant' || !m.tools?.length) continue;
-      const ti = m.tools.findIndex((t) => t.status === 'running' && t.name === 'agent');
+      // The research runs inside the call still running in this reply.
+      const ti = m.tools.findLastIndex((t) => t.status === 'running');
       if (ti === -1) continue;
       const tools = [...m.tools];
       tools[ti] = { ...tools[ti], research: snap };

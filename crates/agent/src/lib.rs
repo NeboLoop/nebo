@@ -16,7 +16,6 @@ pub mod hooks;
 pub mod lanes;
 pub mod large_input;
 pub mod memory;
-pub mod provenance;
 
 /// Approximate chars per token — the ONE token-estimate heuristic (was
 /// defined identically in pruning, memory_flush, and large_input; a budget
@@ -53,7 +52,6 @@ pub mod summarizer;
 pub mod reviewer;
 pub mod task_graph;
 pub mod tool_credentials;
-pub mod tool_filter;
 pub mod tool_guardrail;
 pub mod testing;
 pub mod transcript;

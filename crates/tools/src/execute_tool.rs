@@ -454,8 +454,19 @@ impl DynTool for ExecuteTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        true
+
+    fn search_hint(&self) -> &str {
+        "run a skill script python node"
+    }
+
+    fn rule_key(&self, _input: &serde_json::Value) -> String {
+        "run_skill_script".to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(

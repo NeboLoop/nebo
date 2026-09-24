@@ -58,7 +58,14 @@ impl DynTool for ExitTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+
+    fn rule_key(&self, _input: &serde_json::Value) -> String {
+        "end_activity".to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
         false
     }
 

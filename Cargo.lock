@@ -5998,6 +5998,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "image",
+ "jsonschema",
  "libc",
  "nebo-ai",
  "nebo-auth",

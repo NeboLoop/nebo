@@ -75,9 +75,6 @@ impl DynTool for SpotlightTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
 
     fn execution_timeout(&self, _input: &serde_json::Value) -> Option<std::time::Duration> {
         Some(SEARCH_EXECUTION_TIMEOUT)

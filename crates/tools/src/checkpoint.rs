@@ -69,7 +69,7 @@ pub struct RestoreReport {
 
 /// Resolve Nebo's data directory the way `config::defaults::data_dir` does,
 /// without a dependency on the config crate (tools sits below it).
-fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("NEBO_HOME") {
         return PathBuf::from(dir);
     }

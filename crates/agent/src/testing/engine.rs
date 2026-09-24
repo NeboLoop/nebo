@@ -91,7 +91,7 @@ pub async fn run_live(
             "skill".into(),
         ];
         let strap_section =
-            crate::prompt::build_strap_section(&all_tool_names, &[], &all_tool_names);
+            crate::prompt::build_strap_section(&all_tool_names);
         let full = format!("{}\n\n{}", static_system, strap_section);
         Some(apply_overrides(&full, overrides))
     };

@@ -13,7 +13,7 @@ Two things to know:
    schema (so a tool that needs `resource`/`action` takes them as normal arguments).
 
 Discovering tools you don't see yet: connected MCP tools are activated on demand. Run
-tool_search(query: "<server name or capability>") to find the exact proxy name and its
+find_tools(query: "<server name or capability>") to find the exact proxy name and its
 argument schema, then call mcp__<server>__<tool> with the right arguments.
 
 These are live tools from external servers, not skills — call them directly.

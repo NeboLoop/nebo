@@ -1,21 +1,28 @@
 use std::path::Path;
 
-/// Validate a tool call against hard safety limits.
-/// Returns None if safe, or Some(error_message) if blocked.
+/// Rule keys whose calls read or change files on this machine: the file
+/// safeguard and the folder fence apply to them.
+const FILE_KEYS: &[&str] = &[
+    "read_file",
+    "write_file",
+    "edit_file",
+    "share_file",
+    "convert_file",
+    "checkpoint_files",
+    "list_checkpoints",
+    "restore_checkpoint",
+    "write_plan",
+    "check_plan",
+];
+
+/// Validate a tool call against hard safety limits, keyed on the call's
+/// rule key (`DynTool::rule_key`) so every shape of a job meets the same
+/// limit. Returns None if safe, or Some(error_message) if blocked.
 /// This check is unconditional — cannot be bypassed by any setting.
-pub fn check_safeguard(tool_name: &str, input: &serde_json::Value) -> Option<String> {
-    match tool_name {
-        "system" | "file" => check_file_safeguard(input),
-        "shell" => check_shell_safeguard(input),
-        // The STRAP `os` tool carries the real category in `resource` (which the
-        // model may omit — resolve it through the tool's own inference chain so
-        // the safeguard and the dispatch agree). Pre-rename this match never saw
-        // "os", so ALL hard safety limits were silently disabled for os calls.
-        "os" => match crate::os_tool::OsTool::resolved_resource(input) {
-            "file" => check_file_safeguard(input),
-            "shell" => check_shell_safeguard(input),
-            _ => None,
-        },
+pub fn check_safeguard(rule_key: &str, input: &serde_json::Value) -> Option<String> {
+    match rule_key {
+        "run_command" => check_shell_safeguard(input),
+        key if FILE_KEYS.contains(&key) => check_file_safeguard(key, input),
         _ => None,
     }
 }
@@ -25,7 +32,7 @@ pub fn check_safeguard(tool_name: &str, input: &serde_json::Value) -> Option<Str
 /// File reads are always allowed. Only writes/edits/deletes are restricted.
 /// Shell commands are restricted to running within allowed directories.
 pub fn check_path_scope(
-    tool_name: &str,
+    rule_key: &str,
     input: &serde_json::Value,
     allowed_paths: &[String],
 ) -> Option<String> {
@@ -33,28 +40,17 @@ pub fn check_path_scope(
         return None;
     }
 
-    match tool_name {
-        "system" | "file" => check_file_path_scope(input, allowed_paths),
-        "shell" => check_shell_path_scope(input, allowed_paths),
-        // The STRAP `os` tool carries the real category in `resource`; scope its
-        // file and shell sub-resources the same as the legacy standalone tools.
-        // (Pre-rename this match never saw "os", so path scoping was silently
-        // disabled for all os file/shell calls — TD-002.)
-        "os" => match crate::os_tool::OsTool::resolved_resource(input) {
-            "file" => check_file_path_scope(input, allowed_paths),
-            "shell" => check_shell_path_scope(input, allowed_paths),
-            _ => None,
-        },
-        // A notebook edit writes its .ipynb: fenced like a file write, and
-        // like a file read, reading it is not.
-        "notebook" => {
-            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    match rule_key {
+        "run_command" => check_shell_path_scope(input, allowed_paths),
+        // A notebook edit writes its .ipynb: fenced like a file write.
+        "edit_notebook" => {
             let path = input.get("notebook_path").and_then(|v| v.as_str()).unwrap_or("");
-            if action == "read" || path.is_empty() {
+            if path.is_empty() {
                 return None;
             }
             outside_allowed("edit", &[crate::file_tool::expand_path(path)], allowed_paths)
         }
+        key if FILE_KEYS.contains(&key) => check_file_path_scope(key, input, allowed_paths),
         _ => None,
     }
 }
@@ -84,13 +80,17 @@ pub fn outside_allowed(verb: &str, paths: &[String], allowed_paths: &[String]) -
     None
 }
 
-fn check_file_path_scope(input: &serde_json::Value, allowed_paths: &[String]) -> Option<String> {
-    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+fn check_file_path_scope(
+    rule_key: &str,
+    input: &serde_json::Value,
+    allowed_paths: &[String],
+) -> Option<String> {
+    let action = verb(rule_key);
     let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
     // checkpoint/restore name their files in `paths[]` (restore may also
     // carry none and take them from the manifest — the file tool checks that).
-    if matches!(action, "checkpoint" | "restore") {
+    if matches!(rule_key, "checkpoint_files" | "restore_checkpoint") {
         let paths: Vec<String> = input
             .get("paths")
             .and_then(|v| v.as_array())
@@ -99,13 +99,8 @@ fn check_file_path_scope(input: &serde_json::Value, allowed_paths: &[String]) ->
         return outside_allowed(action, &paths, allowed_paths);
     }
 
-    // Only restrict destructive actions — reads are always allowed
-    if action != "write"
-        && action != "edit"
-        && action != "delete"
-        && action != "move"
-        && action != "copy"
-    {
+    // Only restrict the calls that change a file — reads are always allowed
+    if rule_key != "write_file" && rule_key != "edit_file" {
         return None;
     }
 
@@ -132,11 +127,10 @@ fn check_file_path_scope(input: &serde_json::Value, allowed_paths: &[String]) ->
 }
 
 fn check_shell_path_scope(input: &serde_json::Value, allowed_paths: &[String]) -> Option<String> {
-    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
     let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
     let cwd = input.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
 
-    if action != "exec" || command.is_empty() {
+    if command.is_empty() {
         return None;
     }
 
@@ -172,8 +166,20 @@ fn is_within_allowed(abs_path: &str, allowed_paths: &[String]) -> bool {
     false
 }
 
-fn check_file_safeguard(input: &serde_json::Value) -> Option<String> {
-    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+/// The verb a refusal names for a file call's rule key.
+fn verb(rule_key: &str) -> &'static str {
+    match rule_key {
+        "read_file" => "read",
+        "write_file" => "write",
+        "edit_file" => "edit",
+        "checkpoint_files" => "checkpoint",
+        "restore_checkpoint" => "restore",
+        _ => "use",
+    }
+}
+
+fn check_file_safeguard(rule_key: &str, input: &serde_json::Value) -> Option<String> {
+    let action = verb(rule_key);
     let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
     // The database directory is off-limits for EVERY action, reads included:
@@ -198,8 +204,8 @@ fn check_file_safeguard(input: &serde_json::Value) -> Option<String> {
         }
     }
 
-    // Only guard destructive actions
-    if action != "write" && action != "edit" {
+    // Only guard the calls that change a file.
+    if rule_key != "write_file" && rule_key != "edit_file" {
         return None;
     }
 
@@ -238,16 +244,10 @@ fn check_file_safeguard(input: &serde_json::Value) -> Option<String> {
 }
 
 fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
-    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
     let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
-    // Only guard command execution. The caller has already dispatched by
-    // category (tool name / resolved resource), so no resource re-check here —
-    // the old `resource != "bash"` early-return self-disabled the guard for the
-    // os tool's "shell" resource.
-    if action != "exec" {
-        return None;
-    }
+    // The caller dispatched on the rule key (`run_command`): this call runs
+    // `command`, whatever shape carried it.
     if command.is_empty() {
         return None;
     }
@@ -646,14 +646,14 @@ mod tests {
         let allowed = vec!["/proj".to_string()];
         // checkpoint names its files in `paths[]`, not `path`.
         let inside = serde_json::json!({"resource": "file", "action": "checkpoint", "paths": ["/proj/a.rs", "/proj/src/b.rs"]});
-        assert!(check_path_scope("os", &inside, &allowed).is_none());
+        assert!(check_path_scope("checkpoint_files", &inside, &allowed).is_none());
         let outside = serde_json::json!({"resource": "file", "action": "checkpoint", "paths": ["/proj/a.rs", "/etc/hosts"]});
-        let msg = check_path_scope("os", &outside, &allowed).expect("blocked");
+        let msg = check_path_scope("checkpoint_files", &outside, &allowed).expect("blocked");
         assert!(msg.contains("BLOCKED") && msg.contains("/etc/hosts"), "{msg}");
         // restore with an explicit subset is fenced the same way; the
         // manifest-path case (no `paths`) is the file tool's job.
         let restore = serde_json::json!({"resource": "file", "action": "restore", "checkpoint": "cp-1", "paths": ["/tmp/x"]});
-        assert!(check_path_scope("os", &restore, &allowed).is_some());
+        assert!(check_path_scope("restore_checkpoint", &restore, &allowed).is_some());
         // The manifest helper: first offender named, no fence = nothing blocked.
         assert!(outside_allowed("restore", &["/tmp/x".into()], &[]).is_none());
         let msg = outside_allowed("restore", &["/proj/ok".into(), "/tmp/x".into()], &allowed).expect("blocked");
@@ -689,11 +689,8 @@ mod tests {
             .to_string_lossy()
             .into_owned();
 
-        let input = serde_json::json!({
-            "action": "write",
-            "path": nebo_data,
-        });
-        let result = check_file_safeguard(&input);
+        let input = serde_json::json!({ "path": nebo_data });
+        let result = check_file_safeguard("write_file", &input);
         assert!(
             result.is_some(),
             "should block writes to Nebo data directory"
@@ -714,8 +711,8 @@ mod tests {
             .into_owned();
 
         // File reads of the DB are blocked, not just writes
-        let input = serde_json::json!({"action": "read", "path": db});
-        assert!(check_file_safeguard(&input).is_some());
+        let input = serde_json::json!({"path": db});
+        assert!(check_file_safeguard("read_file", &input).is_some());
 
         // Shell commands referencing the DB path are blocked (the sqlite3 hole)
         let cmd = format!("sqlite3 {} \"INSERT INTO workflows VALUES ('x')\"", db);
@@ -729,8 +726,8 @@ mod tests {
             .join("draft.md")
             .to_string_lossy()
             .into_owned();
-        let input = serde_json::json!({"action": "read", "path": files});
-        assert!(check_file_safeguard(&input).is_none());
+        let input = serde_json::json!({"path": files});
+        assert!(check_file_safeguard("read_file", &input).is_none());
         let input =
             serde_json::json!({"action": "exec", "command": format!("cat {}", files)});
         assert!(check_shell_safeguard(&input).is_none());
@@ -754,69 +751,63 @@ mod tests {
     }
 
     #[test]
-    fn test_os_tool_safeguard_enforced() {
-        // The dead-guard bug: registry resolves aliases to "os" before calling
-        // check_safeguard, so the "os" name MUST dispatch to the real guards.
+    fn safeguards_follow_the_rule_key() {
+        // The registry passes the call's rule key, so every tool shape that
+        // runs a command or writes a file meets the same guard.
         let shell_sudo = serde_json::json!({
             "resource": "shell", "action": "exec", "command": "sudo rm -rf /tmp"
         });
-        assert!(check_safeguard("os", &shell_sudo).is_some());
+        assert!(check_safeguard("run_command", &shell_sudo).is_some());
 
-        // Omitted resource — inferred as shell from the "exec" action.
-        let inferred_wipe = serde_json::json!({
-            "action": "exec", "command": "rm -rf /"
-        });
-        assert!(check_safeguard("os", &inferred_wipe).is_some());
+        let wipe = serde_json::json!({ "command": "rm -rf /" });
+        assert!(check_safeguard("run_command", &wipe).is_some());
 
         // File guard fires for protected system paths.
         let file_write = serde_json::json!({
             "resource": "file", "action": "write", "path": "/etc/passwd"
         });
-        assert!(check_safeguard("os", &file_write).is_some());
+        assert!(check_safeguard("write_file", &file_write).is_some());
+        assert!(check_safeguard("search_web", &file_write).is_none(), "other keys have no file guard");
 
         // Safe commands pass.
         let safe = serde_json::json!({
             "resource": "shell", "action": "exec", "command": "ls -la"
         });
-        assert!(check_safeguard("os", &safe).is_none());
+        assert!(check_safeguard("run_command", &safe).is_none());
     }
 
     #[test]
-    fn test_os_tool_path_scope_inferred_resource() {
-        // Omitted resource must not bypass path scoping — "exec" infers shell,
-        // and the out-of-scope cwd is blocked.
+    fn shell_path_scope_blocks_an_outside_cwd() {
         let allowed = vec!["/Users/me/ws".to_string()];
         let input = serde_json::json!({
             "action": "exec", "command": "ls", "cwd": "/private/etc"
         });
-        assert!(check_path_scope("os", &input, &allowed).is_some());
+        assert!(check_path_scope("run_command", &input, &allowed).is_some());
     }
 
     #[test]
-    fn test_os_tool_path_scope_enforced() {
-        // TD-002: path scoping must apply to the renamed `os` tool (it carries
-        // the category in `resource`), not just the legacy "file"/"shell" names.
+    fn file_path_scope_fences_writes_not_reads() {
         let allowed = vec!["/Users/me/workspace".to_string()];
 
         // os file write OUTSIDE the allowed dir is blocked.
         let outside = serde_json::json!({
             "resource": "file", "action": "write", "path": "/etc/passwd"
         });
-        assert!(check_path_scope("os", &outside, &allowed).is_some());
+        assert!(check_path_scope("write_file", &outside, &allowed).is_some());
 
         // os file write INSIDE the allowed dir is permitted.
         let inside = serde_json::json!({
             "resource": "file", "action": "write", "path": "/Users/me/workspace/report.md"
         });
-        assert!(check_path_scope("os", &inside, &allowed).is_none());
+        assert!(check_path_scope("write_file", &inside, &allowed).is_none());
 
         // Reads are never path-scoped.
         let read = serde_json::json!({
             "resource": "file", "action": "read", "path": "/etc/hosts"
         });
-        assert!(check_path_scope("os", &read, &allowed).is_none());
+        assert!(check_path_scope("read_file", &read, &allowed).is_none());
 
         // Empty allowed_paths = no scoping (must not block).
-        assert!(check_path_scope("os", &outside, &[]).is_none());
+        assert!(check_path_scope("write_file", &outside, &[]).is_none());
     }
 }

@@ -426,39 +426,8 @@ impl ShellTool {
                     result = "(exit 0, no output)".to_string();
                 }
 
-                // Truncate very long output (char-boundary safe)
-                if result.len() > crate::MAX_SUBPROCESS_OUTPUT {
-                    let total_len = result.len();
-                    let total_lines = result.lines().count();
-
-                    // Persist full output to disk
-                    let output_dir = dirs::data_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                        .join("nebo/shell_output");
-                    let _ = std::fs::create_dir_all(&output_dir);
-                    let filename = format!("cmd_{}.txt", uuid::Uuid::new_v4().as_simple());
-                    let output_path = output_dir.join(&filename);
-                    let persisted = std::fs::write(&output_path, &result).is_ok();
-
-                    // Truncate for inline result
-                    types::strutil::safe_truncate(&mut result, crate::MAX_SUBPROCESS_OUTPUT);
-
-                    if persisted {
-                        result.push_str(&format!(
-                            "\n\n--- Showing the first {} of {} bytes ({} lines). Full output (stdout, then STDERR section) saved to: {}\n\
-                             Read sections with: os(resource: \"file\", action: \"read\", path: \"{}\", offset: N, limit: M)",
-                            crate::MAX_SUBPROCESS_OUTPUT, total_len, total_lines,
-                            output_path.display(), output_path.display(),
-                        ));
-                    } else {
-                        let removed = total_len - crate::MAX_SUBPROCESS_OUTPUT;
-                        result.push_str(&format!(
-                            "\n... [output truncated: showing the first {} of {} bytes; {} bytes not shown. \
-                             Use grep to search for specific content, or pipe through head/tail.]",
-                            crate::MAX_SUBPROCESS_OUTPUT, total_len, removed
-                        ));
-                    }
-                }
+                // Long output is persisted by the registry (the one spill
+                // path, at this tool's `max_result_chars`), never here.
 
                 // A command that produced a work document (`python gen.py -o report.pdf`,
                 // `nebo-office pptx create … -o deck.pptx`) surfaces it exactly like an

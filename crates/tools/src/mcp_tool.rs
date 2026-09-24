@@ -460,7 +460,7 @@ impl McpTool {
             "List connected MCP servers. Usage: mcp(action: \"list\").\n\n\
              To CALL a tool on a server, use that tool's own proxy tool named \
              `mcp__<server>__<tool>`. Discover the exact \
-             names and argument schemas with tool_search(query: \"<server or capability>\"), \
+             names and argument schemas with find_tools(query: \"<server or capability>\"), \
              then call the proxy directly — its arguments match the server's real schema.\n\n",
         );
 
@@ -495,15 +495,29 @@ impl DynTool for McpTool {
                 "action": {
                     "type": "string",
                     "enum": ["list"],
-                    "description": "Only \"list\" — enumerate connected MCP servers. To call a tool, use its `mcp__<server>__<tool>` proxy (find it with tool_search)."
+                    "description": "Only \"list\" — enumerate connected MCP servers. To call a tool, use its `mcp__<server>__<tool>` proxy (find it with find_tools)."
                 }
             },
             "additionalProperties": false
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        // Enumeration only — read-only, no approval needed.
+
+    fn search_hint(&self) -> &str {
+        "connected mcp servers list"
+    }
+
+    fn should_defer(&self) -> bool {
+        false
+    }
+
+    fn read_only(&self, _input: &serde_json::Value) -> bool {
+        true
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
         false
     }
 
@@ -520,7 +534,7 @@ impl DynTool for McpTool {
                 );
             }
             ToolResult::ok(format!(
-                "{} connected MCP server(s). Discover a tool's schema with tool_search, then call its mcp__<server>__<tool> proxy:\n{}",
+                "{} connected MCP server(s). Discover a tool's schema with find_tools, then call its mcp__<server>__<tool> proxy:\n{}",
                 servers.len(),
                 Self::server_lines(&servers)
             ))
