@@ -333,7 +333,7 @@ impl OsTool {
     /// which resource a call targets.
     /// The resource a call operates on, inferring it when the model omitted the
     /// field. PUBLIC because it is the ONE definition of that inference — the
-    /// history summarizer (`agent::pruning`) must classify a call exactly as the
+    /// history trim (`agent::harness::compact::trim`) must classify a call exactly as the
     /// executor did, or it mislabels the call and can destroy its result
     /// (2026-08-28: a bare `os {"action":"read","path":…}` was summarized as
     /// `[os] 0 lines` and the model believed the file was empty).

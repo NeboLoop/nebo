@@ -15,6 +15,7 @@ use tools::{Origin, Registry};
 
 use crate::concurrency::ConcurrencyController;
 use crate::db_context;
+use crate::harness::compact::trim;
 use crate::harness::model_call::{self, prefer_non_gateway, resolve_aux};
 use crate::harness::tool_round::ToolResultRow;
 use types::keyparser;
@@ -2304,7 +2305,7 @@ async fn run_loop(
     // Reset per run on purpose: files legitimately change between turns.
     let mut read_ledger = crate::read_ledger::ReadLedger::default();
     // Frozen tool-result renderings: one rendering per tool_use_id per run,
-    // shared by both compaction paths (pruning::micro_compact and
+    // shared by both compaction paths (trim::micro_compact and
     // time_based_micro_compact) so the model's history never mutates mid-run.
     // FROZEN DECISIONS, per chat and persisted: the rendering a compacted tool
     // result was first shown as is its rendering forever, across runs and
@@ -3446,10 +3447,10 @@ async fn run_loop(
         // The window becomes a last resort instead of the first response.
 
         // Stage 1: Clear stale tool results (cache-cold session)
-        let (mut working, tb_saved) = pruning::time_based_micro_compact(
+        let (mut working, tb_saved) = trim::time_based_micro_compact(
             &all_messages,
-            pruning::TIME_BASED_KEEP_RECENT,
-            pruning::TIME_BASED_GAP_THRESHOLD_SECS,
+            trim::TIME_BASED_KEEP_RECENT,
+            trim::TIME_BASED_GAP_THRESHOLD_SECS,
             thresholds.warning,
             &mut frozen_renderings,
         );
@@ -3458,7 +3459,7 @@ async fn run_loop(
         }
 
         // Stage 2: Compress tool results with informative summaries
-        let (compacted, mc_saved) = pruning::micro_compact(&working, thresholds.warning, &mut frozen_renderings);
+        let (compacted, mc_saved) = trim::micro_compact(&working, thresholds.warning, &mut frozen_renderings);
         if mc_saved > 0 {
             debug!(
                 tokens_saved = mc_saved,
