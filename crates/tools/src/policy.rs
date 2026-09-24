@@ -1159,7 +1159,7 @@ fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
     deny_list.insert(Origin::Mcp, keys(&[SHELL_KEYS]));
     // Outside origins — a phone caller, a visitor from a QR scan or an
     // embedded chat — are strangers. The allowlist on their run is the real
-    // fence (deny-by-default, mandatory: see the runner's
+    // fence (deny-by-default, mandatory: see the seat's
     // restrict_outside_origin); this hard set is the backstop that holds even
     // if an allowlist is ever mis-built. Nothing that touches the machine, the
     // mailbox, money, other people, or the roster is reachable from outside —
