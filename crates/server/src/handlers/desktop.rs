@@ -105,6 +105,7 @@ pub async fn teach_stop(
         user_id: String::new(),
         channel: "web".to_string(),
         origin: tools::Origin::User,
+        door: types::permissions::Door::Chat,
         agent_id: agent_id.to_string(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::MAIN.to_string(),

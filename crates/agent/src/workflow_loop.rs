@@ -139,6 +139,10 @@ impl RunnerActivityLoop {
     ) -> Result<(), WorkflowError> {
         let mut ctx = tools::ToolContext::new(tools::Origin::Workflow)
             .with_session(session_key.to_string(), session_id.to_string());
+        ctx.door = types::permissions::Door::Workflow;
+        // The owner approved exactly this call; the check still applies the
+        // hard limits, the ceiling and deny rules.
+        ctx.answered_ask = Some(format!("workflow:{}", turn.trace.run_id));
         ctx.user_id = turn.user_id.to_string();
         ctx.memory_writes_disabled = turn.memory_writes_disabled;
         ctx.run_id = Some(turn.trace.run_id.clone());
@@ -375,13 +379,9 @@ impl ActivityLoop for RunnerActivityLoop {
             min_iterations: turn.min_iterations as usize,
             model_override: turn.model.clone(),
             cancel_token: cancel.clone(),
-            operation_policy: turn.checkpoint.and_then(|c| c.operation_policy.clone()),
-            // Old-engine parity: the engine executed tools directly with no
-            // capability gate — the operation policy (above) and the roster
-            // scoping are the workflow's controls. Full Access keeps the
-            // chat-only capability prompts out of an unattended run; the
-            // operation gate deliberately ignores it (money ops still park).
-            full_access: true,
+            // The activity runs under its employee's own grant, through the
+            // one permission check: an ask parks the run for the owner.
+            door: types::permissions::Door::Workflow,
             workflow: Some(WorkflowMode {
                 trace: turn.trace.clone(),
                 objective,

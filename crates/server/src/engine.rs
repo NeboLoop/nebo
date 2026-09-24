@@ -2551,7 +2551,7 @@ mod tests {
         };
 
         // A fully autonomous employee: still a card, still no turn.
-        s.upsert_entity_config("agent", "ic", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
+        s.set_permission_mode(&types::permissions::Scope::Employee("ic".into()), types::permissions::Mode::FullAccess).unwrap();
         let b = binding();
         let (case_id, t) = fail_four(&s, &b, "s-auto", "auto@x.com");
         let fault = s.engine_events_for("run", &case_id, 50).unwrap().into_iter().filter(|e| e.kind == "needs_attention").last().expect("recorded on the case");
@@ -2569,7 +2569,7 @@ mod tests {
     fn a_poisoned_event_reaches_the_case_it_was_aimed_at() {
         let s = store();
         let user = s.ensure_local_user_id().unwrap();
-        s.upsert_entity_config("agent", "a", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
+        s.set_permission_mode(&types::permissions::Scope::Employee("a".into()), types::permissions::Mode::FullAccess).unwrap();
         s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", inputs: Some(r#"{"_case":{"key":"email:x"}}"#), ..Default::default() }).unwrap();
         s.engine_bind_key("case-1", "email", "x").unwrap();
         s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: None, reason: "waiting", ..Default::default() }, 100).unwrap();
@@ -2596,7 +2596,7 @@ mod tests {
     fn an_unconfirmed_charge_is_never_retried_and_the_owner_is_told_once() {
         let s = store();
         let user = s.ensure_local_user_id().unwrap();
-        s.upsert_entity_config("agent", "a", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
+        s.set_permission_mode(&types::permissions::Scope::Employee("a".into()), types::permissions::Mode::FullAccess).unwrap();
         s.engine_create_run(&NewRun { id: "wf-1", kind: "workflow", session_key: "agent:a:workflow:wf-1", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
         let charge = s.engine_effect_pending("wf-1", "financial", "charge:inv-1042", "stripe", "pi_1042", "").unwrap();
         let note = s.engine_effect_pending("wf-1", "messaging", "email:inv-1042", "smtp", "", "").unwrap();

@@ -5,44 +5,26 @@
 //! MCP client by where it comes from, so the run that spawns the CLI issues a
 //! credential for that one provider call: random, held only in this process,
 //! handed to the CLI in its MCP config, and revoked when the call ends. A tool
-//! call carrying it executes as that run — the same context, rules and
-//! approval door as the runner's own tool calls. A call without one is an
-//! outside MCP client.
+//! call carrying it executes as that run — the same context and grant as the
+//! runner's own tool calls, through the same permission check. A call
+//! without one is an outside MCP client.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use ai::StreamEvent;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use tools::ToolContext;
 
-use crate::runner::WorkflowMode;
-use crate::session::SessionManager;
 
 /// The header a CLI provider's MCP config sends the credential in.
 pub const HEADER: &str = "x-nebo-run-credential";
-
-/// Where a run's approval card is shown and answered.
-#[derive(Clone)]
-pub struct OwnedApprovalDoor {
-    pub channels: tools::ApprovalChannels,
-    pub tx: mpsc::Sender<StreamEvent>,
-    pub cancel_token: CancellationToken,
-}
 
 /// Everything a tool call needs to execute as the run that issued it.
 #[derive(Clone)]
 pub struct RunGrant {
     /// The context the run's own tool calls carry: origin, session, memory
-    /// scope, the employee's rules, Full Access.
+    /// scope, the run's grant.
     pub ctx: ToolContext,
     pub agent_id: String,
-    /// None: nobody can be asked, so what would ask is refused.
-    pub approval: Option<OwnedApprovalDoor>,
-    pub approval_relay: bool,
-    pub workflow_mode: Option<WorkflowMode>,
-    pub sessions: Option<SessionManager>,
 }
 
 /// The live credentials, shared by the runner (which issues them) and the
@@ -104,10 +86,6 @@ mod tests {
         RunGrant {
             ctx: ToolContext::default(),
             agent_id: "a1".into(),
-            approval: None,
-            approval_relay: false,
-            workflow_mode: None,
-            sessions: None,
         }
     }
 

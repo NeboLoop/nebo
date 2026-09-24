@@ -54,22 +54,6 @@ fn oauth_redirect_uri(headers: &HeaderMap, port: u16) -> String {
     format!("{base}/api/v1/integrations/oauth/callback")
 }
 
-/// MCP tool-name prefix for an integration — e.g. "monument.sh" →
-/// "monument_sh", "My GitHub" → "my_github".
-///
-/// DELIBERATELY not `comm::handle::slugify` (the routing-handle slugifier):
-/// the underscore alphabet here is load-bearing — these prefixes are baked
-/// into stored MCP tool names, so the mapping must stay byte-stable even
-/// though it doesn't collapse runs the way handle slugs do.
-fn tool_name_prefix(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string()
-}
-
 /// True if an integration's `metadata` carries a stdio launch spec (a non-empty
 /// `command`). The one predicate for "is this a stdio server" — used by every
 /// connect path so stdio integrations (which have no `server_url`) aren't skipped.
@@ -378,7 +362,7 @@ pub(crate) async fn sync_bridge(state: &AppState) {
                 continue;
             }
         };
-        let tool_prefix = tool_name_prefix(&i.name);
+        let tool_prefix = mcp::bridge::tool_name_prefix(&i.name);
         match state
             .bridge
             .connect(
@@ -830,7 +814,7 @@ pub async fn test_integration(
         }
     };
 
-    let tool_prefix = tool_name_prefix(&integration.name);
+    let tool_prefix = mcp::bridge::tool_name_prefix(&integration.name);
     let (success, message) = match state
         .bridge
         .connect(
@@ -902,7 +886,7 @@ pub async fn connect_integration(
 
     // Use integration name (slugified) as server_type for tool naming
     // e.g. "monument.sh" → "monument_sh" → tools named mcp__monument_sh__comment
-    let tool_prefix = tool_name_prefix(&integration.name);
+    let tool_prefix = mcp::bridge::tool_name_prefix(&integration.name);
 
     // Try to connect and list tools
     match state
@@ -1388,7 +1372,7 @@ pub async fn oauth_callback(
 
     // 6. Connect immediately with the new token
     let server_url = integration.server_url.as_deref().unwrap_or("");
-    let tool_prefix = tool_name_prefix(&integration.name);
+    let tool_prefix = mcp::bridge::tool_name_prefix(&integration.name);
     if !server_url.is_empty() {
         match state
             .bridge
@@ -1575,37 +1559,106 @@ mod tests {
     }
 }
 
-/// Build the tool-permission view for one integration: the server-wide default
-/// plus one row per synced tool (name, live description, explicit override,
-/// effective decision). The ONE view builder shared by GET and PUT.
+/// The rule key an integration's tools answer to: `mcp__<prefix>__*` for the
+/// server's default, `mcp__<prefix>__<tool>` for one tool.
+fn mcp_rule_prefix(integration: &db::models::McpIntegration) -> String {
+    mcp::bridge::server_slug(&mcp::bridge::tool_name_prefix(&integration.name))
+}
+
+fn access_of(effect: types::permissions::Effect) -> &'static str {
+    match effect {
+        types::permissions::Effect::Allow => "allow",
+        types::permissions::Effect::Ask => "ask",
+        types::permissions::Effect::Deny => "deny",
+    }
+}
+
+fn effect_of(access: &str) -> Option<types::permissions::Effect> {
+    match access {
+        "allow" => Some(types::permissions::Effect::Allow),
+        "ask" => Some(types::permissions::Effect::Ask),
+        "deny" => Some(types::permissions::Effect::Deny),
+        _ => None,
+    }
+}
+
+/// The company rules on this integration's tools: its default and its
+/// per-tool overrides (by proxy tool name).
+fn mcp_rules(
+    state: &AppState,
+    prefix: &str,
+) -> Result<(Option<types::permissions::Rule>, Vec<types::permissions::Rule>), types::NeboError> {
+    let family = format!("mcp__{prefix}__");
+    let mut default = None;
+    let mut tools = Vec::new();
+    for r in state.store.permission_rules_in(&types::permissions::Scope::Company)? {
+        let types::permissions::RuleKey::Tool(key) = &r.key else { continue };
+        if r.field.is_some() || !key.starts_with(&family) {
+            continue;
+        }
+        if key.ends_with('*') {
+            default = Some(r);
+        } else {
+            tools.push(r);
+        }
+    }
+    Ok((default, tools))
+}
+
+/// Build the tool-permission view for one integration from its rules: the
+/// server-wide default plus one row per tool it offers (name, live
+/// description, explicit override, effective decision). The ONE view
+/// builder shared by GET and PUT.
 async fn tool_permissions_view(
     state: &AppState,
     integration: &db::models::McpIntegration,
-    perms: &tools::policy::McpServerPermissions,
-) -> serde_json::Value {
-    let slug = tool_name_prefix(&integration.name);
-    let mut rows = Vec::with_capacity(perms.known.len());
-    for tool in &perms.known {
+) -> Result<serde_json::Value, types::NeboError> {
+    let prefix = mcp_rule_prefix(integration);
+    let (default, overrides) = mcp_rules(state, &prefix)?;
+    let default_access = default.map(|r| access_of(r.effect)).unwrap_or("ask");
+    let family = format!("mcp__{prefix}__");
+    let mut names: Vec<String> = state
+        .tools
+        .get_tool_names()
+        .await
+        .into_iter()
+        .filter(|n| n.starts_with(&family))
+        .collect();
+    for r in &overrides {
+        let key = r.key.value().to_string();
+        if !names.contains(&key) {
+            names.push(key);
+        }
+    }
+    names.sort();
+    let mut rows = Vec::with_capacity(names.len());
+    for proxy_name in names {
+        let original = state
+            .tools
+            .mcp_proxy_info(&proxy_name)
+            .await
+            .map(|(_, original)| original)
+            .unwrap_or_else(|| proxy_name.trim_start_matches(&family).to_string());
         // Description comes from the live registry (registered at connect);
         // None when the server is currently disconnected.
-        let proxy_name = mcp::bridge::make_tool_name(&slug, tool);
         let description = state.tools.get_tool_description(&proxy_name).await;
+        let own = overrides.iter().find(|r| r.key.value() == proxy_name).map(|r| access_of(r.effect));
         rows.push(serde_json::json!({
-            "name": tool,
+            "name": original,
             "description": description,
-            "override": perms.tools.get(tool).map(|a| a.as_str()),
-            "effective": perms.decide(tool).as_str(),
+            "override": own,
+            "effective": own.unwrap_or(default_access),
         }));
     }
-    serde_json::json!({
-        "default": perms.default.as_str(),
+    Ok(serde_json::json!({
+        "default": default_access,
         "tools": rows,
         "total": rows.len(),
-    })
+    }))
 }
 
-/// GET /api/v1/integrations/:id/tool-permissions — the server's tri-state tool
-/// permission map (server-wide default + per-tool overrides).
+/// GET /api/v1/integrations/:id/tool-permissions — the server's tool
+/// permissions (server-wide default + per-tool overrides), from its rules.
 pub async fn get_tool_permissions(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1615,14 +1668,7 @@ pub async fn get_tool_permissions(
         .get_mcp_integration(&id)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
-    let perms = tools::policy::McpServerPermissions::from_json(
-        state
-            .store
-            .get_mcp_tool_permissions(&id)
-            .map_err(to_error_response)?
-            .as_deref(),
-    );
-    Ok(Json(tool_permissions_view(&state, &integration, &perms).await))
+    Ok(Json(tool_permissions_view(&state, &integration).await.map_err(to_error_response)?))
 }
 
 /// PUT /api/v1/integrations/:id/tool-permissions body: the full replacement
@@ -1636,50 +1682,62 @@ pub struct UpdateToolPermissionsBody {
 }
 
 /// PUT /api/v1/integrations/:id/tool-permissions — replace the server's default
-/// and per-tool overrides. The synced tool list (`known`) is server-owned and
-/// preserved; it only changes through the connect/refresh sync.
+/// and per-tool overrides, as the owner's company rules.
 pub async fn update_tool_permissions(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<UpdateToolPermissionsBody>,
 ) -> HandlerResult<serde_json::Value> {
+    use types::permissions::{Rule, RuleKey, RuleSource, Scope, Writer};
     let integration = state
         .store
         .get_mcp_integration(&id)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let default = tools::policy::McpToolAccess::parse(&body.default).ok_or_else(|| {
+    let default = effect_of(&body.default).ok_or_else(|| {
         to_error_response(types::NeboError::Validation(format!(
             "invalid default '{}' — expected allow, ask, or deny",
             body.default
         )))
     })?;
-    let mut overrides = std::collections::HashMap::new();
+    let mut overrides = Vec::new();
     for (tool, access) in &body.tools {
-        let access = tools::policy::McpToolAccess::parse(access).ok_or_else(|| {
+        let effect = effect_of(access).ok_or_else(|| {
             to_error_response(types::NeboError::Validation(format!(
                 "invalid access '{access}' for tool '{tool}' — expected allow, ask, or deny"
             )))
         })?;
-        overrides.insert(tool.clone(), access);
+        overrides.push((tool.clone(), effect));
     }
 
-    let mut perms = tools::policy::McpServerPermissions::from_json(
-        state
-            .store
-            .get_mcp_tool_permissions(&id)
-            .map_err(to_error_response)?
-            .as_deref(),
-    );
-    perms.default = default;
-    perms.tools = overrides;
+    let prefix = mcp_rule_prefix(&integration);
+    let rule_err = |e: types::permissions::RuleError| to_error_response(types::NeboError::Validation(e.to_string()));
+    let rule = |key: String, effect| Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope: Scope::Company,
+        key: RuleKey::Tool(key),
+        field: None,
+        effect,
+        money: None,
+        source: RuleSource::Owner,
+        locked: false,
+        created_at: chrono::Utc::now().timestamp(),
+    };
     state
         .store
-        .set_mcp_tool_permissions(&id, &perms.to_json())
-        .map_err(to_error_response)?;
+        .write_permission_rule(&rule(format!("mcp__{prefix}__*"), default), &Writer::Owner)
+        .map_err(rule_err)?;
+    let wanted: Vec<String> = overrides.iter().map(|(tool, _)| mcp::bridge::make_tool_name(&prefix, tool)).collect();
+    let (_, existing) = mcp_rules(&state, &prefix).map_err(to_error_response)?;
+    for r in existing.iter().filter(|r| !r.locked && !wanted.iter().any(|w| w == r.key.value())) {
+        state.store.remove_permission_rule(&r.id, &Writer::Owner).map_err(rule_err)?;
+    }
+    for ((_, effect), key) in overrides.into_iter().zip(wanted) {
+        state.store.write_permission_rule(&rule(key, effect), &Writer::Owner).map_err(rule_err)?;
+    }
 
-    Ok(Json(tool_permissions_view(&state, &integration, &perms).await))
+    Ok(Json(tool_permissions_view(&state, &integration).await.map_err(to_error_response)?))
 }
 
 /// GET /api/v1/integrations/tools

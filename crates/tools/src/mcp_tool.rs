@@ -691,7 +691,7 @@ mod roster_tests {
     async fn the_description_follows_the_proxies_in_the_registry() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap());
-        let registry = Arc::new(Registry::new(crate::policy::Policy::default()));
+        let registry = Arc::new(Registry::new(crate::gate::test_gate()));
         let client = Arc::new(mcp::McpClient::new(Arc::new(mcp::crypto::Encryptor::generate())));
         let bridge = Arc::new(mcp::Bridge::new(client, registry.clone()));
         registry.set_bridge(bridge);

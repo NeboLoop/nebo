@@ -158,9 +158,9 @@ pub async fn agent_mcp_handler(
                         "This run has ended, so its tool access has too. Nothing was run.",
                     ),
                     Some(Some(grant)) => {
-                        call_tool(&state.store, &state.tools, Some(&grant), name, arguments).await
+                        call_tool(&state.tools, Some(&grant), name, arguments).await
                     }
-                    None => call_tool(&state.store, &state.tools, None, name, arguments).await,
+                    None => call_tool(&state.tools, None, name, arguments).await,
                 };
 
                 let content = serde_json::json!([{
@@ -190,91 +190,32 @@ pub async fn agent_mcp_handler(
 /// Run one `tools/call` that arrived over `/agent/mcp`.
 ///
 /// `run` is the run a CLI provider's call carries the credential of: the call
-/// executes as that run — its context, its employee's rules, its approval
-/// card — exactly as the runner's own tool call would. Without one the caller
-/// is an outside MCP client (Claude Desktop, Cursor): `Origin::Mcp`, under
-/// the rules of the main assistant resolved the way a chat run resolves them,
-/// with nobody to ask, so what would ask is refused as for any unattended run.
-/// Either way the call passes the runner's permission gate, then the registry.
+/// executes as that run — its context and its grant — exactly as the runner's
+/// own tool call would. Without one the caller is an outside MCP client
+/// (Claude Desktop, Cursor): `Origin::Mcp` through `Door::Mcp`, under the main
+/// assistant's grant. Either way the registry's one permission check decides.
 async fn call_tool(
-    store: &std::sync::Arc<db::Store>,
     tools: &tools::Registry,
     run: Option<&agent::RunGrant>,
     name: &str,
     arguments: serde_json::Value,
 ) -> tools::ToolResult {
-    let outside;
-    let run = match run {
-        Some(run) => run,
-        None => {
-            outside = outside_client(store);
-            &outside
-        }
+    let ctx = match run {
+        Some(run) => run.ctx.clone(),
+        None => outside_client(),
     };
-    let call = ai::ToolCall {
-        // The approval card is keyed by the call id.
-        id: format!("mcp-{}", uuid::Uuid::new_v4().simple()),
-        name: name.to_string(),
-        input: tools.normalize_input(name, arguments).await,
-    };
-    let mut blocked = vec![None];
-    let gate = agent::gate_tool_calls(
-        &agent::GateRun {
-            tools,
-            store,
-            agent_id: &run.agent_id,
-            session_id: &run.ctx.session_id,
-            session_key: &run.ctx.session_key,
-            origin: run.ctx.origin,
-            full_access: run.ctx.full_access,
-            entity_permissions: run.ctx.entity_permissions.as_ref(),
-            operation_policy: run.ctx.operation_policy.as_ref(),
-            approval: run.approval.as_ref().map(|door| agent::ApprovalDoor {
-                channels: &door.channels,
-                tx: &door.tx,
-                cancel_token: &door.cancel_token,
-            }),
-            approval_relay: run.approval_relay,
-            workflow_mode: run.workflow_mode.as_ref(),
-            sessions: run.sessions.as_ref(),
-        },
-        std::slice::from_ref(&call),
-        &mut blocked,
-    )
-    .await;
-    if let Some((_, refused)) = blocked.pop().flatten() {
-        return refused;
-    }
-    let ctx = tools::ToolContext {
-        approved_categories: gate.approved_categories,
-        ..run.ctx.clone()
-    };
-    tools.execute(&ctx, &call.name, call.input).await
+    tools.execute(&ctx, name, arguments).await
 }
 
-/// An outside MCP client's standing: the main assistant's rules, as a chat
-/// run resolves them, and no approval door.
-fn outside_client(store: &db::Store) -> agent::RunGrant {
-    let rules = crate::entity_config::resolve_for_chat(store, "main", "main");
-    let (permissions, resource_grants, _, _, allowed_paths, operation_policy) =
-        crate::chat_dispatch::entity_run_params(rules.as_ref());
-    agent::RunGrant {
-        ctx: tools::ToolContext {
-            origin: Origin::Mcp,
-            user_id: "mcp-client".into(),
-            session_key: "mcp".into(),
-            entity_permissions: permissions,
-            operation_policy,
-            resource_grants,
-            allowed_paths,
-            full_access: crate::chat_dispatch::resolve_full_access(store),
-            ..Default::default()
-        },
-        agent_id: String::new(),
-        approval: None,
-        approval_relay: false,
-        workflow_mode: None,
-        sessions: None,
+/// An outside MCP client's standing: the main assistant's grant, which the
+/// permission check resolves from the session.
+fn outside_client() -> tools::ToolContext {
+    tools::ToolContext {
+        origin: Origin::Mcp,
+        door: types::permissions::Door::Mcp,
+        user_id: "mcp-client".into(),
+        session_key: "mcp".into(),
+        ..Default::default()
     }
 }
 
@@ -512,6 +453,7 @@ mod tests {
     use std::sync::Arc;
     use tools::registry::DynTool;
     use tools::{ToolContext, ToolResult};
+    use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
 
     /// A tool that reports whether it ran, declaring the rule key and
     /// capability the gates read.
@@ -559,56 +501,68 @@ mod tests {
         }
     }
 
-    async fn setup(probe: Probe, rules: serde_json::Value) -> (tempfile::TempDir, Arc<db::Store>, tools::Registry) {
+    fn rule(scope: Scope, key: RuleKey, effect: Effect) -> Rule {
+        Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope,
+            key,
+            field: None,
+            effect,
+            money: None,
+            source: RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        }
+    }
+
+    async fn setup(probe: Probe, rules: Vec<Rule>) -> (tempfile::TempDir, Arc<db::Store>, tools::Registry) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap());
-        store.upsert_entity_config("main", "main", &rules).unwrap();
-        let registry = tools::Registry::new(tools::Policy::default());
+        for r in rules {
+            store.write_permission_rule(&r, &Writer::Owner).unwrap();
+        }
+        let registry = tools::Registry::new(Arc::new(agent::Check::new(store.clone())));
         registry.register(Box::new(probe)).await;
         (dir, store, registry)
     }
 
+    fn company(key: RuleKey, effect: Effect) -> Rule {
+        rule(Scope::Company, key, effect)
+    }
+
     #[tokio::test]
     async fn a_capability_the_employee_lacks_is_refused() {
-        let (_d, store, registry) = setup(
-            Probe::web(),
-            serde_json::json!({ "permissions": r#"{"web":false}"# }),
-        )
-        .await;
-        let r = call_tool(&store, &registry, None, "web", serde_json::json!({})).await;
+        let (_d, _store, registry) = setup(Probe::web(), vec![company(RuleKey::Capability("web".into()), Effect::Deny)]).await;
+        let r = call_tool(&registry, None, "web", serde_json::json!({})).await;
         assert!(r.is_error, "ran without the web capability: {}", r.content);
-        assert!(r.content.starts_with("PERMISSION_REQUIRED:web"), "{}", r.content);
+        assert!(r.content.contains("permission is off"), "{}", r.content);
     }
 
     #[tokio::test]
     async fn a_capability_the_employee_has_runs() {
-        let (_d, store, registry) = setup(
-            Probe::web(),
-            serde_json::json!({ "permissions": r#"{"web":true}"# }),
-        )
-        .await;
-        let r = call_tool(&store, &registry, None, "web", serde_json::json!({})).await;
+        let (_d, _store, registry) = setup(Probe::web(), vec![company(RuleKey::Capability("web".into()), Effect::Allow)]).await;
+        let r = call_tool(&registry, None, "web", serde_json::json!({})).await;
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(r.content, "RAN");
     }
 
     #[tokio::test]
     async fn a_blocked_operation_is_refused() {
-        let (_d, store, registry) = setup(
+        let (_d, _store, registry) = setup(
             Probe { name: "plugin", operation: Some("payments.charge"), key: "plugin__payments", capability: None },
-            serde_json::json!({ "operationPolicy": r#"{"operations":{"payments.charge":"blocked"}}"# }),
+            vec![company(RuleKey::Operation("payments.charge".into()), Effect::Deny)],
         )
         .await;
-        let r = call_tool(&store, &registry, None, "plugin", serde_json::json!({})).await;
-        assert!(r.is_error, "a Blocked operation ran: {}", r.content);
-        assert!(r.content.contains("Blocked"), "{}", r.content);
+        let r = call_tool(&registry, None, "plugin", serde_json::json!({})).await;
+        assert!(r.is_error, "a denied operation ran: {}", r.content);
+        assert!(r.content.contains("turned off"), "{}", r.content);
     }
 
     // An outside client is an MCP client, whatever any run is doing.
     #[tokio::test]
     async fn an_outside_client_is_an_mcp_client() {
-        let (_d, store, registry) = setup(Probe::shell(), serde_json::json!({})).await;
-        let r = call_tool(&store, &registry, None, "os", shell_call()).await;
+        let (_d, _store, registry) = setup(Probe::shell(), vec![company(RuleKey::Capability("shell".into()), Effect::Allow)]).await;
+        let r = call_tool(&registry, None, "os", shell_call()).await;
         assert!(r.is_error, "shell ran for an MCP client: {}", r.content);
         assert!(r.content.contains("not permitted"), "{}", r.content);
     }
@@ -618,21 +572,23 @@ mod tests {
     }
 
     /// A chat run on the CLI provider, as the runner issues it: the owner's
-    /// own chat (Origin::User) for an employee with the given rules.
-    fn cli_run(permissions: &[(&str, bool)], door: Option<agent::tool_credentials::OwnedApprovalDoor>) -> agent::RunGrant {
+    /// own chat (Origin::User) for an employee with the given shell rule.
+    fn cli_run(store: &db::Store, shell: Effect) -> agent::RunGrant {
+        store
+            .write_permission_rule(
+                &rule(Scope::Employee("emp-1".into()), RuleKey::Capability("shell".into()), shell),
+                &Writer::Owner,
+            )
+            .unwrap();
         agent::RunGrant {
             ctx: ToolContext {
                 origin: Origin::User,
                 session_key: "agent:emp-1:web".into(),
                 session_id: "s-1".into(),
-                entity_permissions: Some(permissions.iter().map(|(k, v)| (k.to_string(), *v)).collect()),
+                grant: Some(Arc::new(agent::resolve_grant(store, "emp-1", None))),
                 ..Default::default()
             },
             agent_id: "emp-1".into(),
-            approval: door,
-            approval_relay: false,
-            workflow_mode: None,
-            sessions: None,
         }
     }
 
@@ -641,46 +597,32 @@ mod tests {
     // employee allowed shell.
     #[tokio::test]
     async fn a_cli_provider_run_calls_as_its_run() {
-        let (_d, store, registry) = setup(Probe::shell(), serde_json::json!({})).await;
-        let run = cli_run(&[("shell", true)], None);
-        let r = call_tool(&store, &registry, Some(&run), "os", shell_call()).await;
+        let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
+        let run = cli_run(&store, Effect::Allow);
+        let r = call_tool(&registry, Some(&run), "os", shell_call()).await;
         assert!(!r.is_error, "the run's own shell call was refused: {}", r.content);
         assert_eq!(r.content, "RAN");
     }
 
-    // ...and under that employee's rules: shell off, nobody to ask → refused.
+    // ...and under that employee's rules: shell denied → refused.
     #[tokio::test]
     async fn a_cli_provider_run_keeps_its_employees_rules() {
-        let (_d, store, registry) = setup(Probe::shell(), serde_json::json!({})).await;
-        let run = cli_run(&[("shell", false)], None);
-        let r = call_tool(&store, &registry, Some(&run), "os", shell_call()).await;
+        let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
+        let run = cli_run(&store, Effect::Deny);
+        let r = call_tool(&registry, Some(&run), "os", shell_call()).await;
         assert!(r.is_error, "{}", r.content);
-        assert!(r.content.starts_with("PERMISSION_REQUIRED:shell"), "{}", r.content);
+        assert!(r.content.contains("permission is off"), "{}", r.content);
     }
 
-    // A capability that is off asks the owner on the run's approval card,
-    // exactly as the runner's own call would; "once" lets it run.
+    // A call an ask rule covers parks on the owner, exactly as the runner's
+    // own call would: it does not run, and the ask is written.
     #[tokio::test]
-    async fn a_cli_provider_runs_ask_reaches_the_owner() {
-        let (_d, store, registry) = setup(Probe::shell(), serde_json::json!({})).await;
-        let channels: tools::ApprovalChannels = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        let door = agent::tool_credentials::OwnedApprovalDoor {
-            channels: channels.clone(),
-            tx,
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-        };
-        let owner = tokio::spawn(async move {
-            let card = rx.recv().await.expect("an approval card");
-            assert_eq!(card.event_type, ai::StreamEventType::ApprovalRequest);
-            let id = card.tool_call.expect("the call on the card").id;
-            let answer = channels.lock().await.remove(&id).expect("a waiting answer");
-            answer.send("once".to_string()).unwrap();
-        });
-        let run = cli_run(&[("shell", false)], Some(door));
-        let r = call_tool(&store, &registry, Some(&run), "os", shell_call()).await;
-        owner.abort();
-        assert!(!r.is_error, "{}", r.content);
-        assert_eq!(r.content, "RAN");
+    async fn a_cli_provider_runs_ask_parks_for_the_owner() {
+        let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
+        let run = cli_run(&store, Effect::Ask);
+        let r = call_tool(&registry, Some(&run), "os", shell_call()).await;
+        assert_ne!(r.content, "RAN", "an asked call ran");
+        let ask = r.parked_ask.as_deref().expect("the call parked");
+        assert_eq!(store.get_permission_ask(ask).unwrap().map(|a| a.status).as_deref(), Some("open"));
     }
 }
