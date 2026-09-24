@@ -271,6 +271,7 @@
   chatError={chat.chatError}
   {recapText}
   activityStatus={chat.activityStatus}
+  helpers={chat.helpers}
   askQueueLength={chat.askQueueLength}
   hasMore={chat.hasMore}
   isLoadingMore={chat.isLoadingMore}

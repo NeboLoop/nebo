@@ -644,9 +644,17 @@ impl Runner {
         // the transcript clean and frames the queued message for the model
         // only. Untrusted caller framing (phone lines) rides along in the
         // briefing below.
-        let via = if req.channel.is_empty() { "chat" } else { req.channel.as_str() };
+        // A coworker's run names its sender as the audience: its message is a
+        // colleague's, never framed as the owner's.
+        let from = match req.audience.as_deref() {
+            Some(coworker) => MidTurnFrom::Coworker { from: coworker.to_string() },
+            None => {
+                let via = if req.channel.is_empty() { "chat" } else { req.channel.as_str() };
+                MidTurnFrom::Owner { via: via.to_string() }
+            }
+        };
         let queue = || {
-            let meta = MidTurnFrom::Owner { via: via.to_string() }.metadata();
+            let meta = from.metadata();
             if let Err(e) = self.sessions.append_message(&session_id, "user", &req.prompt, None, None, Some(&meta)) {
                 warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
             }

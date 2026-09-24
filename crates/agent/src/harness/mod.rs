@@ -195,6 +195,7 @@ pub struct Delivery {
 }
 
 /// The seat a turn asks for; `seat::resolve_seat` turns it into a `Seat`.
+#[derive(Clone)]
 pub struct SeatRequest {
     pub agent_id: String,
     pub user_id: String,
