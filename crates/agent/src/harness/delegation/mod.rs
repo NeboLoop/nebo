@@ -27,6 +27,7 @@ use tracing::{info, warn};
 use super::{Harness, HarnessError, SeatRequest, TurnHandle, TurnInput, TurnMode, TurnRequest};
 use crate::session::SessionManager;
 use child::Parent;
+use types::permissions::Grant;
 use types::provenance::ProvenanceClass;
 
 /// Nesting depth cap. A helper at this depth has no helper tool; a launch
@@ -271,6 +272,8 @@ struct Helper {
     /// The seat the helper was built from (its parent's), kept so a
     /// notification turn is built by the same constructor.
     parent_seat: SeatRequest,
+    /// The parent's grant, the helper's ceiling.
+    parent_grant: Option<types::permissions::Grant>,
     running: bool,
     cancel: CancellationToken,
     /// A foreground launch waiting on this helper's first completion.
@@ -378,22 +381,25 @@ impl Helpers {
     pub async fn delegate(
         self: &Arc<Self>,
         turn: &TurnRequest,
+        grant: Option<&Grant>,
         run_taint: &[ProvenanceClass],
         input: &serde_json::Value,
     ) -> Result<String, String> {
         let spec = HelperSpec::from_input(input)?;
-        Ok(match self.launch(turn, run_taint, spec).await? {
+        Ok(match self.launch(turn, grant, run_taint, spec).await? {
             Launch::Background { task_id } => launch_result(&task_id),
-            Launch::Finished(c) => notify::render_result(&c),
+            Launch::Finished(c) => notify::render_foreground(&c),
         })
     }
 
-    /// Start a helper for the running turn `turn`. A background helper returns at
-    /// once; a foreground one returns its completion, or moves to the
-    /// background when it outlasts the foreground budget.
+    /// Start a helper for the running turn `turn`, which holds `grant`. A
+    /// background helper returns at once; a foreground one returns its
+    /// completion, or moves to the background when it outlasts the
+    /// foreground budget.
     pub async fn launch(
         self: &Arc<Self>,
         turn: &TurnRequest,
+        grant: Option<&Grant>,
         run_taint: &[ProvenanceClass],
         spec: HelperSpec,
     ) -> Result<Launch, String> {
@@ -409,7 +415,7 @@ impl Helpers {
         let parent_seat = &turn.seat;
 
         let isolation = match spec.isolation {
-            Some(Isolation::Worktree) => Some(isolate(parent_seat, &task_id).await?),
+            Some(Isolation::Worktree) => Some(isolate(parent_seat, grant, &task_id).await?),
             None => None,
         };
         let mut brief = spec.prompt.clone();
@@ -451,7 +457,7 @@ impl Helpers {
             let mut state = self.state();
             let cancel = state.session_token(parent_key).child_token();
             state.stops.insert(session_key.clone(), cancel.clone());
-            let parent = Parent { session_key: parent_key, seat: parent_seat, run_taint, cancel: cancel.clone() };
+            let parent = Parent { session_key: parent_key, seat: parent_seat, grant, run_taint, cancel: cancel.clone() };
             let req = child::child_request(&parent, &task_id, &spec, copy.as_deref(), TurnInput::Platform { text: brief });
             state.helpers.insert(
                 task_id.clone(),
@@ -462,6 +468,7 @@ impl Helpers {
                     kind: spec.kind,
                     model: spec.model.clone(),
                     parent_seat: parent_seat.clone(),
+                    parent_grant: grant.cloned(),
                     running: true,
                     cancel,
                     waiter: (!spec.background).then_some(tx),
@@ -509,6 +516,7 @@ impl Helpers {
     pub async fn send(
         self: &Arc<Self>,
         turn: &TurnRequest,
+        grant: Option<&Grant>,
         run_taint: &[ProvenanceClass],
         task_id: &str,
         message: &str,
@@ -547,7 +555,7 @@ impl Helpers {
             let spec = spec_of_row(&self.store, &row);
             let cancel = state.session_token(caller).child_token();
             state.stops.insert(row.session_key.clone(), cancel.clone());
-            let parent = Parent { session_key: caller, seat: &turn.seat, run_taint, cancel: cancel.clone() };
+            let parent = Parent { session_key: caller, seat: &turn.seat, grant, run_taint, cancel: cancel.clone() };
             let req = child::child_request(&parent, task_id, &spec, None, TurnInput::None);
             let helper = state.helpers.entry(task_id.to_string()).or_insert_with(|| Helper {
                 parent_key: caller.to_string(),
@@ -556,6 +564,7 @@ impl Helpers {
                 kind: spec.kind,
                 model: spec.model.clone(),
                 parent_seat: turn.seat.clone(),
+                parent_grant: grant.cloned(),
                 running: false,
                 cancel: cancel.clone(),
                 waiter: None,
@@ -565,6 +574,7 @@ impl Helpers {
             helper.running = true;
             helper.cancel = cancel;
             helper.parent_seat = turn.seat.clone();
+            helper.parent_grant = grant.cloned();
             helper.held = None;
             req
         };
@@ -751,7 +761,7 @@ impl Helpers {
                 && self
                     .sessions
                     .resolve_session_id_by_key(&h.session_key)
-                    .and_then(|id| self.sessions.get_messages(&id))
+                    .and_then(|id| self.store.get_chat_messages(&self.sessions.active_chat_id(&id)))
                     .is_ok_and(|messages| input_unheard(&messages));
             if continues {
                 info!(task_id = %task_id, "input reached the helper as its turn ended: running a turn to hear it");
@@ -767,6 +777,7 @@ impl Helpers {
                 let parent = Parent {
                     session_key: &h.parent_key,
                     seat: &h.parent_seat,
+                    grant: h.parent_grant.as_ref(),
                     run_taint: &[],
                     cancel: h.cancel.clone(),
                 };
@@ -851,6 +862,7 @@ impl Helpers {
                         let parent = Parent {
                             session_key: &p.parent_key,
                             seat: &p.parent_seat,
+                            grant: p.parent_grant.as_ref(),
                             run_taint: &[],
                             cancel: cancel.clone(),
                         };
@@ -895,7 +907,8 @@ impl Helpers {
 }
 
 /// True when the last message or notification that reached a helper's
-/// thread has no model step after it: it landed after the turn's last step.
+/// thread (as stored: notification rows are wrapped and meta, which the
+/// legacy history loader drops) has no model step after it: it landed after the turn's last step.
 fn input_unheard(messages: &[db::models::ChatMessage]) -> bool {
     let Some(at) = messages.iter().rposition(|m| {
         m.role == "user"
@@ -910,13 +923,21 @@ fn input_unheard(messages: &[db::models::ChatMessage]) -> bool {
 /// Fence an isolated helper to its own copy of the parent's project. A
 /// fenced parent may only isolate a project inside its fence: the copy is
 /// merged back there.
-async fn isolate(parent: &SeatRequest, task_id: &str) -> Result<crate::worktree::Isolation, String> {
+async fn isolate(
+    parent: &SeatRequest,
+    grant: Option<&Grant>,
+    task_id: &str,
+) -> Result<crate::worktree::Isolation, String> {
     let workspace = match parent.cwd.as_deref() {
         Some(cwd) => std::path::PathBuf::from(cwd),
         None => std::env::current_dir().map_err(|e| format!("No project folder to isolate: {e}"))?,
     };
-    if let Some(blocked) =
-        tools::safeguard::outside_allowed("isolate", &[workspace.to_string_lossy().into_owned()], &parent.allowed_paths)
+    let strings = |v: &[std::path::PathBuf]| -> Vec<String> { v.iter().map(|p| p.to_string_lossy().into_owned()).collect() };
+    let target = [workspace.to_string_lossy().into_owned()];
+    let folders = grant.map(|g| g.folders()).unwrap_or_default();
+    let fence = grant.and_then(|g| g.fence.clone()).unwrap_or_default();
+    if let Some(blocked) = tools::safeguard::outside_allowed("isolate", &target, &strings(&folders))
+        .or_else(|| tools::safeguard::outside_allowed("isolate", &target, &strings(&fence)))
     {
         return Err(blocked);
     }
@@ -1006,7 +1027,7 @@ mod tests {
             let helpers = Arc::new(Helpers {
                 store: store.clone(),
                 sessions: sessions.clone(),
-                registry: Arc::new(tools::Registry::new(tools::Policy::new())),
+                registry: Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone())))),
                 starter: Arc::new(Scripted { started: started_tx }),
                 wake: Some(wake_tx),
                 ui: Some(ui_tx),
@@ -1050,8 +1071,8 @@ mod tests {
 
         fn notification_rows(&self, key: &str) -> Vec<String> {
             let id = self.sessions.resolve_session_id_by_key(key).unwrap();
-            self.sessions
-                .get_messages(&id)
+            self.store
+                .get_chat_messages(&self.sessions.active_chat_id(&id))
                 .unwrap()
                 .into_iter()
                 .filter(notify::is_notification_row)
@@ -1082,7 +1103,7 @@ mod tests {
     async fn background_is_default_and_ends_the_turn() {
         let mut rig = Rig::new(FOREGROUND_BUDGET);
         let owner = rig.owner_turn("agent:bookkeeper:web");
-        let text = rig.helpers.delegate(&owner, &[], &call("Find the invoice.", None)).await.unwrap();
+        let text = rig.helpers.delegate(&owner, None, &[], &call("Find the invoice.", None)).await.unwrap();
         let id = task_id_of(&text);
         assert_eq!(text, launch_result(&id));
         assert!(text.contains("you know nothing about its result: don't report, guess or redo its work"));
@@ -1094,12 +1115,9 @@ mod tests {
         child.answer("Invoice 12 is missing.").await;
         assert_eq!(rig.next_wake().await, "agent:bookkeeper:web");
         let pending = rig.pending_notifications("agent:bookkeeper:web");
-        assert_eq!(
-            pending,
-            vec![format!(
-                "[Notification: not a message from the owner]\nhelper {id} \"read the ledger\": done\nInvoice 12 is missing."
-            )]
-        );
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].starts_with("<system-reminder>\n[Notification: not a message from the owner]"));
+        assert!(pending[0].contains(&format!("helper {id} \"read the ledger\": done\nInvoice 12 is missing.\n")));
     }
 
     #[tokio::test]
@@ -1112,16 +1130,17 @@ mod tests {
         let helpers = rig.helpers.clone();
         let quick = {
             let owner = rig.owner_turn("agent:bookkeeper:web");
-            tokio::spawn(async move { helpers.delegate(&owner, &[], &call("Quick look.", Some(false))).await })
+            tokio::spawn(async move { helpers.delegate(&owner, None, &[], &call("Quick look.", Some(false))).await })
         };
         rig.next_turn().await.answer("Found it.").await;
         let text = quick.await.unwrap().unwrap();
-        assert!(text.ends_with(": done\nFound it."), "{text}");
+        assert!(text.contains(": done\nFound it.\n"), "{text}");
+        assert!(text.contains("not a message from the owner"), "{text}");
         assert!(rig.wake.try_recv().is_err());
 
         // Past it: moved to the background, not dropped.
         let helpers = rig.helpers.clone();
-        let slow = tokio::spawn(async move { helpers.delegate(&owner, &[], &call("Slow job.", Some(false))).await });
+        let slow = tokio::spawn(async move { helpers.delegate(&owner, None, &[], &call("Slow job.", Some(false))).await });
         let child = rig.next_turn().await;
         let text = slow.await.unwrap().unwrap();
         let id = task_id_of(&text);
@@ -1129,14 +1148,14 @@ mod tests {
         assert!(!child.request.cancel.is_cancelled(), "it keeps running");
         child.answer("Done at last.").await;
         assert_eq!(rig.next_wake().await, "agent:bookkeeper:web");
-        assert!(rig.pending_notifications("agent:bookkeeper:web")[0].ends_with("done\nDone at last."));
+        assert!(rig.pending_notifications("agent:bookkeeper:web")[0].contains("done\nDone at last.\n"));
     }
 
     #[tokio::test]
     async fn no_parent_stream_on_background_helper() {
         let mut rig = Rig::new(FOREGROUND_BUDGET);
         let owner = rig.owner_turn("agent:bookkeeper:web");
-        rig.helpers.delegate(&owner, &[], &call("Look.", None)).await.unwrap();
+        rig.helpers.delegate(&owner, None, &[], &call("Look.", None)).await.unwrap();
         let child = rig.next_turn().await;
         let _ = child.events.send(StreamEvent::text("narrating to nobody")).await;
         let _ = child
@@ -1161,12 +1180,12 @@ mod tests {
     async fn busy_parent_hears_notification_next_step() {
         let mut rig = Rig::new(FOREGROUND_BUDGET);
         let owner = rig.owner_turn("agent:bookkeeper:web");
-        rig.helpers.delegate(&owner, &[], &call("Plan the close.", None)).await.unwrap();
+        rig.helpers.delegate(&owner, None, &[], &call("Plan the close.", None)).await.unwrap();
         let parent = rig.next_turn().await;
         let parent_key = parent.request.session_key.clone();
 
         // The helper starts a helper of its own and keeps working.
-        rig.helpers.delegate(&parent.request, &[], &call("Sum March.", None)).await.unwrap();
+        rig.helpers.delegate(&parent.request, None, &[], &call("Sum March.", None)).await.unwrap();
         let child = rig.next_turn().await;
         assert!(matches!(child.request.mode, TurnMode::Helper { depth: 2, .. }));
         child.answer("March is 4,210.").await;
@@ -1181,7 +1200,7 @@ mod tests {
         }
         let rows = rig.notification_rows(&parent_key);
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].ends_with("done\nMarch is 4,210."));
+        assert!(rows[0].contains("done\nMarch is 4,210.\n"));
         assert!(rig.wake.try_recv().is_err());
 
         // Its next step reads it; its report then goes to the owner.
@@ -1194,10 +1213,10 @@ mod tests {
     async fn notification_reaches_nested_parent() {
         let mut rig = Rig::new(FOREGROUND_BUDGET);
         let owner = rig.owner_turn("agent:bookkeeper:web");
-        rig.helpers.delegate(&owner, &[], &call("Plan the close.", None)).await.unwrap();
+        rig.helpers.delegate(&owner, None, &[], &call("Plan the close.", None)).await.unwrap();
         let parent = rig.next_turn().await;
         let parent_key = parent.request.session_key.clone();
-        rig.helpers.delegate(&parent.request, &[], &call("Sum March.", None)).await.unwrap();
+        rig.helpers.delegate(&parent.request, None, &[], &call("Sum March.", None)).await.unwrap();
         let child = rig.next_turn().await;
 
         // The parent ends its turn while its helper runs: it does not
@@ -1223,7 +1242,7 @@ mod tests {
         assert_eq!(rig.next_wake().await, "agent:bookkeeper:web");
         let pending = rig.pending_notifications("agent:bookkeeper:web");
         assert_eq!(pending.len(), 1);
-        assert!(pending[0].ends_with("done\nClose plan ready."), "{}", pending[0]);
+        assert!(pending[0].contains("done\nClose plan ready.\n"), "{}", pending[0]);
     }
 
     #[tokio::test]
@@ -1231,7 +1250,7 @@ mod tests {
         let mut rig = Rig::new(FOREGROUND_BUDGET);
         let key = "agent:bookkeeper:web";
         let first_turn = rig.owner_turn(key);
-        rig.helpers.delegate(&first_turn, &[], &call("Long job.", None)).await.unwrap();
+        rig.helpers.delegate(&first_turn, None, &[], &call("Long job.", None)).await.unwrap();
         let child = rig.next_turn().await;
         drop(first_turn); // that turn is over
 
@@ -1259,7 +1278,7 @@ mod tests {
     async fn status_sees_only_own_children() {
         let mut rig = Rig::new(FOREGROUND_BUDGET);
         let mine = rig.owner_turn("agent:bookkeeper:web");
-        let text = rig.helpers.delegate(&mine, &[], &call("Look.", None)).await.unwrap();
+        let text = rig.helpers.delegate(&mine, None, &[], &call("Look.", None)).await.unwrap();
         let id = task_id_of(&text);
         let _child = rig.next_turn().await;
 
@@ -1278,9 +1297,9 @@ mod tests {
     async fn a_running_helper_hears_a_message_and_one_landing_late_gets_a_turn() {
         let mut rig = Rig::new(FOREGROUND_BUDGET);
         let owner = rig.owner_turn("agent:bookkeeper:web");
-        let id = task_id_of(&rig.helpers.delegate(&owner, &[], &call("Sum Q1.", None)).await.unwrap());
+        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Sum Q1.", None)).await.unwrap());
         let child = rig.next_turn().await;
-        let text = rig.helpers.send(&owner, &[], &id, "Include April too.").await.unwrap();
+        let text = rig.helpers.send(&owner, None, &[], &id, "Include April too.").await.unwrap();
         assert!(text.contains("hears it at its next step"), "{text}");
         let child_id = rig.sessions.resolve_session_id_by_key(&child.request.session_key).unwrap();
         let row = rig.sessions.get_messages(&child_id).unwrap().pop().unwrap();
@@ -1297,7 +1316,7 @@ mod tests {
         again.answer("With April, 16,100.").await;
         rig.next_wake().await;
         let pending = rig.pending_notifications("agent:bookkeeper:web");
-        assert!(pending[0].ends_with("done\nQ1 is 12,000.\n\nWith April, 16,100."), "{}", pending[0]);
+        assert!(pending[0].contains("done\nQ1 is 12,000.\n\nWith April, 16,100.\n"), "{}", pending[0]);
     }
 
     #[tokio::test]
@@ -1305,7 +1324,7 @@ mod tests {
         let mut rig = Rig::new(FOREGROUND_BUDGET);
         let owner = rig.owner_turn("agent:bookkeeper:web");
         let input = serde_json::json!({"description": "scan logs", "prompt": "Scan.", "helper_type": "explore"});
-        let id = task_id_of(&rig.helpers.delegate(&owner, &[], &input).await.unwrap());
+        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &input).await.unwrap());
         let child = rig.next_turn().await;
         rig.heard(&child.request.session_key);
         child.answer("Three errors.").await;
@@ -1316,7 +1335,7 @@ mod tests {
         let Rig { store, _dir, .. } = rig;
         let mut rig = Rig::on(store, _dir, FOREGROUND_BUDGET);
         let owner = rig.owner_turn("agent:bookkeeper:web");
-        let text = rig.helpers.send(&owner, &[], &id, "Which job threw them?").await.unwrap();
+        let text = rig.helpers.send(&owner, None, &[], &id, "Which job threw them?").await.unwrap();
         assert_eq!(text, launch_result(&id));
         let resumed = rig.next_turn().await;
         assert_eq!(resumed.request.session_key, helper_key("agent:bookkeeper:web", &id));
@@ -1325,7 +1344,7 @@ mod tests {
 
         // Only the helper's own parent can resume it.
         let other = rig.owner_turn("agent:ceo:web");
-        assert!(rig.helpers.send(&other, &[], &id, "hi").await.is_err());
+        assert!(rig.helpers.send(&other, None, &[], &id, "hi").await.is_err());
     }
 
     fn target(key: &str, read_only: bool) -> Target {
@@ -1373,9 +1392,9 @@ mod tests {
         let rig = Rig::new(FOREGROUND_BUDGET);
         let mut deep = rig.owner_turn("subagent:subagent:subagent:agent:x:web:a:b:c");
         deep.mode = helper_mode(HelperKind::General, 3);
-        assert!(rig.helpers.delegate(&deep, &[], &call("x", None)).await.is_err());
+        assert!(rig.helpers.delegate(&deep, None, &[], &call("x", None)).await.is_err());
         deep.mode = TurnMode::Chat;
-        assert!(rig.helpers.delegate(&deep, &[], &call("x", None)).await.is_err(), "the key counts too");
+        assert!(rig.helpers.delegate(&deep, None, &[], &call("x", None)).await.is_err(), "the key counts too");
     }
 
     #[test]

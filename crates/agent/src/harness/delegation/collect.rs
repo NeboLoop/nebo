@@ -1,6 +1,6 @@
 //! Collecting a helper's result: its final message only (or its last words,
-//! marked, when it stopped without one), tail kept past the cap with the full
-//! text spilled to a file.
+//! marked, when it stopped without one). A report past the cap goes through
+//! the one spill path: the full text saved, a preview of its start inline.
 
 use std::path::Path;
 use std::time::Duration;
@@ -11,8 +11,15 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Completion, CompletionStatus};
 
-/// A result longer than this keeps its tail; the full text is saved.
+/// A result longer than this is saved and previewed (the one spill path).
 pub const RESULT_CAP: usize = 100_000;
+
+/// The `stop_reason` of a helper turn's `Done` event when the turn ended at
+/// its step limit (`TurnExit::MaxSteps`). The turn driver sets it.
+pub const STOP_MAX_STEPS: &str = "max_steps";
+/// The `stop_reason` of the `Done` event when the turn ended at its spending
+/// limit (`TurnExit::SpendCap`).
+pub const STOP_SPEND_CAP: &str = "spend_cap";
 
 /// Marks a result that is not a final report.
 pub const NO_FINAL_REPORT: &str = "[no final report; last words before it stopped]";
@@ -27,6 +34,8 @@ pub struct Collected {
     pub error: Option<String>,
     pub stalled: Option<Duration>,
     pub cancelled: bool,
+    /// The turn ended at a limit, not because the work was done.
+    pub limit: Option<&'static str>,
     pub usage: ai::UsageInfo,
 }
 
@@ -48,6 +57,8 @@ impl Collected {
                 best_words(report, &self.last_words),
                 CompletionStatus::Partial { why: format!("no activity for {}s", window.as_secs()) },
             )
+        } else if let Some(why) = self.limit {
+            (best_words(report, &self.last_words), CompletionStatus::Partial { why: why.to_string() })
         } else if report.is_empty() {
             (
                 marked(&self.last_words),
@@ -60,7 +71,7 @@ impl Collected {
             task_id: task_id.to_string(),
             description: description.to_string(),
             status,
-            result: keep_tail(&text, spill_dir),
+            result: spill_if_long(&text, spill_dir),
             usage: self.usage,
         }
     }
@@ -121,7 +132,14 @@ pub async fn collect(
                     StreamEventType::Error => {
                         out.error = Some(event.error.unwrap_or_else(|| "the helper's turn failed".to_string()));
                     }
-                    StreamEventType::Done => break,
+                    StreamEventType::Done => {
+                        out.limit = match event.stop_reason.as_deref() {
+                            Some(STOP_MAX_STEPS) => Some("hit its step limit"),
+                            Some(STOP_SPEND_CAP) => Some("hit its spending limit"),
+                            _ => None,
+                        };
+                        break;
+                    }
                     _ => {}
                 }
             }
@@ -145,20 +163,13 @@ fn add_usage(total: &mut ai::UsageInfo, u: &ai::UsageInfo) {
     }
 }
 
-/// `text` within [`RESULT_CAP`] characters: an over-long report keeps its
-/// end, where the conclusion is, and says where the whole text was saved.
-pub fn keep_tail(text: &str, spill_dir: &Path) -> String {
-    let total = text.chars().count();
-    if total <= RESULT_CAP {
+/// `text`, or past [`RESULT_CAP`] characters the one spill path's note: the
+/// full text saved in `spill_dir`, a preview of its start inline.
+pub fn spill_if_long(text: &str, spill_dir: &Path) -> String {
+    if text.chars().count() <= RESULT_CAP {
         return text.to_string();
     }
-    let start = text.char_indices().nth(total - RESULT_CAP).map_or(0, |(i, _)| i);
-    let tail = &text[start..];
-    let saved = match tools::result_shape::save(spill_dir, text) {
-        Ok(path) => format!("the full report is saved at {}", path.display()),
-        Err(e) => format!("saving the full report failed ({e})"),
-    };
-    format!("[The report was {total} characters; this is its last {RESULT_CAP}, and {saved}.]\n…{tail}")
+    tools::result_shape::persist(spill_dir, text)
 }
 
 /// The first `max` characters of `s`, cut on a character boundary.
@@ -204,15 +215,31 @@ mod tests {
         assert_eq!(c.status, CompletionStatus::Done);
         assert_eq!(c.result, "The invoice is missing from March.", "narration never returns");
 
-        // Oversized: the tail (the conclusion) stays, the whole is saved.
-        let long = format!("{}THE END", "é".repeat(RESULT_CAP + 50));
+        // Oversized: the one spill path, as for any tool result: the whole
+        // text saved, its start previewed.
+        let long = format!("THE START{}THE END", "é".repeat(RESULT_CAP + 50));
         let got = run(vec![tool_call(), StreamEvent::text(long.clone()), StreamEvent::done()]).await;
         let c = got.into_completion("h-1", "find it", dir.path());
-        assert!(c.result.ends_with("THE END"));
-        assert!(c.result.starts_with(&format!("[The report was {} characters", long.chars().count())));
-        let path = c.result.split("saved at ").nth(1).unwrap().split(".]").next().unwrap();
+        assert_eq!(c.status, CompletionStatus::Done);
+        assert!(c.result.starts_with("<persisted-output>"), "{}", &c.result[..200]);
+        assert!(c.result.contains("THE START"));
+        assert!(!c.result.contains("THE END"));
+        let path = c.result.split("Full output saved to: ").nth(1).unwrap().lines().next().unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), long, "the full text is on disk");
-        assert!(c.result.chars().count() < RESULT_CAP + 300);
+        assert!(c.result.chars().count() < 3_000);
+    }
+
+    /// A turn that ended at its step or spending limit is partial, whatever
+    /// it last said.
+    #[tokio::test]
+    async fn a_helper_at_its_limit_reports_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        for (reason, why) in [(STOP_MAX_STEPS, "hit its step limit"), (STOP_SPEND_CAP, "hit its spending limit")] {
+            let got = run(vec![tool_call(), StreamEvent::text("Got through March."), StreamEvent::done_with_reason(reason)]).await;
+            let c = got.into_completion("h-1", "find it", dir.path());
+            assert_eq!(c.status, CompletionStatus::Partial { why: why.into() });
+            assert_eq!(c.result, "Got through March.");
+        }
     }
 
     #[tokio::test]
