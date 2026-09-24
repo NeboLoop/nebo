@@ -158,10 +158,10 @@ fn within(path: &Path, folder: &Path) -> bool {
 /// The mode an employee runs in: its own, else the company default, else
 /// Automatic.
 pub fn mode_of(store: &db::Store, agent_id: &str) -> Result<Mode, types::NeboError> {
-    if !agent_id.is_empty() {
-        if let Some(mode) = store.permission_mode(&Scope::Employee(agent_id.to_string()))? {
-            return Ok(mode);
-        }
+    if !agent_id.is_empty()
+        && let Some(mode) = store.permission_mode(&Scope::Employee(agent_id.to_string()))?
+    {
+        return Ok(mode);
     }
     Ok(store.permission_mode(&Scope::Company)?.unwrap_or_default())
 }

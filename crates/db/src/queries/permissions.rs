@@ -167,8 +167,9 @@ impl Store {
     /// A rule on the same scope, key and field is replaced (one rule per key
     /// and field per scope); the returned rule carries the stored id.
     ///
-    /// A locked rule changes only by its package. A package never replaces
-    /// the owner's own rule on the same key. An employee only narrows: it
+    /// A locked rule changes only by its package. A package's unlocked
+    /// must-ask never replaces the owner's own rule on the same key; a law
+    /// replaces anything. An employee only narrows: it
     /// writes deny and ask, and an allow only to tighten an existing allow's
     /// money.
     pub fn write_permission_rule(&self, rule: &Rule, by: &Writer) -> Result<Rule, RuleError> {
@@ -179,7 +180,9 @@ impl Store {
             .into_iter()
             .find(|r| r.key == rule.key && r.field == rule.field);
         match (&existing, by) {
-            (Some(e), Writer::Package { .. }) if !e.locked => return Ok(e.clone()),
+            // A package's must-ask never replaces a rule the owner wrote; a
+            // law (locked) ends whatever stood.
+            (Some(e), Writer::Package { .. }) if !e.locked && !rule.locked => return Ok(e.clone()),
             (Some(e), Writer::Owner | Writer::Migration | Writer::Employee { .. }) if e.locked => {
                 return Err(RuleError::Locked);
             }
@@ -589,13 +592,17 @@ mod tests {
         assert_eq!(store.remove_permission_rule(&narrowed.id, &employee), Err(RuleError::Widens));
         assert!(store.remove_permission_rule(&narrowed.id, &Writer::Owner).is_ok());
 
-        // A package never replaces the owner's own rule on the same key.
+        // A package's must-ask never replaces the owner's own rule on the same key.
         let owners = store
             .write_permission_rule(&rule(Scope::Company, RuleKey::Operation("mail.message.send".into()), None, Effect::Allow), &Writer::Owner)
             .unwrap();
-        let declared = Rule { locked: true, ..rule(Scope::Company, RuleKey::Operation("mail.message.send".into()), None, Effect::Ask) };
+        let declared = rule(Scope::Company, RuleKey::Operation("mail.message.send".into()), None, Effect::Ask);
         let kept = store.write_permission_rule(&declared, &Writer::Package { package: "p".into() }).unwrap();
-        assert_eq!((kept.id, kept.effect), (owners.id, Effect::Allow));
+        assert_eq!((kept.id, kept.effect), (owners.id.clone(), Effect::Allow));
+        // A law ends it.
+        let law = Rule { locked: true, ..rule(Scope::Company, RuleKey::Operation("mail.message.send".into()), None, Effect::Deny) };
+        let landed = store.write_permission_rule(&law, &Writer::Package { package: "p".into() }).unwrap();
+        assert_eq!((landed.id, landed.effect, landed.locked), (owners.id, Effect::Deny, true));
     }
 
     #[test]

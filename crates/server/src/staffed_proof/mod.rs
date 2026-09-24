@@ -333,10 +333,10 @@ impl Nebo {
     /// `amount_cents`, if any) for the seat, from a run arriving over
     /// `origin`.
     pub fn decide(&self, agent_id: &str, op: &str, origin: tools::Origin, amount_cents: Option<i64>) -> types::permissions::Decision {
-        let grant = agent::resolve_grant(&self.store(), agent_id, None);
+        let grant = agent::resolve_grant(self.store(), agent_id, None);
         let ctx = Self::ctx(agent_id, origin);
         let input = json!({});
-        let cx = agent::harness::permissions::CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &self.store() };
+        let cx = agent::harness::permissions::CheckCx { ctx: &ctx, input: &input, grant: &grant, store: self.store() };
         let mut effects = types::permissions::CallEffects::unknown();
         effects.money_cents = amount_cents;
         let target = types::permissions::Target {

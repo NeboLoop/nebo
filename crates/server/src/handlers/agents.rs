@@ -4470,10 +4470,11 @@ pub async fn handle_available(
 ///     itself (`interface_catalog::is_builtin_capability`);
 ///   * everything this employee has been TOLD about — the `ceiling` its package
 ///     declares, and every operation already carrying a rule (a pack's law, the
-///     owner's own setting, a standing grant). So an owner who builds their own
-///     employee around their own capability gets a row for it, and the
-///     permission check decides it, without that operation being in any list
-///     of ours.
+///     owner's own setting, a standing grant). So an owner who builds their
+///     own employee around their own capability gets a row for it, and the
+///     permission check decides it, without that operation being in any
+///     list of ours.
+///
 /// Writes go through the ONE canonical pathway — the entity-config PUT
 /// (`operationPolicy` patch key, written as rules) — this endpoint is the
 /// read-side aggregation only (CODE_AUDITOR Rule 8).
