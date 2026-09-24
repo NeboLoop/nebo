@@ -2,6 +2,10 @@
 	/** Sent as the answer when the user dismisses instead of choosing. Mirrors
 	 * `SKIP_SENTINEL` in crates/tools/src/origin.rs. */
 	export const SKIP_VALUE = '__skip__';
+	/** Sent as `failed:<the error shown>` when a card's action failed, so the
+	 * parked call learns what happened. Mirrors `CARD_FAILED_PREFIX` in
+	 * crates/tools/src/plugin_tool.rs. */
+	export const FAILED_PREFIX = 'failed:';
 
 	export type AskOption = string | { label: string; description?: string; recommended?: boolean };
 
@@ -101,6 +105,7 @@
 			const failed = list.find((h) => h.code && !hiredCodes.has(h.code));
 			const reason = e instanceof Error ? e.message : $t('chat.installFailed');
 			installError = failed?.name ? `${failed.name}: ${reason}` : reason;
+			fail(installError);
 		} finally {
 			installing = false;
 		}
@@ -119,6 +124,7 @@
 		} catch {
 			connecting = false;
 			connectError = $t('chat.connectFailed');
+			fail(connectError);
 		}
 	}
 
@@ -138,6 +144,7 @@
 				if ((data.plugin as string) === w.plugin) {
 					connecting = false;
 					connectError = (data.error as string) || $t('chat.connectFailed');
+					fail(connectError);
 				}
 			}),
 		];
@@ -160,11 +167,17 @@
 
 	const answered = $derived(response != null);
 	const wasSkipped = $derived(response === SKIP_VALUE);
+	const failedReason = $derived(response?.startsWith(FAILED_PREFIX) ? response.slice(FAILED_PREFIX.length) : null);
 
 	function submit(value: string) {
 		if (!answered && !disabled && !cancelled) {
 			onSubmit(requestId, value);
 		}
+	}
+
+	/** Answer the parked call with the failure the owner sees, on one line. */
+	function fail(reason: string) {
+		submit(FAILED_PREFIX + reason.replace(/\s+/g, ' ').trim());
 	}
 
 	function toggle(label: string) {
@@ -194,6 +207,8 @@
 	{#if answered}
 		{#if wasSkipped}
 			<div class="badge badge-ghost badge-sm">{$t('common.skipped')}</div>
+		{:else if failedReason != null}
+			<div class="text-xs text-error">{failedReason}</div>
 		{:else}
 			<div class="flex flex-wrap gap-1">
 				{#each (response ?? '').split(', ') as item}
