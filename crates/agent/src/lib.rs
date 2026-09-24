@@ -21,8 +21,6 @@ pub mod memory;
 /// defined identically in pruning, memory_flush, and large_input; a budget
 /// change had to land three times).
 pub const CHARS_PER_TOKEN: usize = 4;
-pub mod memory_debounce;
-pub mod memory_gate;
 pub mod memory_flush;
 pub mod orchestrator;
 pub mod workflow_loop;

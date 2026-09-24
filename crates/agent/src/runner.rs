@@ -2168,30 +2168,8 @@ async fn run_loop(
     // Joined (and deduped against the identity slice, which needs db_ctx)
     // right before the run loop starts.
     let recall_task = if !user_prompt.is_empty() {
-        hybrid_searcher.map(|searcher| {
-            let searcher = searcher.clone();
-            let recall_user_id = memory_user_id.clone();
-            let recall_prompt = user_prompt.to_string();
-            let t_start = std::time::Instant::now();
-            tokio::spawn(async move {
-                let results = searcher
-                    .search(
-                        &recall_prompt,
-                        &recall_user_id,
-                        db_context::PROMPT_MEMORY_CANDIDATES,
-                        // Relevance floor: with single-leg renormalization
-                        // and the corrected BM25 orientation, both installs
-                        // score real matches well above this — and a prompt
-                        // with NO relevant memories now injects NOTHING
-                        // instead of the best of the irrelevant (which was
-                        // 1.2k of noise on every turn, and what weak models
-                        // answered instead of the ask).
-                        Some(db_context::PROMPT_RECALL_MIN_SCORE),
-                    )
-                    .await;
-                (results, t_start.elapsed())
-            })
-        })
+        hybrid_searcher
+            .map(|searcher| db_context::spawn_prompt_recall(searcher, &memory_user_id, user_prompt))
     } else {
         None
     };
@@ -4499,7 +4477,8 @@ async fn run_loop(
     // loop resumed across user messages still meets the backstop.
     cross_turn_save(session_id, &action_call_counts, guard_cfg.same_action_limit);
 
-    // Debounced memory extraction: only runs after 5s idle per session.
+    // Memory extraction over the messages since the last one, no pre-gate.
+    // The runner has no agreed goal (the objective is not one).
     after_turn::MemoryExtraction {
         sessions,
         session_id,
@@ -4507,14 +4486,13 @@ async fn run_loop(
         store,
         concurrency,
         embedding_provider,
-        decide,
+        tools,
         memory_user_id: &memory_user_id,
         memory_topics: &memory_topics,
         memory_write_bar: &memory_write_bar,
         run_taint,
-        objective: &active_task,
+        goal: None,
         skip_memory,
-        gate_trace: side_trace("memory_gate"),
         trace: side_trace("memory_extract"),
     }
     .schedule()
