@@ -315,14 +315,37 @@ fn boundary_refusal(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
+/// What the `/agent/mcp` key check needs, fixed at startup.
+#[derive(Clone)]
+pub struct McpAuth {
+    /// The install's API key (`NEBO_MCP_API_KEY`), when one is set.
+    pub install_key: Option<String>,
+    /// Live per-run credentials (see `agent::tool_credentials`).
+    pub credentials: agent::ToolCredentials,
+}
+
 /// Opt-in API key auth for the MCP endpoint.
-/// If `NEBO_MCP_API_KEY` is set, requires `Authorization: Bearer <key>`.
+/// If `NEBO_MCP_API_KEY` is set, requires `Authorization: Bearer <key>` — or
+/// a live run credential (`X-Nebo-Run-Credential`): a CLI provider's tool
+/// calls carry their run's credential, never the install key.
 /// If not set, the endpoint is open (localhost-only use case).
-pub async fn mcp_api_key_auth(request: Request, next: Next) -> Response {
+pub async fn mcp_api_key_auth(
+    axum::extract::State(auth): axum::extract::State<McpAuth>,
+    request: Request,
+    next: Next,
+) -> Response {
     // No key configured → skip auth (zero-config localhost mode)
-    let Some(expected) = install_key() else {
+    let Some(expected) = auth.install_key else {
         return next.run(request).await;
     };
+
+    let run_credential = request
+        .headers()
+        .get(agent::tool_credentials::HEADER)
+        .and_then(|v| v.to_str().ok());
+    if run_credential.is_some_and(|t| auth.credentials.grant(t).is_some()) {
+        return next.run(request).await;
+    }
 
     let auth_header = request
         .headers()
@@ -628,5 +651,87 @@ mod boundary_tests {
             status(Boundary { install_key: Some("k".into()), ..loopback_bind() }, "/api/v1/agents", LOCAL, &[("host", "localhost:27895")]).await,
             StatusCode::OK
         );
+    }
+}
+
+#[cfg(test)]
+mod mcp_auth_tests {
+    use super::*;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use tower::ServiceExt;
+
+    fn app(auth: McpAuth) -> Router {
+        Router::new().route(
+            "/agent/mcp",
+            axum::routing::post(|| async { "ok" })
+                .layer(axum::middleware::from_fn_with_state(auth, mcp_api_key_auth)),
+        )
+    }
+
+    async fn status(auth: McpAuth, headers: &[(&str, &str)]) -> StatusCode {
+        let mut req = HttpRequest::builder().method("POST").uri("/agent/mcp");
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        app(auth).oneshot(req.body(Body::empty()).unwrap()).await.unwrap().status()
+    }
+
+    fn keyed(credentials: &agent::ToolCredentials) -> McpAuth {
+        McpAuth { install_key: Some("k-123".into()), credentials: credentials.clone() }
+    }
+
+    fn grant() -> agent::RunGrant {
+        agent::RunGrant {
+            ctx: Default::default(),
+            agent_id: "emp-1".into(),
+            approval: None,
+            approval_relay: false,
+            workflow_mode: None,
+            sessions: None,
+        }
+    }
+
+    // A CLI provider's tool calls carry their run's credential, never the
+    // install key: with a key set, the credential is what admits them.
+    #[tokio::test]
+    async fn a_live_run_credential_satisfies_the_key() {
+        let credentials = agent::ToolCredentials::default();
+        let guard = credentials.issue(grant());
+        assert_eq!(
+            status(keyed(&credentials), &[("x-nebo-run-credential", guard.token())]).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ended_or_unknown_credential_does_not() {
+        let credentials = agent::ToolCredentials::default();
+        let token = credentials.issue(grant()).token().to_string(); // guard dropped: revoked
+        assert_eq!(
+            status(keyed(&credentials), &[("x-nebo-run-credential", &token)]).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(keyed(&credentials), &[("x-nebo-run-credential", "made-up")]).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(status(keyed(&credentials), &[]).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_install_key_still_works_and_no_key_means_open() {
+        let credentials = agent::ToolCredentials::default();
+        assert_eq!(
+            status(keyed(&credentials), &[("authorization", "Bearer k-123")]).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(keyed(&credentials), &[("authorization", "Bearer nope")]).await,
+            StatusCode::UNAUTHORIZED
+        );
+        let open = McpAuth { install_key: None, credentials };
+        assert_eq!(status(open, &[]).await, StatusCode::OK);
     }
 }
