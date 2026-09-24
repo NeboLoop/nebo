@@ -639,6 +639,143 @@ fn input_target(input: &serde_json::Value) -> (&str, Option<(i64, i64)>) {
     (element_ref, coordinate)
 }
 
+/// Jev (TypeSafe through Janus), when the server installed it: picks the
+/// element an input action means from the elements that can take it.
+static DECIDER: std::sync::OnceLock<std::sync::Arc<ai::DecideClient>> = std::sync::OnceLock::new();
+/// Jev's misses per capture: two on one screen and the model drives until
+/// the screen changes.
+static JEV_MISSES: std::sync::Mutex<Vec<(String, u8)>> = std::sync::Mutex::new(Vec::new());
+
+/// Recent acts and the screen each left behind: (app + action + target,
+/// fingerprint of the after-state). A toggle loop — click the title, a
+/// popover opens; click the text, it closes; again — never repeats a result
+/// byte for byte (every capture has a new id), so the runner's repeat guard
+/// cannot see it. The same act producing the same screen three times is
+/// refused the fourth (Stadium, 2026-09-24: 20+ alternating clicks).
+static RECENT_ACTS: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+
+fn screen_fingerprint(snap: &Snapshot) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut parts: Vec<String> = snap
+        .elements
+        .iter()
+        .map(|e| format!("{}|{}|{}", e.role, e.label, e.value.as_deref().unwrap_or("")))
+        .collect();
+    parts.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    parts.hash(&mut h);
+    snap.frame.as_ref().map(|f| (f.x, f.y, f.width, f.height)).hash(&mut h);
+    h.finish()
+}
+
+/// How many of the last acts were this act and left this same screen.
+fn circling(act: &str, fingerprint: Option<u64>) -> usize {
+    let Ok(acts) = RECENT_ACTS.lock() else { return 0 };
+    acts.iter().rev().take(10).filter(|(a, f)| a == act && fingerprint.map_or(true, |fp| *f == fp)).count()
+}
+
+fn remember_act(act: String, fingerprint: u64) {
+    if let Ok(mut acts) = RECENT_ACTS.lock() {
+        acts.push((act, fingerprint));
+        let n = acts.len();
+        if n > 20 {
+            acts.drain(..n - 20);
+        }
+    }
+}
+
+/// Installed once at server boot.
+pub fn set_decider(client: std::sync::Arc<ai::DecideClient>) {
+    let _ = DECIDER.set(client);
+}
+
+/// What an element offers, for the choice list Jev reads.
+fn describe_for_pick(e: &UIElement) -> String {
+    let mut d = format!("{} \"{}\"", e.role, e.label);
+    if let Some(v) = &e.value {
+        d.push_str(&format!(" = \"{}\"", v.chars().take(60).collect::<String>()));
+    }
+    if e.path.starts_with("m:") {
+        d.push_str(" (menu item)");
+    }
+    d
+}
+
+/// The elements of `snap` that `action` can act on: pressable for a click,
+/// editable for type, anything with a context menu for a right-click.
+fn pick_candidates<'a>(action: &str, snap: &'a Snapshot) -> Vec<&'a UIElement> {
+    snap.elements
+        .iter()
+        .filter(|e| e.actionable && (!e.label.is_empty() || e.value.is_some()))
+        .filter(|e| match action {
+            "type" => e.actions.iter().any(|a| a == "AXSetValue") || is_editable_role(&e.role),
+            "right_click" => e.actions.iter().any(|a| a == "AXShowMenu" || a == "AXPress"),
+            _ => e.actions.is_empty() || e.actions.iter().any(|a| a == "AXPress" || a == "AXShowMenu"),
+        })
+        .take(60)
+        .collect()
+}
+
+/// Resolve `target` ("the Save button") to one element of `snap`. A single
+/// element carrying exactly that label needs no model; otherwise Jev picks,
+/// accepted at confidence 0.7 or more. Every other outcome falls through to
+/// the model with the reason, and nothing moves.
+async fn jev_pick(action: &str, target: &str, snap: &Snapshot) -> Result<(String, String), String> {
+    let candidates = pick_candidates(action, snap);
+    if candidates.is_empty() {
+        return Err("this screen has no labelled elements for that action (read by vision); pick a pixel from the image".into());
+    }
+    let want = target.trim().trim_start_matches("the ").to_lowercase();
+    let exact: Vec<&&UIElement> = candidates.iter().filter(|e| e.label.to_lowercase() == want).collect();
+    if exact.len() == 1 {
+        return Ok((exact[0].id.clone(), format!("{} is the one element labelled \"{}\"", exact[0].id, exact[0].label)));
+    }
+    let misses = JEV_MISSES.lock().ok().and_then(|m| m.iter().find(|(id, _)| *id == snap.id).map(|(_, n)| *n)).unwrap_or(0);
+    if misses >= 2 {
+        return Err("Jev missed twice on this screen; choose the ref yourself until the screen changes".into());
+    }
+    let Some(client) = DECIDER.get() else {
+        return Err("Jev is not available here; choose the ref yourself".into());
+    };
+    let described: Vec<(String, String)> = candidates.iter().map(|e| (e.id.clone(), describe_for_pick(e))).collect();
+    let mut criteria: Vec<(&str, &str)> = described.iter().map(|(id, d)| (id.as_str(), d.as_str())).collect();
+    criteria.push(("none", "no listed element is the one meant"));
+    let instructions = format!(
+        "On the {} screen, which element should a {action} act on to do this: {target}? Answer none when no listed element is clearly it.",
+        snap.app.as_deref().unwrap_or("current")
+    );
+    let questions: std::collections::BTreeMap<&str, ai::Question> =
+        [("element", ai::Question::choice(&instructions, &criteria))].into_iter().collect();
+    let state = serde_json::json!({ "app": snap.app, "action": action, "target": target });
+    let trace = ai::RequestTrace::new("desktop_pick");
+    let miss = |why: String| {
+        if let Ok(mut m) = JEV_MISSES.lock() {
+            match m.iter_mut().find(|(id, _)| *id == snap.id) {
+                Some((_, n)) => *n += 1,
+                None => m.push((snap.id.clone(), 1)),
+            }
+            let len = m.len();
+            if len > 32 {
+                m.drain(..len - 32);
+            }
+        }
+        why
+    };
+    let decision = client.decide(&trace, &state, &questions).await.map_err(|e| miss(format!("Jev did not answer ({e}); choose the ref yourself")))?;
+    let Some(ans) = decision.answer("element") else {
+        return Err(miss("Jev returned no choice; choose the ref yourself".into()));
+    };
+    let picked = ans.picked().to_string();
+    let conf = ans.confidence.unwrap_or(0.0);
+    let mut top: Vec<(&String, &f64)> = ans.probabilities.iter().collect();
+    top.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let top = top.iter().take(3).map(|(k, p)| format!("{k} {:.0}%", *p * 100.0)).collect::<Vec<_>>().join(", ");
+    if picked == "none" || picked.is_empty() || conf < 0.7 || !candidates.iter().any(|e| e.id == picked) {
+        return Err(miss(format!("Jev was not sure which element is \"{target}\" ({top}); choose the ref yourself")));
+    }
+    Ok((picked.clone(), format!("Jev picked {picked} for \"{target}\" ({:.0}% sure)", conf * 100.0)))
+}
+
 /// The capture an input action's coordinates refer to: the one named by
 /// `snapshot_id`, else the latest of `app`, else the latest of anything.
 async fn snapshot_for(
@@ -669,7 +806,57 @@ async fn handle_input(
     if action == "paste" {
         return input_paste().await;
     }
+    // `target` in words instead of a ref: resolved to one element of the
+    // last capture, or handed back to the model with the reason.
+    let picked_input;
+    let mut pick_note = String::new();
+    // `label` on a click means the same thing as `target`.
+    let label_as_target = input["target"].as_str().filter(|t| !t.trim().is_empty()).or_else(|| input["label"].as_str());
+    let input = match label_as_target.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(target) if input_target(input).0.is_empty() && input_target(input).1.is_none() => {
+            let app = input["app"].as_str().unwrap_or("");
+            let Some(snap) = snapshot_for(snapshot_store, input["snapshot_id"].as_str().unwrap_or(""), app).await else {
+                return ToolResult::error(format!("{action}: target needs a capture to pick from; capture {} first", if app.is_empty() { "the app" } else { app }));
+            };
+            match jev_pick(action, target, &snap).await {
+                Ok((id, note)) => {
+                    let mut v = input.clone();
+                    v["ref"] = serde_json::json!(id);
+                    picked_input = v;
+                    pick_note = format!(" ({note})");
+                    &picked_input
+                }
+                Err(why) => return ToolResult::error(format!("Not delivered (safe to retry): {why}. Nothing was touched.")),
+            }
+        }
+        _ => input,
+    };
     let (element_ref, coordinate) = input_target(input);
+    // The act as a key, for the circling guard: the same thing done to the same target.
+    // Everything that says what the act does (direction, amount, text, key…);
+    // not what only says how to look afterwards.
+    let act_key = {
+        let mut v = input.clone();
+        if let Some(o) = v.as_object_mut() {
+            for k in ["snapshot_id", "wait_ms", "wait_for", "quality", "max_elements"] {
+                o.remove(k);
+            }
+        }
+        format!("{action}|{v}")
+    };
+    let repeats = circling(&act_key, None);
+    if repeats >= 3 {
+        let same_screen = RECENT_ACTS
+            .lock()
+            .ok()
+            .and_then(|a| a.iter().rev().find(|(k, _)| *k == act_key).map(|(_, f)| *f))
+            .map_or(0, |fp| circling(&act_key, Some(fp)));
+        if same_screen >= 3 {
+            return ToolResult::error(format!(
+                "Not delivered: this {action} has left the same screen {same_screen} times in the last few acts — it is going in circles. Stop repeating it: read the last capture, and use a different way (a menu: os(resource: \"menu\", action: \"click\", name: \"Menu > Item\"), a key, or a different element), or tell the user what is in the way."
+            ));
+        }
+    }
     let snapshot_id = input["snapshot_id"].as_str().unwrap_or("");
     let app_arg = input["app"].as_str().unwrap_or("").trim().to_string();
     let snap = snapshot_for(snapshot_store, snapshot_id, &app_arg).await;
@@ -767,7 +954,8 @@ async fn handle_input(
 
     // A drag remembers what it moved and where it dropped, for the after-state.
     let mut drop_check: Option<(String, (i64, i64))> = None;
-    let performed: ToolResult = match action {
+    let mut hit_note = String::new();
+    let performed: ToolResult = 'performed: { match action {
         "type" => {
             let text = input["text"].as_str().unwrap_or("");
             if text.is_empty() {
@@ -780,10 +968,11 @@ async fn handle_input(
             let physical = input["physical"].as_bool().unwrap_or(false);
             if !physical {
                 if let Some(e) = element.as_ref().filter(|e| !e.path.is_empty() && e.actions.iter().any(|a| a == "AXSetValue")) {
-                    return match ax_native::set_value(&app, 1, &e.path, text, Some((&e.role, &e.label))).await {
+                    // Through to the after-state like every act: the result shows the field.
+                    break 'performed match ax_native::set_value(&app, 1, &e.path, text, Some((&e.role, &e.label))).await {
                         Ok(()) => ToolResult::ok(format!("Set {} \"{}\" to {} chars via accessibility (read back)", e.id, e.label, text.chars().count())),
-                        Err(err) => ToolResult::error(format!(
-                            "Setting {} \"{}\" through accessibility failed: {err}. Nothing was typed. \
+                        Err(err) => return ToolResult::error(format!(
+                            "Not delivered (safe to retry): setting {} \"{}\" through accessibility failed: {err}. Nothing was typed. \
                              Capture again and use a current ref, or pass physical: true to click it and paste."
                         , e.id, e.label)),
                     };
@@ -812,15 +1001,37 @@ async fn handle_input(
             }
         }
         "press" | "hotkey" => {
-            let key = input["key"].as_str().unwrap_or("");
+            // `keys` as a combo string or a list (["cmd", "a"]) is the same key.
+            let joined;
+            let key = match input["key"].as_str().filter(|k| !k.is_empty()) {
+                Some(k) => k,
+                None => {
+                    joined = combo_from(&input["keys"]);
+                    joined.as_str()
+                }
+            };
             if key.is_empty() {
-                return ToolResult::error(errors::missing_param("press", "key", "os(resource: \"input\", action: \"press\", key: \"return\")"));
+                return ToolResult::error(errors::missing_param(action, "key", "os(resource: \"input\", action: \"hotkey\", key: \"cmd+a\")"));
             }
-            let r = if key.contains('+') { input_hotkey(key).await } else { input_press(key).await };
-            if r.is_error {
-                return r;
+            // Combos that end the session or force-quit are never sent by a tool.
+            if blocked_combo(key) && !input["force"].as_bool().unwrap_or(false) {
+                return ToolResult::error(format!(
+                    "Not delivered: {key} logs out, locks the screen or force-quits, and a tool does not send it. If the owner asked for exactly that, pass force: true."
+                ));
             }
-            ToolResult::ok(format!("Pressed {key}"))
+            // `repeat`: the same key n times (pageup ×9), one result.
+            let times = input["repeat"]
+                .as_u64()
+                .or_else(|| input["repeat"].as_str().and_then(|s| s.trim().parse().ok()))
+                .unwrap_or(1)
+                .clamp(1, 30);
+            for _ in 0..times {
+                let r = if key.contains('+') { input_hotkey(key).await } else { input_press(key).await };
+                if r.is_error {
+                    return r;
+                }
+            }
+            ToolResult::ok(if times > 1 { format!("Pressed {key} {times} times") } else { format!("Pressed {key}") })
         }
         "click" | "double_click" | "right_click" => {
             let Some((x, y, label)) = &target else {
@@ -828,7 +1039,15 @@ async fn handle_input(
                     "click requires `ref` (from capture see) or `coordinate: [x, y]`.",
                 );
             };
-            let click_count = if action == "double_click" { 2 } else { input["click_count"].as_u64().unwrap_or(1) };
+            let click_count = if action == "double_click" {
+                2
+            } else {
+                input["click_count"]
+                    .as_u64()
+                    .or_else(|| input["click_count"].as_str().and_then(|s| s.trim().parse().ok()))
+                    .unwrap_or(1)
+                    .clamp(1, 3)
+            };
             let button = if action == "right_click" { "right" } else { input["button"].as_str().unwrap_or("left") };
             // A plain click on an element that accepts AXPress is pressed
             // through accessibility, after the element is re-identified in
@@ -839,20 +1058,73 @@ async fn handle_input(
             let physical = input["physical"].as_bool().unwrap_or(false);
             if click_count == 1 && button == "left" && !physical {
                 if let Some(e) = element.as_ref().filter(|e| !e.path.is_empty() && e.actions.iter().any(|a| a == "AXPress")) {
-                    return match ax_native::act(&app, 1, &e.path, "AXPress", Some((&e.role, &e.label))).await {
+                    break 'performed match ax_native::act(&app, 1, &e.path, "AXPress", Some((&e.role, &e.label))).await {
                         Ok(()) => ToolResult::ok(format!("Pressed {label} via accessibility")),
-                        Err(err) => ToolResult::error(format!(
-                            "Press of {label} through accessibility failed: {err}. Nothing was clicked. \
+                        Err(err) => return ToolResult::error(format!(
+                            "Not delivered (safe to retry): the press of {label} through accessibility failed: {err}. Nothing was clicked. \
                              Capture again and use a current ref, or pass physical: true to click its point with the mouse."
                         )),
                     };
                 }
             }
-            // Physical input lands on whatever window is on top at the point:
-            // bring the element's own window forward first.
-            if element.is_some() && !app.is_empty() {
-                let _ = ax_native::raise(&app, 1).await;
+            // A right-click on an element that offers a context menu opens it
+            // through accessibility: proof is a menu that was not open before,
+            // and its items come back listed as refs.
+            if button == "right" && !physical {
+                if let Some(e) = element.as_ref().filter(|e| !e.path.is_empty() && e.actions.iter().any(|a| a == "AXShowMenu")) {
+                    let mut args = vec!["show-menu".to_string(), "--app".into(), app.clone(), "--path".into(), e.path.clone()];
+                    if !e.role.is_empty() {
+                        args.extend(["--role".into(), e.role.clone(), "--label".into(), e.label.clone()]);
+                    }
+                    match ax_native::run(&args, Duration::from_secs(8)).await {
+                        Ok(_) => break 'performed ToolResult::ok(format!("Opened the context menu of {label} via accessibility; its items are listed first below")),
+                        Err(err) if err.contains("helper unavailable") => {}
+                        Err(err) => return ToolResult::error(format!("Right-click of {label}: {err}")),
+                    }
+                }
             }
+            // Physical input lands on whatever window is on top at the point:
+            // bring the element's own window forward first, and the element
+            // itself into view — a click on a clipped element hits whatever is
+            // drawn over it.
+            let mut target_xy = (*x, *y);
+            if let Some(e) = element.as_ref().filter(|e| !e.path.is_empty() && !app.is_empty()) {
+                let _ = ax_native::raise(&app, 1).await;
+                let mut args = vec!["scroll-to".to_string(), "--app".into(), app.clone(), "--path".into(), e.path.clone()];
+                if !e.role.is_empty() {
+                    args.extend(["--role".into(), e.role.clone(), "--label".into(), e.label.clone()]);
+                }
+                if let Ok(out) = ax_native::run(&args, Duration::from_secs(5)).await {
+                    let moved = ax_native::json_lines(&out).first().map_or(false, |v| v["steps"].as_u64().unwrap_or(0) > 0);
+                    if moved {
+                        // It moved: aim at where it is now, not where it was.
+                        if let Ok(t) = ax_native::tree(&app, &ax_native::WalkOpts::default()).await {
+                            if let Some(n) = t.nodes.iter().find(|n| n.role == e.role && element_from_node(n).label == e.label) {
+                                target_xy = (n.frame[0] + n.frame[2] / 2, n.frame[1] + n.frame[3] / 2);
+                            }
+                        }
+                    }
+                }
+            } else if !app.is_empty() {
+                // A pixel of the image: say what is under it, and refuse when
+                // another app's window covers the point — the click would land there.
+                if let Ok(out) = ax_native::run(&["hit".to_string(), "--x".into(), x.to_string(), "--y".into(), y.to_string()], Duration::from_secs(3)).await {
+                    if let Some(v) = ax_native::json_lines(&out).first() {
+                        let owner = v["app"].as_str().unwrap_or("");
+                        if !owner.is_empty() && !owner.eq_ignore_ascii_case(&app) && owner != "Dock" && owner != "SystemUIServer" && !physical {
+                            return ToolResult::error(format!(
+                                "Not delivered (safe to retry): {label} is covered by {owner}'s {} \"{}\" — the click would land there. Capture {app} again, or pass physical: true to click that point anyway.",
+                                v["role"].as_str().unwrap_or("window"), v["label"].as_str().unwrap_or("")
+                            ));
+                        }
+                        let role = v["role"].as_str().unwrap_or("");
+                        if !role.is_empty() {
+                            hit_note = format!(" (on {role} \"{}\")", v["label"].as_str().unwrap_or(""));
+                        }
+                    }
+                }
+            }
+            let (x, y) = (&target_xy.0, &target_xy.1);
             let (r, how) = match (click_count, button) {
                 (_, "right") => (input_right_click(*x, *y).await, "Right-clicked"),
                 (2, _) => (input_double_click(*x, *y).await, "Double-clicked"),
@@ -861,7 +1133,7 @@ async fn handle_input(
             if r.is_error {
                 return r;
             }
-            ToolResult::ok(format!("{how} {label} at screen ({x},{y})"))
+            ToolResult::ok(format!("{how} {label}{hit_note} at screen ({x},{y})"))
         }
         "move" => {
             let Some((x, y, label)) = &target else {
@@ -875,17 +1147,40 @@ async fn handle_input(
         }
         "scroll" => {
             // Web-parity shape: direction + amount (ticks, ~100px each).
-            let amount = input["amount"].as_i64().unwrap_or(3).max(1);
+            // A number or a numeric string ("30"): models send both.
+            let amount = input["amount"]
+                .as_i64()
+                .or_else(|| input["amount"].as_str().and_then(|s| s.trim().parse().ok()))
+                .unwrap_or(3)
+                .clamp(1, 100);
             let step = 100;
-            let direction = input["direction"].as_str().unwrap_or("down");
+            // `dy`/`dx` in wheel ticks, the wheel's own sign (negative dy
+            // scrolls down): what models send when they skip direction.
+            let tick = |k: &str| input[k].as_i64().or_else(|| input[k].as_str().and_then(|s| s.trim().parse().ok())).filter(|n| *n != 0);
+            let from_ticks = if input["direction"].as_str().is_none() {
+                match (tick("dy"), tick("dx")) {
+                    (Some(dy), _) => Some((if dy < 0 { "down" } else { "up" }, dy.abs().clamp(1, 100))),
+                    (None, Some(dx)) => Some((if dx < 0 { "right" } else { "left" }, dx.abs().clamp(1, 100))),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let amount = from_ticks.map_or(amount, |(_, n)| n);
+            let direction = from_ticks.map_or(input["direction"].as_str().unwrap_or("down"), |(d, _)| d);
             let (dx, dy) = match direction {
                 "up" => (0, -amount * step),
                 "left" => (-amount * step, 0),
                 "right" => (amount * step, 0),
                 _ => (0, amount * step),
             };
+            // The wheel turns under the pointer: over the target, or over the
+            // app's window — not wherever the pointer was left (Stadium,
+            // 2026-09-24: a scroll with no target moved nothing in TextEdit).
             if let Some((x, y, _)) = &target {
                 let _ = input_move(*x, *y).await;
+            } else if let Some(w) = &now {
+                let _ = input_move(w.x + w.width / 2, w.y + w.height / 2).await;
             }
             let until = input["until"].as_str().unwrap_or("").trim().to_lowercase();
             if until.is_empty() {
@@ -899,9 +1194,23 @@ async fn handle_input(
                 // the text is on screen, or the page budget runs out. Each page
                 // is a fresh observe, so the match is what is visible NOW.
                 let max_pages = input["max_pages"].as_u64().unwrap_or(8).clamp(1, 30) as usize;
-                let visible = |snap: &Snapshot| snap.elements.iter().any(|e| e.label.to_lowercase().contains(&until));
+                // On screen means visible: the helper reads each element's
+                // visible text (a text area's visible character range, not its
+                // whole value); labels of the capture are the fallback.
+                let label_visible = |snap: &Snapshot| snap.elements.iter().any(|e| e.label.to_lowercase().contains(&until));
+                let helper_says = |app: String, text: String| async move {
+                    let args = vec!["wait".to_string(), "--app".into(), app, "--for".into(), "text".into(), "--text".into(), text, "--timeout-ms".into(), "0".into()];
+                    match ax_native::run(&args, Duration::from_secs(4)).await {
+                        Ok(_) => Some(true),
+                        Err(e) if e.starts_with("wait_timeout") => Some(false),
+                        Err(_) => None,
+                    }
+                };
                 let mut pages = 0;
-                let mut found = snap.as_ref().map_or(false, |s| visible(s));
+                let mut found = match helper_says(app.clone(), until.clone()).await {
+                    Some(v) => v,
+                    None => snap.as_ref().map_or(false, |s| label_visible(s)),
+                };
                 while !found && pages < max_pages {
                     let r = input_scroll(dx, dy).await;
                     if r.is_error {
@@ -912,10 +1221,13 @@ async fn handle_input(
                     if let Ok(mut guard) = ax_cache.lock() {
                         guard.clear();
                     }
-                    match observe(&app, &serde_json::json!({ "app": app, "quality": input["quality"] }), snapshot_store, ax_cache).await {
-                        Ok(o) => found = visible(&o.snapshot),
-                        Err(e) => return e,
-                    }
+                    found = match helper_says(app.clone(), until.clone()).await {
+                        Some(v) => v,
+                        None => match observe(&app, &serde_json::json!({ "app": app, "quality": input["quality"] }), snapshot_store, ax_cache).await {
+                            Ok(o) => label_visible(&o.snapshot),
+                            Err(e) => return e,
+                        },
+                    };
                 }
                 if found {
                     ToolResult::ok(format!("Scrolled {direction} {pages} page(s); \"{}\" is on screen — find it in the list below", input["until"].as_str().unwrap_or("")))
@@ -988,17 +1300,31 @@ async fn handle_input(
                 action
             ))
         }
-    };
+    } };
 
-    // The after-state: the same target, captured fresh.
-    let wait_ms = input["wait_ms"].as_u64().unwrap_or(800).min(10_000);
-    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+    // The after-state: the same target, captured fresh — after the thing the
+    // caller said to wait for, or after a fixed pause.
+    let wait_note = match wait_for_args(&app, input) {
+        Some(args) => match ax_native::run(&args, Duration::from_millis(wait_for_timeout(input) + 2_000)).await {
+            Ok(out) => {
+                let ms = ax_native::json_lines(&out).first().and_then(|v| v["elapsed_ms"].as_u64()).unwrap_or(0);
+                format!(" Waited {ms} ms until {}.", wait_for_label(input))
+            }
+            Err(e) => format!(" {}", e.trim_start_matches("wait_timeout: ").replace("waited", "Waited")),
+        },
+        None => {
+            let wait_ms = input["wait_ms"].as_u64().unwrap_or(800).min(10_000);
+            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+            String::new()
+        }
+    };
     if let Ok(mut guard) = ax_cache.lock() {
         guard.clear();
     }
     let after_input = serde_json::json!({ "app": app, "quality": input["quality"] });
     match observe(&app, &after_input, snapshot_store, ax_cache).await {
         Ok(after) => {
+            remember_act(act_key.clone(), screen_fingerprint(&after.snapshot));
             let mut delta = match snap.as_ref().filter(|s| s.app.as_deref().map_or(app.is_empty(), |a| a.eq_ignore_ascii_case(&app))) {
                 Some(before) => delta_line(before, &after.snapshot),
                 None => String::new(),
@@ -1009,15 +1335,71 @@ async fn handle_input(
                     delta = format!("{delta} {report}");
                 }
             }
+            // Delivery, said plainly: what changed is the verification.
+            let verdict = if delta.is_empty() {
+                "Delivered"
+            } else if delta.starts_with("Window unchanged") {
+                "Delivered; nothing visible changed yet (slow to react, or it had no effect)"
+            } else {
+                "Delivered and verified"
+            };
             let mut r = after.result;
-            r.content = format!("{}. {delta}\n\n{}", performed.content, r.content);
+            r.content = format!("{}{pick_note}. {verdict}.{wait_note} {delta}\n\n{}", performed.content, r.content);
             r
         }
         Err(e) => ToolResult::ok(format!(
-            "{}. Could not capture the after-state: {}",
+            "{}. Delivered, unverified: could not capture the after-state: {}",
             performed.content, e.content
         )),
     }
+}
+
+/// `wait_for` on an input action: wait for that instead of a fixed pause.
+/// `{"text": "Saved"}`, `{"appears": "Export"}` / `{"gone": "Loading"}` (a
+/// label), `{"menu": true}` / `{"menu": false}`, `{"window": true}` or
+/// `{"window": "Untitled"}`; `timeout_ms` (default 5000, max 30000).
+fn wait_for_args(app: &str, input: &serde_json::Value) -> Option<Vec<String>> {
+    let w = input.get("wait_for").filter(|v| v.is_object())?;
+    if app.is_empty() {
+        return None;
+    }
+    let mut a = vec!["wait".to_string(), "--app".into(), app.to_string()];
+    let s = |k: &str| w[k].as_str().map(str::to_string).filter(|v| !v.is_empty());
+    if let Some(t) = s("text") {
+        a.extend(["--for".into(), "text".into(), "--text".into(), t]);
+    } else if let Some(l) = s("appears") {
+        a.extend(["--for".into(), "appears".into(), "--label".into(), l]);
+    } else if let Some(l) = s("gone") {
+        a.extend(["--for".into(), "gone".into(), "--label".into(), l]);
+    } else if let Some(open) = w["menu"].as_bool() {
+        a.extend(["--for".into(), if open { "menu" } else { "menu-closed" }.into()]);
+    } else if !w["window"].is_null() && w["window"] != serde_json::json!(false) {
+        a.extend(["--for".into(), "window".into()]);
+        if let Some(t) = s("window") {
+            a.extend(["--title".into(), t]);
+        }
+    } else {
+        return None;
+    }
+    a.extend(["--timeout-ms".into(), wait_for_timeout(input).to_string()]);
+    Some(a)
+}
+
+fn wait_for_timeout(input: &serde_json::Value) -> u64 {
+    input["wait_for"]["timeout_ms"].as_u64().unwrap_or(5_000).clamp(100, 30_000)
+}
+
+fn wait_for_label(input: &serde_json::Value) -> String {
+    let w = &input["wait_for"];
+    for k in ["text", "appears", "gone"] {
+        if let Some(v) = w[k].as_str() {
+            return format!("{k} \"{v}\"");
+        }
+    }
+    if let Some(open) = w["menu"].as_bool() {
+        return if open { "a menu opened".into() } else { "the menu closed".into() };
+    }
+    "the window changed".into()
 }
 
 /// Put `text` into the focused field through the clipboard, and put the
@@ -1054,9 +1436,72 @@ async fn pbcopy(bytes: &[u8]) -> Result<(), String> {
     child.wait().await.map_err(|e| e.to_string()).map(|_| ())
 }
 
+/// Physical input through the native helper (CGEvent): no cliclick, which a
+/// stock Mac does not have, and no System Events, which needs an Automation
+/// grant. `None` means the helper is unavailable and the caller falls back.
+#[cfg(target_os = "macos")]
+async fn helper_input(args: &[String]) -> Option<ToolResult> {
+    match ax_native::run(args, Duration::from_secs(20)).await {
+        Ok(out) => Some(ToolResult::ok(out)),
+        Err(e) if e.contains("helper unavailable") => None,
+        Err(e) => Some(ToolResult::error(e)),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn args_of(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|s| s.to_string()).collect()
+}
+
+/// `keys` as the model sends it: "cmd+a", ["cmd", "a"], or that list
+/// serialized into a string ("[\"cmd\", \"a\"]").
+fn combo_from(v: &serde_json::Value) -> String {
+    let list = match v {
+        serde_json::Value::Array(a) => a.clone(),
+        serde_json::Value::String(s) if s.trim_start().starts_with('[') => serde_json::from_str(s).unwrap_or_default(),
+        serde_json::Value::String(s) => return s.trim().to_string(),
+        _ => return String::new(),
+    };
+    list.iter().filter_map(|k| k.as_str()).map(str::trim).filter(|k| !k.is_empty()).collect::<Vec<_>>().join("+")
+}
+
+/// Log out, lock, force-quit: combos a tool never sends on its own.
+fn blocked_combo(keys: &str) -> bool {
+    let Ok((key, mods)) = split_combo(keys) else { return false };
+    let mut m: Vec<&str> = mods.split(',').filter(|s| !s.is_empty()).collect();
+    m.sort_unstable();
+    let key = key.to_lowercase();
+    matches!(
+        (m.as_slice(), key.as_str()),
+        (["cmd", "shift"], "q") | (["cmd", "opt", "shift"], "q") | (["cmd", "ctrl"], "q") | (["cmd", "opt"], "escape" | "esc")
+            | (["cmd", "opt", "shift"], "escape" | "esc")
+    )
+}
+
+/// "cmd+shift+s" → (key, "cmd,shift"). Unknown modifiers are refused.
+fn split_combo(keys: &str) -> Result<(String, String), String> {
+    let parts: Vec<&str> = keys.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
+    let Some((key, mods)) = parts.split_last() else { return Err("empty key combo".into()) };
+    let mut out = Vec::new();
+    for m in mods {
+        out.push(match m.to_lowercase().as_str() {
+            "cmd" | "command" | "meta" | "super" => "cmd",
+            "shift" => "shift",
+            "opt" | "option" | "alt" => "opt",
+            "ctrl" | "control" => "ctrl",
+            "fn" => "fn",
+            other => return Err(format!("unknown modifier '{other}' in '{keys}'")),
+        });
+    }
+    Ok((key.to_string(), out.join(",")))
+}
+
 async fn input_type(text: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
+        if let Some(r) = helper_input(&args_of(&["type", "--text", text])).await {
+            return r;
+        }
         let script = format!(
             "tell application \"System Events\" to keystroke \"{}\"",
             escape_applescript(text)
@@ -1088,6 +1533,11 @@ async fn input_type(text: &str) -> ToolResult {
 async fn input_press(key: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
+        if let Ok(code) = key_name_to_code(key) {
+            if let Some(r) = helper_input(&args_of(&["key", "--code", code])).await {
+                return r;
+            }
+        }
         let key_code = match key_name_to_code(key) {
             Ok(code) => code,
             Err(e) => return ToolResult::error(e),
@@ -1220,6 +1670,9 @@ async fn screen_rect() -> Option<Rect> {
 async fn input_click(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
+        if let Some(r) = helper_input(&args_of(&["click", "--x", &x.to_string(), "--y", &y.to_string()])).await {
+            return r;
+        }
         let arg = format!("c:{},{}", x, y);
         return run_command("cliclick", &[&arg]).await;
     }
@@ -1260,6 +1713,9 @@ public class Mouse {{
 async fn input_double_click(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
+        if let Some(r) = helper_input(&args_of(&["click", "--x", &x.to_string(), "--y", &y.to_string(), "--count", "2"])).await {
+            return r;
+        }
         let arg = format!("dc:{},{}", x, y);
         return run_command("cliclick", &[&arg]).await;
     }
@@ -1301,6 +1757,9 @@ Start-Sleep -Milliseconds 50
 async fn input_right_click(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
+        if let Some(r) = helper_input(&args_of(&["click", "--x", &x.to_string(), "--y", &y.to_string(), "--button", "right"])).await {
+            return r;
+        }
         let arg = format!("rc:{},{}", x, y);
         return run_command("cliclick", &[&arg]).await;
     }
@@ -1341,6 +1800,16 @@ public class Mouse {{
 async fn input_hotkey(keys: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
+        match split_combo(keys) {
+            Ok((key, mods)) => {
+                if let Ok(code) = key_name_to_code(&key) {
+                    if let Some(r) = helper_input(&args_of(&["key", "--code", code, "--mods", &mods])).await {
+                        return r;
+                    }
+                }
+            }
+            Err(e) => return ToolResult::error(e),
+        }
         // Parse "command+shift+s" into AppleScript key code with modifiers
         let parts: Vec<&str> = keys.split('+').map(|s| s.trim()).collect();
         let key = parts.last().unwrap_or(&"");
@@ -1404,6 +1873,9 @@ async fn input_hotkey(keys: &str) -> ToolResult {
 async fn input_move(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
+        if let Some(r) = helper_input(&args_of(&["move", "--x", &x.to_string(), "--y", &y.to_string()])).await {
+            return r;
+        }
         let arg = format!("m:{},{}", x, y);
         return run_command("cliclick", &[&arg]).await;
     }
@@ -1439,6 +1911,11 @@ public class Mouse {{ [DllImport("user32.dll")] public static extern bool SetCur
 async fn input_scroll(dx: i64, dy: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
+        // Real wheel events, both axes. (The cliclick path below sent `ku`/`kd`,
+        // which are key up/down commands, not scrolling.)
+        if let Some(r) = helper_input(&args_of(&["scroll", "--dx", &dx.to_string(), "--dy", &dy.to_string()])).await {
+            return r;
+        }
         // cliclick supports scroll: kd (scroll down) / ku (scroll up)
         if dx != 0 && dy == 0 {
             return ToolResult::error(
@@ -1501,6 +1978,10 @@ public class Mouse {{ [DllImport("user32.dll")] public static extern void mouse_
 async fn input_drag(x: i64, y: i64, x2: i64, y2: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
+        // Pick up, move in steps, dwell over the target so it activates, drop.
+        if let Some(r) = helper_input(&args_of(&["drag", "--x", &x.to_string(), "--y", &y.to_string(), "--to-x", &x2.to_string(), "--to-y", &y2.to_string()])).await {
+            return r;
+        }
         let dd = format!("dd:{},{}", x, y);
         let du = format!("du:{},{}", x2, y2);
         return run_command("cliclick", &[&dd, &du]).await;
@@ -1549,6 +2030,9 @@ Start-Sleep -Milliseconds 50
 async fn input_paste() -> ToolResult {
     #[cfg(target_os = "macos")]
     {
+        if let Some(r) = helper_input(&args_of(&["key", "--code", "9", "--mods", "cmd"])).await {
+            return r;
+        }
         let script = "tell application \"System Events\" to keystroke \"v\" using command down";
         return run_osascript(script).await;
     }
@@ -1859,6 +2343,37 @@ async fn handle_capture(
     match canonical_capture_action(action) {
         "screenshot" => capture_screenshot(input).await,
         "see" => capture_see(input, snapshot_store, ax_cache).await,
+        // Wait for something to be on screen (or gone) instead of guessing a pause.
+        "wait" => {
+            // No app: the one in front.
+            let front;
+            let app = match input["app"].as_str().filter(|a| !a.is_empty()) {
+                Some(a) => a,
+                None => {
+                    front = ax_native::frontmost().await.unwrap_or_default();
+                    front.as_str()
+                }
+            };
+            let mut spec = input.clone();
+            if spec.get("wait_for").is_none() {
+                spec["wait_for"] = serde_json::json!({
+                    "text": input["text"], "appears": input["label"], "gone": input["gone"],
+                    "menu": input["menu"], "window": input["window"], "timeout_ms": input["timeout_ms"],
+                });
+            }
+            match wait_for_args(app, &spec) {
+                None => ToolResult::error(
+                    "wait needs app and one of: text, label (appears), gone, menu (true|false), window — e.g. os(resource: \"capture\", action: \"wait\", app: \"Safari\", text: \"Saved\")",
+                ),
+                Some(args) => match ax_native::run(&args, Duration::from_millis(wait_for_timeout(&spec) + 2_000)).await {
+                    Ok(out) => {
+                        let ms = ax_native::json_lines(&out).first().and_then(|v| v["elapsed_ms"].as_u64()).unwrap_or(0);
+                        ToolResult::ok(format!("Waited {ms} ms: {} in {app}. Capture to see it.", wait_for_label(&spec)))
+                    }
+                    Err(e) => ToolResult::error(e.trim_start_matches("wait_timeout: ").replace("waited", "Waited")),
+                },
+            }
+        }
         _ => ToolResult::error(format!(
             "Unknown capture action '{}'. Use: screenshot, see",
             action
@@ -1911,13 +2426,13 @@ fn element_from_node(n: &ax_native::AxNode) -> UIElement {
     } else {
         n.value.clone().unwrap_or_default()
     };
-    UIElement {
+    UIElement { more: n.more,
         id: String::new(),
         role: n.role.clone(),
         label,
         bounds: Rect { x: n.frame[0], y: n.frame[1], width: n.frame[2], height: n.frame[3] },
         actionable: !n.actions.is_empty(),
-        keyboard_shortcut: None,
+        keyboard_shortcut: n.shortcut.clone(),
         actions: n.actions.clone(),
         path: n.path.clone(),
         focused: n.focused,
@@ -1925,14 +2440,20 @@ fn element_from_node(n: &ax_native::AxNode) -> UIElement {
     }
 }
 
-async fn walk_elements(app: &str) -> (AxCapture, Vec<UIElement>) {
-    match ax_native::tree(app, &ax_native::WalkOpts::default()).await {
+async fn walk_elements(app: &str, root: Option<String>) -> (AxCapture, Vec<UIElement>) {
+    // A drill walks one element's subtree deeper than the whole-window walk.
+    let opts = match root {
+        Some(r) => ax_native::WalkOpts { depth: 40, max: 500, root: Some(r), ..Default::default() },
+        None => ax_native::WalkOpts::default(),
+    };
+    match ax_native::tree(app, &opts).await {
         Ok(tree) => {
             let elements: Vec<UIElement> = tree
                 .nodes
                 .iter()
                 .map(element_from_node)
                 .collect();
+            let menu_open = tree.nodes.iter().any(|n| n.menu);
             let actionable = elements.iter().filter(|e| e.actionable).count();
             (
                 AxCapture {
@@ -1942,6 +2463,8 @@ async fn walk_elements(app: &str) -> (AxCapture, Vec<UIElement>) {
                     via: if actionable >= 3 && elements.iter().any(|e| !e.label.is_empty()) { "ax" } else { "vision" }.to_string(),
                     truncated: tree.truncated,
                     fallback: None,
+                    cut_by: tree.cut_by.clone(),
+                    menu_open,
                 },
                 elements,
             )
@@ -1982,7 +2505,7 @@ fn merge_text_lines(
         if known {
             continue;
         }
-        elements.push(UIElement {
+        elements.push(UIElement { more: 0,
             id: String::new(),
             role: "OCRText".into(),
             label: l.text.clone(),
@@ -2080,21 +2603,35 @@ async fn observe(
     };
 
     // 3. The elements (a walk done moments ago is reused; an act clears it).
+    //    `ref` drills into that element of the last capture: its subtree only.
+    let drill_ref = input["ref"].as_str().unwrap_or("").trim().to_string();
+    let drill: Option<(String, String)> = if drill_ref.is_empty() {
+        None
+    } else {
+        let store = snapshot_store.lock().await;
+        match store.latest_for(app).and_then(|s| s.elements.iter().find(|e| e.id == drill_ref)) {
+            Some(e) if !e.path.is_empty() && !e.path.starts_with("m:") => Some((e.path.clone(), format!("{} \"{}\"", e.id, e.label))),
+            Some(e) => return Err(ToolResult::error(format!("{} \"{}\" cannot be drilled into (it has no tree path); capture the whole window instead", e.id, e.label))),
+            None => return Err(ToolResult::error(format!("see: ref '{drill_ref}' is not in the last capture of {app}; capture again and use a ref from that list"))),
+        }
+    };
     let cache_key = app.to_string();
-    let cached = ax_cache.lock().ok().and_then(|guard| {
+    let cached = if drill.is_some() { None } else { ax_cache.lock().ok().and_then(|guard| {
         guard
             .get(&cache_key)
             .filter(|(_, _, ts)| ts.elapsed() < Duration::from_secs(2))
             .map(|(cap, elems, ts)| (cap.clone(), elems.clone(), ts.elapsed().as_millis() as u64))
-    });
+    }) };
     let mut ax_reused_from_ms_ago: Option<u64> = None;
     let (observed, mut elements) = if let Some((cap, elems, ms)) = cached {
         ax_reused_from_ms_ago = Some(ms);
         (cap, elems)
     } else {
-        let (cap, elems) = walk_elements(app).await;
-        if let Ok(mut guard) = ax_cache.lock() {
-            guard.insert(cache_key, (cap.clone(), elems.clone(), Instant::now()));
+        let (cap, elems) = walk_elements(app, drill.as_ref().map(|d| d.0.clone())).await;
+        if drill.is_none() {
+            if let Ok(mut guard) = ax_cache.lock() {
+                guard.insert(cache_key, (cap.clone(), elems.clone(), Instant::now()));
+            }
         }
         (cap, elems)
     };
@@ -2165,7 +2702,14 @@ async fn observe(
         via.push_str(&format!(" (walk failed: {err})"));
     }
     if observed.truncated {
-        via.push_str(" (walk cut short by its budget; elements may be missing)");
+        let by = if observed.cut_by.is_empty() { "its budget".to_string() } else { format!("its {}", observed.cut_by) };
+        via.push_str(&format!(" (walk cut short by {by}; elements may be missing — capture with ref: <a container> to drill into one part)"));
+    }
+    if let Some((_, what)) = &drill {
+        via.push_str(&format!(" (drilled into {what}: only its contents are listed)"));
+    }
+    if observed.menu_open {
+        via.push_str(" (a menu is open: its items are listed first as menu items; click one by ref, or press escape to close it)");
     }
     if observed.windows == Some(0) {
         via.push_str(" (the app is running but has no open window)");
@@ -2177,7 +2721,7 @@ async fn observe(
     let role_filter = input["role"].as_str().unwrap_or("").to_lowercase();
     let listed: Vec<&UIElement> = elements
         .iter()
-        .filter(|e| e.actionable || !e.label.is_empty())
+        .filter(|e| e.actionable || !e.label.is_empty() || e.more > 0)
         .filter(|e| {
             (filter.is_empty()
                 || e.label.to_lowercase().contains(&filter)
@@ -2199,11 +2743,15 @@ async fn observe(
             }
             None => (e.bounds.x, e.bounds.y, e.bounds.width, e.bounds.height),
         };
-        let mut tags = Vec::new();
-        if e.role == "OCRText" { tags.push("text read from the image"); }
-        if e.actions.iter().any(|a| a == "AXPress") { tags.push("press"); }
-        if e.actions.iter().any(|a| a == "AXSetValue") { tags.push("editable"); }
-        if e.focused { tags.push("focused"); }
+        let mut tags: Vec<String> = Vec::new();
+        if e.path.starts_with("m:") { tags.push("menu item".into()); }
+        if let Some(k) = &e.keyboard_shortcut { tags.push(k.clone()); }
+        if e.more > 0 { tags.push(format!("+{} inside: capture with ref: \"{}\" to drill in", e.more, e.id)); }
+        if e.role == "OCRText" { tags.push("text read from the image".into()); }
+        if e.actions.iter().any(|a| a == "AXPress") { tags.push("press".into()); }
+        if e.actions.iter().any(|a| a == "AXShowMenu") { tags.push("menu".into()); }
+        if e.actions.iter().any(|a| a == "AXSetValue") { tags.push("editable".into()); }
+        if e.focused { tags.push("focused".into()); }
         let tags = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
         let value = e.value.as_deref().map(|v| format!("  = \"{v}\"")).unwrap_or_default();
         text.push_str(&format!("{}  {}  \"{}\"{value}  at {x},{y} {w}×{h}{tags}\n", e.id, e.role, e.label));
@@ -2260,6 +2808,10 @@ struct AxCapture {
     truncated: bool,
     /// Why the native walk was not used, when it was not.
     fallback: Option<String>,
+    /// Which budget cut a truncated walk, from the helper ("node budget (400)").
+    cut_by: String,
+    /// A menu was open when the walk ran; its items were listed first.
+    menu_open: bool,
 }
 
 /// Capture AX elements with position information from the accessibility tree.
@@ -3087,19 +3639,46 @@ async fn handle_menu(action: &str, input: &serde_json::Value) -> ToolResult {
             if app.is_empty() {
                 return ToolResult::error(errors::missing_param("list", "app", "os(resource: \"menu\", action: \"list\", app: \"Safari\")"));
             }
-            menu_list(app).await
+            match menu_via_helper(app, name, false).await {
+                Some(r) => r,
+                None => menu_list(app).await,
+            }
         }
         "menus" => {
             if app.is_empty() {
                 return ToolResult::error(errors::missing_param("menus", "app", "os(resource: \"menu\", action: \"menus\", app: \"Safari\")"));
             }
-            menu_menus(app).await
+            match menu_via_helper(app, "", true).await {
+                Some(r) => r,
+                None => menu_menus(app).await,
+            }
         }
-        "click" => {
+        "click" | "menu" | "choose" => {
+            // No app: the app in front owns the menu bar.
+            let front;
+            let app = if app.is_empty() {
+                front = ax_native::frontmost().await.unwrap_or_default();
+                front.as_str()
+            } else {
+                app
+            };
             if app.is_empty() || name.is_empty() {
                 return ToolResult::error(errors::missing_param("click", "app/name", "os(resource: \"menu\", action: \"click\", app: \"Safari\", name: \"File > New Window\")"));
             }
-            menu_click(app, name).await
+            let args = vec!["menu".to_string(), "--app".into(), app.to_string(), "--path".into(), name.to_string()];
+            match ax_native::run(&args, Duration::from_secs(8)).await {
+                Ok(out) => {
+                    let v = ax_native::json_lines(&out).into_iter().next().unwrap_or_default();
+                    let pressed = v["pressed"].as_str().unwrap_or(name);
+                    if v["opened"].as_bool() == Some(true) {
+                        ToolResult::ok(format!("Opened the {pressed} menu via accessibility. Capture {app} to see its items as refs, or click one with name: \"{pressed} > <item>\"."))
+                    } else {
+                        ToolResult::ok(format!("Chose {pressed} via accessibility; delivered{}.", if v["menu_closed"].as_bool() == Some(true) { " (the menu closed)" } else { "" }))
+                    }
+                }
+                Err(e) if e.contains("helper unavailable") || e.contains("macOS-only") => menu_click(app, name).await,
+                Err(e) => ToolResult::error(format!("Menu {name}: {e}")),
+            }
         }
         "status" => menu_status_list().await,
         "click_status" => {
@@ -3116,6 +3695,51 @@ async fn handle_menu(action: &str, input: &serde_json::Value) -> ToolResult {
 }
 
 #[allow(unused_variables)]
+/// The menu bar (or one menu, `path`), read through accessibility. `all`
+/// lists every top-level menu with its items. `None`: the helper is not
+/// available here, use the AppleScript reading.
+async fn menu_via_helper(app: &str, path: &str, all: bool) -> Option<ToolResult> {
+    let list = |p: &str| {
+        let mut a = vec!["menu-list".to_string(), "--app".into(), app.to_string()];
+        if !p.is_empty() {
+            a.extend(["--path".into(), p.to_string()]);
+        }
+        a
+    };
+    let line = |v: &serde_json::Value| {
+        let mut l = v["title"].as_str().unwrap_or("").to_string();
+        if let Some(k) = v["shortcut"].as_str() {
+            l.push_str(&format!("  {k}"));
+        }
+        if v["submenu"].as_bool() == Some(true) {
+            l.push_str("  ▸");
+        }
+        if v["enabled"].as_bool() == Some(false) {
+            l.push_str("  (disabled)");
+        }
+        l
+    };
+    let top = match ax_native::run(&list(path), Duration::from_secs(6)).await {
+        Ok(out) => ax_native::json_lines(&out),
+        Err(e) if e.contains("helper unavailable") || e.contains("macOS-only") => return None,
+        Err(e) => return Some(ToolResult::error(format!("Menu of {app}: {e}"))),
+    };
+    let mut text = String::new();
+    for v in &top {
+        text.push_str(&line(v));
+        text.push('\n');
+        if all && v["title"].as_str().is_some_and(|t| t != "Apple") {
+            if let Ok(out) = ax_native::run(&list(v["title"].as_str().unwrap_or("")), Duration::from_secs(6)).await {
+                for item in ax_native::json_lines(&out) {
+                    text.push_str(&format!("  {}\n", line(&item)));
+                }
+            }
+        }
+    }
+    text.push_str("Choose one with os(resource: \"menu\", action: \"click\", app, name: \"Menu > Item\").");
+    Some(ToolResult::ok(text))
+}
+
 async fn menu_list(app: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
@@ -4081,11 +4705,32 @@ fn key_name_to_code(key: &str) -> Result<&'static str, String> {
         "f3" => "99",
         "f4" => "118",
         "f5" => "96",
+        "f6" => "97",
+        "f7" => "98",
+        "f8" => "100",
+        "f9" => "101",
+        "f10" => "109",
+        "f11" => "103",
+        "f12" => "111",
+        "forwarddelete" | "del" => "117",
+        "home" => "115",
+        "end" => "119",
+        "pageup" | "page_up" => "116",
+        "pagedown" | "page_down" => "121",
+        // US ANSI letters, digits and punctuation, so combos like cmd+s go
+        // through key codes instead of System Events keystrokes.
+        "a" => "0", "s" => "1", "d" => "2", "f" => "3", "h" => "4", "g" => "5", "z" => "6",
+        "x" => "7", "c" => "8", "v" => "9", "b" => "11", "q" => "12", "w" => "13", "e" => "14",
+        "r" => "15", "y" => "16", "t" => "17", "1" => "18", "2" => "19", "3" => "20", "4" => "21",
+        "6" => "22", "5" => "23", "=" => "24", "9" => "25", "7" => "26", "-" => "27", "8" => "28",
+        "0" => "29", "]" => "30", "o" => "31", "u" => "32", "[" => "33", "i" => "34", "p" => "35",
+        "l" => "37", "j" => "38", "'" => "39", "k" => "40", ";" => "41", "\\" => "42", "," => "43",
+        "/" => "44", "n" => "45", "m" => "46", "." => "47", "`" => "50",
         // Falling back to Return here used to press Enter for any typo, which
         // submits forms the caller never meant to submit.
         _ => {
             return Err(format!(
-                "Key '{}' is not in the macOS key map (return, tab, space, delete, escape, arrows, f1-f5). Use press with a combo or type the character.",
+                "Key '{}' is not in the macOS key map (return, tab, space, delete, escape, arrows, home/end/pageup/pagedown, f1-f12, letters, digits, punctuation). Use type for text.",
                 key
             ))
         }
@@ -4398,7 +5043,7 @@ mod tests {
         // An unmapped key must not fall back to Return.
         let err = key_name_to_code("f13").unwrap_err();
         assert!(err.contains("Key 'f13' is not in the macOS key map"), "{err}");
-        assert!(err.contains("f1-f5"));
+        assert!(err.contains("f1-f12"));
     }
 
     #[cfg(target_os = "macos")]
@@ -4503,7 +5148,7 @@ mod tests {
             id: id.into(),
             app: Some(app.into()),
             created_at: Instant::now(),
-            elements: vec![UIElement {
+            elements: vec![UIElement { more: 0,
                 id: "B1".into(),
                 role: "AXButton".into(),
                 label: format!("{app} button"),
@@ -4642,6 +5287,56 @@ mod tests {
         let _ = run_osascript_raw("tell application \"Calculator\" to quit", Some(AX_CAPTURE_TIMEOUT)).await;
     }
 
+    /// Every combo goes through key codes (no System Events), and the ones
+    /// that end the session are refused unless forced.
+    #[test]
+    fn combos_split_into_a_key_code_and_modifiers_and_session_enders_are_blocked() {
+        assert_eq!(super::split_combo("command+shift+s").unwrap(), ("s".to_string(), "cmd,shift".to_string()));
+        assert_eq!(super::split_combo("ctrl+alt+Delete").unwrap(), ("Delete".to_string(), "ctrl,opt".to_string()));
+        assert!(super::split_combo("hyper+s").is_err());
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(super::key_name_to_code("s").unwrap(), "1");
+            assert_eq!(super::key_name_to_code("v").unwrap(), "9");
+            assert_eq!(super::key_name_to_code("pagedown").unwrap(), "121");
+            assert!(super::key_name_to_code("nonsense").is_err());
+        }
+        for k in ["cmd+shift+q", "shift+cmd+q", "cmd+option+escape", "ctrl+cmd+q"] {
+            assert!(super::blocked_combo(k), "{k}");
+        }
+        for k in ["cmd+q", "cmd+s", "cmd+shift+s", "escape"] {
+            assert!(!super::blocked_combo(k), "{k}");
+        }
+    }
+
+    /// The same act leaving the same screen is counted; a different screen
+    /// (the act did something new) is not.
+    #[test]
+    fn an_act_that_keeps_leaving_the_same_screen_is_counted_as_circling() {
+        let key = "click|{\"app\":\"TextEdit\",\"coordinate\":[130,8],\"circling-test\":1}".to_string();
+        for _ in 0..3 {
+            super::remember_act(key.clone(), 42);
+        }
+        assert_eq!(super::circling(&key, Some(42)), 3);
+        assert_eq!(super::circling(&key, Some(7)), 0, "a different screen is progress");
+        assert_eq!(super::circling("TextEdit|click||Some((1, 1))||other", None), 0);
+    }
+
+    /// wait_for picks exactly one helper predicate; an empty or unknown one
+    /// falls back to the fixed pause.
+    #[test]
+    fn wait_for_becomes_one_helper_wait() {
+        let a = |v: serde_json::Value| super::wait_for_args("Mail", &serde_json::json!({ "wait_for": v }));
+        assert_eq!(a(serde_json::json!({"text": "Sent"})).unwrap()[3..6], ["--for", "text", "--text"].map(String::from));
+        assert!(a(serde_json::json!({"gone": "Loading"})).unwrap().contains(&"gone".to_string()));
+        assert!(a(serde_json::json!({"menu": false})).unwrap().contains(&"menu-closed".to_string()));
+        assert!(a(serde_json::json!({"window": "Untitled"})).unwrap().contains(&"--title".to_string()));
+        assert!(a(serde_json::json!({"text": null, "window": null})).is_none());
+        assert!(super::wait_for_args("", &serde_json::json!({"wait_for": {"text": "x"}})).is_none());
+        let t = serde_json::json!({"wait_for": {"text": "x", "timeout_ms": 999_999}});
+        assert_eq!(super::wait_for_timeout(&t), 30_000);
+    }
+
     /// A field is named by its placeholder, not its contents; its contents are
     /// its value; a secure field has neither read.
     #[test]
@@ -4649,6 +5344,7 @@ mod tests {
         let node = |role: &str, title: &str, value: Option<&str>, placeholder: Option<&str>| ax_native::AxNode {
             path: "0".into(), role: role.into(), title: title.into(), value: value.map(String::from),
             desc: None, placeholder: placeholder.map(String::from), frame: [0, 0, 10, 10], actions: vec![], enabled: true, focused: false,
+            ..Default::default()
         };
         let typed = element_from_node(&node("AXTextField", "", Some("alma@x.com"), Some("you@company.com")));
         assert_eq!((typed.label.as_str(), typed.value.as_deref()), ("you@company.com", Some("alma@x.com")));
@@ -4667,7 +5363,7 @@ mod tests {
     #[test]
     fn text_lines_join_the_elements_unless_the_tree_already_names_them() {
         let frame = desktop_snapshot::Rect { x: 100, y: 50, width: 2000, height: 1000 };
-        let mut elements = vec![UIElement {
+        let mut elements = vec![UIElement { more: 0,
             id: String::new(),
             role: "AXButton".into(),
             label: "Save".into(),

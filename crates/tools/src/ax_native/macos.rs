@@ -16,7 +16,7 @@ async fn helper() -> Result<PathBuf, String> {
 }
 
 fn tree_args(app: &str, opts: &WalkOpts) -> Vec<String> {
-    vec![
+    let mut v: Vec<String> = vec![
         "tree".into(),
         "--app".into(),
         app.into(),
@@ -28,7 +28,17 @@ fn tree_args(app: &str, opts: &WalkOpts) -> Vec<String> {
         opts.max.to_string(),
         "--timeout-ms".into(),
         opts.timeout.as_millis().to_string(),
-    ]
+    ];
+    if let Some(root) = opts.root.as_ref().filter(|r| !r.is_empty()) {
+        v.push("--root".into());
+        v.push(root.clone());
+    }
+    v
+}
+
+pub(super) async fn run(args: &[String], deadline: Duration) -> Result<String, String> {
+    let bin = helper().await?;
+    run_cmd(&bin, args, deadline).await
 }
 
 /// Run `program` and return its stdout. Past `deadline` the process is
@@ -72,7 +82,12 @@ async fn run_cmd(program: &Path, args: &[String], deadline: Duration) -> Result<
             if partial.lines().next().map_or(false, |l| l.contains("\"pid\"")) {
                 Ok(partial)
             } else {
-                Err(format!("accessibility walk produced nothing within {} ms", deadline.as_millis()))
+                // Named: which call, which budget.
+                Err(format!(
+                    "ax-helper {} passed its {} ms deadline and was stopped; the app may be busy",
+                    args.first().map(String::as_str).unwrap_or("call"),
+                    deadline.as_millis()
+                ))
             }
         }
     }
@@ -158,7 +173,7 @@ mod tests {
 
     #[test]
     fn tree_args_carry_every_budget() {
-        let opts = WalkOpts { window: 2, depth: 7, max: 50, timeout: Duration::from_millis(1500) };
+        let opts = WalkOpts { window: 2, depth: 7, max: 50, timeout: Duration::from_millis(1500), root: None };
         let a = tree_args("Finder", &opts);
         assert_eq!(a[..3], ["tree", "--app", "Finder"]);
         for (flag, val) in [("--window", "2"), ("--depth", "7"), ("--max", "50"), ("--timeout-ms", "1500")] {
@@ -183,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn a_timed_out_walk_with_no_header_is_an_error() {
         let err = run_cmd(Path::new(SH), &sh("sleep 5"), Duration::from_millis(200)).await.unwrap_err();
-        assert!(err.contains("produced nothing"), "{err}");
+        assert!(err.contains("passed its 200 ms deadline"), "the deadline is named: {err}");
     }
 
     #[tokio::test]

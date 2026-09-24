@@ -1,0 +1,57 @@
+id: live-mac-fixture-app
+name: "Computer control — every hard case in one deterministic app"
+description: |
+  LIVE, macOS only, not in any suite (logged-in desktop + Accessibility; the
+  Stadium mini). Setup builds fixtures/live/app/NeboFixture.swift into a
+  throwaway .app and opens it. The window holds each hard case once: refs
+  that must follow labels through a shuffle, a named text field, a secure
+  field that is never read, a delayed status for wait_for, a 200-row list to
+  scroll, a context menu, and a menu-bar item. Status shows the last thing
+  that happened, so each step's effect is readable from the capture.
+target_component: os
+setup:
+  - "D=/tmp/NeboFixture.app/Contents/MacOS; mkdir -p $D; F=fixtures/live/app/NeboFixture.swift; [ -f $F ] || F=app/NeboFixture.swift; swiftc -O -parse-as-library $F -o $D/NeboFixture && printf '<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>NeboFixture</string><key>CFBundleIdentifier</key><string>ai.nebo.fixture</string><key>CFBundleName</key><string>NeboFixture</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>' > /tmp/NeboFixture.app/Contents/Info.plist && open /tmp/NeboFixture.app; sleep 5"
+teardown:
+  - "pkill -x NeboFixture; rm -rf /tmp/NeboFixture.app"
+
+conversation:
+  - role: user
+    content: "The app NeboFixture is open. Use the computer control tools, act by ref (never pixels), and after each step tell me what the Status line says. (1) Capture NeboFixture, press Shuffle, then press the Beta button. (2) Type Ada into the Your name field. Tell me how the password field is listed. (3) Press Delayed, waiting until the text Ready appears (wait_for). (4) Scroll the rows until Row 150 is on screen and press Row 150. (5) Right-click the Tag label and choose Flag from its menu. (6) Choose Fixture > Say Hello from the menu bar."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: no-tool-errors
+      text: "No tool result is an error"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: beta-after-shuffle
+      text: "After Shuffle, pressing Beta by ref sets Status to Beta (the ref followed the label, not the position)"
+      severity: critical
+    - id: secure-never-read
+      text: "The password field is listed as [secure field] and no password text appears anywhere"
+      severity: critical
+    - id: waited-for-ready
+      text: "The Delayed press waited until Ready (the result says it waited), and Status reads Ready"
+      severity: critical
+    - id: row-150
+      text: "Status reads Picked Row 150"
+      severity: critical
+    - id: flagged
+      text: "The context menu opened by right-click listed Copy Tag and Flag, and Status reads Flagged"
+      severity: critical
+    - id: hello
+      text: "Status reads Hello from the menu"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 20 tool calls"
+      severity: important
+      check: { max_tool_calls: 20 }
+
+ideal_behavior:
+  tool_calls: 10
+  narrative: "see → Shuffle → Beta → type Ada → Delayed (wait_for Ready) → scroll until Row 150 → Row 150 → right_click Tag → Flag → menu Fixture > Say Hello."

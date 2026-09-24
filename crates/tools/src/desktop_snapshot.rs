@@ -56,6 +56,14 @@ pub struct UIElement {
     /// carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// Children the walk's depth limit cut off inside this element: capture
+    /// again with this ref as `ref` to drill in.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub more: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// A snapshot combining a screenshot with detected UI elements.
@@ -165,6 +173,24 @@ pub fn delta_line(before: &Snapshot, after: &Snapshot) -> String {
     let (nb, na) = (before.elements.len(), after.elements.len());
     if na != nb {
         parts.push(format!("{} elements now ({} before).", na, nb));
+    }
+    // What reads differently now: the proof an act did something, even when
+    // the window's shape and element count did not move (Calculator's
+    // display, a field's contents, a checkbox).
+    let shown = |e: &UIElement| format!("{}\u{1f}{}\u{1f}{}", e.role, e.label, e.value.as_deref().unwrap_or(""));
+    let was: std::collections::HashSet<String> = before.elements.iter().map(shown).collect();
+    let new: Vec<String> = after
+        .elements
+        .iter()
+        .filter(|e| !was.contains(&shown(e)) && (!e.label.is_empty() || e.value.is_some()))
+        .take(4)
+        .map(|e| match &e.value {
+            Some(v) => format!("{} \"{}\" = \"{}\"", e.id, e.label, v),
+            None => format!("{} \"{}\"", e.id, e.label),
+        })
+        .collect();
+    if !new.is_empty() {
+        parts.push(format!("Now showing: {}.", new.join(", ")));
     }
     if parts.is_empty() {
         format!("Window unchanged: same frame, same {nb} elements.")
@@ -301,13 +327,21 @@ pub struct RefBook {
 
 /// Give every element a ref: from `book` when this app has shown the same
 /// role and label before, otherwise the next unused number for its role.
-/// Unlabelled elements always get a fresh number. Pass a fresh book for
-/// refs that start at 1.
+/// An unlabelled element keeps its ref by its place in the tree (TextEdit's
+/// document area is `AXTextArea ""` and got T1, T2, T3… on every act —
+/// Stadium, 2026-09-24); with no path either it gets a fresh number. Pass a
+/// fresh book for refs that start at 1.
 pub fn assign_element_ids(elements: &mut [UIElement], book: &mut RefBook) {
     let mut taken = std::collections::HashSet::new();
     for elem in elements.iter_mut() {
         let prefix = role_prefix(&elem.role);
-        let key = (!elem.label.is_empty()).then(|| format!("{prefix}|{}", elem.label));
+        let key = if !elem.label.is_empty() {
+            Some(format!("{prefix}|{}", elem.label))
+        } else if !elem.path.is_empty() {
+            Some(format!("{prefix}|@{}", elem.path))
+        } else {
+            None
+        };
         let known = key.as_ref().and_then(|k| book.ids.get(k)).filter(|id| !taken.contains(*id)).cloned();
         elem.id = known.unwrap_or_else(|| {
             let n = book.high.entry(prefix).or_insert(0);
@@ -366,7 +400,7 @@ pub fn parse_ax_output(output: &str) -> Vec<UIElement> {
             || role_prefix(&role) == "L"
             || role_prefix(&role) == "M";
 
-        elements.push(UIElement {
+        elements.push(UIElement { more: 0,
             id: String::new(), // assigned later by assign_element_ids
             role,
             label,
@@ -413,7 +447,7 @@ mod tests {
 
     fn snap(frame: Rect, n: usize, focused: Option<usize>) -> Snapshot {
         let elements = (0..n)
-            .map(|i| UIElement {
+            .map(|i| UIElement { more: 0,
                 id: format!("B{}", i + 1),
                 role: "AXButton".into(),
                 label: format!("b{i}"),
@@ -441,7 +475,7 @@ mod tests {
     /// that meant one element is never given to another.
     #[test]
     fn refs_are_stable_per_label_and_never_reused() {
-        let el = |role: &str, label: &str| UIElement {
+        let el = |role: &str, label: &str| UIElement { more: 0,
             id: String::new(),
             role: role.into(),
             label: label.into(),
@@ -470,6 +504,16 @@ mod tests {
         let mut dup = vec![el("AXButton", "Home"), el("AXButton", "Home")];
         assign_element_ids(&mut dup, &mut book);
         assert_ne!(dup[0].id, dup[1].id);
+        // An unlabelled element keeps its ref by its place in the tree.
+        let area = |path: &str| UIElement { role: "AXTextArea".into(), path: path.into(), ..el("AXTextArea", "") };
+        let mut t1 = vec![area("0.0.0")];
+        assign_element_ids(&mut t1, &mut book);
+        let mut t2 = vec![area("0.0.0")];
+        assign_element_ids(&mut t2, &mut book);
+        assert_eq!(t1[0].id, t2[0].id, "TextEdit's document area is the same element");
+        let mut moved = vec![area("0.1.0")];
+        assign_element_ids(&mut moved, &mut book);
+        assert_ne!(moved[0].id, t1[0].id, "another place is another element");
     }
 
     #[test]
@@ -492,12 +536,17 @@ mod tests {
     fn delta_line_reports_only_what_was_measured() {
         let a = snap(rect(0, 0, 100, 100), 3, None);
         assert_eq!(delta_line(&a, &a), "Window unchanged: same frame, same 3 elements.");
+        // Same shape, different text: Calculator's display after pressing 7.
+        let mut shows7 = a.clone();
+        shows7.elements[0].label = "7".into();
+        assert!(delta_line(&a, &shows7).starts_with("Now showing: "), "{}", delta_line(&a, &shows7));
+        assert!(delta_line(&a, &shows7).contains("\"7\""), "{}", delta_line(&a, &shows7));
         let moved = snap(rect(5, 5, 100, 100), 3, None);
         assert_eq!(delta_line(&a, &moved), "The window moved to 5,5.");
         let resized = snap(rect(0, 0, 120, 100), 3, None);
         assert_eq!(delta_line(&a, &resized), "The window resized to 120×100.");
         let sheet = snap(rect(0, 0, 100, 100), 7, Some(1));
-        assert_eq!(delta_line(&a, &sheet), "Focus is now on B2 \"b1\". 7 elements now (3 before).");
+        assert!(delta_line(&a, &sheet).starts_with("Focus is now on B2 \"b1\". 7 elements now (3 before). Now showing: B4 \"b3\""), "{}", delta_line(&a, &sheet));
     }
 
     #[test]
@@ -510,7 +559,7 @@ mod tests {
             frame: None,
             scale: 1.0,
             via: String::new(),
-            elements: vec![UIElement {
+            elements: vec![UIElement { more: 0,
                 id: "B1".into(),
                 role: "AXButton".into(),
                 label: "Submit".into(),
@@ -588,7 +637,7 @@ mod tests {
             scale: 1.0,
             via: String::new(),
             elements: vec![
-                UIElement {
+                UIElement { more: 0,
                     id: "B1".into(),
                     role: "AXButton".into(),
                     label: "OK".into(),
@@ -605,7 +654,7 @@ mod tests {
                     focused: false,
                     value: None,
                 },
-                UIElement {
+                UIElement { more: 0,
                     id: "T1".into(),
                     role: "AXTextField".into(),
                     label: "Name".into(),
@@ -643,7 +692,7 @@ mod tests {
     #[test]
     fn test_element_id_generation() {
         let mut elements = vec![
-            UIElement {
+            UIElement { more: 0,
                 id: String::new(),
                 role: "AXButton".into(),
                 label: "OK".into(),
@@ -660,7 +709,7 @@ mod tests {
                 focused: false,
                 value: None,
             },
-            UIElement {
+            UIElement { more: 0,
                 id: String::new(),
                 role: "AXTextField".into(),
                 label: "Name".into(),
@@ -677,7 +726,7 @@ mod tests {
                 focused: false,
                 value: None,
             },
-            UIElement {
+            UIElement { more: 0,
                 id: String::new(),
                 role: "AXButton".into(),
                 label: "Cancel".into(),
@@ -694,7 +743,7 @@ mod tests {
                 focused: false,
                 value: None,
             },
-            UIElement {
+            UIElement { more: 0,
                 id: String::new(),
                 role: "AXStaticText".into(),
                 label: "Help".into(),

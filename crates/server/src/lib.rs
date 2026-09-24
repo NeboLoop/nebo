@@ -1742,6 +1742,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
     let decide_client = build_decide_client(store.clone(), &cfg);
+    // Desktop control asks Jev which element "the Save button" is.
+    tools::desktop_tool::set_decider(decide_client.clone());
     let mut runner_builder = agent::Runner::new(
         store.clone(),
         tool_registry.clone(),

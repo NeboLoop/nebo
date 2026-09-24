@@ -88,6 +88,11 @@ impl DynTool for AppTool {
                             "app(action: \"quit\", app: \"Safari\")",
                         ));
                     }
+                    if is_protected_process(app) {
+                        return ToolResult::error(format!(
+                            "'{app}' is a protected system process (or Nebo itself) and is never quit by a tool: the session, the desktop or this agent would go with it."
+                        ));
+                    }
                     handle_quit(app).await
                 }
                 "quit_all" => handle_quit_all().await,
@@ -158,6 +163,16 @@ async fn handle_launch(app: &str) -> ToolResult {
     run_osascript(&script).await
 }
 
+/// Processes a quit would take the session, the desktop or this agent down
+/// with. Matched on the whole name or any dotted part of a bundle id, any case.
+const PROTECTED_PROCESSES: &[&str] =
+    &["loginwindow", "windowserver", "dock", "launchd", "finder", "systemuiserver", "controlcenter", "nebo"];
+
+pub(crate) fn is_protected_process(app: &str) -> bool {
+    let a = app.trim().trim_end_matches(".app").to_lowercase();
+    PROTECTED_PROCESSES.iter().any(|p| a == *p || a.split('.').any(|part| part == *p))
+}
+
 #[cfg(target_os = "macos")]
 async fn handle_quit(app: &str) -> ToolResult {
     let script = format!(
@@ -173,7 +188,7 @@ async fn handle_quit_all() -> ToolResult {
 tell application "System Events"
     set appList to name of every process whose visible is true
     repeat with appName in appList
-        if appName is not "Finder" then
+        if appName is not in {"Finder", "Nebo", "Dock", "SystemUIServer", "ControlCenter", "loginwindow"} then
             try
                 tell application appName to quit
             end try
@@ -950,5 +965,18 @@ mod tests {
         assert_eq!(escape_applescript("hello"), "hello");
         assert_eq!(escape_applescript("say \"hi\""), "say \\\"hi\\\"");
         assert_eq!(escape_applescript("path\\to"), "path\\\\to");
+    }
+}
+
+#[cfg(test)]
+mod protected_tests {
+    #[test]
+    fn protected_processes_are_matched_by_name_or_bundle_part() {
+        for p in ["Finder", "finder", "com.apple.finder", "Dock", "loginwindow", "Nebo", "Nebo.app", "WindowServer"] {
+            assert!(super::is_protected_process(p), "{p}");
+        }
+        for p in ["Safari", "Calculator", "com.apple.Safari", "Finder Helper"] {
+            assert!(!super::is_protected_process(p), "{p}");
+        }
     }
 }
