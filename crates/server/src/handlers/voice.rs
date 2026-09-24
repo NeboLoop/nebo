@@ -7,7 +7,7 @@ use tracing::{error, info, warn};
 
 use super::to_error_response;
 use crate::chat_dispatch::{
-    TurnEnd, announce_ask, control_stop_of, entity_run_params, finish_turn, resolve_full_access,
+    TurnEnd, announce_ask, control_stop_of, entity_run_params, finish_turn,
 };
 use crate::codes::build_api_client;
 use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
@@ -536,9 +536,9 @@ struct CallerContext {
 /// corrections, policy — so voice inherits its first-call reliability.
 ///
 /// `caller` is Some for telephony: the run carries `Origin::Caller` (never
-/// interactive — no ask tool, no approval modals), the agent's real entity
-/// permissions/operation policy (the old `..Default::default()` skipped BOTH
-/// gates entirely), an explicit tool allowlist, and a provenance reminder
+/// interactive — no ask tool, no approval modals), the employee's own grant
+/// through the one permission check, an explicit tool allowlist, and a
+/// provenance reminder
 /// marking the task as untrusted third-party speech.
 async fn run_delegated_task(
     state: &AppState,
@@ -561,12 +561,12 @@ async fn run_delegated_task(
         // spoken words are already the thread's user row. The model reads
         // the task, the owner never sees it twice.
         hidden_prompt: true,
+        door: types::permissions::Door::Voice,
         ..Default::default()
     };
     if let Some(c) = caller {
         req.origin = tools::Origin::Caller;
         req.agent_id = c.agent_id.clone();
-        req.full_access = false;
         req.tool_allowlist = Some(c.allowlist.clone());
         let who = if c.caller_id.is_empty() { "an unknown number" } else { &c.caller_id };
         req.mention_context = Some(format!(
@@ -578,22 +578,14 @@ async fn run_delegated_task(
             if c.line.is_empty() { "phone" } else { &c.line },
             if c.business.is_empty() { "the business" } else { &c.business },
         ));
-    } else {
-        req.full_access = resolve_full_access(&state.store);
     }
     // The employee's own configuration, resolved the way a chat run resolves
-    // it. Owner voice runs used to skip this and ran with no permissions,
-    // grants, model preference or path limits (live 2026-09-03: a Developer
-    // employee reached an operations MCP server from a voice task).
+    // it; its grant comes with the run (live 2026-09-03: a Developer employee
+    // reached an operations MCP server from a voice task that skipped this).
     let ec = crate::entity_config::resolve_for_chat(&state.store, "agent", &req.agent_id);
-    let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths, operation_policy) =
-        entity_run_params(ec.as_ref());
-    req.permissions = permissions;
-    req.resource_grants = resource_grants;
+    let (model_preference, personality_snippet) = entity_run_params(ec.as_ref());
     req.model_preference = model_preference;
     req.personality_snippet = personality_snippet;
-    req.allowed_paths = allowed_paths;
-    req.operation_policy = operation_policy;
     // On the rails like a chat run: visible in the runs panel, cancellable,
     // and bounded by the same idle limit.
     let entity_name = state
@@ -1847,9 +1839,9 @@ async fn handle_conversation_session(
         }
     });
 
-    // Voice tool execution context: empty approved_categories — OFF
-    // capabilities fail closed with a clear error (no autonomy bypass; the
-    // model relays "grant it on desktop"). Telephony sessions run as
+    // Voice tool execution context: every call passes the one permission
+    // check under the employee's grant (resolved from the session key).
+    // Telephony sessions run as
     // Origin::Caller with the caller allowlist so even the improvised
     // direct-execute fallback below hits the registry's restricted-run
     // fence. Voice is a modality of the chat, so it uses the SAME
@@ -1865,6 +1857,7 @@ async fn handle_conversation_session(
         tools::Origin::User
     });
     ctx.tool_whitelist = caller_ctx.as_ref().map(|c| c.allowlist.clone());
+    ctx.door = types::permissions::Door::Voice;
     let voice_agent_id = q.agent_id.clone().unwrap_or_default();
     let team_seat = team
         .as_ref()

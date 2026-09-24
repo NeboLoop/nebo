@@ -265,6 +265,15 @@ pub struct RunRequest {
     /// desktop's Interactive runs don't need this; it exists so a run whose
     /// approvals reach the owner over comm isn't treated as unattended.
     pub approval_relay: bool,
+    /// The entry this run came through (chat, helper, workflow, schedule,
+    /// heartbeat, coworker, voice, MCP). Recorded with every decision.
+    pub door: types::permissions::Door,
+    /// A run override of the employee's permission mode; `None` = its own.
+    pub mode: Option<types::permissions::Mode>,
+    /// The grant this run can only narrow: its parent's (a helper).
+    pub ceiling: Option<types::permissions::Ceiling>,
+    /// A hard fence for this run: an isolated helper's own copy.
+    pub fence: Option<Vec<std::path::PathBuf>>,
     /// Agent-to-agent handoff depth for this run's outbound messages (0 = not
     /// a handoff). Stamped on loop-tool sends so receiving bots enforce the
     /// depth cap even on tool-authored messages, not just runner replies.
@@ -278,13 +287,6 @@ pub struct RunRequest {
     /// When set, this run executes as a specific agent (persona). The agent's persona
     /// replaces the default identity, and session history is isolated.
     pub agent_id: String,
-    /// Per-entity permission overrides (tool category → allowed).
-    pub permissions: Option<HashMap<String, bool>>,
-    /// Per-employee three-state approval policy over gated interface operations
-    /// (Always / Approval / Blocked). None = inherit seat defaults.
-    pub operation_policy: Option<tools::policy::OperationPolicy>,
-    /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
-    pub resource_grants: Option<HashMap<String, String>>,
     /// Per-entity model preference (fuzzy-resolved before provider selection).
     pub model_preference: Option<String>,
     /// Per-entity personality snippet prepended to system prompt.
@@ -295,9 +297,6 @@ pub struct RunRequest {
     /// size, url). Kept on the user row so a reloaded transcript still shows
     /// them; the "[Attached: …]" note in the text is for the model.
     pub attachments: Vec<comm::wire::Attachment>,
-    /// Allowed filesystem paths — restricts file writes and shell commands to these directories.
-    /// Empty = unrestricted.
-    pub allowed_paths: Vec<String>,
     /// Default working directory for shell commands and relative file paths
     /// (an isolated sub-agent's worktree). None = the process cwd.
     pub cwd: Option<String>,
@@ -356,10 +355,6 @@ pub struct RunRequest {
     /// plugin tool can inject `NEBO_CHANNEL_*` env vars into plugin processes
     /// (e.g. for `slack upload`). See `docs/publishers-guide/channel-plugins.md`.
     pub channel_ctx: Option<tools::ChannelContext>,
-    /// Master "Full Access" flag (settings.full_access). When true, the runner's
-    /// per-tool approval gate is bypassed entirely — the agent executes without
-    /// asking. When false, an OFF capability prompts via the Approval Modal.
-    pub full_access: bool,
     /// Provenance classes seeding this run's taint set — the taint of the
     /// TRIGGERING input (a coworker envelope's provenance, a remote channel
     /// message). The runner unions tool-derived classes on top and stamps the
@@ -598,12 +593,11 @@ impl Runner {
     /// Run the agentic loop: prompt -> stream -> tool calls -> loop.
     /// Returns a receiver of streaming events.
     pub async fn run(&self, mut req: RunRequest) -> Result<mpsc::Receiver<StreamEvent>, ProviderError> {
-        seat::restrict_outside_origin(req.origin, &mut req.full_access, &mut req.tool_allowlist, &mut req.tool_denial_hint);
+        seat::restrict_outside_origin(req.origin, &mut req.tool_allowlist, &mut req.tool_denial_hint);
         let t_run_entry = std::time::Instant::now();
         info!(
             session_key = %req.session_key,
             channel = %req.channel,
-            full_access = req.full_access,
             "Runner.run() called"
         );
         {
@@ -905,11 +899,8 @@ impl Runner {
             DEFAULT_MAX_ITERATIONS
         };
         let min_iterations = req.min_iterations;
-        let entity_permissions = req.permissions.clone();
-        let operation_policy = req.operation_policy.clone();
-        let entity_resource_grants = req.resource_grants.clone();
+        let grant = Arc::new(crate::harness::seat::run_grant(&self.store, req.grant_request()));
         let personality_snippet = req.personality_snippet.clone();
-        let allowed_paths = req.allowed_paths.clone();
         let run_cwd = req.cwd.clone();
         let presence_tracker = req.presence_tracker.clone();
         let proactive_inbox = req.proactive_inbox.clone();
@@ -917,7 +908,6 @@ impl Runner {
         let progress = Some(progress);
         let ask_channels = self.ask_channels.clone();
         let approval_channels = self.approval_channels.clone();
-        let full_access = req.full_access;
         let embedding_provider = self.embedding_provider.clone();
         let hybrid_searcher = self.hybrid_searcher.clone();
         let tool_scope = req.tool_scope.clone();
@@ -991,13 +981,11 @@ impl Runner {
                         &agent_registry,
                         &agent_id,
                         personality_snippet.as_deref(),
-                        entity_permissions.as_ref(),
-                        operation_policy.as_ref(),
-                        entity_resource_grants.as_ref(),
+                        &grant,
+                        &req.door,
                         &user_prompt,
                         &force_skill,
                         skill_loader.as_deref(),
-                        &allowed_paths,
                         run_cwd.as_deref(),
                         presence_tracker.as_ref(),
                         proactive_inbox.as_ref(),
@@ -1006,7 +994,6 @@ impl Runner {
                         progress.as_ref(),
                         ask_channels.as_ref(),
                         approval_channels.as_ref(),
-                        full_access,
                         req.approval_relay,
                         req.handoff_depth,
                         embedding_provider.as_ref(),
@@ -1098,13 +1085,11 @@ impl Runner {
                 &agent_registry,
                 &agent_id,
                 personality_snippet.as_deref(),
-                entity_permissions.as_ref(),
-                operation_policy.as_ref(),
-                entity_resource_grants.as_ref(),
+                &grant,
+                &req.door,
                 &user_prompt,
                 &force_skill,
                 skill_loader.as_deref(),
-                &allowed_paths,
                 run_cwd.as_deref(),
                 presence_tracker.as_ref(),
                 proactive_inbox.as_ref(),
@@ -1113,7 +1098,6 @@ impl Runner {
                 progress.as_ref(),
                 ask_channels.as_ref(),
                 approval_channels.as_ref(),
-                full_access,
                 req.approval_relay,
                 req.handoff_depth,
                 embedding_provider.as_ref(),
@@ -1212,11 +1196,9 @@ impl Runner {
                     let agent_registry_rf = agent_registry.clone();
                     let agent_id_rf = agent_id.clone();
                     let personality_snippet_rf = personality_snippet.clone();
-                    let entity_permissions_rf = entity_permissions.clone();
-                    let operation_policy_rf = operation_policy.clone();
-                    let entity_resource_grants_rf = entity_resource_grants.clone();
+                    let grant_rf = grant.clone();
+                    let door_rf = req.door.clone();
                     let skill_loader_rf = skill_loader.clone();
-                    let allowed_paths_rf = allowed_paths.clone();
                     let run_cwd_rf = run_cwd.clone();
                     let embedding_provider_rf = embedding_provider.clone();
                     let hybrid_searcher_rf = hybrid_searcher.clone();
@@ -1299,13 +1281,11 @@ impl Runner {
                             &agent_registry_rf,
                             &agent_id_rf,
                             personality_snippet_rf.as_deref(),
-                            entity_permissions_rf.as_ref(),
-                            operation_policy_rf.as_ref(),
-                            entity_resource_grants_rf.as_ref(),
+                            &grant_rf,
+                            &door_rf,
                             crate::review_fork::REVIEW_PROMPT,
                             "",
                             skill_loader_rf.as_deref(),
-                            &allowed_paths_rf,
                             run_cwd_rf.as_deref(),
                             None,
                             None,
@@ -1314,7 +1294,6 @@ impl Runner {
                             None,
                             None,
                             None,
-                            false, // no full_access — the whitelist blocks shell anyway
                             false, // review forks never relay approvals
                             0,     // review forks never hand off
                             embedding_provider_rf.as_ref(),
@@ -1555,13 +1534,11 @@ async fn run_loop(
     agent_registry: &tools::AgentRegistry,
     agent_id: &str,
     personality_snippet: Option<&str>,
-    entity_permissions: Option<&HashMap<String, bool>>,
-    operation_policy: Option<&tools::policy::OperationPolicy>,
-    entity_resource_grants: Option<&HashMap<String, String>>,
+    grant: &Arc<types::permissions::Grant>,
+    door: &types::permissions::Door,
     user_prompt: &str,
     force_skill: &str,
     skill_loader: Option<&tools::skills::Loader>,
-    allowed_paths: &[String],
     run_cwd: Option<&str>,
     presence_tracker: Option<&Arc<crate::proactive::PresenceTracker>>,
     proactive_inbox: Option<&Arc<crate::proactive::ProactiveInbox>>,
@@ -1570,7 +1547,6 @@ async fn run_loop(
     progress: Option<&RunProgress>,
     ask_channels: Option<&tools::AskChannels>,
     approval_channels: Option<&tools::ApprovalChannels>,
-    full_access: bool,
     approval_relay: bool,
     handoff_depth: u8,
     embedding_provider: Option<&Arc<dyn ai::EmbeddingProvider>>,
@@ -1876,30 +1852,8 @@ async fn run_loop(
     // Joined (and deduped against the identity slice, which needs db_ctx)
     // right before the run loop starts.
     let recall_task = if !user_prompt.is_empty() {
-        hybrid_searcher.map(|searcher| {
-            let searcher = searcher.clone();
-            let recall_user_id = memory_user_id.clone();
-            let recall_prompt = user_prompt.to_string();
-            let t_start = std::time::Instant::now();
-            tokio::spawn(async move {
-                let results = searcher
-                    .search(
-                        &recall_prompt,
-                        &recall_user_id,
-                        db_context::PROMPT_MEMORY_CANDIDATES,
-                        // Relevance floor: with single-leg renormalization
-                        // and the corrected BM25 orientation, both installs
-                        // score real matches well above this — and a prompt
-                        // with NO relevant memories now injects NOTHING
-                        // instead of the best of the irrelevant (which was
-                        // 1.2k of noise on every turn, and what weak models
-                        // answered instead of the ask).
-                        Some(db_context::PROMPT_RECALL_MIN_SCORE),
-                    )
-                    .await;
-                (results, t_start.elapsed())
-            })
-        })
+        hybrid_searcher
+            .map(|searcher| db_context::spawn_prompt_recall(searcher, &memory_user_id, user_prompt))
     } else {
         None
     };
@@ -3127,10 +3081,9 @@ async fn run_loop(
             origin,
             memory_user_id: &memory_user_id,
             handoff_depth,
-            entity_permissions,
-            operation_policy,
-            entity_resource_grants,
-            allowed_paths,
+            grant,
+            door,
+            untrusted_input: workflow_mode.is_some_and(|m| m.tainted),
             run_cwd,
             cancel_token,
             tx,
@@ -3144,7 +3097,6 @@ async fn run_loop(
             memory_write_bar: &memory_write_bar,
             audience_restricted,
             memory_matter: &memory_matter,
-            full_access,
             review_fork: review_fork.as_ref(),
             tool_allowlist,
             tool_denial_hint: &tool_denial_hint,
@@ -3159,16 +3111,6 @@ async fn run_loop(
                 credentials.issue(crate::tool_credentials::RunGrant {
                     ctx: tool_scope.tool_context(),
                     agent_id: agent_id.to_string(),
-                    approval: approval_channels.map(|channels| {
-                        crate::tool_credentials::OwnedApprovalDoor {
-                            channels: channels.clone(),
-                            tx: tx.clone(),
-                            cancel_token: cancel_token.clone(),
-                        }
-                    }),
-                    approval_relay,
-                    workflow_mode: workflow_mode.cloned(),
-                    sessions: Some(sessions.clone()),
                 })
             }
         });
@@ -3344,60 +3286,33 @@ async fn run_loop(
                             .join(", ")
                     )
                 };
-
-                let request_id = uuid::Uuid::new_v4().to_string();
                 let tool_names: Vec<String> = tool_calls.iter().map(|tc| tc.name.clone()).collect();
-
-                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                ask_chs.lock().await.insert(request_id.clone(), resp_tx);
-
-                let _ = tx
-                    .send(StreamEvent::plan_approval_request(
-                        &request_id,
-                        &plan_text,
-                        tool_names,
-                    ))
-                    .await;
-
-                info!(session_id, request_id = %request_id, "plan mode: waiting for user approval");
-
-                let approved = tokio::select! {
-                    _ = cancel_token.cancelled() => {
+                use crate::harness::permissions::plan::{approve_plan, PlanAnswer};
+                match approve_plan(ask_chs, tx, cancel_token, session_id, &plan_text, tool_names).await {
+                    PlanAnswer::Cancelled => {
                         info!(session_id, "plan approval cancelled");
-                        ask_chs.lock().await.remove(&request_id);
                         return Ok(turn_exit_reason.label());
                     }
-                    result = resp_rx => {
-                        match result {
-                            Ok(value) => {
-                                let v = value.to_lowercase();
-                                v == "approve" || v == "approved" || v == "yes" || v == "true"
-                            }
-                            Err(_) => false,
-                        }
+                    PlanAnswer::Rejected => {
+                        info!(session_id, "plan rejected by user");
+                        let _ = tx
+                            .send(StreamEvent::text(
+                                "\n\nPlan was rejected. Let me know how you'd like to proceed."
+                                    .to_string(),
+                            ))
+                            .await;
+                        let _ = sessions.append_message(
+                            session_id,
+                            "assistant",
+                            "Plan was rejected. Let me know how you'd like to proceed.",
+                            None,
+                            None,
+                            None,
+                        );
+                        break;
                     }
-                };
-
-                if !approved {
-                    info!(session_id, "plan rejected by user");
-                    let _ = tx
-                        .send(StreamEvent::text(
-                            "\n\nPlan was rejected. Let me know how you'd like to proceed."
-                                .to_string(),
-                        ))
-                        .await;
-                    let _ = sessions.append_message(
-                        session_id,
-                        "assistant",
-                        "Plan was rejected. Let me know how you'd like to proceed.",
-                        None,
-                        None,
-                        None,
-                    );
-                    break;
+                    PlanAnswer::Approved => info!(session_id, "plan approved, proceeding with tool execution"),
                 }
-
-                info!(session_id, "plan approved, proceeding with tool execution");
             }
         }
 
@@ -3446,11 +3361,9 @@ async fn run_loop(
                 &crate::harness::tool_round::RoundContext {
                     scope: tool_scope,
                     tools,
-                    store,
                     providers,
                     concurrency,
                     hooks,
-                    agent_id,
                     user_prompt,
                     iteration,
                     approval_channels,
@@ -4046,7 +3959,8 @@ async fn run_loop(
     // loop resumed across user messages still meets the backstop.
     cross_turn_save(session_id, &action_call_counts, guard_cfg.same_action_limit);
 
-    // Debounced memory extraction: only runs after 5s idle per session.
+    // Memory extraction over the messages since the last one, no pre-gate.
+    // The runner has no agreed goal (the objective is not one).
     after_turn::MemoryExtraction {
         sessions,
         session_id,
@@ -4054,14 +3968,13 @@ async fn run_loop(
         store,
         concurrency,
         embedding_provider,
-        decide,
+        tools,
         memory_user_id: &memory_user_id,
         memory_topics: &memory_topics,
         memory_write_bar: &memory_write_bar,
         run_taint,
-        objective: &active_task,
+        goal: None,
         skip_memory,
-        gate_trace: side_trace("memory_gate"),
         trace: side_trace("memory_extract"),
     }
     .schedule()

@@ -529,17 +529,16 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
     inputs["_case"]["history"] = serde_json::json!(history_lines(store, &parent.id, &key));
     // What governs this turn, recorded with it: the workflow is read fresh
     // each turn on purpose, so the record says which one this turn ran
-    // under and what the employee's policy was at the time.
+    // under and the permission mode the employee ran in.
     inputs["_case"]["governance"] = serde_json::json!({
         "definition_hash": parent.definition.as_deref().map(fingerprint).unwrap_or_default(),
-        "policy_default": store
-            .get_entity_config("agent", &parent.agent_id)
+        "permission_mode": store
+            .permission_mode(&types::permissions::Scope::Employee(parent.agent_id.clone()))
             .ok()
             .flatten()
-            .and_then(|c| c.operation_policy)
-            .map(|j| tools::policy::OperationPolicy::from_json(Some(&j)))
-            .map(|p| format!("{:?}", p.default).to_lowercase())
-            .unwrap_or_else(|| "approval".to_string()),
+            .or_else(|| store.permission_mode(&types::permissions::Scope::Company).ok().flatten())
+            .unwrap_or_default()
+            .as_str(),
         "queued_at": chrono::Utc::now().timestamp(),
     });
     let binding = inputs["_case"]["binding"].as_str().unwrap_or("").to_string();

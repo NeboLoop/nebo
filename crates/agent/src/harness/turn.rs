@@ -34,7 +34,8 @@ use super::conversation::{self, InputRow, MidTurnFrom};
 use super::events::{self, TurnEvent};
 use super::model_call::{self, CallOutcome, RetryWhy};
 use super::prompt::{self, PromptInputs, SystemPrompt, sections};
-use super::seat::{self, ApprovalMode, Seat};
+use super::seat::{self, GrantRequest, Seat};
+use types::permissions::{Grant, Mode};
 use super::session_gate::{self, Admission, RunProgress, TurnGuard};
 use super::tool_round::{self, RoundContext, RoundGuards, RoundOutcome, RunToolScope};
 use super::tool_surface::{self, SurfaceInputs};
@@ -58,6 +59,8 @@ pub struct TurnContext {
     pub harness: Harness,
     pub request: TurnRequest,
     pub seat: Seat,
+    /// The run's permissions: every tool call is decided against them.
+    pub grant: Arc<Grant>,
     /// The employee's registry entry, when the turn has one.
     pub agent: Option<tools::ActiveAgent>,
     /// The session row id (the request carries the key).
@@ -86,16 +89,13 @@ pub struct TurnContext {
 }
 
 impl TurnContext {
-    fn full_access(&self) -> bool {
-        self.request.seat.approval_mode == ApprovalMode::FullAccess
-    }
-
+    /// A helper's asks go up to whoever can answer them.
     fn approval_relay(&self) -> bool {
-        self.request.seat.approval_mode == ApprovalMode::Relay
+        matches!(self.request.mode, TurnMode::Helper { .. })
     }
 
     fn plan_mode(&self) -> bool {
-        self.request.seat.approval_mode == ApprovalMode::Plan
+        self.grant.mode == Mode::Plan
     }
 
     fn workflow(&self) -> Option<&crate::runner::WorkflowMode> {
@@ -128,7 +128,9 @@ pub struct TurnState {
     pub(crate) usage: RunState,
     /// Deferred tools loaded in the conversation, derived from it each step.
     pub loaded_tools: BTreeSet<String>,
-    pub surfaced_memories: HashSet<String>,
+    /// Memory ids this session was already shown; seeded at Prepare from
+    /// `memory_context::surfaced_memories`.
+    pub surfaced_memories: HashSet<i64>,
     pub end_checks_this_turn: u8,
     pub frozen_renderings: compact::trim::Frozen,
     pub read_ledger: crate::read_ledger::ReadLedger,
@@ -141,7 +143,6 @@ pub struct TurnState {
     pub date: chrono::NaiveDate,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
-    plan_approved: bool,
     persisted_renderings: HashSet<String>,
     trim_spec: pruning::TrimSpec,
     round: RoundCarry,
@@ -409,12 +410,19 @@ pub(crate) async fn prepare(
 ) -> Result<(TurnContext, TurnState), String> {
     {
         let s = &mut req.seat;
-        let mut full_access = s.approval_mode == ApprovalMode::FullAccess;
-        seat::restrict_outside_origin(s.origin, &mut full_access, &mut s.tool_allowlist, &mut s.tool_denial_hint);
-        if !full_access && s.approval_mode == ApprovalMode::FullAccess {
-            s.approval_mode = ApprovalMode::Ask;
-        }
+        seat::restrict_outside_origin(s.origin, &mut s.tool_allowlist, &mut s.tool_denial_hint);
     }
+    let grant = Arc::new(seat::run_grant(
+        &h.store,
+        GrantRequest {
+            agent_id: &req.seat.agent_id,
+            origin: req.seat.origin,
+            mode: req.seat.mode,
+            ceiling: req.seat.ceiling.as_ref(),
+            fence: None,
+            cwd: req.seat.cwd.as_deref(),
+        },
+    ));
     let agent = if req.seat.agent_id.is_empty() {
         None
     } else {
@@ -505,7 +513,7 @@ pub(crate) async fn prepare(
             cwd: req.seat.cwd.clone(),
             channel: channel.clone(),
             watching: seat.execution_mode.into(),
-            permission_mode: permission_mode_name(req.seat.approval_mode).to_string(),
+            permission_mode: permission_mode_name(grant.mode).to_string(),
         },
         employee_memory: memory.section,
         team,
@@ -553,7 +561,6 @@ pub(crate) async fn prepare(
         model: model.clone(),
         date,
         checkpoints: 0,
-        plan_approved: false,
         persisted_renderings: HashSet::new(),
         trim_spec: pruning::TrimSpec::new(),
         round: RoundCarry::default(),
@@ -576,6 +583,7 @@ pub(crate) async fn prepare(
         harness: h.clone(),
         request: req,
         seat,
+        grant,
         agent,
         session_id: session_id.to_string(),
         channel,
@@ -644,15 +652,12 @@ async fn parent_name(h: &Harness, parent_key: &str) -> String {
 }
 
 /// The permission mode as the owner sees it.
-fn permission_mode_name(mode: ApprovalMode) -> &'static str {
+fn permission_mode_name(mode: Mode) -> &'static str {
     match mode {
-        ApprovalMode::Ask => "Ask",
-        ApprovalMode::AcceptEdits => "Accept edits",
-        ApprovalMode::Plan => "Plan",
-        ApprovalMode::FullAccess => "Full Access",
-        ApprovalMode::NeverAsk => "Never ask",
-        ApprovalMode::Automatic => "Automatic",
-        ApprovalMode::Relay => "Relay",
+        Mode::Automatic => "Automatic",
+        Mode::Ask => "Ask",
+        Mode::Plan => "Plan",
+        Mode::FullAccess => "Full Access",
     }
 }
 
@@ -764,12 +769,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             cancel_token: &cx.request.cancel,
             progress: Some(&cx.progress),
             ask_channels: h.ask_channels.as_ref(),
-            full_access: cx.full_access(),
             handoff_depth: cx.request.seat.handoff_depth,
-            entity_permissions: cx.request.seat.permissions.as_ref(),
-            operation_policy: cx.request.seat.operation_policy.as_ref(),
-            entity_resource_grants: cx.request.seat.resource_grants.as_ref(),
-            allowed_paths: &cx.request.seat.allowed_paths,
+            grant: &cx.grant,
+            door: &cx.request.seat.door,
+            untrusted_input: cx.workflow().is_some_and(|m| m.tainted),
             run_cwd: cx.request.seat.cwd.as_deref(),
             channel_ctx: cx.request.delivery.channel_ctx.as_ref(),
             model_override: &cx.model,
@@ -791,14 +794,6 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 credentials.issue(crate::tool_credentials::RunGrant {
                     ctx: tool_scope.tool_context(),
                     agent_id: cx.agent_id().to_string(),
-                    approval: h.approval_channels.as_ref().map(|channels| crate::tool_credentials::OwnedApprovalDoor {
-                        channels: channels.clone(),
-                        tx: cx.tx.clone(),
-                        cancel_token: cx.request.cancel.clone(),
-                    }),
-                    approval_relay: cx.approval_relay(),
-                    workflow_mode: cx.workflow().cloned(),
-                    sessions: Some(sessions.clone()),
                 })
             }
         });
@@ -874,16 +869,6 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         save_reply(cx, &text, &tool_calls, &block_order).await;
 
         if !tool_calls.is_empty() {
-            if cx.plan_mode() && !st.plan_approved {
-                match approve_plan(cx, &text, &tool_calls).await {
-                    Some(true) => {
-                        st.plan_approved = true;
-                        st.reminders.add(&TurnEvent::PlanMode { entered: false });
-                    }
-                    Some(false) => return TurnExit::PlanProposed,
-                    None => {}
-                }
-            }
             // A CLI provider ran its tools itself over /agent/mcp.
             if provider.handles_tools() {
                 return TurnExit::Answered;
@@ -1213,35 +1198,6 @@ async fn save_reply(cx: &TurnContext, text: &str, tool_calls: &[ai::ToolCall], b
     }
 }
 
-/// Plan mode: the first tool calls wait for the owner's approval of the
-/// plan. `None` when no one can answer (no ask channel).
-async fn approve_plan(cx: &TurnContext, text: &str, tool_calls: &[ai::ToolCall]) -> Option<bool> {
-    let channels = cx.harness.ask_channels.as_ref()?;
-    let names: Vec<String> = tool_calls.iter().map(|tc| tc.name.clone()).collect();
-    let plan = if text.is_empty() {
-        format!("I'd like to run {} tool calls: {}", names.len(), names.join(", "))
-    } else {
-        text.to_string()
-    };
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    channels.lock().await.insert(request_id.clone(), resp_tx);
-    let _ = cx.tx.send(StreamEvent::plan_approval_request(&request_id, &plan, names)).await;
-    let approved = tokio::select! {
-        _ = cx.request.cancel.cancelled() => {
-            channels.lock().await.remove(&request_id);
-            return Some(false);
-        }
-        answer = resp_rx => answer.is_ok_and(|v| matches!(v.to_lowercase().as_str(), "approve" | "approved" | "yes" | "true")),
-    };
-    if !approved {
-        const REJECTED: &str = "Plan was rejected. Let me know how you'd like to proceed.";
-        let _ = cx.tx.send(StreamEvent::text(format!("\n\n{REJECTED}"))).await;
-        let _ = cx.harness.sessions.append_message(&cx.session_id, "assistant", REJECTED, None, None, None);
-    }
-    Some(approved)
-}
-
 /// Run the reply's tool calls. `Some` ends the turn.
 async fn tool_round(
     cx: &TurnContext,
@@ -1259,11 +1215,9 @@ async fn tool_round(
         &RoundContext {
             scope,
             tools: &h.tools,
-            store: &h.store,
             providers: &h.providers,
             concurrency: &h.concurrency,
             hooks: &h.hooks,
-            agent_id: cx.agent_id(),
             user_prompt: "",
             iteration: st.step as usize,
             approval_channels: h.approval_channels.as_ref(),
@@ -1397,14 +1351,13 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         store: &h.store,
         concurrency: &h.concurrency,
         embedding_provider: h.embedding_provider.as_ref(),
-        decide: None,
+        tools: &h.tools,
         memory_user_id: &cx.seat.memory.user_id,
         memory_topics: &cx.seat.memory_topics,
         memory_write_bar: &cx.seat.write_bar,
         run_taint: &cx.taint,
-        objective: "",
+        goal: None,
         skip_memory: false,
-        gate_trace: cx.trace("memory_gate"),
         trace: cx.trace("memory_extract"),
     }
     .schedule()
@@ -1563,7 +1516,7 @@ mod tests {
     async fn harness(model: &Arc<Scripted>) -> Harness {
         let path = std::env::temp_dir().join(format!("nebo-turn-{}.db", uuid::Uuid::new_v4()));
         let store = Arc::new(db::Store::new(path.to_str().unwrap()).expect("store"));
-        let registry = Arc::new(tools::Registry::new(tools::Policy::new()));
+        let registry = Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone()))));
         registry.register(Box::new(Echo { name: "echo", deferred: false })).await;
         registry.register(Box::new(Echo { name: "weather", deferred: true })).await;
         registry.register(Box::new(tools::find_tools::FindToolsTool::new(registry.clone()))).await;
@@ -1594,16 +1547,14 @@ mod tests {
                 agent_id: String::new(),
                 user_id: String::new(),
                 origin: tools::Origin::User,
-                permissions: None,
-                operation_policy: None,
-                resource_grants: None,
-                allowed_paths: Vec::new(),
+                door: types::permissions::Door::Chat,
+                mode: Some(Mode::FullAccess),
+                ceiling: None,
                 cwd: None,
                 seed_taint: Vec::new(),
                 audience: None,
                 tool_allowlist: None,
                 tool_denial_hint: None,
-                approval_mode: ApprovalMode::FullAccess,
                 handoff_depth: 0,
                 model_override: String::new(),
                 model_preference: None,

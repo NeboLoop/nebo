@@ -13,9 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use ai::{Provider, RequestTrace, StreamEvent, StreamEventType};
-use db::Store;
 use tools::{Origin, Registry, ToolContext, ToolResult};
-use types::keyparser;
 
 use crate::concurrency::ConcurrencyController;
 use crate::harness::conversation::convert_messages;
@@ -81,12 +79,14 @@ pub(crate) struct RunToolScope<'a> {
     pub cancel_token: &'a CancellationToken,
     pub progress: Option<&'a RunProgress>,
     pub ask_channels: Option<&'a tools::AskChannels>,
-    pub full_access: bool,
     pub handoff_depth: u8,
-    pub entity_permissions: Option<&'a HashMap<String, bool>>,
-    pub operation_policy: Option<&'a tools::policy::OperationPolicy>,
-    pub entity_resource_grants: Option<&'a HashMap<String, String>>,
-    pub allowed_paths: &'a [String],
+    /// The run's permissions: every call is decided against them.
+    pub grant: &'a Arc<types::permissions::Grant>,
+    /// The entry the run came through.
+    pub door: &'a types::permissions::Door,
+    /// The run's input arrived from outside (a workflow started by an
+    /// inbound payload).
+    pub untrusted_input: bool,
     pub run_cwd: Option<&'a str>,
     pub channel_ctx: Option<&'a tools::ChannelContext>,
     pub model_override: &'a str,
@@ -113,10 +113,9 @@ impl RunToolScope<'_> {
             origin,
             memory_user_id,
             handoff_depth,
-            entity_permissions,
-            operation_policy,
-            entity_resource_grants,
-            allowed_paths,
+            grant,
+            door,
+            untrusted_input,
             run_cwd,
             cancel_token,
             tx,
@@ -130,7 +129,6 @@ impl RunToolScope<'_> {
             memory_write_bar,
             audience_restricted,
             memory_matter,
-            full_access,
             review_fork,
             tool_allowlist,
             tool_denial_hint,
@@ -146,10 +144,10 @@ impl RunToolScope<'_> {
             user_id: memory_user_id.clone(),
             trusted_plugin_env: false,
             handoff_depth,
-            entity_permissions: entity_permissions.cloned(),
-            operation_policy: operation_policy.cloned(),
-            resource_grants: entity_resource_grants.cloned(),
-            allowed_paths: allowed_paths.to_vec(),
+            grant: Some(grant.clone()),
+            door: door.clone(),
+            answered_ask: None,
+            untrusted_input,
             cwd: run_cwd.map(str::to_string),
             cancel_token: cancel_token.clone(),
             stream_tx: Some(tx.clone()),
@@ -164,9 +162,6 @@ impl RunToolScope<'_> {
             memory_write_bar: memory_write_bar.clone(),
             audience_restricted,
             memory_matter: memory_matter.clone(),
-            // Populated by the approval gate below, before tool execution.
-            approved_categories: std::collections::HashSet::new(),
-            full_access,
             // Restricted-run allowlist: the review fork's whitelist, or
             // the request's explicit allowlist (phone callers). None for
             // every normal run.
@@ -174,7 +169,14 @@ impl RunToolScope<'_> {
                 .as_ref()
                 .map(|r| r.whitelist.clone())
                 .or_else(|| tool_allowlist.cloned()),
-            whitelist_denial_hint: tool_denial_hint.clone(),
+            whitelist_denial_hint: match review_fork {
+                Some(_) => Some(
+                    "Only the skill tool is available in this review pass: save the learning \
+                     with it or reply 'Nothing to save.'"
+                        .to_string(),
+                ),
+                None => tool_denial_hint.clone(),
+            },
             learned_write_agent: review_fork.as_ref().map(|r| r.owner_agent_id.clone()),
             learned_write_staged: review_fork.as_ref().map(|r| r.staged).unwrap_or(false),
             // A fresh fork learning, not a re-apply — records its audit row.
@@ -194,11 +196,9 @@ impl RunToolScope<'_> {
 pub(crate) struct RoundContext<'a> {
     pub scope: &'a RunToolScope<'a>,
     pub tools: &'a Arc<Registry>,
-    pub store: &'a Arc<Store>,
     pub providers: &'a Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     pub concurrency: &'a Arc<ConcurrencyController>,
     pub hooks: &'a napp::HookDispatcher,
-    pub agent_id: &'a str,
     pub user_prompt: &'a str,
     pub iteration: usize,
     pub approval_channels: Option<&'a tools::ApprovalChannels>,
@@ -268,11 +268,9 @@ pub(crate) async fn run_tool_round(
     let RoundContext {
         scope,
         tools,
-        store,
         providers,
         concurrency,
         hooks,
-        agent_id,
         user_prompt,
         iteration,
         approval_channels,
@@ -290,11 +288,7 @@ pub(crate) async fn run_tool_round(
         origin,
         cancel_token,
         progress,
-        full_access,
-        entity_permissions,
-        operation_policy,
         run_cwd,
-        review_fork,
         ..
     } = *scope;
     let RoundGuards {
@@ -317,7 +311,7 @@ pub(crate) async fn run_tool_round(
         last_desktop_act,
         ctx_spilled_results,
     } = st;
-    let mut ctx = scope.tool_context();
+    let ctx = scope.tool_context();
 
     // Track tool names for context filtering
     for tc in tool_calls.iter() {
@@ -629,69 +623,6 @@ pub(crate) async fn run_tool_round(
         return RoundOutcome::Ended(crate::guardrails::Exit::RepeatedToolCalls);
     }
 
-    // ── Restricted-run allowlist ─────────────────────────────────────
-    // Review fork (docs/design/SELF_IMPROVEMENT.md WS2) and phone-
-    // caller runs: only allowlisted tools may EXECUTE; everything
-    // else is denied here with a corrective error. Matching is
-    // `tool:resource`-aware and shared with the registry choke point
-    // (ToolContext::whitelist_allows) so the two fences can't drift.
-    if ctx.tool_whitelist.is_some() {
-        for (idx, tc) in tool_calls.iter().enumerate() {
-            if blocked_results[idx].is_none() && !ctx.whitelist_allows(&tc.name, &tc.input)
-            {
-                let msg = if review_fork.is_some() {
-                    format!(
-                        "Background review denied non-whitelisted tool: {}. \
-                         Only the skill tool is available in this review pass — \
-                         save the learning with it or reply 'Nothing to save.'",
-                        tc.name
-                    )
-                } else if let Some(ref hint) = ctx.whitelist_denial_hint {
-                    format!("'{}' is not available in this run. {}", tc.name, hint)
-                } else {
-                    format!(
-                        "'{}' is not available in this call. Use the tools you \
-                         were given, or tell the caller plainly that you can't \
-                         do that and offer to take a message.",
-                        tc.name
-                    )
-                };
-                blocked_results[idx] = Some((tc.clone(), ToolResult::error(msg)));
-            }
-        }
-    }
-
-    // ── Permission gate (PERMISSIONS_SME §11): see gate_tool_calls ──
-    let gate = gate_tool_calls(
-        &GateRun {
-            tools,
-            store,
-            agent_id,
-            session_id,
-            session_key: &ctx.session_key,
-            origin,
-            full_access,
-            entity_permissions,
-            operation_policy,
-            approval: approval_channels.map(|channels| ApprovalDoor {
-                channels,
-                tx,
-                cancel_token,
-            }),
-            approval_relay,
-            workflow_mode,
-            sessions: Some(sessions),
-        },
-        tool_calls,
-        &mut blocked_results,
-    )
-    .await;
-    if gate.parked.is_some() {
-        wf_break_reason = gate.parked;
-    }
-    let owner_answered = gate.owner_answered;
-    ctx.approved_categories = gate.approved_categories;
-
     // ── Decide guardrail (crate::tool_guardrail) ──────────────────────
     // Last, after every gate above, and only for calls that are about
     // to run without the owner having answered a card for them: one
@@ -715,7 +646,7 @@ pub(crate) async fn run_tool_round(
         };
         let mut judged = Vec::new();
         for (idx, tc) in tool_calls.iter().enumerate() {
-            if blocked_results[idx].is_some() || owner_answered.contains(&idx) {
+            if blocked_results[idx].is_some() {
                 continue;
             }
             if !tools.has_side_effects(&tc.name, &tc.input).await {
@@ -793,8 +724,8 @@ pub(crate) async fn run_tool_round(
         }
     }
 
-    // Workflow break (exit primitive / approval park): the turn ends
-    // now — nothing in this batch executes.
+    // Workflow break (the exit primitive): the turn ends now — nothing in
+    // this batch executes.
     if let Some(reason) = wf_break_reason {
         return RoundOutcome::Ended(crate::guardrails::Exit::Workflow(reason));
     }
@@ -816,7 +747,19 @@ pub(crate) async fn run_tool_round(
     // Tool ids whose result a post-tool hook wrote into (the done gate's
     // "a check ran" signal).
     let mut hook_noted: HashSet<String> = HashSet::new();
-    for batch in partition_tool_calls(&live) {
+    // A workflow activity that can park runs its calls one at a time, so a
+    // call the permission check parks on the owner stops the step there.
+    let workflow_park = workflow_mode.and_then(|m| m.park.as_ref());
+    let batches = if workflow_park.is_some() {
+        live.iter().map(|(idx, _)| vec![*idx]).collect()
+    } else {
+        partition_tool_calls(&live)
+    };
+    let mut parked_call: Option<usize> = None;
+    for batch in batches {
+        if parked_call.is_some() {
+            break;
+        }
         let mut futures = FuturesUnordered::new();
         for idx in batch {
             let tools = tools.clone();
@@ -898,6 +841,9 @@ pub(crate) async fn run_tool_round(
                 })
                 .await;
             durations.insert(tc.id.clone(), duration_ms);
+            if workflow_park.is_some() && result.parked_ask.is_some() {
+                parked_call = Some(idx);
+            }
             results[idx] = Some((tc, result));
         }
     }
@@ -1040,6 +986,10 @@ pub(crate) async fn run_tool_round(
         .filter(|(_, r)| r.content.starts_with("<persisted-output>"))
         .count();
 
+    // The parked call's result is not saved: the resumed run executes the
+    // call itself once the owner answers.
+    let parked = parked_call.and_then(|idx| results[idx].take().map(|(tc, _)| (idx, tc)));
+
     // Save all tool results to session in deterministic order
     // and track whether ALL results in this iteration were errors.
     let mut all_errors_this_iteration = true;
@@ -1094,7 +1044,7 @@ pub(crate) async fn run_tool_round(
         }
         // Capture pre-truncation snapshots for the summarizer (only name + short content)
         summary_tool_calls.push(tc.clone());
-        summary_tool_results.push(ToolResult { payload: None, need: None,
+        summary_tool_results.push(ToolResult { payload: None, need: None, parked_ask: None,
             content: crate::runner::truncate_str(&result.content, 300).to_string(),
             is_error: result.is_error,
             image_url: None,
@@ -1324,6 +1274,23 @@ pub(crate) async fn run_tool_round(
         }
     }
 
+    // A workflow step parked on the owner: the run suspends with the
+    // conversation as it stands and the call that waits.
+    if let (Some(park), Some((idx, tc))) = (workflow_park, parked) {
+        let snapshot = convert_messages(&sessions.get_messages(session_id).unwrap_or_default());
+        let operation = targets[idx]
+            .as_ref()
+            .map(|t| t.operation.as_deref().map(tools::plugin_tool::port_suffix).unwrap_or_else(|| t.key.clone()))
+            .unwrap_or_else(|| tc.name.clone());
+        let display = tools.labels(&tc.name, &tc.input).await.0;
+        let reason = match park(WorkflowPark { messages: snapshot, call: &tc, operation, display }) {
+            Ok(()) => "awaiting_approval".to_string(),
+            // Can't persist the suspension: fail loud, never run the call.
+            Err(e) => format!("suspension_failed:{e}"),
+        };
+        return RoundOutcome::Ended(crate::guardrails::Exit::Workflow(reason));
+    }
+
     // Terminal tool error → end the run now (FRAMES Phase 1). The failure is
     // unrecoverable (auth/permission/connection) — surface it and stop rather
     // than feed it back for the model to retry/improvise. This is the
@@ -1364,66 +1331,6 @@ pub(crate) async fn run_tool_round(
         summary_tool_calls,
         summary_tool_results,
     })
-}
-
-/// The command a call would run in the shell, for the per-command
-/// allowlist: its rule field when its rule key is `run_command`.
-fn shell_command_of(target: &types::permissions::Target) -> Option<String> {
-    match (&target.field, target.key.as_str()) {
-        (Some(types::permissions::RuleField::CommandPrefix(c)), "run_command") => Some(c.clone()),
-        _ => None,
-    }
-}
-
-/// "Approve Always" on the ApprovalModal → grant the capability category for
-/// next time (PERMISSIONS_SME §14). Flips the global `user_profiles.tool_permissions`
-/// entry ON, the same store the Settings → Permissions toggles write.
-fn persist_capability_grant(store: &Store, category: &str) -> Result<(), String> {
-    let raw = store
-        .get_user_profile()
-        .map_err(|e| e.to_string())?
-        .and_then(|p| p.tool_permissions)
-        .unwrap_or_else(|| "{}".to_string());
-    let mut map: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&raw).unwrap_or_default();
-    map.insert(category.to_string(), serde_json::Value::Bool(true));
-    let json = serde_json::to_string(&map).map_err(|e| e.to_string())?;
-    store
-        .update_tool_permissions(&json)
-        .map_err(|e| e.to_string())
-}
-
-/// "Approve Always" on an MCP tool call → pin an explicit Always-allow override
-/// in the server's tool-permission map — the SAME store Settings → MCP → Tool
-/// permissions edits (tools::policy::McpServerPermissions on the integration row).
-fn persist_mcp_tool_allow(store: &Store, integration_id: &str, tool: &str) -> Result<(), String> {
-    let mut perms = tools::policy::McpServerPermissions::from_json(
-        store
-            .get_mcp_tool_permissions(integration_id)
-            .map_err(|e| e.to_string())?
-            .as_deref(),
-    );
-    perms
-        .tools
-        .insert(tool.to_string(), tools::policy::McpToolAccess::Allow);
-    store
-        .set_mcp_tool_permissions(integration_id, &perms.to_json())
-        .map_err(|e| e.to_string())
-}
-
-/// One tool-approval round-trip (PERMISSIONS_SME §11): register a oneshot keyed
-/// by the tool_call id, emit `approval_request`, and await the ApprovalModal
-/// decision ("deny" / "once" / "always"). Run cancellation resolves to "deny".
-/// The ONE ask pathway shared by the capability gate and the MCP tri-state gate.
-async fn ask_tool_approval(
-    channels: &tools::ApprovalChannels,
-    tx: &mpsc::Sender<StreamEvent>,
-    cancel_token: &CancellationToken,
-    tool_call: &ai::ToolCall,
-    session_id: &str,
-    gate: &str,
-) -> String {
-    ask_tool_approval_batch(channels, tx, cancel_token, std::slice::from_ref(tool_call), session_id, gate).await
 }
 
 /// The batch form: one card, one decision, for every gated call in a batch
@@ -1710,767 +1617,6 @@ async fn apply_post_tool_hooks(
     attached
 }
 
-/// The seat that decides what this one may not: the line the owner drew
-/// (`reports_to`), and failing that a seat the company has actually given the
-/// authority to grant (`authority.grant.grant` — by a rule the owner or the
-/// General Manager wrote, or by its own package declaring it).
-///
-/// Never a name compiled in here. A company may put a Chief Operating Officer
-/// over its seats, a General Manager, a person, or nobody; who holds authority
-/// is the owner's to say, and it is already in the data.
-fn authority_seat(store: &Arc<Store>, asking_agent_id: &str) -> Option<db::models::Agent> {
-    if asking_agent_id.is_empty() {
-        return None;
-    }
-    // 1. The reporting line, as the owner set it.
-    if let Ok(Some(me)) = store.get_agent(asking_agent_id)
-        && let Some(above) = me
-            .reports_to
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty() && *s != asking_agent_id)
-            && let Ok(Some(seat)) = store.get_agent(above) {
-        return Some(seat);
-    }
-    // 2. A seat that holds the authority to grant authority.
-    let mut holders: Vec<db::models::Agent> = store
-        .list_agents(10_000, 0)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|a| {
-            a.id != asking_agent_id
-                && a.is_app.unwrap_or(0) == 0
-                && a.is_enabled != 0
-                && holds_granting_authority(store, a)
-        })
-        .collect();
-    holders.sort_by(|a, b| a.name.cmp(&b.name));
-    holders.into_iter().next()
-}
-
-/// The seat whose day counters a standing grant spends. A sub-agent carries
-/// no agent id of its own and runs under its parent's operation policy, so it
-/// spends its parent seat's counters — never a fresh allowance of its own.
-fn grant_counter_seat(agent_id: &str, session_key: &str) -> String {
-    if agent_id.is_empty() && session_key.starts_with("subagent:") {
-        keyparser::extract_agent_id(session_key)
-    } else {
-        agent_id.to_string()
-    }
-}
-
-/// Whether this seat may grant standing authority: the owner's own rule on
-/// `authority.grant.grant`, or its package declaring that operation.
-fn holds_granting_authority(store: &Arc<Store>, seat: &db::models::Agent) -> bool {
-    const GRANT: &str = "authority.grant.grant";
-    let stored = store
-        .get_entity_config("agent", &seat.id)
-        .ok()
-        .flatten()
-        .and_then(|c| c.operation_policy);
-    if let Some(rule) = tools::policy::OperationPolicy::from_json(stored.as_deref())
-        .operations
-        .get(GRANT)
-        && rule.access != tools::policy::OperationAccess::Blocked {
-        return true;
-    }
-    !seat.frontmatter.is_empty()
-        && napp::agent::parse_agent_config(&seat.frontmatter)
-            .map(|c| {
-                c.ceiling
-                    .keys()
-                    .any(|op| tools::plugin_tool::port_suffix(op).starts_with("authority."))
-                    || c.requires.interfaces.iter().any(|i| i == "authority")
-            })
-            .unwrap_or(false)
-}
-
-/// Out-of-bounds work is somebody's job, not an impossibility.
-///
-/// When a gated operation decides Approval in a run with nobody to ask, the
-/// work is handed to the seat that holds authority as that seat's OWN
-/// assignment — the one hand-over pathway (`open_assignment`, through the
-/// opener the server installs at boot, the same one the `agent` tool uses) —
-/// carrying the operation, the seat that wanted it, the bound it fell outside,
-/// and what is now stopped. Returns the sentence the stopped run tells the
-/// model, or `None` when nobody here holds that authority, in which case the
-/// caller's own fallback stands: park for the owner, or refuse.
-fn hand_off_out_of_bounds(
-    store: &Arc<Store>,
-    agent_id: &str,
-    session_key: &str,
-    operation: &str,
-    display: &str,
-    reason: &str,
-) -> Option<String> {
-    let opener = tools::assignments::assignment_opener()?;
-    let seat = authority_seat(store, agent_id)?;
-    let my_name = store
-        .get_agent(agent_id)
-        .ok()
-        .flatten()
-        .map(|a| a.name)
-        .unwrap_or_else(|| agent_id.to_string());
-    let req = tools::assignments::AssignmentRequest {
-        assigner_agent_id: agent_id.to_string(),
-        assigner_name: my_name.clone(),
-        assigner_session_key: session_key.to_string(),
-        parent_run_id: None,
-        assignee_agent_id: seat.id.clone(),
-        subject: format!("{my_name} is stopped on {operation}: {display}"),
-        done_means: format!(
-            "Decide {operation} for {my_name}. It fell outside what {my_name} may do unattended: \
-             {reason}. The work that is stopped: {display}. Either grant {my_name} standing \
-             authority for {operation} within bounds you can stand behind, do it yourself if it is \
-             yours to do, or close this saying it will not happen and why."
-        ),
-        due: None,
-    };
-    match opener.open(&req) {
-        Ok(id) => {
-            tracing::info!(
-                agent = %agent_id, op = %operation, assignee = %seat.id, assignment = %id,
-                "out of bounds: handed to the seat that holds authority"
-            );
-            Some(format!(
-                "'{operation}' is outside what you may do unattended ({reason}), so it was handed to \
-                 {} as an assignment: the operation, the bound it fell outside, and the work that is \
-                 stopped. Do not retry it and do not work around it — say plainly that it is now {}'s \
-                 to decide, and carry on with anything else you can finish.",
-                seat.name, seat.name
-            ))
-        }
-        Err(e) => {
-            warn!(agent = %agent_id, op = %operation, error = %e, "handing out-of-bounds work on failed");
-            None
-        }
-    }
-}
-
-/// Who can answer an approval card for a batch: the channels the answer
-/// comes back on, the stream the card is shown in, and the run's cancel token.
-pub struct ApprovalDoor<'a> {
-    pub channels: &'a tools::ApprovalChannels,
-    pub tx: &'a mpsc::Sender<StreamEvent>,
-    pub cancel_token: &'a CancellationToken,
-}
-
-/// The run a batch of tool calls belongs to, as the permission gate reads it.
-/// The runner fills it for every batch; `/agent/mcp` fills it for a single
-/// call from an MCP client (no door, `Origin::Mcp`).
-pub struct GateRun<'a> {
-    pub tools: &'a Registry,
-    pub store: &'a Arc<Store>,
-    pub agent_id: &'a str,
-    pub session_id: &'a str,
-    pub session_key: &'a str,
-    pub origin: Origin,
-    pub full_access: bool,
-    pub entity_permissions: Option<&'a HashMap<String, bool>>,
-    pub operation_policy: Option<&'a tools::policy::OperationPolicy>,
-    /// None: nobody can be asked, so what would ask is refused.
-    pub approval: Option<ApprovalDoor<'a>>,
-    pub approval_relay: bool,
-    pub workflow_mode: Option<&'a WorkflowMode>,
-    /// For a workflow park's conversation snapshot.
-    pub sessions: Option<&'a SessionManager>,
-}
-
-/// What the gate decided for a batch, beyond the refusals it wrote.
-pub struct GateOutcome {
-    /// Capabilities cleared for this batch — set on the `ToolContext` so the
-    /// registry's capability check lets them through.
-    pub approved_categories: HashSet<String>,
-    /// Calls the owner answered on a card.
-    pub owner_answered: HashSet<usize>,
-    /// A workflow parked an Approval-gated call: the loop's break reason.
-    pub parked: Option<String>,
-}
-
-/// The permission gate every tool call passes before the registry runs it:
-/// MCP server tool permissions, the per-employee operation policy, and the
-/// capability toggles — asking the owner where someone can be asked, and
-/// refusing (or handing off) where nobody can. Refusals are written into
-/// `blocked_results`; the registry's own checks (safeguard, path scope,
-/// origin deny list, capability, resource grants) still run after this.
-pub async fn gate_tool_calls(
-    run: &GateRun<'_>,
-    tool_calls: &[ai::ToolCall],
-    blocked_results: &mut [Option<(ai::ToolCall, ToolResult)>],
-) -> GateOutcome {
-    let GateRun {
-        tools,
-        store,
-        agent_id,
-        session_id,
-        session_key,
-        origin,
-        full_access,
-        entity_permissions,
-        operation_policy,
-        approval: _,
-        approval_relay,
-        workflow_mode,
-        sessions,
-    } = *run;
-    let mut wf_break_reason: Option<String> = None;
-    // ── Per-tool approval gate (PERMISSIONS_SME §11) ──────────────────
-    // A capability that's OFF means ASK the user, not hard-fail. We wire
-    // the previously-dangling producer: emit `approval_request` and await
-    // the ApprovalModal decision via the shared `approval_channels`
-    // round-trip (the SAME pathway plan-mode uses). Autonomous mode and
-    // pre-granted (ON) categories proceed without asking; Deny returns a
-    // clean declined result; "Always" flips the capability ON for next
-    // time. Categories cleared here are recorded on the ToolContext so the
-    // registry permission gate (Phase 1c) treats them as allowed.
-    let mut approved_cats: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-    // Per-command allowlist: prefixes the user chose "Approve Always" for.
-    // Loaded once; appended on an "always" decision for a shell command.
-    let mut approved_cmds: Vec<String> = store.get_approved_commands().unwrap_or_default();
-    // Gated calls in one batch get ONE approval card (Stage 7): the first
-    // pass collects them, one ask covers the lot, the second pass applies
-    // the decision through the same grant code as a single ask.
-    #[derive(Clone, Copy, PartialEq)]
-    enum GatePass { Collect, Apply }
-    let mut to_ask: Vec<usize> = Vec::new();
-    let mut batch_decision: Option<String> = None;
-    // Calls the owner answered on a card in this batch: the decide
-    // guardrail below never asks about them a second time.
-    let mut owner_answered: std::collections::HashSet<usize> =
-        std::collections::HashSet::new();
-    for gate_pass in [GatePass::Collect, GatePass::Apply] {
-    if gate_pass == GatePass::Apply {
-        if to_ask.is_empty() { break; }
-        let calls: Vec<ai::ToolCall> = to_ask.iter().map(|&i| tool_calls[i].clone()).collect();
-        let door = run.approval.as_ref().expect("collect pass only records calls with a door");
-        batch_decision = Some(ask_tool_approval_batch(door.channels, door.tx, door.cancel_token, &calls, session_id, "capability").await);
-        owner_answered.extend(to_ask.iter().copied());
-    }
-    for idx in 0..tool_calls.len() {
-        if blocked_results[idx].is_some() {
-            continue;
-        }
-        // ── MCP tri-state gate (Settings → MCP → Tool permissions) ────
-        // Per-server default + per-tool override, decided by
-        // tools::policy::McpServerPermissions: Allow auto-approves,
-        // Ask runs the SAME ApprovalGate round-trip as capabilities,
-        // Deny refuses with an error naming the setting. This gate is
-        // the ONE enforcement site for MCP tool permissions; MCP
-        // proxies carry no ambient capability, so the loop `continue`s
-        // here and never reaches the capability gate below.
-        if tool_calls[idx].name.starts_with("mcp__")
-            && let Some((integration_id, original)) =
-            tools.mcp_proxy_info(&tool_calls[idx].name).await
-        {
-            // Company Memory (the platform-authenticated server,
-            // auth_type "neboai") is governed on the KB page —
-            // the owner grants or revokes each Nebo there and the
-            // shard enforces it with a 401. Asking again here
-            // would leave every unattended run (a shopper on a
-            // code, a workflow) with no one to answer. One gate.
-            let platform_memory = store
-                .get_mcp_integration(&integration_id)
-                .ok()
-                .flatten()
-                .map(|i| i.auth_type == "neboai")
-                .unwrap_or(false);
-            if platform_memory {
-                continue;
-            }
-            let perms = tools::policy::McpServerPermissions::from_json(
-                store
-                    .get_mcp_tool_permissions(&integration_id)
-                    .unwrap_or_default()
-                    .as_deref(),
-            );
-            // mcp__<server>__<tool> — the server slug, for messages.
-            let server = tool_calls[idx]
-                .name
-                .split("__")
-                .nth(1)
-                .unwrap_or("server")
-                .to_string();
-            match perms.decide(&original) {
-                tools::policy::McpToolAccess::Allow => {}
-                tools::policy::McpToolAccess::Deny => {
-                    blocked_results[idx] = Some((
-                        tool_calls[idx].clone(),
-                        ToolResult::error(format!(
-                            "Blocked: the MCP tool '{original}' on server \
-                             '{server}' is set to Blocked in Settings → MCP → \
-                             Tool permissions. Tell the user this tool is \
-                             blocked by that setting and stop — do not retry \
-                             or work around it."
-                        )),
-                    ));
-                }
-                tools::policy::McpToolAccess::Ask if full_access => {
-                    // Full Access bypasses the ask, same as the
-                    // capability gate. Blocked above still blocks.
-                }
-                tools::policy::McpToolAccess::Ask => {
-                    match &run.approval {
-                        Some(door)
-                            if tools::ExecutionMode::from(origin)
-                                == tools::ExecutionMode::Interactive
-                                || approval_relay =>
-                        {
-                            let decision = ask_tool_approval(
-                                door.channels,
-                                door.tx,
-                                door.cancel_token,
-                                &tool_calls[idx],
-                                session_id,
-                                "mcp",
-                            )
-                            .await;
-                            owner_answered.insert(idx);
-                            match decision.as_str() {
-                                "always" => {
-                                    if let Err(e) = persist_mcp_tool_allow(
-                                        store,
-                                        &integration_id,
-                                        &original,
-                                    ) {
-                                        warn!(session_id, tool = %original, error = %e, "failed to persist MCP tool grant");
-                                    }
-                                }
-                                "once" | "approve" | "approved" | "yes" | "true" => {}
-                                _ => {
-                                    blocked_results[idx] = Some((
-                                        tool_calls[idx].clone(),
-                                        ToolResult::error(format!(
-                                            "The user declined to allow the MCP \
-                                             tool '{original}' on server \
-                                             '{server}'. Tell the user it needs \
-                                             their approval and stop — do not \
-                                             retry or work around it."
-                                        )),
-                                    ));
-                                }
-                            }
-                        }
-                        // Unattended (cron/workflow/comm/subagent) or no
-                        // channel: nobody can answer — refuse instead of
-                        // hanging on a prompt nobody sees. Unlike the
-                        // capability gate there is no registry backstop
-                        // for MCP tools, so the refusal happens here.
-                        _ => {
-                            blocked_results[idx] = Some((
-                                tool_calls[idx].clone(),
-                                ToolResult::error(format!(
-                                    "The MCP tool '{original}' on server \
-                                     '{server}' needs the user's approval \
-                                     (Settings → MCP → Tool permissions) and no \
-                                     one is available to approve it in this \
-                                     run. Report this and stop."
-                                )),
-                            ));
-                        }
-                    }
-                }
-            }
-            continue;
-        }
-        // ── Per-operation approval gate (per-employee three-state policy) ──
-        // A gated interface operation is decided by the employee's
-        // OperationPolicy: Always runs, Approval asks the owner
-        // (interactive) / refuses when unattended, Blocked is refused (the
-        // toolset also omits it — this is the hard backstop). Origin-aware
-        // (WS2): an untrusted origin floors gated Always to Approval, and
-        // with NO policy set a trusted origin keeps "installation is the
-        // grant" (except a critical operation, which always asks) while an
-        // untrusted one falls back to the safe default — the decision lives
-        // in decide/decide_optional, shared with the workflow checkpoint
-        // (Rule 8.1).
-        //
-        // WHICH operation a call performs is the TOOL's to declare
-        // (`DynTool::operation_performed`), never this gate's to infer from
-        // a tool name: the `plugin` tool answers with its typed
-        // `operation`, the `pack` tool with the layer write or removal it
-        // performs, and any tool that grows a gated operation is decided
-        // here without touching this code. A call that performs no typed
-        // operation (plugin list/discover/exec-by-slug, pack list/show)
-        // falls through ungated.
-        if let Some(op) = tools
-            .operation_performed(&tool_calls[idx].name, &tool_calls[idx].input)
-            .await
-        {
-            // The operation's parameters, as far as the call states
-            // them: a standing grant is checked against amount,
-            // counterparty, and today's counters (R16). A call that
-            // states no amount is checked against count and freshness
-            // only.
-            let params = tools::policy::OperationParams {
-                amount_cents: tool_calls[idx]
-                    .input
-                    .get("amount_cents")
-                    .and_then(|v| v.as_i64()),
-                counterparty: tool_calls[idx]
-                    .input
-                    .get("counterparty")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                counterparty_has_source_id: tool_calls[idx]
-                    .input
-                    .get("counterparty_id")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|s| !s.is_empty()),
-                irreversible: tools::interface_catalog::is_critical(&op),
-            };
-            let company_policy = store
-                .get_company_policy()
-                .ok()
-                .flatten()
-                .map(|j| tools::policy::CompanyPolicy::from_json(Some(&j)));
-            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-            let rule_key = format!(
-                "{}:{}",
-                grant_counter_seat(agent_id, session_key),
-                tools::plugin_tool::port_suffix(&op)
-            );
-            let counters = {
-                let cp = params.counterparty.clone().unwrap_or_default();
-                let mine = store.day_counters(&rule_key, &today, &cp).ok();
-                let company = store.day_counters(db::COMPANY_COUNTER_KEY, &today, "").ok();
-                mine.map(|m| tools::policy::DayCounters {
-                    count: m.count,
-                    cents: m.cents,
-                    counterparty_cents: m.counterparty_cents,
-                    company_count: company.as_ref().map(|c| c.count).unwrap_or(0),
-                    company_cents: company.as_ref().map(|c| c.cents).unwrap_or(0),
-                })
-            };
-            let decision = tools::policy::OperationPolicy::decide_optional(
-                operation_policy,
-                &op,
-                // Tainted workflow inputs decide as Comm: a gated
-                // Always floors to Approval (WS2-R7), the same
-                // rule the engine checkpoint applied.
-                if workflow_mode.is_some_and(|m| m.tainted) {
-                    tools::Origin::Comm
-                } else {
-                    origin
-                },
-                &params,
-                company_policy.as_ref(),
-                counters.as_ref(),
-                // The projection is proven current once the cache
-                // exists (Playbook PRD 6.4); until then local policy
-                // is the only copy and is current by definition.
-                true,
-            );
-            if let Some(decision) = decision {
-                match decision.access {
-                    tools::policy::OperationAccess::Always => {
-                        // A standing grant spent: count it against the
-                        // day before the call runs, so a crash between
-                        // decision and execution can never under-count.
-                        if decision.layer == tools::policy::PolicyLayer::StandingAuthority {
-                            let cp = params.counterparty.clone().unwrap_or_default();
-                            let cents = params.amount_cents.unwrap_or(0);
-                            let _ = store.bump_counters(&rule_key, &today, &cp, cents);
-                            let _ = store.bump_counters(db::COMPANY_COUNTER_KEY, &today, "", cents);
-                            tracing::info!(
-                                agent = %agent_id, op = %op, rule = %rule_key, reason = %decision.reason,
-                                "operation approved by standing authority"
-                            );
-                        }
-                    }
-                    tools::policy::OperationAccess::Blocked => {
-                        blocked_results[idx] = Some((
-                            tool_calls[idx].clone(),
-                            ToolResult::error(format!(
-                                "The operation '{op}' is Blocked for this AI employee \
-                                 ({layer}: {reason}). Tell the user it's blocked and \
-                                 stop — do not retry or work around it.",
-                                layer = decision.layer.as_str(),
-                                reason = decision.reason,
-                            )),
-                        ));
-                    }
-                    tools::policy::OperationAccess::Approval => {
-                        // NOTE: deliberately NO full_access bypass here. The
-                        // per-employee operation policy is an explicit setting;
-                        // the whole point is that a global convenience (Full
-                        // Access) never overrides a per-employee gate on money/
-                        // outbound/irreversible operations. decide() rules.
-                        //
-                        // The approval prompt must be comprehensible to a
-                        // non-technical owner: require the `display` sentence
-                        // (real names + formatted amounts, not ids/cents).
-                        // Missing → corrective retry, never a raw-JSON prompt.
-                        let display = tool_calls[idx]
-                            .input
-                            .get("display")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
-                        if display.is_empty() {
-                            blocked_results[idx] = Some((
-                                tool_calls[idx].clone(),
-                                ToolResult::error(format!(
-                                    "The operation '{op}' needs the owner's approval, and \
-                                     the approval prompt requires a `display` sentence. \
-                                     Retry the SAME call adding display: one plain-language \
-                                     sentence a non-technical person understands — real \
-                                     names and formatted amounts (e.g. \"Pay Acme Supplies \
-                                     $2,500.00 for bill #1042\"), never raw ids or cents."
-                                )),
-                            ));
-                        } else if tools::ExecutionMode::from(origin)
-                            == tools::ExecutionMode::Interactive
-                            || approval_relay
-                        {
-                            match &run.approval {
-                                Some(door) => {
-                                    let decision = ask_tool_approval(
-                                        door.channels,
-                                        door.tx,
-                                        door.cancel_token,
-                                        &tool_calls[idx],
-                                        session_id,
-                                        "operation",
-                                    )
-                                    .await;
-                                    owner_answered.insert(idx);
-                                    match decision.as_str() {
-                                        "always" => {
-                                            // Approve Always → persist this op as
-                                            // Always in the employee's policy so the
-                                            // button does what it says.
-                                            if !agent_id.is_empty() {
-                                                let mut policy = operation_policy
-                                                    .cloned()
-                                                    .unwrap_or_default();
-                                                // A locked entry (the seat's
-                                                // ceiling or a law) refuses the
-                                                // edit: the button cannot loosen it.
-                                                if let Err(e) = policy.apply_edit(
-                                                    &tools::plugin_tool::port_suffix(&op),
-                                                    tools::policy::OperationRule::access(
-                                                        tools::policy::OperationAccess::Always,
-                                                    ),
-                                                ) {
-                                                    tracing::warn!(op = %op, error = %e, "Approve Always refused by the policy");
-                                                }
-                                                let patch = serde_json::json!({
-                                                    "operationPolicy": policy.to_json()
-                                                });
-                                                if let Err(e) = store
-                                                    .upsert_entity_config(
-                                                        "agent", agent_id, &patch,
-                                                    )
-                                                {
-                                                    warn!(session_id, op, error = %e, "failed to persist operation Always grant");
-                                                }
-                                            }
-                                        }
-                                        "once" | "approve" | "approved" | "yes"
-                                        | "true" => {}
-                                        _ => {
-                                            blocked_results[idx] = Some((
-                                                tool_calls[idx].clone(),
-                                                ToolResult::error(format!(
-                                                    "The user declined to approve the \
-                                                     operation '{op}'. Tell the user it \
-                                                     needs their approval and stop — do \
-                                                     not retry or work around it."
-                                                )),
-                                            ));
-                                        }
-                                    }
-                                }
-                                None => {
-                                    // Nobody to ask on this surface: the
-                                    // work goes to whoever holds the
-                                    // authority for it, or waits for the
-                                    // owner if nobody does.
-                                    blocked_results[idx] = Some((
-                                        tool_calls[idx].clone(),
-                                        match hand_off_out_of_bounds(
-                                            store,
-                                            agent_id,
-                                            session_id,
-                                            op.as_str(),
-                                            &display,
-                                            &decision.reason,
-                                        ) {
-                                            Some(handed) => ToolResult::ok(handed),
-                                            None => ToolResult::error(format!(
-                                                "The operation '{op}' needs approval and no \
-                                                 one is available to approve it in this run. \
-                                                 Report this and stop."
-                                            )),
-                                        },
-                                    ));
-                                }
-                            }
-                        } else if let Some(park) =
-                            workflow_mode.and_then(|m| m.park.as_ref())
-                        {
-                            // Workflow suspend/resume: park the run for the
-                            // owner instead of refusing — the closure persists
-                            // the suspension row; the loop exits parked.
-                            let snapshot = convert_messages(
-                                &sessions
-                                .map(|s| s.get_messages(session_id).unwrap_or_default())
-                                .unwrap_or_default(),
-                            );
-                            match park(WorkflowPark {
-                                messages: snapshot,
-                                call: &tool_calls[idx],
-                                operation: tools::plugin_tool::port_suffix(&op),
-                                display: display.clone(),
-                            }) {
-                                Ok(()) => {
-                                    wf_break_reason =
-                                        Some("awaiting_approval".to_string());
-                                }
-                                Err(e) => {
-                                    // Can't persist the suspension → fail loud,
-                                    // never silent-run the gated call.
-                                    wf_break_reason =
-                                        Some(format!("suspension_failed:{e}"));
-                                }
-                            }
-                            break;
-                        } else {
-                            // Unattended chat origin (cron/comm/subagent): the chat
-                            // gate can't pause, and the workflow path already parks
-                            // at its checkpoint. Work that fell outside this seat's
-                            // bounds is not impossible work — it is somebody's to
-                            // decide, so it is handed to the seat that holds that
-                            // authority and this run stops cleanly. With nobody
-                            // holding it, it waits for the owner as before.
-                            blocked_results[idx] = Some((
-                                tool_calls[idx].clone(),
-                                match hand_off_out_of_bounds(
-                                    store,
-                                    agent_id,
-                                    session_id,
-                                    op.as_str(),
-                                    &display,
-                                    &decision.reason,
-                                ) {
-                                    Some(handed) => ToolResult::ok(handed),
-                                    None => ToolResult::error(format!(
-                                        "The operation '{op}' needs your approval and this is \
-                                         an unattended run. It was not performed."
-                                    )),
-                                },
-                            ));
-                        }
-                    }
-                }
-            }
-            // The operation gate is the decision for a declared operation:
-            // `plugin` and `pack` belong to no capability, so there is
-            // nothing further to ask here.
-            continue;
-        }
-        let target = tools.target(&tool_calls[idx].name, &tool_calls[idx].input).await;
-        let category = match target.as_ref().and_then(|t| t.capability.clone()) {
-            Some(c) => c,
-            None => continue, // ungated (installed extension / non-ambient tool)
-        };
-        let category = category.as_str();
-        let cap_off = entity_permissions
-            .map(|p| p.get(category) == Some(&false))
-            .unwrap_or(false);
-        // The shell command this call would run, if any (for the per-command
-        // allowlist). None for non-shell tools.
-        let shell_cmd = target.as_ref().and_then(shell_command_of);
-        if !cap_off || full_access {
-            // Pre-granted (capability ON), no permission map, or Full Access
-            // → proceed without asking.
-            approved_cats.insert(category.to_string());
-            continue;
-        }
-        // Capability OFF, but this exact shell command was "approved always"
-        // (matched by prefix; compound/interpreter commands never match) →
-        // run without asking. Hard safeguards still apply unconditionally.
-        if let Some(ref c) = shell_cmd
-            && tools::policy::command_matches(&approved_cmds, c) {
-            approved_cats.insert(category.to_string());
-            continue;
-        }
-        // Capability OFF + not Full Access + not pre-approved → ask, but ONLY
-        // when a human is present. Unattended runs (cron/heartbeat/workflow/
-        // comm/subagent) have no one to answer, so it's denied (left ungranted
-        // → Phase 1c blocks) rather than hanging on a prompt nobody sees.
-        if tools::ExecutionMode::from(origin) != tools::ExecutionMode::Interactive
-            && !approval_relay
-        {
-            continue;
-        }
-        if run.approval.is_none() {
-            // No channel to ask through: leave the category ungranted so
-            // registry Phase 1c hard-blocks (safe).
-            continue;
-        }
-        // Collect pass: remember the call and move on; the batch is
-        // asked once below and the decision applied in the apply pass.
-        let decision = match gate_pass {
-            GatePass::Collect => {
-                to_ask.push(idx);
-                continue;
-            }
-            GatePass::Apply => batch_decision.clone().unwrap_or_else(|| "deny".to_string()),
-        };
-        match decision.as_str() {
-            "always" => {
-                approved_cats.insert(category.to_string());
-                match &shell_cmd {
-                    // Shell command → remember just this command's PREFIX
-                    // (not all of Shell). Interpreters/compound commands
-                    // yield None → no durable grant (approved once only).
-                    Some(c) => {
-                        if let Some(prefix) = tools::policy::command_prefix(c)
-                            && !approved_cmds.iter().any(|p| p == &prefix) {
-                            approved_cmds.push(prefix.clone());
-                            if let Err(e) = store.set_approved_commands(&approved_cmds)
-                            {
-                                warn!(session_id, error = %e, "failed to persist approved command");
-                            }
-                        }
-                    }
-                    // Non-shell capability → grant the whole capability for
-                    // next time (per-item grants aren't meaningful there).
-                    None => {
-                        if let Err(e) = persist_capability_grant(store, category) {
-                            warn!(session_id, category, error = %e, "failed to persist capability grant");
-                        }
-                    }
-                }
-            }
-            "once" | "approve" | "approved" | "yes" | "true" => {
-                approved_cats.insert(category.to_string());
-            }
-            _ => {
-                // Deny → skip execution with a clean, non-spiraling result.
-                blocked_results[idx] = Some((
-                    tool_calls[idx].clone(),
-                    ToolResult::error(format!(
-                        "The user declined to allow this action (the \"{}\" capability \
-                         is off). Tell the user it needs their approval and stop — do \
-                         not retry or work around it.",
-                        tools::capabilities::capability_label(category)
-                    )),
-                ));
-            }
-        }
-    }
-    }
-    GateOutcome {
-        approved_categories: approved_cats,
-        owner_answered,
-        parked: wf_break_reason,
-    }
-}
-
 /// Detect if a tool call is requesting documentation (help/schema).
 /// Returns a cache key like "skill:gws-sheets" or "plugin:sheets:help" if so.
 fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<String> {
@@ -2538,20 +1684,6 @@ fn partition_tool_calls(calls: &[(usize, bool)]) -> Vec<Vec<usize>> {
         open_safe = safe;
     }
     batches
-}
-
-#[cfg(test)]
-mod grant_counter_tests {
-    /// A sub-agent runs under its parent's operation policy, so a standing
-    /// grant it spends counts against the parent seat's day — it gets no
-    /// fresh allowance of its own. Other runs are keyed as before.
-    #[test]
-    fn a_sub_agent_spends_its_parent_seats_counters() {
-        assert_eq!(super::grant_counter_seat("", "subagent:agent:bk:web:sa-1"), "bk");
-        assert_eq!(super::grant_counter_seat("", "subagent:subagent:agent:bk:web:sa-1:sa-2"), "bk");
-        assert_eq!(super::grant_counter_seat("bk", "agent:bk:web"), "bk");
-        assert_eq!(super::grant_counter_seat("", "agent:assistant:web"), "");
-    }
 }
 
 #[cfg(test)]
@@ -2668,8 +1800,6 @@ mod tests {
         assert!(is_desktop_act(&target("os", "desktop_click", None)));
         assert!(!is_desktop_act(&target("os", "desktop_see", None)));
         assert!(!is_desktop_act(&command("ls")));
-        assert_eq!(shell_command_of(&command("ls -la")).as_deref(), Some("ls -la"));
-        assert_eq!(shell_command_of(&read("/a")), None);
     }
 
     /// One message's results are held to the budget by persisting the
@@ -2802,117 +1932,5 @@ mod runaway_backstop_tests {
         let b = call("execute", "ls");
         assert!(budget.abort_due(&a.name, &a.input, IDENTICAL_CALL_ABORT).is_some());
         assert!(budget.abort_due(&b.name, &b.input, IDENTICAL_CALL_ABORT).is_none());
-    }
-}
-
-#[cfg(test)]
-mod out_of_bounds_tests {
-    use super::*;
-
-    /// Stands in for the case opener the server installs at boot, so the join
-    /// can be proven without the engine: what matters here is that ONE
-    /// hand-over pathway is used and what is put on the assignment.
-    struct Capture {
-        seen: std::sync::Mutex<Vec<tools::assignments::AssignmentRequest>>,
-    }
-
-    impl tools::assignments::AssignmentOpener for Capture {
-        fn open(
-            &self,
-            req: &tools::assignments::AssignmentRequest,
-        ) -> Result<String, String> {
-            self.seen.lock().unwrap().push(req.clone());
-            Ok("assignment-1".to_string())
-        }
-    }
-
-    fn store() -> Arc<Store> {
-        let path = std::env::temp_dir().join(format!("nebo-oob-{}.db", uuid::Uuid::new_v4()));
-        Arc::new(Store::new(&path.to_string_lossy()).expect("store"))
-    }
-
-    fn seat(store: &Arc<Store>, id: &str, name: &str, frontmatter: &str) {
-        store
-            .create_agent(id, None, name, "", "", frontmatter, None, None)
-            .expect("seat");
-    }
-
-    /// Out-of-bounds work in an unattended run is somebody's assignment, not a
-    /// refusal — and who that somebody is comes out of the data, never out of a
-    /// name compiled into Rust.
-    #[test]
-    fn out_of_bounds_work_becomes_the_authority_seats_assignment() {
-        let store = store();
-        let captured = Arc::new(Capture { seen: std::sync::Mutex::new(Vec::new()) });
-        tools::assignments::install_assignment_opener(captured.clone());
-
-        // A seat the owner has given the authority to grant, and a worker.
-        seat(&store, "coo", "Operations Lead", "");
-        let mut policy = tools::policy::OperationPolicy::default();
-        policy
-            .apply_edit(
-                "authority.grant.grant",
-                tools::policy::OperationRule::access(tools::policy::OperationAccess::Approval),
-            )
-            .unwrap();
-        store
-            .upsert_entity_config(
-                "agent",
-                "coo",
-                &serde_json::json!({ "operationPolicy": policy.to_json() }),
-            )
-            .expect("policy");
-        seat(&store, "bk", "Bookkeeper", "");
-
-        // Found from the data: the seat that holds the authority to grant.
-        assert_eq!(
-            authority_seat(&store, "bk").map(|a| a.id).as_deref(),
-            Some("coo")
-        );
-
-        const OP: &str = "ledger.billpayment.create";
-        const DISPLAY: &str = "Pay Acme Supplies $3,000.00 for bill #1042";
-        const REASON: &str = "amount 300000 exceeds the grant's 250000 per operation";
-        let handed = hand_off_out_of_bounds(&store, "bk", "agent:bk:cron", OP, DISPLAY, REASON)
-            .expect("the work is handed on, not refused");
-        assert!(handed.contains("Operations Lead"), "{handed}");
-        assert!(handed.contains("Do not retry"), "{handed}");
-
-        let reqs = captured.seen.lock().unwrap();
-        assert_eq!(reqs.len(), 1, "ONE hand-over, through open_assignment");
-        let req = &reqs[0];
-        assert_eq!(req.assignee_agent_id, "coo");
-        assert_eq!(req.assigner_agent_id, "bk");
-        assert_eq!(req.assigner_session_key, "agent:bk:cron");
-        // The assignment carries the operation, who wanted it, the bound it fell
-        // outside, and what is now stopped.
-        assert!(req.subject.contains("Bookkeeper") && req.subject.contains(OP), "{}", req.subject);
-        assert!(req.subject.contains(DISPLAY), "{}", req.subject);
-        assert!(req.done_means.contains(REASON), "{}", req.done_means);
-        assert!(req.done_means.contains(DISPLAY), "{}", req.done_means);
-        assert!(req.done_means.contains(OP), "{}", req.done_means);
-        drop(reqs);
-
-        // The line the owner drew wins over the search: an Office Manager who
-        // holds no authority of its own still gets the decision when the owner
-        // put it above this seat.
-        seat(&store, "om", "Office Manager", "");
-        store
-            .update_agent(
-                "bk", "", "", "", "", None, None, None, None, None, None, None, None, None,
-                Some("om"),
-            )
-            .expect("reporting line");
-        assert_eq!(
-            authority_seat(&store, "bk").map(|a| a.id).as_deref(),
-            Some("om"),
-        );
-
-        // Nobody above it and nobody holding that authority: the work waits for
-        // the owner, which is what the caller's own fallback does.
-        assert!(
-            hand_off_out_of_bounds(&store, "coo", "agent:coo:cron", OP, DISPLAY, REASON).is_none(),
-            "with no authority seat the owner decides",
-        );
     }
 }

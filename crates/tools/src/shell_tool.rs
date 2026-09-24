@@ -1,6 +1,5 @@
 use crate::errors;
 use crate::origin::ToolContext;
-use crate::policy::Policy;
 use crate::process::{self, ProcessRegistry};
 use crate::registry::ToolResult;
 use serde::Deserialize;
@@ -9,7 +8,6 @@ use std::sync::Arc;
 
 /// Shell operations: execute commands, manage processes and background sessions.
 pub struct ShellTool {
-    _policy: Policy,
     registry: Arc<ProcessRegistry>,
     plugin_store: Option<Arc<napp::plugin::PluginStore>>,
 }
@@ -46,9 +44,8 @@ struct ShellInput {
 }
 
 impl ShellTool {
-    pub fn new(policy: Policy, registry: Arc<ProcessRegistry>) -> Self {
+    pub fn new(registry: Arc<ProcessRegistry>) -> Self {
         Self {
-            _policy: policy,
             registry,
             plugin_store: None,
         }
@@ -316,7 +313,7 @@ impl ShellTool {
         let result = crate::process::output_within(cmd, std::time::Duration::from_secs(timeout_secs)).await;
 
         match result {
-            Ok(crate::process::Outcome::TimedOut { stdout, stderr }) => ToolResult { payload: None, need: None,
+            Ok(crate::process::Outcome::TimedOut { stdout, stderr }) => ToolResult { payload: None, need: None, parked_ask: None,
                 content: format!(
                     "Command killed after {}s (its timeout): `{}`\n\
                      Output before the kill:\n{}\
@@ -411,7 +408,7 @@ impl ShellTool {
                         result.push_str(&msg);
                     }
                     if is_error {
-                        return ToolResult { payload: None, need: None,
+                        return ToolResult { payload: None, need: None, parked_ask: None,
                             content: format!("{}\n{}", exit_header(&output.status), result),
                             is_error: true,
                             image_url: None,
@@ -1107,7 +1104,7 @@ mod tests {
     use serde_json::json;
 
     fn tool() -> ShellTool {
-        ShellTool::new(Policy::default(), Arc::new(ProcessRegistry::new()))
+        ShellTool::new(Arc::new(ProcessRegistry::new()))
     }
 
     fn ctx() -> ToolContext {

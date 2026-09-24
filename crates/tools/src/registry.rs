@@ -6,11 +6,9 @@ use tracing::{debug, warn};
 
 use ai::ToolDefinition;
 
-use crate::capabilities;
+use crate::gate::{GateVerdict, PermissionGate, ResolvedCall};
 use crate::origin::ToolContext;
-use crate::policy::Policy;
 use crate::process::ProcessRegistry;
-use crate::safeguard;
 
 // ── Resource Permits ────────────────────────────────────────────────
 
@@ -87,6 +85,10 @@ pub struct ToolResult {
     /// `content`'s words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub need: Option<types::OwnerNeed>,
+    /// The call did not run: the permission check parked it on the owner.
+    /// The ask's id, so a workflow activity can suspend on the same ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_ask: Option<String>,
 }
 
 impl ToolResult {
@@ -298,11 +300,10 @@ pub trait DynTool: Send + Sync {
     /// The typed interface operation this call performs
     /// (`capability.resource.action`), when it performs one.
     ///
-    /// The runner's per-operation approval gate asks the TOOL this question
-    /// instead of matching on a tool name, so any tool can declare that one of
-    /// its calls is a gated operation and be decided by the employee's
-    /// `OperationPolicy`. The tool never decides anything itself: it says what
-    /// the call is, and `OperationPolicy::decide` is the one place that answers.
+    /// The permission check asks the TOOL this question instead of matching
+    /// on a tool name, so any tool can declare that one of its calls performs
+    /// a catalog operation and be decided by the rules keyed on it. The tool
+    /// never decides anything itself: it says what the call is.
     ///
     /// Default: `None` — this call performs no typed operation and the gate
     /// does not apply.
@@ -348,7 +349,8 @@ pub struct Registry {
     deferred: Arc<RwLock<HashSet<String>>>,
     /// Maps agent_id → set of tool names owned by that agent's sidecar.
     agent_tools: Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    policy: Arc<RwLock<Policy>>,
+    /// The permission check every call passes before it runs.
+    gate: Arc<dyn PermissionGate>,
     process_registry: Arc<ProcessRegistry>,
     bridge: std::sync::RwLock<Option<Arc<mcp::Bridge>>>,
     plugin_store: std::sync::RwLock<Option<Arc<napp::plugin::PluginStore>>>,
@@ -381,14 +383,16 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new(policy: Policy) -> Self {
+    /// A registry whose calls are all decided by `gate`: there is no way to
+    /// run a tool without it.
+    pub fn new(gate: Arc<dyn PermissionGate>) -> Self {
         Self {
             tools: Arc::new(RwLock::new(HashMap::new())),
             def_cache: Arc::new(RwLock::new(HashMap::new())),
             validators: Arc::new(RwLock::new(HashMap::new())),
             deferred: Arc::new(RwLock::new(HashSet::new())),
             agent_tools: Arc::new(RwLock::new(HashMap::new())),
-            policy: Arc::new(RwLock::new(policy)),
+            gate,
             process_registry: Arc::new(ProcessRegistry::new()),
             bridge: std::sync::RwLock::new(None),
             plugin_store: std::sync::RwLock::new(None),
@@ -781,10 +785,9 @@ impl Registry {
     ///
     /// The one door every call goes through, in order: resolve the tool,
     /// repair and settle the input, validate it against the schema and the
-    /// tool's own checks, the hard limits keyed on the call's rule key
-    /// (safeguard, folder fence, origin limits, restricted-run allowlist,
-    /// lease), the capability and resource grants, then run it under its
-    /// resource permit and shape the result (the one spill path).
+    /// tool's own checks, the permission check (hard limits, ceiling, rules,
+    /// mode), the lease, then run it under its resource permit and shape the
+    /// result (the one spill path).
     pub async fn execute(
         &self,
         ctx: &ToolContext,
@@ -849,34 +852,16 @@ impl Registry {
             return ToolResult::error(crate::result_shape::tool_use_error(&message));
         }
 
-        // Hard limits, keyed on the job the call does (its rule key), so a
-        // call reaches the same guard whichever tool shape carries it.
-        let key = tool.rule_key(&input);
-        if let Some(err) = safeguard::check_safeguard(&key, &input) {
-            warn!(tool = %name, error = %err, "safeguard blocked");
-            return ToolResult::error(err);
-        }
-        if let Some(err) = safeguard::check_path_scope(&key, &input, &ctx.allowed_paths) {
-            warn!(tool = %name, error = %err, "path scope blocked");
-            return ToolResult::error(err);
-        }
-        if self.policy.read().await.is_denied_for_origin(ctx.origin, &key) {
-            return ToolResult::error(format!(
-                "'{key}' is not permitted when called from {}. Tell the user what you needed it for; do not retry.",
-                origin_label(ctx.origin)
-            ));
-        }
-
-        // Restricted-run allowlist (review fork, phone callers). Checked
-        // at THIS choke point too — the runner's gate covers the normal
-        // loop, but direct registry callers (the voice fallback path, the
-        // flat-name aliases resolved above) must hit the same fence.
-        if !ctx.whitelist_allows(name, &input) {
-            return ToolResult::error(format!(
-                "Tool '{}' is not available in this restricted run. Use one of the \
-                 tools you were given, or say plainly that you can't do that.",
-                name
-            ));
+        // The permission check: hard limits, the ceiling, the rules and the
+        // mode, decided on the call as it will run.
+        let call = ResolvedCall {
+            tool: tool.as_ref(),
+            input: &input,
+            target: target_of(tool.as_ref(), &input),
+        };
+        match self.gate.check(ctx, &call).await {
+            GateVerdict::Run(_) => {}
+            GateVerdict::Refuse(result) | GateVerdict::Parked(result) => return result,
         }
 
         // Lease gate: while this bot's lease is not held (a cloud bot
@@ -888,46 +873,7 @@ impl Registry {
             return ToolResult::error(format!("{name}: {}", comm::lease::PAUSED));
         }
 
-        // Entity permission: the capability the call belongs to, from the
-        // tool's spec. Installed extensions (plugin/mcp/app/skill/agent)
-        // declare none — installation is the grant.
-        if let Some(ref perms) = ctx.entity_permissions
-            && let Some(category) = tool.capability(&input)
-        {
-            // OFF capability is a hard error ONLY when the caller hasn't
-            // cleared it. The runner clears it via the approval round-trip
-            // (user said yes / autonomous / capability pre-granted), turning
-            // "off" into "ask" rather than a dead end (PERMISSIONS_SME §11).
-            // Callers that don't run the gate leave approved_categories empty,
-            // so their OFF capabilities still hard-block.
-            if perms.get(category) == Some(&false) && !ctx.approved_categories.contains(category) {
-                // Actionable, capability-named denial. PERMISSION_REQUIRED:
-                // prefix lets the runner/UI detect this and offer a one-tap
-                // enable.
-                let label = capabilities::capability_label(category);
-                return ToolResult::error(format!(
-                    "PERMISSION_REQUIRED:{category} — The \"{label}\" capability is \
-                     turned off, so I can't do this. Tell the user, in plain language, \
-                     that you need the \"{label}\" permission enabled in Settings → \
-                     Permissions to continue, then stop. Do NOT try other tools or \
-                     workarounds to get around it."
-                ));
-            }
-        }
-
         let permit_kind = tool.resource_permit(&input);
-        if let (Some(grants), Some(kind)) = (&ctx.resource_grants, &permit_kind) {
-            let resource_name = match kind {
-                ResourceKind::Screen => "screen",
-                ResourceKind::Browser => "browser",
-            };
-            if grants.get(resource_name).is_some_and(|g| g == "deny") {
-                return ToolResult::error(format!(
-                    "This AI employee is not allowed to use the {}. Tell the user; do not try another tool to reach it.",
-                    resource_name
-                ));
-            }
-        }
         let _permit_guard = match permit_kind {
             Some(kind) => {
                 debug!(tool = %name, resource = ?kind, "acquiring resource permit");
@@ -983,25 +929,14 @@ impl Registry {
         message
     }
 
-    /// Update the policy.
-    pub async fn set_policy(&self, policy: Policy) {
-        *self.policy.write().await = policy;
-    }
-
     /// Get a reference to the process registry.
     pub fn process_registry(&self) -> &Arc<ProcessRegistry> {
         &self.process_registry
     }
 
-    /// Get a reference to the policy.
-    pub async fn policy(&self) -> Policy {
-        self.policy.read().await.clone()
-    }
-
     /// Register the default set of tools (os tool only — no DB access).
     pub async fn register_defaults(&self) {
-        let policy = self.policy.read().await.clone();
-        let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
+        let mut os_tool = crate::os_tool::OsTool::new(self.process_registry.clone());
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
@@ -1095,8 +1030,7 @@ impl Registry {
         // cache reads — far cheaper than the discovery round-trips and context pollution
         // that deferral caused. Reserve deferral for genuinely optional surface
         // (per-skill, MCP, niche platform tools).
-        let policy = self.policy.read().await.clone();
-        let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone())
+        let mut os_tool = crate::os_tool::OsTool::new(self.process_registry.clone())
             .with_store(store.clone());
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
@@ -1429,31 +1363,45 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         }
     }
 
-    fn tools_synced(&self, integration_id: &str, tool_names: &[String]) {
+    fn tools_synced(&self, integration_id: &str, server_slug: &str) {
         let store = match self.store.read().unwrap().as_ref() {
             Some(s) => s.clone(),
             None => {
-                warn!(
-                    integration = %integration_id,
-                    "cannot sync MCP tool permissions: store not set"
-                );
+                warn!(integration = %integration_id, "cannot settle MCP tool rules: store not set");
                 return;
             }
         };
-        let mut perms = crate::policy::McpServerPermissions::from_json(
-            store
-                .get_mcp_tool_permissions(integration_id)
-                .ok()
-                .flatten()
-                .as_deref(),
-        );
-        if perms.sync_tools(tool_names) {
-            if let Err(e) = store.set_mcp_tool_permissions(integration_id, &perms.to_json()) {
-                warn!(
-                    integration = %integration_id,
-                    error = %e,
-                    "failed to persist MCP tool permissions after sync"
-                );
+        // Company Memory (the platform-authenticated server) is governed on
+        // the KB page, which the shard enforces; it takes no rule here.
+        let platform = store
+            .get_mcp_integration(integration_id)
+            .ok()
+            .flatten()
+            .is_some_and(|i| i.auth_type == "neboai");
+        if platform {
+            return;
+        }
+        // A server's tools ask until the owner says otherwise: the server's
+        // default rule is written once, at its first connect.
+        let key = types::permissions::RuleKey::Tool(format!("mcp__{server_slug}__*"));
+        let has_default = store
+            .permission_rules_in(&types::permissions::Scope::Company)
+            .map(|rules| rules.iter().any(|r| r.key == key && r.field.is_none()))
+            .unwrap_or(true);
+        if !has_default {
+            let rule = types::permissions::Rule {
+                id: uuid::Uuid::new_v4().to_string(),
+                scope: types::permissions::Scope::Company,
+                key,
+                field: None,
+                effect: types::permissions::Effect::Ask,
+                money: None,
+                source: types::permissions::RuleSource::Owner,
+                locked: false,
+                created_at: chrono::Utc::now().timestamp(),
+            };
+            if let Err(e) = store.write_permission_rule(&rule, &types::permissions::Writer::Migration) {
+                warn!(integration = %integration_id, error = %e, "failed to write the MCP server's default rule");
             }
         }
     }
@@ -1556,24 +1504,6 @@ pub fn legacy_tool_aliases() -> &'static [(&'static str, &'static str)] {
     ]
 }
 
-/// Plain words for where a call came from, for the origin deny message. The
-/// model reads this, so it names the caller the way the user would, not the
-/// enum variant.
-fn origin_label(origin: crate::origin::Origin) -> &'static str {
-    use crate::origin::Origin;
-    match origin {
-        Origin::User => "the app",
-        Origin::Comm => "a chat channel",
-        Origin::App => "an external app",
-        Origin::Skill => "a skill template",
-        Origin::System => "a scheduled system task",
-        Origin::Mcp => "an external MCP client",
-        Origin::Workflow => "an unattended workflow run",
-        Origin::Caller => "a phone caller",
-        Origin::Visitor => "a visitor",
-    }
-}
-
 /// A tool's answers for one call, resolved for the permission check.
 pub fn target_of(tool: &dyn DynTool, input: &serde_json::Value) -> types::permissions::Target {
     types::permissions::Target {
@@ -1641,16 +1571,6 @@ pub(crate) fn is_tool_name(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// The origin deny message names the caller in plain words, never the
-    /// enum variant.
-    #[test]
-    fn origin_labels_are_plain_words() {
-        use crate::origin::Origin;
-        assert_eq!(origin_label(Origin::Mcp), "an external MCP client");
-        assert_eq!(origin_label(Origin::Comm), "a chat channel");
-        assert_eq!(origin_label(Origin::User), "the app");
-    }
-
     /// A model that serializes a structured argument as a JSON string must not
     /// reach the tool that way: `agent(action:"spawn_parallel", tasks:"[{…}]")`
     /// read as a missing `tasks` param, and the model re-sent the identical call
@@ -1686,7 +1606,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stringified_array_arg_is_coerced_before_dispatch() {
-        let registry = Registry::new(Policy::default());
+        let registry = Registry::new(crate::gate::test_gate());
         registry.register(Box::new(ArrayParamTool)).await;
 
         let ctx = ToolContext::default();
@@ -1772,7 +1692,7 @@ mod tests {
         let lease: &'static comm::lease::Lease = Box::leak(Box::new(comm::lease::Lease::new()));
         lease.set_fenced(true);
         lease.claim();
-        let mut registry = Registry::new(Policy::default());
+        let mut registry = Registry::new(crate::gate::test_gate());
         registry.lease = lease;
         let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         registry.register(Box::new(LedgerTool(ran.clone()))).await;
@@ -1795,7 +1715,7 @@ mod tests {
 
     /// A registry holding the real `os` tool, and a scratch directory.
     async fn os_registry() -> (Registry, tempfile::TempDir) {
-        let registry = Registry::new(Policy::default());
+        let registry = Registry::new(crate::gate::test_gate());
         registry.register_defaults().await;
         (registry, tempfile::tempdir().unwrap())
     }
@@ -1805,155 +1725,6 @@ mod tests {
     /// `test -d` on it changes nothing if a gate is missed.
     fn db_dir() -> String {
         config::data_dir().unwrap().join("data").to_string_lossy().into_owned()
-    }
-
-    /// Every gate reads the call the tool will run, however the call was
-    /// written: a call that leaves `action` (and `resource`) for the tool
-    /// to infer meets the same safeguard as the explicit shape.
-    #[tokio::test]
-    async fn a_call_without_an_action_meets_the_safeguard() {
-        let (registry, dir) = os_registry().await;
-        let marker = dir.path().join("ran");
-        let command = format!("touch {}; test -d '{}'", marker.display(), db_dir());
-        let result = registry
-            .execute(&ToolContext::default(), "os", serde_json::json!({ "command": command }))
-            .await;
-        assert!(result.is_error && result.content.contains("BLOCKED"), "{}", result.content);
-        assert!(!marker.exists(), "the command ran past the safeguard");
-    }
-
-    /// The path fence holds for a write and a shell command that name no
-    /// action.
-    #[tokio::test]
-    async fn a_call_without_an_action_meets_the_path_fence() {
-        let (registry, dir) = os_registry().await;
-        let inside = dir.path().join("inside");
-        let outside = dir.path().join("outside");
-        std::fs::create_dir_all(&inside).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        let ctx = ToolContext {
-            allowed_paths: vec![inside.to_string_lossy().into_owned()],
-            ..Default::default()
-        };
-
-        let target = outside.join("x.txt");
-        let write = registry
-            .execute(
-                &ctx,
-                "os",
-                serde_json::json!({ "path": target.to_string_lossy(), "content": "y" }),
-            )
-            .await;
-        assert!(write.is_error && write.content.contains("BLOCKED"), "{}", write.content);
-        assert!(!target.exists(), "the write landed outside the fence");
-
-        let marker = outside.join("ran");
-        let exec = registry
-            .execute(
-                &ctx,
-                "os",
-                serde_json::json!({
-                    "command": format!("touch {}", marker.display()),
-                    "cwd": outside.to_string_lossy(),
-                }),
-            )
-            .await;
-        assert!(exec.is_error && exec.content.contains("BLOCKED"), "{}", exec.content);
-        assert!(!marker.exists(), "the command ran outside the fence");
-    }
-
-    /// A shell command that names no action is gated on Shell, not on the
-    /// Desktop capability an empty action used to resolve to.
-    #[tokio::test]
-    async fn a_call_without_an_action_is_gated_on_its_own_capability() {
-        let (registry, dir) = os_registry().await;
-        let marker = dir.path().join("ran");
-        let ctx = ToolContext {
-            entity_permissions: Some(
-                [("shell".to_string(), false), ("desktop".to_string(), true)].into(),
-            ),
-            ..Default::default()
-        };
-        let result = registry
-            .execute(
-                &ctx,
-                "os",
-                serde_json::json!({ "command": format!("touch {}", marker.display()) }),
-            )
-            .await;
-        assert!(result.content.starts_with("PERMISSION_REQUIRED:shell"), "{}", result.content);
-        assert!(!marker.exists(), "the command ran with Shell off");
-    }
-
-    /// The origin limits key on the call's rule key (`run_command`): a shell
-    /// command from a chat channel is refused whether or not the call names
-    /// its resource.
-    #[tokio::test]
-    async fn a_call_without_an_action_meets_the_origin_deny_list() {
-        let (registry, dir) = os_registry().await;
-        let marker = dir.path().join("ran");
-        let ctx = ToolContext { origin: crate::origin::Origin::Comm, ..Default::default() };
-        let result = registry
-            .execute(
-                &ctx,
-                "os",
-                serde_json::json!({ "command": format!("touch {}", marker.display()) }),
-            )
-            .await;
-        assert!(result.is_error && result.content.contains("not permitted"), "{}", result.content);
-        assert!(!marker.exists(), "a chat channel ran a shell command");
-    }
-
-    /// A notebook edit writes a file: it meets the File capability and the
-    /// path fence exactly as a file write does.
-    #[tokio::test]
-    async fn a_notebook_edit_meets_the_file_capability_and_the_path_fence() {
-        let registry = Registry::new(Policy::default());
-        registry.register(Box::new(crate::notebook_tool::NotebookTool::new())).await;
-        let dir = tempfile::tempdir().unwrap();
-        let inside = dir.path().join("inside");
-        let outside = dir.path().join("outside");
-        std::fs::create_dir_all(&inside).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        let original = serde_json::json!({
-            "cells": [{"cell_type": "code", "id": "c1", "metadata": {}, "source": "print(1)", "outputs": [], "execution_count": 1}],
-            "metadata": {}, "nbformat": 4, "nbformat_minor": 5
-        })
-        .to_string();
-        let edit = |nb: &std::path::Path| {
-            serde_json::json!({
-                "action": "edit", "notebook_path": nb.to_string_lossy(),
-                "cell_id": "c1", "new_source": "print(2)"
-            })
-        };
-
-        let fenced = outside.join("n.ipynb");
-        std::fs::write(&fenced, &original).unwrap();
-        let ctx = ToolContext {
-            allowed_paths: vec![inside.to_string_lossy().into_owned()],
-            ..Default::default()
-        };
-        let result = registry.execute(&ctx, "notebook", edit(&fenced)).await;
-        assert!(result.is_error && result.content.contains("BLOCKED"), "{}", result.content);
-        assert_eq!(std::fs::read_to_string(&fenced).unwrap(), original, "the edit landed outside the fence");
-
-        let gated = inside.join("n.ipynb");
-        std::fs::write(&gated, &original).unwrap();
-        let ctx = ToolContext {
-            entity_permissions: Some([("file".to_string(), false)].into()),
-            ..Default::default()
-        };
-        let result = registry.execute(&ctx, "notebook", edit(&gated)).await;
-        assert!(result.content.starts_with("PERMISSION_REQUIRED:file"), "{}", result.content);
-        assert_eq!(std::fs::read_to_string(&gated).unwrap(), original, "the edit ran with File off");
-
-        // Reads stay open inside the fence, as file reads do.
-        let ctx = ToolContext {
-            allowed_paths: vec![inside.to_string_lossy().into_owned()],
-            ..Default::default()
-        };
-        let read = serde_json::json!({"action": "read", "notebook_path": fenced.to_string_lossy()});
-        assert!(!registry.execute(&ctx, "notebook", read).await.is_error);
     }
 
     /// The runner's gates read the call through the same door: the settled
@@ -2005,8 +1776,8 @@ mod tests {
     /// different orders must emit identical definition lists.
     #[tokio::test]
     async fn tool_definitions_are_in_name_order() {
-        let a = Registry::new(crate::policy::Policy::default());
-        let b = Registry::new(crate::policy::Policy::default());
+        let a = Registry::new(crate::gate::test_gate());
+        let b = Registry::new(crate::gate::test_gate());
         let mk = |n: &str| ToolDefinition {
             name: n.into(),
             description: format!("{n} first line\nmore"),
@@ -2121,7 +1892,7 @@ mod tests {
     }
 
     async fn echo_registry() -> Registry {
-        let registry = Registry::new(Policy::default());
+        let registry = Registry::new(crate::gate::test_gate());
         registry.register(Box::new(EchoTool)).await;
         registry
     }
@@ -2209,7 +1980,7 @@ mod tests {
     #[tokio::test]
     async fn deferral_is_the_tools_own_answer() {
         let r = echo_registry().await;
-        r.register(Box::new(crate::find_tools::FindToolsTool::new(Arc::new(Registry::new(Policy::default())))))
+        r.register(Box::new(crate::find_tools::FindToolsTool::new(Arc::new(Registry::new(crate::gate::test_gate())))))
             .await;
         assert!(r.is_deferred("echo_text").await);
         assert!(!r.is_deferred("find_tools").await);
@@ -2225,7 +1996,7 @@ mod tests {
     async fn full_registry() -> (Arc<Registry>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
-        let registry = Arc::new(Registry::new(Policy::default()));
+        let registry = Arc::new(Registry::new(crate::gate::test_gate()));
         registry.register_all(store, crate::orchestrator::new_handle()).await;
         registry.register(Box::new(crate::find_tools::FindToolsTool::new(registry.clone()))).await;
         registry.register(Box::new(crate::mcp_tool::McpTool::new(registry.mcp_proxy_roster()))).await;
@@ -2398,17 +2169,5 @@ mod tests {
     }
 
 
-    /// Through the one door: a chat channel's call to poll or stop a shell
-    /// session is refused before the tool runs.
-    #[tokio::test]
-    async fn a_chat_channel_cannot_poll_or_stop_a_shell_session() {
-        let (registry, _dir) = os_registry().await;
-        let ctx = ToolContext { origin: crate::origin::Origin::Comm, ..Default::default() };
-        for action in ["poll", "kill", "log"] {
-            let call = serde_json::json!({ "resource": "shell", "action": action, "session_id": "s-1" });
-            let result = registry.execute(&ctx, "os", call).await;
-            assert!(result.is_error && result.content.contains("not permitted"), "{action}: {}", result.content);
-        }
-    }
 
 }

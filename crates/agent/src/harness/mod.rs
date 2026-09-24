@@ -16,6 +16,7 @@ pub mod events;
 pub mod goal;
 pub mod memory_context;
 pub mod model_call;
+pub mod permissions;
 pub mod prompt;
 pub mod recap;
 pub mod reminders;
@@ -29,7 +30,7 @@ pub mod turn_end;
 pub mod usage;
 pub mod workflow_turn;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::sync::{RwLock, mpsc};
@@ -192,16 +193,18 @@ pub struct SeatRequest {
     pub agent_id: String,
     pub user_id: String,
     pub origin: tools::Origin,
-    pub permissions: Option<HashMap<String, bool>>,
-    pub operation_policy: Option<tools::policy::OperationPolicy>,
-    pub resource_grants: Option<HashMap<String, String>>,
-    pub allowed_paths: Vec<String>,
+    /// Which entry started this run.
+    pub door: types::permissions::Door,
+    /// A run override of the employee's mode (e.g. Plan); `None` = its own.
+    pub mode: Option<types::permissions::Mode>,
+    /// The parent's grant (a helper) or the creator's (a created employee):
+    /// the run can only narrow it.
+    pub ceiling: Option<types::permissions::Ceiling>,
     pub cwd: Option<String>,
     pub seed_taint: Vec<types::provenance::ProvenanceClass>,
     pub audience: Option<String>,
     pub tool_allowlist: Option<HashSet<String>>,
     pub tool_denial_hint: Option<String>,
-    pub approval_mode: seat::ApprovalMode,
     pub handoff_depth: u8,
     pub model_override: String,
     pub model_preference: Option<String>,
