@@ -234,15 +234,7 @@ async fn run_child(
     let mut prompt = first_prompt;
     let mut reports: Vec<String> = Vec::new();
     loop {
-        let mut run_req = build_subagent_request(
-            session_key,
-            &prompt,
-            &spawn_req.model_override,
-            &spawn_req.user_id,
-            &cancel,
-            spawn_req.max_iterations,
-        );
-        apply_spawn_context(&mut run_req, spawn_req);
+        let run_req = build_subagent_request(spawn_req, session_key, &prompt, &cancel);
         let result = run_and_collect(
             runner,
             run_req,
@@ -333,6 +325,19 @@ impl Orchestrator {
         compose_original_block(&user_msg.content, prompt)
     }
 
+    /// The brief every child gets: its type's prefix, the task, and the
+    /// owner's own words (see `original_request_block`). One composition for
+    /// every spawn path.
+    fn child_prompt(&self, req: &SpawnRequest) -> String {
+        let prefix = task_prefix_for_type(&AgentType::from_str(&req.agent_type));
+        format!(
+            "{}{}{}",
+            prefix,
+            req.prompt,
+            self.original_request_block(&req.parent_session_id, &req.prompt)
+        )
+    }
+
     /// Spawn a single sub-agent.
     async fn spawn_internal(&self, req: SpawnRequest) -> Result<SpawnResult, String> {
         // Recursion guard: stop a "work together" prompt from exploding into an
@@ -361,13 +366,7 @@ impl Orchestrator {
             None,
         );
 
-        let task_prefix = task_prefix_for_type(&agent_type);
-        let prefixed_prompt = format!(
-            "{}{}{}",
-            task_prefix,
-            req.prompt,
-            self.original_request_block(&req.parent_session_id, &req.prompt)
-        );
+        let prefixed_prompt = self.child_prompt(&req);
         remember_resumable(&mut *self.resumable.write().await, task_id.clone(), resumable_copy(&req));
         self.launch(task_id, req, prefixed_prompt).await
     }
@@ -572,10 +571,7 @@ impl Orchestrator {
     async fn execute_dag_internal(
         &self,
         prompt: &str,
-        user_id: &str,
-        parent_session_id: &str,
-        parent_model: &str,
-        parent_cancel: Option<CancellationToken>,
+        parent: SpawnRequest,
     ) -> Result<SpawnResult, String> {
         // 1. Decompose task into sub-tasks
         info!("Decomposing task into sub-tasks");
@@ -584,27 +580,7 @@ impl Orchestrator {
         // Single-task optimization: skip DAG scheduler
         if decompose::is_single_task(&nodes) {
             info!("Single task decomposition — running directly");
-            let node = &nodes[0];
-            let req = SpawnRequest {
-                prompt: node.prompt.clone(),
-                description: node.description.clone(),
-                agent_type: node.agent_type.as_str().to_string(),
-                model_override: parent_model.to_string(),
-                parent_session_id: parent_session_id.to_string(),
-                parent_session_key: parent_session_id.to_string(),
-                user_id: user_id.to_string(),
-                wait: true,
-                parent_cancel: parent_cancel.clone(),
-                max_iterations: 0,
-                skills: Vec::new(),
-                plugins: Vec::new(),
-                tools: Vec::new(),
-                parent_stream_tx: None,
-                handoff_depth: 0,
-                isolate: String::new(),
-                workspace: String::new(),
-            };
-            return self.spawn_internal(req).await;
+            return self.spawn_internal(dag_node_request(&parent, &nodes[0])).await;
         }
 
         // 2. Build and validate DAG
@@ -622,8 +598,8 @@ impl Orchestrator {
         let _ = self.store.create_pending_task(
             &parent_task_id,
             "dag",
-            parent_session_id,
-            Some(user_id),
+            &parent.parent_session_key,
+            Some(&parent.user_id),
             prompt,
             None,
             Some("DAG orchestration"),
@@ -634,7 +610,8 @@ impl Orchestrator {
 
         // 4. Shared cancellation for the entire DAG — derived from parent so
         //    cancelling the parent cascades to all DAG tasks.
-        let dag_cancel = parent_cancel
+        let dag_cancel = parent
+            .parent_cancel
             .as_ref()
             .map(|p| p.child_token())
             .unwrap_or_else(CancellationToken::new);
@@ -651,17 +628,11 @@ impl Orchestrator {
                 let node = graph.nodes.get(&task_id).unwrap();
                 let dep_context = format_dep_context(&graph.collect_dependency_results(&task_id));
                 let task_prefix = task_prefix_for_type(&node.agent_type);
-                let prompt = format!("{}{}", task_prefix, node.prompt);
-                // A node only names a model when the decomposition asked for
-                // one; otherwise the whole DAG runs at the parent's model.
-                let model_override = if node.model_override.is_empty() {
-                    parent_model.to_string()
-                } else {
-                    node.model_override.clone()
-                };
-                let user_id = user_id.to_string();
+                let node_req = dag_node_request(&parent, node);
+                let prompt = self.child_prompt(&node_req);
+                let user_id = node_req.user_id.clone();
                 let cancel = dag_cancel.clone();
-                let session_key = format!("subagent:{}:{}", parent_session_id, task_id);
+                let session_key = format!("subagent:{}:{}", parent.parent_session_key, task_id);
 
                 let runner = self.runner.clone();
                 let store = self.store.clone();
@@ -697,14 +668,7 @@ impl Orchestrator {
                         format!("{}\n\n{}", dep_context, prompt)
                     };
 
-                    let req = build_subagent_request(
-                        &session_key,
-                        &full_prompt,
-                        &model_override,
-                        &user_id,
-                        &cancel,
-                        0,
-                    );
+                    let req = build_subagent_request(&node_req, &session_key, &full_prompt, &cancel);
 
                     let result = run_and_collect(&runner, req, cancel, None, None, None).await;
 
@@ -866,8 +830,12 @@ impl Orchestrator {
         // Isolation (P5.3): each child gets its own copy of the project,
         // fenced by cwd + allowed_paths; merged back after the batch.
         let isolate = requests.first().is_some_and(|r| r.isolate == "worktree");
-        let workspace: PathBuf = match requests.first().map(|r| r.workspace.as_str()) {
-            Some(w) if !w.is_empty() => PathBuf::from(w),
+        // The project to isolate: the one named, else where the parent works.
+        let workspace: PathBuf = match requests.first() {
+            Some(r) if !r.workspace.is_empty() => PathBuf::from(&r.workspace),
+            Some(SpawnRequest { seat: tools::orchestrator::ChildSeat { cwd: Some(cwd), .. }, .. }) => {
+                PathBuf::from(cwd)
+            }
             _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         };
         if isolate && !workspace.is_dir() {
@@ -891,7 +859,7 @@ impl Orchestrator {
             >,
         > = FuturesUnordered::new();
 
-        for req in requests {
+        for mut req in requests {
             let task_id = format!("sa-{}", uuid::Uuid::new_v4());
             let session_key = format!("subagent:{}:{}", req.parent_session_key, task_id);
             let cancel = req
@@ -902,7 +870,7 @@ impl Orchestrator {
 
             let agent_type = AgentType::from_str(&req.agent_type);
             let task_prefix = task_prefix_for_type(&agent_type);
-            let prefixed_prompt = format!("{}{}", task_prefix, req.prompt);
+            let mut prefixed_prompt = self.child_prompt(&req);
             let description = req.description.clone();
 
             // Persist to DB
@@ -949,31 +917,25 @@ impl Orchestrator {
             let desc = description.clone();
             let prog_tx_clone = prog_tx.clone();
 
-            let mut run_req = build_subagent_request(
-                &session_key,
-                &prefixed_prompt,
-                &req.model_override,
-                &req.user_id,
-                &cancel,
-                req.max_iterations,
-            );
-            apply_spawn_context(&mut run_req, &req);
             if isolate {
-                match crate::worktree::create(&workspace, &task_id).await {
+                // The child works in its own copy, fenced to it — a narrowing
+                // of the parent's fence, refused when the project lies outside it.
+                let isolated = match crate::worktree::create(&workspace, &task_id).await {
                     Ok(iso) => {
                         let path = iso.path().to_string_lossy().into_owned();
-                        run_req.prompt = format!("{}{}", crate::worktree::preamble(&iso), run_req.prompt);
-                        run_req.cwd = Some(path.clone());
-                        run_req.allowed_paths = vec![path];
+                        prefixed_prompt = format!("{}{}", crate::worktree::preamble(&iso), prefixed_prompt);
                         isolations.push(iso);
+                        req.seat.isolate_to(&workspace.to_string_lossy(), &path)
                     }
-                    Err(e) => {
-                        // Undo what this batch already isolated; nothing ran yet.
-                        let _ = crate::worktree::merge_all(&isolations, "nebo: aborted batch").await;
-                        return Err(format!("could not isolate {}: {e}", workspace.display()));
-                    }
+                    Err(e) => Err(format!("could not isolate {}: {e}", workspace.display())),
+                };
+                if let Err(e) = isolated {
+                    // Undo what this batch already isolated; nothing ran yet.
+                    let _ = crate::worktree::merge_all(&isolations, "nebo: aborted batch").await;
+                    return Err(e);
                 }
             }
+            let run_req = build_subagent_request(&req, &session_key, &prefixed_prompt, &cancel);
 
             running.push(Box::pin(async move {
                 let result = run_and_collect(
@@ -1266,34 +1228,44 @@ fn is_interactive_session(session_key: &str) -> bool {
         && !session_key.contains(":workflow:")
 }
 
+/// The ONE builder of a child's run: a single spawn, a background spawn, a
+/// `send` continuation, every member of a parallel batch and every DAG node
+/// come through here. The child runs under its parent's limits (`seat`):
+/// capability toggles, operation policy, resource grants, tool allowlist,
+/// path fence, Full Access and taint so far. It is `Origin::System`, so it
+/// never asks the owner for an approval — an OFF capability stays OFF.
 fn build_subagent_request(
+    spawn_req: &SpawnRequest,
     session_key: &str,
     prompt: &str,
-    model_override: &str,
-    user_id: &str,
     cancel: &CancellationToken,
-    max_iterations: usize,
 ) -> RunRequest {
-    RunRequest {
+    let seat = &spawn_req.seat;
+    let mut run_req = RunRequest {
         session_key: session_key.to_string(),
         prompt: prompt.to_string(),
-        model_override: model_override.to_string(),
-        user_id: user_id.to_string(),
+        model_override: spawn_req.model_override.clone(),
+        user_id: spawn_req.user_id.clone(),
         skip_memory_extract: true,
         origin: tools::Origin::System,
         channel: "subagent".to_string(),
         cancel_token: cancel.clone(),
         prompt_mode: crate::prompt::PromptMode::Minimal,
-        max_iterations,
+        max_iterations: spawn_req.max_iterations,
+        // A sub-agent stays at the parent's hop depth — a spawn must not
+        // restart the coworker chain cap at zero.
+        handoff_depth: spawn_req.handoff_depth,
+        permissions: seat.permissions.clone(),
+        operation_policy: seat.operation_policy.clone(),
+        resource_grants: seat.resource_grants.clone(),
+        tool_allowlist: seat.tool_allowlist.clone(),
+        tool_denial_hint: seat.tool_denial_hint.clone(),
+        allowed_paths: seat.allowed_paths.clone(),
+        cwd: seat.cwd.clone(),
+        full_access: seat.full_access,
+        seed_taint: seat.taint.clone(),
         ..Default::default()
-    }
-}
-
-/// Apply SpawnRequest's skills/plugins/tools onto an already-built RunRequest.
-fn apply_spawn_context(run_req: &mut RunRequest, spawn_req: &SpawnRequest) {
-    // A sub-agent stays at the parent's hop depth — a spawn must not restart
-    // the coworker chain cap at zero.
-    run_req.handoff_depth = spawn_req.handoff_depth;
+    };
     if !spawn_req.skills.is_empty() {
         run_req.preload_skills = spawn_req.skills.clone();
     }
@@ -1313,6 +1285,25 @@ fn apply_spawn_context(run_req: &mut RunRequest, spawn_req: &SpawnRequest) {
                 run_req.preactivate_tools.push(tool.clone());
             }
         }
+    }
+    run_req
+}
+
+/// A DAG node as a child of `parent`: the node's task on the parent's seat.
+/// A node names a model only when the decomposition asked for one; otherwise
+/// the whole DAG runs at the parent's.
+fn dag_node_request(parent: &SpawnRequest, node: &crate::task_graph::TaskNode) -> SpawnRequest {
+    SpawnRequest {
+        prompt: node.prompt.clone(),
+        description: node.description.clone(),
+        agent_type: node.agent_type.as_str().to_string(),
+        model_override: if node.model_override.is_empty() {
+            parent.model_override.clone()
+        } else {
+            node.model_override.clone()
+        },
+        wait: true,
+        ..parent.clone()
     }
 }
 
@@ -1532,25 +1523,10 @@ impl SubAgentOrchestrator for Orchestrator {
     fn execute_dag(
         &self,
         prompt: &str,
-        user_id: &str,
-        parent_session_id: &str,
-        model_override: &str,
-        parent_cancel: Option<CancellationToken>,
+        parent: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>> {
         let prompt = prompt.to_string();
-        let user_id = user_id.to_string();
-        let parent_session_id = parent_session_id.to_string();
-        let model_override = model_override.to_string();
-        Box::pin(async move {
-            self.execute_dag_internal(
-                &prompt,
-                &user_id,
-                &parent_session_id,
-                &model_override,
-                parent_cancel,
-            )
-            .await
-        })
+        Box::pin(async move { self.execute_dag_internal(&prompt, parent).await })
     }
 
     fn cancel(
@@ -1607,6 +1583,254 @@ impl SubAgentOrchestrator for Orchestrator {
 }
 
 #[cfg(test)]
+mod child_limits {
+    use super::*;
+    use tools::ToolContext;
+    use tools::registry::DynTool;
+    use types::provenance::ProvenanceClass;
+    type Fut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+    /// Records what the agent tool hands the orchestrator: every child
+    /// request, and the parent a decomposition was asked for from.
+    #[derive(Default, Clone)]
+    struct Recorder(Arc<std::sync::Mutex<Vec<SpawnRequest>>>);
+    impl Recorder {
+        fn take(&self) -> Vec<SpawnRequest> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+    }
+    fn recorded() -> Result<SpawnResult, String> {
+        Ok(SpawnResult { task_id: "t".into(), success: true, output: "done".into(), error: None })
+    }
+    impl SubAgentOrchestrator for Recorder {
+        fn spawn(&self, req: SpawnRequest) -> Fut<'_, Result<SpawnResult, String>> {
+            self.0.lock().unwrap().push(req);
+            Box::pin(async { recorded() })
+        }
+        fn execute_dag(&self, _: &str, parent: SpawnRequest) -> Fut<'_, Result<SpawnResult, String>> {
+            self.0.lock().unwrap().push(parent);
+            Box::pin(async { recorded() })
+        }
+        fn cancel(&self, _: &str) -> Fut<'_, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn status(&self, _: &str) -> Fut<'_, Result<String, String>> {
+            Box::pin(async { Ok(String::new()) })
+        }
+        fn send(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<CancellationToken>,
+            _: Option<mpsc::Sender<ai::StreamEvent>>,
+        ) -> Fut<'_, Result<SpawnResult, String>> {
+            Box::pin(async { recorded() })
+        }
+        fn list_active(&self) -> Fut<'_, Vec<(String, String, String)>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn spawn_parallel(
+            &self,
+            requests: Vec<SpawnRequest>,
+            _: mpsc::Sender<ai::StreamEvent>,
+        ) -> Fut<'_, Result<SpawnResult, String>> {
+            self.0.lock().unwrap().extend(requests);
+            Box::pin(async { recorded() })
+        }
+        fn recover(&self) -> Fut<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    fn agent_tool(rec: &Recorder) -> (tempfile::TempDir, tools::AgentTool) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let handle = tools::new_handle();
+        let _ = handle.set(Box::new(rec.clone()));
+        (dir, tools::AgentTool::new(store, handle))
+    }
+
+    /// An employee with shell OFF, the browser denied, one operation blocked,
+    /// a path fence, a tool allowlist, and web content already in its run.
+    fn limited_parent() -> ToolContext {
+        let (tx, _rx) = mpsc::channel(8);
+        ToolContext {
+            session_id: "s1".into(),
+            session_key: "agent:a1:web".into(),
+            user_id: "owner:agent:a1".into(),
+            entity_permissions: Some([("shell".to_string(), false)].into_iter().collect()),
+            resource_grants: Some([("browser".to_string(), "deny".to_string())].into_iter().collect()),
+            operation_policy: Some(tools::policy::OperationPolicy::from_json(Some(
+                r#"{"operations":{"payments.transfer.send":{"access":"blocked"}}}"#,
+            ))),
+            tool_whitelist: Some(["agent".to_string(), "os".to_string()].into_iter().collect()),
+            whitelist_denial_hint: Some("not in this run".into()),
+            allowed_paths: vec!["/work/a".into()],
+            cwd: Some("/work/a".into()),
+            full_access: false,
+            run_taint: vec![ProvenanceClass::Web, ProvenanceClass::ExternalEmail],
+            stream_tx: Some(tx),
+            ..Default::default()
+        }
+    }
+
+    /// The child's run carries every limit its parent ran under.
+    fn assert_limited_like(child: &RunRequest, parent: &ToolContext, path: &str) {
+        assert_eq!(child.permissions, parent.entity_permissions, "{path}: capability toggles lost");
+        assert_eq!(child.resource_grants, parent.resource_grants, "{path}: resource grants lost");
+        assert_eq!(
+            serde_json::to_value(&child.operation_policy).unwrap(),
+            serde_json::to_value(&parent.operation_policy).unwrap(),
+            "{path}: operation policy lost"
+        );
+        assert_eq!(child.tool_allowlist, parent.tool_whitelist, "{path}: tool allowlist lost");
+        assert_eq!(child.tool_denial_hint, parent.whitelist_denial_hint, "{path}: denial hint lost");
+        assert_eq!(child.allowed_paths, parent.allowed_paths, "{path}: path fence lost");
+        assert_eq!(child.cwd, parent.cwd, "{path}: working directory lost");
+        assert_eq!(child.full_access, parent.full_access, "{path}: Full Access differs");
+        assert_eq!(child.seed_taint, parent.run_taint, "{path}: taint laundered");
+        assert_eq!(child.user_id, parent.user_id, "{path}: memory scope lost");
+        assert_eq!(child.origin, tools::Origin::System, "{path}: a child never asks the owner");
+    }
+
+    async fn call(tool: &tools::AgentTool, ctx: &ToolContext, input: serde_json::Value) -> tools::ToolResult {
+        tool.execute_dyn(ctx, input).await
+    }
+
+    /// The escalation: a sub-agent of an employee with shell OFF and a path
+    /// fence came back with shell ON and no fence, because the child request
+    /// carried none of the parent's limits and "unset" means allowed.
+    #[tokio::test]
+    async fn a_sub_agent_keeps_its_parents_limits() {
+        let rec = Recorder::default();
+        let (_dir, tool) = agent_tool(&rec);
+        let ctx = limited_parent();
+        call(&tool, &ctx, serde_json::json!({"resource": "task", "action": "spawn", "prompt": "list the files", "wait": true})).await;
+        let req = rec.take().pop().expect("spawn reached the orchestrator");
+        let child = build_subagent_request(&req, "subagent:agent:a1:web:sa-1", "p", &CancellationToken::new());
+        assert_eq!(child.permissions.as_ref().and_then(|p| p.get("shell")), Some(&false), "shell came back ON");
+        assert_limited_like(&child, &ctx, "spawn");
+    }
+
+    /// Every way a child is made — single, background, each member of a
+    /// parallel batch, each DAG node, and a `send` continuation — ends in the
+    /// same builder with the same limits.
+    #[tokio::test]
+    async fn every_spawn_path_inherits_the_parents_limits() {
+        let rec = Recorder::default();
+        let (_dir, tool) = agent_tool(&rec);
+        let ctx = limited_parent();
+        let cancel = CancellationToken::new();
+        let key = "subagent:agent:a1:web:sa-1";
+
+        let cases: [(&str, serde_json::Value); 4] = [
+            ("spawn", serde_json::json!({"resource": "task", "action": "spawn", "prompt": "a", "wait": true})),
+            ("spawn in background", serde_json::json!({"resource": "task", "action": "spawn", "prompt": "a", "wait": false})),
+            (
+                "spawn_parallel",
+                serde_json::json!({"resource": "task", "action": "spawn_parallel",
+                    "tasks": [{"prompt": "a"}, {"prompt": "b", "model_override": "janus/other", "skills": ["x"]}]}),
+            ),
+            ("orchestrate", serde_json::json!({"resource": "task", "action": "orchestrate", "prompt": "a then b"})),
+        ];
+        for (path, input) in cases {
+            call(&tool, &ctx, input).await;
+            let reqs = rec.take();
+            assert!(!reqs.is_empty(), "{path}: nothing reached the orchestrator");
+            for req in reqs {
+                let req = if path == "orchestrate" {
+                    let node = crate::task_graph::TaskNode {
+                        id: "n1".into(),
+                        prompt: "a".into(),
+                        description: "a".into(),
+                        agent_type: AgentType::Explore,
+                        model_override: String::new(),
+                        depends_on: vec![],
+                        status: crate::task_graph::TaskStatus::Pending,
+                        result: None,
+                        error: None,
+                    };
+                    dag_node_request(&req, &node)
+                } else {
+                    req
+                };
+                assert_limited_like(&build_subagent_request(&req, key, "p", &cancel), &ctx, path);
+                // The same child continued later by `send`.
+                let resumed = resumable_copy(&req);
+                assert_limited_like(&build_subagent_request(&resumed, key, "p", &cancel), &ctx, "send");
+            }
+        }
+    }
+
+    /// Nothing is invented: an unrestricted parent's child is unrestricted,
+    /// and a parent with Full Access hands it on. The parent's own run is
+    /// untouched by spawning.
+    #[tokio::test]
+    async fn an_unrestricted_parent_has_an_unrestricted_child() {
+        let rec = Recorder::default();
+        let (_dir, tool) = agent_tool(&rec);
+        let ctx = ToolContext {
+            session_id: "s1".into(),
+            session_key: "agent:assistant:web".into(),
+            full_access: true,
+            ..Default::default()
+        };
+        call(&tool, &ctx, serde_json::json!({"resource": "task", "action": "spawn", "prompt": "a"})).await;
+        let req = rec.take().pop().unwrap();
+        let child = build_subagent_request(&req, "subagent:agent:assistant:web:sa-1", "p", &CancellationToken::new());
+        assert!(child.permissions.is_none() && child.resource_grants.is_none() && child.operation_policy.is_none());
+        assert!(child.tool_allowlist.is_none() && child.allowed_paths.is_empty() && child.seed_taint.is_empty());
+        assert!(child.full_access, "the owner's Full Access did not reach the child");
+    }
+
+    /// Taint the parent picked up travels down: a child of a run that read
+    /// the web starts out as having read the web.
+    #[tokio::test]
+    async fn taint_travels_to_the_child() {
+        let rec = Recorder::default();
+        let (_dir, tool) = agent_tool(&rec);
+        let ctx = ToolContext {
+            session_key: "agent:a1:web".into(),
+            run_taint: vec![ProvenanceClass::Channel],
+            ..Default::default()
+        };
+        call(&tool, &ctx, serde_json::json!({"resource": "task", "action": "spawn", "prompt": "a"})).await;
+        let req = rec.take().pop().unwrap();
+        let child = build_subagent_request(&req, "subagent:agent:a1:web:sa-1", "p", &CancellationToken::new());
+        assert_eq!(child.seed_taint, vec![ProvenanceClass::Channel]);
+    }
+
+    /// A DAG node runs at its own model when the decomposition named one,
+    /// else at the parent's — and keeps the parent's limits either way.
+    #[test]
+    fn a_dag_node_keeps_the_seat_and_takes_its_own_model() {
+        let parent = SpawnRequest {
+            model_override: "janus/parent".into(),
+            parent_session_key: "agent:a1:web".into(),
+            seat: tools::orchestrator::ChildSeat { allowed_paths: vec!["/work/a".into()], ..Default::default() },
+            ..Default::default()
+        };
+        let mut node = crate::task_graph::TaskNode {
+            id: "n1".into(),
+            prompt: "a".into(),
+            description: "a".into(),
+            agent_type: AgentType::General,
+            model_override: String::new(),
+            depends_on: vec![],
+            status: crate::task_graph::TaskStatus::Pending,
+            result: None,
+            error: None,
+        };
+        assert_eq!(dag_node_request(&parent, &node).model_override, "janus/parent");
+        node.model_override = "janus/node".into();
+        let req = dag_node_request(&parent, &node);
+        assert_eq!(req.model_override, "janus/node");
+        assert_eq!(req.seat.allowed_paths, vec!["/work/a".to_string()]);
+        assert_eq!(req.parent_session_key, "agent:a1:web");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1634,6 +1858,7 @@ mod tests {
             handoff_depth: 0,
             isolate: String::new(),
             workspace: String::new(),
+            seat: Default::default(),
         };
         let kept = resumable_copy(&req);
         drop(req);

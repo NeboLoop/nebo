@@ -336,6 +336,16 @@ fn given_words_runner(
     (runner, store)
 }
 
+/// The run a proof's fan-out is spawned from: the owner's, with no limits.
+fn owner_run() -> tools::SpawnRequest {
+    tools::SpawnRequest {
+        parent_session_id: "agent:ops:web".into(),
+        parent_session_key: "agent:ops:web".into(),
+        user_id: "owner".into(),
+        ..Default::default()
+    }
+}
+
 /// A fan-out finishes when only two model calls may run at once. A permit
 /// is taken where the resource is spent, at the call, never around a unit
 /// of work that makes calls: the DAG once held an LLM permit per sub-task
@@ -353,7 +363,7 @@ async fn a_fan_out_finishes_at_the_permit_floor() {
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        orchestrator.execute_dag("three independent jobs", "owner", "agent:ops:web", "", None),
+        orchestrator.execute_dag("three independent jobs", owner_run()),
     )
     .await
     .expect("the fan-out deadlocked: a permit is held around work that needs permits")
@@ -385,7 +395,7 @@ async fn a_429_slows_the_whole_bot_and_it_recovers() {
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        orchestrator.execute_dag("eight independent jobs", "owner", "agent:ops:web", "", None),
+        orchestrator.execute_dag("eight independent jobs", owner_run()),
     )
     .await
     .expect("the fan-out finished")
