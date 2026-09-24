@@ -10,6 +10,7 @@ mod artifact_updates;
 mod auth_profiles;
 mod chats;
 mod comm_seen;
+mod comm_stream_offsets;
 mod commander;
 mod company_policy;
 mod cron_jobs;

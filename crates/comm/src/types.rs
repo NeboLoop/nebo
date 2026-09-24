@@ -22,10 +22,29 @@ pub enum CommError {
     Http { status: u16, body: String },
     #[error("{0}")]
     Other(String),
+    /// Refused before anything left this machine: the bot's lease is
+    /// Uncertain or Lost and this process is frozen (`lease`). Nothing was
+    /// sent.
+    #[error("{}", crate::lease::PAUSED)]
+    Paused,
+    /// The hub refused the connection (AUTH_FAIL `lease_held`): another
+    /// running process holds this bot.
+    #[error("another running copy of this bot holds its NeboAI connection (lease_held)")]
+    LeaseHeld,
 }
 
 /// Thread-safe message handler callback.
 pub type MessageHandler = Arc<dyn Fn(CommMessage) + Send + Sync>;
+
+/// Durable per-stream delivery offsets: the last seq the bot acked on each of
+/// its own hub streams. Every connect JOINs each stream with it, so the hub
+/// replays what arrived while the bot was disconnected.
+pub trait StreamOffsets: Send + Sync {
+    /// Last acked seq on `stream`; 0 when there is none.
+    fn acked(&self, bot_id: &str, stream: &str) -> u64;
+    /// Record that `seq` on `stream` was acked. Never moves backwards.
+    fn record(&self, bot_id: &str, stream: &str, seq: u64);
+}
 
 /// Type of a comm message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

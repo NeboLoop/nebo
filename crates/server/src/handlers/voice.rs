@@ -862,18 +862,36 @@ fn voice_cancel_line(cancelled: bool, before: Option<&agent::runner::ActiveTurnS
 }
 
 /// What a voice turn writes to the thread, decided in one place. The owner's
-/// speech is one user row, written when the employee acts on it (the `nebo`
-/// call) or, with no call, when the model starts replying. The realtime
+/// speech is one user row, written when the utterance ends
+/// (`TranscriptionEnd`), so it holds the finished transcript. The realtime
 /// model's own speech is one assistant row per turn, and none at all when a
 /// delegated run answered the turn: the run's reply is the row, and "On it"
 /// plus a spoken paraphrase of that reply were the duplicates in the thread.
+///
+/// The model can start answering before the utterance ends (xAI's finished
+/// transcript lands after the reply starts). That speech, and any delegation
+/// it makes, belongs to the utterance's turn, so it is held apart until the
+/// user row is written: rows land in utterance order, not arrival order.
 #[derive(Default)]
 struct TurnLedger {
+    /// An utterance is in progress: started, its end not seen yet.
+    open: bool,
     /// Cumulative transcript of the utterance in progress.
     user: String,
-    /// The model's spoken text since the last user row.
-    assistant: String,
-    /// A `nebo` run answered the current turn.
+    /// The model's reply to the utterance in progress started before the
+    /// utterance ended.
+    answering: bool,
+    /// The turn of the last user row: the model's speech since then, and
+    /// whether a `nebo` run answered it.
+    turn: TurnSpeech,
+    /// The speech and delegation answering the utterance in progress, held
+    /// until its user row is written.
+    early: TurnSpeech,
+}
+
+#[derive(Default)]
+struct TurnSpeech {
+    text: String,
     delegated: bool,
 }
 
@@ -883,37 +901,70 @@ enum Row {
 }
 
 impl TurnLedger {
-    /// The model acted on the utterance (`delegating`) or started replying to
-    /// it: the utterance is final. Closes the previous turn's model speech
-    /// first, so rows land in spoken order.
-    fn user_final(&mut self, delegating: bool) -> Vec<Row> {
-        let pending = !self.user.trim().is_empty();
-        if !pending && !delegating {
+    /// The user started speaking.
+    fn utterance_started(&mut self) {
+        self.open = true;
+    }
+
+    /// The utterance's words so far (cumulative: replaces).
+    fn words(&mut self, text: &str) {
+        self.open = true;
+        self.user = text.to_string();
+    }
+
+    /// The model started a reply. Before the utterance in progress has
+    /// ended, the reply answers it.
+    fn reply_started(&mut self) {
+        if self.open {
+            self.answering = true;
+        }
+    }
+
+    /// The model's spoken words, joined into the turn they answer.
+    fn speech(&mut self, delta: &str) {
+        let turn = if self.answering { &mut self.early } else { &mut self.turn };
+        join_transcript(&mut turn.text, delta);
+    }
+
+    /// The model called `nebo`; `delegating` when the run's reply is the
+    /// turn's answer. Returns true when the call answers an utterance whose
+    /// user row is not written yet: the run must wait for it, so the spoken
+    /// request lands before the run's rows.
+    fn call(&mut self, delegating: bool) -> bool {
+        let turn = if self.answering { &mut self.early } else { &mut self.turn };
+        turn.delegated |= delegating;
+        self.answering
+    }
+
+    /// The utterance ended: its user row, after the previous turn's model
+    /// speech, so rows land in spoken order.
+    fn user_final(&mut self) -> Vec<Row> {
+        let early = std::mem::take(&mut self.early);
+        self.open = false;
+        self.answering = false;
+        if self.user.trim().is_empty() {
+            // No words: whatever answered it continues the current turn.
+            join_transcript(&mut self.turn.text, &early.text);
+            self.turn.delegated |= early.delegated;
             return Vec::new();
         }
-        let mut rows = Vec::new();
-        if pending {
-            rows.extend(self.close_assistant());
-            rows.push(Row::User(std::mem::take(&mut self.user).trim().to_string()));
-        }
-        if delegating {
-            self.delegated = true;
-        }
+        let mut rows = self.close_assistant();
+        rows.push(Row::User(std::mem::take(&mut self.user).trim().to_string()));
+        self.turn = early;
         rows
     }
 
     fn close_assistant(&mut self) -> Vec<Row> {
-        let text = std::mem::take(&mut self.assistant);
-        let delegated = std::mem::take(&mut self.delegated);
-        if delegated || text.trim().is_empty() {
+        let turn = std::mem::take(&mut self.turn);
+        if turn.delegated || turn.text.trim().is_empty() {
             return Vec::new();
         }
-        vec![Row::Assistant(text.trim().to_string())]
+        vec![Row::Assistant(turn.text.trim().to_string())]
     }
 
     /// Session over: whatever is still open, in order.
     fn flush(&mut self) -> Vec<Row> {
-        let mut rows = self.user_final(false);
+        let mut rows = self.user_final();
         rows.extend(self.close_assistant());
         rows
     }
@@ -1852,8 +1903,8 @@ async fn handle_conversation_session(
 
     // Turn accumulation for transcript persistence: the user transcript is
     // cumulative (replace), the agent transcript arrives as deltas (join).
-    // The user turn is final once the model starts responding; the agent turn
-    // once playback ends. Anything left at session end is flushed.
+    // The user turn is final at its TranscriptionEnd; the agent turn when the
+    // next user row is written. Anything left at session end is flushed.
     let mut ledger = TurnLedger::default();
     let mut sink = TurnSink {
         chat_id: chat_id.clone(),
@@ -1881,6 +1932,77 @@ async fn handle_conversation_session(
     let (tool_done_tx, mut tool_done_rx) = mpsc::channel::<(String, String)>(8);
     let mut pending_tools: usize = 0;
 
+    // Runs one tool call off the select loop; its output comes back through
+    // `tool_done_tx`.
+    let spawn_tool = |call_id: String, name: String, arguments: String| {
+        let state = state.clone();
+        let ctx = ctx.clone();
+        let done = tool_done_tx.clone();
+        let delegate_chat_id = chat_id.clone();
+        let delegate_seat = team_seat.clone();
+        let phone_title = phone_title.clone();
+        let caller = caller_ctx.clone();
+        let tree = call_tree.clone();
+        tokio::spawn(async move {
+            let input = decode_tool_arguments(&arguments);
+            // Narrow the delegated run to the chosen intent's
+            // grants. Unknown/"other"/no intent = the floor —
+            // never the union, so a lazy pick can't widen.
+            let caller = caller.map(|mut c| {
+                if let Some(t) = tree.as_ref() {
+                    let picked = input.get("intent").and_then(|v| v.as_str());
+                    c.allowlist = picked
+                        .and_then(|name| {
+                            t.intents
+                                .iter()
+                                .find(|i| i.name == name)
+                                .map(|i| i.allowlist.clone())
+                        })
+                        .unwrap_or_else(caller_floor_allowlist);
+                }
+                c
+            });
+            // `nebo` delegates to the Runner (the ONE tuned
+            // tool brain); anything else the model improvises
+            // still runs through the policy-gated registry.
+            let output = if name == "nebo" {
+                let task = input
+                    .get("task")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let content = if task.is_empty() {
+                    "The nebo tool needs a `task` string describing what to do.".to_string()
+                } else {
+                    // A delegated run appends to the thread —
+                    // real activity, so the chat must exist.
+                    if let Some(cid) = delegate_chat_id.as_deref() {
+                        ensure_chat_row(&state, cid, &ctx.session_key, phone_title.as_deref());
+                    } else if let Some((key, title)) = delegate_seat.as_ref()
+                        && let Err(e) =
+                            crate::coworker::ensure_conversation_thread(&state, key, title)
+                    {
+                        warn!(error = %e, "voice: could not open the lead's team seat");
+                    }
+                    run_delegated_task(&state, &ctx.session_key, task, caller.as_ref()).await
+                };
+                serde_json::json!({ "ok": true, "content": content })
+            } else {
+                let result = state.tools.execute(&ctx, &name, input).await;
+                // The model needs the outcome either way —
+                // errors included, so it can say what blocked.
+                serde_json::json!({
+                    "ok": !result.is_error,
+                    "content": result.content,
+                })
+            };
+            let _ = done.send((call_id, output.to_string())).await;
+        });
+    };
+    // `nebo` calls that answer an utterance whose user row is not written
+    // yet. They start when it is (TranscriptionEnd), so the spoken request
+    // lands before the run's rows.
+    let mut held_runs: Vec<(String, String, String)> = Vec::new();
+
     loop {
         tokio::select! {
             // Events from the realtime engine -> client (+ tool dispatch)
@@ -1892,20 +2014,28 @@ async fn handle_conversation_session(
                 let frame = match event {
                     ConversationEvent::SessionInitialized =>
                         Some(serde_json::json!({"type": "session_initialized"})),
-                    ConversationEvent::TranscriptionStart =>
-                        Some(serde_json::json!({"type": "transcription_start"})),
+                    ConversationEvent::TranscriptionStart => {
+                        ledger.utterance_started();
+                        Some(serde_json::json!({"type": "transcription_start"}))
+                    }
                     // Cumulative transcript — the client replaces, never appends.
                     ConversationEvent::TranscriptionText(text) => {
-                        ledger.user = text.clone();
+                        ledger.words(&text);
                         Some(serde_json::json!({"type": "transcription_text", "text": text}))
                     }
-                    ConversationEvent::TranscriptionEnd =>
-                        Some(serde_json::json!({"type": "transcription_end"})),
-                    ConversationEvent::PlaybackStart => {
-                        // Model turn started ⇒ the user's utterance is final
-                        // (late transcript corrections have landed by now).
-                        let rows = ledger.user_final(false);
+                    // The utterance is final (one end per utterance, after its
+                    // finished transcript): its user row, then the runs that
+                    // waited for it.
+                    ConversationEvent::TranscriptionEnd => {
+                        let rows = ledger.user_final();
                         sink.write(&state, &mut socket, rows).await;
+                        for (call_id, name, arguments) in held_runs.drain(..) {
+                            spawn_tool(call_id, name, arguments);
+                        }
+                        Some(serde_json::json!({"type": "transcription_end"}))
+                    }
+                    ConversationEvent::PlaybackStart => {
+                        ledger.reply_started();
                         Some(serde_json::json!({"type": "playback_start"}))
                     }
                     // The model's speech stays open until the turn closes (next
@@ -1913,7 +2043,7 @@ async fn handle_conversation_session(
                     // a delegated run answered, which makes it noise.
                     ConversationEvent::PlaybackEnd => Some(serde_json::json!({"type": "playback_end"})),
                     ConversationEvent::ResponseText(text) => {
-                        join_transcript(&mut ledger.assistant, &text);
+                        ledger.speech(&text);
                         Some(serde_json::json!({"type": "response_text", "text": text}))
                     }
                     ConversationEvent::ConversationId(id) =>
@@ -2036,78 +2166,15 @@ async fn handle_conversation_session(
                             }
                             continue;
                         }
-                        if name == "nebo" {
-                            // The spoken request is the thread's user row, and
-                            // it lands before the run's rows, not after them.
-                            // In a team thread the run's rows land in the
-                            // lead's seat, not the thread, so the lead's spoken
-                            // reply stays: it IS the team's record of the answer.
-                            let rows = ledger.user_final(team.is_none());
-                            sink.write(&state, &mut socket, rows).await;
-                        }
                         pending_tools += 1;
-                        let state = state.clone();
-                        let ctx = ctx.clone();
-                        let done = tool_done_tx.clone();
-                        let delegate_chat_id = chat_id.clone();
-                        let delegate_seat = team_seat.clone();
-                        let phone_title = phone_title.clone();
-                        let caller = caller_ctx.clone();
-                        let tree = call_tree.clone();
-                        tokio::spawn(async move {
-                            let input = decode_tool_arguments(&arguments);
-                            // Narrow the delegated run to the chosen intent's
-                            // grants. Unknown/"other"/no intent = the floor —
-                            // never the union, so a lazy pick can't widen.
-                            let caller = caller.map(|mut c| {
-                                if let Some(t) = tree.as_ref() {
-                                    let picked = input.get("intent").and_then(|v| v.as_str());
-                                    c.allowlist = picked
-                                        .and_then(|name| {
-                                            t.intents
-                                                .iter()
-                                                .find(|i| i.name == name)
-                                                .map(|i| i.allowlist.clone())
-                                        })
-                                        .unwrap_or_else(caller_floor_allowlist);
-                                }
-                                c
-                            });
-                            // `nebo` delegates to the Runner (the ONE tuned
-                            // tool brain); anything else the model improvises
-                            // still runs through the policy-gated registry.
-                            let output = if name == "nebo" {
-                                let task = input
-                                    .get("task")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or_default();
-                                let content = if task.is_empty() {
-                                    "The nebo tool needs a `task` string describing what to do.".to_string()
-                                } else {
-                                    // A delegated run appends to the thread —
-                                    // real activity, so the chat must exist.
-                                    if let Some(cid) = delegate_chat_id.as_deref() {
-                                        ensure_chat_row(&state, cid, &ctx.session_key, phone_title.as_deref());
-                                    } else if let Some((key, title)) = delegate_seat.as_ref()
-                                        && let Err(e) =
-                                            crate::coworker::ensure_conversation_thread(&state, key, title)
-                                    {
-                                        warn!(error = %e, "voice: could not open the lead's team seat");
-                                    }
-                                    run_delegated_task(&state, &ctx.session_key, task, caller.as_ref()).await
-                                };
-                                serde_json::json!({ "ok": true, "content": content })
-                            } else {
-                                let result = state.tools.execute(&ctx, &name, input).await;
-                                // The model needs the outcome either way —
-                                // errors included, so it can say what blocked.
-                                serde_json::json!({
-                                    "ok": !result.is_error,
-                                    "content": result.content,
-                                })
-                            };
-                            let _ = done.send((call_id, output.to_string())).await;
-                        });
+                        // In a team thread the run's rows land in the lead's
+                        // seat, not the thread, so the lead's spoken reply
+                        // stays: it IS the team's record of the answer.
+                        if name == "nebo" && ledger.call(team.is_none()) {
+                            held_runs.push((call_id, name, arguments));
+                        } else {
+                            spawn_tool(call_id, name, arguments);
+                        }
                         None
                     }
                 };
@@ -2193,6 +2260,10 @@ async fn handle_conversation_session(
     // so the transcript in the chat never loses the last exchange.
     let rows = ledger.flush();
     sink.write(&state, &mut socket, rows).await;
+    // A run the owner asked for still runs when the call ends first.
+    for (call_id, name, arguments) in held_runs.drain(..) {
+        spawn_tool(call_id, name, arguments);
+    }
     if let Some(cid) = chat_id.as_deref() {
         // A short call can end before any assistant row was written: last
         // chance to name the chat (the generator's own gates make this a
@@ -2264,28 +2335,70 @@ mod voice_prompt_tests {
     fn ledger_writes_one_row_per_utterance_and_drops_delegated_filler() {
         let mut l = TurnLedger::default();
         // Turn 1: a plain answer.
-        l.user = "hi there".into();
-        assert_eq!(shape(&l.user_final(false)), ["user:hi there"]);
-        l.assistant = "Hello.".into();
+        l.utterance_started();
+        l.words("hi there");
+        assert_eq!(shape(&l.user_final()), ["user:hi there"]);
+        l.reply_started();
+        l.speech("Hello.");
         // Turn 2: "On it" spoken, then the nebo call, then the run's relay.
-        l.user = "make the repo".into();
-        assert_eq!(shape(&l.user_final(false)), ["assistant:Hello.", "user:make the repo"]);
-        l.assistant = "On it.".into();
-        assert!(l.user_final(true).is_empty());
-        l.assistant.push_str(" Done, the repo exists.");
-        // The model speaking the result is not a new turn.
-        assert!(l.user_final(false).is_empty());
+        l.utterance_started();
+        l.words("make the repo");
+        assert_eq!(shape(&l.user_final()), ["assistant:Hello.", "user:make the repo"]);
+        l.reply_started();
+        l.speech("On it.");
+        assert!(!l.call(true), "the user row is already written: the run starts now");
+        l.reply_started();
+        l.speech(" Done, the repo exists.");
         // Turn 3 closes turn 2 without its filler.
-        l.user = "thanks".into();
-        assert_eq!(shape(&l.user_final(false)), ["user:thanks"]);
-        l.assistant = "Any time.".into();
+        l.utterance_started();
+        l.words("thanks");
+        assert_eq!(shape(&l.user_final()), ["user:thanks"]);
+        l.speech("Any time.");
         assert_eq!(shape(&l.flush()), ["assistant:Any time."]);
         assert!(l.flush().is_empty());
-        // A call made before any speech still writes the user row first.
-        l.user = "list files".into();
-        assert_eq!(shape(&l.user_final(true)), ["user:list files"]);
-        l.assistant = "Here they are.".into();
+        // A call with no utterance in progress marks the current turn.
+        l.reply_started();
+        l.speech("Here they are.");
+        assert!(!l.call(true));
         assert!(l.flush().is_empty());
+    }
+
+    /// The order xAI can send: the reply starts, and even delegates, before
+    /// the utterance's finished transcript. The user row carries the final
+    /// words, lands after the previous turn's speech and before this turn's,
+    /// and the run waits for it.
+    #[test]
+    fn ledger_orders_rows_by_utterance_when_the_transcript_lands_late() {
+        let mut l = TurnLedger::default();
+        l.utterance_started();
+        l.words("hi");
+        assert_eq!(shape(&l.user_final()), ["user:hi"]);
+        l.reply_started();
+        l.speech("Hello.");
+
+        l.utterance_started();
+        l.words("what I want is just");
+        l.reply_started();
+        l.speech("On it.");
+        assert!(l.call(true), "the run waits for the user row");
+        l.words("what I want is just a list");
+        assert_eq!(
+            shape(&l.user_final()),
+            ["assistant:Hello.", "user:what I want is just a list"]
+        );
+        // "On it." belonged to the delegated turn: dropped.
+        l.speech(" Here is the list.");
+        assert!(l.flush().is_empty());
+
+        // Undelegated: the early reply is this turn's assistant row.
+        l.utterance_started();
+        l.words("how are");
+        l.reply_started();
+        l.speech("Good,");
+        l.words("how are you");
+        assert_eq!(shape(&l.user_final()), ["user:how are you"]);
+        l.speech(" thanks.");
+        assert_eq!(shape(&l.flush()), ["assistant:Good, thanks."]);
     }
 
     #[test]

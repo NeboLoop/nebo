@@ -36,6 +36,15 @@ pub struct ConnectPayload {
     /// offset can never advance. Absent (older clients) ⇒ no backfill.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub acks_offsets: bool,
+    /// This process (`lease::Lease::instance_id`, fresh per process start)
+    /// asks for the bot's lease. The gateway fences only clients that send
+    /// it; absent ⇒ a bot that predates leases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    /// The last lease epoch this process held, 0 on start. Informational:
+    /// the hub's compare-and-swap decides.
+    #[serde(default)]
+    pub lease_epoch: u64,
 }
 
 /// AUTH_OK / AUTH_FAIL frame payload (server -> client).
@@ -52,6 +61,49 @@ pub struct AuthResultPayload {
     /// Rotated bot JWT — use this token for the next reconnect.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub token: String,
+    /// The lease epoch this process now holds. 0 ⇒ the hub issues no leases.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lease_epoch: u64,
+    /// The lease TTL the hub applies to each acquisition and renewal.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lease_ttl_secs: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// A lease renewal, carried as the payload of the bot's gateway ping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseRenewal {
+    pub lease_epoch: u64,
+    /// The bot's monotonic stamp for when the ping was sent (`lease::Lease::stamp`),
+    /// echoed back so the lease is measured from the send.
+    pub t: u64,
+}
+
+/// CLOSE frame payload (client -> server) of a process handing its lease back
+/// on a clean shutdown, so its successor need not wait out the TTL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseRelease {
+    pub release_lease: bool,
+}
+
+/// LEASE frame payload (server -> client): the answer to a renewal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseAnswer {
+    /// "lease_ok" or "lease_lost".
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub epoch: u64,
+    #[serde(default)]
+    pub expires_in_secs: u64,
+    /// The renewal's stamp, echoed.
+    #[serde(default)]
+    pub t: u64,
 }
 
 /// SEND_MESSAGE frame payload (client -> server).
@@ -211,8 +263,12 @@ mod tests {
             platform: Some("linux".into()),
             hostname: Some("devbox".into()),
             acks_offsets: true,
+            instance_id: Some("8f0c7d1e-0000-4000-8000-000000000001".into()),
+            lease_epoch: 4,
         };
         let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"instanceId\":\"8f0c7d1e-0000-4000-8000-000000000001\""));
+        assert!(json.contains("\"leaseEpoch\":4"));
         // Identity fields use snake_case keys per the shared wire contract.
         assert!(json.contains("\"agentName\":\"Atlas\""));
         assert!(json.contains("\"agentHandle\":\"atlas\""));
@@ -235,6 +291,27 @@ mod tests {
         // ...and a false flag stays off the wire entirely.
         let json = serde_json::to_string(&p).unwrap();
         assert!(!json.contains("acksOffsets"));
+    }
+
+    /// The hub's lease fields on AUTH_OK, and their absence from a hub that
+    /// predates leases (epoch 0 ⇒ unleased), plus the renewal round trip.
+    #[test]
+    fn lease_fields_on_the_wire() {
+        let ok: AuthResultPayload =
+            serde_json::from_str(r#"{"ok":true,"botId":"b","leaseEpoch":7,"leaseTtlSecs":60}"#).unwrap();
+        assert_eq!((ok.lease_epoch, ok.lease_ttl_secs), (7, 60));
+        let old: AuthResultPayload = serde_json::from_str(r#"{"ok":true,"botId":"b"}"#).unwrap();
+        assert_eq!((old.lease_epoch, old.lease_ttl_secs), (0, 0));
+
+        let ping = serde_json::to_string(&LeaseRenewal { lease_epoch: 7, t: 1234 }).unwrap();
+        assert_eq!(ping, r#"{"leaseEpoch":7,"t":1234}"#);
+        let answer: LeaseAnswer =
+            serde_json::from_str(r#"{"type":"lease_ok","epoch":7,"expiresInSecs":60,"t":1234}"#).unwrap();
+        assert_eq!((answer.kind.as_str(), answer.epoch, answer.t), ("lease_ok", 7, 1234));
+        let lost: LeaseAnswer = serde_json::from_str(r#"{"type":"lease_lost","epoch":7}"#).unwrap();
+        assert_eq!(lost.kind, "lease_lost");
+        let release = serde_json::to_string(&LeaseRelease { release_lease: true }).unwrap();
+        assert_eq!(release, r#"{"releaseLease":true}"#);
     }
 
     #[test]

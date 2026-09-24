@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ai::{ChatRequest, EventReceiver, Provider, ProviderError, StreamEventType};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info, warn};
 
@@ -22,6 +23,10 @@ const MB_PER_LLM_CALL: u64 = 4;
 /// Floor — never throttle below this.
 const MIN_PERMITS: usize = 2;
 
+/// How much of the LLM pool housekeeping may use: one permit per this many
+/// foreground permits, at least one.
+const BACKGROUND_SHARE: usize = 4;
+
 /// Adaptive global concurrency controller for LLM and tool execution.
 ///
 /// LLM calls take a permit from ONE pool per bot (auditor Rule 15.2). Its size
@@ -29,28 +34,26 @@ const MIN_PERMITS: usize = 2;
 /// resource probe) and the provider's (halved on a 429 wave, +1 per
 /// successful call). Shrinking never waits for free permits: permits that are
 /// checked out when a cut lands are retired as their calls finish.
+///
+/// Background LLM work (summaries, memory extraction, personality synthesis)
+/// has a pool of its own so a burst of housekeeping never queues a person's
+/// reply — sized as a share of the foreground pool, so every cut and every
+/// recovery reaches it too.
 pub struct ConcurrencyController {
-    llm_semaphore: Arc<Semaphore>,
-    llm_pool: Arc<Mutex<LlmPool>>,
+    llm: Pool,
+    background: Pool,
+    bounds: Mutex<Bounds>,
     /// Floor — never go below this.
     min_permits: usize,
     /// Tool-level concurrency per turn.
     tool_semaphore: Arc<Semaphore>,
-    /// Background LLM work (summaries, objective detection, personality
-    /// synthesis) takes permits here, never from the pool user turns wait on:
-    /// a burst of housekeeping must not queue a person's reply.
-    background_semaphore: Arc<Semaphore>,
     /// Absolute max permits — configured limit, or DEFAULT_MAX_CEILING when auto.
     max_ceiling: usize,
 }
 
-/// The LLM pool's books. Every change goes through `rebalance`.
-struct LlmPool {
-    /// Permits that exist: free in the semaphore plus checked out.
-    capacity: usize,
-    /// Checked-out permits to retire when they come back instead of freeing
-    /// them — the part of a cut larger than the free permits at that moment.
-    debt: usize,
+/// The two bounds every pool size derives from. Locked before any pool's
+/// books, never after.
+struct Bounds {
     /// The machine's bound (memory and load), set by the resource probe.
     ceiling: usize,
     /// The provider's bound: halved per 429 wave, +1 per successful call.
@@ -61,11 +64,86 @@ struct LlmPool {
     round: u64,
 }
 
+/// A pool's books. Every change goes through `Pool::resize`.
+struct Books {
+    /// Permits that exist: free in the semaphore plus checked out.
+    capacity: usize,
+    /// Checked-out permits to retire when they come back instead of freeing
+    /// them — the part of a cut larger than the free permits at that moment.
+    debt: usize,
+}
+
+/// A permit pool that can shrink while every permit is busy.
+struct Pool {
+    semaphore: Arc<Semaphore>,
+    books: Arc<Mutex<Books>>,
+}
+
+impl Pool {
+    fn new(permits: usize) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(permits)),
+            books: Arc::new(Mutex::new(Books { capacity: permits, debt: 0 })),
+        }
+    }
+
+    async fn acquire(&self, round: u64) -> LlmPermit {
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("permit pool closed");
+        LlmPermit { permit: Some(permit), books: self.books.clone(), round }
+    }
+
+    /// Bring the pool to `target`. Growing pays down owed retirements before
+    /// adding permits; shrinking retires free permits now and owes the rest,
+    /// collected as busy calls return theirs.
+    fn resize(&self, target: usize) {
+        let mut books = self.books.lock().unwrap();
+        let effective = books.capacity - books.debt;
+        if target < effective {
+            let mut cut = effective - target;
+            while cut > 0 {
+                match self.semaphore.clone().try_acquire_owned() {
+                    Ok(free) => {
+                        free.forget();
+                        books.capacity -= 1;
+                        cut -= 1;
+                    }
+                    Err(_) => break,
+                }
+            }
+            books.debt += cut;
+        } else if target > effective {
+            let grow = target - effective;
+            let forgiven = grow.min(books.debt);
+            books.debt -= forgiven;
+            let added = grow - forgiven;
+            self.semaphore.add_permits(added);
+            books.capacity += added;
+        }
+        debug!(target, capacity = books.capacity, debt = books.debt, "permit pool resized");
+    }
+
+    /// Permits the pool is sized to right now (owed retirements excluded).
+    fn effective(&self) -> usize {
+        let books = self.books.lock().unwrap();
+        books.capacity - books.debt
+    }
+
+    /// Permits checked out right now.
+    fn in_flight(&self) -> usize {
+        self.effective().saturating_sub(self.semaphore.available_permits())
+    }
+}
+
 /// A checked-out LLM permit. Dropping it frees the slot, or retires it when
 /// the pool owes a cut.
 pub struct LlmPermit {
     permit: Option<OwnedSemaphorePermit>,
-    pool: Arc<Mutex<LlmPool>>,
+    books: Arc<Mutex<Books>>,
     round: u64,
 }
 
@@ -80,10 +158,10 @@ impl LlmPermit {
 impl Drop for LlmPermit {
     fn drop(&mut self) {
         let Some(permit) = self.permit.take() else { return };
-        let mut pool = self.pool.lock().unwrap();
-        if pool.debt > 0 {
-            pool.debt -= 1;
-            pool.capacity -= 1;
+        let mut books = self.books.lock().unwrap();
+        if books.debt > 0 {
+            books.debt -= 1;
+            books.capacity -= 1;
             permit.forget();
         }
     }
@@ -99,14 +177,13 @@ impl ConcurrencyController {
             .max(MIN_PERMITS);
 
         let controller = Self {
-            llm_semaphore: Arc::new(Semaphore::new(max_ceiling)),
-            llm_pool: Arc::new(Mutex::new(LlmPool {
-                capacity: max_ceiling,
-                debt: 0,
+            llm: Pool::new(max_ceiling),
+            background: Pool::new((max_ceiling / BACKGROUND_SHARE).max(1)),
+            bounds: Mutex::new(Bounds {
                 ceiling: max_ceiling,
                 rate_target: max_ceiling,
                 round: 0,
-            })),
+            }),
             min_permits: MIN_PERMITS,
             // Tools run locally (processes, files, browser) and compete for
             // cores, so their pool is sized from the machine — never derived
@@ -118,7 +195,6 @@ impl ConcurrencyController {
                     .unwrap_or(16)
                     .max(8),
             )),
-            background_semaphore: Arc::new(Semaphore::new((max_ceiling / 4).max(1))),
             max_ceiling,
         };
 
@@ -140,25 +216,17 @@ impl ConcurrencyController {
 
     /// Acquire a permit for an LLM call. Blocks when at capacity.
     pub async fn acquire_llm_permit(&self) -> LlmPermit {
-        let permit = self
-            .llm_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("llm semaphore closed");
-        let round = self.llm_pool.lock().unwrap().round;
-        LlmPermit { permit: Some(permit), pool: self.llm_pool.clone(), round }
+        let round = self.bounds.lock().unwrap().round;
+        self.llm.acquire(round).await
     }
 
-    /// Acquire a permit for background LLM work. Separate, smaller pool (a
-    /// quarter of the ceiling, at least one) so housekeeping never blocks a
-    /// user's turn; callers do not retry on overload.
-    pub async fn acquire_background_permit(&self) -> OwnedSemaphorePermit {
-        self.background_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("background semaphore closed")
+    /// Acquire a permit for background LLM work. A separate pool, a share of
+    /// the foreground one, so housekeeping never blocks a user's turn and
+    /// still shrinks and grows with every cut; callers do not retry on
+    /// overload.
+    pub async fn acquire_background_permit(&self) -> LlmPermit {
+        let round = self.bounds.lock().unwrap().round;
+        self.background.acquire(round).await
     }
 
     /// Acquire a permit for parallel tool execution within a turn.
@@ -173,10 +241,10 @@ impl ConcurrencyController {
     /// A call finished without a rate limit: the provider's bound grows by
     /// one, back toward the machine's.
     pub fn report_success(&self) {
-        let mut pool = self.llm_pool.lock().unwrap();
-        if pool.rate_target < self.max_ceiling {
-            pool.rate_target += 1;
-            self.rebalance(&mut pool);
+        let mut bounds = self.bounds.lock().unwrap();
+        if bounds.rate_target < self.max_ceiling {
+            bounds.rate_target += 1;
+            self.rebalance(&bounds);
         }
     }
 
@@ -185,74 +253,129 @@ impl ConcurrencyController {
     /// last cut (`granted_round` older than the pool's) reports the same wave
     /// that cut already answered.
     pub fn report_rate_limit(&self, granted_round: u64) {
-        let mut pool = self.llm_pool.lock().unwrap();
-        if granted_round < pool.round {
+        let mut bounds = self.bounds.lock().unwrap();
+        if granted_round < bounds.round {
             return;
         }
-        let in_flight = (pool.capacity - pool.debt)
-            .saturating_sub(self.llm_semaphore.available_permits());
-        pool.rate_target = (in_flight / 2).max(self.min_permits);
-        pool.round += 1;
+        let in_flight = self.llm.in_flight();
+        bounds.rate_target = (in_flight / 2).max(self.min_permits);
+        bounds.round += 1;
         info!(
             in_flight,
-            rate_target = pool.rate_target,
-            round = pool.round,
+            rate_target = bounds.rate_target,
+            round = bounds.round,
             "rate limit: halving LLM concurrency"
         );
-        self.rebalance(&mut pool);
+        self.rebalance(&bounds);
     }
 
     /// Set the machine's bound — called by the resource monitor.
     pub fn set_ceiling(&self, new_ceiling: usize) {
-        let mut pool = self.llm_pool.lock().unwrap();
-        pool.ceiling = new_ceiling.max(self.min_permits);
-        self.rebalance(&mut pool);
+        let mut bounds = self.bounds.lock().unwrap();
+        bounds.ceiling = new_ceiling.max(self.min_permits);
+        self.rebalance(&bounds);
     }
 
-    /// Bring the pool to min(machine bound, provider bound). Growing pays
-    /// down owed retirements before adding permits; shrinking retires free
-    /// permits now and owes the rest, collected as busy calls return theirs.
-    fn rebalance(&self, pool: &mut LlmPool) {
-        let target = pool.ceiling.min(pool.rate_target).max(self.min_permits);
-        let effective = pool.capacity - pool.debt;
-        if target < effective {
-            let mut cut = effective - target;
-            while cut > 0 {
-                match self.llm_semaphore.clone().try_acquire_owned() {
-                    Ok(free) => {
-                        free.forget();
-                        pool.capacity -= 1;
-                        cut -= 1;
-                    }
-                    Err(_) => break,
-                }
-            }
-            pool.debt += cut;
-        } else if target > effective {
-            let grow = target - effective;
-            let forgiven = grow.min(pool.debt);
-            pool.debt -= forgiven;
-            let added = grow - forgiven;
-            self.llm_semaphore.add_permits(added);
-            pool.capacity += added;
-        }
-        debug!(
-            target,
-            capacity = pool.capacity,
-            debt = pool.debt,
-            "LLM pool rebalanced"
-        );
+    /// Size both pools from the bounds: the foreground pool to
+    /// min(machine bound, provider bound), the background pool to its share
+    /// of that — so a 429 cut or a memory trim reaches housekeeping too.
+    fn rebalance(&self, bounds: &Bounds) {
+        let target = bounds.ceiling.min(bounds.rate_target).max(self.min_permits);
+        self.llm.resize(target);
+        self.background.resize((target / BACKGROUND_SHARE).max(1));
     }
 
-    /// Permits the pool is sized to right now (owed retirements excluded).
+    /// Permits the foreground pool is sized to right now (owed retirements
+    /// excluded).
     pub fn effective_permits(&self) -> usize {
-        let pool = self.llm_pool.lock().unwrap();
-        pool.capacity - pool.debt
+        self.llm.effective()
+    }
+
+    /// Permits the background pool is sized to right now.
+    pub fn background_permits(&self) -> usize {
+        self.background.effective()
     }
 
     /// The machine's bound (memory and load).
     pub fn ceiling(&self) -> usize {
-        self.llm_pool.lock().unwrap().ceiling
+        self.bounds.lock().unwrap().ceiling
+    }
+}
+
+/// A provider whose calls are housekeeping: each call takes a background
+/// permit for its whole stream and reports its outcome to the pool — a
+/// 429 at send time or inside the stream halves the pool, a completed
+/// stream grows it. The ONE way a background LLM call is made
+/// (auditor Rule 15.2): the helpers it wraps keep calling `Provider::stream`
+/// and know nothing about permits.
+pub struct BackgroundProvider {
+    inner: Arc<dyn Provider>,
+    concurrency: Arc<ConcurrencyController>,
+}
+
+impl ConcurrencyController {
+    /// Wrap a provider so its calls run as housekeeping.
+    pub fn background(self: &Arc<Self>, inner: Arc<dyn Provider>) -> Arc<dyn Provider> {
+        Arc::new(BackgroundProvider { inner, concurrency: self.clone() })
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for BackgroundProvider {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+    fn display_name(&self) -> &str {
+        self.inner.display_name()
+    }
+    fn profile_id(&self) -> &str {
+        self.inner.profile_id()
+    }
+    fn handles_tools(&self) -> bool {
+        self.inner.handles_tools()
+    }
+    fn supports_tool_result_images(&self) -> bool {
+        self.inner.supports_tool_result_images()
+    }
+    fn supports_vision(&self) -> bool {
+        self.inner.supports_vision()
+    }
+    async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+        let permit = self.concurrency.acquire_background_permit().await;
+        let round = permit.round();
+        let mut rx = match self.inner.stream(req).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                if let ProviderError::RateLimit { .. } = &e {
+                    self.concurrency.report_rate_limit(round);
+                }
+                return Err(e);
+            }
+        };
+        // Hold the permit for the whole stream and judge it the way the
+        // runner judges a foreground stream: an error event that classifies
+        // as a rate limit is a 429; anything else that finishes is a success.
+        let (tx, out) = tokio::sync::mpsc::channel(32);
+        let concurrency = self.concurrency.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let mut limited = false;
+            while let Some(event) = rx.recv().await {
+                if event.event_type == StreamEventType::Error {
+                    let msg = event.error.clone().unwrap_or_else(|| event.text.clone());
+                    limited |= ai::classify_error_reason(&ProviderError::Stream(msg)) == "rate_limit";
+                }
+                if tx.send(event).await.is_err() {
+                    break;
+                }
+            }
+            if limited {
+                concurrency.report_rate_limit(round);
+            } else {
+                concurrency.report_success();
+            }
+        });
+        Ok(out)
     }
 }
 
@@ -376,7 +499,7 @@ mod tests {
         assert_eq!(ctrl.effective_permits(), 4, "halved to half of the 8 in flight");
         drop(busy);
         assert_eq!(
-            ctrl.llm_semaphore.available_permits(),
+            ctrl.llm.semaphore.available_permits(),
             4,
             "four returning permits were retired, four freed"
         );
@@ -420,7 +543,7 @@ mod tests {
             ctrl.report_success();
         }
         assert_eq!(ctrl.effective_permits(), 8, "back to the machine's bound, not past it");
-        assert_eq!(ctrl.llm_semaphore.available_permits(), 8);
+        assert_eq!(ctrl.llm.semaphore.available_permits(), 8);
     }
 
     /// The memory trim shrinks a busy pool the same way a 429 does.
@@ -435,6 +558,107 @@ mod tests {
         ctrl.set_ceiling(3);
         assert_eq!(ctrl.effective_permits(), 3);
         drop(busy);
-        assert_eq!(ctrl.llm_semaphore.available_permits(), 3);
+        assert_eq!(ctrl.llm.semaphore.available_permits(), 3);
     }
+
+    /// Housekeeping is a share of the foreground pool and follows its cuts:
+    /// a 429 wave that halves the foreground pool halves housekeeping too,
+    /// landing while its permits are busy, and successes grow both back.
+    #[tokio::test]
+    async fn test_background_pool_follows_the_cuts() {
+        let ctrl = ConcurrencyController::new(Some(16));
+        ctrl.set_ceiling(16);
+        assert_eq!(ctrl.background_permits(), 4, "a quarter of 16");
+        let mut busy_bg = Vec::new();
+        for _ in 0..4 {
+            busy_bg.push(ctrl.acquire_background_permit().await);
+        }
+        let mut busy = Vec::new();
+        for _ in 0..16 {
+            busy.push(ctrl.acquire_llm_permit().await);
+        }
+        ctrl.report_rate_limit(busy[0].round());
+        assert_eq!(ctrl.effective_permits(), 8);
+        assert_eq!(ctrl.background_permits(), 2, "housekeeping halved with the foreground");
+        drop(busy_bg);
+        assert_eq!(ctrl.background.semaphore.available_permits(), 2, "two returning permits retired");
+        drop(busy);
+        for _ in 0..8 {
+            ctrl.report_success();
+        }
+        assert_eq!(ctrl.effective_permits(), 16);
+        assert_eq!(ctrl.background_permits(), 4, "housekeeping recovered with the foreground");
+    }
+
+    /// The memory trim reaches housekeeping the same way.
+    #[test]
+    fn test_background_pool_follows_the_ceiling() {
+        let ctrl = ConcurrencyController::new(Some(16));
+        ctrl.set_ceiling(16);
+        assert_eq!(ctrl.background_permits(), 4);
+        ctrl.set_ceiling(4);
+        assert_eq!(ctrl.background_permits(), 1, "never below one, never above its share");
+        ctrl.set_ceiling(12);
+        assert_eq!(ctrl.background_permits(), 3);
+    }
+
+
+    /// A housekeeping call behaves like a foreground one toward the pool: a
+    /// 429 at send time halves it, a rate-limit error inside the stream
+    /// halves it, a completed stream grows it back — and each call holds a
+    /// background permit for its whole stream.
+    #[tokio::test]
+    async fn test_background_provider_reports_to_the_pool() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        struct Scripted(AtomicUsize);
+        #[async_trait::async_trait]
+        impl Provider for Scripted {
+            fn id(&self) -> &str {
+                "scripted"
+            }
+            async fn stream(&self, _req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+                let n = self.0.fetch_add(1, SeqCst);
+                let (tx, rx) = tokio::sync::mpsc::channel(4);
+                match n {
+                    0 => return Err(ProviderError::RateLimit { retry_after_secs: None }),
+                    1 => {
+                        let _ = tx.send(ai::StreamEvent::error("Rate limit exceeded for user")).await;
+                    }
+                    _ => {
+                        let _ = tx.send(ai::StreamEvent::text("ok")).await;
+                        let _ = tx.send(ai::StreamEvent::done()).await;
+                    }
+                }
+                Ok(rx)
+            }
+        }
+        let ctrl = Arc::new(ConcurrencyController::new(Some(16)));
+        ctrl.set_ceiling(16);
+        let prov = ctrl.background(Arc::new(Scripted(AtomicUsize::new(0))));
+        let req = ChatRequest::new(ai::RequestTrace::new("test"));
+        // Eight foreground calls in flight so the halving has something to halve.
+        let mut busy = Vec::new();
+        for _ in 0..8 {
+            busy.push(ctrl.acquire_llm_permit().await);
+        }
+
+        assert!(prov.stream(&req).await.is_err(), "first call is refused at send time");
+        assert_eq!(ctrl.effective_permits(), 4, "a send-time 429 on housekeeping halves the pool");
+
+        // The second call was granted after the first cut: a new round, so its
+        // in-stream rate limit is a second wave and halves again (4 → 2).
+        let mut rx = prov.stream(&req).await.expect("second call streams");
+        while rx.recv().await.is_some() {}
+        tokio::task::yield_now().await;
+        assert_eq!(ctrl.effective_permits(), 2, "an in-stream rate limit on housekeeping halves the pool");
+        assert_eq!(ctrl.background_permits(), 1);
+
+        drop(busy);
+        let before = ctrl.effective_permits();
+        let mut rx = prov.stream(&req).await.expect("third call streams");
+        while rx.recv().await.is_some() {}
+        tokio::task::yield_now().await;
+        assert_eq!(ctrl.effective_permits(), before + 1, "a completed housekeeping stream grows the pool");
+    }
+
 }

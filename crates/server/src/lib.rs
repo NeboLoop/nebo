@@ -685,10 +685,16 @@ async fn handle_comm_install_event(
     match event.event_type.as_str() {
         "tool_installed" | "tool_updated" => {
             let api = codes::build_api_client(state).map_err(|e| e.to_string())?;
-            let detail = api
-                .get_skill(&event.tool_id)
-                .await
-                .map_err(|e| format!("fetch artifact {}: {e}", event.tool_id))?;
+            // GET /skills/{id} is the hub's detail for EVERY artifact type (it
+            // resolves any artifact id and carries the type and install code);
+            // its 404 text says "skill" whatever the type, so name the artifact
+            // from the event.
+            let detail = api.get_skill(&event.tool_id).await.map_err(|e| {
+                let p = &event.payload;
+                let kind = p.get("artifact_type").and_then(|v| v.as_str()).unwrap_or("artifact");
+                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                format!("fetch {kind} {name} ({}): {e}", event.tool_id)
+            })?;
             let item = &detail.item;
             let artifact_type = item.artifact_type.as_deref().unwrap_or("skill");
             // Dedup the self-echo: a fresh "tool_installed" for something already
@@ -756,11 +762,24 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         info!(orphans_killed = orphans, "startup: reaped orphan child processes from previous run");
     }
 
-    // Install SIGTERM/SIGINT/SIGHUP handler so children die with us on shutdown.
-    napp::child_guard::install_signal_handler();
+    // Register the shutdown signals now, so one that arrives while Nebo is
+    // still starting is held for the graceful path below instead of killing
+    // the process with its children still running.
+    let shutdown = shutdown_signal()?;
 
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
+
+    // BotLease (comm::lease): a cloud bot freezes itself whenever its lease
+    // is not held; a desktop does not. A bot with NeboAI credentials is
+    // frozen from here until the hub grants it the lease — before any loop
+    // below can fire a timer or send.
+    let lease = comm::lease::process();
+    lease.set_fenced(tools::server_mode());
+    if cfg.is_neboai_enabled() && codes::neboai_token_from(&store).is_some() {
+        lease.claim();
+    }
+    info!(instance = %lease.instance_id(), fenced = tools::server_mode(), "bot lease: this process's instance");
 
     // A Nebo never quietly serves a broken database. The check is quick; a
     // failure is logged and, once the hub exists, told to the owner with the
@@ -1078,6 +1097,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let browser_config = browser::BrowserConfig::default();
     let browser_data_dir = data_dir.to_string_lossy().to_string();
     let browser_manager = Arc::new(browser::Manager::new(browser_config, browser_data_dir));
+    let shutdown_browser = browser_manager.clone();
     let extension_bridge = browser_manager.bridge();
 
     // Install/update native messaging host manifest for Chrome extension.
@@ -1422,7 +1442,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // reflects live state. The loop tool holds this same handle, so it becomes
     // functional the moment the connection comes up — no registry rebuild needed.
     // (Also registered with the comm manager below.)
-    let neboai_plugin: Arc<dyn comm::CommPlugin> = Arc::new(comm::NeboAIPlugin::new());
+    let neboai_plugin: Arc<dyn comm::CommPlugin> = Arc::new(comm::NeboAIPlugin::new(Arc::new(
+        StoreStreamOffsets(store.clone()),
+    )));
 
     tool_registry.set_plugin_store(plugin_store.clone());
     tool_registry
@@ -2536,8 +2558,19 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let mcp_refresh_wake = mcp_refresh_wake.clone();
         let plugin_refresh_wake = plugin_refresh_wake.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            let mut backoff_secs: u64 = 30;
+            // Boot connects on its own; this watcher takes over after a
+            // minute — or at once when the hub refused this process the bot
+            // (another copy holds its lease), which is then asked again at
+            // the renewal cadence rather than after the backoff.
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                _ = comm::lease::process().until_lost() => {}
+            }
+            let mut backoff_secs: u64 = if comm::lease::process().is_lost() {
+                comm::lease::RENEW_EVERY.as_secs()
+            } else {
+                30
+            };
             loop {
                 let before_sleep = std::time::SystemTime::now();
 
@@ -2592,6 +2625,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         }
                         backoff_secs = 30;
                     }
+                    Err(_) if comm::lease::process().is_lost() => {
+                        // Another running copy holds the bot. Ask again at
+                        // the renewal cadence: its lease lapses within one
+                        // TTL of it stopping.
+                        backoff_secs = comm::lease::RENEW_EVERY.as_secs();
+                    }
                     Err(_) => {
                         backoff_secs = (backoff_secs * 2).min(600);
                     }
@@ -2610,6 +2649,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         tokio::spawn(async move {
             let mut backoff_secs: u64 = 30;
             loop {
+                // Only the process holding the bot's lease may hold its
+                // tunnel; the dial names that lease (comm::tunnel).
+                comm::lease::process().granted_or_unleased().await;
+                // The token is read after the grant: the AUTH_OK that granted
+                // the lease rotated it, and the one read before is refused.
                 let Some(token) = codes::neboai_token(&tunnel_state) else {
                     // Not activated yet — poll until credentials appear.
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -2893,6 +2937,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let shutdown_registry = state.run_registry.clone();
     let shutdown_store = state.store.clone();
     let shutdown_lifecycles = state.app_lifecycles.clone();
+    let shutdown_state = state.clone();
 
     if !quiet {
         info!("Server ready at http://localhost:{port}");
@@ -2935,7 +2980,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            shutdown_signal().await;
+            shutdown.await;
             info!("shutdown signal received — pausing scheduler, draining in-flight runs...");
             // A clean shutdown is not an interruption: case turns still
             // running are suspended and resume on boot with their budget intact.
@@ -2953,11 +2998,28 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 }
                 lifecycles.clear();
             }
-            info!("app sidecars stopped, disconnecting comm plugins...");
+            info!("app sidecars stopped, closing the browser and the desktop...");
+            // Asked to exit, not killed: the browser releases its profile
+            // whole, so nothing still writes into the data directory.
+            shutdown_browser.shutdown().await;
+            tools::desktop_session::stop().await;
+            info!("browser and desktop closed, committing bot state...");
+            // Nothing writes now: what changed is committed, the hub's answer
+            // is the proof, then the lease is handed back as the connection
+            // closes (plan 1A-4: commit, verify, release).
+            backup_ship::commit_on_drain(&shutdown_store, &shutdown_state).await;
+            comm::lease::process().release();
+            info!("bot state settled, disconnecting comm plugins...");
             shutdown_comm.shutdown().await;
             // Brief pause for write_loop to send the WebSocket Close frame
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             info!("comm plugins disconnected");
+            // Last: any child process still registered (plugins, watchers,
+            // bridges) is stopped so none outlives this process.
+            let children = tokio::task::spawn_blocking(napp::child_guard::kill_all_now)
+                .await
+                .unwrap_or_default();
+            info!(children, "child processes stopped — shutdown complete");
         })
         .await
         .map_err(|e| NeboError::Server(format!("server error: {e}")))?;
@@ -2965,9 +3027,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     Ok(())
 }
 
-/// Set once a shutdown signal arrives. The scheduler checks it each tick so no
-/// NEW flows start while in-flight ones drain — the graceful-update contract:
-/// signal -> pause scheduler -> wait for live runs (bounded) -> exit.
+/// Set once a shutdown signal arrives. The scheduler and the engine loop
+/// check it each tick so no NEW flows start while in-flight ones drain — the
+/// graceful-update contract: signal -> pause scheduler -> wait for live runs
+/// (bounded) -> exit.
 pub static DRAINING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Drain in-flight runs after a shutdown signal: every live run in the
@@ -3008,26 +3071,36 @@ async fn drain_in_flight_runs(registry: &run_registry::RunRegistry) {
     }
 }
 
-/// Wait for a shutdown signal (SIGTERM on Unix, Ctrl+C everywhere).
-async fn shutdown_signal() {
-    let ctrl_c = tokio::signal::ctrl_c();
+/// The shutdown signals: SIGTERM (kill, Kubernetes, hot reload), SIGINT
+/// (Ctrl+C) and SIGHUP (the terminal closed) on Unix, Ctrl+C everywhere.
+/// They are registered when this is called; the returned future resolves on
+/// the first one to arrive. This is the only shutdown signal handler in the
+/// process: the graceful drain it starts owns shutdown end to end.
+#[cfg(unix)]
+fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let register = |kind: SignalKind, name: &str| {
+        signal(kind).map_err(|e| NeboError::Server(format!("failed to install {name} handler: {e}")))
+    };
+    let mut term = register(SignalKind::terminate(), "SIGTERM")?;
+    let mut int = register(SignalKind::interrupt(), "SIGINT")?;
+    let mut hup = register(SignalKind::hangup(), "SIGHUP")?;
+    Ok(async move {
+        let sig = tokio::select! {
+            _ = term.recv() => "SIGTERM",
+            _ = int.recv() => "SIGINT",
+            _ = hup.recv() => "SIGHUP",
+        };
+        info!(signal = sig, "received shutdown signal");
+    })
+}
 
-    #[cfg(unix)]
-    {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler");
-
-        tokio::select! {
-            _ = ctrl_c => { info!("received Ctrl+C"); }
-            _ = sigterm.recv() => { info!("received SIGTERM"); }
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        ctrl_c.await.ok();
+#[cfg(not(unix))]
+fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError> {
+    Ok(async {
+        tokio::signal::ctrl_c().await.ok();
         info!("received Ctrl+C");
-    }
+    })
 }
 
 /// Process filesystem agent change events: sync DB, update registry, broadcast WS.
@@ -3667,6 +3740,27 @@ async fn run_webhook_workflow(
             agent = %agent_id, workflow = %binding_name, error = %e,
             "webhook workflow run failed"
         ),
+    }
+}
+
+/// The comm plugin's stream offsets, kept in the database beside the inbound
+/// dedupe records they pair with. A read failure joins from 0 (no replay, the
+/// behavior before offsets existed); a write failure means the next connect
+/// replays a little more, which the dedupe absorbs.
+struct StoreStreamOffsets(Arc<db::Store>);
+
+impl comm::StreamOffsets for StoreStreamOffsets {
+    fn acked(&self, bot_id: &str, stream: &str) -> u64 {
+        self.0.comm_stream_offset(bot_id, stream).unwrap_or_else(|e| {
+            warn!(stream, error = %e, "reading comm stream offset failed");
+            0
+        })
+    }
+
+    fn record(&self, bot_id: &str, stream: &str, seq: u64) {
+        if let Err(e) = self.0.record_comm_stream_offset(bot_id, stream, seq) {
+            warn!(stream, seq, error = %e, "recording comm stream offset failed");
+        }
     }
 }
 

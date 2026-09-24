@@ -790,12 +790,15 @@
             <ul class="dropdown-content menu bg-base-100 rounded-box z-20 w-64 p-1 shadow-md border border-base-300 flex-nowrap max-h-80 overflow-y-auto">
               {#each modelOptions as opt (opt.value)}
                 <li>
+                  <!-- A menu item is a grid that flows its children into
+                       columns; `flex` takes it back so the name sits above
+                       its description and the check keeps to the right. -->
                   <button
-                    class="text-sm flex-col items-start gap-0"
+                    class="flex flex-col items-start gap-0.5 text-left text-sm"
                     onclick={() => { pickModel(opt.value); (document.activeElement as HTMLElement | null)?.blur(); }}
                   >
-                    <span class="flex items-center gap-1.5">
-                      {opt.label}
+                    <span class="flex w-full items-center justify-between gap-1.5">
+                      <span>{opt.label}</span>
                       {#if modelLabel(activeModel, modelOptions) === opt.label}<span class="text-primary">&check;</span>{/if}
                     </span>
                     {#if opt.description}

@@ -27,15 +27,15 @@
 //! [`register_child`] / [`unregister_child`] — every long-lived child spawner
 //! calls these around the child's lifetime.
 //!
-//! [`install_signal_handler`] — call once at startup. Installs SIGTERM, SIGINT
-//! and SIGHUP handlers that:
-//!   1. SIGTERM all registered children (graceful shutdown signal)
-//!   2. Wait briefly for them to exit cleanly
-//!   3. SIGKILL any that didn't exit
-//!   4. Exit Nebo cleanly so the runtime can run Drop on remaining state
+//! [`kill_all_now`] — synchronous best-effort cleanup: SIGTERM every
+//! registered child, wait briefly, SIGKILL any that didn't exit. Call before
+//! any code path that intends to exit the process.
 //!
-//! [`kill_all_now`] — synchronous best-effort cleanup. Call before any code
-//! path that intends to exit the process.
+//! This module installs no signal handler. The server's graceful shutdown
+//! owns SIGTERM/SIGINT/SIGHUP: it drains runs, stops sidecars and disconnects
+//! plugins first, and calls [`kill_all_now`] as its last step. A handler here
+//! that exited on the same signal would end the process before that drain
+//! could run.
 //!
 //! SIGKILL of the Nebo process itself can't be intercepted — that's an OS
 //! constraint, no signal handler can run. For that pathological case we'd
@@ -246,56 +246,6 @@ pub fn kill_all_now() -> usize {
     }
 
     pids.len()
-}
-
-/// Install signal handlers (Unix only). Call once at server startup.
-///
-/// On SIGTERM/SIGINT/SIGHUP: kills all tracked children, then exits the
-/// process with code 0.
-#[cfg(unix)]
-pub fn install_signal_handler() {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    tokio::spawn(async {
-        let mut term = match signal(SignalKind::terminate()) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(error = %e, "failed to install SIGTERM handler");
-                return;
-            }
-        };
-        let mut int = match signal(SignalKind::interrupt()) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(error = %e, "failed to install SIGINT handler");
-                return;
-            }
-        };
-        let mut hup = match signal(SignalKind::hangup()) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(error = %e, "failed to install SIGHUP handler");
-                return;
-            }
-        };
-
-        let sig = tokio::select! {
-            _ = term.recv() => "SIGTERM",
-            _ = int.recv() => "SIGINT",
-            _ = hup.recv() => "SIGHUP",
-        };
-        let count = tracked_pids().len();
-        info!(signal = sig, child_count = count, "shutdown signal received, killing children");
-        kill_all_now();
-        // Give logs a moment to flush before exit.
-        std::thread::sleep(Duration::from_millis(50));
-        std::process::exit(0);
-    });
-}
-
-#[cfg(not(unix))]
-pub fn install_signal_handler() {
-    // No-op on non-Unix. See module docs for the Windows path (Job Objects).
 }
 
 /// Best-effort startup cleanup: scan for orphan plugin processes left over

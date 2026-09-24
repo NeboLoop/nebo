@@ -29,6 +29,11 @@ pub fn spawn(
         // Initial delay to let the server boot
         tokio::time::sleep(Duration::from_secs(10)).await;
 
+        // Resuming stranded runs advances workflows: not until this bot
+        // holds its lease (a cloud bot started while another copy runs
+        // must not resume that copy's work).
+        comm::lease::process().until_unfrozen().await;
+
         // Workflow runs stranded by process death (WS4): stamp interrupted,
         // resume from the last completed activity via the snapshotted
         // definition, fail the unresumable with a narrated reason.
@@ -41,14 +46,16 @@ pub fn spawn(
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            if crate::DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
+            if crate::DRAINING.load(std::sync::atomic::Ordering::Relaxed)
+                || comm::lease::process().frozen()
+            {
                 continue;
             }
             sweep(&store, &workflow_manager);
             // Cleanup expired snapshots
             snapshot_store.cleanup();
             nightly_backup(&store, &state).await;
-            crate::backup_ship::ship_pending(&store, &state).await;
+            crate::backup_ship::commit_if_due(&store, &state).await;
         }
     });
 }

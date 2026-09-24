@@ -18,8 +18,8 @@ importers:
         specifier: ^1.7.0
         version: 1.7.0
       '@tauri-apps/api':
-        specifier: ~2.10.0
-        version: 2.10.1
+        specifier: ~2.11.1
+        version: 2.11.1
       '@tauri-apps/plugin-notification':
         specifier: ^2.3.3
         version: 2.3.3
@@ -814,8 +814,8 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  '@tauri-apps/api@2.10.1':
-    resolution: {integrity: sha512-hKL/jWf293UDSUN09rR69hrToyIXBb8CjGaWC7gfinvnQrBVvnLr08FeFi38gxtugAVyVcTa5/FD/Xnkb1siBw==}
+  '@tauri-apps/api@2.11.1':
+    resolution: {integrity: sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA==}
 
   '@tauri-apps/plugin-notification@2.3.3':
     resolution: {integrity: sha512-Zw+ZH18RJb41G4NrfHgIuofJiymusqN+q8fGUIIV7vyCH+5sSn5coqRv/MWB9qETsUs97vmU045q7OyseCV3Qg==}
@@ -2333,11 +2333,11 @@ snapshots:
       tailwindcss: 4.2.4
       vite: 8.2.2(@types/node@25.6.2)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)
 
-  '@tauri-apps/api@2.10.1': {}
+  '@tauri-apps/api@2.11.1': {}
 
   '@tauri-apps/plugin-notification@2.3.3':
     dependencies:
-      '@tauri-apps/api': 2.10.1
+      '@tauri-apps/api': 2.11.1
 
   '@tiptap/core@3.30.5(@tiptap/pm@3.22.5)':
     dependencies:

@@ -224,6 +224,24 @@ mod tests {
         assert_eq!(extract_version("invalid.sql"), None);
     }
 
+    /// Two files with one version number: the runner applies both, records
+    /// the first, and fails recording the second (`_nebo_migrations.version`
+    /// is unique), so every bot exits once at boot and then runs without the
+    /// second file's schema (2026-09-24: 0163_binding_standing_outcome vs
+    /// 0163_comm_stream_offsets took the whole auto-update fleet through
+    /// that). Parallel branches each take "the next number"; this is the
+    /// check that catches it before an image does.
+    #[test]
+    fn no_two_migrations_share_a_version() {
+        let mut seen = std::collections::HashMap::new();
+        for f in iter_files() {
+            let v = extract_version(&f).unwrap_or_else(|| panic!("invalid migration filename: {f}"));
+            if let Some(prev) = seen.insert(v, f.clone()) {
+                panic!("migration version {v} is used twice: {prev} and {f} — renumber the newer one");
+            }
+        }
+    }
+
     #[test]
     fn test_extract_goose_up() {
         let sql = "-- +goose Up\nCREATE TABLE foo (id INT);\n-- +goose Down\nDROP TABLE foo;";

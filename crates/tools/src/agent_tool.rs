@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::origin::ToolContext;
-use crate::plugin_tool::TOOL_INSTALL_DOOR;
+use crate::plugin_tool::{CardAnswer, INSTALL_CARD_INSTALLED, TOOL_INSTALL_DOOR};
 use crate::registry::{DynTool, ToolResult};
 use db::Store;
 
@@ -920,7 +920,7 @@ impl PersonaTool {
                 }]),
             )
             .await;
-        if answer.as_deref() == Some(crate::plugin_tool::INSTALL_CARD_INSTALLED) {
+        if answer.as_deref() == Some(INSTALL_CARD_INSTALLED) {
             // Everyone the owner asked for is accounted for here: the newly hired
             // and the ones already on the roster. Nothing is left to search.
             let was_already = if already.is_empty() {
@@ -934,12 +934,20 @@ impl PersonaTool {
                 names.join(", ")
             ));
         }
-        ToolResult::ok(format!(
-            "{listing}\n\nThe user declined the hire card for {}. Discuss alternatives or answer \
-             questions — do NOT paste install codes into chat; if they change their mind, call \
-             discover again to re-offer the card.",
-            names.join(", ")
-        ))
+        let who = names.join(", ");
+        ToolResult::ok(match CardAnswer::read(answer.as_deref(), INSTALL_CARD_INSTALLED) {
+            CardAnswer::Failed(reason) => format!(
+                "Hiring {who} FAILED: {reason}. Tell the owner that error in plain words and stop. \
+                 Do NOT offer the card again and do NOT suggest commands or other ways to hire."
+            ),
+            CardAnswer::NoAnswer => {
+                format!("The hire card for {who} got no answer (the owner stopped the run). Do NOT offer it again.")
+            }
+            CardAnswer::Skipped | CardAnswer::Done => format!(
+                "{listing}\n\nThe owner skipped the hire card for {who}. Do NOT offer it again unless \
+                 they ask. Never paste install codes into chat."
+            ),
+        })
     }
 
     /// The name a person reads in the Employees list.

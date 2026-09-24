@@ -18,10 +18,32 @@ pub struct NeboAIApi {
     bot_id: String,
     token: RwLock<String>,
     client: Client,
+    /// This process's lease: a frozen process sends nothing that changes
+    /// anything (see `gate`).
+    lease: &'static crate::lease::Lease,
+    /// The credential this bot was provisioned with ([`provisioned_credential`]),
+    /// retried on a read the hub refused as stale (see `send`).
+    provisioned: Option<String>,
+}
+
+/// This bot's boot credential (`NEBO_BOOT_TOKEN`), which the reconciler
+/// keeps in a cloud pod's Secret beside the plain `NEBO_BOT_TOKEN` the auth
+/// profile is seeded from. Never made stale by rotation, and accepted by the
+/// hub for exactly what a pod rebuilding into an empty /data needs —
+/// reading its committed state and its own backups, and CONNECT under a
+/// lease (whose AUTH_OK hands back the rotated token). Desktops have none.
+pub fn provisioned_credential() -> Option<String> {
+    std::env::var("NEBO_BOOT_TOKEN").ok().filter(|t| !t.trim().is_empty())
 }
 
 /// Default production API server.
 pub const DEFAULT_API_SERVER: &str = "https://api.neboai.com";
+
+/// How long a REST call may take before it is abandoned.
+const REST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long one file may take through the files door, either way.
+const FILE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// ONE process-wide HTTP client (connection pool). `NeboAIApi` values are
 /// constructed per call site (73 of them) — giving each its own `Client` gave
@@ -31,7 +53,7 @@ pub const DEFAULT_API_SERVER: &str = "https://api.neboai.com";
 static HTTP_CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| {
     Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(REST_TIMEOUT)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
         .build()
         .unwrap_or_else(|_| Client::new())
@@ -45,6 +67,8 @@ impl NeboAIApi {
             bot_id,
             token: RwLock::new(token),
             client: HTTP_CLIENT.clone(),
+            lease: crate::lease::process(),
+            provisioned: provisioned_credential(),
         }
     }
 
@@ -82,8 +106,51 @@ impl NeboAIApi {
 
     // ── Internal helpers ────────────────────────────────────────────
 
+    /// The lease gate every request passes: while this process is frozen
+    /// (its lease Uncertain or Lost) a request that changes something is
+    /// refused before it leaves the machine. Reads still go.
+    fn gate(&self, method: &reqwest::Method) -> Result<(), CommError> {
+        let read = *method == reqwest::Method::GET || *method == reqwest::Method::HEAD;
+        if !read && self.lease.frozen() {
+            debug!(method = %method, "neboai api: refused while the lease is not held");
+            return Err(CommError::Paused);
+        }
+        Ok(())
+    }
+
     fn token(&self) -> String {
         self.token.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Send one request built for a given bearer token. A READ the hub refuses
+    /// as stale (every rotated token a rebuilt pod restored is stale) is sent
+    /// once more with the provisioned credential, which the hub accepts for
+    /// the reads a rebuild needs. Ok(Err) is the hub's refusal: status, body.
+    async fn send(
+        &self,
+        read: bool,
+        build: impl Fn(String) -> reqwest::RequestBuilder,
+    ) -> Result<Result<reqwest::Response, (reqwest::StatusCode, String)>, reqwest::Error> {
+        let token = self.token();
+        let resp = build(token.clone()).send().await?;
+        if resp.status().is_success() {
+            return Ok(Ok(resp));
+        }
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let fallback = self.provisioned.as_ref().filter(|p| **p != token);
+        match fallback {
+            Some(provisioned) if read && status == reqwest::StatusCode::UNAUTHORIZED && body.contains("stale token") => {
+                debug!("neboai api: token refused as stale on a read; retrying with the provisioned credential");
+                let resp = build(provisioned.clone()).send().await?;
+                if resp.status().is_success() {
+                    return Ok(Ok(resp));
+                }
+                let status = resp.status();
+                Ok(Err((status, resp.text().await.unwrap_or_default())))
+            }
+            _ => Ok(Err((status, body))),
+        }
     }
 
     async fn do_json<T: DeserializeOwned>(
@@ -92,24 +159,25 @@ impl NeboAIApi {
         path: &str,
         body: Option<&impl Serialize>,
     ) -> Result<T, CommError> {
+        self.gate(&method)?;
         let url = format!("{}{}", self.api_server, path);
         debug!(method = %method, url = %url, "neboai api");
 
-        let mut req = self.client.request(method, &url).bearer_auth(self.token());
-
-        if let Some(b) = body {
-            req = req.json(b);
-        }
-
-        let resp = req
-            .send()
+        let read = method == reqwest::Method::GET;
+        let resp = match self
+            .send(read, |token| {
+                let req = self.client.request(method.clone(), &url).bearer_auth(token);
+                match body {
+                    Some(b) => req.json(b),
+                    None => req,
+                }
+            })
             .await
-            .map_err(|e| CommError::Transport(e.to_string()))?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(CommError::Http { status: status.as_u16(), body });
-        }
+            .map_err(|e| CommError::Transport(e.to_string()))?
+        {
+            Ok(resp) => resp,
+            Err((status, body)) => return Err(CommError::Http { status: status.as_u16(), body }),
+        };
 
         // The server answered success; a body we cannot read is still a
         // success we cannot confirm, not a refusal.
@@ -124,6 +192,7 @@ impl NeboAIApi {
         path: &str,
         body: Option<&impl Serialize>,
     ) -> Result<(), CommError> {
+        self.gate(&method)?;
         let url = format!("{}{}", self.api_server, path);
         let mut req = self.client.request(method, &url).bearer_auth(self.token());
 
@@ -180,6 +249,7 @@ impl NeboAIApi {
         if !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Err(CommError::Other("invalid plugin slug".into()));
         }
+        self.gate(&method)?;
         let mut url = format!(
             "{}/api/v1/plugins/{}/proxy/{}",
             self.api_server,
@@ -579,6 +649,7 @@ impl NeboAIApi {
     /// Install a product (skill/agent/workflow) for this bot by product ID.
     /// NeboAI may return JSON or an empty body on success.
     pub async fn install_product(&self, id: &str) -> Result<serde_json::Value, CommError> {
+        self.gate(&reqwest::Method::POST)?;
         let body = serde_json::json!({ "botId": self.bot_id });
         let url = format!("{}/api/v1/products/{}/install", self.api_server, id);
         let resp = self
@@ -1378,7 +1449,7 @@ impl NeboAIApi {
         } else {
             format!("{}{}", self.api_server, url)
         };
-        self.fetch_raw(&full_url).await
+        self.fetch_raw(&full_url, REST_TIMEOUT).await
     }
 
     // ── Content Protection ─────────────────────────────────────────
@@ -1578,6 +1649,7 @@ impl NeboAIApi {
         data: Vec<u8>,
         fields: &[(String, String)],
     ) -> Result<crate::wire::Attachment, CommError> {
+        self.gate(&reqwest::Method::POST)?;
         let part = reqwest::multipart::Part::bytes(data)
             .file_name(filename.to_string())
             .mime_str(mime_type)
@@ -1595,7 +1667,7 @@ impl NeboAIApi {
         // Use a client with a longer timeout for uploads
         let upload_client = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(FILE_TRANSFER_TIMEOUT)
             .build()
             .unwrap_or_else(|_| Client::new());
 
@@ -1610,10 +1682,7 @@ impl NeboAIApi {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(CommError::Other(format!(
-                "upload returned {}: {}",
-                status, body
-            )));
+            return Err(CommError::Http { status: status.as_u16(), body });
         }
 
         resp.json::<crate::wire::Attachment>()
@@ -1621,32 +1690,50 @@ impl NeboAIApi {
             .map_err(|e| CommError::Other(format!("decode upload response: {}", e)))
     }
 
-    /// Download a file by ID. Returns raw bytes.
+    /// Download a file by ID. Returns raw bytes. Files are as large as the
+    /// upload door allows, so the download gets the upload's time.
     pub async fn download_file(&self, file_id: &str) -> Result<Vec<u8>, CommError> {
         let url = format!("{}/api/v1/files/{}", self.api_server, file_id);
-        self.fetch_raw(&url).await
+        self.fetch_raw(&url, FILE_TRANSFER_TIMEOUT).await
+    }
+
+    // ── BotState ────────────────────────────────────────────────────
+
+    /// This bot's committed state: the head generation a next commit must
+    /// follow, and the latest role=state generation (or `generation`, when
+    /// asked for one).
+    pub async fn bot_state(&self, generation: Option<i64>) -> Result<BotStateResponse, CommError> {
+        let path = match generation {
+            Some(g) => format!("/api/v1/bots/self/state?generation={g}"),
+            None => "/api/v1/bots/self/state".to_string(),
+        };
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
+    /// Commit a BotState manifest. The hub moves the head only from
+    /// `generation - 1`; another writer having moved it first is a 409.
+    pub async fn commit_bot_state(&self, manifest: &serde_json::Value) -> Result<BotStateCommitResponse, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/bots/self/state", Some(manifest))
+            .await
     }
 
     // ── Raw Fetch ───────────────────────────────────────────────────
 
     /// Download raw content from a URL using the client's auth header.
-    pub async fn fetch_raw(&self, url: &str) -> Result<Vec<u8>, CommError> {
-        let resp = self
-            .client
-            .get(url)
-            .bearer_auth(self.token())
-            .send()
+    pub async fn fetch_raw(&self, url: &str, timeout: std::time::Duration) -> Result<Vec<u8>, CommError> {
+        let resp = match self
+            .send(true, |token| self.client.get(url).timeout(timeout).bearer_auth(token))
             .await
-            .map_err(|e| CommError::Other(format!("fetch failed: {}", e)))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(CommError::Other(format!(
-                "NeboAI returned {}: {}",
-                status, body
-            )));
-        }
+            .map_err(|e| CommError::Other(format!("fetch failed: {}", e)))?
+        {
+            Ok(resp) => resp,
+            Err((status, body)) => {
+                return Err(CommError::Other(format!(
+                    "NeboAI returned {}: {}",
+                    status, body
+                )));
+            }
+        };
 
         resp.bytes()
             .await
@@ -1759,4 +1846,116 @@ pub struct AgentChatSync {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_activity_at: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A client on a frozen lease, pointed at a port nothing listens on: a
+    /// refused request never reaches the network, a read does (and fails
+    /// there, as a transport error — not as Paused).
+    fn frozen_api() -> NeboAIApi {
+        let lease: &'static crate::lease::Lease = Box::leak(Box::new(crate::lease::Lease::new()));
+        lease.set_fenced(true);
+        lease.claim();
+        let mut api = NeboAIApi::new("http://127.0.0.1:9".into(), "bot".into(), "token".into());
+        api.lease = lease;
+        api
+    }
+
+    #[tokio::test]
+    async fn a_frozen_bot_sends_nothing_that_changes_anything() {
+        let api = frozen_api();
+        let inbox = api.push_inbox_item(&serde_json::json!({"id": "x"})).await;
+        assert!(matches!(inbox, Err(CommError::Paused)), "{inbox:?}");
+        let upload = api.upload_file("a.txt", "text/plain", b"hi".to_vec(), &[]).await;
+        assert!(matches!(upload, Err(CommError::Paused)), "{upload:?}");
+        let proxied = api
+            .plugin_proxy(reqwest::Method::POST, "gmail", "/send", None, Default::default(), vec![])
+            .await;
+        assert!(matches!(proxied, Err(CommError::Paused)), "{proxied:?}");
+        let installed = api.install_product("p1").await;
+        assert!(matches!(installed, Err(CommError::Paused)), "{installed:?}");
+    }
+
+    #[tokio::test]
+    async fn a_frozen_bot_still_reads() {
+        let api = frozen_api();
+        let read = api.bot_update_status().await;
+        assert!(matches!(read, Err(CommError::Transport(_))), "a GET must reach the network: {read:?}");
+    }
+
+    #[tokio::test]
+    async fn a_held_lease_lets_writes_through() {
+        let api = frozen_api();
+        api.lease.granted(1, std::time::Duration::from_secs(60), std::time::Instant::now());
+        let inbox = api.push_inbox_item(&serde_json::json!({"id": "x"})).await;
+        assert!(!matches!(inbox, Err(CommError::Paused)), "{inbox:?}");
+    }
+
+    /// A hub that honours only `good` and refuses every other bearer as
+    /// stale, counting requests.
+    async fn stale_hub(good: &'static str) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                let (status, body) = if head.contains(&format!("authorization: bearer {good}")) {
+                    ("200 OK", r#"{"ok":true}"#)
+                } else {
+                    ("401 Unauthorized", r#"{"error":"stale token"}"#)
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        (format!("http://{addr}"), hits)
+    }
+
+    fn rebuilt_api(url: String, provisioned: Option<&str>) -> NeboAIApi {
+        let mut api = NeboAIApi::new(url, "bot".into(), "stale-rotated".into());
+        api.provisioned = provisioned.map(str::to_string);
+        api
+    }
+
+    /// A pod rebuilt into an empty /data holds only stale rotated tokens: its
+    /// reads (committed state, its backups) go through on the provisioned
+    /// boot credential instead of failing.
+    #[tokio::test]
+    async fn a_stale_read_retries_with_the_provisioned_credential() {
+        let (url, hits) = stale_hub("boot").await;
+        let api = rebuilt_api(url, Some("boot"));
+        let state = api.bot_update_status().await;
+        assert!(state.is_ok(), "{state:?}");
+        let file = api.download_file("f1").await;
+        assert_eq!(file.unwrap(), br#"{"ok":true}"#.to_vec());
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 4, "each read: stale, then the retry");
+    }
+
+    /// Writes are never retried on it (the hub accepts it for reads only),
+    /// and a bot with no provisioned credential gets the refusal as before.
+    #[tokio::test]
+    async fn only_reads_fall_back_and_only_when_provisioned() {
+        let (url, hits) = stale_hub("boot").await;
+        let api = rebuilt_api(url.clone(), Some("boot"));
+        let write = api.push_inbox_item(&serde_json::json!({"id": "x"})).await;
+        assert!(write.is_err(), "{write:?}");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "a write is sent once");
+
+        let desktop = rebuilt_api(url, None);
+        let read = desktop.bot_update_status().await;
+        assert!(matches!(read, Err(CommError::Http { status: 401, .. })), "{read:?}");
+    }
 }
