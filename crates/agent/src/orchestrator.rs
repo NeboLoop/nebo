@@ -828,7 +828,7 @@ impl Orchestrator {
         let total = requests.len();
 
         // Isolation (P5.3): each child gets its own copy of the project,
-        // fenced by cwd + allowed_paths; merged back after the batch.
+        // fenced to it (cwd + the run's fence); merged back after the batch.
         let isolate = requests.first().is_some_and(|r| r.isolate == "worktree");
         // The project to isolate: the one named, else where the parent works.
         let workspace: PathBuf = match requests.first() {

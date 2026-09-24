@@ -213,13 +213,14 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
     if !cx.ctx.whitelist_allows(&t.tool, cx.input) {
         return Some(deny(
             "allowlist",
-            cx.ctx.whitelist_denial_hint.clone().unwrap_or_else(|| {
-                format!(
+            match &cx.ctx.whitelist_denial_hint {
+                Some(hint) => format!("'{}' is not available in this run. {hint}", t.tool),
+                None => format!(
                     "Tool '{}' is not available in this restricted run. Use one of the tools you \
                      were given, or say plainly that you can't do that.",
                     t.tool
-                )
-            }),
+                ),
+            },
         ));
     }
     if let Some(d) = credentials(cx, t) {
@@ -228,8 +229,9 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
     None
 }
 
-/// Rule keys that carry content out of this machine to someone.
-const OUTBOUND_KEYS: &[&str] = &["http_request", "browser_fill_form"];
+/// Rule keys that carry content out of this machine to someone else's
+/// server, whatever their recipients say.
+const OUTBOUND_KEYS: &[&str] = &["http_request"];
 
 /// A call that would send a secret somewhere: an outbound message, a
 /// publish, a request carrying one. The owner's secrets never leave in a

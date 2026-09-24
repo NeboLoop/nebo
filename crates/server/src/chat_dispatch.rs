@@ -257,8 +257,8 @@ pub struct ChatConfig {
     /// Working directory for this run's shell commands and relative file
     /// paths. The WS is owner-authenticated, so an owner-supplied cwd is the
     /// owner choosing where their employee works: the same trust the desktop
-    /// app extends when it opens a project folder. Joined into a restricted
-    /// `allowed_paths` list so the file tools may work there (see `run_cwd`).
+    /// app extends when it opens a project folder. Joined to a folder-fenced
+    /// job's folders so the file tools may work there (see `run_cwd`).
     /// None = the process cwd.
     pub cwd: Option<std::path::PathBuf>,
     /// Explicit model for this run (the harness's `--model`); wins over the

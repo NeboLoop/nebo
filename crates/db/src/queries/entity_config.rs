@@ -70,14 +70,10 @@ impl Store {
             ("heartbeat_content", "heartbeatContent"),
             ("heartbeat_window_start", "heartbeatWindowStart"),
             ("heartbeat_window_end", "heartbeatWindowEnd"),
-            ("permissions", "permissions"),
-            ("resource_grants", "resourceGrants"),
             ("model_preference", "modelPreference"),
             ("personality_snippet", "personalitySnippet"),
-            ("allowed_paths", "allowedPaths"),
             ("pinned", "pinned"),
             ("multi_chat", "multiChat"),
-            ("operation_policy", "operationPolicy"),
             ("learning_mode", "learningMode"),
         ];
 

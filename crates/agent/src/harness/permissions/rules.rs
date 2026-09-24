@@ -43,14 +43,17 @@ impl RuleSet {
     /// The rule that decides `t` and its effect, or `None` when no rule
     /// matches.
     pub fn decide(&self, t: &Target) -> Option<(&Rule, Effect)> {
-        fn strongest<'r>(rules: &'r [Rule], t: &Target) -> Option<(&'r Rule, Effect)> {
-            rules
-                .iter()
-                .filter(|r| matches(r, t))
-                .max_by_key(|r| r.effect)
-                .map(|r| (r, r.effect))
-        }
-        strongest(&self.employee, t).or_else(|| strongest(&self.company, t))
+        self.deciding(t)
+            .iter()
+            .filter(|r| matches(r, t))
+            .max_by_key(|r| r.effect)
+            .map(|r| (r, r.effect))
+    }
+
+    /// The scope that decides `t`: the employee's when any of its rules
+    /// matches, else the company's.
+    fn deciding(&self, t: &Target) -> &[Rule] {
+        if self.employee.iter().any(|r| matches(r, t)) { &self.employee } else { &self.company }
     }
 
     /// Whether `t` is inside the job: basic work (no capability), or a
@@ -73,10 +76,11 @@ impl RuleSet {
     /// Whether an allow the owner wrote for this key (not the whole
     /// capability) covers `t`: what Ask mode runs without asking.
     pub fn owner_allowed(&self, t: &Target) -> bool {
-        matches!(
-            self.decide(t),
-            Some((rule, Effect::Allow)) if !matches!(rule.key, RuleKey::Capability(_))
-        )
+        matches!(self.decide(t), Some((_, Effect::Allow)))
+            && self
+                .deciding(t)
+                .iter()
+                .any(|r| r.effect == Effect::Allow && !matches!(r.key, RuleKey::Capability(_)) && matches(r, t))
     }
 
     /// The job's folders (see [`types::permissions::folders_of`]).
