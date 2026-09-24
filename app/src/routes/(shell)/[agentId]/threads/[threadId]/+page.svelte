@@ -254,6 +254,7 @@
   quotaWarning={chat.quotaWarning}
   chatError={chat.chatError}
   activityStatus={chat.activityStatus}
+  helpers={chat.helpers}
   askQueueLength={chat.askQueueLength}
   hasMore={chat.hasMore}
   isLoadingMore={chat.isLoadingMore}
