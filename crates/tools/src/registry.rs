@@ -1975,6 +1975,58 @@ mod tests {
         assert!(!marker.exists(), "a chat channel ran a shell command");
     }
 
+    /// A notebook edit writes a file: it meets the File capability and the
+    /// path fence exactly as a file write does.
+    #[tokio::test]
+    async fn a_notebook_edit_meets_the_file_capability_and_the_path_fence() {
+        let registry = Registry::new(Policy::default());
+        registry.register(Box::new(crate::notebook_tool::NotebookTool::new())).await;
+        let dir = tempfile::tempdir().unwrap();
+        let inside = dir.path().join("inside");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let original = serde_json::json!({
+            "cells": [{"cell_type": "code", "id": "c1", "metadata": {}, "source": "print(1)", "outputs": [], "execution_count": 1}],
+            "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+        })
+        .to_string();
+        let edit = |nb: &std::path::Path| {
+            serde_json::json!({
+                "action": "edit", "notebook_path": nb.to_string_lossy(),
+                "cell_id": "c1", "new_source": "print(2)"
+            })
+        };
+
+        let fenced = outside.join("n.ipynb");
+        std::fs::write(&fenced, &original).unwrap();
+        let ctx = ToolContext {
+            allowed_paths: vec![inside.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let result = registry.execute(&ctx, "notebook", edit(&fenced)).await;
+        assert!(result.is_error && result.content.contains("BLOCKED"), "{}", result.content);
+        assert_eq!(std::fs::read_to_string(&fenced).unwrap(), original, "the edit landed outside the fence");
+
+        let gated = inside.join("n.ipynb");
+        std::fs::write(&gated, &original).unwrap();
+        let ctx = ToolContext {
+            entity_permissions: Some([("file".to_string(), false)].into()),
+            ..Default::default()
+        };
+        let result = registry.execute(&ctx, "notebook", edit(&gated)).await;
+        assert!(result.content.starts_with("PERMISSION_REQUIRED:file"), "{}", result.content);
+        assert_eq!(std::fs::read_to_string(&gated).unwrap(), original, "the edit ran with File off");
+
+        // Reads stay open inside the fence, as file reads do.
+        let ctx = ToolContext {
+            allowed_paths: vec![inside.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let read = serde_json::json!({"action": "read", "notebook_path": fenced.to_string_lossy()});
+        assert!(!registry.execute(&ctx, "notebook", read).await.is_error);
+    }
+
     /// The runner's gates read the call through the same door: the settled
     /// call names its action and resource, is gated on its own capability,
     /// and settling it twice changes nothing.
