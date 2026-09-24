@@ -762,6 +762,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         info!(orphans_killed = orphans, "startup: reaped orphan child processes from previous run");
     }
 
+    agent::steering::announce();
+
     // Register the shutdown signals now, so one that arrives while Nebo is
     // still starting is held for the graceful path below instead of killing
     // the process with its children still running.

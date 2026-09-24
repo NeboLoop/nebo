@@ -228,6 +228,194 @@ impl ReminderCadence {
     }
 }
 
+/// A run's stream reminders: queued here, ridden on the next LLM call as
+/// ephemeral `<system-reminder>` messages, cleared once that call lands. The
+/// ONE place steering is queued and decided: `steer` checks the switch by
+/// name, so every piece of steering that rides the stream carries its name.
+/// `push` is for facts (time, recall, wakes, tool-state notices, hard-stop
+/// wrap-ups), which the switch never touches.
+#[derive(Default)]
+pub struct StreamReminders {
+    items: Vec<String>,
+    /// Per name: how often steering fired this run, and how often it would
+    /// have fired but `NEBO_STEERING` held it back.
+    tally: std::collections::BTreeMap<&'static str, (u32, u32)>,
+}
+
+impl StreamReminders {
+    /// Queue the steering named `name`, unless the switch holds it back.
+    /// Returns whether it was queued: a caller that re-enters the loop for
+    /// this steering does so only when it was.
+    pub fn steer(&mut self, name: &'static str, text: &str) -> bool {
+        let on = self.gate(name);
+        if on {
+            self.items.push(wrap_system_reminder(text));
+        }
+        on
+    }
+
+    /// Decide (and count) steering named `name` that does not ride the
+    /// stream: the prompt's objective paragraph and the loop reviewer's side
+    /// call.
+    pub fn gate(&mut self, name: &'static str) -> bool {
+        self.record(name, enabled(name))
+    }
+
+    /// Queue a fact — already wrapped, never gated.
+    pub fn push(&mut self, content: String) {
+        self.items.push(content);
+    }
+
+    pub fn extend(&mut self, contents: impl IntoIterator<Item = String>) {
+        self.items.extend(contents);
+    }
+
+    /// What rides the next call, for the one place it is attached.
+    pub fn as_slice(&self) -> &[String] {
+        &self.items
+    }
+
+    pub fn clear(&mut self) {
+        self.items.clear();
+    }
+
+    fn record(&mut self, name: &'static str, on: bool) -> bool {
+        let entry = self.tally.entry(name).or_default();
+        if on {
+            entry.0 += 1;
+        } else {
+            entry.1 += 1;
+        }
+        on
+    }
+
+    /// `name:fired=N,suppressed=M` per name that fired or would have, for
+    /// the per-turn log line; `none` when nothing tripped.
+    pub fn tally(&self) -> String {
+        if self.tally.is_empty() {
+            return "none".to_string();
+        }
+        self.tally
+            .iter()
+            .map(|(name, (fired, suppressed))| format!("{name}:fired={fired},suppressed={suppressed}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+// ===== NEBO_STEERING: the one switch over all steering =====
+//
+// Steering is text the runtime adds, triggered by run state, that tells the
+// model how to behave next: every registry reminder below, the gated
+// injection sites in the runner (`RUNNER_SITES`), the objective's instruction
+// paragraph in the prompt, the loop reviewer, and the auto-continue judge's
+// "keep going" turn. Facts (the owner's messages, tool results, recall, wakes,
+// timestamps, background results), policy and hard stops are not steering and
+// never pass through the switch.
+//
+// `NEBO_STEERING`: unset / `on` = everything on (today's behaviour); `off` =
+// everything off; `a,b` = only those names on; `-a,-b` = everything on except
+// those. Read once per process.
+
+/// Gated steering sites outside the reminder registry, by the name the switch
+/// addresses them with.
+const RUNNER_SITES: &[&str] = &[
+    "latest_message",
+    "channel_grounding",
+    "app_steering",
+    "plan_check",
+    "loop_review",
+    "pseudo_call",
+    "min_iterations",
+    "discover_nudge",
+    "empty_after_tools",
+    "done_gate",
+    "repeat_gate",
+    "desktop_gate",
+    "objective_push",
+    "auto_continue",
+];
+
+/// Every name `NEBO_STEERING` can address.
+pub fn names() -> Vec<&'static str> {
+    let mut all: Vec<&'static str> = reminders().iter().map(|r| r.name()).collect();
+    all.extend_from_slice(RUNNER_SITES);
+    all
+}
+
+/// A parsed `NEBO_STEERING` value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Spec {
+    All,
+    Only(std::collections::BTreeSet<String>),
+    Except(std::collections::BTreeSet<String>),
+}
+
+impl Spec {
+    pub fn parse(raw: Option<&str>) -> Spec {
+        let raw = raw.unwrap_or("").trim().to_ascii_lowercase();
+        match raw.as_str() {
+            "" | "on" | "1" | "true" | "yes" => return Spec::All,
+            "off" | "0" | "false" | "no" => return Spec::Only(Default::default()),
+            _ => {}
+        }
+        let mut on = std::collections::BTreeSet::new();
+        let mut except = std::collections::BTreeSet::new();
+        for item in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            match item.strip_prefix('-') {
+                Some(name) => except.insert(name.trim().to_string()),
+                None => on.insert(item.to_string()),
+            };
+        }
+        if on.is_empty() {
+            Spec::Except(except)
+        } else {
+            Spec::Only(&on - &except)
+        }
+    }
+
+    pub fn allows(&self, name: &str) -> bool {
+        match self {
+            Spec::All => true,
+            Spec::Only(on) => on.contains(name),
+            Spec::Except(off) => !off.contains(name),
+        }
+    }
+
+    /// Names in the spec that address nothing.
+    pub fn unknown(&self) -> Vec<String> {
+        let known = names();
+        let listed = match self {
+            Spec::All => return Vec::new(),
+            Spec::Only(s) | Spec::Except(s) => s,
+        };
+        listed.iter().filter(|n| !known.contains(&n.as_str())).cloned().collect()
+    }
+}
+
+static SPEC: std::sync::LazyLock<Spec> =
+    std::sync::LazyLock::new(|| Spec::parse(std::env::var("NEBO_STEERING").ok().as_deref()));
+
+/// The one steering predicate: may the steering named `name` run?
+pub fn enabled(name: &str) -> bool {
+    SPEC.allows(name)
+}
+
+/// Read `NEBO_STEERING` at startup and say what it selected when it is not
+/// the default; warn about names that address nothing.
+pub fn announce() {
+    let raw = std::env::var("NEBO_STEERING").unwrap_or_default();
+    match &*SPEC {
+        Spec::All => {}
+        Spec::Only(on) if on.is_empty() => tracing::info!("steering=off"),
+        _ => tracing::info!("steering={}", raw.trim()),
+    }
+    let unknown = SPEC.unknown();
+    if !unknown.is_empty() {
+        tracing::warn!(unknown = ?unknown, valid = %names().join(","), "NEBO_STEERING names nothing it can address");
+    }
+}
+
 /// The registered reminders. Grows as generators migrate off the suffix.
 fn reminders() -> Vec<Box<dyn Reminder>> {
     vec![
@@ -317,27 +505,63 @@ pub fn wrap_system_reminder(text: &str) -> String {
 }
 
 /// Select at most one reminder to inject this turn: the highest-priority reminder
-/// whose condition trips AND whose per-reminder + global cadence allows it. Returns
-/// the wrapped `<system-reminder>` body, or None. Records the firing in `cadence`.
-pub fn select_reminder(ctx: &ReminderContext, cadence: &mut ReminderCadence) -> Option<String> {
-    select_from(&reminders(), ctx, cadence)
+/// whose condition trips AND whose per-reminder + global cadence allows it, among
+/// those `NEBO_STEERING` lets run. Queues it on `stream` (returns whether one
+/// was queued) and counts the held-back ones there. Records the firing in `cadence`.
+pub fn select_reminder(
+    ctx: &ReminderContext,
+    cadence: &mut ReminderCadence,
+    stream: &mut StreamReminders,
+) -> bool {
+    let (held, picked) = select_with(&reminders(), ctx, cadence, &enabled);
+    for name in held {
+        stream.record(name, false);
+    }
+    picked.is_some_and(|(name, text)| stream.steer(name, &text))
 }
 
-/// Core selection over an explicit registry — separated so the cadence/priority
-/// logic is testable without mutating the global registry.
+/// Selection over an explicit registry with the switch as it is, wrapped —
+/// the cadence/priority tests' view.
+#[cfg(test)]
 fn select_from(
     registry: &[Box<dyn Reminder>],
     ctx: &ReminderContext,
     cadence: &mut ReminderCadence,
 ) -> Option<String> {
+    select_with(registry, ctx, cadence, &enabled).1.map(|(_, text)| wrap_system_reminder(&text))
+}
+
+/// Selection under a steering predicate: (the names held back this turn, the
+/// winner). A reminder the predicate holds back never competes for the turn;
+/// when its condition trips (and its own cadence allows) it is reported held
+/// back and its cadence advances as if it had fired, so an off-run counts it
+/// at the rate it would have fired.
+fn select_with(
+    registry: &[Box<dyn Reminder>],
+    ctx: &ReminderContext,
+    cadence: &mut ReminderCadence,
+    allows: &dyn Fn(&str) -> bool,
+) -> (Vec<&'static str>, Option<(&'static str, String)>) {
+    let mut held = Vec::new();
+    for r in registry.iter().filter(|r| !allows(r.name())) {
+        if let Some(&last) = cadence.last_fired.get(r.name()) {
+            if ctx.iteration < last + r.min_turns_between() {
+                continue;
+            }
+        }
+        if r.check(ctx).is_some() {
+            cadence.last_fired.insert(r.name(), ctx.iteration);
+            held.push(r.name());
+        }
+    }
     // Global throttle: at most one reminder every GLOBAL_MIN turns.
     if let Some(last) = cadence.global_last {
         if ctx.iteration < last + GLOBAL_MIN_TURNS_BETWEEN_REMINDERS {
-            return None;
+            return (held, None);
         }
     }
     let mut best: Option<(&'static str, u8, String)> = None;
-    for r in registry {
+    for r in registry.iter().filter(|r| allows(r.name())) {
         // Per-reminder cadence.
         if let Some(&last) = cadence.last_fired.get(r.name()) {
             if ctx.iteration < last + r.min_turns_between() {
@@ -350,11 +574,13 @@ fn select_from(
             }
         }
     }
-    let (name, _, text) = best?;
+    let Some((name, _, text)) = best else {
+        return (held, None);
+    };
     cadence.last_fired.insert(name, ctx.iteration);
     cadence.global_last = Some(ctx.iteration);
     cadence.last_name = Some(name);
-    Some(wrap_system_reminder(&text))
+    (held, Some((name, text)))
 }
 
 // --- Concrete reminders ---
@@ -2996,7 +3222,9 @@ mod tests {
     fn test_select_reminder_no_fire_when_quiet() {
         // Empty history → no silent streak → no reminder.
         let mut cadence = ReminderCadence::default();
-        assert!(select_reminder(&rctx(5), &mut cadence).is_none());
+        let mut stream = StreamReminders::default();
+        assert!(!select_reminder(&rctx(5), &mut cadence, &mut stream));
+        assert_eq!(stream.as_slice().len(), 0);
     }
 
     /// `n` consecutive silent (empty-content + tool-call) assistant turns, each
@@ -3173,6 +3401,124 @@ mod tests {
         assert!(select_from(&registry, &rctx(2), &mut cadence).is_none());
         // 1 + GLOBAL_MIN(2) → allowed again.
         assert!(select_from(&registry, &rctx(3), &mut cadence).is_some());
+    }
+
+    // ── NEBO_STEERING ──
+
+    #[test]
+    fn steering_spec_parses_on_off_lists_and_exceptions() {
+        for on in [None, Some(""), Some("on"), Some("ON"), Some("1"), Some("true")] {
+            assert_eq!(Spec::parse(on), Spec::All, "{on:?}");
+        }
+        for off in ["off", "OFF", "0", "false", "no"] {
+            let spec = Spec::parse(Some(off));
+            assert!(super::names().iter().all(|n| !spec.allows(n)), "{off}: nothing runs");
+        }
+        let only = Spec::parse(Some(" tool_result_honesty , execute_intent "));
+        assert!(only.allows("tool_result_honesty") && only.allows("execute_intent"));
+        assert!(!only.allows("objective_reinforce") && !only.allows("auto_continue"));
+        let except = Spec::parse(Some("-objective_reinforce,-done_gate"));
+        assert!(!except.allows("objective_reinforce") && !except.allows("done_gate"));
+        assert!(except.allows("execute_intent") && except.allows("auto_continue"));
+        // A list with both: the listed names, minus the excepted ones.
+        let mixed = Spec::parse(Some("execute_intent,done_gate,-done_gate"));
+        assert!(mixed.allows("execute_intent") && !mixed.allows("done_gate"));
+        assert_eq!(
+            Spec::parse(Some("execute_intent,no_such_thing,-also_not")).unknown(),
+            vec!["no_such_thing".to_string()],
+            "the excepted name is dropped from an Only list; the unknown listed one is reported"
+        );
+        assert_eq!(Spec::parse(Some("-nope")).unknown(), vec!["nope".to_string()]);
+        assert!(Spec::parse(Some("off")).unknown().is_empty());
+    }
+
+    #[test]
+    fn steering_names_cover_every_generator_and_site_once() {
+        let all = super::names();
+        let unique: std::collections::BTreeSet<&str> = all.iter().copied().collect();
+        assert_eq!(unique.len(), all.len(), "a name addresses one thing");
+        assert_eq!(reminders().len(), 27);
+        for n in ["untrusted_content", "research_mode_nudge", "serial_read_grind", "objective_push", "auto_continue", "loop_review"] {
+            assert!(all.contains(&n), "{n}");
+        }
+    }
+
+    /// Every runner site name is decided at exactly one site: through the
+    /// stream (`steer`/`gate`) in the runner, or `auto_continue` at the
+    /// dispatcher.
+    #[test]
+    fn steering_every_runner_site_is_gated_in_source() {
+        let squeeze = |src: &str| src.split_whitespace().collect::<String>();
+        let runner = squeeze(include_str!("runner.rs"));
+        let dispatch = squeeze(include_str!("../../server/src/chat_dispatch.rs"));
+        for name in RUNNER_SITES {
+            let in_runner = runner.matches(&format!("pending_stream_reminders.steer(\"{name}\"")).count()
+                + runner.matches(&format!("pending_stream_reminders.gate(\"{name}\")")).count();
+            let in_dispatch = dispatch.matches(&format!("steering::enabled(\"{name}\")")).count();
+            assert_eq!(in_runner + in_dispatch, 1, "{name}: gated at exactly one site");
+        }
+    }
+
+    /// With steering off no registry reminder produces text, and the ones
+    /// that would have fired are reported held back.
+    #[test]
+    fn steering_off_selects_nothing_and_counts_what_it_held_back() {
+        let off = Spec::parse(Some("off"));
+        let allows = |n: &str| off.allows(n);
+        let msgs = silent_msgs(3);
+        let ctx = rctx_msgs(&msgs, tools::ExecutionMode::Interactive);
+        let mut cadence = ReminderCadence::default();
+        let (held, picked) = select_with(&reminders(), &ctx, &mut cadence, &allows);
+        assert!(picked.is_none());
+        assert!(held.contains(&"silence_breaker"), "{held:?}");
+        assert!(cadence.last_fired_name().is_none(), "nothing fired, so nothing triggers the reviewer");
+        // Its own cadence (3) holds the count to the rate it would have fired.
+        let ctx6 = rctx_prov(&msgs, tools::ExecutionMode::Interactive, "openai", 6);
+        let (held, picked) = select_with(&reminders(), &ctx6, &mut cadence, &allows);
+        assert!(picked.is_none() && !held.contains(&"silence_breaker"));
+        let ctx8 = rctx_prov(&msgs, tools::ExecutionMode::Interactive, "openai", 8);
+        let (held, picked) = select_with(&reminders(), &ctx8, &mut cadence, &allows);
+        assert!(picked.is_none() && held.contains(&"silence_breaker"));
+    }
+
+    /// Unset is today's selection; a list keeps only its names.
+    #[test]
+    fn steering_on_is_unchanged_and_a_list_selects() {
+        let msgs = silent_msgs(3);
+        let ctx = rctx_msgs(&msgs, tools::ExecutionMode::Interactive);
+        let all = Spec::All;
+        let mut a = ReminderCadence::default();
+        let (held, picked) = select_with(&reminders(), &ctx, &mut a, &|n| all.allows(n));
+        assert!(held.is_empty());
+        let (name, text) = picked.expect("fires");
+        assert_eq!(name, "silence_breaker");
+        let mut b = ReminderCadence::default();
+        assert_eq!(select_from(&reminders(), &ctx, &mut b), Some(wrap_system_reminder(&text)));
+
+        let only = Spec::parse(Some("silence_breaker"));
+        let mut c = ReminderCadence::default();
+        assert!(select_with(&reminders(), &ctx, &mut c, &|n| only.allows(n)).1.is_some());
+        let except = Spec::parse(Some("-silence_breaker"));
+        let mut d = ReminderCadence::default();
+        let (held, picked) = select_with(&reminders(), &ctx, &mut d, &|n| except.allows(n));
+        assert!(picked.is_none() && held == vec!["silence_breaker"]);
+    }
+
+    /// The stream: steering is queued wrapped and counted; facts ride as given.
+    #[test]
+    fn stream_queues_steering_by_name_and_facts_as_given() {
+        let mut stream = StreamReminders::default();
+        assert_eq!(stream.tally(), "none");
+        assert!(stream.steer("done_gate", "run the checks"), "unset: on");
+        stream.push("<system-reminder>\nMessage sent at noon.\n</system-reminder>".to_string());
+        let items = stream.as_slice();
+        assert_eq!(items.len(), 2);
+        assert!(items[0].starts_with("<system-reminder>") && items[0].contains("run the checks"));
+        stream.record("done_gate", false);
+        stream.record("execute_intent", true);
+        assert_eq!(stream.tally(), "done_gate:fired=1,suppressed=1 execute_intent:fired=1,suppressed=0");
+        stream.clear();
+        assert_eq!(stream.as_slice().len(), 0);
     }
 }
 

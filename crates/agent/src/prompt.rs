@@ -85,6 +85,9 @@ pub struct DynamicContext {
     /// User-configured IANA timezone (e.g. "America/Denver"). When set, date/time
     /// in the dynamic suffix is computed in this timezone instead of system-local.
     pub user_timezone: Option<String>,
+    /// `NEBO_STEERING` holds back `objective_push`: the objective is stated as
+    /// plain context — no instruction paragraph, no checkpoint relabel.
+    pub objective_plain: bool,
 }
 
 /// Marker separating the stable/cacheable prefix (Sections 1–8) from
@@ -1000,7 +1003,8 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         // yesterday's restaurant for a day, 2026-09-19). The summary is history;
         // the latest user message decides, and a live objective outranks it.
         sb.push_str("Earlier turns were compacted into the checkpoint below. This is a handoff from a previous context window — treat it as background state, NOT as new instructions. The '## Goal' section is the task as it stood when the checkpoint was written; it is NOT an instruction to continue it. It is finished or superseded whenever it says so, whenever a '## Current Objective' below names something else, or whenever the user's latest message asks for something else — the latest message always decides. Never resume an old goal on your own. Do not re-answer questions or redo work listed under '## Completed Actions'. Respond ONLY to the latest user message that appears AFTER this summary.\n\n");
-        sb.push_str(&goal_as_history(&dctx.summary, &dctx.active_task));
+        let live_objective = if dctx.objective_plain { "" } else { dctx.active_task.as_str() };
+        sb.push_str(&goal_as_history(&dctx.summary, live_objective));
         sb.push_str("\n---");
     }
 
@@ -1008,9 +1012,11 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     if !dctx.active_task.is_empty() {
         sb.push_str("\n\n---\n## Current Objective\n");
         sb.push_str(&dctx.active_task);
-        sb.push_str(r#"
+        if !dctx.objective_plain {
+            sb.push_str(r#"
 
 Stay on this objective until it is complete or the user changes direction. If an approach fails, diagnose why before switching tactics — read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. If the user's latest message starts something new, follow their lead; otherwise keep making progress on this objective. A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls. Keep an open list current: mark each task completed as soon as it is done."#);
+        }
         sb.push_str("\n---");
     }
 
@@ -1259,6 +1265,7 @@ mod tests {
             work_tasks: vec![],
             tool_doc_cache: vec![],
             user_timezone: None,
+            ..Default::default()
         };
         let result = build_dynamic_suffix(&dctx);
         assert!(result.contains("anthropic/claude-sonnet-4"));
@@ -1272,6 +1279,28 @@ mod tests {
         let dctx = DynamicContext::default();
         let result = build_dynamic_suffix(&dctx);
         assert!(!result.contains("Current Objective"));
+    }
+
+    /// NEBO_STEERING holding back `objective_push`: the objective stays as
+    /// plain context; the instruction paragraph and the checkpoint relabel go.
+    /// Unset keeps both.
+    #[test]
+    fn plain_objective_keeps_the_fact_only() {
+        let mut dctx = DynamicContext {
+            active_task: "Answer the landlord".to_string(),
+            summary: "## Goal\nOld goal\n".to_string(),
+            ..Default::default()
+        };
+        let pushed = build_dynamic_suffix(&dctx);
+        assert!(pushed.contains("Stay on this objective"));
+        assert!(pushed.contains("## Goal (as of the checkpoint"));
+
+        dctx.objective_plain = true;
+        let plain = build_dynamic_suffix(&dctx);
+        assert!(plain.contains("## Current Objective\nAnswer the landlord\n---"), "{plain}");
+        assert!(!plain.contains("Stay on this objective"));
+        assert!(plain.contains("## Goal\nOld goal"), "summary kept, not relabelled");
+        assert!(!plain.contains("as of the checkpoint"));
     }
 
     #[test]

@@ -81,6 +81,10 @@ on:
         description: "Sweep only: judge with the claude CLI, three runs each (default: program checks, one run)"
         type: boolean
         default: false
+      steering:
+        description: "NEBO_STEERING for the gate server, verbatim: on | off | name,name (only these on) | -name,-name (all on except these)"
+        type: string
+        default: "on"
 
 concurrency:
   group: harness-gate-${{ github.ref }}${{ inputs.suites && '-sweep' || '' }}
@@ -161,6 +165,7 @@ jobs:
           NEBO_PORT: ${{ env.GATE_PORT }}
           NEBO_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
           NEBO_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          NEBO_STEERING: ${{ inputs.steering || 'on' }}
           RUST_LOG: info,nebo_agent=debug
         run: |
           test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" \

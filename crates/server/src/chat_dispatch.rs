@@ -1849,6 +1849,17 @@ fn maybe_auto_continue(
             goals::Verdict::Continue { reason } => reason,
             goals::Verdict::Done => return,
         };
+        // NEBO_STEERING: the judge still runs so a held-back continuation is
+        // counted, but no "keep going" turn is dispatched.
+        if !agent::steering::enabled("auto_continue") {
+            tracing::info!(
+                session = %p.session_key,
+                reason = %reason,
+                steering = "auto_continue:fired=0,suppressed=1",
+                "auto-continue: held back by NEBO_STEERING"
+            );
+            return;
+        }
         // The judge call took time — re-check preemption before dispatching.
         if state.run_registry.is_session_active(&p.session_key).await {
             tracing::debug!(session = %p.session_key, "auto-continue: preempted during judging");
