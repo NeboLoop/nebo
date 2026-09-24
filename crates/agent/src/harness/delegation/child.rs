@@ -40,7 +40,7 @@ pub fn child_request(
     let mut seed_taint = p.seed_taint.clone();
     for class in parent.run_taint {
         if !seed_taint.contains(class) {
-            seed_taint.push(class.clone());
+            seed_taint.push(*class);
         }
     }
     let (allowed_paths, cwd) = match isolated_copy {

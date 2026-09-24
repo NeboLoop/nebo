@@ -362,8 +362,10 @@ mod tests {
     /// unclipped, with no second header around it.
     #[test]
     fn notifications_wake_in_their_own_format() {
-        let n = "[Notification: not a message from the owner]\nhelper h-1 \"read logs\": done\n".to_string()
-            + &"x".repeat(5000);
+        let n = format!(
+            "[Notification: not a message from the owner]\nhelper h-1 \"read logs\": done\n{}",
+            "x".repeat(5000)
+        );
         assert_eq!(wake_prompt(&[wake(NOTIFICATION, &n)]), n);
         let two = wake_prompt(&[wake(NOTIFICATION, "a"), wake(NOTIFICATION, "b")]);
         assert_eq!(two, "a\n\nb");

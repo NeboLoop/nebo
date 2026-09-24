@@ -299,6 +299,25 @@ impl State {
     fn running_children(&self, key: &str) -> bool {
         self.helpers.values().any(|h| h.parent_key == key && h.running)
     }
+
+    /// Drop a helper that is done with nothing running under it, and the
+    /// finished helpers it started. Its row stays: `read_output` and a
+    /// resuming `send` read that.
+    fn forget(&mut self, task_id: &str) {
+        let Some(h) = self.helpers.remove(task_id) else {
+            return;
+        };
+        self.stops.remove(&h.session_key);
+        let children: Vec<String> = self
+            .helpers
+            .iter()
+            .filter(|(_, c)| c.parent_key == h.session_key && !c.running)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in children {
+            self.forget(&id);
+        }
+    }
 }
 
 /// The helper registry.
@@ -407,7 +426,8 @@ impl Helpers {
             "model": spec.model,
         })
         .to_string();
-        self.store
+        let created = self
+            .store
             .engine_create_run(&db::NewRun {
                 id: &task_id,
                 kind: ROW_KIND,
@@ -417,7 +437,13 @@ impl Helpers {
                 inputs: Some(&inputs),
                 ..Default::default()
             })
-            .map_err(|e| format!("Could not start the helper: {e}"))?;
+            .map_err(|e| format!("Could not start the helper: {e}"));
+        if let Err(e) = created {
+            if let Some(iso) = &isolation {
+                crate::worktree::merge_all(std::slice::from_ref(iso), "nebo: helper not started").await;
+            }
+            return Err(e);
+        }
         let _ = self.store.update_task_running(&task_id);
 
         let (tx, rx) = oneshot::channel();
@@ -578,7 +604,8 @@ impl Helpers {
         }
     }
 
-    /// The caller's own helpers this process knows, running first.
+    /// The caller's own helpers still in hand: running, or finished and
+    /// waiting on helpers of their own. Running first.
     pub fn list(&self, caller: &str) -> Vec<HelperStatus> {
         let mut out: Vec<HelperStatus> = self
             .state()
@@ -750,20 +777,27 @@ impl Helpers {
                 h.earlier_reports.push(std::mem::take(&mut completion.result));
                 completion.result = std::mem::take(&mut h.earlier_reports).join("\n\n");
             }
-            let completion = match h.waiter.take() {
+            let waiter = h.waiter.take();
+            let (session_key, parent_key) = (h.session_key.clone(), h.parent_key.clone());
+            let completion = match waiter {
                 Some(waiter) => match waiter.send(completion) {
-                    Ok(()) => return None,
+                    Ok(()) => {
+                        if !state.running_children(&session_key) {
+                            state.forget(task_id);
+                        }
+                        return None;
+                    }
                     Err(c) => c,
                 },
                 None => completion,
             };
-            let (session_key, parent_key) = (h.session_key.clone(), h.parent_key.clone());
             if completion.status != CompletionStatus::Stopped && state.running_children(&session_key) {
                 if let Some(h) = state.helpers.get_mut(task_id) {
                     h.held = Some(completion);
                 }
                 return None;
             }
+            state.forget(task_id);
             (parent_key, completion)
         };
         self.deliver(&parent_key, completion);
@@ -797,6 +831,7 @@ impl Helpers {
                             && let Some(held) = p.held.take()
                         {
                             release = Some((p.parent_key.clone(), held));
+                            state.forget(&pid);
                         }
                     } else {
                         let grandparent = state.helpers[&pid].parent_key.clone();
