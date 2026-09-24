@@ -10,6 +10,15 @@ pub struct WorkTask {
     pub details: Option<String>,
 }
 
+/// Whether the session's objective is a multi-stage job: the turn decision
+/// recorded it so with the objective, or tracked work is still open. It sets
+/// how hard the objective pushes — a job gets "stay on it" and the progress
+/// reminders, a conversation gets its objective as the topic only. No answer
+/// and no open work reads as a conversation.
+pub fn objective_is_multi_stage(recorded: Option<bool>, work_tasks: &[WorkTask]) -> bool {
+    recorded == Some(true) || work_tasks.iter().any(|t| t.status != "completed")
+}
+
 /// Format proactive inbox items into `[Background Results]` lines for the system suffix.
 /// (The behavioral Generator/Pipeline machinery was retired in R8; this is the one piece
 /// of the old pipeline that survives — it surfaces background results, not steering.)
@@ -71,6 +80,9 @@ pub struct ReminderContext<'a> {
     pub multi_stage: Option<bool>,
     /// The current modifiable objective (active_task) — the goal-anchor reminder re-injects it.
     pub active_task: &'a str,
+    /// The objective's recorded multi-stage answer (the session's, kept
+    /// across turns); see [`objective_is_multi_stage`].
+    pub objective_multi_stage: Option<bool>,
     /// Rolling (name_hash, args_hash, result_hash) for recent tool calls (duplicate detection).
     /// (name_hash, args_hash, result_hash, was_unproductive)
     pub recent_tool_result_hashes: &'a [(u64, u64, u64, bool)],
@@ -185,6 +197,11 @@ impl ReminderContext<'_> {
     /// Strong direct models follow the system prompt well — suppression-style reminders skip them.
     fn is_claude(&self) -> bool {
         self.provider_id == "anthropic"
+    }
+
+    /// An objective that is a multi-stage job, not a conversation's topic.
+    fn has_multi_stage_objective(&self) -> bool {
+        !self.active_task.is_empty() && objective_is_multi_stage(self.objective_multi_stage, self.work_tasks)
     }
 
     /// An external messaging channel (NeboLoop/Slack/etc.) — NOT the local app's own
@@ -987,9 +1004,9 @@ impl Reminder for ExecuteIntent {
         if ctx.is_claude() || ctx.iteration < 2 {
             return None;
         }
-        // Only mid-task: an active objective, or incomplete tracked work tasks. Simple Q&A
-        // completes at iteration 1 and never reaches here, so this won't nag conversation.
-        let mid_task = !ctx.active_task.is_empty()
+        // Only mid-task: a multi-stage objective, or incomplete tracked work tasks. A
+        // conversation's objective is its topic, not work to push on.
+        let mid_task = ctx.has_multi_stage_objective()
             || ctx.work_tasks.iter().any(|t| t.status != "completed");
         if !mid_task {
             return None;
@@ -1097,7 +1114,7 @@ impl Reminder for ObjectiveReinforce {
         OBJECTIVE_REINFORCE_EVERY
     }
     fn check(&self, ctx: &ReminderContext) -> Option<String> {
-        if ctx.active_task.is_empty() || ctx.iteration < OBJECTIVE_REINFORCE_EVERY {
+        if !ctx.has_multi_stage_objective() || ctx.iteration < OBJECTIVE_REINFORCE_EVERY {
             return None;
         }
         Some(format!(
@@ -2786,23 +2803,128 @@ mod tests {
         // Before the cadence floor → no fire.
         assert!(
             ObjectiveReinforce
-                .check(&ReminderContext { iteration: 3, active_task: "Plan the trip", ..base_rctx() })
+                .check(&ReminderContext {
+                    iteration: 3,
+                    active_task: "Plan the trip",
+                    objective_multi_stage: Some(true),
+                    ..base_rctx()
+                })
                 .is_none()
         );
         // At/after the floor → fires, restating the goal verbatim.
         let out = ObjectiveReinforce
-            .check(&ReminderContext { iteration: 8, active_task: "Plan the Tokyo trip", ..base_rctx() })
+            .check(&ReminderContext {
+                iteration: 8,
+                active_task: "Plan the Tokyo trip",
+                objective_multi_stage: Some(true),
+                ..base_rctx()
+            })
             .expect("fires");
         assert!(out.contains("Plan the Tokyo trip"));
     }
 
+    /// A conversation's objective is its topic: the goal reminder never fires
+    /// for it, answered no or never answered. Open tracked work makes it a job.
+    #[test]
+    fn objective_reinforce_is_silent_for_a_conversation() {
+        for recorded in [Some(false), None] {
+            assert!(
+                ObjectiveReinforce
+                    .check(&ReminderContext {
+                        iteration: 16,
+                        active_task: "Rename the bookkeeping firm Ledgerly",
+                        objective_multi_stage: recorded,
+                        ..base_rctx()
+                    })
+                    .is_none(),
+                "{recorded:?}"
+            );
+        }
+        let tasks = open_task();
+        assert!(
+            ObjectiveReinforce
+                .check(&ReminderContext {
+                    iteration: 16,
+                    active_task: "Rename the bookkeeping firm Ledgerly",
+                    work_tasks: &tasks,
+                    ..base_rctx()
+                })
+                .is_some(),
+            "open work tasks make it a job"
+        );
+    }
+
+    fn open_task() -> Vec<WorkTask> {
+        vec![WorkTask {
+            id: "1".into(),
+            subject: "draft candidates".into(),
+            status: "pending".into(),
+            details: None,
+        }]
+    }
+
+    /// ExecuteIntent stays silent for a conversation's topic and fires for a
+    /// multi-stage objective or open work.
+    #[test]
+    fn execute_intent_is_silent_for_a_conversation() {
+        for recorded in [Some(false), None] {
+            assert!(
+                ExecuteIntent
+                    .check(&ReminderContext {
+                        iteration: 4,
+                        active_task: "Rename the bookkeeping firm Ledgerly",
+                        objective_multi_stage: recorded,
+                        ..base_rctx()
+                    })
+                    .is_none(),
+                "{recorded:?}"
+            );
+        }
+        assert!(
+            ExecuteIntent
+                .check(&ReminderContext {
+                    iteration: 4,
+                    active_task: "Rename the bookkeeping firm Ledgerly",
+                    objective_multi_stage: Some(true),
+                    ..base_rctx()
+                })
+                .is_some()
+        );
+        let tasks = open_task();
+        assert!(
+            ExecuteIntent
+                .check(&ReminderContext {
+                    iteration: 4,
+                    active_task: "Rename the bookkeeping firm Ledgerly",
+                    objective_multi_stage: Some(false),
+                    work_tasks: &tasks,
+                    ..base_rctx()
+                })
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_job_is_a_recorded_yes_or_open_work() {
+        let open = open_task();
+        let mut done = open_task();
+        done[0].status = "completed".into();
+        assert!(objective_is_multi_stage(Some(true), &[]));
+        assert!(!objective_is_multi_stage(Some(false), &[]));
+        assert!(!objective_is_multi_stage(None, &[]), "never answered: a conversation");
+        assert!(objective_is_multi_stage(None, &open));
+        assert!(objective_is_multi_stage(Some(false), &open));
+        assert!(!objective_is_multi_stage(None, &done), "finished work is not open");
+    }
+
     #[test]
     fn test_execute_intent_fires_mid_task_not_chitchat() {
-        // Mid-task (active objective), iteration ≥ 2, weak model → fires with the bind rule.
+        // Mid-task (multi-stage objective), iteration ≥ 2, weak model → fires with the bind rule.
         let out = ExecuteIntent
             .check(&ReminderContext {
                 iteration: 2,
                 active_task: "Write the Janus dashboard to the desktop",
+                objective_multi_stage: Some(true),
                 ..base_rctx()
             })
             .expect("fires mid-task");
@@ -2884,6 +3006,7 @@ mod tests {
             user_prompt: "",
             multi_stage: None,
             active_task: "",
+            objective_multi_stage: None,
             recent_tool_result_hashes: &[],
             user_presence: "",
             user_just_returned: false,
