@@ -350,9 +350,9 @@ pub async fn list_work_documents(
 
 /// GET /api/v1/files/*path
 ///
-/// `?preview=pdf` on a presentation file serves an on-demand PDF rendering
+/// `?preview=pdf` on an office document serves an on-demand PDF rendering
 /// (generated via the nebo-office plugin, cached next to the source) so the
-/// Work panel can show decks through its existing PDF viewer.
+/// Work panel can show decks and Word files through its existing PDF viewer.
 pub async fn serve_file(
     State(state): State<AppState>,
     Path(file_path): Path<String>,
@@ -381,12 +381,12 @@ pub async fn serve_file(
     }
 
     if params.get("preview").map(String::as_str) == Some("pdf")
-        && matches!(
-            canonical.extension().and_then(|e| e.to_str()),
-            Some("pptx" | "ppt")
-        )
+        && canonical
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(pdf_previewable)
     {
-        return serve_pptx_preview(&state, &canonical, &canonical_root).await;
+        return serve_pdf_preview(&state, &canonical, &canonical_root).await;
     }
 
     let bytes = tokio::fs::read(&canonical)
@@ -423,11 +423,20 @@ pub async fn serve_file(
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))
 }
 
-/// Render a .pptx to a cached PDF via the nebo-office plugin and return the
-/// cache path. Results cache under `files/.previews/<name>.pdf` and
-/// regenerate when the source is newer. The ONE conversion implementation —
-/// used by the preview endpoint and by outbound comm artifact uploads.
-pub(crate) async fn ensure_pptx_preview(
+/// The office formats that get a PDF preview: decks, which no browser can
+/// show, and Word files, which the phone cannot show either (the web renders
+/// those in-page and never asks). ONE gate, shared by the on-demand preview
+/// endpoint and the outbound sibling upload, so a format the phone expects a
+/// preview for is a format the server actually converts.
+pub(crate) fn pdf_previewable(ext: &str) -> bool {
+    matches!(ext, "pptx" | "ppt" | "docx" | "doc")
+}
+
+/// Render an office document to a cached PDF via the nebo-office plugin and
+/// return the cache path. Results cache under `files/.previews/<name>.pdf`
+/// and regenerate when the source is newer. The ONE conversion implementation
+/// — used by the preview endpoint and by outbound comm artifact uploads.
+pub(crate) async fn ensure_pdf_preview(
     plugin_store: &napp::plugin::PluginStore,
     source: &std::path::Path,
     files_root: &std::path::Path,
@@ -474,14 +483,14 @@ pub(crate) async fn ensure_pptx_preview(
     Ok(cache)
 }
 
-/// Serve the on-demand pptx→PDF preview. 503 when the plugin is missing or
+/// Serve the on-demand office→PDF preview. 503 when the plugin is missing or
 /// conversion fails — the viewer falls back to its download card.
-async fn serve_pptx_preview(
+async fn serve_pdf_preview(
     state: &AppState,
     source: &std::path::Path,
     files_root: &std::path::Path,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
-    let cache = ensure_pptx_preview(&state.plugin_store, source, files_root)
+    let cache = ensure_pdf_preview(&state.plugin_store, source, files_root)
         .await
         .map_err(|e| {
             (
@@ -499,4 +508,22 @@ async fn serve_pptx_preview(
         .header("content-type", "application/pdf")
         .body(axum::body::Body::from(bytes))
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))
+}
+
+#[cfg(test)]
+mod preview_gate_tests {
+    use super::pdf_previewable;
+
+    /// The phone pairs `<name>.preview.pdf` to decks and Word files. A format
+    /// it expects a sibling for must be one the server converts, and nothing
+    /// else may quietly gain a conversion the clients do not pair.
+    #[test]
+    fn office_documents_get_a_pdf_preview() {
+        for ext in ["pptx", "ppt", "docx", "doc"] {
+            assert!(pdf_previewable(ext), "{ext} should be previewable");
+        }
+        for ext in ["pdf", "xlsx", "md", "html", "png", ""] {
+            assert!(!pdf_previewable(ext), "{ext} should not be previewable");
+        }
+    }
 }
