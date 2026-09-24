@@ -99,6 +99,7 @@ env:
   GATE_MODEL: janus/nebo-1
   GATE_PORT: "27895"
   MIN_CORRECTION_RATE: "80"
+  LEASE_WAIT_MINUTES: "45"
 
 jobs:
   harness:
@@ -109,7 +110,12 @@ jobs:
     # group was tried (#151) and dropped: GitHub keeps ONE pending job per
     # group, so a PR's queued run was silently replaced by the next PR's —
     # 35589080672 never ran. Queueing is the runners' job, not a group's.
-    timeout-minutes: ${{ github.event_name == 'schedule' && 120 || inputs.suites && 600 || 60 }}
+    # Both jobs are the one CI bot, though, and the bot has one lease: the
+    # second server waits for the first to hand it back (see "Start a
+    # headless server"). That wait is bounded at LEASE_WAIT_MINUTES (45) and
+    # each timeout below carries it on top of the lane's own budget
+    # (60 gate, 120 nightly, 600 sweep).
+    timeout-minutes: ${{ github.event_name == 'schedule' && 165 || inputs.suites && 645 || 105 }}
     env:
       RUSTC_WRAPPER: ""
     steps:
@@ -199,13 +205,36 @@ jobs:
           done
           echo "GATE_PORT=$GATE_PORT" >> "$GITHUB_ENV"
           export NEBO_PORT="$GATE_PORT"
-          nohup ./target/debug/nebo-cli agent > "${{ runner.temp }}/server.log" 2>&1 &
+          log="${{ runner.temp }}/server.log"
+          nohup ./target/debug/nebo-cli agent > "$log" 2>&1 &
           server=$!
           echo "server=$server" >> "$GITHUB_ENV"
-          for i in $(seq 1 60); do
-            curl -sf -m 2 "http://localhost:$GATE_PORT/health" >/dev/null && break
+          # Every gate job is the same CI bot, and the bot has one lease.
+          # While another job's server holds it, ours logs `waiting` every
+          # 15 s from backup_ship::until_released and does not listen yet;
+          # once the lease is free it logs one of `past_lease` and boots.
+          # The lease wait is bounded by LEASE_WAIT_MINUTES; the 120 s boot
+          # budget only counts once the lease is ours (36017752499 died at
+          # 120 s behind the push gate 36017093512).
+          waiting="another copy of this bot still holds it"
+          past_lease="bot state restored from NeboAI|no committed state: starting as a new bot"
+          lease_deadline=$((SECONDS + LEASE_WAIT_MINUTES * 60))
+          boot_start=$SECONDS
+          said=""
+          until curl -sf -m 2 "http://localhost:$GATE_PORT/health" >/dev/null; do
+            kill -0 "$server" 2>/dev/null || break
+            if grep -q "$waiting" "$log" && ! grep -Eq "$past_lease" "$log"; then
+              [ -n "$said" ] || { echo "another gate job holds the CI bot; waiting up to $LEASE_WAIT_MINUTES min for it to hand the bot back"; said=1; }
+              if [ "$SECONDS" -ge "$lease_deadline" ]; then
+                echo "the CI bot was not handed back within $LEASE_WAIT_MINUTES min; the server log:"; cat "$log"; exit 1
+              fi
+              boot_start=$SECONDS
+            elif [ $((SECONDS - boot_start)) -ge 120 ]; then
+              echo "the server did not answer /health within 120 s of holding the bot; its log:"; cat "$log"; exit 1
+            fi
             sleep 2
           done
+          [ -z "$said" ] || echo "the CI bot is ours after $((SECONDS / 60)) min"
           # The health probe alone proved nothing: with two jobs on one VM it
           # answered from the OTHER job's server while ours had died on
           # "port already in use", and the fixtures ran against a build that
@@ -280,6 +309,13 @@ jobs:
         run: |
           [ -n "${server:-}" ] && kill "$server" 2>/dev/null || true
           fuser -k -TERM "$GATE_PORT/tcp" 2>/dev/null || true
+          # A server asked to exit hands the bot's lease back on its way out;
+          # let it, so a gate job waiting for the bot starts now rather than
+          # when the lease lapses after the runner reaps the process.
+          for i in $(seq 1 30); do
+            [ -n "${server:-}" ] && kill -0 "$server" 2>/dev/null || break
+            sleep 2
+          done
 
       - name: Keep the traces and the server log on the VM
         if: always()
