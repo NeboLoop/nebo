@@ -1910,7 +1910,14 @@ impl WorkflowManager for WorkflowManagerImpl {
     }
 
     fn announce_binding_need(&self, agent_id: &str, binding_name: &str, need: &str) {
-        tell_owner_need(&self.store, &self.hub, &self.config.neboai.api_url, agent_id, binding_name, need);
+        tell_owner_need(
+            &self.store,
+            &self.hub,
+            &self.config.neboai.api_url,
+            agent_id,
+            binding_name,
+            crate::preflight::Need::Recorded(need),
+        );
     }
 
     fn cancel_runs_for_agent<'a>(
@@ -2074,23 +2081,24 @@ pub(crate) fn notify_binding_need(
     );
 }
 
-/// Tell the owner, once, that an employee's duty stands on `need`: a need
-/// its binding's record names (`needs a telephony plugin`), or the standing
-/// outcome of a run blocked for want of an account (`blocked: No …`). Every
-/// held fire and blocked run comes here; only the first of a need is news
-/// (`db::Store::tell_binding_need`). A blocked run on an account that exists
-/// but stopped working is left to the reconnect notice
-/// (`tools::plugin_tool::notify_plugin_needs_reauth`), which already tells
-/// the owner once per spell.
+/// Tell the owner, once, that an employee's duty stands on `need`
+/// (`crate::preflight::Need`): the reason its record names, what a blocked
+/// run's refusing tool named, or what heartbeat triage read its last
+/// outcome as standing on. Every held fire and blocked run comes here; only
+/// the first of a need is news (`db::Store::tell_binding_need`). The item
+/// opens the one place that fixes it; nothing is installed or connected.
 pub(crate) fn tell_owner_need(
     store: &db::Store,
     hub: &ClientHub,
     api_url: &str,
     agent_id: &str,
     binding_name: &str,
-    need: &str,
+    need: crate::preflight::Need<'_>,
 ) {
-    match store.tell_binding_need(agent_id, binding_name, need) {
+    use crate::preflight::{Need, account_need_notice, plugin_need_notice, something_needed_notice};
+    use agent::heartbeat_triage::Declared;
+    let key = need.key();
+    match store.tell_binding_need(agent_id, binding_name, &key) {
         Ok(true) => {}
         Ok(false) => return,
         Err(e) => {
@@ -2104,43 +2112,41 @@ pub(crate) fn tell_owner_need(
         .flatten()
         .map(|a| a.name)
         .unwrap_or_else(|| agent_id.to_string());
-    let notice = match workflow::WorkflowError::blocked_refusal(need) {
-        None => crate::preflight::plugin_need_notice(&employee, binding_name, need),
-        Some(refusal) => {
-            let installed: Vec<(String, String)> = store
-                .list_installed_plugins()
-                .unwrap_or_default()
+    // An installed plugin's name as the owner sees it.
+    let installed = |slug: &str| {
+        store.get_plugin_by_slug(slug).ok().flatten().map(|p| {
+            [&p.display_name, &p.name]
                 .into_iter()
-                .map(|p| {
-                    let name = [&p.display_name, &p.name]
-                        .into_iter()
-                        .find(|n| !n.trim().is_empty())
-                        .cloned()
-                        .unwrap_or_else(|| p.slug.clone());
-                    (p.slug, name)
-                })
-                .collect();
-            let plugin = crate::preflight::plugin_named_in(refusal, &installed);
-            if let Some((slug, _)) = plugin {
-                if !store.list_plugin_account_profiles(agent_id, slug).unwrap_or_default().is_empty() {
-                    return;
-                }
-            }
-            crate::preflight::account_need_notice(
-                &employee,
-                agent_id,
-                binding_name,
-                plugin.map(|(slug, name)| (slug.as_str(), name.as_str())),
-            )
-        }
+                .find(|n| !n.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| slug.to_string())
+        })
     };
-    info!(role = %agent_id, binding = %binding_name, %need, "binding stands on a need; owner told");
+    let notice = match need {
+        Need::Recorded(text) => plugin_need_notice(&employee, binding_name, text),
+        Need::Known(types::OwnerNeed::Account { plugin }) => {
+            let name = installed(plugin).unwrap_or_else(|| plugin.clone());
+            account_need_notice(&employee, agent_id, binding_name, (plugin, &name))
+        }
+        Need::Known(types::OwnerNeed::Plugin { plugin }) => {
+            plugin_need_notice(&employee, binding_name, &format!("needs the {plugin} plugin"))
+        }
+        Need::Judged(held) => match &held.which {
+            Some(Declared::Capability(c)) => plugin_need_notice(&employee, binding_name, &format!("needs a {c} plugin")),
+            Some(Declared::Plugin(p)) => match installed(p) {
+                Some(name) => account_need_notice(&employee, agent_id, binding_name, (p, &name)),
+                None => plugin_need_notice(&employee, binding_name, &format!("needs the {p} plugin")),
+            },
+            None => something_needed_notice(&employee, agent_id, binding_name, &held.clause),
+        },
+    };
+    info!(role = %agent_id, binding = %binding_name, need = %key, "binding stands on a need; owner told");
     notify_binding_need(store, hub, api_url, agent_id, &notice);
 }
 
-/// After a binding's run ends: a run blocked for want of an account is the
-/// owner's to fix ([`tell_owner_need`]).
-fn tell_owner_if_blocked(
+/// After a binding's run ends: a run blocked on something the refusing tool
+/// named as the owner's to supply is told ([`tell_owner_need`]).
+pub(crate) fn tell_owner_if_blocked(
     store: &db::Store,
     hub: &ClientHub,
     api_url: &str,
@@ -2148,8 +2154,8 @@ fn tell_owner_if_blocked(
     binding_name: &str,
     run_id: &str,
 ) {
-    if let Some(outcome) = crate::preflight::blocked_outcome(store, run_id) {
-        tell_owner_need(store, hub, api_url, agent_id, binding_name, &outcome);
+    if let Some(need) = crate::preflight::blocked_need(store, run_id) {
+        tell_owner_need(store, hub, api_url, agent_id, binding_name, crate::preflight::Need::Known(&need));
     }
 }
 
@@ -3235,7 +3241,7 @@ mod run_end_tests {
     fn an_evaluator_exit_is_not_a_failure() {
         let exit = RunEnd::of(&workflow::WorkflowError::Exited("nothing to do".into()));
         assert_eq!((exit.status(), exit.message()), ("exited", "nothing to do"));
-        let blocked = RunEnd::of(&workflow::WorkflowError::Blocked("No example account is connected for this agent.".into()));
+        let blocked = RunEnd::of(&workflow::WorkflowError::Blocked("No example account is connected for this agent.".into(), None));
         assert_eq!(
             (blocked.status(), blocked.message()),
             ("exited", "blocked: No example account is connected for this agent.")

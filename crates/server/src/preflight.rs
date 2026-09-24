@@ -200,58 +200,75 @@ pub(crate) fn plugin_need_notice(employee: &str, binding_name: &str, need: &str)
     }
 }
 
-/// The notice for a run that ended blocked because the employee has no
-/// account on a plugin: open that employee's accounts at that plugin.
-/// `plugin` is (slug, name) when the refusal names an installed plugin.
-pub(crate) fn account_need_notice(
-    employee: &str,
-    agent_id: &str,
-    binding_name: &str,
-    plugin: Option<(&str, &str)>,
-) -> NeedNotice {
+/// The notice for a missing account on an installed plugin: open that
+/// employee's accounts at that plugin. `plugin` is (slug, name).
+pub(crate) fn account_need_notice(employee: &str, agent_id: &str, binding_name: &str, plugin: (&str, &str)) -> NeedNotice {
+    let (slug, name) = plugin;
+    NeedNotice {
+        id: format!("need:{}", uuid::Uuid::new_v4()),
+        title: format!("{employee} needs {name} connected"),
+        body: format!(
+            "{employee} can't do \"{duty}\" until a {name} account is connected for it. \
+             Connect one in {employee}'s accounts. The duty goes ahead on its own after that.",
+            duty = duty_words(binding_name)
+        ),
+        link: format!("/{agent_id}/settings/accounts?plugin={}", urlencoding::encode(slug)),
+    }
+}
+
+/// The notice when a run's own words say the duty cannot be done until
+/// something is connected, and what is not known. `clause` is the one short
+/// piece of the run's words the owner is shown, quoted.
+pub(crate) fn something_needed_notice(employee: &str, agent_id: &str, binding_name: &str, clause: &str) -> NeedNotice {
     let duty = duty_words(binding_name);
-    let (title, body, link) = match plugin {
-        Some((slug, name)) => (
-            format!("{employee} needs {name} connected"),
-            format!(
-                "{employee} can't do \"{duty}\" until a {name} account is connected for it. \
-                 Connect one in {employee}'s accounts. The duty goes ahead on its own after that."
-            ),
-            format!("/{agent_id}/settings/accounts?plugin={}", urlencoding::encode(slug)),
+    let said = if clause.is_empty() { String::new() } else { format!(" Its last run said: \"{clause}\"") };
+    NeedNotice {
+        id: format!("need:{}", uuid::Uuid::new_v4()),
+        title: format!("{employee} needs something connected"),
+        body: format!(
+            "{employee} can't do \"{duty}\" until something is added or connected.{said} \
+             Check {employee}'s accounts and Plugins. The duty goes ahead on its own after that."
         ),
-        None => (
-            format!("{employee} needs an account connected"),
-            format!(
-                "{employee} can't do \"{duty}\" until an account it uses is connected. \
-                 Connect it in {employee}'s accounts. The duty goes ahead on its own after that."
-            ),
-            format!("/{agent_id}/settings/accounts"),
-        ),
-    };
-    NeedNotice { id: format!("need:{}", uuid::Uuid::new_v4()), title, body, link }
+        link: format!("/{agent_id}/settings/accounts"),
+    }
 }
 
-/// The installed plugin a refusal names, as (slug, name): refusals name the
-/// plugin by its slug, so a word of the refusal equal to an installed slug
-/// is it (the longest, when several are).
-pub(crate) fn plugin_named_in<'a>(refusal: &str, installed: &'a [(String, String)]) -> Option<&'a (String, String)> {
-    let words: Vec<&str> = refusal
-        .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
-        .filter(|w| !w.is_empty())
-        .collect();
-    installed
-        .iter()
-        .filter(|(slug, _)| words.contains(&slug.as_str()))
-        .max_by_key(|(slug, _)| slug.len())
+/// What a binding's duty stands on, from whichever source knows it.
+pub(crate) enum Need<'a> {
+    /// The reason the binding's record names (pre-flight, a watch trigger's
+    /// start): `needs a telephony plugin`.
+    Recorded(&'a str),
+    /// What the tool that blocked a run named, as data.
+    Known(&'a types::OwnerNeed),
+    /// What heartbeat triage read the last outcome as standing on.
+    Judged(&'a agent::heartbeat_triage::HeldNeed),
 }
 
-/// The standing outcome a binding's run ended blocked on
-/// (`WorkflowError::Blocked`, recorded as an `exited` run), or None for
-/// every other end.
-pub(crate) fn blocked_outcome(store: &Store, run_id: &str) -> Option<String> {
+impl Need<'_> {
+    /// The key "the owner was told this" is kept under.
+    pub(crate) fn key(&self) -> String {
+        use agent::heartbeat_triage::Declared;
+        match self {
+            Need::Recorded(text) => text.to_string(),
+            Need::Known(need) => need.key(),
+            Need::Judged(held) => match &held.which {
+                Some(Declared::Capability(c)) => format!("judged:capability:{c}"),
+                Some(Declared::Plugin(p)) => format!("judged:plugin:{p}"),
+                None => "judged:something".to_string(),
+            },
+        }
+    }
+}
+
+/// The owner need a binding's run ended blocked on, as the refusing tool
+/// named it, or None: the run did not end blocked (`exited`), or the tool
+/// named nothing the owner supplies.
+pub(crate) fn blocked_need(store: &Store, run_id: &str) -> Option<types::OwnerNeed> {
     let run = store.get_workflow_run(run_id).ok().flatten()?;
-    let outcome = run.error.filter(|_| run.status == "exited")?;
-    workflow::WorkflowError::blocked_refusal(&outcome).is_some().then_some(outcome)
+    if run.status != "exited" {
+        return None;
+    }
+    store.workflow_run_owner_need(run_id).ok().flatten()
 }
 
 #[cfg(test)]

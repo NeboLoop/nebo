@@ -1140,7 +1140,14 @@ fn preflight_admits(state: &AppState, run: &EngineRun) -> bool {
     };
     let unmet = crate::preflight::unmet_need_now(&state.store, &state.plugin_store, &agent_id, &binding);
     let announce = |need: &str| {
-        crate::workflow_manager::tell_owner_need(&state.store, &state.hub, &state.config.neboai.api_url, &agent_id, &binding, need);
+        crate::workflow_manager::tell_owner_need(
+            &state.store,
+            &state.hub,
+            &state.config.neboai.api_url,
+            &agent_id,
+            &binding,
+            crate::preflight::Need::Recorded(need),
+        );
     };
     crate::preflight::admit(&state.store, run, &agent_id, &binding, unmet, now(), &announce)
 }
@@ -1161,7 +1168,7 @@ const TRIAGE_HISTORY: i64 = 20;
 /// is closed `done` with the summary tag `skipped` and no output, so the
 /// next fire's "last real run" passes over it; its timer is already re-armed.
 async fn triage_admits(state: &AppState, run: &EngineRun) -> bool {
-    use agent::heartbeat_triage::{self as triage, Gate, Mode};
+    use agent::heartbeat_triage::{self as triage, Mode};
     let mode = triage::mode();
     if mode == Mode::Off {
         return true;
@@ -1182,14 +1189,44 @@ async fn triage_admits(state: &AppState, run: &EngineRun) -> bool {
         return true;
     };
     let decide = state.runner.decide();
-    if triage::triage(decide.as_deref(), mode, &binding, TRIAGE_TIMEOUT).await == Gate::Run {
-        return true;
+    let gate = triage::triage(decide.as_deref(), mode, &binding, TRIAGE_TIMEOUT).await;
+    let tell = |duty: &str, held: &triage::HeldNeed| {
+        crate::workflow_manager::tell_owner_need(
+            &state.store,
+            &state.hub,
+            &state.config.neboai.api_url,
+            &run.agent_id,
+            duty,
+            crate::preflight::Need::Judged(held),
+        );
+    };
+    act_on_gate(&state.store, run, &binding, &gate, now(), &tell)
+}
+
+/// Act on triage's gate for one fire: true runs it. A skip or a hold is
+/// closed `done` with the summary tag `skipped` (the next fire's "last real
+/// run" passes over it); a hold first tells the owner what the duty stands
+/// on (`tell`, once per need), as a pre-flight hold does.
+pub(crate) fn act_on_gate(
+    store: &Store,
+    run: &EngineRun,
+    binding: &agent::heartbeat_triage::Binding,
+    gate: &agent::heartbeat_triage::Gate,
+    t: i64,
+    tell: &dyn Fn(&str, &agent::heartbeat_triage::HeldNeed),
+) -> bool {
+    use agent::heartbeat_triage::Gate;
+    match gate {
+        Gate::Run => return true,
+        Gate::Skip => {}
+        Gate::Hold(held) => match binding.duty.as_deref() {
+            Some(duty) => tell(duty, held),
+            None => return true,
+        },
     }
-    let t = now();
-    if let Err(e) = state
-        .store
+    if let Err(e) = store
         .engine_set_run_result_tag(&run.id, "skipped")
-        .and_then(|_| state.store.engine_set_run_state(&run.id, "done", t, None))
+        .and_then(|_| store.engine_set_run_state(&run.id, "done", t, None))
     {
         warn!(run = %run.id, error = %e, "engine: could not close a skipped fire; running it");
         return true;
@@ -1253,6 +1290,8 @@ pub(crate) fn triage_binding(store: &Store, run: &EngineRun, entity: Option<(Str
             cadence,
             standing: false,
             flags: Flags { first_run: true, ..Default::default() },
+            duty: None,
+            declared: Vec::new(),
         });
     };
     let since = last.started_at.unwrap_or(last.created_at);
@@ -1296,7 +1335,43 @@ pub(crate) fn triage_binding(store: &Store, run: &EngineRun, entity: Option<(Str
             new_assignments: changes.new_assignments,
             settings_changed: changes.settings_changed,
         },
+        declared: wf.as_ref().map(|w| declared_needs(store, &run.agent_id, &w.binding_name)).unwrap_or_default(),
+        duty: wf.map(|w| w.binding_name),
     })
+}
+
+/// What an employee declares its binding may need, as triage's
+/// `which_need` options: its `requires.interfaces`, its `requires.plugins`
+/// (named the way install names them; a marketplace code cannot be named
+/// offline), and the binding's watch plugin. Each name once.
+fn declared_needs(store: &Store, agent_id: &str, binding_name: &str) -> Vec<agent::heartbeat_triage::Declared> {
+    use agent::heartbeat_triage::Declared;
+    let Some(config) = store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .and_then(|a| napp::agent::parse_agent_config(&a.frontmatter).ok())
+    else {
+        return Vec::new();
+    };
+    let mut declared: Vec<Declared> = Vec::new();
+    let mut add = |d: Declared| {
+        if !d.name().is_empty() && !declared.iter().any(|x| x.name() == d.name()) {
+            declared.push(d);
+        }
+    };
+    for reference in &config.requires.plugins {
+        if crate::codes::detect_code(reference).is_none() {
+            add(Declared::Plugin(crate::deps::extract_simple_name(reference).to_string()));
+        }
+    }
+    if let Some(napp::agent::AgentTrigger::Watch { plugin, .. }) = config.workflows.get(binding_name).map(|b| &b.trigger) {
+        add(Declared::Capability(plugin.clone()));
+    }
+    for capability in &config.requires.interfaces {
+        add(Declared::Capability(capability.clone()));
+    }
+    declared
 }
 
 /// Seconds between a schedule's next two occurrences; None for a one-shot.

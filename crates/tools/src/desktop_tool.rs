@@ -2227,7 +2227,7 @@ async fn observe(
     ));
 
     Ok(Observed {
-        result: ToolResult { payload: None, content: text, is_error: false, image_url: shot.image_url, http_status: None, terminal: false },
+        result: ToolResult { payload: None, need: None, content: text, is_error: false, image_url: shot.image_url, http_status: None, terminal: false },
         snapshot,
     })
 }
@@ -2675,6 +2675,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, dims: Option<(u32, u32)>, summary:
         image_url: Some(data_uri),
         http_status: None,
         terminal: false,
+        need: None,
     }
 }
 

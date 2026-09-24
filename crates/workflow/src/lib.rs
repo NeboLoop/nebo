@@ -55,8 +55,10 @@ pub enum WorkflowError {
     /// a failure: every run hits the same wall until the owner changes
     /// something, so the run ends with this as its reason (see
     /// [`WorkflowError::standing_outcome`]).
+    /// The second field is what only the owner can supply, when the tool
+    /// that refused named it.
     #[error("blocked: {0}")]
-    Blocked(String),
+    Blocked(String, Option<types::OwnerNeed>),
     #[error("workflow cancelled")]
     Cancelled,
     #[error("runaway call loop: {0}")]
@@ -84,16 +86,18 @@ impl WorkflowError {
     pub fn standing_outcome(&self) -> Option<String> {
         match self {
             WorkflowError::Exited(reason) => Some(reason.clone()),
-            WorkflowError::Blocked(_) => Some(self.to_string()),
+            WorkflowError::Blocked(..) => Some(self.to_string()),
             _ => None,
         }
     }
 
-    /// The tool's refusal inside a standing outcome that a `Blocked` end
-    /// recorded, or None for every other outcome — the inverse of `Blocked`'s
-    /// display, kept beside it so the two cannot drift.
-    pub fn blocked_refusal(outcome: &str) -> Option<&str> {
-        outcome.strip_prefix("blocked: ")
+    /// What only the owner can supply before the run can do its job, when
+    /// the tool that blocked it named it.
+    pub fn owner_need(&self) -> Option<&types::OwnerNeed> {
+        match self {
+            WorkflowError::Blocked(_, need) => need.as_ref(),
+            _ => None,
+        }
     }
 }
 
