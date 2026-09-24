@@ -78,10 +78,11 @@ pub async fn get_session_messages(
         .unwrap_or(&id);
 
     let limit = q.limit.unwrap_or(50).min(200) as usize;
-    let all_messages = state
+    let mut all_messages = state
         .store
         .get_chat_messages(chat_id)
         .map_err(to_error_response)?;
+    all_messages.retain(super::chat::is_owner_visible);
 
     if let Some(ref before_id) = q.before {
         // Find cursor position and return messages before it

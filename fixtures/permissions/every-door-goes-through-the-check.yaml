@@ -1,0 +1,21 @@
+id: every-door-goes-through-the-check
+name: "Every entry door resolves the same call through the one check"
+description: |
+  PRD-Permissions §4.1 / §7 (Doors): "every tool call, whatever its shape and
+  wherever it comes from (chat, helper, workflow step, schedule, coworker,
+  MCP door), resolves to rule key + field and passes through the same
+  check." Technical design §2.12.3: `ToolRegistry::execute` calls
+  `gate.check` before every handler runs, with no other way to execute a
+  tool, so the harness tool round (chat, helpers, workflow activities,
+  schedules, heartbeats, coworker runs, voice), `/agent/mcp`, and the REST
+  routes that run a tool all funnel through `harness::permissions::Check`.
+  This proof drives the identical denied call (a capability the fixture's
+  employee does not have) through each door in turn — a chat tool round, a
+  helper's child request, a workflow activity, a schedule tick, a coworker
+  request, and `/agent/mcp` — and asserts every one of them is refused for
+  the same reason by the same code path, never by a door-specific gate.
+  Zero gate bypasses is PRD-Permissions §6's hard target; this is the test
+  named for it there and again in technical design §2.12.11.
+target_component: permissions
+proof: harness::permissions::proof::every_door_goes_through_the_check
+conversation: []

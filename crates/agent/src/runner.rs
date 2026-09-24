@@ -2775,33 +2775,11 @@ async fn run_loop(
     // Inject agent input_values into the system prompt so the LLM knows
     // about user-configured values (API keys, target market, etc.).
     // Without this, agents and their sub-agents ignore configured inputs.
-    if !agent_id.is_empty() {
-        if let Ok(Some(agent_rec)) = store.get_agent(agent_id) {
-            if let Ok(vals) = serde_json::from_str::<serde_json::Value>(&agent_rec.input_values) {
-                if let Some(obj) = vals.as_object() {
-                    if !obj.is_empty() {
-                        let lines: Vec<String> = obj
-                            .iter()
-                            .filter_map(|(key, val)| {
-                                let display = match val {
-                                    serde_json::Value::String(s) if !s.is_empty() => s.clone(),
-                                    serde_json::Value::String(_) => return None,
-                                    other => other.to_string(),
-                                };
-                                Some(format!("- **{}**: {}", key, display))
-                            })
-                            .collect();
-                        if !lines.is_empty() {
-                            db_context_formatted.push_str(&format!(
-                                "\n\n---\n\n# Configured Inputs\nThe user has configured the following inputs for this agent. \
-                                Use these values — do NOT ask the user for information that is already provided here.\n{}",
-                                lines.join("\n")
-                            ));
-                        }
-                    }
-                }
-            }
-        }
+    if !agent_id.is_empty()
+        && let Ok(Some(agent_rec)) = store.get_agent(agent_id)
+        && let Some(inputs) = db_context::format_configured_inputs(&agent_rec.input_values)
+    {
+        db_context_formatted.push_str(&format!("\n\n---\n\n{inputs}"));
     }
 
     // Get active task (mutable: refreshed periodically to catch async detect_objective)

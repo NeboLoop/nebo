@@ -1,0 +1,17 @@
+id: non-loopback-bind-without-key-401
+name: "A non-loopback bind without the install key gets a 401"
+description: |
+  PRD-Permissions §4.8 / §7 (Doors): "when the server is bound off loopback
+  (NEBO_HOST on a LAN or server install), every route requires the install's
+  API key. A server that's reachable from the network is never open."
+  Technical design §2.12.8: "with NEBO_HOST off loopback, every route
+  requires the install's API key; a missing or wrong key gets a 401."
+  This proof starts the server bound to a non-loopback host and asserts a
+  request with no key, and a request with a wrong key, both get 401, while
+  the same request with the install's own key succeeds — proving the key is
+  actually checked, not merely present in config.
+  Pure HTTP-layer behaviour with no model involved, so it is a deterministic
+  proof rather than a conversation.
+target_component: permissions
+proof: harness::permissions::proof::non_loopback_bind_without_key_401
+conversation: []
