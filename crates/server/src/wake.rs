@@ -26,6 +26,10 @@ const STORM_CAP: usize = 20;
 /// R2 payload bound: a single payload is clipped to this many chars in the
 /// wake prompt — the full text stays in the queue row / source thread.
 const PAYLOAD_CLIP: usize = 2000;
+/// The kind of a helper's notification (see
+/// `agent::harness::delegation::notify`): already in its one format, never
+/// clipped (a helper's result is capped where it is collected).
+const NOTIFICATION: &str = agent::harness::delegation::notify::WAKE_KIND;
 
 /// Sessions with a wake run dispatched but not yet finished, mapped to the
 /// claimed wake ids that ride it. Stamped delivered when the run completes
@@ -77,6 +81,19 @@ pub async fn deliver(state: &AppState, session_key: &str) {
             warn!(session = %session_key, poisoned, "wake: undeliverable wakes poisoned");
         }
         for w in batch {
+            // A helper's notification is a row in the conversation: the
+            // running turn loads it at its next step.
+            if w.kind == NOTIFICATION {
+                match agent::harness::delegation::notify::append_row(state.runner.sessions(), session_key, &w.payload) {
+                    Ok(()) => {
+                        if let Err(e) = state.store.engine_complete_events(&[w.id], now()) {
+                            warn!(error = %e, session = %session_key, "wake: failed to stamp a notification row delivered");
+                        }
+                    }
+                    Err(e) => warn!(error = %e, session = %session_key, "wake: notification row not written; it redelivers"),
+                }
+                continue;
+            }
             let taint =
                 serde_json::from_str::<Vec<ProvenanceClass>>(&w.provenance).unwrap_or_default();
             let content = agent::steering::wrap_system_reminder(&format!(
@@ -249,6 +266,11 @@ fn now() -> i64 {
 }
 
 fn wake_prompt(batch: &[db::EngineEvent]) -> String {
+    // Helper notifications carry their own header and format: an idle
+    // session hears them exactly as a running one would.
+    if batch.iter().all(|w| w.kind == NOTIFICATION) {
+        return batch.iter().map(|w| w.payload.as_str()).collect::<Vec<_>>().join("\n\n");
+    }
     let mut out = String::from("[Background event — not an owner message]\n");
     let shown = batch.len().min(STORM_CAP);
     if batch.len() == 1 {
@@ -256,7 +278,11 @@ fn wake_prompt(batch: &[db::EngineEvent]) -> String {
     } else {
         out.push_str(&format!("{} events arrived while you were idle, in order:\n\n", batch.len()));
         for (i, w) in batch[..shown].iter().enumerate() {
-            out.push_str(&format!("{}. {}:\n{}\n\n", i + 1, label(&w.kind), clip(&w.payload)));
+            if w.kind == NOTIFICATION {
+                out.push_str(&format!("{}. {}\n\n", i + 1, w.payload));
+            } else {
+                out.push_str(&format!("{}. {}:\n{}\n\n", i + 1, label(&w.kind), clip(&w.payload)));
+            }
         }
         if batch.len() > shown {
             out.push_str(&format!(
@@ -330,6 +356,19 @@ mod tests {
         assert!(p.contains("t19"), "first 20 shown verbatim");
         assert!(!p.contains("t20\n"), "beyond the cap is summarized");
         assert!(p.contains("plus 10 more not shown"));
+    }
+
+    /// A helper's notification reaches an idle session in its one format,
+    /// unclipped, with no second header around it.
+    #[test]
+    fn notifications_wake_in_their_own_format() {
+        let n = "[Notification: not a message from the owner]\nhelper h-1 \"read logs\": done\n".to_string()
+            + &"x".repeat(5000);
+        assert_eq!(wake_prompt(&[wake(NOTIFICATION, &n)]), n);
+        let two = wake_prompt(&[wake(NOTIFICATION, "a"), wake(NOTIFICATION, "b")]);
+        assert_eq!(two, "a\n\nb");
+        let mixed = wake_prompt(&[wake("coworker_reply", "hi"), wake(NOTIFICATION, &n)]);
+        assert!(mixed.contains(&n), "never clipped in a mixed batch");
     }
 
     #[test]

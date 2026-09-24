@@ -1477,10 +1477,9 @@ fn format_dep_context(deps: &[(String, String)]) -> String {
     let mut parts = vec!["[Results from prerequisite tasks]\n".to_string()];
 
     for (desc, result) in deps {
-        let truncated = if result.len() > MAX_DEP_CONTEXT_CHARS {
-            format!("{}...(truncated)", &result[..MAX_DEP_CONTEXT_CHARS])
-        } else {
-            result.clone()
+        let truncated = match crate::harness::delegation::collect::clip_chars(result, MAX_DEP_CONTEXT_CHARS) {
+            Some(head) => format!("{head}...(truncated)"),
+            None => result.clone(),
         };
         parts.push(format!(
             "--- Task \"{}\" (completed) ---\n{}\n",
@@ -1959,6 +1958,15 @@ mod tests {
         let ctx = format_dep_context(&deps);
         assert!(ctx.contains("truncated"));
         assert!(ctx.len() < 5500);
+    }
+
+    /// Multi-byte text past the clip point must not split a character (it
+    /// used to byte-slice at 4000 and panic).
+    #[test]
+    fn dep_context_clip_is_char_safe() {
+        let long_result = format!("a{}", "é".repeat(MAX_DEP_CONTEXT_CHARS));
+        let ctx = format_dep_context(&[("Task".to_string(), long_result)]);
+        assert!(ctx.contains(&format!("a{}...(truncated)", "é".repeat(MAX_DEP_CONTEXT_CHARS - 1))));
     }
 
     #[test]
