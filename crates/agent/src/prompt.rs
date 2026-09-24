@@ -1267,6 +1267,19 @@ mod tests {
         assert!(result.contains("CONTEXT COMPACTION"));
     }
 
+    #[test]
+    fn test_build_dynamic_no_task() {
+        let dctx = DynamicContext::default();
+        let result = build_dynamic_suffix(&dctx);
+        assert!(!result.contains("Current Objective"));
+    }
+
+    #[test]
+    fn test_model_specific_guidance_claude_empty() {
+        assert!(build_model_specific_guidance("anthropic", "claude-sonnet-4").is_empty());
+        assert!(build_model_specific_guidance("anthropic", "claude-opus-4").is_empty());
+    }
+
     /// The task list is state, re-rendered every call; what to do with it is
     /// steering and never rides in the system prompt.
     #[test]
@@ -1285,19 +1298,6 @@ mod tests {
         for directive in ["Pick up from here", "continue the next pending task", "Don't recreate"] {
             assert!(!result.contains(directive), "steering in the task list: {directive}");
         }
-    }
-
-    #[test]
-    fn test_build_dynamic_no_task() {
-        let dctx = DynamicContext::default();
-        let result = build_dynamic_suffix(&dctx);
-        assert!(!result.contains("Current Objective"));
-    }
-
-    #[test]
-    fn test_model_specific_guidance_claude_empty() {
-        assert!(build_model_specific_guidance("anthropic", "claude-sonnet-4").is_empty());
-        assert!(build_model_specific_guidance("anthropic", "claude-opus-4").is_empty());
     }
 
     #[test]
