@@ -184,16 +184,144 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     response
 }
 
+/// Who may reach this server, fixed when it binds (PRD Permissions §4.8).
+#[derive(Clone, Debug)]
+pub struct Boundary {
+    /// The port the server listens on.
+    pub port: u16,
+    /// Bound off loopback (`NEBO_HOST`): the network can reach it.
+    pub network: bool,
+    /// The install's API key (`NEBO_MCP_API_KEY`), when one is set.
+    pub install_key: Option<String>,
+}
+
+impl Boundary {
+    pub fn for_bind(host: &str, port: u16) -> Self {
+        Self {
+            port,
+            network: !is_loopback_bind(host),
+            install_key: install_key(),
+        }
+    }
+}
+
+/// Whether `NEBO_HOST` keeps the server on this machine.
+pub fn is_loopback_bind(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+/// The install's API key: `NEBO_MCP_API_KEY`, when set and non-empty.
+pub fn install_key() -> Option<String> {
+    std::env::var("NEBO_MCP_API_KEY").ok().filter(|k| !k.is_empty())
+}
+
+/// The bearer token on a request, if it carries one.
+fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+    let (scheme, token) = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .split_once(' ')?;
+    scheme.eq_ignore_ascii_case("bearer").then_some(token.trim())
+}
+
+/// A request the bot's own tunnel forwarded: the hub checked the owner
+/// before the request entered the tunnel, and the tunnel stamped it with a
+/// secret that exists only in this process (`comm::tunnel`).
+pub(crate) fn came_through_tunnel(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get("x-nebo-tunnel-auth")
+        .and_then(|v| v.to_str().ok())
+        == Some(comm::tunnel::tunnel_auth_secret())
+}
+
+/// Whether `Host` names this machine: a loopback name (or the desktop
+/// shell's `tauri.localhost`) with this server's port or none. A page that
+/// DNS-rebinds its own domain onto 127.0.0.1 still sends its own domain here.
+fn host_is_local(host: &str, port: u16) -> bool {
+    let (name, host_port) = match host.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((name, rest)) => (name, rest.strip_prefix(':')),
+            None => return false,
+        },
+        None => match host.split_once(':') {
+            Some((name, p)) => (name, Some(p)),
+            None => (host, None),
+        },
+    };
+    let name = name.to_ascii_lowercase();
+    matches!(name.as_str(), "localhost" | "127.0.0.1" | "::1" | "tauri.localhost")
+        && host_port.is_none_or(|p| p.parse::<u16>().ok() == Some(port))
+}
+
+/// The one gate every request passes before any route (REST, WebSocket,
+/// `/agent/*`, static files).
+///
+/// - Through the tunnel: admitted — the hub authenticated the owner, and the
+///   Host is the browser's (`neboai.com`), which is why the stamp decides.
+/// - From the network on a non-loopback bind: the install key is required.
+///   `/health` alone is exempt — it reports only status and version, and it
+///   is the path an orchestrator's liveness probe calls without credentials.
+/// - From this machine: `Host` must name this machine (DNS rebinding).
+pub async fn local_boundary(
+    axum::extract::State(boundary): axum::extract::State<Boundary>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let headers = request.headers();
+    if came_through_tunnel(headers) {
+        return next.run(request).await;
+    }
+    // No peer address means the server was not served with connect info:
+    // treat the caller as the network, never as this machine.
+    let from_this_machine = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .is_some_and(|ci| ci.0.ip().is_loopback());
+    if boundary.network && !from_this_machine {
+        if request.uri().path() == "/health" {
+            return next.run(request).await;
+        }
+        let presented = bearer(headers).filter(|t| !t.is_empty());
+        return match (boundary.install_key.as_deref(), presented) {
+            (Some(key), Some(token)) if token == key => next.run(request).await,
+            _ => boundary_refusal(
+                StatusCode::UNAUTHORIZED,
+                "this server is reachable from the network: send the install's API key \
+                 (NEBO_MCP_API_KEY) as Authorization: Bearer <key>",
+            ),
+        };
+    }
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| request.uri().authority().map(|a| a.as_str()));
+    match host {
+        Some(host) if host_is_local(host, boundary.port) => next.run(request).await,
+        _ => {
+            tracing::warn!(host = ?host, path = %request.uri().path(), "refused a request for a foreign host");
+            boundary_refusal(StatusCode::FORBIDDEN, "host not allowed")
+        }
+    }
+}
+
+fn boundary_refusal(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        Json(ErrorResponse {
+            error: message.to_string(),
+        }),
+    )
+        .into_response()
+}
+
 /// Opt-in API key auth for the MCP endpoint.
 /// If `NEBO_MCP_API_KEY` is set, requires `Authorization: Bearer <key>`.
 /// If not set, the endpoint is open (localhost-only use case).
 pub async fn mcp_api_key_auth(request: Request, next: Next) -> Response {
-    let expected = std::env::var("NEBO_MCP_API_KEY").ok();
-
     // No key configured → skip auth (zero-config localhost mode)
-    let expected = match expected {
-        Some(k) if !k.is_empty() => k,
-        _ => return next.run(request).await,
+    let Some(expected) = install_key() else {
+        return next.run(request).await;
     };
 
     let auth_header = request
@@ -309,4 +437,196 @@ pub async fn rate_limit(request: Request, next: Next) -> Response {
     drop(buckets);
 
     next.run(request).await
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use std::net::SocketAddr;
+    use tower::ServiceExt;
+
+    fn app(boundary: Boundary) -> Router {
+        Router::new()
+            .route("/api/v1/agents", axum::routing::get(|| async { "ok" }))
+            .route("/health", axum::routing::get(|| async { "ok" }))
+            .fallback(|| async { "spa" })
+            .layer(axum::middleware::from_fn_with_state(boundary, local_boundary))
+    }
+
+    fn loopback_bind() -> Boundary {
+        Boundary { port: 27895, network: false, install_key: None }
+    }
+
+    fn network_bind(key: Option<&str>) -> Boundary {
+        Boundary { port: 27895, network: true, install_key: key.map(str::to_string) }
+    }
+
+    async fn status(
+        boundary: Boundary,
+        path: &str,
+        peer: &str,
+        headers: &[(&str, &str)],
+    ) -> StatusCode {
+        let mut req = HttpRequest::builder().uri(path);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let mut req = req.body(Body::empty()).unwrap();
+        let peer: SocketAddr = peer.parse().unwrap();
+        req.extensions_mut().insert(ConnectInfo(peer));
+        app(boundary).oneshot(req).await.unwrap().status()
+    }
+
+    const LOCAL: &str = "127.0.0.1:50000";
+    const LAN: &str = "192.168.1.20:50000";
+
+    // DNS rebinding: a page on attacker.example re-points its own name at
+    // 127.0.0.1 and calls the API as same-origin. The browser sends the
+    // attacker's name as Host; nothing else about the request is unusual.
+    #[tokio::test]
+    async fn a_foreign_host_is_refused() {
+        for path in ["/api/v1/agents", "/health", "/", "/ws"] {
+            assert_eq!(
+                status(loopback_bind(), path, LOCAL, &[("host", "attacker.example:27895")]).await,
+                StatusCode::FORBIDDEN,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            status(loopback_bind(), "/api/v1/agents", LOCAL, &[("host", "127.0.0.1.attacker.example")]).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn loopback_and_app_hosts_pass() {
+        for host in [
+            "localhost:27895",
+            "127.0.0.1:27895",
+            "[::1]:27895",
+            "LOCALHOST:27895",
+            // The desktop shell's raw reconnect ping sends no port.
+            "localhost",
+            "tauri.localhost",
+        ] {
+            assert_eq!(
+                status(loopback_bind(), "/api/v1/agents", LOCAL, &[("host", host)]).await,
+                StatusCode::OK,
+                "{host}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_loopback_name_on_another_port_is_refused() {
+        assert_eq!(
+            status(loopback_bind(), "/api/v1/agents", LOCAL, &[("host", "localhost:8080")]).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    // The hub tunnel preserves the browser's Host (`neboai.com`, both on the
+    // pod holding the tunnel and on a peer hop), and the bot's tunnel stamps
+    // every request it forwards with a per-boot secret. The stamp, not the
+    // name, is what says "this came through the tunnel".
+    #[tokio::test]
+    async fn tunnel_requests_pass_with_the_browsers_host() {
+        let stamp = comm::tunnel::tunnel_auth_secret();
+        for host in ["neboai.com", "www.neboai.com", "localhost:5174"] {
+            assert_eq!(
+                status(
+                    loopback_bind(),
+                    "/api/v1/agents",
+                    LOCAL,
+                    &[("host", host), ("x-nebo-tunnel-auth", stamp)]
+                )
+                .await,
+                StatusCode::OK,
+                "{host}"
+            );
+        }
+        assert_eq!(
+            status(
+                loopback_bind(),
+                "/api/v1/agents",
+                LOCAL,
+                &[("host", "neboai.com"), ("x-nebo-tunnel-auth", "forged")]
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn a_network_bind_requires_the_install_key() {
+        let b = || network_bind(Some("k-123"));
+        for path in ["/api/v1/agents", "/", "/ws", "/agent/mcp"] {
+            assert_eq!(
+                status(b(), path, LAN, &[("host", "192.168.1.5:27895")]).await,
+                StatusCode::UNAUTHORIZED,
+                "{path}"
+            );
+            assert_eq!(
+                status(b(), path, LAN, &[("host", "192.168.1.5:27895"), ("authorization", "Bearer wrong")]).await,
+                StatusCode::UNAUTHORIZED,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            status(b(), "/api/v1/agents", LAN, &[("host", "192.168.1.5:27895"), ("authorization", "Bearer k-123")]).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(b(), "/api/v1/agents", LAN, &[("host", "nebo.example.com"), ("authorization", "bearer k-123")]).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn a_network_bind_without_a_key_is_never_open() {
+        assert_eq!(
+            status(network_bind(None), "/api/v1/agents", LAN, &[("host", "192.168.1.5:27895")]).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(network_bind(None), "/api/v1/agents", LAN, &[("host", "192.168.1.5:27895"), ("authorization", "Bearer ")]).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    // A cloud bot binds 0.0.0.0 and is reached only through the tunnel; its
+    // own process and sidecars call it on loopback, and the orchestrator's
+    // liveness probe calls /health from the node. None of those carry a key.
+    #[tokio::test]
+    async fn a_network_bind_keeps_the_tunnel_local_callers_and_health_probe() {
+        let stamp = comm::tunnel::tunnel_auth_secret();
+        assert_eq!(
+            status(network_bind(None), "/api/v1/agents", LOCAL, &[("host", "neboai.com"), ("x-nebo-tunnel-auth", stamp)]).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(network_bind(None), "/api/v1/agents", LOCAL, &[("host", "127.0.0.1:27895")]).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(network_bind(None), "/health", "10.244.1.1:40000", &[("host", "10.244.1.7:27895")]).await,
+            StatusCode::OK
+        );
+        // Same-machine callers are still held to the Host check.
+        assert_eq!(
+            status(network_bind(None), "/api/v1/agents", LOCAL, &[("host", "attacker.example:27895")]).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn a_loopback_bind_asks_for_no_key() {
+        assert_eq!(
+            status(Boundary { install_key: Some("k".into()), ..loopback_bind() }, "/api/v1/agents", LOCAL, &[("host", "localhost:27895")]).await,
+            StatusCode::OK
+        );
+    }
 }

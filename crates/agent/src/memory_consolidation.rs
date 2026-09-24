@@ -423,6 +423,7 @@ async fn run_curation_prompt(
     prompt: String,
 ) -> Result<String, String> {
     let req = ai::ChatRequest {
+        tool_credential: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".to_string(),

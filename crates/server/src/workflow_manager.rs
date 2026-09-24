@@ -2372,6 +2372,7 @@ async fn review_failed_workflow_run(
     );
 
     let req = ai::ChatRequest {
+        tool_credential: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),
@@ -2989,6 +2990,7 @@ async fn workflow_tuning_sweep(
             }
         };
         let req = ai::ChatRequest {
+            tool_credential: None,
             tool_choice: Default::default(),
             messages: vec![ai::Message {
                 role: "user".into(),

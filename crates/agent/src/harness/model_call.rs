@@ -183,6 +183,10 @@ pub(crate) struct ModelCall<'a> {
     pub model_override: &'a str,
     /// The compaction threshold, logged beside the context usage.
     pub context_limit: usize,
+    /// Issues this run's tool credential, for a provider that runs tools
+    /// itself over /agent/mcp (the CLI providers). Revoked when the call ends.
+    pub tool_credential:
+        Option<&'a (dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)>,
 }
 
 /// What a call came back with.
@@ -238,6 +242,7 @@ pub(crate) async fn call_model(
         selected_model,
         model_override,
         context_limit,
+        tool_credential,
     } = call;
 
     // Acquire LLM permit before provider call (blocks if at capacity)
@@ -310,6 +315,17 @@ pub(crate) async fn call_model(
     if !provider.supports_vision() && chat_req.messages.iter().any(|m| m.images.is_some()) {
         crate::sidecar::describe_attached_images(provider.as_ref(), &mut chat_req).await;
     }
+
+    // A CLI provider's tool calls come back over /agent/mcp carrying this
+    // credential, and execute as this run until the call returns.
+    let _tool_credential = match tool_credential {
+        Some(issue) if provider.handles_tools() => {
+            let guard = issue();
+            chat_req.tool_credential = Some(guard.token().to_string());
+            Some(guard)
+        }
+        _ => None,
+    };
 
     let t_stream_start = std::time::Instant::now();
     let stream_result = tokio::select! {
