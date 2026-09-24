@@ -465,7 +465,9 @@ mod tests {
             let recorder = Arc::new(Recorder::default());
             let providers: Arc<RwLock<Vec<Arc<dyn Provider>>>> =
                 Arc::new(RwLock::new(vec![recorder.clone() as Arc<dyn Provider>]));
-            let tools = Arc::new(tools::Registry::new(tools::Policy::new()));
+            let tools = Arc::new(tools::Registry::new(Arc::new(
+                crate::harness::permissions::Check::new(store.clone()),
+            )));
             tools
                 .register(Box::new(tools::AgentTool::new(store.clone(), tools::new_handle())))
                 .await;
