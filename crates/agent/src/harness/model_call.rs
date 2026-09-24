@@ -194,8 +194,8 @@ pub(crate) enum CallOutcome {
     /// The model's reply. A stream error the retries could not clear has
     /// already been shown to the owner and rides in `stream_error`.
     Reply(ModelReply),
-    /// Take the step again: reactive compaction, failover or a reconnect.
-    Retry,
+    /// Take the step again.
+    Retry(RetryWhy),
     /// Cancelled waiting for the permit or during the stream.
     Cancelled,
     /// Cancelled while backing off before a retry.
@@ -204,6 +204,15 @@ pub(crate) enum CallOutcome {
     Exhausted,
     /// The call failed for good; the turn ends with this error.
     Failed(String),
+}
+
+/// Why a call is taken again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryWhy {
+    /// The provider said the request is over the window: compact first.
+    Overflow,
+    /// A failover, a backoff or a reconnect: the same request again.
+    Transient,
 }
 
 /// The model's reply.
@@ -385,7 +394,7 @@ pub(crate) async fn call_model(
                     correction = state.estimate_correction,
                     "context overflow: forcing reactive compaction"
                 );
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(RetryWhy::Overflow);
             }
 
             if ai::is_transient_error(&e) {
@@ -428,7 +437,7 @@ pub(crate) async fn call_model(
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.transient_retries, None)) => {}
                 }
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(RetryWhy::Transient);
             }
 
             // A 429 slows the whole bot, not just this call: the pool
@@ -468,7 +477,7 @@ pub(crate) async fn call_model(
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.retryable_retries, retry_after)) => {}
                 }
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(RetryWhy::Transient);
             }
 
             return CallOutcome::Failed(format!("Provider error: {}", e));
@@ -849,7 +858,7 @@ pub(crate) async fn call_model(
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.transient_retries, None)) => {}
                 }
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(RetryWhy::Transient);
             }
         }
 
@@ -893,7 +902,7 @@ pub(crate) async fn call_model(
                 _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                 _ = tokio::time::sleep(retry_backoff(st.retryable_retries, last_retry_after)) => {}
             }
-            return CallOutcome::Retry;
+            return CallOutcome::Retry(RetryWhy::Transient);
         }
 
         // Layer 3: Non-retryable — send error to user

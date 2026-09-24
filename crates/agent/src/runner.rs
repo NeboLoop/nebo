@@ -241,7 +241,7 @@ pub struct WorkflowPark<'a> {
 
 /// Whether a restricted run's allowlist names this tool: by name, as the
 /// tool of a `tool:resource` entry, or by a `prefix*` family.
-fn allowlist_admits(allowlist: &HashSet<String>, name: &str) -> bool {
+pub(crate) fn allowlist_admits(allowlist: &HashSet<String>, name: &str) -> bool {
     allowlist.contains(name)
         || allowlist.iter().any(|e| {
             e.split_once(':').is_some_and(|(tool, _)| tool == name)
@@ -410,7 +410,7 @@ pub(crate) struct RunState {
 }
 
 impl RunState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             prompt_overhead: 0,
             system_overhead_tokens: 0,
@@ -598,7 +598,7 @@ impl Runner {
     /// Run the agentic loop: prompt -> stream -> tool calls -> loop.
     /// Returns a receiver of streaming events.
     pub async fn run(&self, mut req: RunRequest) -> Result<mpsc::Receiver<StreamEvent>, ProviderError> {
-        seat::restrict_outside_origin(&mut req);
+        seat::restrict_outside_origin(req.origin, &mut req.full_access, &mut req.tool_allowlist, &mut req.tool_denial_hint);
         let t_run_entry = std::time::Instant::now();
         info!(
             session_key = %req.session_key,
@@ -1508,7 +1508,7 @@ pub(crate) fn desktop_evidence(result: &str) -> String {
 /// Add the trim facts of every stored tool call not yet in `spec`, read
 /// from its tool's spec (a call to a tool no longer registered gets the
 /// default).
-async fn extend_trim_spec(tools: &Registry, messages: &[ChatMessage], spec: &mut pruning::TrimSpec) {
+pub(crate) async fn extend_trim_spec(tools: &Registry, messages: &[ChatMessage], spec: &mut pruning::TrimSpec) {
     for msg in messages.iter().filter(|m| m.role == "assistant") {
         let Some(calls) = msg
             .tool_calls
@@ -3200,7 +3200,7 @@ async fn run_loop(
         .await
         {
             model_call::CallOutcome::Reply(reply) => reply,
-            model_call::CallOutcome::Retry => continue,
+            model_call::CallOutcome::Retry(_) => continue,
             model_call::CallOutcome::Cancelled => return Ok(turn_exit_reason.label()),
             model_call::CallOutcome::CancelledInBackoff => return Ok("cancelled".to_string()),
             model_call::CallOutcome::Exhausted => break,

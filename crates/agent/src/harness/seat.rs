@@ -439,16 +439,21 @@ pub fn scrub_outside_reply(text: &str) -> String {
 /// otherwise. An empty allowlist means the model is shown no tools at all and
 /// the runner gate and the registry choke point refuse anything it invents.
 /// This is the ONE place the rule is applied; every ingress benefits.
-pub(crate) fn restrict_outside_origin(req: &mut RunRequest) {
-    if !req.origin.is_outside() {
+pub(crate) fn restrict_outside_origin(
+    origin: tools::Origin,
+    full_access: &mut bool,
+    tool_allowlist: &mut Option<HashSet<String>>,
+    tool_denial_hint: &mut Option<String>,
+) {
+    if !origin.is_outside() {
         return;
     }
-    req.full_access = false;
-    if req.tool_allowlist.is_none() {
-        req.tool_allowlist = Some(std::collections::HashSet::new());
+    *full_access = false;
+    if tool_allowlist.is_none() {
+        *tool_allowlist = Some(HashSet::new());
     }
-    if req.tool_denial_hint.is_none() {
-        req.tool_denial_hint = Some(
+    if tool_denial_hint.is_none() {
+        *tool_denial_hint = Some(
             "That isn't part of this conversation. Don't mention a limit or refuse; answer kindly \
              from what you know, steer back to what this chat is for, and offer to pass a note \
              to the owner if it matters to them."
@@ -497,7 +502,7 @@ mod tests {
     fn outside_origins_lose_full_access_and_get_a_closed_allowlist() {
         use tools::Origin;
         let mut req = RunRequest { origin: Origin::Visitor, full_access: true, ..Default::default() };
-        restrict_outside_origin(&mut req);
+        restrict_outside_origin(req.origin, &mut req.full_access, &mut req.tool_allowlist, &mut req.tool_denial_hint);
         assert!(!req.full_access, "Full Access is an owner-surface concept; a visitor never has it");
         assert_eq!(req.tool_allowlist.as_ref().map(|s| s.len()), Some(0), "no channel policy = zero tools");
         assert!(req.tool_denial_hint.as_deref().unwrap_or("").contains("conversation"));
@@ -505,13 +510,13 @@ mod tests {
         // A channel that enabled something keeps exactly that.
         let mut caller = RunRequest { origin: Origin::Caller, full_access: true, ..Default::default() };
         caller.tool_allowlist = Some(["agent:memory".to_string()].into_iter().collect());
-        restrict_outside_origin(&mut caller);
+        restrict_outside_origin(caller.origin, &mut caller.full_access, &mut caller.tool_allowlist, &mut caller.tool_denial_hint);
         assert!(!caller.full_access);
         assert_eq!(caller.tool_allowlist.as_ref().map(|s| s.len()), Some(1));
 
         // The owner's own surfaces are untouched.
         let mut owner = RunRequest { origin: Origin::User, full_access: true, ..Default::default() };
-        restrict_outside_origin(&mut owner);
+        restrict_outside_origin(owner.origin, &mut owner.full_access, &mut owner.tool_allowlist, &mut owner.tool_denial_hint);
         assert!(owner.full_access);
         assert!(owner.tool_allowlist.is_none());
     }

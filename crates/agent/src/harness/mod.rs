@@ -30,25 +30,78 @@ pub mod usage;
 pub mod workflow_turn;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::concurrency::ConcurrencyController;
 use crate::runner::WorkflowMode;
+use crate::selector::ModelSelector;
+use crate::session::SessionManager;
 use session_gate::{ActiveTurns, RunProgress};
 
-/// The facade every caller starts a turn through. WP2.9 gives it the rest of
-/// what `Runner` holds (sessions, tools, store, providers, concurrency,
-/// selector, hooks, agent registry, ask/approval channels, embedding,
-/// hybrid searcher, skill loader, title sink) when it points the callers here.
+/// The facade every caller starts a turn through: the services a turn runs
+/// against. Cheap to clone; a running turn owns a clone. WP2.9 points the
+/// callers here and deletes `Runner`.
+#[derive(Clone)]
 pub struct Harness {
-    active_turns: ActiveTurns,
+    pub(crate) sessions: SessionManager,
+    pub(crate) store: Arc<db::Store>,
+    pub(crate) tools: Arc<tools::Registry>,
+    pub(crate) providers: Arc<RwLock<Vec<Arc<dyn ai::Provider>>>>,
+    pub(crate) selector: Arc<ModelSelector>,
+    pub(crate) concurrency: Arc<ConcurrencyController>,
+    pub(crate) hooks: Arc<napp::HookDispatcher>,
+    /// Issues the credential a CLI provider's tool calls carry back over
+    /// /agent/mcp.
+    pub(crate) tool_credentials: Option<crate::tool_credentials::ToolCredentials>,
+    pub(crate) agent_registry: tools::AgentRegistry,
+    pub(crate) skill_loader: Option<Arc<tools::skills::Loader>>,
+    pub(crate) ask_channels: Option<tools::AskChannels>,
+    pub(crate) approval_channels: Option<tools::ApprovalChannels>,
+    pub(crate) embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    pub(crate) title_sink: Option<Arc<dyn after_turn::ChatTitleSink>>,
+    pub(crate) active_turns: ActiveTurns,
 }
 
 impl Harness {
-    /// Admit, prepare and drive one turn; its events stream on the handle.
-    pub async fn start_turn(&self, _req: TurnRequest) -> Result<TurnHandle, HarnessError> {
-        unimplemented!("WP2.9")
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        store: Arc<db::Store>,
+        tools: Arc<tools::Registry>,
+        providers: Vec<Arc<dyn ai::Provider>>,
+        selector: ModelSelector,
+        concurrency: Arc<ConcurrencyController>,
+        hooks: Arc<napp::HookDispatcher>,
+        tool_credentials: Option<crate::tool_credentials::ToolCredentials>,
+        agent_registry: tools::AgentRegistry,
+        skill_loader: Option<Arc<tools::skills::Loader>>,
+    ) -> Self {
+        Self {
+            sessions: SessionManager::new(store.clone()),
+            store,
+            tools,
+            providers: Arc::new(RwLock::new(providers)),
+            selector: Arc::new(selector),
+            concurrency,
+            hooks,
+            tool_credentials,
+            agent_registry,
+            skill_loader,
+            ask_channels: None,
+            approval_channels: None,
+            embedding_provider: None,
+            title_sink: None,
+            active_turns: Default::default(),
+        }
+    }
+
+    /// Admit the turn and drive it on its own task; its events stream on the
+    /// handle. On a busy session the input is queued into the running turn
+    /// and the handle carries the busy line.
+    pub async fn start_turn(&self, req: TurnRequest) -> Result<TurnHandle, HarnessError> {
+        turn::start(self.clone(), req).await
     }
 
     /// Whether a turn is running on `key`.

@@ -108,6 +108,11 @@ impl Reminders {
         self.queued.push(attachment);
     }
 
+    /// Whether attachments are waiting for the next write.
+    pub fn has_queued(&self) -> bool {
+        !self.queued.is_empty()
+    }
+
     /// The only way an attachment enters the context: persist each queued
     /// attachment as a typed row at the end of the session's conversation,
     /// in queue order, and empty the queue. The step then loads the
