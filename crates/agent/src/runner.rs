@@ -5937,6 +5937,15 @@ async fn run_loop(
                 }
             }
 
+            // Every gate below judges the call as it will run: the tool
+            // settles an inferred action or resource here (after any hook
+            // rewrote the input), so no call shape reaches execution past a
+            // gate that read a different call.
+            for tc in tool_calls.iter_mut() {
+                let input = std::mem::take(&mut tc.input);
+                tc.input = tools.normalize_input(&tc.name, input).await;
+            }
+
             // Hard guard: block tool calls that keep repeating identical args WITHOUT
             // making progress.
             //
@@ -6350,8 +6359,8 @@ async fn run_loop(
                                 }
                             }
                         }
+                        continue;
                     }
-                    continue;
                 }
                 // ── Per-operation approval gate (per-employee three-state policy) ──
                 // A gated interface operation is decided by the employee's

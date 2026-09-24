@@ -548,6 +548,81 @@ impl OsTool {
         ""
     }
 
+    /// Every resource the os tool dispatches to.
+    const RESOURCE_NAMES: &'static [&'static str] = &[
+        "file", "shell", "window", "input", "clipboard", "capture", "notification",
+        "ui", "menu", "dialog", "space", "shortcut", "tts", "dock",
+        "app", "settings", "music", "keychain", "search",
+        "mail", "contacts", "calendar", "reminders",
+    ];
+
+    /// The call as it will run: shorthand accepted (first-call doctrine: fix
+    /// the API, not the client), the action a call plainly means filled in,
+    /// and the resource it resolves to written into `resource`.
+    ///
+    /// This is the ONE place a call's shape is settled, and the registry
+    /// applies it (`DynTool::normalize_input`) BEFORE any gate reads the
+    /// call: safeguard, path fence, origin deny list, capability and approval
+    /// all see the action and resource that execute, whichever shape the
+    /// model wrote. Idempotent, so running it again changes nothing.
+    pub(crate) fn normalized(input: serde_json::Value) -> serde_json::Value {
+        let mut v = input;
+        // dir / directory / folder are the path (live 2026-09-05: a
+        // listing sent {command: "", dir: ...} and failed to parse).
+        if v.get("path").and_then(|p| p.as_str()).unwrap_or("").is_empty() {
+            if let Some(dir) = ["dir", "directory", "folder"]
+                .iter()
+                .find_map(|k| v.get(*k).and_then(|d| d.as_str()).filter(|d| !d.is_empty()))
+                .map(String::from)
+            {
+                v["path"] = serde_json::json!(dir);
+            }
+        }
+        // resource: "shell" with the command in `pattern` (live
+        // 2026-09-05: {command: "", pattern: "ls ... | wc -l"}).
+        if v.get("resource").and_then(|r| r.as_str()) == Some("shell")
+            && v.get("command").and_then(|c| c.as_str()).unwrap_or("").is_empty()
+        {
+            if let Some(cmd) = v.get("pattern").and_then(|c| c.as_str()).filter(|c| !c.is_empty()).map(String::from) {
+                v["command"] = serde_json::json!(cmd);
+                v.as_object_mut().map(|o| o.remove("pattern"));
+            }
+        }
+        if let Some(action) = Self::infer_missing_action(&v) {
+            v["action"] = serde_json::json!(action);
+        }
+        // A call with no action is refused by the tool; a file-management
+        // verb is answered with a shell correction and names no resource.
+        let Ok(domain_input) = serde_json::from_value::<DomainInput>(v.clone()) else {
+            return v;
+        };
+        if Self::is_file_mgmt_redirect(&v) {
+            return v;
+        }
+        let corrected =
+            crate::domain::auto_correct_resource(&domain_input, &mut v, Self::RESOURCE_NAMES);
+        let resource = if corrected.is_empty() {
+            Self::resolved_resource(&v).to_string()
+        } else {
+            corrected
+        };
+        if resource.is_empty() {
+            return v;
+        }
+        // Settings VALUES models guess as resources: `os(resource:
+        // "battery", action: "info")` is the natural first shape, but
+        // battery/volume/brightness are ACTIONS on the settings
+        // resource. Honor the guess instead of erroring.
+        let resource = if matches!(resource.as_str(), "battery" | "volume" | "brightness") {
+            v["action"] = serde_json::Value::String(resource);
+            "settings".to_string()
+        } else {
+            resource
+        };
+        v["resource"] = serde_json::Value::String(resource);
+        v
+    }
+
     /// The action a call plainly means when it names none (the agent tool's
     /// `infer_missing_action` precedent). A live run wrote
     /// os({glob: "*.md", path: ...}) and got "missing field `action`"; the
@@ -1005,6 +1080,10 @@ impl DynTool for OsTool {
         false
     }
 
+    fn normalize_input(&self, input: serde_json::Value) -> serde_json::Value {
+        Self::normalized(input)
+    }
+
     fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
         let resource = Self::resolved_resource(input);
         // Organizer resources: only write actions need approval
@@ -1057,37 +1136,7 @@ impl DynTool for OsTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            // Shorthand acceptance (first-call doctrine: fix the API, not the
-            // client): a call that names no action but plainly means one is
-            // normalized instead of rejected.
-            let input = {
-                let mut v = input;
-                // dir / directory / folder are the path (live 2026-09-05: a
-                // listing sent {command: "", dir: ...} and failed to parse).
-                if v.get("path").and_then(|p| p.as_str()).unwrap_or("").is_empty() {
-                    if let Some(dir) = ["dir", "directory", "folder"]
-                        .iter()
-                        .find_map(|k| v.get(*k).and_then(|d| d.as_str()).filter(|d| !d.is_empty()))
-                        .map(String::from)
-                    {
-                        v["path"] = serde_json::json!(dir);
-                    }
-                }
-                // resource: "shell" with the command in `pattern` (live
-                // 2026-09-05: {command: "", pattern: "ls ... | wc -l"}).
-                if v.get("resource").and_then(|r| r.as_str()) == Some("shell")
-                    && v.get("command").and_then(|c| c.as_str()).unwrap_or("").is_empty()
-                {
-                    if let Some(cmd) = v.get("pattern").and_then(|c| c.as_str()).filter(|c| !c.is_empty()).map(String::from) {
-                        v["command"] = serde_json::json!(cmd);
-                        v.as_object_mut().map(|o| o.remove("pattern"));
-                    }
-                }
-                if let Some(action) = Self::infer_missing_action(&v) {
-                    v["action"] = serde_json::json!(action);
-                }
-                v
-            };
+            let input = Self::normalized(input);
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
                 Err(e) => {
@@ -1105,15 +1154,6 @@ impl DynTool for OsTool {
                 }
             };
 
-            const RESOURCE_NAMES: &[&str] = &[
-                "file", "shell", "window", "input", "clipboard", "capture", "notification",
-                "ui", "menu", "dialog", "space", "shortcut", "tts", "dock",
-                "app", "settings", "music", "keychain", "search",
-                "mail", "contacts", "calendar", "reminders",
-            ];
-
-            let mut input = input;
-
             // File-management verbs (move/copy/rename/delete/mkdir) with file-shaped
             // args are file operations, NOT a mouse "move" — but action-name inference
             // resolves bare "move" to the desktop "input" resource, which then gated on
@@ -1128,18 +1168,12 @@ impl DynTool for OsTool {
                 }
             }
 
-            let resource = {
-                let corrected = crate::domain::auto_correct_resource(
-                    &domain_input,
-                    &mut input,
-                    RESOURCE_NAMES,
-                );
-                if corrected.is_empty() {
-                    Self::resolved_resource(&input).to_string()
-                } else {
-                    corrected
-                }
-            };
+            // `normalized` wrote the resource when the call settles one.
+            let resource = input
+                .get("resource")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             if resource.is_empty() {
                 return ToolResult::error(format!(
@@ -1149,27 +1183,6 @@ impl DynTool for OsTool {
                      reminders) or use one of the documented actions.",
                     domain_input.action
                 ));
-            }
-
-            // Settings VALUES models guess as resources: `os(resource:
-            // "battery", action: "info")` is the natural first shape, but
-            // battery/volume/brightness are ACTIONS on the settings
-            // resource. Honor the guess instead of erroring.
-            let resource = if matches!(resource.as_str(), "battery" | "volume" | "brightness") {
-                input["action"] = serde_json::Value::String(resource.clone());
-                "settings".to_string()
-            } else {
-                resource
-            };
-            input["resource"] = serde_json::Value::String(resource.clone());
-
-            // Ensure resource is present in input for downstream tools
-            if !input
-                .get("resource")
-                .and_then(|v| v.as_str())
-                .is_some_and(|s| !s.is_empty())
-            {
-                input["resource"] = serde_json::Value::String(resource.clone());
             }
 
             // Desktop-bound resources have no counterpart in a cloud deploy —

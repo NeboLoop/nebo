@@ -105,6 +105,8 @@ pub fn gating_capability(tool: &str, input: &Value) -> Option<&'static str> {
         // gets the correct (Shell) ask.
         "os" if OsTool::is_file_mgmt_redirect(input) => None,
         "os" => os_capability(input),
+        // Notebook cells are file contents: gated like os file calls.
+        "notebook" => Some("file"),
         "organizer" => match input.get("resource").and_then(|v| v.as_str()) {
             Some("contacts") => Some("contacts"),
             // mail / calendar / reminders: not behind a coarse toggle
