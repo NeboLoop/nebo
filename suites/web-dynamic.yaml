@@ -17,3 +17,4 @@ fixtures:
   - ../fixtures/tools/web-research/dynamic-market-research.yaml
   # Auth-gated with graceful degradation (1)
   - ../fixtures/tools/web-research/dynamic-linkedin-company.yaml
+  - ../fixtures/tools/web-research/dynamic-google-local.yaml

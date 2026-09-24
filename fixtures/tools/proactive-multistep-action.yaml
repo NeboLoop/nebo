@@ -7,13 +7,13 @@ description: |
 target_component: agent
 
 setup:
-  - "rm -rf /tmp/nebo-prox && mkdir -p /tmp/nebo-prox/Screenshots && touch /tmp/nebo-prox/shot1.png /tmp/nebo-prox/shot2.png /tmp/nebo-prox/notes.txt"
+  - "rm -rf {{scratch}} && mkdir -p {{scratch}}/Screenshots && touch {{scratch}}/shot1.png {{scratch}}/shot2.png {{scratch}}/notes.txt"
 teardown:
-  - "rm -rf /tmp/nebo-prox"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "In /tmp/nebo-prox there are two .png screenshots and a Screenshots folder. Move both .png files into the Screenshots folder."
+    content: "In {{scratch}} there are two .png screenshots and a Screenshots folder. Move both .png files into the Screenshots folder."
 
 tool_config:
   os:
@@ -24,6 +24,7 @@ prompt_assertions:
     - id: acts-not-announces
       text: "Model CALLS the os tool to move/manage the files — it does NOT just reply 'On it' with zero tool calls"
       severity: critical
+      check: { tool: os }
   cost:
     - id: completes
       text: "The .png files are actually moved (at least one os tool call is made)"

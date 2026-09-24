@@ -23,7 +23,7 @@ prompt_assertions:
     - id: background-spawn
       text: "Model calls agent resource: 'task', action: 'spawn' with wait: false for the research task"
       severity: critical
-  conversation:
+  recovery:
     - id: answers-inline-question
       text: "Model answers the subject-line question itself without blocking on the background task"
       severity: critical

@@ -17,6 +17,7 @@ fixtures:
   # Research completion (2)
   - ../fixtures/tools/web-research/completion-simple-fact.yaml
   - ../fixtures/tools/web-research/completion-multi-source.yaml
+  - ../fixtures/tools/search-consumes-results.yaml
   # Authentication detection (2)
   - ../fixtures/tools/web-research/auth-social-media-post.yaml
   - ../fixtures/tools/web-research/auth-private-repo.yaml
@@ -27,3 +28,4 @@ fixtures:
   - ../fixtures/tools/web-research/dynamic-flight-search.yaml
   - ../fixtures/tools/web-research/dynamic-market-research.yaml
   - ../fixtures/tools/web-research/dynamic-linkedin-company.yaml
+  - ../fixtures/tools/web-research/dynamic-google-local.yaml

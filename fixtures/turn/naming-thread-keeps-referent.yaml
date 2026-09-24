@@ -1,0 +1,60 @@
+id: naming-thread-keeps-referent
+name: "Referent kept across short follow-ups — the naming thread"
+description: |
+  Replays the shape of a real thread (2026-09-23): a naming conversation
+  followed by short owner messages — "should it change its name?", a bare
+  name, "sorry I meant <another name>", "no we need another". Every short
+  message was stored as the employee's Current Objective and the prompt
+  called it "what counts now", so with the whole history in front of it the
+  model answered "What's 'it'?" and "What are we looking for another one
+  of?". The turn controller has no per-turn objective: the verbatim
+  conversation is the state, and each short follow-up reads as a
+  refinement of the naming task for the named firm.
+  Moved from #238's `fixtures/tools/objective-keeps-its-referent.yaml`,
+  with program checks added: the lost-referent questions are pinned out of
+  the reply text, and the "judgement only" instruction pins zero tool calls.
+target_component: prompt
+
+conversation:
+  - role: user
+    content: "I run a small bookkeeping firm called Ledgerly. Help me think through our brand name. No web research, just your judgement."
+  - role: user
+    content: "should it change its name? if so what would you call it?"
+  - role: user
+    content: "Tallyworks"
+  - role: user
+    content: "sorry I meant Tallybook"
+  - role: user
+    content: "no we need another"
+
+prompt_assertions:
+  first_call:
+    - id: never-asks-what-it-is
+      text: "No reply asks what 'it' or 'another' refers to (\"What's 'it'?\", \"What does 'it' refer to?\", \"another what?\", \"What are we looking for another one of?\")"
+      severity: critical
+      check:
+        reply_not_matches: "(?i)what['’]?s\\s+['\"‘“]it['\"’”]|what\\s+(does|do\\s+you\\s+mean\\s+by)\\s+['\"‘“]?(it|another)['\"’”]?\\s*(refer|mean|\\?)|another\\s+(one\\s+)?of\\s+what|another\\s+one\\s+of\\s*\\?|another\\s+what\\s*\\?"
+    - id: it-is-the-firm
+      text: "On \"should it change its name?\" the model answers about renaming the bookkeeping firm Ledgerly"
+      severity: critical
+  recovery:
+    - id: correction-is-a-name
+      text: "On \"sorry I meant Tallybook\" the model treats Tallybook as a candidate name for the firm, not as a new unrelated request"
+      severity: critical
+    - id: another-is-a-name
+      text: "On \"no we need another\" the model proposes new name candidates for the firm (not Tallyworks or Tallybook again)"
+      severity: critical
+  cost:
+    - id: no-research
+      text: "The model makes no tool call at all: the owner asked for judgement only"
+      severity: important
+      check: { tool_calls: 0 }
+
+ideal_behavior:
+  tool_calls: 0
+  total_tokens: 4000
+  narrative: |
+    Every reply stays on renaming the bookkeeping firm: whether Ledgerly should
+    change, what Tallyworks and then Tallybook would say about the firm, and a
+    fresh set of candidates when the owner asks for another. At no turn does
+    the model ask what a pronoun or a bare name refers to.

@@ -1,0 +1,54 @@
+id: no-steering-in-stored-thread
+name: "Steering text never becomes part of the thread"
+description: |
+  PRD evidence E3/E5: "Continue — your previous response committed to more
+  work…" was stored as a user row and re-sent on every later turn (15 rows
+  on the owner's desktop, 79 across 6 cloud bots), and other reminders were
+  stored by accident. On the turn controller every reminder goes through
+  one path for one call, the store refuses a reminder-wrapped row, and
+  history load drops legacy steering rows.
+  The runner sees replies and tool calls, not stored rows, so the thread is
+  read back through the model: turn 1 invites a question (the shape that
+  drew auto-continue), and the last turn asks for every owner message word
+  for word. A steering row stored as an owner message shows up in that list.
+  A direct check on the stored rows needs the runner to fetch the session's
+  messages after the run; until then this is the observable half.
+target_component: runner
+
+conversation:
+  - role: user
+    content: "I need a short note to a client about moving our meeting. Ask me anything you need before you write it."
+  - role: user
+    content: "Move it to Thursday at 10. The client's name is Dana. Keep it to three sentences."
+  - role: user
+    content: "Before anything else: list every message I have sent you in this conversation, word for word, numbered, and nothing else."
+
+prompt_assertions:
+  first_call:
+    - id: asks-then-waits
+      text: "The first reply asks what it needs (the new time, the client) and ends there, without drafting on a guess"
+      severity: critical
+  recovery:
+    - id: lists-the-real-messages
+      text: "The final list includes the owner's second message"
+      severity: critical
+      check: { reply_matches: "(?i)thursday at 10" }
+    - id: no-steering-in-the-list
+      text: "Nothing in any reply echoes steering text: no 'Continue — your previous response…', 'committed to more work', 'system-reminder', 'Current Objective', 'Stay on this objective', '[Background event'"
+      severity: critical
+      check: { reply_not_matches: "(?i)previous response committed|committed to more work|system-reminder|current objective|stay on this objective|\\[background event" }
+    - id: exactly-three
+      text: "The final list has exactly three numbered items, the owner's three messages, and nothing the owner never typed"
+      severity: critical
+  cost:
+    - id: no-tools
+      text: "No tool call is needed anywhere in this thread"
+      severity: important
+      check: { tool_calls: 0 }
+
+ideal_behavior:
+  tool_calls: 0
+  narrative: |
+    Asks for the new time and the client's name; drafts the three-sentence
+    note to Dana for Thursday at 10; then lists the three owner messages,
+    verbatim, and nothing else.
