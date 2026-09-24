@@ -287,6 +287,13 @@ pub struct ToolContext {
     /// (working style) only — non-tacit reads are refused with an
     /// "isn't shared with their role" correction. `false` for owner runs.
     pub audience_restricted: bool,
+    /// The tools whose definitions the model was sent on this step. A call
+    /// to a deferred tool outside it that fails validation is told to load
+    /// the tool first. `None` for callers that are not a model's step.
+    pub declared_tools: Option<std::sync::Arc<std::collections::HashSet<String>>>,
+    /// The id of the call this context runs, so a long call's progress
+    /// events name the call they belong to. Empty outside a model's step.
+    pub tool_call_id: String,
 }
 
 /// Canonical session key for an agent-bound workflow run: `agent:<id>:workflow:<run_id>`.

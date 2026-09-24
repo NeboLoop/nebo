@@ -351,9 +351,6 @@ impl DynTool for AuthorityTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
 
     /// Granting a seat standing authority — and widening it — is how an
     /// employee comes to act unattended at all, so both are gated operations
@@ -372,8 +369,30 @@ impl DynTool for AuthorityTool {
         }
     }
 
-    fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+    fn search_hint(&self) -> &str {
+        "standing authority grants constitution"
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
         matches!(input["action"].as_str(), Some("list") | Some("show"))
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        if input["resource"].as_str() == Some("constitution") {
+            return "read_constitution".to_string();
+        }
+        match input["action"].as_str().unwrap_or("") {
+            "narrow" | "suspend" => "narrow_authority",
+            "list" | "show" => "list_authority",
+            _ => "grant_authority",
+        }
+        .to_string()
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
+        false
     }
 
     fn execute_dyn<'a>(

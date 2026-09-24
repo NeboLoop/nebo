@@ -36,7 +36,7 @@ prompt_assertions:
       text: "Model asks where the code lives"
       severity: important
     - id: no-search-spiral
-      text: "Model does not run more than two searches (a tool_search or a directory listing to confirm emptiness is fine)"
+      text: "Model does not run more than two searches (a find_tools or a directory listing to confirm emptiness is fine)"
       severity: important
       check: { max_tool_calls: 4 }
 

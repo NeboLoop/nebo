@@ -13,7 +13,6 @@
 //! its head was cut. After the boundary, `restore` re-attaches what still
 //! matters.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use ai::{ChatRequest, Message, StreamEventType, ToolChoice};
@@ -22,6 +21,7 @@ use tracing::{info, warn};
 
 use super::restore::{self, RestoreState};
 use crate::harness::reminders::{AttachmentStore, Reminders};
+use crate::harness::tool_surface;
 
 /// A written checkpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,9 +114,6 @@ pub struct CheckpointContext<'a> {
     pub hooks: &'a [Box<dyn PreCheckpointHook>],
     /// Where the restore rows are written, after the boundary.
     pub attachments: &'a (dyn AttachmentStore + Sync),
-    /// Deferred tools loaded so far; the boundary records them and the set
-    /// carries over.
-    pub loaded_tools: &'a BTreeSet<String>,
     pub restore: RestoreState<'a>,
 }
 
@@ -183,26 +180,6 @@ pub fn boundary_text(summary: &str, head_cut: bool, why: CheckpointReason) -> St
     text
 }
 
-/// Whether `msg` is a checkpoint boundary.
-pub fn is_boundary(msg: &ChatMessage) -> bool {
-    metadata(msg).is_some_and(|m| m.get("checkpoint").and_then(|v| v.as_bool()) == Some(true))
-}
-
-/// The deferred tools a conversation loaded from its checkpoint: the set its
-/// boundary recorded; empty when it starts without one.
-pub fn loaded_tools_at(conversation: &[ChatMessage]) -> BTreeSet<String> {
-    conversation
-        .first()
-        .filter(|m| is_boundary(m))
-        .and_then(metadata)
-        .and_then(|m| serde_json::from_value(m.get("loadedTools")?.clone()).ok())
-        .unwrap_or_default()
-}
-
-fn metadata(msg: &ChatMessage) -> Option<serde_json::Value> {
-    serde_json::from_str(msg.metadata.as_deref()?).ok()
-}
-
 /// Checkpoint the conversation: hooks, summary, boundary row, restore rows.
 pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Result<Checkpoint, String> {
     if cx.conversation.is_empty() {
@@ -222,12 +199,13 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
     let (reply, head_cut) = summarize(cx).await?;
     let summary = crate::compaction::enhanced_summary(&stored, &extract_checkpoint(&reply)?);
 
-    let metadata = serde_json::json!({
+    // The deferred tools loaded so far carry over on the boundary.
+    let mut metadata = serde_json::json!({
         "checkpoint": true,
         "reason": why.as_str(),
         "headCut": head_cut,
-        "loadedTools": cx.loaded_tools,
     });
+    metadata[tool_surface::LOADED_TOOLS_KEY] = serde_json::json!(tool_surface::loaded_names(&stored));
     let text = boundary_text(&summary, head_cut, why);
     let boundary = cx
         .store
@@ -387,6 +365,8 @@ mod tests {
     use db::Store;
     use types::NeboError;
 
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::harness::compact::restore::RunningWork;
     use crate::harness::goal::{AgreedGoal, GoalSource, GoalStatus};
@@ -511,7 +491,6 @@ mod tests {
             why: CheckpointReason,
             hooks: &[Box<dyn PreCheckpointHook>],
             restore: RestoreState<'_>,
-            loaded_tools: &BTreeSet<String>,
         ) -> Result<Checkpoint, String> {
             let conversation = self.conversation();
             let fork_of = ChatRequest {
@@ -534,11 +513,18 @@ mod tests {
                 fork_of: &fork_of,
                 hooks,
                 attachments: &rows,
-                loaded_tools,
                 restore,
             };
             checkpoint(&cx, why).await
         }
+    }
+
+    fn metadata(msg: &ChatMessage) -> Option<serde_json::Value> {
+        serde_json::from_str(msg.metadata.as_deref()?).ok()
+    }
+
+    fn is_boundary(msg: &ChatMessage) -> bool {
+        metadata(msg).is_some_and(|m| m["checkpoint"] == true)
     }
 
     fn kind(msg: &ChatMessage) -> String {
@@ -571,7 +557,7 @@ mod tests {
         let provider = Scripted::new(vec![Reply::Say(SUMMARY.into())]);
 
         let done = s
-            .checkpoint(&provider, CheckpointReason::OwnerAsked, &[], RestoreState::default(), &BTreeSet::new())
+            .checkpoint(&provider, CheckpointReason::OwnerAsked, &[], RestoreState::default())
             .await
             .expect("checkpoint");
 
@@ -616,7 +602,7 @@ mod tests {
         s.say("assistant", "Drafted.");
         let provider = Scripted::new(vec![Reply::Say("first summary".into()), Reply::Say("second summary".into())]);
         let first = s
-            .checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default(), &BTreeSet::new())
+            .checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default())
             .await
             .unwrap();
         s.say("user", "Now send it.");
@@ -627,7 +613,7 @@ mod tests {
         assert_eq!(s.sessions.get_messages(&s.sid).unwrap().len(), 4, "the thread keeps every row");
 
         let second = s
-            .checkpoint(&provider, CheckpointReason::Overflow, &[], RestoreState::default(), &BTreeSet::new())
+            .checkpoint(&provider, CheckpointReason::Overflow, &[], RestoreState::default())
             .await
             .unwrap();
         let req = provider.requests().pop().unwrap();
@@ -656,7 +642,7 @@ mod tests {
         let provider = Scripted::new(vec![Reply::Say("summary".into())]);
 
         let done = s
-            .checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default(), &BTreeSet::new())
+            .checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default())
             .await
             .unwrap();
 
@@ -709,7 +695,6 @@ mod tests {
                 CheckpointReason::Threshold,
                 &[],
                 RestoreState { goal: Some(&goal), running: &running, plan_mode: true },
-                &BTreeSet::new(),
             )
             .await
             .unwrap();
@@ -727,7 +712,7 @@ mod tests {
         let paused = AgreedGoal { status: GoalStatus::Paused(crate::harness::goal::Pause::Stopped), ..goal };
         s.say("user", "More.");
         let again = s
-            .checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState { goal: Some(&paused), ..Default::default() }, &BTreeSet::new())
+            .checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState { goal: Some(&paused), ..Default::default() })
             .await
             .unwrap();
         assert!(!again.restore.contains(&"agreed_goal".to_string()), "a paused goal is not re-attached");
@@ -744,7 +729,7 @@ mod tests {
             s.say("user", GROUND_RULE);
             s.say("assistant", "OK.");
             let provider = Scripted::new(vec![Reply::Say(SUMMARY.into())]);
-            s.checkpoint(&provider, why, &[], RestoreState::default(), &BTreeSet::new()).await.unwrap();
+            s.checkpoint(&provider, why, &[], RestoreState::default()).await.unwrap();
             let req = provider.requests().pop().unwrap();
             let boundary = s.conversation().remove(0);
             out.push((serde_json::to_string(&req.messages).unwrap(), req.tool_choice, boundary));
@@ -783,7 +768,7 @@ mod tests {
         let provider = Scripted::new(vec![Reply::Say("summary".into())]);
         let record = Arc::new(Record { provider: provider.clone(), store: s.store.clone(), chat: s.chat.clone(), seen: Mutex::new(vec![]) });
         let hooks: Vec<Box<dyn PreCheckpointHook>> = vec![Box::new(record.clone())];
-        s.checkpoint(&provider, CheckpointReason::Overflow, &hooks, RestoreState::default(), &BTreeSet::new())
+        s.checkpoint(&provider, CheckpointReason::Overflow, &hooks, RestoreState::default())
             .await
             .unwrap();
         assert_eq!(*record.seen.lock().unwrap(), vec![(s.sid.clone(), CheckpointReason::Overflow, 0, false)]);
@@ -802,7 +787,7 @@ mod tests {
             s.say("assistant", &format!("answer {i}"));
         }
         let provider = Scripted::new(vec![Reply::Overflow, Reply::Say("summary".into())]);
-        s.checkpoint(&provider, CheckpointReason::Overflow, &[], RestoreState::default(), &BTreeSet::new())
+        s.checkpoint(&provider, CheckpointReason::Overflow, &[], RestoreState::default())
             .await
             .unwrap();
         let requests = provider.requests();
@@ -818,7 +803,7 @@ mod tests {
         s.say("user", "one round only");
         let provider = Scripted::new(vec![Reply::Overflow]);
         let err = s
-            .checkpoint(&provider, CheckpointReason::Overflow, &[], RestoreState::default(), &BTreeSet::new())
+            .checkpoint(&provider, CheckpointReason::Overflow, &[], RestoreState::default())
             .await
             .unwrap_err();
         assert!(err.contains("too long"));
@@ -826,20 +811,24 @@ mod tests {
     }
 
     /// Tool failures survive into the summary; the deferred tools loaded so
-    /// far are recorded on the boundary and read back from the conversation.
+    /// far are recorded on the boundary and still count as loaded after
+    /// the next checkpoint (`tool_surface::loaded_names`).
     #[tokio::test]
     async fn failures_and_loaded_tools_carry_over() {
         let s = Setup::new();
         s.say("user", "Send the invoice.");
+        s.call("f1", tools::find_tools::FIND_TOOLS, serde_json::json!({ "query": "mail" }), "<functions>\n<function>{\"name\":\"mail\"}</function>\n</functions>\nLoaded: mail. Call them directly.", false);
         s.call("m1", "mail", serde_json::json!({ "action": "send" }), "SMTP 550 mailbox unavailable", true);
-        let provider = Scripted::new(vec![Reply::Say("summary".into())]);
-        let loaded: BTreeSet<String> = ["mail".to_string()].into();
-        let done = s
-            .checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default(), &loaded)
-            .await
-            .unwrap();
+        let provider = Scripted::new(vec![Reply::Say("summary".into()), Reply::Say("summary".into())]);
+        let done = s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
         assert!(done.summary.contains("## Tool Failures") && done.summary.contains("mailbox unavailable"));
-        assert_eq!(loaded_tools_at(&s.conversation()), loaded);
+        let boundary = s.conversation().remove(0);
+        assert_eq!(metadata(&boundary).unwrap()[tool_surface::LOADED_TOOLS_KEY], serde_json::json!(["mail"]));
+
+        s.say("user", "Try again.");
+        s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
+        let loaded = tool_surface::loaded_names(&s.conversation());
+        assert_eq!(loaded, BTreeSet::from(["mail".to_string()]), "carried across two boundaries");
     }
 
     /// A summary call that asks for a tool saves nothing.
@@ -849,7 +838,7 @@ mod tests {
         s.say("user", "Hello.");
         let provider = Scripted::new(vec![Reply::CallTool]);
         assert!(s
-            .checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default(), &BTreeSet::new())
+            .checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default())
             .await
             .is_err());
         assert_eq!(s.conversation().len(), 1);
@@ -874,7 +863,6 @@ mod tests {
         let provider = Scripted::new(vec![]);
         let fork_of = ChatRequest::new(ai::RequestTrace::new("compaction"));
         let rows = Rows { store: s.store.clone(), chat_id: s.chat.clone() };
-        let loaded = BTreeSet::new();
         let cx = CheckpointContext {
             store: &s.store,
             provider: provider.as_ref(),
@@ -884,7 +872,6 @@ mod tests {
             fork_of: &fork_of,
             hooks: &[],
             attachments: &rows,
-            loaded_tools: &loaded,
             restore: RestoreState::default(),
         };
         send(&checkpoint(&cx, CheckpointReason::OwnerAsked));

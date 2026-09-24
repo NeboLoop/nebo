@@ -62,9 +62,6 @@ impl DynTool for SettingsTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
-        false
-    }
 
     fn execute_dyn<'a>(
         &'a self,

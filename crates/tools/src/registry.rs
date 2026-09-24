@@ -155,14 +155,6 @@ pub trait Tool: Send + Sync {
     /// JSON schema for the tool's input.
     fn schema(&self) -> serde_json::Value;
 
-    /// Whether this tool needs user approval.
-    fn requires_approval(&self) -> bool;
-
-    /// Per-resource approval check. Override for tools with mixed approval per resource.
-    fn requires_approval_for(&self, _input: &serde_json::Value) -> bool {
-        self.requires_approval()
-    }
-
     /// Execute the tool with the given input.
     fn execute(
         &self,
@@ -171,15 +163,122 @@ pub trait Tool: Send + Sync {
     ) -> impl std::future::Future<Output = ToolResult> + Send;
 }
 
-/// Type-erased tool wrapper for dynamic dispatch.
+/// The persistence threshold every tool's `max_result_chars` is capped at:
+/// a larger result is saved to the session's `tool-results/` and the model
+/// gets a preview (see [`crate::result_shape`]).
+pub const PERSIST_THRESHOLD_CHARS: usize = 50_000;
+
+/// A tool's result threshold when it declares none of its own.
+pub const DEFAULT_MAX_RESULT_CHARS: usize = 100_000;
+
+/// Order in which aged tool results are trimmed: lowest first.
+pub const TRIM_FIRST: u8 = 0;
+/// Trimmed after [`TRIM_FIRST`]: large output that is rarely re-read.
+pub const TRIM_EARLY: u8 = 2;
+/// The default place in the trimming order.
+pub const TRIM_DEFAULT: u8 = 3;
+
+/// The tool interface: identity, the model-facing definition, and every
+/// attribute other code needs about a tool. Nothing outside a tool keys on
+/// its name: the loop, the permission check, provenance, trimming, labels
+/// and the chat's image filter read these.
+///
+/// Rule keys are names of the current tool set. A tool that still carries
+/// several jobs behind `action`/`resource` answers per call with the name
+/// of the tool that job has in the current set (`read_file`,
+/// `run_command`, …), so a rule, an origin limit or a guard written for a
+/// name holds whichever tool runs the job.
 pub trait DynTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> String;
     fn schema(&self) -> serde_json::Value;
-    fn requires_approval(&self) -> bool;
-    /// Per-resource approval check. Override for tools with mixed approval per resource.
-    fn requires_approval_for(&self, _input: &serde_json::Value) -> bool {
-        self.requires_approval()
+    /// 3–8 words the tool search scores beside the name and description.
+    fn search_hint(&self) -> &str {
+        ""
+    }
+    /// Deferred tools are listed by name until `find_tools` loads them; the
+    /// core set is always loaded. Default: deferred.
+    fn should_defer(&self) -> bool {
+        true
+    }
+    /// The call changes nothing outside this process.
+    fn read_only(&self, _input: &serde_json::Value) -> bool {
+        false
+    }
+    /// The call may run alongside other concurrency-safe calls of the same
+    /// response. Default: read-only calls are.
+    fn concurrency_safe(&self, input: &serde_json::Value) -> bool {
+        self.read_only(input)
+    }
+    /// The key permission rules, origin limits and guards match for this
+    /// call: a tool name of the current set, or a catalog operation.
+    fn rule_key(&self, _input: &serde_json::Value) -> String {
+        self.name().to_string()
+    }
+    /// The call's value a rule matches beside its key: a command prefix, a
+    /// folder, a web domain or a recipient.
+    fn rule_field(&self, _input: &serde_json::Value) -> Option<types::permissions::RuleField> {
+        None
+    }
+    /// The job capability the call belongs to (`file`, `shell`, `web`,
+    /// `browser`, `desktop`, `media`, `system`, `contacts`, or an interfaces
+    /// catalog term). `None` is basic work.
+    fn capability(&self, _input: &serde_json::Value) -> Option<&'static str> {
+        None
+    }
+    /// What the call does outside its own work, as far as its input shows.
+    /// An effect the input can't show is `Unknown`, never a guess.
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        if self.read_only(input) {
+            types::permissions::CallEffects::none()
+        } else {
+            types::permissions::CallEffects::unknown()
+        }
+    }
+    /// Whether the registry validates a call against `schema()` before the
+    /// tool runs. Every tool of the new interface does. A pre-interface tool
+    /// that settles its own call shapes (an inferred `resource`/`action`, its
+    /// alias corrections) answers `false` until its package replaces it; the
+    /// invariant test holds every other tool to `true`.
+    fn validates_input(&self) -> bool {
+        true
+    }
+    /// Checks the tool makes after schema validation and before permission;
+    /// the error is the model-facing message.
+    fn validate_input(&self, _input: &serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
+    /// A result longer than this (capped at [`PERSIST_THRESHOLD_CHARS`]) is
+    /// saved to disk and previewed. `None`: the tool pages its own output
+    /// and its results are never persisted.
+    fn max_result_chars(&self, _input: &serde_json::Value) -> Option<usize> {
+        Some(DEFAULT_MAX_RESULT_CHARS)
+    }
+    /// The owner-facing line while the call runs ("reading notes.md").
+    fn activity(&self, input: &serde_json::Value) -> String {
+        crate::humanize::call_labels(self.name(), input).0
+    }
+    /// The owner-facing line once it ran ("Read notes.md").
+    fn outcome(&self, input: &serde_json::Value) -> String {
+        crate::humanize::call_labels(self.name(), input).1
+    }
+    /// The untrusted-content class the call's result brings into the run.
+    fn taint(&self, _input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
+        None
+    }
+    /// Place in the order aged results are trimmed (see [`TRIM_FIRST`]).
+    fn trim_priority(&self) -> u8 {
+        TRIM_DEFAULT
+    }
+    /// An aged result keeps a bounded slice of its content instead of a
+    /// stub: it is something read, which the work may still rely on.
+    fn keeps_content_when_trimmed(&self, input: &serde_json::Value) -> bool {
+        self.read_only(input)
+    }
+    /// An image this call returns is media the owner asked for, attached to
+    /// the reply, rather than the tool looking at the screen or a page.
+    fn emits_image(&self, _input: &serde_json::Value) -> bool {
+        false
     }
     /// The call as it will run, with every shorthand the tool accepts
     /// resolved (an inferred action or resource written in). The registry
@@ -195,16 +294,6 @@ pub trait DynTool: Send + Sync {
     /// the corresponding permit before executing. Default: `None` (no serialization).
     fn resource_permit(&self, _input: &serde_json::Value) -> Option<ResourceKind> {
         None
-    }
-    /// Whether this tool call is safe to run concurrently with other tools.
-    ///
-    /// Read-only operations (file read, web search, skill catalog) return `true`
-    /// and can run in parallel. Write operations (file write, shell exec, plugin exec)
-    /// return `false` and are executed serially after all concurrent tools finish.
-    ///
-    /// Default: `false` (assume writes). Override for read-only operations.
-    fn is_concurrent_safe(&self, _input: &serde_json::Value) -> bool {
-        false
     }
     /// The typed interface operation this call performs
     /// (`capability.resource.action`), when it performs one.
@@ -241,66 +330,6 @@ pub trait DynTool: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>>;
 }
 
-/// `web` browser actions that change the page or send something: the web
-/// tool declares every call read-only for the concurrency phase (its browser
-/// is per session, so calls never contend), which is true for the scheduler
-/// and false for side effects. Everything else on `web` (navigate,
-/// read_page, screenshot, scroll, find, search, http GET) is a read.
-const WEB_SIDE_EFFECT_ACTIONS: &[&str] = &[
-    "click",
-    "fill",
-    "type",
-    "select",
-    "press",
-    "drag",
-    "evaluate",
-    "file_upload",
-    "webmcp_call",
-];
-
-/// `work` actions that only read workflow state. The work tool declares
-/// every call sequential, and must: a status poll's answer changes between
-/// calls, so the registry's identical-read ceiling (3) must not end a turn
-/// that is waiting on a run. That is true for the scheduler and false for
-/// side effects. These were 286 of the 828 guardrail shadow decisions, 81 of
-/// them in `ask`.
-const WORK_READ_ACTIONS: &[&str] = &["list", "status", "runs"];
-
-/// `emit` puts an event on the local bus and nothing leaves the machine;
-/// whatever a subscribed workflow then does is judged (and gated) where it
-/// happens, in that run.
-const EMIT_TOOL: &str = "emit";
-
-/// Whether a call changes something outside this process. `read_only` is the
-/// tool's own answer (`DynTool::is_concurrent_safe`). The carve-outs: `web`
-/// (see [`WEB_SIDE_EFFECT_ACTIONS`]; an HTTP call that is not a GET/HEAD
-/// sends something), `work` reads (see [`WORK_READ_ACTIONS`]) and `emit`
-/// (see [`EMIT_TOOL`]).
-pub fn call_has_side_effects(tool: &str, input: &serde_json::Value, read_only: bool) -> bool {
-    if tool == EMIT_TOOL {
-        return false;
-    }
-    if tool == "work" {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        if WORK_READ_ACTIONS.contains(&action) {
-            return false;
-        }
-    }
-    if tool == "web" {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        if WEB_SIDE_EFFECT_ACTIONS.contains(&action) {
-            return true;
-        }
-        let method = input
-            .get("method")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_ascii_uppercase();
-        return !method.is_empty() && method != "GET" && method != "HEAD";
-    }
-    !read_only
-}
-
 /// Registry manages available tools.
 pub struct Registry {
     // Arc, not Box: execute() clones the handle and drops the map lock BEFORE
@@ -312,7 +341,10 @@ pub struct Registry {
     /// Cached tool definitions (description + schema) computed at registration time.
     /// Avoids regenerating descriptions and JSON schemas on every LLM iteration.
     def_cache: Arc<RwLock<HashMap<String, ToolDefinition>>>,
-    /// Tools marked as deferred — not sent to LLM until keyword-activated or first called.
+    /// Each tool's compiled input schema, built with its definition.
+    validators: Arc<RwLock<HashMap<String, Arc<jsonschema::Validator>>>>,
+    /// Deferred tools (`DynTool::should_defer`): listed by name until
+    /// `find_tools` loads them.
     deferred: Arc<RwLock<HashSet<String>>>,
     /// Maps agent_id → set of tool names owned by that agent's sidecar.
     agent_tools: Arc<RwLock<HashMap<String, HashSet<String>>>>,
@@ -353,6 +385,7 @@ impl Registry {
         Self {
             tools: Arc::new(RwLock::new(HashMap::new())),
             def_cache: Arc::new(RwLock::new(HashMap::new())),
+            validators: Arc::new(RwLock::new(HashMap::new())),
             deferred: Arc::new(RwLock::new(HashSet::new())),
             agent_tools: Arc::new(RwLock::new(HashMap::new())),
             policy: Arc::new(RwLock::new(policy)),
@@ -472,7 +505,8 @@ impl Registry {
             .unwrap_or_default()
     }
 
-    /// Register a tool.
+    /// Register a tool: its definition, its compiled schema, and whether
+    /// it is deferred, all from the tool's spec.
     pub async fn register(&self, tool: Box<dyn DynTool>) {
         let name = tool.name().to_string();
         let def = ToolDefinition {
@@ -480,6 +514,8 @@ impl Registry {
             description: tool.description(),
             input_schema: tool.schema(),
         };
+        let validator = crate::input_schema::compile(&name, &def.input_schema).map(Arc::new);
+        let deferred = tool.should_defer();
         let mut tools = self.tools.write().await;
         if tools.contains_key(&name) {
             warn!(tool = %name, "tool already registered, overwriting");
@@ -487,15 +523,19 @@ impl Registry {
         tools.insert(name.clone(), Arc::from(tool));
         drop(tools);
         self.def_cache.write().await.insert(name.clone(), def);
-        debug!(tool = %name, "registered tool");
-    }
-
-    /// Register a tool and mark it as deferred (not sent to LLM until activated).
-    pub async fn register_deferred(&self, tool: Box<dyn DynTool>) {
-        let name = tool.name().to_string();
-        self.deferred.write().await.insert(name.clone());
-        self.register(tool).await;
-        debug!(tool = %name, "registered as deferred");
+        let mut validators = self.validators.write().await;
+        match validator {
+            Some(v) => validators.insert(name.clone(), v),
+            None => validators.remove(&name),
+        };
+        drop(validators);
+        let mut deferred_set = self.deferred.write().await;
+        if deferred {
+            deferred_set.insert(name.clone());
+        } else {
+            deferred_set.remove(&name);
+        }
+        debug!(tool = %name, deferred, "registered tool");
     }
 
     /// Register a tool as belonging to an agent's sidecar.
@@ -526,6 +566,7 @@ impl Registry {
         if tools.remove(name).is_some() {
             self.deferred.write().await.remove(name);
             self.def_cache.write().await.remove(name);
+            self.validators.write().await.remove(name);
             debug!(tool = %name, "unregistered tool");
         }
     }
@@ -539,9 +580,13 @@ impl Registry {
         if !names.is_empty() {
             let mut tools = self.tools.write().await;
             let mut cache = self.def_cache.write().await;
+            let mut validators = self.validators.write().await;
+            let mut deferred = self.deferred.write().await;
             for name in &names {
                 tools.remove(name);
                 cache.remove(name);
+                validators.remove(name);
+                deferred.remove(name);
             }
             debug!(agent = %agent_id, tools = ?names, "unregistered agent sidecar tools");
         }
@@ -594,24 +639,22 @@ impl Registry {
         defs
     }
 
-    /// List deferred tools that haven't been activated yet as compact stubs.
-    /// Returns (name, first_line_of_description) pairs for system prompt listing.
-    pub async fn list_deferred_stubs(&self, activated: &HashSet<String>) -> Vec<(String, String)> {
+    /// Every deferred tool as `find_tools` searches it, in name order.
+    pub async fn deferred_entries(&self) -> Vec<crate::find_tools::DeferredEntry> {
         let deferred = self.deferred.read().await;
         let cache = self.def_cache.read().await;
-        let mut stubs: Vec<(String, String)> = deferred
+        let tools = self.tools.read().await;
+        let mut entries: Vec<crate::find_tools::DeferredEntry> = deferred
             .iter()
-            .filter(|name| !activated.contains(name.as_str()))
             .filter_map(|name| {
-                cache.get(name.as_str()).map(|def| {
-                    let short = def.description.lines().next().unwrap_or("").to_string();
-                    (name.clone(), short)
+                Some(crate::find_tools::DeferredEntry {
+                    definition: cache.get(name)?.clone(),
+                    search_hint: tools.get(name)?.search_hint().to_string(),
                 })
             })
             .collect();
-        // Name order: this listing is system-prompt bytes (see `list`).
-        stubs.sort();
-        stubs
+        entries.sort_by(|a, b| a.definition.name.cmp(&b.definition.name));
+        entries
     }
 
     /// Refresh the cached definition for a tool (e.g. after plugin install/uninstall).
@@ -624,6 +667,10 @@ impl Registry {
                 input_schema: tool.schema(),
             };
             drop(tools);
+            match crate::input_schema::compile(name, &def.input_schema) {
+                Some(v) => self.validators.write().await.insert(name.to_string(), Arc::new(v)),
+                None => self.validators.write().await.remove(name),
+            };
             self.def_cache.write().await.insert(name.to_string(), def);
             debug!(tool = %name, "refreshed cached tool definition");
         }
@@ -669,15 +716,45 @@ impl Registry {
         tools.get(name).and_then(|t| t.execution_timeout(input))
     }
 
-    /// Check whether a tool call is safe to run concurrently with other tools.
-    ///
-    /// Returns `true` for read-only operations, `false` for writes/mutations.
-    /// Returns `false` for unknown tools (conservative default).
-    pub async fn is_concurrent_safe(&self, tool_name: &str, input: &serde_json::Value) -> bool {
-        let tools = self.tools.read().await;
-        tools
-            .get(tool_name)
-            .map_or(false, |tool| tool.is_concurrent_safe(input))
+    /// A registered tool, for reading its spec.
+    pub async fn get(&self, name: &str) -> Option<Arc<dyn DynTool>> {
+        self.tools.read().await.get(name).cloned()
+    }
+
+    /// Whether this call may run alongside the other concurrency-safe calls
+    /// of its response. `false` for an unknown tool.
+    pub async fn concurrency_safe(&self, tool_name: &str, input: &serde_json::Value) -> bool {
+        self.get(tool_name)
+            .await
+            .is_some_and(|tool| tool.concurrency_safe(input))
+    }
+
+    /// Whether this call changes nothing outside this process. `false` for
+    /// an unknown tool.
+    pub async fn read_only(&self, tool_name: &str, input: &serde_json::Value) -> bool {
+        self.get(tool_name).await.is_some_and(|tool| tool.read_only(input))
+    }
+
+    /// The call resolved for the permission check: its rule key, operation,
+    /// capability, rule field, read-only flag and effects, from the tool's
+    /// spec. `None` for an unknown tool.
+    pub async fn target(
+        &self,
+        tool_name: &str,
+        input: &serde_json::Value,
+    ) -> Option<types::permissions::Target> {
+        let tool = self.get(tool_name).await?;
+        Some(target_of(tool.as_ref(), input))
+    }
+
+    /// The owner-facing (activity, outcome) lines for a call. A name no
+    /// tool is registered under (a CLI provider's own tools) gets the
+    /// generic wording.
+    pub async fn labels(&self, tool_name: &str, input: &serde_json::Value) -> (String, String) {
+        match self.get(tool_name).await {
+            Some(tool) => (tool.activity(input), tool.outcome(input)),
+            None => crate::humanize::call_labels(tool_name, input),
+        }
     }
 
     /// The call as the named tool will run it (see
@@ -695,62 +772,35 @@ impl Registry {
     /// Whether this call changes something outside this process — the ONE
     /// answer to that question: the runner's guardrail judges exactly these
     /// calls, and the lease gate in [`Registry::execute`] refuses exactly
-    /// these while a cloud bot is frozen. See [`call_has_side_effects`].
+    /// these while a cloud bot is frozen. The tool's `read_only`.
     pub async fn has_side_effects(&self, tool_name: &str, input: &serde_json::Value) -> bool {
-        let read_only = self.is_concurrent_safe(tool_name, input).await;
-        call_has_side_effects(tool_name, input, read_only)
+        !self.read_only(tool_name, input).await
     }
 
-    /// List tools filtered by per-entity permissions.
-    /// Tools whose category is denied are excluded from the list sent to the LLM.
-    pub async fn list_with_permissions(
-        &self,
-        permissions: Option<&std::collections::HashMap<String, bool>>,
-    ) -> Vec<ToolDefinition> {
-        let cache = self.def_cache.read().await;
-        cache
-            .values()
-            .filter(|def| {
-                if let Some(perms) = permissions {
-                    // Only hide pure single-capability tools whose capability is
-                    // off. Meta-tools (os) and mixed tools (organizer) stay listed
-                    // — their individual calls are gated per-resource at execution.
-                    if let Some(cat) = capabilities::whole_tool_capability(&def.name) {
-                        if let Some(&allowed) = perms.get(cat) {
-                            return allowed;
-                        }
-                    }
-                }
-                true // no permission set / ungated = allowed
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Execute a tool and return the result.
+    /// Execute a tool and return the result, shaped for the model.
     ///
-    /// Uses a two-phase approach to avoid holding the `tools` read-lock
-    /// while waiting for a resource permit:
-    ///
-    /// 1. **Validate** — read-lock tools, check safeguard + policy, call
-    ///    `resource_permit()` to determine which physical resource (if any)
-    ///    the tool needs. Drop the read-lock.
-    /// 2. **Acquire permit** — if a resource is needed, block until the
-    ///    corresponding `ResourcePermits` mutex is free.
-    /// 3. **Execute** — re-read-lock tools and run `execute_dyn()`. The
-    ///    permit guard stays alive for the duration of execution.
+    /// The one door every call goes through, in order: resolve the tool,
+    /// repair and settle the input, validate it against the schema and the
+    /// tool's own checks, the hard limits keyed on the call's rule key
+    /// (safeguard, folder fence, origin limits, restricted-run allowlist,
+    /// lease), the capability and resource grants, then run it under its
+    /// resource permit and shape the result (the one spill path).
     pub async fn execute(
         &self,
         ctx: &ToolContext,
         tool_name: &str,
         input: serde_json::Value,
     ) -> ToolResult {
-        let name = tool_name;
+        debug!(tool = %tool_name, "executing tool");
 
-        debug!(tool = %name, "executing tool");
-
-        // ── Phase 1: Validate + determine resource permit ──────────
-        let (name, mut input) = if let Some((strap_name, params)) = resolve_flat_alias(name) {
+        // A name no tool is registered under may be an old flat name that
+        // still resolves; a registered name always runs its own tool.
+        let alias = if self.get(tool_name).await.is_none() {
+            resolve_flat_alias(tool_name)
+        } else {
+            None
+        };
+        let (name, mut input) = if let Some((strap_name, params)) = alias {
             let mut merged = input;
             if let Some(obj) = merged.as_object_mut() {
                 for (k, v) in params {
@@ -760,214 +810,177 @@ impl Registry {
             debug!(alias = %tool_name, resolved = %strap_name, "flat-name alias resolved");
             (strap_name, merged)
         } else {
-            (name.to_string(), input)
+            (tool_name.to_string(), input)
         };
         let name = name.as_str();
 
-        // Truncated-stream salvage detection: when a tool call's argument
-        // stream is cut off mid-flight (output cap hit while emitting a huge
-        // payload), the gateway wraps the unparseable text as {"_raw": ...}.
-        // Dispatching that produces a terse per-tool serde error ("missing
-        // field `action`") that teaches nothing — observed live 2026-08-28:
-        // five identical 45KB dashboard writes, each streamed ~60s, each
-        // failing the same way. Catch it at the ONE dispatch choke point and
-        // teach the recovery instead.
-        if let Some(obj) = input.as_object() {
-            if obj.len() == 1 {
-                if let Some(raw) = obj.get("_raw").and_then(|v| v.as_str()) {
-                    // A short unparseable payload was never cut off by any
-                    // output cap: the model emitted bad JSON (live 2026-09-05:
-                    // `"limit": }` at 73 bytes). Telling it "do not retry, it
-                    // will be cut off again" sent it to split a glob into pieces.
-                    if raw.len() < 4096 {
-                        return ToolResult::error(format!(
-                            "Your tool call's arguments were not valid JSON ({} bytes): `{}`. \
-                             A value is missing or malformed. Resend the same call with every \
-                             field filled; leave a field out rather than empty.",
-                            raw.len(),
-                            crate::truncate_str(raw, 200)
-                        ));
-                    }
-                    return ToolResult::error(format!(
-                        "Your tool call's arguments were CUT OFF mid-stream at the output limit ({} bytes of arguments arrived before the cut; JSON incomplete). Do NOT retry the same call: it will be cut off again. Produce large content in PARTS instead: first `os(resource: \"file\", action: \"write\", path: ..., content: <first portion>)`, then repeat with `append: true` for each following portion. Keep each call's content under ~15,000 characters.",
-                        raw.len()
-                    ));
-                }
-            }
+        let Some(tool) = self.get(name).await else {
+            warn!(tool = %name, "unknown tool");
+            return ToolResult::error(crate::result_shape::unknown_tool(name));
+        };
+
+        // Arguments that never parsed arrive as `{"_raw": "..."}` (the
+        // provider's salvage of a cut or malformed stream).
+        if let Some(raw) = unparsed_arguments(&input) {
+            return ToolResult::error(bad_json_error(name, raw));
         }
 
-        let permit_kind = {
-            let tools = self.tools.read().await;
-            let tool = match tools.get(name) {
-                Some(t) => t,
-                None => {
-                    warn!(tool = %name, "unknown tool");
-                    let available: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
-                    let correction = tool_correction(name);
-                    return ToolResult::error(format!(
-                        "TOOL ERROR: {:?} does not exist. You do NOT have that tool. Do NOT call it again.\n\n{}\nYour available tools are: {}",
-                        name,
-                        correction,
-                        available.join(", ")
-                    ));
-                }
-            };
-
-            // Repair model-stringified object/array args against the tool's own
-            // schema, the same way MCP proxy tools already do. Some providers
-            // serialize a structured argument as a JSON string
-            // (`tasks: "[{\"prompt\":…}]"` instead of the array), and the tool
-            // then reports the parameter as missing. The model cannot see the
-            // difference, so it re-sends the identical call until the spiral
-            // backstop ends the turn ("'agent:spawn_parallel' was called 8
-            // times this turn without progress"). Coerce once here, at the one
-            // dispatch point every tool goes through.
-            crate::mcp_tool::coerce_schema_types(&mut input, &tool.schema());
-
-            // Settle the call's shape BEFORE any gate reads it: every check
-            // below (and the tool itself) sees the action and resource that
-            // execute, whichever shape the model wrote.
-            input = tool.normalize_input(input);
-
-            // Hard safety guard — unconditional, cannot be overridden
-            if let Some(err) = safeguard::check_safeguard(name, &input) {
-                warn!(tool = %name, error = %err, "safeguard blocked");
-                return ToolResult::error(err);
-            }
-
-            // Path scope guard — restrict file/shell to allowed directories
-            if let Some(err) = safeguard::check_path_scope(name, &input, &ctx.allowed_paths) {
-                warn!(tool = %name, error = %err, "path scope blocked");
-                return ToolResult::error(err);
-            }
-
-            // Check origin-based deny list
-            let resource = input.get("resource").and_then(|v| v.as_str());
-            {
-                let policy = self.policy.read().await;
-                if policy.is_denied_for_origin(ctx.origin, name, resource) {
-                    return ToolResult::error(format!(
-                        "Tool '{}' is not permitted when called from {}. Tell the user what you needed it for; do not retry.",
-                        name,
-                        origin_label(ctx.origin)
-                    ));
-                }
-            }
-
-            // Restricted-run allowlist (review fork, phone callers). Checked
-            // at THIS choke point too — the runner's gate covers the normal
-            // loop, but direct registry callers (the voice fallback path, the
-            // flat-name aliases resolved above) must hit the same fence.
-            if !ctx.whitelist_allows(name, &input) {
-                return ToolResult::error(format!(
-                    "Tool '{}' is not available in this restricted run. Use one of the \
-                     tools you were given, or say plainly that you can't do that.",
-                    name
-                ));
-            }
-
-            // Lease gate: while this bot's lease is not held (a cloud bot
-            // that lost its NeboAI connection, or was replaced by another
-            // running copy) nothing that changes anything runs — another
-            // process may be the bot now. Reads still run.
-            if self.lease.frozen() && call_has_side_effects(name, &input, tool.is_concurrent_safe(&input)) {
-                warn!(tool = %name, "lease not held: side-effecting call paused");
-                return ToolResult::error(format!("{name}: {}", comm::lease::PAUSED));
-            }
-
-            tool.resource_permit(&input)
-        }; // ← tools read-lock dropped
-
-        // ── Phase 1b: Entity permission check ─────────────────────
-        if let Some(ref perms) = ctx.entity_permissions {
-            // Resource-aware: `os` resolves to file/shell/system/desktop/media by
-            // the resource being used (the original bug gated all of os behind
-            // `desktop`). Installed extensions (plugin/mcp/app/skill/agent) return
-            // None here — ungated, because installation is the grant.
-            if let Some(category) = capabilities::gating_capability(name, &input) {
-                // OFF capability is a hard error ONLY when the caller hasn't
-                // cleared it. The runner clears it via the approval round-trip
-                // (user said yes / autonomous / capability pre-granted), turning
-                // "off" into "ask" rather than a dead end (PERMISSIONS_SME §11).
-                // Callers that don't run the gate leave approved_categories empty,
-                // so their OFF capabilities still hard-block.
-                if perms.get(category) == Some(&false)
-                    && !ctx.approved_categories.contains(category)
-                {
-                    // Actionable, capability-named denial. Tell the model exactly
-                    // which permission is off and to surface that to the user
-                    // (Settings → Permissions) instead of silently flailing
-                    // through fallback tools. PERMISSION_REQUIRED: prefix lets the
-                    // runner/UI detect this and offer a one-tap enable.
-                    let label = capabilities::capability_label(category);
-                    return ToolResult::error(format!(
-                        "PERMISSION_REQUIRED:{category} — The \"{label}\" capability is \
-                         turned off, so I can't do this. Tell the user, in plain language, \
-                         that you need the \"{label}\" permission enabled in Settings → \
-                         Permissions to continue, then stop. Do NOT try other tools or \
-                         workarounds to get around it."
-                    ));
-                }
-            }
+        // Repair model-stringified values against the tool's own schema
+        // (`tasks: "[{...}]"`, `limit: "5"`), then settle the call's shape
+        // BEFORE anything reads it: every check below, and the tool itself,
+        // sees the call that executes, whichever shape the model wrote.
+        if let Some(def) = self.definition(name).await {
+            crate::mcp_tool::coerce_schema_types(&mut input, &def.input_schema);
         }
+        input = tool.normalize_input(input);
 
-        // ── Phase 1c: Entity resource grant check ─────────────────
-        if let Some(ref grants) = ctx.resource_grants {
-            if let Some(kind) = &permit_kind {
-                let resource_name = match kind {
-                    ResourceKind::Screen => "screen",
-                    ResourceKind::Browser => "browser",
-                };
-                if let Some(grant) = grants.get(resource_name) {
-                    if grant == "deny" {
-                        return ToolResult::error(format!(
-                            "This AI employee is not allowed to use the {}. Tell the user; do not try another tool to reach it.",
-                            resource_name
-                        ));
-                    }
-                }
-            }
-        }
-
-        // ── Phase 2: Acquire resource permit (may block) ───────────
-        let _permit_guard = if let Some(kind) = permit_kind {
-            debug!(tool = %name, resource = ?kind, "acquiring resource permit");
-            Some(self.resource_permits.acquire(kind).await)
+        let validator = if tool.validates_input() {
+            self.validators.read().await.get(name).cloned()
         } else {
             None
         };
-
-        // ── Phase 3: snapshot the tool handle, RELEASE the lock, execute ──
-        // The guard must not live across the tool future: a tool can park for
-        // minutes on an ask card, and register/unregister (plugin installs)
-        // need the write lock meanwhile. Holding the read guard here
-        // deadlocked the install card against its own discover call.
-        let tool = {
-            let tools = self.tools.read().await;
-            tools.get(name).cloned()
-        };
-        let mut result = match tool {
-            Some(tool) => tool.execute_dyn(ctx, input).await,
-            None => ToolResult::error(format!(
-                "Tool '{}' was removed while this call waited (a plugin install/uninstall ran). Call it once more; if it is still missing, it is gone.",
-                name
-            )),
-        };
-
-        // Registry-level output backstop (a hard MAX_TOOL_RESULT_BYTES ceiling).
-        // The runner has smarter preview/spill-to-file tiers well below this, so
-        // chat runs never hit it — it protects direct callers (deep research,
-        // workflows) from unbounded multi-MB results.
-        const MAX_RESULT_BYTES: usize = 400_000;
-        if result.content.len() > MAX_RESULT_BYTES {
-            let total = result.content.len();
-            let truncated = crate::truncate_str(&result.content, MAX_RESULT_BYTES);
-            result.content = format!(
-                "{}\n\n[output truncated: first 400,000 of {} bytes shown; nothing was saved to disk. Re-run with a narrower scope.]",
-                truncated, total
-            );
+        if let Some(validator) = validator {
+            let issues = crate::input_schema::issues(&validator, &input);
+            if !issues.is_empty() {
+                return ToolResult::error(self.validation_error(ctx, tool.as_ref(), &input, issues).await);
+            }
         }
+        if let Err(message) = tool.validate_input(&input) {
+            return ToolResult::error(crate::result_shape::tool_use_error(&message));
+        }
+
+        // Hard limits, keyed on the job the call does (its rule key), so a
+        // call reaches the same guard whichever tool shape carries it.
+        let key = tool.rule_key(&input);
+        if let Some(err) = safeguard::check_safeguard(&key, &input) {
+            warn!(tool = %name, error = %err, "safeguard blocked");
+            return ToolResult::error(err);
+        }
+        if let Some(err) = safeguard::check_path_scope(&key, &input, &ctx.allowed_paths) {
+            warn!(tool = %name, error = %err, "path scope blocked");
+            return ToolResult::error(err);
+        }
+        if self.policy.read().await.is_denied_for_origin(ctx.origin, &key) {
+            return ToolResult::error(format!(
+                "'{key}' is not permitted when called from {}. Tell the user what you needed it for; do not retry.",
+                origin_label(ctx.origin)
+            ));
+        }
+
+        // Restricted-run allowlist (review fork, phone callers). Checked
+        // at THIS choke point too — the runner's gate covers the normal
+        // loop, but direct registry callers (the voice fallback path, the
+        // flat-name aliases resolved above) must hit the same fence.
+        if !ctx.whitelist_allows(name, &input) {
+            return ToolResult::error(format!(
+                "Tool '{}' is not available in this restricted run. Use one of the \
+                 tools you were given, or say plainly that you can't do that.",
+                name
+            ));
+        }
+
+        // Lease gate: while this bot's lease is not held (a cloud bot
+        // that lost its NeboAI connection, or was replaced by another
+        // running copy) nothing that changes anything runs — another
+        // process may be the bot now. Reads still run.
+        if self.lease.frozen() && !tool.read_only(&input) {
+            warn!(tool = %name, "lease not held: side-effecting call paused");
+            return ToolResult::error(format!("{name}: {}", comm::lease::PAUSED));
+        }
+
+        // Entity permission: the capability the call belongs to, from the
+        // tool's spec. Installed extensions (plugin/mcp/app/skill/agent)
+        // declare none — installation is the grant.
+        if let Some(ref perms) = ctx.entity_permissions
+            && let Some(category) = tool.capability(&input)
+        {
+            // OFF capability is a hard error ONLY when the caller hasn't
+            // cleared it. The runner clears it via the approval round-trip
+            // (user said yes / autonomous / capability pre-granted), turning
+            // "off" into "ask" rather than a dead end (PERMISSIONS_SME §11).
+            // Callers that don't run the gate leave approved_categories empty,
+            // so their OFF capabilities still hard-block.
+            if perms.get(category) == Some(&false) && !ctx.approved_categories.contains(category) {
+                // Actionable, capability-named denial. PERMISSION_REQUIRED:
+                // prefix lets the runner/UI detect this and offer a one-tap
+                // enable.
+                let label = capabilities::capability_label(category);
+                return ToolResult::error(format!(
+                    "PERMISSION_REQUIRED:{category} — The \"{label}\" capability is \
+                     turned off, so I can't do this. Tell the user, in plain language, \
+                     that you need the \"{label}\" permission enabled in Settings → \
+                     Permissions to continue, then stop. Do NOT try other tools or \
+                     workarounds to get around it."
+                ));
+            }
+        }
+
+        let permit_kind = tool.resource_permit(&input);
+        if let (Some(grants), Some(kind)) = (&ctx.resource_grants, &permit_kind) {
+            let resource_name = match kind {
+                ResourceKind::Screen => "screen",
+                ResourceKind::Browser => "browser",
+            };
+            if grants.get(resource_name).is_some_and(|g| g == "deny") {
+                return ToolResult::error(format!(
+                    "This AI employee is not allowed to use the {}. Tell the user; do not try another tool to reach it.",
+                    resource_name
+                ));
+            }
+        }
+        let _permit_guard = match permit_kind {
+            Some(kind) => {
+                debug!(tool = %name, resource = ?kind, "acquiring resource permit");
+                Some(self.resource_permits.acquire(kind).await)
+            }
+            None => None,
+        };
+
+        // The handle is an `Arc` snapshot: no registry lock is held across
+        // the tool future (a tool can park for minutes on an ask card while
+        // plugin installs re-register tools).
+        let threshold = crate::result_shape::threshold(tool.max_result_chars(&input));
+        let mut result = tool.execute_dyn(ctx, input).await;
+        crate::result_shape::shape(
+            name,
+            &crate::result_shape::results_dir(&ctx.session_id),
+            threshold,
+            &mut result,
+        );
         result
+    }
+
+    /// The InputValidationError for a call that failed its schema: the
+    /// issues, the smallest valid call when nothing was sent, and for a
+    /// deferred tool the model was never sent, how to load it.
+    async fn validation_error(
+        &self,
+        ctx: &ToolContext,
+        tool: &dyn DynTool,
+        input: &serde_json::Value,
+        mut issues: Vec<String>,
+    ) -> String {
+        let name = tool.name();
+        let schema = self.definition(name).await.map(|d| d.input_schema).unwrap_or_default();
+        if input.as_object().is_some_and(|o| o.is_empty())
+            && let Some(minimal) = crate::input_schema::minimal_call(&schema)
+        {
+            issues.push(minimal);
+        }
+        let mut message = crate::result_shape::input_validation(name, &issues);
+        let unloaded = ctx
+            .declared_tools
+            .as_ref()
+            .is_some_and(|declared| !declared.contains(name))
+            && self.is_deferred(name).await;
+        if unloaded {
+            message.push_str(&format!(
+                "\nThis tool wasn't loaded, so its definition was never sent. Call {} with \
+                 query \"select:{name}\", then retry this call. Its input schema is: {schema}",
+                crate::find_tools::FIND_TOOLS
+            ));
+        }
+        message
     }
 
     /// Update the policy.
@@ -1075,7 +1088,7 @@ impl Registry {
         // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — CORE.
         // The file/shell meta-tool is the agent's primary way to act; it must always be
         // visible. It previously was deferred to save ~8-10K schema tokens, but that left
-        // the model blind to its own core capability — it had to tool_search to discover
+        // the model blind to its own core capability — it had to find_tools to discover
         // os, and the tool unloaded when that discovery message was evicted from the sliding
         // window, causing mid-task thrashing. The system-prompt prefix is cached
         // (Anthropic cache_control / Janus prefix caching), so the schema costs ~10% on
@@ -1093,9 +1106,9 @@ impl Registry {
         *self.read_state.write().unwrap() = Some(os_tool.file_tool().read_state());
         self.register(Box::new(os_tool)).await;
 
-        // Code tool (tree-sitter outline/symbols/parse_check/query/context) — CORE.
+        // Code tool (tree-sitter outline/symbols/parse_check/query/context) — deferred.
         // Read-only intel, no capability gate: same tier as os file read/grep
-        // (capabilities::gating_capability's default arm keeps it ungated).
+        // (it declares no capability, so it is ungated).
         self.register(Box::new(crate::code_tool::CodeTool::new()))
             .await;
 
@@ -1217,7 +1230,7 @@ impl Registry {
             if let Some(ps) = self.plugin_store.read().unwrap().clone() {
                 execute_tool = execute_tool.with_plugin_store(ps);
             }
-            self.register_deferred(Box::new(execute_tool)).await;
+            self.register(Box::new(execute_tool)).await;
         }
 
         // Message tool (owner notifications + coworker messages) — always registered (core)
@@ -1230,18 +1243,18 @@ impl Registry {
 
         // Work tool (workflow lifecycle + execution) — deferred (only activated when user mentions workflows)
         if let Some(manager) = workflow_manager {
-            self.register_deferred(Box::new(crate::workflows::WorkTool::new(manager)))
+            self.register(Box::new(crate::workflows::WorkTool::new(manager)))
                 .await;
         }
 
-        self.register_deferred(Box::new(crate::publisher_tool::PublisherTool::new(
+        self.register(Box::new(crate::publisher_tool::PublisherTool::new(
             store.clone(),
         )))
         .await;
 
         // Notebook tool (.ipynb cell editing) — deferred (activated when the user
         // mentions notebooks / Jupyter / .ipynb).
-        self.register_deferred(Box::new(crate::notebook_tool::NotebookTool::new()))
+        self.register(Box::new(crate::notebook_tool::NotebookTool::new()))
             .await;
 
         // Plugin tool — ALWAYS registered when a plugin store exists, even with ZERO
@@ -1259,7 +1272,7 @@ impl Registry {
 
         // VM tool (isolated Linux environment for builds/toolchains) — deferred
         // Activated when agent needs Go, gcc, Docker, or clean build env
-        self.register_deferred(Box::new(crate::vm_tool::VmTool::new()))
+        self.register(Box::new(crate::vm_tool::VmTool::new()))
             .await;
 
         // Team tool (teams of local employees) — always registered (core): a
@@ -1276,7 +1289,7 @@ impl Registry {
         // Authority tool (standing authority inside the constitution). Deferred:
         // it reaches the model only when a seat's `requires.tools` names
         // "authority" (the General Manager) or a turn discovers it.
-        self.register_deferred(Box::new(crate::authority_tool::AuthorityTool::new(store.clone())))
+        self.register(Box::new(crate::authority_tool::AuthorityTool::new(store.clone())))
             .await;
 
         // Loop tool (NeboAI comms: dm, channel, loop, topic) — requires "loop" permission.
@@ -1323,12 +1336,15 @@ impl DynTool for McpProxyTool {
             .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}))
     }
 
-    fn requires_approval(&self) -> bool {
-        true
-    }
 
     fn mcp_proxy_info(&self) -> Option<(String, String)> {
         Some((self.integration_id.clone(), self.original_name.clone()))
+    }
+
+    /// An MCP result is what the work asked the server for (Company Memory
+    /// included): trimming keeps it.
+    fn keeps_content_when_trimmed(&self, _input: &serde_json::Value) -> bool {
+        true
     }
 
     fn execute_dyn<'a>(
@@ -1394,7 +1410,7 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(async {
-                    self.register_deferred(Box::new(tool)).await;
+                    self.register(Box::new(tool)).await;
                     self.note_proxy_change(name, true).await;
                 });
             });
@@ -1449,69 +1465,6 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
 // (filesystem/memory/plugin) that didn't match the persisted keys
 // (file/shell/system/…), so most toggles silently gated nothing.
 
-/// The canonical absolute paths an `os` file mutation would touch, or `None`
-/// when the call is anything else.
-///
-/// Returns `Some(paths)` only for the `os` tool with resolved resource "file"
-/// (via [`crate::os_tool::OsTool::resolved_resource`] — the same chain the
-/// approval gate, safeguards, and path scoping use) and a mutating action
-/// (write/edit/delete/move/copy). The target `path` is made absolute; for
-/// move/copy the destination (`destination`/`to`) is included too. A missing
-/// or unresolvable path yields `None` — callers must treat `None` as "not a
-/// path-scoped file mutation" and fall back to their conservative behavior.
-///
-/// Part of the concurrency surface alongside [`Registry::is_concurrent_safe`]:
-/// the runner's tool-call partition uses it to admit path-disjoint file
-/// mutations into the parallel phase.
-pub fn file_mutation_paths(
-    tool_name: &str,
-    input: &serde_json::Value,
-) -> Option<Vec<std::path::PathBuf>> {
-    if tool_name != "os" {
-        return None;
-    }
-    if crate::os_tool::OsTool::resolved_resource(input) != "file" {
-        return None;
-    }
-    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-    // checkpoint snapshots its `paths[]` (a concurrent write would race the
-    // snapshot); restore writes them. A restore with no `paths` takes them
-    // from the manifest, which this input-only view cannot see: None, so the
-    // scheduler runs it alone. plan_check runs arbitrary commands: alone too.
-    if matches!(action, "checkpoint" | "restore") {
-        let paths: Vec<std::path::PathBuf> = input
-            .get("paths")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|p| p.as_str())
-                    .filter_map(|p| std::path::absolute(std::path::Path::new(p)).ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-        return (!paths.is_empty()).then_some(paths);
-    }
-    if !matches!(action, "write" | "edit" | "delete" | "move" | "copy" | "plan") {
-        return None;
-    }
-    let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
-    if path.is_empty() {
-        return None;
-    }
-    let mut paths = vec![std::path::absolute(std::path::Path::new(path)).ok()?];
-    if matches!(action, "move" | "copy") {
-        let dest = input
-            .get("destination")
-            .or_else(|| input.get("to"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if dest.is_empty() {
-            return None;
-        }
-        paths.push(std::path::absolute(std::path::Path::new(dest)).ok()?);
-    }
-    Some(paths)
-}
 
 /// Resolve flat tool names (the model-facing convention) AND legacy pre-STRAP
 /// tool names to STRAP tool + injected params. Returns (strap_tool_name,
@@ -1530,8 +1483,8 @@ pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json
         // Legacy STRAP consolidations — tools absorbed into os/plugin. The
         // call shape carried over (resource/action args), so organizer-style
         // calls pass through untouched; single-purpose tools inject their
-        // absorbed resource. Must agree with tool_correction's prose and
-        // legacy_tool_aliases (the scoping table).
+        // absorbed resource. Must agree with legacy_tool_aliases (the
+        // scoping table).
         "organizer" | "desktop" | "system" => ("os", vec![]),
         "app" => ("os", vec![("resource", "app")]),
         "settings" => ("os", vec![("resource", "settings")]),
@@ -1578,8 +1531,7 @@ pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json
 }
 
 /// Legacy tool names from before the STRAP consolidation → the STRAP tool
-/// that absorbed them. The structured counterpart of `tool_correction`'s
-/// prose (which carries usage examples and must agree with this table).
+/// that absorbed them.
 /// Consumed by the workflow engine's activity tool-scoping so a workflow
 /// authored (or imported) against pre-STRAP names — `organizer(...)`,
 /// `gws ...` — still scopes to the right live tool instead of matching
@@ -1604,7 +1556,6 @@ pub fn legacy_tool_aliases() -> &'static [(&'static str, &'static str)] {
     ]
 }
 
-/// Provide specific correction for known hallucinated tool names.
 /// Plain words for where a call came from, for the origin deny message. The
 /// model reads this, so it names the caller the way the user would, not the
 /// enum variant.
@@ -1623,104 +1574,81 @@ fn origin_label(origin: crate::origin::Origin) -> &'static str {
     }
 }
 
-fn tool_correction(name: &str) -> String {
-    match name.to_lowercase().as_str() {
-        "websearch" | "web_search" => {
-            "INSTEAD USE: web(action: \"search\", query: \"your search query\")".to_string()
-        }
-        "webfetch" | "web_fetch" => {
-            "INSTEAD USE: web(action: \"fetch\", url: \"https://...\")".to_string()
-        }
-        "read" | "file" => {
-            "INSTEAD USE: os(resource: \"file\", action: \"read\", path: \"/path/to/file\")".to_string()
-        }
-        "write" => {
-            "INSTEAD USE: os(resource: \"file\", action: \"write\", path: \"/path\", content: \"...\")".to_string()
-        }
-        "edit" => {
-            "INSTEAD USE: os(resource: \"file\", action: \"edit\", path: \"/path\", old_string: \"...\", new_string: \"...\")".to_string()
-        }
-        "grep" => {
-            "INSTEAD USE: os(resource: \"file\", action: \"grep\", pattern: \"...\", path: \"/dir\")".to_string()
-        }
-        "glob" => {
-            "INSTEAD USE: os(resource: \"file\", action: \"glob\", pattern: \"**/*.go\")".to_string()
-        }
-        "bash" | "shell" => {
-            "INSTEAD USE: os(resource: \"shell\", action: \"exec\", command: \"...\")".to_string()
-        }
-        "system" => {
-            "INSTEAD USE: os(resource: \"file\", action: \"read\", ...) or os(resource: \"shell\", action: \"exec\", ...) — system is now os".to_string()
-        }
-        "bot" => {
-            "INSTEAD USE: agent(resource: \"memory\", action: \"recall\", ...) — bot is now agent".to_string()
-        }
-        "desktop" => {
-            "INSTEAD USE: os(resource: \"window\", action: \"list\") or os(resource: \"capture\", action: \"screenshot\") — desktop is now under os".to_string()
-        }
-        "app" => {
-            "INSTEAD USE: os(resource: \"app\", action: \"launch\", app: \"...\") — app is now under os".to_string()
-        }
-        "settings" => {
-            "INSTEAD USE: os(resource: \"settings\", action: \"volume\", value: 50) — settings is now under os".to_string()
-        }
-        "music" => {
-            "INSTEAD USE: os(resource: \"music\", action: \"play\") — music is now under os".to_string()
-        }
-        "keychain" => {
-            "INSTEAD USE: os(resource: \"keychain\", action: \"get\", service: \"...\") — keychain is now under os".to_string()
-        }
-        "spotlight" => {
-            "INSTEAD USE: os(resource: \"search\", action: \"search\", query: \"...\") — spotlight is now under os".to_string()
-        }
-        "organizer" => {
-            "INSTEAD USE: os(resource: \"mail\", action: \"unread\") or os(resource: \"calendar\", action: \"today\") — organizer is now under os".to_string()
-        }
-        "gws" | "google-workspace" | "gmail" | "gcalendar" | "gdrive" | "gsheets" | "gdocs" => {
-            "INSTEAD USE: plugin(resource: \"gws\", command: \"gmail +triage --max 5\") — use the plugin tool with the plugin slug as resource".to_string()
-        }
-        "napp" | "install" | "package" => {
-            "INSTEAD USE: skill(action: \"list\") to see available skills, skill(action: \"install\", code: \"SKIL-XXXX-XXXX\") to install".to_string()
-        }
-        "workflow" | "automation" | "work_flow" => {
-            "INSTEAD USE: work(action: \"list\") to see workflows, work(resource: \"name\", action: \"run\") to run".to_string()
-        }
-        _ => {
-            if name.starts_with("mcp__") {
-                // Namespaced MCP proxies ARE the way to call MCP tools (see
-                // strap/mcp.txt) — they're just deferred. A miss here means the
-                // exact proxy name doesn't exist or isn't activated yet.
-                format!(
-                    "'{}' is not a registered tool: no connected MCP server exposes a tool by that exact name. Run tool_search(query: \"<server or capability>\") to get the exact mcp__<server>__<tool> name, then call that. mcp(action: \"list\") enumerates connected servers.",
-                    name
-                )
-            } else {
-                format!(
-                    "'{}' is not a recognized tool. Use skill(action: \"discover\", query: \"{}\") to find a skill, \
-                     or check your available tools with tool_search(query: \"{}\").",
-                    name, name, name
-                )
-            }
-        }
+/// A tool's answers for one call, resolved for the permission check.
+pub fn target_of(tool: &dyn DynTool, input: &serde_json::Value) -> types::permissions::Target {
+    types::permissions::Target {
+        tool: tool.name().to_string(),
+        key: tool.rule_key(input),
+        operation: tool.operation_performed(input).filter(|op| !op.is_empty()),
+        capability: tool.capability(input).map(str::to_string),
+        field: tool.rule_field(input),
+        read_only: tool.read_only(input),
+        effects: tool.effects(input),
     }
 }
+
+/// The raw text of arguments that never parsed: the provider hands them over
+/// as `{"_raw": "..."}`.
+fn unparsed_arguments(input: &serde_json::Value) -> Option<&str> {
+    let obj = input.as_object()?;
+    if obj.len() != 1 {
+        return None;
+    }
+    obj.get("_raw")?.as_str()
+}
+
+/// The InputValidationError for arguments that are not JSON, quoting their
+/// first bytes. Past 4 KB they were cut off at the output limit, and the
+/// same call will be cut off again.
+fn bad_json_error(tool: &str, raw: &str) -> String {
+    let issue = if raw.len() < 4096 {
+        format!(
+            "The arguments are not valid JSON ({} bytes): `{}`. A value is missing or \
+             malformed. Resend the same call with every field filled; leave a field out \
+             rather than empty.",
+            raw.len(),
+            crate::truncate_str(raw, 200)
+        )
+    } else {
+        format!(
+            "The arguments were cut off at the output limit ({} bytes arrived; the JSON is \
+             incomplete), starting `{}`. Do not resend the same call: it will be cut off \
+             again. Write large content in parts of under ~15,000 characters each.",
+            raw.len(),
+            crate::truncate_str(raw, 200)
+        )
+    };
+    crate::result_shape::input_validation(tool, &[issue])
+}
+
+/// Tool names follow `^[a-z][a-z0-9_]*$`; external families keep their
+/// `plugin__`, `mcp__` or `app__` namespace.
+#[cfg(test)]
+pub(crate) fn is_tool_name(name: &str) -> bool {
+    let plain = |n: &str| {
+        let mut chars = n.chars();
+        chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    };
+    match ["plugin__", "mcp__", "app__"].iter().find_map(|p| name.strip_prefix(p)) {
+        Some(rest) => !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+        None => plain(name),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// The origin deny message names the caller in plain words, never the
-    /// enum variant; the MCP miss names tool_search as the next call.
+    /// enum variant.
     #[test]
-    fn origin_labels_and_mcp_miss_are_plain_words() {
+    fn origin_labels_are_plain_words() {
         use crate::origin::Origin;
         assert_eq!(origin_label(Origin::Mcp), "an external MCP client");
         assert_eq!(origin_label(Origin::Comm), "a chat channel");
         assert_eq!(origin_label(Origin::User), "the app");
-        let c = tool_correction("mcp__foo__bar");
-        assert!(c.contains("not a registered tool"), "{c}");
-        assert!(c.contains("tool_search(query:"), "{c}");
-        assert!(tool_correction("napp").contains("SKIL-XXXX-XXXX"));
     }
 
     /// A model that serializes a structured argument as a JSON string must not
@@ -1741,9 +1669,6 @@ mod tests {
                 "type": "object",
                 "properties": { "tasks": { "type": "array" }, "note": { "type": "string" } }
             })
-        }
-        fn requires_approval(&self) -> bool {
-            false
         }
         fn execute_dyn<'a>(
             &'a self,
@@ -1775,33 +1700,39 @@ mod tests {
         assert_eq!(result.content, "array:2");
     }
 
-    /// Reads skip, writes and sends are side effects; `web`, `work` reads and
-    /// `emit` are the carve-outs.
-    #[test]
-    fn side_effects_are_the_writes_and_the_acting_web_calls() {
+    /// Side effects are each tool's own `read_only` answer: web reads look,
+    /// web clicks and non-GET requests act; a status poll of a workflow is a
+    /// read that still never runs alongside others; an emitted event acts
+    /// only through its subscribers' own runs.
+    #[tokio::test]
+    async fn side_effects_are_each_tools_read_only_answer() {
         use serde_json::json;
-        let read = json!({"resource": "file", "action": "read", "path": "/tmp/a"});
-        assert!(!call_has_side_effects("os", &read, true));
-        assert!(call_has_side_effects("os", &json!({"action": "write", "path": "/tmp/a"}), false));
-        assert!(call_has_side_effects("os", &json!({"action": "exec", "command": "rm -rf x"}), false));
-        assert!(call_has_side_effects("message", &json!({"action": "send"}), false));
-        // work declares every call sequential; its reads are not side
-        // effects, its writes are.
-        assert!(!call_has_side_effects("work", &json!({"action": "list"}), false));
-        assert!(!call_has_side_effects("work", &json!({"resource": "weekly-report", "action": "status"}), false));
-        assert!(!call_has_side_effects("work", &json!({"resource": "weekly-report", "action": "runs"}), false));
-        assert!(call_has_side_effects("work", &json!({"resource": "weekly-report", "action": "run"}), false));
-        assert!(call_has_side_effects("work", &json!({"action": "update", "name": "x", "definition": "{}"}), false));
-        // emit is judged where its subscribers act, not on the bus.
-        assert!(!call_has_side_effects("emit", &json!({"source": "inventory.low"}), false));
-        assert!(!call_has_side_effects("web", &json!({"action": "read_page"}), true));
-        assert!(!call_has_side_effects("web", &json!({"action": "navigate", "url": "https://example.com"}), true));
-        assert!(!call_has_side_effects("web", &json!({"action": "search", "query": "x"}), true));
-        assert!(!call_has_side_effects("web", &json!({"action": "fetch", "url": "https://example.com"}), true));
-        assert!(!call_has_side_effects("web", &json!({"action": "fetch", "method": "get", "url": "https://example.com"}), true));
-        assert!(call_has_side_effects("web", &json!({"action": "click", "ref": "e1"}), true));
-        assert!(call_has_side_effects("web", &json!({"action": "fill", "ref": "e1", "value": "x"}), true));
-        assert!(call_has_side_effects("web", &json!({"action": "fetch", "method": "POST", "url": "https://example.com"}), true));
+        let web = crate::web_tool::WebTool::new();
+        for read in [
+            json!({"action": "read_page"}),
+            json!({"action": "navigate", "url": "https://example.com"}),
+            json!({"action": "search", "query": "x"}),
+            json!({"action": "fetch", "method": "get", "url": "https://example.com"}),
+        ] {
+            assert!(web.read_only(&read), "{read}");
+            assert!(web.concurrency_safe(&read), "{read}");
+        }
+        for act in [
+            json!({"action": "click", "ref": "e1"}),
+            json!({"action": "fill", "ref": "e1", "value": "x"}),
+            json!({"action": "fetch", "method": "POST", "url": "https://example.com"}),
+        ] {
+            assert!(!web.read_only(&act), "{act}");
+            assert!(web.concurrency_safe(&act), "the browser is per session: {act}");
+        }
+        let (bus, _rx) = crate::events::EventBus::new();
+        let emit = crate::emit_tool::EmitTool::new(bus);
+        assert!(emit.read_only(&json!({"source": "inventory.low"})));
+        assert!(!emit.concurrency_safe(&json!({"source": "inventory.low"})));
+        let (registry, _dir) = os_registry().await;
+        assert!(!registry.has_side_effects("os", &json!({"action": "read", "path": "/tmp/a"})).await);
+        assert!(registry.has_side_effects("os", &json!({"action": "write", "path": "/tmp/a"})).await);
+        assert!(registry.has_side_effects("unknown", &json!({})).await, "unknown means acting");
     }
 
     /// A tool whose `read` action is read-only and whose other actions write;
@@ -1818,10 +1749,7 @@ mod tests {
         fn schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
-        fn requires_approval(&self) -> bool {
-            false
-        }
-        fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
+        fn read_only(&self, input: &serde_json::Value) -> bool {
             input["action"] == "read"
         }
         fn execute_dyn<'a>(
@@ -1957,8 +1885,9 @@ mod tests {
         assert!(!marker.exists(), "the command ran with Shell off");
     }
 
-    /// The origin deny list keys on `os:shell`: a shell command from a chat
-    /// channel is refused whether or not the call names its resource.
+    /// The origin limits key on the call's rule key (`run_command`): a shell
+    /// command from a chat channel is refused whether or not the call names
+    /// its resource.
     #[tokio::test]
     async fn a_call_without_an_action_meets_the_origin_deny_list() {
         let (registry, dir) = os_registry().await;
@@ -2038,7 +1967,8 @@ mod tests {
             .await;
         assert_eq!(settled["action"], "exec");
         assert_eq!(settled["resource"], "shell");
-        assert_eq!(crate::capabilities::gating_capability("os", &settled), Some("shell"));
+        let target = registry.target("os", &settled).await.unwrap();
+        assert_eq!((target.key.as_str(), target.capability.as_deref()), ("run_command", Some("shell")));
         assert_eq!(registry.normalize_input("os", settled.clone()).await, settled);
         // A file-management verb stays unresolved: the tool answers it with a
         // shell correction, and the capability gate leaves it alone.
@@ -2066,7 +1996,7 @@ mod tests {
         assert!(result.is_error, "{}", result.content);
         assert!(!marker.exists(), "a built-in ran under an MCP name");
         assert!(
-            !registry.is_concurrent_safe("mcp__anything__os", &serde_json::json!({"action": "read", "path": "/tmp/x"})).await,
+            !registry.concurrency_safe("mcp__anything__os", &serde_json::json!({"action": "read", "path": "/tmp/x"})).await,
             "an MCP name answered with a built-in's concurrency"
         );
     }
@@ -2074,7 +2004,7 @@ mod tests {
     /// The request's tool order is a cache key. Two registries built in
     /// different orders must emit identical definition lists.
     #[tokio::test]
-    async fn tool_definitions_and_deferred_stubs_are_in_name_order() {
+    async fn tool_definitions_are_in_name_order() {
         let a = Registry::new(crate::policy::Policy::default());
         let b = Registry::new(crate::policy::Policy::default());
         let mk = |n: &str| ToolDefinition {
@@ -2097,75 +2027,7 @@ mod tests {
         assert_eq!(names(a.list().await), names(b.list().await));
         let none = std::collections::HashSet::new();
         assert_eq!(names(a.list_active(&none).await), vec!["agent", "os"]);
-        assert_eq!(a.list_deferred_stubs(&none).await, b.list_deferred_stubs(&none).await);
-        assert_eq!(a.list_deferred_stubs(&none).await[0].0, "skill");
-    }
 
-    #[test]
-    fn test_file_mutation_paths() {
-        // Write with explicit resource → its absolute path.
-        let write = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
-        assert_eq!(
-            file_mutation_paths("os", &write),
-            Some(vec![std::path::PathBuf::from("/a/b.txt")])
-        );
-
-        // Inferred resource (write → file) works without an explicit resource.
-        let inferred = serde_json::json!({"action": "write", "path": "/a/b.txt"});
-        assert!(file_mutation_paths("os", &inferred).is_some());
-
-        // Move includes the destination.
-        let mv = serde_json::json!({
-            "resource": "file", "action": "move", "path": "/a/b.txt", "destination": "/c/d.txt"
-        });
-        assert_eq!(
-            file_mutation_paths("os", &mv),
-            Some(vec![
-                std::path::PathBuf::from("/a/b.txt"),
-                std::path::PathBuf::from("/c/d.txt")
-            ])
-        );
-
-        // Move without a destination is unparseable → None.
-        let mv_no_dest =
-            serde_json::json!({"resource": "file", "action": "move", "path": "/a/b.txt"});
-        assert_eq!(file_mutation_paths("os", &mv_no_dest), None);
-
-        // Reads, shell calls, missing paths, and non-os tools are all None.
-        let read = serde_json::json!({"resource": "file", "action": "read", "path": "/a/b.txt"});
-        assert_eq!(file_mutation_paths("os", &read), None);
-
-        // checkpoint/restore carry their files in `paths[]`; a restore with
-        // none must run alone (None), never as a free-for-all.
-        let cp = serde_json::json!({"resource": "file", "action": "checkpoint", "paths": ["/a/b.txt", "/a/c.txt"]});
-        assert_eq!(file_mutation_paths("os", &cp).map(|p| p.len()), Some(2));
-        let restore_all = serde_json::json!({"resource": "file", "action": "restore", "checkpoint": "cp-1"});
-        assert_eq!(file_mutation_paths("os", &restore_all), None);
-        let plan_check = serde_json::json!({"resource": "file", "action": "plan_check", "path": "/a/plan.md"});
-        assert_eq!(file_mutation_paths("os", &plan_check), None);
-        let shell = serde_json::json!({"resource": "shell", "action": "exec", "command": "ls"});
-        assert_eq!(file_mutation_paths("os", &shell), None);
-        let no_path = serde_json::json!({"resource": "file", "action": "write"});
-        assert_eq!(file_mutation_paths("os", &no_path), None);
-        assert_eq!(file_mutation_paths("web", &write), None);
-    }
-
-    #[test]
-    fn test_tool_correction() {
-        assert!(tool_correction("read").contains("os"));
-        assert!(tool_correction("bash").contains("os"));
-        assert!(tool_correction("websearch").contains("web"));
-        assert!(tool_correction("system").contains("os"));
-        assert!(tool_correction("bot").contains("agent"));
-        assert!(tool_correction("desktop").contains("os"));
-        assert!(tool_correction("music").contains("os"));
-        assert!(tool_correction("unknown_tool").contains("not a recognized tool"));
-        assert!(tool_correction("unknown_tool").contains("skill(action: \"discover\""));
-        assert!(tool_correction("unknown_tool").contains("tool_search"));
-        // Namespaced proxies are the real MCP call path (strap/mcp.txt) —
-        // the correction steers to discovery, never to a wrapper call.
-        assert!(tool_correction("mcp__server__tool").contains("tool_search"));
-        assert!(tool_correction("mcp__server__tool").contains("mcp__<server>__<tool>"));
     }
 
     /// Drift guard for the tool-rename class (TD-001, capability vocabulary,
@@ -2214,4 +2076,339 @@ mod tests {
             hits.join("\n")
         );
     }
+    /// A small deferred tool with a strict schema, for the error shapes.
+    struct EchoTool;
+
+    impl DynTool for EchoTool {
+        fn name(&self) -> &str {
+            "echo_text"
+        }
+        fn description(&self) -> String {
+            "Echoes text.".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" }, "times": { "type": "integer" } },
+                "required": ["text"]
+            })
+        }
+        fn search_hint(&self) -> &str {
+            "repeat text back"
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
+            if input["text"] == "" {
+                return Err("`text` is empty: give the words to echo.".into());
+            }
+            Ok(())
+        }
+        fn max_result_chars(&self, _input: &serde_json::Value) -> Option<usize> {
+            Some(1_000)
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                let times = input["times"].as_u64().unwrap_or(1) as usize;
+                ToolResult::ok(input["text"].as_str().unwrap_or("").repeat(times))
+            })
+        }
+    }
+
+    async fn echo_registry() -> Registry {
+        let registry = Registry::new(Policy::default());
+        registry.register(Box::new(EchoTool)).await;
+        registry
+    }
+
+    #[tokio::test]
+    async fn an_unknown_tool_is_a_tool_use_error() {
+        let r = echo_registry().await;
+        let out = r.execute(&ToolContext::default(), "no_such_tool", serde_json::json!({})).await;
+        assert!(out.is_error);
+        assert_eq!(out.content, "<tool_use_error>Error: No such tool available: no_such_tool</tool_use_error>");
+    }
+
+    #[tokio::test]
+    async fn a_schema_failure_names_each_issue_and_an_empty_call_gets_the_minimal_shape() {
+        let r = echo_registry().await;
+        let ctx = ToolContext::default();
+        let out = r.execute(&ctx, "echo_text", serde_json::json!({"text": "hi", "times": "many"})).await;
+        assert!(out.is_error);
+        assert!(out.content.starts_with("<tool_use_error>InputValidationError: echo_text failed due to the following issue(s):\n"), "{}", out.content);
+        assert!(out.content.contains("The parameter `times` type is expected as `integer` but provided as `string`"), "{}", out.content);
+        let out = r.execute(&ctx, "echo_text", serde_json::json!({})).await;
+        assert!(out.content.contains("The required parameter `text` is missing"), "{}", out.content);
+        assert!(out.content.contains("A minimal valid call: {\"text\": <string>}"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn validate_input_runs_after_the_schema_and_before_the_tool() {
+        let r = echo_registry().await;
+        let out = r.execute(&ToolContext::default(), "echo_text", serde_json::json!({"text": ""})).await;
+        assert_eq!(out.content, "<tool_use_error>`text` is empty: give the words to echo.</tool_use_error>");
+    }
+
+    #[tokio::test]
+    async fn arguments_that_are_not_json_quote_their_first_bytes() {
+        let r = echo_registry().await;
+        let out = r
+            .execute(&ToolContext::default(), "echo_text", serde_json::json!({"_raw": "{\"text\": }"}))
+            .await;
+        assert!(out.content.starts_with("<tool_use_error>InputValidationError: echo_text"), "{}", out.content);
+        assert!(out.content.contains("`{\"text\": }`"), "{}", out.content);
+    }
+
+    /// A deferred tool the model was never sent: a call that validates
+    /// runs; one that fails is told to load it, with the schema.
+    #[tokio::test]
+    async fn an_unloaded_deferred_tool_that_fails_validation_is_told_to_load_it() {
+        let r = echo_registry().await;
+        let ctx = ToolContext {
+            declared_tools: Some(Arc::new(HashSet::from(["read_file".to_string()]))),
+            ..Default::default()
+        };
+        let ok = r.execute(&ctx, "echo_text", serde_json::json!({"text": "hi"})).await;
+        assert_eq!(ok.content, "hi", "a call that validates simply runs");
+        let bad = r.execute(&ctx, "echo_text", serde_json::json!({})).await;
+        assert!(bad.content.contains("Call find_tools with query \"select:echo_text\""), "{}", bad.content);
+        assert!(bad.content.contains("Its input schema is: {"), "{}", bad.content);
+        // Loaded (declared) tools don't get the hint.
+        let loaded = ToolContext {
+            declared_tools: Some(Arc::new(HashSet::from(["echo_text".to_string()]))),
+            ..Default::default()
+        };
+        let bad = r.execute(&loaded, "echo_text", serde_json::json!({})).await;
+        assert!(!bad.content.contains("find_tools"), "{}", bad.content);
+    }
+
+    /// Results over the tool's threshold go to the one spill path, the
+    /// session's `tool-results/`, and come back as a preview.
+    #[tokio::test]
+    async fn a_result_over_the_threshold_is_persisted_under_the_session() {
+        let r = echo_registry().await;
+        let ctx = ToolContext { session_id: format!("wp0-spill-{}", uuid::Uuid::new_v4()), ..Default::default() };
+        let out = r.execute(&ctx, "echo_text", serde_json::json!({"text": "abcdefghij\n", "times": 500})).await;
+        assert!(out.content.starts_with("<persisted-output>"), "{}", out.content);
+        let path = out.content.split("Full output saved to: ").nth(1).and_then(|l| l.lines().next()).unwrap();
+        let dir = crate::result_shape::results_dir(&ctx.session_id);
+        assert!(std::path::Path::new(path).starts_with(&dir), "{path} not under {}", dir.display());
+        assert_eq!(std::fs::read_to_string(path).unwrap().len(), 5_500);
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        let short = r.execute(&ctx, "echo_text", serde_json::json!({"text": "hi"})).await;
+        assert_eq!(short.content, "hi");
+    }
+
+    /// Deferral comes from the spec; the search sees name, description and
+    /// hint for every deferred tool, in name order.
+    #[tokio::test]
+    async fn deferral_is_the_tools_own_answer() {
+        let r = echo_registry().await;
+        r.register(Box::new(crate::find_tools::FindToolsTool::new(Arc::new(Registry::new(Policy::default())))))
+            .await;
+        assert!(r.is_deferred("echo_text").await);
+        assert!(!r.is_deferred("find_tools").await);
+        let entries = r.deferred_entries().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0].definition.name.as_str(), entries[0].search_hint.as_str()), ("echo_text", "repeat text back"));
+        r.unregister("echo_text").await;
+        assert!(r.deferred_entries().await.is_empty());
+    }
+
+    /// Every tool the full roster registers, the way a bot builds it (the
+    /// server adds find_tools and mcp after `register_all`).
+    async fn full_registry() -> (Arc<Registry>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let registry = Arc::new(Registry::new(Policy::default()));
+        registry.register_all(store, crate::orchestrator::new_handle()).await;
+        registry.register(Box::new(crate::find_tools::FindToolsTool::new(registry.clone()))).await;
+        registry.register(Box::new(crate::mcp_tool::McpTool::new(registry.mcp_proxy_roster()))).await;
+        (registry, dir)
+    }
+
+    /// The tools that still carry several jobs behind `action`/`resource`.
+    /// Each tool package removes its names; nothing is ever added.
+    const PRE_INTERFACE_TOOLS: &[&str] = &[
+        "a2ui", "agent", "authority", "code", "emit", "event", "execute", "exit", "loop",
+        "mcp", "message", "notebook", "os", "pack", "plugin", "publisher", "rules", "skill",
+        "team", "vm", "web", "work",
+    ];
+
+    /// The enum-dispatch surfaces the interface allows (device surfaces).
+    const ENUM_SURFACES: &[(&str, &str)] = &[("code_intel", "operation"), ("browser_act", "action")];
+
+    /// The invariants every tool of the new interface meets (tools doc
+    /// §7.2): a search hint, a lean description, a snake_case (or
+    /// namespaced) name, no `action`/`resource` dispatch, at most three
+    /// required parameters. Tools not yet moved onto the interface are the
+    /// closed `PRE_INTERFACE_TOOLS` list.
+    #[tokio::test]
+    async fn every_new_interface_tool_has_a_lean_flat_spec() {
+        let (registry, _dir) = full_registry().await;
+        for name in registry.get_tool_names().await {
+            let tool = registry.get(&name).await.unwrap();
+            let def = registry.definition(&name).await.unwrap();
+            if PRE_INTERFACE_TOOLS.contains(&name.as_str()) {
+                continue;
+            }
+            assert!(is_tool_name(&name), "{name}: names are ^[a-z][a-z0-9_]*$ or plugin__/mcp__/app__");
+            assert!(!tool.search_hint().trim().is_empty(), "{name}: no search_hint");
+            let hint_words = tool.search_hint().split_whitespace().count();
+            assert!((3..=8).contains(&hint_words), "{name}: search_hint is 3–8 words");
+            assert!(!def.description.trim().is_empty() && def.description.chars().count() <= 1_600, "{name}: lean description ≤ 1,600 chars");
+            assert!(tool.validates_input(), "{name}: every new-interface tool is validated against its schema");
+            assert_spec_is_flat(&name, &def.input_schema);
+        }
+    }
+
+    fn assert_spec_is_flat(name: &str, schema: &serde_json::Value) {
+        assert_eq!(schema["type"], "object", "{name}: the schema is an object");
+        let props = schema["properties"].as_object().cloned().unwrap_or_default();
+        for dispatch in ["action", "resource"] {
+            let allowed = ENUM_SURFACES.iter().any(|(t, p)| *t == name && *p == dispatch);
+            assert!(!props.contains_key(dispatch) || allowed, "{name}: `{dispatch}` dispatch is not allowed");
+        }
+        let required = schema["required"].as_array().map_or(0, |r| r.len());
+        assert!(required <= 3, "{name}: {required} required parameters (at most 3)");
+    }
+
+    /// The checks themselves: a tool with `action`, or four required
+    /// parameters, fails them.
+    #[test]
+    #[should_panic(expected = "`action` dispatch is not allowed")]
+    fn an_action_parameter_fails_the_flat_spec_check() {
+        assert_spec_is_flat("send_thing", &serde_json::json!({"type": "object", "properties": {"action": {"type": "string"}}}));
+    }
+
+    #[test]
+    #[should_panic(expected = "4 required parameters")]
+    fn four_required_parameters_fail_the_flat_spec_check() {
+        assert_spec_is_flat("send_thing", &serde_json::json!({"type": "object", "properties": {}, "required": ["a", "b", "c", "d"]}));
+    }
+
+    #[test]
+    fn the_pre_interface_list_is_closed_and_the_allowed_surfaces_are_the_device_ones() {
+        assert_eq!(PRE_INTERFACE_TOOLS.len(), 22, "packages only remove names from this list");
+        assert!(ENUM_SURFACES.iter().all(|(t, _)| is_tool_name(t)));
+    }
+
+    /// Characters of every always-loaded definition (description + schema),
+    /// measured at WP0: the pre-interface core tools plus find_tools. The os
+    /// tool describes the desktop surfaces its platform has, so the number is
+    /// per platform: 52,728 on macOS (agent 17,451 · os 14,219 · web 8,361 ·
+    /// message 3,270 · skill 3,102 · team 2,747 · event 2,229 · find_tools
+    /// 704 · mcp 645) and 53,032 on Linux (os 14,524 · web 8,362 · mcp 643).
+    /// The plugin tool (core too, and sized by the installed plugins) needs a
+    /// plugin store and is not in this roster. Each package that lands lowers
+    /// the numbers; they never rise.
+    #[cfg(target_os = "macos")]
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 52_728;
+    #[cfg(not(target_os = "macos"))]
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 53_032;
+
+    #[tokio::test]
+    async fn the_always_loaded_set_stays_within_its_budget() {
+        let (registry, _dir) = full_registry().await;
+        let deferred = registry.get_deferred_names().await;
+        let mut core: Vec<(String, usize)> = Vec::new();
+        for def in registry.list().await {
+            if deferred.contains(&def.name) {
+                continue;
+            }
+            core.push((def.name.clone(), def.description.chars().count() + def.input_schema.to_string().chars().count()));
+        }
+        let total: usize = core.iter().map(|(_, n)| n).sum();
+        eprintln!("core definitions: {total} chars {core:?}");
+        assert!(total <= CORE_DEFINITION_CHARS_BUDGET, "always-loaded definitions are {total} chars, over the {CORE_DEFINITION_CHARS_BUDGET} budget: {core:?}");
+    }
+
+    /// Deferred at WP0: everything but the core. Code, loop, work, emit,
+    /// pack, rules, a2ui, publisher, notebook, vm and authority are listed
+    /// and loadable, never dropped.
+    #[tokio::test]
+    async fn the_core_is_the_strap_tools_and_find_tools() {
+        let (registry, _dir) = full_registry().await;
+        let deferred = registry.get_deferred_names().await;
+        let mut core: Vec<String> = registry.get_tool_names().await.into_iter().filter(|n| !deferred.contains(n)).collect();
+        core.sort();
+        assert_eq!(core, ["agent", "event", "find_tools", "mcp", "message", "os", "skill", "team", "web"]);
+        for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules"] {
+            assert!(deferred.contains(name), "{name} is deferred");
+        }
+    }
+
+    /// Every rule key a tool answers is a tool name of the current set.
+    #[tokio::test]
+    async fn rule_keys_are_tool_names() {
+        let (registry, _dir) = full_registry().await;
+        let calls = [
+            ("os", serde_json::json!({"action": "exec", "command": "ls"})),
+            ("os", serde_json::json!({"action": "read", "path": "/tmp/x"})),
+            ("agent", serde_json::json!({"resource": "memory", "action": "store"})),
+            ("agent", serde_json::json!({"resource": "task", "action": "spawn"})),
+            ("skill", serde_json::json!({"action": "load", "name": "x"})),
+            ("web", serde_json::json!({"action": "fetch", "url": "https://example.com"})),
+            ("message", serde_json::json!({"resource": "owner", "action": "notify"})),
+            ("find_tools", serde_json::json!({"query": "x"})),
+        ];
+        for (tool, input) in calls {
+            let t = registry.target(tool, &input).await.unwrap();
+            assert!(is_tool_name(&t.key) && !PRE_INTERFACE_TOOLS.contains(&t.key.as_str()), "{tool} {input} → {}", t.key);
+        }
+    }
+
+
+    /// What an aged result keeps, and the taint a result brings in, are each
+    /// tool's own answers: memory recalls, skill loads, searches and file
+    /// reads keep their content; commands and task changes become stubs;
+    /// web content and mail are untrusted.
+    #[tokio::test]
+    async fn trimming_and_taint_are_each_tools_answer() {
+        use serde_json::json;
+        use types::provenance::ProvenanceClass;
+        let (registry, _dir) = full_registry().await;
+        let keeps = |name: &'static str, input: serde_json::Value| {
+            let registry = registry.clone();
+            async move { registry.get(name).await.unwrap().keeps_content_when_trimmed(&input) }
+        };
+        assert!(keeps("agent", json!({"resource": "memory", "action": "recall"})).await);
+        assert!(!keeps("agent", json!({"resource": "task", "action": "create"})).await);
+        assert!(keeps("skill", json!({"action": "load", "name": "x"})).await);
+        assert!(keeps("web", json!({"action": "search", "query": "x"})).await);
+        assert!(keeps("os", json!({"action": "read", "path": "/tmp/x"})).await);
+        assert!(keeps("os", json!({"resource": "calendar", "action": "today"})).await);
+        assert!(!keeps("os", json!({"action": "exec", "command": "ls"})).await);
+        let taint = |name: &'static str, input: serde_json::Value| {
+            let registry = registry.clone();
+            async move { registry.get(name).await.unwrap().taint(&input) }
+        };
+        assert_eq!(taint("web", json!({"action": "fetch", "url": "https://example.com"})).await, Some(ProvenanceClass::Web));
+        assert_eq!(taint("os", json!({"resource": "mail", "action": "unread"})).await, Some(ProvenanceClass::ExternalEmail));
+        assert_eq!(taint("os", json!({"resource": "mail", "action": "send", "to": "a@example.com"})).await, None);
+        assert_eq!(taint("message", json!({"resource": "sms", "action": "read"})).await, Some(ProvenanceClass::Channel));
+        assert_eq!(taint("os", json!({"action": "read", "path": "/tmp/x"})).await, None, "the owner's own files carry no taint");
+        assert_eq!(registry.get("web").await.unwrap().trim_priority(), TRIM_FIRST);
+        assert_eq!(registry.get("os").await.unwrap().trim_priority(), TRIM_EARLY);
+    }
+
+
+    /// Through the one door: a chat channel's call to poll or stop a shell
+    /// session is refused before the tool runs.
+    #[tokio::test]
+    async fn a_chat_channel_cannot_poll_or_stop_a_shell_session() {
+        let (registry, _dir) = os_registry().await;
+        let ctx = ToolContext { origin: crate::origin::Origin::Comm, ..Default::default() };
+        for action in ["poll", "kill", "log"] {
+            let call = serde_json::json!({ "resource": "shell", "action": action, "session_id": "s-1" });
+            let result = registry.execute(&ctx, "os", call).await;
+            assert!(result.is_error && result.content.contains("not permitted"), "{action}: {}", result.content);
+        }
+    }
+
 }

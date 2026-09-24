@@ -3,79 +3,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::origin::Origin;
 
-/// Security level for tool execution policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PolicyLevel {
-    /// Deny all dangerous operations.
-    Deny,
-    /// Allow only whitelisted commands (default).
-    Allowlist,
-    /// Allow all (dangerous!).
-    Full,
-}
-
-impl Default for PolicyLevel {
-    fn default() -> Self {
-        PolicyLevel::Allowlist
-    }
-}
-
-/// When to ask for approval.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AskMode {
-    /// Never ask.
-    Off,
-    /// Ask only for non-whitelisted (default).
-    OnMiss,
-    /// Always ask.
-    Always,
-}
-
-impl Default for AskMode {
-    fn default() -> Self {
-        AskMode::OnMiss
-    }
-}
-
-/// Commands that never require approval.
-pub const SAFE_BINS: &[&str] = &[
-    "ls",
-    "pwd",
-    "cat",
-    "head",
-    "tail",
-    "grep",
-    "find",
-    "which",
-    "type",
-    "jq",
-    "cut",
-    "sort",
-    "uniq",
-    "wc",
-    "echo",
-    "date",
-    "env",
-    "printenv",
-    "git status",
-    "git log",
-    "git diff",
-    "git branch",
-    "git show",
-    "go version",
-    "node --version",
-    "python --version",
-];
-
-/// Policy manages approval for dangerous operations.
+/// The hard origin limits: which calls a run started from each origin may
+/// never make, whatever its allowlist, the owner's toggles or Full Access.
 #[derive(Debug, Clone)]
 pub struct Policy {
-    pub level: PolicyLevel,
-    pub ask_mode: AskMode,
-    pub allowlist: HashSet<String>,
-    /// Origin-based tool restrictions: maps Origin -> set of denied tool names.
+    /// Origin → the rule keys denied to it. An entry ending in `*` denies
+    /// every key with that prefix (`desktop_*`).
     pub origin_deny_list: HashMap<Origin, HashSet<String>>,
 }
 
@@ -87,117 +20,22 @@ impl Default for Policy {
 
 impl Policy {
     pub fn new() -> Self {
-        let mut allowlist = HashSet::new();
-        for cmd in SAFE_BINS {
-            allowlist.insert(cmd.to_string());
-        }
-
         Self {
-            level: PolicyLevel::Allowlist,
-            ask_mode: AskMode::OnMiss,
-            allowlist,
             origin_deny_list: default_origin_deny_list(),
         }
     }
 
-    /// Create a policy from config values.
-    pub fn from_config(level: &str, ask_mode: &str, extra_allowlist: &[String]) -> Self {
-        let mut p = Self::new();
-
-        p.level = match level {
-            "deny" => PolicyLevel::Deny,
-            "full" => PolicyLevel::Full,
-            _ => PolicyLevel::Allowlist,
-        };
-
-        p.ask_mode = match ask_mode {
-            "off" => AskMode::Off,
-            "always" => AskMode::Always,
-            _ => AskMode::OnMiss,
-        };
-
-        for item in extra_allowlist {
-            p.allowlist.insert(item.clone());
-        }
-
-        p
-    }
-
-    /// Check if a tool is blocked for a given origin (hard deny, no approval prompt).
-    pub fn is_denied_for_origin(
-        &self,
-        origin: Origin,
-        tool_name: &str,
-        resource: Option<&str>,
-    ) -> bool {
-        let denied = match self.origin_deny_list.get(&origin) {
-            Some(d) => d,
-            None => return false,
-        };
-
-        // Check bare tool name
-        if denied.contains(tool_name) {
-            return true;
-        }
-
-        // Check tool:resource compound key
-        if let Some(resource) = resource {
-            if denied.contains(&format!("{}:{}", tool_name, resource)) {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Check if a command requires user approval.
-    pub fn requires_approval(&self, cmd: &str) -> bool {
-        if self.level == PolicyLevel::Full {
-            return false;
-        }
-
-        if self.level == PolicyLevel::Deny {
-            return true;
-        }
-
-        // Check allowlist
-        if self.is_allowed(cmd) {
-            return self.ask_mode == AskMode::Always;
-        }
-
-        self.ask_mode != AskMode::Off
-    }
-
-    /// Check if a command matches the allowlist.
-    fn is_allowed(&self, cmd: &str) -> bool {
-        let cmd = cmd.trim();
-
-        // Exact match
-        if self.allowlist.contains(cmd) {
-            return true;
-        }
-
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        if let Some(&first) = parts.first() {
-            // Check binary name
-            if self.allowlist.contains(first) {
-                return true;
-            }
-            // Check binary with first arg (e.g., "git status")
-            if parts.len() > 1 {
-                let two = format!("{} {}", first, parts[1]);
-                if self.allowlist.contains(&two) {
-                    return true;
-                }
-            }
-        }
-
-        false
-    }
-
-    /// Add a command pattern to the allowlist.
-    pub fn add_to_allowlist(&mut self, pattern: impl Into<String>) {
-        self.allowlist.insert(pattern.into());
+    /// Whether a call with this rule key is refused for the origin (a hard
+    /// deny, no approval prompt). The key is the tool's `rule_key` for the
+    /// call, so the limit holds whichever tool shape carries the job.
+    pub fn is_denied_for_origin(&self, origin: Origin, rule_key: &str) -> bool {
+        self.origin_deny_list.get(&origin).is_some_and(|denied| {
+            denied.contains(rule_key)
+                || denied.iter().any(|e| {
+                    e.strip_suffix('*')
+                        .is_some_and(|prefix| !prefix.is_empty() && rule_key.starts_with(prefix))
+                })
+        })
     }
 }
 
@@ -1276,72 +1114,146 @@ fn grant_admits(
     Ok(())
 }
 
-/// Default per-origin tool restrictions.
-fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
-    // The shell pathway is `os(resource:"shell")`, matched by the `os:shell`
-    // compound key in is_denied_for_origin. A bare `os` key would deny the whole
-    // os tool (file, capture, everything) — far too broad. (Pre-rename keys
-    // "shell"/"system:shell" never matched the renamed `os` tool — TD-001.)
-    let shell_deny: HashSet<String> = ["os:shell"].iter().map(|s| s.to_string()).collect();
+/// Running commands on this machine, and controlling the background shell
+/// sessions they leave: reading their output, stopping them, writing to
+/// them. Helper status and cancel (`read_output`, `stop_task`) are not shell
+/// control and are not in this set.
+const SHELL_KEYS: &[&str] = &[
+    "run_command",
+    "list_processes",
+    "send_input",
+    "read_command_output",
+    "stop_command",
+];
+/// Reading and changing files on this machine.
+const FILE_KEYS: &[&str] = &[
+    "read_file",
+    "write_file",
+    "edit_file",
+    "share_file",
+    "convert_file",
+    "checkpoint_files",
+    "list_checkpoints",
+    "restore_checkpoint",
+    "write_plan",
+    "check_plan",
+    "edit_notebook",
+];
+/// Looking at the screen.
+const CAPTURE_KEYS: &[&str] = &["desktop_screenshot", "desktop_see"];
 
+/// Default per-origin limits, in rule keys.
+fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
+    let keys = |groups: &[&[&str]]| -> HashSet<String> {
+        groups.iter().flat_map(|g| g.iter()).map(|k| k.to_string()).collect()
+    };
     let mut deny_list = HashMap::new();
     // A peer Nebo, a loop, an agent space: another program's words. Shell was
     // always off the table; files join it (2026-09-05, the QR file-share
-    // incident) — the legacy `file` tool and `os:capture` included.
-    let comm_deny: HashSet<String> = ["os:shell", "os:file", "os:capture", "file", "shell"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    deny_list.insert(Origin::Comm, comm_deny);
-    deny_list.insert(Origin::App, shell_deny.clone());
-    deny_list.insert(Origin::Skill, shell_deny.clone());
+    // incident), the screen with them.
+    deny_list.insert(Origin::Comm, keys(&[SHELL_KEYS, FILE_KEYS, CAPTURE_KEYS]));
+    deny_list.insert(Origin::App, keys(&[SHELL_KEYS]));
+    deny_list.insert(Origin::Skill, keys(&[SHELL_KEYS]));
     // External MCP clients: at most comm-level trust. An authenticated client
     // is still another program injecting prompts from outside our UI.
-    deny_list.insert(Origin::Mcp, shell_deny);
+    deny_list.insert(Origin::Mcp, keys(&[SHELL_KEYS]));
     // Outside origins — a phone caller, a visitor from a QR scan or an
     // embedded chat — are strangers. The allowlist on their run is the real
     // fence (deny-by-default, mandatory: see the runner's
     // restrict_outside_origin); this hard set is the backstop that holds even
     // if an allowlist is ever mis-built. Nothing that touches the machine, the
     // mailbox, money, other people, or the roster is reachable from outside —
-    // and no owner toggle or Full Access can put it back. Names must be the
-    // REGISTERED tool names: `file` and `shell` are registered beside `os`, so
-    // both spellings are listed. Enablable per channel (deliberately absent):
-    // agent:memory (recall), message:owner, event, organizer, skill.
-    let outside_deny: HashSet<String> = [
-        "os:shell",
-        "os:file",
-        "os:mail",
-        "os:contacts",
-        "os:capture",
-        "file",
-        "shell",
-        "notebook",
-        "spotlight",
-        "web",
-        "execute",
-        "vm",
-        "publisher",
-        "code",
-        "desktop",
-        "keychain",
-        "settings",
+    // and no owner toggle or Full Access can put it back. Enablable per
+    // channel (deliberately absent): recall, message_owner, scheduling,
+    // the organizer's calendar and reminders, skills.
+    let outside: &[&str] = &[
+        // Mail and contacts.
+        "mail_*",
+        "contacts_*",
+        // The web and the browser.
+        "search_web",
+        "fetch_url",
+        "http_request",
+        "browser_*",
+        // Code, scripts, machines, publishing.
+        "run_skill_script",
+        "vm_*",
+        "publish_app",
+        "list_publications",
+        "publication_status",
+        "code_intel",
+        "search_computer",
+        // Desktop control, apps, settings, secrets.
+        "desktop_*",
+        "window_*",
+        "clipboard_*",
+        "ui_*",
+        "menu_*",
+        "dialog_*",
+        "space_*",
+        "shortcut_*",
+        "dock_*",
+        "app_*",
+        "speak",
+        "system_settings",
+        "music_control",
+        "keychain_*",
+        // Plugins, MCP, NeboAI loops.
         "plugin",
-        "app",
-        "loop",
+        "plugin__*",
+        "find_plugins",
+        "read_plugin_events",
         "mcp",
-        "agent:registry",
-        "agent:task",
-        "agent:session",
-        "agent:profile",
-        "agent:advisors",
-        "agent:runs",
-        "message:sms",
-        "message:notify",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
+        "loop_*",
+        "send_loop_message",
+        "ensure_loop_channel",
+        "list_loop_channels",
+        "read_loop_channel",
+        "list_loops",
+        "get_loop",
+        "subscribe_topic",
+        "unsubscribe_topic",
+        "topic_status",
+        "share_to_loop",
+        // The roster, helpers, tasks, sessions, the profile, the advisors, runs.
+        "list_employees",
+        "get_employee",
+        "find_employees",
+        "hire_employee",
+        "create_employee",
+        "update_employee",
+        "delete_employee",
+        "set_employee_active",
+        "setup_employee",
+        "repair_employee",
+        "reload_employee",
+        "employee_stats",
+        "delegate",
+        "orchestrate",
+        "send_message",
+        "read_output",
+        "stop_task",
+        "create_task",
+        "update_task",
+        "get_task",
+        "list_tasks",
+        "assign_task",
+        "list_assignments",
+        "search_history",
+        "read_session",
+        "list_sessions",
+        "get_profile",
+        "update_profile",
+        "open_billing",
+        "consult_advisors",
+        "list_advisors",
+        "list_runs",
+        // SMS and notifications.
+        "sms_*",
+        "push_notification",
+        "check_dnd",
+    ];
+    let outside_deny = keys(&[SHELL_KEYS, FILE_KEYS, CAPTURE_KEYS, outside]);
     deny_list.insert(Origin::Caller, outside_deny.clone());
     deny_list.insert(Origin::Visitor, outside_deny);
     deny_list
@@ -1350,15 +1262,6 @@ fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_default_policy() {
-        let p = Policy::new();
-        assert_eq!(p.level, PolicyLevel::Allowlist);
-        assert_eq!(p.ask_mode, AskMode::OnMiss);
-        assert!(p.allowlist.contains("ls"));
-        assert!(p.allowlist.contains("git status"));
-    }
 
     fn d(p: &OperationPolicy, op: &str) -> OperationAccess {
         p.decide(op, Origin::User, &OperationParams::default(), None, None, true).access
@@ -1604,47 +1507,37 @@ mod tests {
         assert_eq!(comm.layer, PolicyLayer::OriginFloor);
     }
 
+    /// Another program's origins (a chat channel, an app, a skill, an MCP
+    /// client) never control a shell session — reading it, stopping it or
+    /// writing to it — while the helper status and cancel they already had
+    /// stay theirs.
     #[test]
-    fn test_safe_bins_allowed() {
+    fn shell_session_control_is_shell_and_helper_control_is_not() {
         let p = Policy::new();
-        assert!(!p.requires_approval("ls"));
-        assert!(!p.requires_approval("git status"));
-        assert!(!p.requires_approval("cat"));
+        for origin in [Origin::Comm, Origin::App, Origin::Skill, Origin::Mcp] {
+            for key in ["read_command_output", "stop_command", "send_input", "list_processes"] {
+                assert!(p.is_denied_for_origin(origin, key), "{origin:?} must not use {key}");
+            }
+            for key in ["read_output", "stop_task"] {
+                assert!(!p.is_denied_for_origin(origin, key), "{origin:?} keeps {key}");
+            }
+        }
+        for origin in [Origin::User, Origin::System, Origin::Workflow] {
+            assert!(!p.is_denied_for_origin(origin, "stop_command"), "{origin:?}");
+        }
     }
 
     #[test]
-    fn test_dangerous_requires_approval() {
+    fn origin_limits_match_rule_keys_and_prefixes() {
         let p = Policy::new();
-        assert!(p.requires_approval("rm -rf /tmp/test"));
-        assert!(p.requires_approval("npm install"));
-    }
-
-    #[test]
-    fn test_full_policy_no_approval() {
-        let p = Policy::from_config("full", "off", &[]);
-        assert!(!p.requires_approval("rm -rf /"));
-    }
-
-    #[test]
-    fn test_deny_policy_always_approval() {
-        let p = Policy::from_config("deny", "on-miss", &[]);
-        assert!(p.requires_approval("ls"));
-    }
-
-    #[test]
-    fn test_origin_deny() {
-        let p = Policy::new();
-        // The shell pathway is os(resource:"shell"); the deny matches on the
-        // os:shell compound key, not a bare/old tool name. (Must use the real
-        // registered tool name "os" — the bug was that pre-rename names like
-        // "shell"/"system" silently stopped matching.)
-        assert!(p.is_denied_for_origin(Origin::Comm, "os", Some("shell")));
-        assert!(p.is_denied_for_origin(Origin::App, "os", Some("shell")));
-        assert!(p.is_denied_for_origin(Origin::Skill, "os", Some("shell")));
-        // Non-shell os resources (e.g. file) are NOT denied.
-        assert!(p.is_denied_for_origin(Origin::Comm, "os", Some("file")));
-        // User/System origins are unrestricted.
-        assert!(!p.is_denied_for_origin(Origin::User, "os", Some("shell")));
+        for origin in [Origin::Comm, Origin::App, Origin::Skill, Origin::Mcp] {
+            assert!(p.is_denied_for_origin(origin, "run_command"), "{origin:?}");
+        }
+        assert!(!p.is_denied_for_origin(Origin::User, "run_command"));
+        assert!(!p.is_denied_for_origin(Origin::System, "run_command"));
+        assert!(!p.is_denied_for_origin(Origin::App, "read_file"));
+        assert!(p.is_denied_for_origin(Origin::Visitor, "desktop_click"), "prefix entry");
+        assert!(!p.is_denied_for_origin(Origin::Visitor, "desktop"), "a prefix entry needs its prefix");
     }
 
     /// The outside hard-deny: what no allowlist, no owner toggle and no Full
@@ -1653,28 +1546,25 @@ mod tests {
     fn outside_origins_hard_deny_the_machine_the_mailbox_and_the_roster() {
         let p = Policy::new();
         for origin in [Origin::Visitor, Origin::Caller] {
-            for (tool, res) in [
-                ("os", Some("file")), ("os", Some("shell")), ("os", Some("capture")),
-                ("os", Some("mail")), ("os", Some("contacts")),
-                ("web", None), ("execute", None), ("vm", None), ("publisher", None),
-                ("code", None), ("desktop", None), ("keychain", None), ("settings", None),
-                ("agent", Some("registry")), ("agent", Some("task")), ("agent", Some("session")),
-                ("agent", Some("profile")), ("plugin", None), ("app", None), ("loop", None),
-                ("message", Some("sms")), ("file", None), ("shell", None), ("notebook", None),
-                ("spotlight", None), ("mcp", None),
+            for key in [
+                "read_file", "write_file", "run_command", "desktop_screenshot", "mail_message_send",
+                "contacts_search", "fetch_url", "search_web", "browser_open", "run_skill_script",
+                "vm_run", "publish_app", "code_intel", "desktop_click", "keychain_get",
+                "system_settings", "list_employees", "delegate", "search_history", "get_profile",
+                "plugin", "plugin__gws", "app_open", "send_loop_message", "sms_message_send",
+                "edit_notebook", "search_computer", "mcp", "push_notification",
             ] {
-                assert!(p.is_denied_for_origin(origin, tool, res), "{origin:?} must deny {tool}:{res:?}");
+                assert!(p.is_denied_for_origin(origin, key), "{origin:?} must deny {key}");
             }
             // Enablable by the owner per channel — never on the hard list.
-            assert!(!p.is_denied_for_origin(origin, "agent", Some("memory")));
-            assert!(!p.is_denied_for_origin(origin, "message", Some("owner")));
-            assert!(!p.is_denied_for_origin(origin, "event", None));
-            assert!(!p.is_denied_for_origin(origin, "skill", None));
+            for key in ["recall", "message_owner", "create_schedule", "use_skill", "calendar_event_list"] {
+                assert!(!p.is_denied_for_origin(origin, key), "{origin:?} must leave {key} to the allowlist");
+            }
         }
-        // Another program's words (a peer Nebo, a loop) keep shell AND now files off the table.
-        assert!(p.is_denied_for_origin(Origin::Comm, "os", Some("file")));
-        assert!(p.is_denied_for_origin(Origin::Comm, "os", Some("capture")));
-        assert!(!p.is_denied_for_origin(Origin::System, "os", Some("shell")));
+        // Another program's words (a peer Nebo, a loop) keep shell, files and the screen off the table.
+        for key in ["read_file", "write_file", "desktop_see", "run_command"] {
+            assert!(p.is_denied_for_origin(Origin::Comm, key), "{key}");
+        }
     }
 
     #[test]

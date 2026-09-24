@@ -223,7 +223,57 @@ impl DynTool for MessageTool {
         })
     }
 
-    fn requires_approval(&self) -> bool {
+
+    fn search_hint(&self) -> &str {
+        "message owner coworker notify sms"
+    }
+
+    fn should_defer(&self) -> bool {
+        false
+    }
+
+    fn rule_key(&self, input: &serde_json::Value) -> String {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let resource = input
+            .get("resource")
+            .and_then(|v| v.as_str())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| self.infer_resource(action, input));
+        match (resource, action) {
+            ("owner", _) => "message_owner",
+            (_, "dnd_status") => "check_dnd",
+            ("notify", _) => "push_notification",
+            ("coworker", _) => "send_message",
+            ("sms", "send") => "sms_message_send",
+            ("sms", "conversations") => "sms_conversations",
+            ("sms", "search") => "sms_search",
+            ("sms", _) => "sms_read",
+            _ => "message",
+        }
+        .to_string()
+    }
+
+    fn rule_field(&self, input: &serde_json::Value) -> Option<types::permissions::RuleField> {
+        let to = input.get("to").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty())?;
+        Some(types::permissions::RuleField::Recipient(to.trim().to_string()))
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        matches!(
+            self.rule_key(input).as_str(),
+            "check_dnd" | "sms_conversations" | "sms_search" | "sms_read"
+        )
+    }
+
+    /// SMS reads bring outside people's words into the run.
+    fn taint(&self, input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
+        matches!(self.rule_key(input).as_str(), "sms_conversations" | "sms_search" | "sms_read")
+            .then_some(types::provenance::ProvenanceClass::Channel)
+    }
+
+    /// Pre-interface: it settles its own call shapes (see
+    /// `DynTool::validates_input`).
+    fn validates_input(&self) -> bool {
         false
     }
 

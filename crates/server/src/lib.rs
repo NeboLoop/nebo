@@ -1045,9 +1045,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let mut providers = build_providers(&store, &cfg, Some(&cli_statuses));
 
     // Build tool registry with default tools
-    let mut policy = tools::Policy::new();
-    policy.level = tools::PolicyLevel::Full;
-    policy.ask_mode = tools::AskMode::Off;
+    let policy = tools::Policy::new();
     // No-op: Nebo uses the platform-native data directory (see config::data_dir).
     migration::migrate_data_dir();
 
@@ -1468,10 +1466,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )
         .await;
 
-    // ToolSearch meta-tool — always active, lets LLM discover deferred tools on demand.
+    // find_tools — always loaded; loads deferred tools on demand.
     // Must be registered after register_all_with_permissions since it needs Arc<Registry>.
     tool_registry
-        .register(Box::new(tools::ToolSearchTool::new(tool_registry.clone())))
+        .register(Box::new(tools::FindToolsTool::new(tool_registry.clone())))
         .await;
 
     // Initialize encryption: try OS keyring → file key → generate new
