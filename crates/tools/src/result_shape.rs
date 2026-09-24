@@ -56,11 +56,17 @@ pub fn shape(tool: &str, dir: &Path, threshold: Option<usize>, result: &mut Tool
 /// the model sees in its place: the size, the path and a preview cut at a
 /// newline. A failed write keeps the preview and says the rest is gone.
 pub fn persist(dir: &Path, content: &str) -> String {
-    let saved = save(dir, content);
+    let path = dir.join(format!("{}.txt", uuid::Uuid::new_v4()));
+    let saved = std::fs::create_dir_all(dir)
+        .and_then(|()| {
+            crate::checkpoint::restrict_private(dir, true);
+            std::fs::write(&path, content)
+        })
+        .map(|()| crate::checkpoint::restrict_private(&path, false));
     let size = human_size(content.len());
     let preview = preview(content);
     match saved {
-        Ok(path) => format!(
+        Ok(()) => format!(
             "<persisted-output>\nOutput too large ({size}). Full output saved to: {}\n\n\
              Preview (first 2KB):\n{preview}\n</persisted-output>\n\
              Read the file a line range at a time, or search it with grep; don't read it whole.",
@@ -74,18 +80,6 @@ pub fn persist(dir: &Path, content: &str) -> String {
             )
         }
     }
-}
-
-/// Save `content` in `dir` (a session's [`results_dir`]), private to the
-/// owner, and return where it went.
-pub fn save(dir: &Path, content: &str) -> std::io::Result<PathBuf> {
-    let path = dir.join(format!("{}.txt", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(dir).and_then(|()| {
-        crate::checkpoint::restrict_private(dir, true);
-        std::fs::write(&path, content)
-    })?;
-    crate::checkpoint::restrict_private(&path, false);
-    Ok(path)
 }
 
 /// The first [`PREVIEW_CHARS`] of `content`, cut back to a newline when one
