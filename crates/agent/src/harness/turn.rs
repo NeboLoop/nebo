@@ -7,7 +7,7 @@
 use std::collections::{BTreeSet, HashSet};
 
 use super::seat::Seat;
-use super::{TurnRequest, compact, goal, reminders, usage};
+use super::{TurnRequest, compact, goal, model_call, reminders, usage};
 
 /// What one turn runs with.
 pub struct TurnContext {
@@ -20,12 +20,8 @@ pub struct TurnState {
     pub step: u32,
     pub transition: Transition,
     pub reminders: reminders::Reminders,
-    pub cutoff_attempts: u8,
-    pub output_escalated: bool,
-    pub overflow_retries: u8,
-    pub transient_retries: u8,
-    pub empty_retries: u8,
-    pub lost_call_retries: u8,
+    /// Failover position, retry counters and output-cap escalation.
+    pub call: model_call::CallState,
     /// Deferred tools loaded this session.
     pub loaded_tools: BTreeSet<String>,
     pub surfaced_memories: HashSet<String>,

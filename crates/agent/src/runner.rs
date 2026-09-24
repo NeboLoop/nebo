@@ -16,7 +16,7 @@ use tools::{Origin, Registry, ToolContext, ToolResult};
 
 use crate::concurrency::ConcurrencyController;
 use crate::db_context;
-use crate::dedupe::{self, DedupeCache};
+use crate::harness::model_call::{self, prefer_non_gateway, resolve_aux};
 use types::keyparser;
 use crate::memory;
 use crate::prompt;
@@ -33,65 +33,10 @@ const DEFAULT_MAX_ITERATIONS: usize = 100;
 const EXTENDED_MAX_ITERATIONS: usize = 200;
 /// Default context token limit for models that don't report one.
 const DEFAULT_CONTEXT_TOKEN_LIMIT: usize = 80_000;
-/// Max transient error retries before giving up.
-const MAX_TRANSIENT_RETRIES: usize = 10;
-/// Max retryable (provider/rate_limit/billing) retries before giving up.
-const MAX_RETRYABLE_RETRIES: usize = 5;
-/// Max reactive-compaction attempts when the provider rejects for context
-/// overflow despite the local estimate saying we fit (single-shot reactive
-/// compact + give-up, a guard against an auto-compaction death-spiral).
-const MAX_OVERFLOW_RETRIES: usize = 2;
-/// Consecutive overloaded (529) errors before falling back to a cheaper model.
-#[allow(dead_code)] // reserved for overload fallback logic
-const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
 /// Timeout for individual tool execution.
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 /// How often the tool clock checks whether the call is parked on the owner.
 const PARKED_POLL: Duration = Duration::from_millis(250);
-/// Max gap between stream events before the stream is declared wedged
-/// (connection open, no tokens). A 90s idle watchdog, classified transient so
-/// the normal retry/failover path re-issues the request.
-// Generous for the same reason as the HTTP client's read_timeout: buffered
-// tool-call arguments make healthy streams go silent for minutes. TCP
-// keepalive surfaces dead sockets as read errors long before this fires.
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-/// A first token this long in coming gets a status line, repeated at the
-/// same interval until it arrives, so a slow model is never minutes of
-/// silence (live 2026-09-03: 294 s with nothing shown).
-const SLOW_FIRST_TOKEN: Duration = Duration::from_secs(30);
-
-/// Status for a retry the owner would otherwise never see. With partial
-/// text on screen the retry resumes it; before any text it is a fresh try.
-pub fn retry_notice(had_partial: bool, retry: usize) -> String {
-    if had_partial {
-        "Connection dropped mid-response, reconnecting to resume where it left off.".to_string()
-    } else {
-        format!("The model connection dropped before it replied; retry {retry} starting.")
-    }
-}
-
-/// What the owner reads when the model he picked refuses the request outright.
-/// The raw upstream text ("Parameter 'temperature'=0.699… is not supported for
-/// …") tells him nothing he can act on, so lead with the decision he can
-/// change and keep the provider's words underneath for whoever needs them.
-pub fn model_refusal_notice(model: &str, detail: &str) -> String {
-    let name = model.rsplit('/').next().unwrap_or(model);
-    let named = if name.is_empty() {
-        "The model this employee is set to".to_string()
-    } else {
-        format!("The model this employee is set to ({name})")
-    };
-    format!(
-        "{named} turned this request down, and would answer the same way every \
-         time, so I stopped instead of retrying. Pick a different model under \
-         Settings → General → Model and send this again.\n\nWhat the provider \
-         said: {detail}"
-    )
-}
-
-pub fn slow_first_token_notice(waited_secs: u64) -> String {
-    format!("Still waiting on the model, {waited_secs} seconds with no reply yet.")
-}
 
 #[cfg(test)]
 mod grant_counter_tests {
@@ -183,64 +128,14 @@ mod notice_tests {
     }
 
     use super::*;
-
-    #[test]
-    fn retry_notice_says_which_kind_of_retry() {
-        assert!(retry_notice(true, 1).contains("resume"));
-        let fresh = retry_notice(false, 3);
-        assert!(fresh.contains("retry 3") && !fresh.contains("resume"));
-        assert!(slow_first_token_notice(60).contains("60 seconds"));
-    }
-
-    /// The live failure: "Nebo 1 Pro" resolved to a model that rejects the
-    /// temperature every Nebo chat turn sends, so the owner's employee died
-    /// on a 400 the retry ladder could never clear. What he reads has to name
-    /// the setting he can change, not the parameter he has never heard of.
-    #[test]
-    fn a_refused_model_names_the_setting_the_owner_can_change() {
-        use super::model_refusal_notice;
-        let notice = model_refusal_notice(
-            "janus/nebo-1-pro",
-            "Provider dashscope error: OpenAI API error (HTTP 400): \
-             [invalid_parameter_error] Parameter 'temperature'=0.7 is not \
-             supported for kimi-k3 model.",
-        );
-        assert!(notice.contains("nebo-1-pro"), "names the model: {notice}");
-        assert!(!notice.contains("janus/"), "not the wire id: {notice}");
-        assert!(notice.contains("Settings → General → Model"), "says where to fix it: {notice}");
-        // The provider's words stay available underneath, never the headline.
-        assert!(notice.contains("kimi-k3"));
-        assert!(notice.find("turned this request down").unwrap() < notice.find("kimi-k3").unwrap());
-        // No model set at all still reads as a sentence.
-        assert!(model_refusal_notice("", "boom").starts_with("The model this employee is set to turned"));
-    }
 }
 
-/// Retry backoff: exponential 500ms × 2^(n−1) capped at 32s, plus 0–25% jitter.
-/// An explicit provider Retry-After wins outright.
-fn retry_backoff(attempt: usize, retry_after_secs: Option<u64>) -> Duration {
-    if let Some(secs) = retry_after_secs {
-        return Duration::from_secs(secs);
-    }
-    let exp = attempt.saturating_sub(1).min(6) as u32; // 500ms × 2^6 = 32s cap
-    let base_ms = 500u64 << exp;
-    // ponytail: clock-nanos jitter instead of a rand dependency
-    let jitter_ms = base_ms
-        * (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u64 % 250)
-            .unwrap_or(0))
-        / 1000;
-    Duration::from_millis(base_ms + jitter_ms)
-}
 /// Default max auto-continuations when agent stops mid-task (no work tasks).
 #[allow(dead_code)] // used by max_auto_continuations, reserved for auto-continuation logic
 const MAX_AUTO_CONTINUATIONS_DEFAULT: usize = 5;
 /// Ceiling for auto-continuations even with many work tasks.
 #[allow(dead_code)] // used by max_auto_continuations, reserved for auto-continuation logic
 const MAX_AUTO_CONTINUATIONS_CEILING: usize = 50;
-/// Max recovery attempts when output is truncated by token limit.
-const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
 
 /// Absolute per-turn ceiling on repeats of ONE exact call (same tool, same
 /// arguments), counted regardless of whether the result changed.
@@ -437,10 +332,6 @@ fn summary_done(session_id: &str) {
         .unwrap_or_else(|p| p.into_inner())
         .remove(session_id);
 }
-/// Default output token cap for LLM requests.
-const DEFAULT_MAX_OUTPUT_TOKENS: i32 = 16_384;
-/// Escalated output token cap after a max_tokens truncation.
-const ESCALATED_MAX_OUTPUT_TOKENS: i32 = 65_536;
 /// Max output length from forked command execution (bytes).
 const FORK_OUTPUT_CAP: usize = 32_000;
 /// Max iterations for forked command sub-agent.
@@ -801,37 +692,6 @@ fn extract_shell_read_path(command: &str) -> Option<String> {
         return None;
     }
     Some(cleaned.to_string())
-}
-
-/// Pick a non-gateway provider when available.  Falls back to first provider
-/// (which may be Janus) only when no other option exists.  This prevents
-/// background operations (memory extraction, compaction, summarisation) from
-/// burning Janus credits when a CLI or direct-API provider is loaded.
-pub(crate) fn prefer_non_gateway(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
-    providers
-        .iter()
-        .find(|p| p.id() != "janus")
-        .cloned()
-        .or_else(|| providers.first().cloned())
-}
-
-/// Resolve the (provider, model) for auxiliary side-tasks — chat title
-/// generation, memory extraction, tool-batch summaries, and the auto-continue
-/// judge.  Honors `task_routing.aux` ("provider/model") from models.yaml when
-/// set AND that provider is loaded; returns `None` otherwise so each caller
-/// silently keeps its existing selection.  Aux routing must never make a
-/// side-task fail that would have succeeded before.
-pub(crate) fn resolve_aux(
-    cfg: &config::ModelsConfig,
-    providers: &[Arc<dyn Provider>],
-) -> Option<(Arc<dyn Provider>, String)> {
-    let spec = cfg.task_routing.as_ref().map(|tr| tr.aux.as_str())?;
-    if spec.is_empty() {
-        return None;
-    }
-    let (provider_id, model) = spec.split_once('/')?;
-    let provider = providers.iter().find(|p| p.id() == provider_id)?.clone();
-    Some((provider, model.to_string()))
 }
 
 /// JSON shape for tool results stored in the DB. Includes optional image_url
@@ -1325,35 +1185,35 @@ pub struct RunProgress {
 }
 
 /// Per-run mutable state (prevents data races across concurrent runs).
-struct RunState {
+pub(crate) struct RunState {
     prompt_overhead: usize,
     /// System prompt + tool-schema tokens (display estimate, no threshold fudge).
-    system_overhead_tokens: usize,
-    last_input_tokens: usize,
+    pub(crate) system_overhead_tokens: usize,
+    pub(crate) last_input_tokens: usize,
     /// Local estimate (chars/4) of the message tokens sent in the last request.
     /// Compared against API-reported usage to calibrate compaction thresholds.
-    last_request_estimate: usize,
+    pub(crate) last_request_estimate: usize,
     /// Observed undercount of the local estimate vs API-reported usage
     /// (hybrid counting, expressed as a threshold adjustment:
     /// actual_prev + est(tail) > threshold  ⇔  est(prev) + est(tail) > threshold − undercount).
-    estimate_correction: usize,
+    pub(crate) estimate_correction: usize,
     /// Cumulative input tokens across all iterations in this run.
-    total_input_tokens: i32,
+    pub(crate) total_input_tokens: i32,
     /// Cumulative output tokens across all iterations in this run.
-    total_output_tokens: i32,
+    pub(crate) total_output_tokens: i32,
     /// Cumulative cache tokens. Read for calibration since forever but never
     /// kept — and cache reads are most of a long conversation's bill.
-    total_cache_read_tokens: i32,
-    total_cache_creation_tokens: i32,
+    pub(crate) total_cache_read_tokens: i32,
+    pub(crate) total_cache_creation_tokens: i32,
     /// Provider-reported cost this run, microdollars (Janus prices the model it
     /// routed to). 0 when no provider said — then the price table is the only
     /// estimate, and for a routed alias it knows nothing.
-    cost_microdollars: i64,
-    thresholds: Option<ContextThresholds>,
+    pub(crate) cost_microdollars: i64,
+    pub(crate) thresholds: Option<ContextThresholds>,
     /// Janus quota warning string, populated when session or weekly usage exceeds 80%.
-    quota_warning: Option<String>,
+    pub(crate) quota_warning: Option<String>,
     /// Whether a quota warning WS event has already been sent this run (fire once).
-    quota_warning_sent: bool,
+    pub(crate) quota_warning_sent: bool,
 }
 
 impl RunState {
@@ -3013,9 +2873,7 @@ async fn run_loop(
     } else {
         origin.into()
     };
-    let mut transient_retries = 0usize;
-    let mut retryable_retries = 0usize;
-    let mut overflow_retries = 0usize;
+    let mut call_state = model_call::CallState::default();
     // Pre-seed called_tools with preactivated tools so they pass the tool filter
     // from turn 1 (bypasses deferred-loading discovery for sub-agents).
     let mut called_tools: Vec<String> = preactivate_tools.to_vec();
@@ -3109,9 +2967,6 @@ async fn run_loop(
         &store.get_guardrails().unwrap_or_else(|_| "{}".into()),
     )
     .sanitized();
-    let mut provider_idx: usize = 0;
-    // Janus provider metadata for tool stickiness — echoed back in subsequent requests
-    let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
     let auto_continuations = 0usize;
     // Cycle detection: track last auto-continued response to break loops
     let prev_auto_content: Option<String> = None;
@@ -3120,18 +2975,10 @@ async fn run_loop(
     let mut tool_doc_cache: Vec<(String, String)> = Vec::new();
     const MAX_TOOL_DOC_ENTRIES: usize = 5;
     const MAX_TOOL_DOC_CONTENT: usize = 4_000;
-    let mut output_recovery_attempts = 0usize;
-    let mut output_escalated = false;
-    // Provider said the model stopped to call tools but the stream carried no
-    // parsed tool calls (payload lost between proxy and parser). Retried, not
-    // trusted — ending the turn silently strands the user mid-task.
-    let mut lost_toolcall_retries = 0usize;
     let mut consecutive_error_iterations = 0usize;
     let mut post_tool_empty_nudges = 0usize;
     let mut pseudo_call_nudges: usize = 0;
     let mut no_access_nudges: usize = 0;
-    let mut empty_content_retries = 0usize;
-    const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
     // Message-stream steering: per-run cadence for <system-reminder> injection.
     let mut reminder_cadence = steering::ReminderCadence::default();
     let mut review_trigger = crate::reviewer::Trigger::default();
@@ -4889,11 +4736,7 @@ async fn run_loop(
             tool_choice: forced_choice.unwrap_or_default(),
             messages: ai_messages,
             tools: if wrap_up_turn { Vec::new() } else { tool_defs },
-            max_tokens: if output_escalated {
-                ESCALATED_MAX_OUTPUT_TOKENS
-            } else {
-                DEFAULT_MAX_OUTPUT_TOKENS
-            },
+            max_tokens: call_state.max_output_tokens(),
             temperature: if workflow_mode.is_some() { 0.0 } else { 0.7 },
             system: full_system,
             static_system: static_system.clone(),
@@ -4903,7 +4746,7 @@ async fn run_loop(
                 selected_model_name.to_string()
             },
             enable_thinking,
-            metadata: sticky_metadata.clone(),
+            metadata: call_state.sticky_metadata.clone(),
             cache_breakpoints,
             cancel_token: Some(cancel_token.clone()),
             // Tag this chat run so Janus attributes its usage per agent (no
@@ -4926,673 +4769,44 @@ async fn run_loop(
             iteration, session_id, "[telemetry] pre-LLM overhead (msg load → request built)"
         );
 
-        // Acquire LLM permit before provider call (blocks if at capacity)
-        let t_permit_start = std::time::Instant::now();
-        let llm_permit = tokio::select! {
-            _ = cancel_token.cancelled() => {
-                info!(session_id, "run cancelled waiting for LLM permit");
-                return Ok(turn_exit_reason.label());
-            }
-            permit = concurrency.acquire_llm_permit() => permit,
-        };
-        // A 429 on this call reports the round its permit was granted in, so
-        // one wave of rejections halves the pool once.
-        let permit_round = llm_permit.round();
-        let permit_wait_ms = t_permit_start.elapsed().as_millis() as u64;
-        if permit_wait_ms > 5 {
-            info!(
-                ms = permit_wait_ms,
-                iteration, session_id, "[telemetry] LLM permit wait"
-            );
-        }
-
-        // Snapshot provider from lock, then release before I/O
-        let provider = {
-            let prov_lock = providers.read().await;
-            if prov_lock.is_empty() {
-                return Err("No AI providers available".to_string());
-            }
-
-            // Find provider: use model-based lookup on first attempt,
-            // but after retries (provider_idx > 0) use round-robin so we
-            // actually fall through to the next provider (e.g. CLI agent).
-            let idx = if provider_idx > 0 {
-                provider_idx % prov_lock.len()
-            } else if !selected_provider_id.is_empty() {
-                prov_lock
-                    .iter()
-                    .position(|p| p.id() == selected_provider_id)
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-
-            info!(
-                iteration,
+        let reply = match model_call::call_model(
+            model_call::ModelCall {
+                request: chat_req,
+                providers,
+                selector,
+                concurrency,
+                sessions,
+                cancel: cancel_token,
+                tx,
                 session_id,
-                provider_idx = idx,
-                provider_id = prov_lock[idx].id(),
+                step: iteration,
+                step_started: t_iter_start,
                 selected_provider_id,
-                selected_model = %selected_model,
-                provider_count = prov_lock.len(),
-                message_count = chat_req.messages.len(),
-                tool_count = chat_req.tools.len(),
-                enable_thinking,
-                "sending request to provider"
-            );
-            prov_lock[idx].clone()
+                selected_model: &selected_model,
+                model_override,
+                context_limit: thresholds.auto_compact,
+            },
+            &mut call_state,
+            &mut state,
+            &mut pending_stream_reminders,
+        )
+        .await
+        {
+            model_call::CallOutcome::Reply(reply) => reply,
+            model_call::CallOutcome::Retry => continue,
+            model_call::CallOutcome::Cancelled => return Ok(turn_exit_reason.label()),
+            model_call::CallOutcome::CancelledInBackoff => return Ok("cancelled".to_string()),
+            model_call::CallOutcome::Exhausted => break,
+            model_call::CallOutcome::Failed(e) => return Err(e),
         };
-
-        // If we fell through to a different provider (e.g. CLI after Janus rate limit),
-        // clear the model so the fallback provider uses its own default.
-        let mut chat_req = chat_req;
-        if provider.id() != selected_provider_id {
-            chat_req.model = String::new();
-        }
-
-        // Providers that never put images on the wire get them as text instead.
-        // Decided here, after the fallback above, because a run that started on a
-        // vision provider can land on a blind one mid-retry.
-        if !provider.supports_vision() && chat_req.messages.iter().any(|m| m.images.is_some()) {
-            crate::sidecar::describe_attached_images(provider.as_ref(), &mut chat_req).await;
-        }
-
-        let t_stream_start = std::time::Instant::now();
-        let stream_result = tokio::select! {
-            _ = cancel_token.cancelled() => {
-                info!(session_id, "run cancelled during provider.stream() call");
-                return Ok(turn_exit_reason.label());
-            }
-            result = provider.stream(&chat_req) => result,
-        };
-        let stream_connect_ms = t_stream_start.elapsed().as_millis() as u64;
-
-        let mut rx = match stream_result {
-            Ok(rx) => {
-                info!(
-                    iteration,
-                    session_id,
-                    connect_ms = stream_connect_ms,
-                    "[telemetry] provider stream connected"
-                );
-                rx
-            }
-            Err(e) => {
-                // Every branch below retries after a wait or ends the turn:
-                // a waiting call must not sit on a slot other calls could use.
-                drop(llm_permit);
-                // Deduplicate repeated errors to avoid log spam
-                let err_str = format!("{}", e);
-                let fingerprint = dedupe::fingerprint_error(&err_str);
-                static ERROR_DEDUP: std::sync::OnceLock<DedupeCache> = std::sync::OnceLock::new();
-                let dedup = ERROR_DEDUP.get_or_init(DedupeCache::default);
-                if dedup.check(&fingerprint) {
-                    debug!(iteration, session_id, "deduplicated provider error");
-                } else {
-                    warn!(iteration, session_id, error = %e, "provider error");
-                }
-
-                if ai::is_context_overflow(&e) {
-                    overflow_retries += 1;
-                    if overflow_retries > MAX_OVERFLOW_RETRIES {
-                        return Err(format!(
-                            "Context overflow persisted after {} compaction attempts: {}",
-                            MAX_OVERFLOW_RETRIES, e
-                        ));
-                    }
-                    // The provider disagreed with our local estimate. Make the
-                    // retry state-changing: tighten thresholds by 20% of the
-                    // compaction budget so next iteration's stages actually
-                    // evict, instead of re-sending the identical request.
-                    let bump = state
-                        .thresholds
-                        .as_ref()
-                        .map(|t| t.auto_compact / 5)
-                        .unwrap_or(20_000);
-                    state.estimate_correction += bump;
-                    warn!(
-                        overflow_retries,
-                        correction = state.estimate_correction,
-                        "context overflow: forcing reactive compaction"
-                    );
-                    continue;
-                }
-
-                if ai::is_transient_error(&e) {
-                    transient_retries += 1;
-                    selector.mark_failed(&selected_model);
-                    if transient_retries > MAX_TRANSIENT_RETRIES {
-                        return Err(format!("Too many transient errors: {}", e));
-                    }
-                    // The owner sees the retry, not a silent gap (voice said
-                    // "on it" and went quiet for five minutes, 2026-09-03).
-                    if tx
-                        .send(StreamEvent::control_notice(
-                            retry_notice(false, transient_retries),
-                            "stream_reconnecting",
-                        ))
-                        .await
-                        .is_err()
-                    {
-                        debug!(session_id, "retry notice: receiver gone");
-                    }
-                    // Try next provider on transient error — but never
-                    // silently fall from CLI to Janus (burns Nebo credits).
-                    let prov_lock = providers.read().await;
-                    let prov_count = prov_lock.len();
-                    if prov_count > 1 {
-                        let next_idx = (provider_idx + 1) % prov_count;
-                        if prov_lock[next_idx].id() == "janus" {
-                            drop(prov_lock);
-                            return Err(format!("Provider error (no fallback to Janus): {}", e));
-                        }
-                        drop(prov_lock);
-                        provider_idx += 1;
-                    } else {
-                        drop(prov_lock);
-                    }
-                    tokio::select! {
-                        _ = cancel_token.cancelled() => return Ok("cancelled".to_string()),
-                        _ = tokio::time::sleep(retry_backoff(transient_retries, None)) => {}
-                    }
-                    continue;
-                }
-
-                // A 429 slows the whole bot, not just this call: the pool
-                // halves, and this call waits as long as the provider asked.
-                let mut retry_after = None;
-                if let ProviderError::RateLimit { retry_after_secs } = &e {
-                    concurrency.report_rate_limit(permit_round);
-                    retry_after = *retry_after_secs;
-                }
-
-                if e.is_retryable() {
-                    retryable_retries += 1;
-                    selector.mark_failed(&selected_model);
-                    if retryable_retries > MAX_RETRYABLE_RETRIES {
-                        return Err(format!(
-                            "Service temporarily unavailable after {} retries: {}",
-                            MAX_RETRYABLE_RETRIES, e
-                        ));
-                    }
-                    let prov_lock = providers.read().await;
-                    let prov_count = prov_lock.len();
-                    if prov_count > 1 {
-                        let next_idx = (provider_idx + 1) % prov_count;
-                        if prov_lock[next_idx].id() == "janus" {
-                            drop(prov_lock);
-                            return Err(format!("Provider error (no fallback to Janus): {}", e));
-                        }
-                        drop(prov_lock);
-                        provider_idx += 1;
-                    } else {
-                        drop(prov_lock);
-                    }
-                    tokio::select! {
-                        _ = cancel_token.cancelled() => return Ok("cancelled".to_string()),
-                        _ = tokio::time::sleep(retry_backoff(retryable_retries, retry_after)) => {}
-                    }
-                    continue;
-                }
-
-                return Err(format!("Provider error: {}", e));
-            }
-        };
-
-        // Process stream (retry counters are reset after stream produces content)
-        let mut assistant_content = String::new();
-        let mut tool_calls: Vec<ai::ToolCall> = Vec::new();
-        let mut stream_error: Option<String> = None;
-        let mut last_retry_after: Option<u64> = None;
-        let mut stop_reason: Option<String> = None;
-        let mut t_first_token: Option<std::time::Instant> = None;
-        let mut slow_notice_at = tokio::time::Instant::now() + SLOW_FIRST_TOKEN;
-        // Track the order of content blocks (text vs tool) for correct rehydration.
-        // Each entry is either "text" (coalesced) or a tool index.
-        let mut block_order: Vec<(&str, Option<usize>)> = Vec::new();
-        // CLI providers run multi-turn tool loops — save each turn incrementally.
-        let cli_incremental = provider.handles_tools();
-
-        loop {
-            let mut event = tokio::select! {
-                _ = cancel_token.cancelled() => {
-                    info!(session_id, "run cancelled during LLM stream");
-                    // Best-effort: save whatever content we accumulated before cancellation
-                    if !assistant_content.is_empty() || !tool_calls.is_empty() {
-                        let tc_json = if !tool_calls.is_empty() {
-                            serde_json::to_string(&tool_calls).ok()
-                        } else {
-                            None
-                        };
-                        if let Err(e) = sessions.append_message(
-                            session_id, "assistant", &assistant_content,
-                            tc_json.as_deref(), None, None,
-                        ) {
-                            warn!(session_id = %session_id, error = %e, "failed to save partial assistant message on cancel");
-                        } else {
-                            info!(session_id, content_len = assistant_content.len(), tool_count = tool_calls.len(), "saved partial assistant message before cancel");
-                        }
-                    }
-                    return Ok(turn_exit_reason.label());
-                }
-                _ = tokio::time::sleep_until(slow_notice_at), if t_first_token.is_none() => {
-                    let waited = t_stream_start.elapsed().as_secs();
-                    if tx
-                        .send(StreamEvent::control_notice(
-                            slow_first_token_notice(waited),
-                            "slow_first_token",
-                        ))
-                        .await
-                        .is_err()
-                    {
-                        debug!(session_id, "slow first token notice: receiver gone");
-                    }
-                    slow_notice_at += SLOW_FIRST_TOKEN;
-                    continue;
-                }
-                ev = tokio::time::timeout(STREAM_IDLE_TIMEOUT, rx.recv()) => match ev {
-                    Ok(Some(e)) => e,
-                    Ok(None) => break,
-                    Err(_) => {
-                        warn!(
-                            iteration,
-                            session_id,
-                            "stream idle timeout: no events for {}s",
-                            STREAM_IDLE_TIMEOUT.as_secs()
-                        );
-                        stream_error = Some(format!(
-                            "stream idle timeout: no events for {}s",
-                            STREAM_IDLE_TIMEOUT.as_secs()
-                        ));
-                        break;
-                    }
-                }
-            };
-            if t_first_token.is_none() {
-                t_first_token = Some(std::time::Instant::now());
-                let ttft = t_stream_start.elapsed().as_millis() as u64;
-                let iter_elapsed = t_iter_start.elapsed().as_millis() as u64;
-                info!(
-                    ttft_ms = ttft,
-                    iter_total_ms = iter_elapsed,
-                    iteration,
-                    session_id,
-                    provider = %provider.id(),
-                    model = %chat_req.model,
-                    "[telemetry] first token received"
-                );
-            }
-            match event.event_type {
-                StreamEventType::Text => {
-                    // CLI incremental save: text after tool calls = new turn.
-                    // Flush the previous turn's content + tool calls to DB.
-                    if cli_incremental && !tool_calls.is_empty() {
-                        let tc_json = serde_json::to_string(&tool_calls).ok();
-                        if let Err(e) = sessions.append_message(
-                            session_id,
-                            "assistant",
-                            &assistant_content,
-                            tc_json.as_deref(),
-                            None,
-                            None,
-                        ) {
-                            warn!(session_id = %session_id, error = %e, "failed to save CLI turn to DB");
-                        } else {
-                            debug!(
-                                session_id,
-                                content_len = assistant_content.len(),
-                                tool_count = tool_calls.len(),
-                                "saved CLI turn incrementally"
-                            );
-                        }
-                        assistant_content.clear();
-                        tool_calls.clear();
-                        block_order.clear();
-                    }
-                    assistant_content.push_str(&event.text);
-                    // Coalesce consecutive text events into one block
-                    if block_order.last().map_or(true, |b| b.0 != "text") {
-                        block_order.push(("text", None));
-                    }
-                    let _ = tx.send(event).await;
-                }
-                StreamEventType::Thinking => {
-                    info!(session_id, "received thinking block");
-                    let _ = tx.send(event).await;
-                }
-                StreamEventType::ToolCall => {
-                    if let Some(ref tc) = event.tool_call {
-                        info!(session_id, tool = %tc.name, tool_id = %tc.id, "tool call received");
-                        tool_calls.push(tc.clone());
-                        block_order.push(("tool", Some(tool_calls.len() - 1)));
-                    }
-                    let _ = tx.send(event).await;
-                }
-                StreamEventType::Error => {
-                    warn!(session_id, error = ?event.error, "stream error event");
-                    stream_error = event.error.clone();
-                    // Don't forward to user yet — classify after stream ends
-                }
-                StreamEventType::Usage => {
-                    if let Some(ref mut usage) = event.usage {
-                        state.last_input_tokens = usage.input_tokens as usize;
-                        state.total_input_tokens += usage.input_tokens;
-                        state.total_output_tokens += usage.output_tokens;
-                        state.total_cache_read_tokens += usage.cache_read_input_tokens;
-                        state.total_cache_creation_tokens += usage.cache_creation_input_tokens;
-                        state.cost_microdollars += usage.cost_microdollars.unwrap_or(0);
-                        usage.overhead_tokens = state.system_overhead_tokens as i32;
-
-                        // Calibrate the local token estimate against ground truth.
-                        // Context actually sent = input + cache tokens (with prompt
-                        // caching, input_tokens alone excludes the cached bulk).
-                        let context_actual = (usage.input_tokens
-                            + usage.cache_creation_input_tokens
-                            + usage.cache_read_input_tokens)
-                            as usize;
-                        if context_actual > 0 && state.last_request_estimate > 0 {
-                            let conversation_actual =
-                                context_actual.saturating_sub(state.system_overhead_tokens);
-                            state.estimate_correction =
-                                conversation_actual.saturating_sub(state.last_request_estimate);
-                        }
-                        info!(
-                            session_id,
-                            iteration,
-                            context_tokens = context_actual,
-                            cache_read_tokens = usage.cache_read_input_tokens,
-                            estimated = state.last_request_estimate + state.system_overhead_tokens,
-                            limit = thresholds.auto_compact,
-                            "context usage"
-                        );
-                    }
-                    let _ = tx.send(event).await;
-                }
-                StreamEventType::RateLimit => {
-                    if let Some(ref meta) = event.rate_limit {
-                        last_retry_after = meta.retry_after_secs;
-
-                        // Check Janus session/weekly usage and generate quota warning at >80%
-                        let mut warnings = Vec::new();
-                        if let (Some(limit), Some(remaining)) =
-                            (meta.session_limit_credits, meta.session_remaining_credits)
-                        {
-                            if limit > 0 {
-                                let used_pct = ((limit.saturating_sub(remaining)) as f64
-                                    / limit as f64)
-                                    * 100.0;
-                                if used_pct >= 80.0 {
-                                    warnings.push(format!(
-                                        "Session usage at {:.0}% (resets at {})",
-                                        used_pct,
-                                        meta.session_reset_at.as_deref().unwrap_or("unknown"),
-                                    ));
-                                }
-                            }
-                        }
-                        if let (Some(limit), Some(remaining)) =
-                            (meta.weekly_limit_credits, meta.weekly_remaining_credits)
-                        {
-                            if limit > 0 {
-                                let used_pct = ((limit.saturating_sub(remaining)) as f64
-                                    / limit as f64)
-                                    * 100.0;
-                                if used_pct >= 80.0 {
-                                    warnings.push(format!(
-                                        "Weekly usage at {:.0}% (resets at {})",
-                                        used_pct,
-                                        meta.weekly_reset_at.as_deref().unwrap_or("unknown"),
-                                    ));
-                                }
-                            }
-                        }
-                        if !warnings.is_empty() {
-                            let warning_text = warnings.join(". ");
-                            state.quota_warning = Some(warning_text.clone());
-
-                            // Forward the rate limit event with warning text once per run
-                            // so chat_dispatch can broadcast a quota_warning WS event.
-                            if !state.quota_warning_sent {
-                                state.quota_warning_sent = true;
-                                let _ = tx
-                                    .send(StreamEvent { payload: None,
-                                        provenance: None,
-                                        event_type: StreamEventType::RateLimit,
-                                        text: warning_text,
-                                        tool_call: None,
-                                        error: None,
-                                        usage: None,
-                                        rate_limit: event.rate_limit.clone(),
-                                        widgets: None,
-                                        provider_metadata: None,
-                                        stop_reason: None,
-                                        image_url: None,
-                                    })
-                                    .await;
-                            }
-                        }
-                    }
-                }
-                StreamEventType::Done => {
-                    // Capture stop reason for max output recovery
-                    if event.stop_reason.is_some() {
-                        stop_reason = event.stop_reason.clone();
-                    }
-                    // Capture provider metadata for Janus tool stickiness
-                    if let Some(meta) = event.provider_metadata {
-                        sticky_metadata = Some(meta);
-                    }
-                }
-                StreamEventType::ToolResult => {
-                    // CLI providers (handles_tools) execute tools themselves via
-                    // MCP and stream the results back; relay so chat_dispatch can
-                    // broadcast tool_result. API providers never emit this event —
-                    // the runner synthesizes it after executing tools itself.
-                    let _ = tx.send(event).await;
-                }
-                StreamEventType::ApprovalRequest
-                | StreamEventType::AskRequest
-                | StreamEventType::PlanApproval
-                | StreamEventType::ControlNotice
-                | StreamEventType::ContextStats => {
-                    // Approval/Ask/Plan/ControlNotice: only sent by runner, not
-                    // received from provider.
-                }
-                StreamEventType::ToolSummary => {
-                    // Tool execution summary — relay to parent for display.
-                    let _ = tx.send(event).await;
-                }
-                StreamEventType::SubagentStart
-                | StreamEventType::SubagentProgress
-                | StreamEventType::SubagentComplete => {
-                    // Forwarded from sub-agent orchestrator via stream_tx; relay to parent.
-                    let _ = tx.send(event).await;
-                }
-            }
-        }
-
-        // Drop LLM permit now that stream is complete
-        drop(llm_permit);
-
-        // Reset retry counters only when stream actually produced content
-        if stream_error.is_none() && (!assistant_content.is_empty() || !tool_calls.is_empty()) {
-            transient_retries = 0;
-            retryable_retries = 0;
-            // Note: estimate_correction is NOT reset — the compaction that
-            // recovered from overflow must stay in effect for the rest of the run.
-            overflow_retries = 0;
-        }
-
-        // Report success or rate limit to concurrency controller
-        if stream_error.is_none() {
-            concurrency.report_success();
-        }
-
-        // Handle stream errors — classify and retry (matches Go runner logic)
-        if let Some(ref err_msg) = stream_error {
-            warn!("stream error: {}", err_msg);
-            let err = ProviderError::Stream(err_msg.clone());
-            let reason = ai::classify_error_reason(&err);
-            // A refusal the provider will repeat verbatim. Both ladders below
-            // re-send the identical payload, so letting one through costs the
-            // owner the whole retry budget and tells him nothing new.
-            let deterministic = ai::is_deterministic_request_error(&err);
-
-            // Mid-stream cutoff continuation: partial text the user already
-            // watched stream would die with the retry `continue` below (which
-            // skips the normal end-of-iteration save), so the retried call
-            // would regenerate — repeating or restarting what was already
-            // delivered. Persist the partial turn (same append pathway as the
-            // cancel save in the stream loop) and steer the retry to resume in
-            // place. Partial tool calls are NOT saved — an assistant tool_use
-            // with no tool result is an invalid sequence for every provider.
-            // Called only on the branches that actually retry; the
-            // non-retryable fall-through persists via the normal save.
-            // The user watched this text stream and then freeze mid-sentence.
-            // Without a status line the dead bubble reads as the model giving
-            // up; with one, the retry reads as what it is — a reconnect.
-            let had_partial = !assistant_content.is_empty();
-            let reconnect_notice = |retry: usize| {
-                tx.send(StreamEvent::control_notice(
-                    retry_notice(had_partial, retry),
-                    "stream_reconnecting",
-                ))
-            };
-            let mut queue_cutoff_continuation = || {
-                if assistant_content.is_empty() && tool_calls.is_empty() {
-                    return;
-                }
-                if !assistant_content.is_empty() {
-                    if let Err(e) = sessions.append_message(
-                        session_id,
-                        "assistant",
-                        &assistant_content,
-                        None,
-                        None,
-                        None,
-                    ) {
-                        warn!(session_id = %session_id, error = %e, "failed to save partial assistant message before stream retry");
-                    }
-                }
-                // A stream that dies while a tool call is in flight is almost
-                // always killed by the call itself — one enormous streamed
-                // argument (a whole document inline). A generic "continue"
-                // makes the model re-emit the same giant call and die the same
-                // way; name the cause and steer it to chunk the work instead.
-                let reminder = if tool_calls.is_empty() {
-                    "Your previous response was cut off mid-stream by a \
-                     connection error. Continue EXACTLY where you left off — \
-                     do not repeat or restart."
-                        .to_string()
-                } else {
-                    let names: Vec<&str> =
-                        tool_calls.iter().map(|tc| tc.name.as_str()).collect();
-                    format!(
-                        "Your previous response was cut off mid-stream while \
-                         emitting a tool call ({}) — the call was NOT delivered. \
-                         Oversized tool arguments are the usual cause. Do NOT \
-                         retry one giant call: break the work into several \
-                         smaller tool calls (write large files in pieces, edit \
-                         one section at a time), then continue from where you \
-                         stopped.",
-                        names.join(", ")
-                    )
-                };
-                pending_stream_reminders.push(steering::wrap_system_reminder(&reminder));
-            };
-
-            // Layer 1: Transient errors (connection reset, timeout, EOF)
-            if !deterministic && ai::is_transient_error(&err) {
-                transient_retries += 1;
-                if transient_retries <= MAX_TRANSIENT_RETRIES {
-                    queue_cutoff_continuation();
-                    if reconnect_notice(transient_retries).await.is_err() {
-                        debug!(session_id, "retry notice: receiver gone");
-                    }
-                    let prov_count = providers.read().await.len();
-                    if prov_count > 1 {
-                        provider_idx += 1;
-                    }
-                    tokio::select! {
-                        _ = cancel_token.cancelled() => return Ok("cancelled".to_string()),
-                        _ = tokio::time::sleep(retry_backoff(transient_retries, None)) => {}
-                    }
-                    continue;
-                }
-            }
-
-            // Report rate limit to concurrency controller
-            if reason == "rate_limit" {
-                concurrency.report_rate_limit(permit_round);
-            }
-
-            // Layer 2: Retryable errors (rate_limit, billing, provider errors)
-            let is_retryable = !deterministic
-                && (err.is_retryable()
-                    || reason == "rate_limit"
-                    || reason == "billing"
-                    || reason == "provider"
-                    || reason == "timeout");
-            if is_retryable {
-                retryable_retries += 1;
-                if retryable_retries > MAX_RETRYABLE_RETRIES {
-                    let _ = tx
-                        .send(StreamEvent::error(format!(
-                            "Service temporarily unavailable after {} retries: {}",
-                            MAX_RETRYABLE_RETRIES, err_msg
-                        )))
-                        .await;
-                    break;
-                }
-                warn!(
-                    reason,
-                    retryable_retries, "retryable stream error, trying next provider"
-                );
-                queue_cutoff_continuation();
-                if reconnect_notice(retryable_retries).await.is_err() {
-                    debug!(session_id, "retry notice: receiver gone");
-                }
-                let prov_count = providers.read().await.len();
-                if prov_count > 1 {
-                    provider_idx += 1;
-                }
-                tokio::select! {
-                    _ = cancel_token.cancelled() => return Ok("cancelled".to_string()),
-                    _ = tokio::time::sleep(retry_backoff(retryable_retries, last_retry_after)) => {}
-                }
-                continue;
-            }
-
-            // Layer 3: Non-retryable — send error to user
-            if deterministic {
-                warn!(
-                    model = model_override,
-                    "provider refused the request outright; not retrying"
-                );
-            }
-            let _ = tx
-                .send(StreamEvent::error(if deterministic {
-                    model_refusal_notice(model_override, err_msg)
-                } else {
-                    err_msg.clone()
-                }))
-                .await;
-        }
-        // The call landed: its stream reminders are spent.
-        pending_stream_reminders.clear();
-
-        let stream_total_ms = t_stream_start.elapsed().as_millis() as u64;
-        let iter_total_ms = t_iter_start.elapsed().as_millis() as u64;
-        info!(
-            session_id,
-            iteration,
-            content_len = assistant_content.len(),
-            tool_call_count = tool_calls.len(),
-            has_error = stream_error.is_some(),
-            stream_ms = stream_total_ms,
-            iter_ms = iter_total_ms,
-            "[telemetry] stream complete"
-        );
+        let model_call::ModelReply {
+            text: assistant_content,
+            mut tool_calls,
+            stop: stop_reason,
+            stream_error,
+            mut block_order,
+            provider,
+        } = reply;
 
         // Hook: message.post_receive — let apps modify response text before saving
         let assistant_content = if hooks.has_subscribers("message.post_receive") {
@@ -7881,49 +7095,14 @@ async fn run_loop(
             continue;
         }
 
-        // Output token escalation: on first truncation, retry with a higher cap
-        // before falling through to the multi-attempt continuation recovery.
-        if (stop_reason.as_deref() == Some("length")
-            || stop_reason.as_deref() == Some("max_tokens"))
-            && !output_escalated
+        // Cut off by the output cap: retry at the escalated cap, then continue in place.
+        if let Some(retry) =
+            model_call::output_cutoff(&mut call_state, stop_reason.as_deref(), iteration, session_id)
         {
-            info!(
-                iteration,
-                session_id,
-                "output truncated at {}K tokens, retrying with {}K",
-                DEFAULT_MAX_OUTPUT_TOKENS / 1024,
-                ESCALATED_MAX_OUTPUT_TOKENS / 1024,
-            );
-            output_escalated = true;
-            continue;
-        }
-
-        // Max output tokens recovery: if response was truncated, force continuation
-        if stop_reason.as_deref() == Some("length") || stop_reason.as_deref() == Some("max_tokens")
-        {
-            if output_recovery_attempts < MAX_OUTPUT_RECOVERY_ATTEMPTS {
-                output_recovery_attempts += 1;
-                info!(
-                    iteration,
-                    session_id,
-                    attempt = output_recovery_attempts,
-                    "max output tokens recovery"
-                );
-                // Continuation rides the next call as an ephemeral reminder
-                // after the (already persisted, line ~2740) truncated turn.
-                pending_stream_reminders.push(steering::wrap_system_reminder(
-                    "Your previous response was cut off by the output token limit. \
-                     Resume directly from where you stopped — no recap, no apology. \
-                     If you had pending tool calls, make them now.",
-                ));
-                continue;
+            if let model_call::StepRetry::WithReminder(reminder) = retry {
+                pending_stream_reminders.push(reminder);
             }
-        }
-        // Reset recovery counter and escalation flag on successful non-truncated completion
-        if stop_reason.as_deref() != Some("length") && stop_reason.as_deref() != Some("max_tokens")
-        {
-            output_recovery_attempts = 0;
-            output_escalated = false;
+            continue;
         }
 
         // Token budget continuation: if min_iterations is set and not yet reached,
@@ -8016,14 +7195,7 @@ async fn run_loop(
             }
 
             // Empty response retry: retry up to 3 times before giving up.
-            if empty_content_retries < MAX_EMPTY_CONTENT_RETRIES {
-                empty_content_retries += 1;
-                warn!(
-                    iteration,
-                    session_id,
-                    retry = empty_content_retries,
-                    "empty response — retrying"
-                );
+            if model_call::retry_empty_reply(&mut call_state, iteration, session_id) {
                 continue;
             }
 
@@ -8033,7 +7205,7 @@ async fn run_loop(
                 iteration,
                 session_id,
                 "empty response after {} retries — giving up",
-                MAX_EMPTY_CONTENT_RETRIES
+                model_call::MAX_EMPTY_CONTENT_RETRIES
             );
             let _ = sessions.append_message(session_id, "assistant", "(empty)", None, None, None);
             let _ = tx.send(StreamEvent::text("(empty)".to_string())).await;
@@ -8041,10 +7213,7 @@ async fn run_loop(
         }
 
         // Reset retry counter on successful non-empty content (read on next loop iteration)
-        #[allow(unused_assignments)]
-        {
-            empty_content_retries = 0;
-        }
+        call_state.empty_content_retries = 0;
 
         // Auto-continuation: tool_use blocks are the sole continuation signal.
         // Text-only responses always exit the loop.
@@ -8065,25 +7234,16 @@ async fn run_loop(
             hooks.do_action("agent.turn", payload).await;
         }
 
-        // Contradictory stop: the provider says the model stopped TO CALL TOOLS,
-        // but no tool calls were parsed from the stream — the payload was lost
-        // in transit (observed live with Janus: stop_reason="tool_calls",
-        // tool_call_count=0). Ending the turn here strands the user with only
-        // the preamble text; retry the iteration instead.
-        let stop_says_tools = matches!(stop_reason.as_deref(), Some("tool_calls" | "tool_use"));
-        if stop_says_tools && tool_calls.is_empty() && lost_toolcall_retries < 2 {
-            lost_toolcall_retries += 1;
-            warn!(
-                iteration,
-                session_id,
-                attempt = lost_toolcall_retries,
-                "stop_reason says tool_calls but none were parsed — retrying iteration"
-            );
-            pending_stream_reminders.push(steering::wrap_system_reminder(
-                "Your previous response ended as if calling tools, but no tool \
-                 calls arrived. Make the tool calls now — do not re-introduce \
-                 the task.",
-            ));
+        // Contradictory stop: the provider says the model stopped TO CALL
+        // TOOLS but none were parsed — retry the iteration instead of ending.
+        if let Some(reminder) = model_call::lost_tool_calls(
+            &mut call_state,
+            stop_reason.as_deref(),
+            &tool_calls,
+            iteration,
+            session_id,
+        ) {
+            pending_stream_reminders.push(reminder);
             continue;
         }
 
@@ -8204,7 +7364,7 @@ async fn run_loop(
                     static_system: static_system.clone(),
                     model: last_model_name.clone(),
                     enable_thinking: false,
-                    metadata: sticky_metadata.clone(),
+                    metadata: call_state.sticky_metadata.clone(),
                     cache_breakpoints: vec![],
                     cancel_token: Some(cancel_token.clone()),
                     trace: side_trace("budget_summary"),
@@ -10180,79 +9340,6 @@ mod tests {
 
     /// Spiral tests exercise the counting mechanics at the shipped default.
     const SAME_ACTION_LIMIT: usize = crate::guardrails::DEFAULT_SAME_ACTION_LIMIT;
-
-    /// Minimal provider stub for resolve_aux tests (only id() matters).
-    struct StubProvider(&'static str);
-
-    #[async_trait::async_trait]
-    impl Provider for StubProvider {
-        fn id(&self) -> &str {
-            self.0
-        }
-        async fn stream(
-            &self,
-            _req: &ChatRequest,
-        ) -> Result<ai::EventReceiver, ProviderError> {
-            Err(ProviderError::Request("stub".into()))
-        }
-    }
-
-    fn aux_config(aux: &str) -> config::ModelsConfig {
-        config::ModelsConfig {
-            version: "1.0".into(),
-            defaults: None,
-            task_routing: Some(config::models::TaskRouting {
-                vision: String::new(),
-                audio: String::new(),
-                reasoning: String::new(),
-                code: String::new(),
-                general: String::new(),
-                aux: aux.to_string(),
-                fallbacks: std::collections::HashMap::new(),
-            }),
-            lane_routing: None,
-            aliases: vec![],
-            providers: std::collections::HashMap::new(),
-            cli_providers: vec![],
-        }
-    }
-
-    #[test]
-    fn test_resolve_aux_unset_returns_none() {
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
-        // Empty aux field → fallback.
-        assert!(resolve_aux(&aux_config(""), &providers).is_none());
-        // No task_routing at all → fallback.
-        let mut cfg = aux_config("");
-        cfg.task_routing = None;
-        assert!(resolve_aux(&cfg, &providers).is_none());
-    }
-
-    #[test]
-    fn test_resolve_aux_provider_missing_returns_none() {
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
-        let cfg = aux_config("openai/gpt-4o-mini");
-        assert!(resolve_aux(&cfg, &providers).is_none());
-    }
-
-    #[test]
-    fn test_resolve_aux_malformed_spec_returns_none() {
-        // Bare model id without a provider prefix cannot be routed → fallback.
-        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
-        assert!(resolve_aux(&aux_config("gpt-4o-mini"), &providers).is_none());
-    }
-
-    #[test]
-    fn test_resolve_aux_set_and_available_routes() {
-        let providers: Vec<Arc<dyn Provider>> = vec![
-            Arc::new(StubProvider("anthropic")),
-            Arc::new(StubProvider("openai")),
-        ];
-        let cfg = aux_config("openai/gpt-4o-mini");
-        let (provider, model) = resolve_aux(&cfg, &providers).expect("aux route should resolve");
-        assert_eq!(provider.id(), "openai");
-        assert_eq!(model, "gpt-4o-mini");
-    }
 
     #[test]
     fn test_convert_messages() {

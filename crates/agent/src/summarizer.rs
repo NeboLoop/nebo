@@ -34,7 +34,7 @@ pub async fn summarize_tool_batch(
         return None;
     }
 
-    let (provider, aux_model) = match crate::runner::resolve_aux(&ModelsConfig::load(), providers) {
+    let (provider, aux_model) = match crate::harness::model_call::resolve_aux(&ModelsConfig::load(), providers) {
         Some(routed) => routed,
         None => (pick_cheapest(providers)?, String::new()),
     };
@@ -159,9 +159,9 @@ pub async fn one_line(
 ) -> Option<String> {
     let (provider, model) = {
         let lock = providers.read().await;
-        match crate::runner::resolve_aux(&ModelsConfig::load(), &lock) {
+        match crate::harness::model_call::resolve_aux(&ModelsConfig::load(), &lock) {
             Some(routed) => routed,
-            None => (crate::runner::prefer_non_gateway(&lock)?, model.to_string()),
+            None => (crate::harness::model_call::prefer_non_gateway(&lock)?, model.to_string()),
         }
     };
 
