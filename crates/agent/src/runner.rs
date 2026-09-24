@@ -2929,7 +2929,7 @@ async fn run_loop(
     // LLM call's messages in-memory, then dropped. Never persisted to the
     // session — a reminder that lands in stored history pollutes every
     // later context window AND leaks into channel mirrors/backfills.
-    let mut pending_stream_reminders: Vec<String> = Vec::new();
+    let mut pending_stream_reminders = steering::StreamReminders::default();
     // The owner's spending limit escalates once: wrap-up turn, then stop.
     let mut spend_cap_wrap_up_issued = false;
     // The runaway backstop escalates the same way: the repeated call is
@@ -4582,11 +4582,11 @@ async fn run_loop(
                 serde_json::from_slice::<crate::hooks::SteeringGenerateResponse>(&result)
             {
                 for d in resp.directives {
-                    pending_stream_reminders.push(steering::wrap_system_reminder(&if d.label.is_empty() {
+                    pending_stream_reminders.steer("app_steering", &if d.label.is_empty() {
                         d.content
                     } else {
                         format!("{}: {}", d.label, d.content)
-                    }));
+                    });
                 }
             }
         }
@@ -4618,9 +4618,10 @@ async fn run_loop(
         // no such reminder because its transcript is compacted and its model
         // strong; here the first iteration says it outright.
         if iteration == 1 {
-            if let Some(text) = steering::latest_message_reminder(&all_messages) {
+            if let Some(text) = steering::latest_message_reminder(&all_messages)
+                && pending_stream_reminders.steer("latest_message", &text)
+            {
                 info!(session_id, "steering: latest-message-is-the-task reminder injected");
-                pending_stream_reminders.push(steering::wrap_system_reminder(&text));
             }
         }
 
@@ -4631,7 +4632,7 @@ async fn run_loop(
         // prompt). The post-tool-round reminder registry can't cover this — it fires
         // too late to shape the first reply.
         if iteration == 1 && steering::channel_is_external(channel) {
-            pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+            pending_stream_reminders.steer("channel_grounding", &format!(
                 "You are fully connected on the `{channel}` channel with your complete \
                  toolset — web, files, installed plugins (call them via the `plugin` tool), \
                  skills, and sub-agents — exactly as in any other channel. When asked to do \
@@ -4639,7 +4640,7 @@ async fn run_loop(
                  concrete results. Never simulate, mock, describe hypothetically, or claim \
                  you lack access — if you're unsure what's available, discover it with \
                  `tool_search` or the `plugin` tool first."
-            )));
+            ));
         }
 
         let mut ai_messages = convert_messages(&window_messages);
@@ -4667,6 +4668,7 @@ async fn run_loop(
             work_tasks: work_tasks.clone(),
             tool_doc_cache: tool_doc_cache.clone(),
             user_timezone: user_timezone.clone(),
+            objective_plain: !active_task.is_empty() && !pending_stream_reminders.gate("objective_push"),
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
@@ -4848,7 +4850,7 @@ async fn run_loop(
         }
 
         // This call's steering, attached in the one place it enters a call.
-        attach_stream_reminders(&mut ai_messages, &pending_stream_reminders);
+        attach_stream_reminders(&mut ai_messages, pending_stream_reminders.as_slice());
 
         // Build ChatRequest
         let chat_req = ChatRequest {
@@ -5764,13 +5766,15 @@ async fn run_loop(
                     tool_calls.push(tc);
                     block_order.push(("tool", Some(tool_calls.len() - 1)));
                 }
-            } else if pseudo_call_nudges < 1 {
-                pseudo_call_nudges += 1;
-                warn!(iteration, session_id, "tool call written as text; nudging");
-                pending_stream_reminders.push(steering::wrap_system_reminder(
+            } else if pseudo_call_nudges < 1
+                && pending_stream_reminders.steer(
+                    "pseudo_call",
                     "You wrote a tool call as text instead of calling it. Nothing ran. \
                      Make that call now as a real tool call, with the same arguments.",
-                ));
+                )
+            {
+                pseudo_call_nudges += 1;
+                warn!(iteration, session_id, "tool call written as text; nudging");
                 continue;
             }
         }
@@ -7644,12 +7648,12 @@ async fn run_loop(
 
             if let Some((at, path)) = plan_touch.as_mut() {
                 if plan_reminder_due(iteration, *at) {
-                    pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+                    pending_stream_reminders.steer("plan_check", &format!(
                         "Plan {path}: {} iterations since its last check. Run os(resource: \"file\", \
                          action: \"plan_check\", path: \"{path}\") before reporting the task done; \
                          only a passing verify command ticks a step.",
                         iteration.saturating_sub(*at)
-                    )));
+                    ));
                     *at = iteration;
                 }
             }
@@ -7686,14 +7690,14 @@ async fn run_loop(
                     channel,
                 };
                 let mut reviewer_stop: Option<String> = None;
-                if let Some(reminder) = steering::select_reminder(&rctx, &mut reminder_cadence) {
+                if steering::select_reminder(&rctx, &mut reminder_cadence, &mut pending_stream_reminders) {
                     info!(session_id, iteration, reminder = ?reminder_cadence.last_fired_name(), "steering reminder fired");
-                    pending_stream_reminders.push(reminder);
                     // A loop-class reminder firing twice means the notes in the
                     // model's own stream are not landing: bring in the reviewer,
                     // a different reader with the goal and the last steps.
                     if let Some(name) = reminder_cadence.last_fired_name()
                         && review_trigger.note(name, iteration)
+                        && pending_stream_reminders.gate("loop_review")
                     {
                         let prov_snapshot: Vec<Arc<dyn Provider>> = providers.read().await.clone();
                         let steps = crate::reviewer::describe_steps(&msgs);
@@ -7889,19 +7893,21 @@ async fn run_loop(
                 );
                 break;
             }
-            if !assistant_content.is_empty() {
+            // Budget continuation as an ephemeral stream reminder (R8).
+            if !assistant_content.is_empty()
+                && pending_stream_reminders.steer(
+                    "min_iterations",
+                    "You stopped early but your task is not complete. \
+                     Keep working — use your tools to make more progress. \
+                     Do not summarize or ask to continue. Take the next action.",
+                )
+            {
                 info!(
                     iteration,
                     session_id,
                     min = min_iterations,
                     "budget continuation: forcing next iteration"
                 );
-                // Budget continuation as an ephemeral stream reminder (R8).
-                pending_stream_reminders.push(steering::wrap_system_reminder(
-                    "You stopped early but your task is not complete. \
-                     Keep working — use your tools to make more progress. \
-                     Do not summarize or ask to continue. Take the next action.",
-                ));
                 continue;
             }
         }
@@ -7927,14 +7933,17 @@ async fn run_loop(
                 .rev()
                 .take(12)
                 .any(|m| m.role == "assistant" && m.content.contains("\"discover\""));
-            if denies && !discovered {
-                no_access_nudges += 1;
-                warn!(iteration, session_id, "access denied from memory; nudging to discover");
-                pending_stream_reminders.push(steering::wrap_system_reminder(
+            if denies
+                && !discovered
+                && pending_stream_reminders.steer(
+                    "discover_nudge",
                     "You said a service is unavailable without checking. Call \
                      plugin(action: \"discover\", query: \"<service>\") now and answer from \
                      what it returns; if it finds nothing, say that.",
-                ));
+                )
+            {
+                no_access_nudges += 1;
+                warn!(iteration, session_id, "access denied from memory; nudging to discover");
                 continue;
             }
         }
@@ -7952,19 +7961,22 @@ async fn run_loop(
                 .rev()
                 .take(5)
                 .any(|m| m.role == "tool");
-            if prior_was_tool && post_tool_empty_nudges < 1 {
+            // Ephemeral nudge on the next call — nothing persisted (the
+            // tool results already sit in the session; user-after-tool is
+            // a valid sequence for every provider we ship).
+            if prior_was_tool
+                && post_tool_empty_nudges < 1
+                && pending_stream_reminders.steer(
+                    "empty_after_tools",
+                    "You just executed tool calls but returned an empty response. \
+                     Please process the tool results above and continue with the task.",
+                )
+            {
                 post_tool_empty_nudges += 1;
                 warn!(
                     iteration,
                     session_id, "empty response after tool calls — nudging model to continue"
                 );
-                // Ephemeral nudge on the next call — nothing persisted (the
-                // tool results already sit in the session; user-after-tool is
-                // a valid sequence for every provider we ship).
-                pending_stream_reminders.push(steering::wrap_system_reminder(
-                    "You just executed tool calls but returned an empty response. \
-                     Please process the tool results above and continue with the task.",
-                ));
                 continue;
             }
 
@@ -8060,27 +8072,34 @@ async fn run_loop(
         if !plan_mode
             && !cancel_token.is_cancelled()
             && done_gate_due(edits_since_check, done_gate_fired)
+            && pending_stream_reminders.steer(
+                "done_gate",
+                &format!(
+                    "You edited {edits_since_check} file(s) since a check last ran. Run the \
+                     project's checks (name them if you know them) and fix what they report \
+                     before reporting done. If there are no checks that apply, say so in one \
+                     sentence and finish."
+                ),
+            )
         {
             done_gate_fired += 1;
             info!(iteration, session_id, edits = edits_since_check, "done gate fired");
-            pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
-                "You edited {edits_since_check} file(s) since a check last ran. Run the \
-                 project's checks (name them if you know them) and fix what they report \
-                 before reporting done. If there are no checks that apply, say so in one \
-                 sentence and finish."
-            )));
             continue;
         }
 
         // Repeat gate: the owner already has this exact reply.
-        if !repeat_gate_fired && !cancel_token.is_cancelled() && repeats_earlier_reply(&assistant_content, &all_messages) {
-            repeat_gate_fired = true;
-            info!(iteration, session_id, "repeat gate fired");
-            pending_stream_reminders.push(steering::wrap_system_reminder(
+        if !repeat_gate_fired
+            && !cancel_token.is_cancelled()
+            && repeats_earlier_reply(&assistant_content, &all_messages)
+            && pending_stream_reminders.steer(
+                "repeat_gate",
                 "You already sent the owner this exact reply earlier in this conversation. \
                  Do not send it again. Take the next concrete step with a tool, or say in \
                  one sentence what is stopping you.",
-            ));
+            )
+        {
+            repeat_gate_fired = true;
+            info!(iteration, session_id, "repeat gate fired");
             continue;
         }
 
@@ -8089,16 +8108,20 @@ async fn run_loop(
         // "code accepted, you're all set" right after a result that read
         // `Pressed B5 "Home"` with the iPhone home screen below it.
         if !desktop_gate_fired && !cancel_token.is_cancelled() {
-            if let Some(evidence) = last_desktop_act.take() {
+            if let Some(evidence) = last_desktop_act.take()
+                && pending_stream_reminders.steer(
+                    "desktop_gate",
+                    &format!(
+                        "Before this reply goes to the owner, check it against what your last \
+                         action actually did. Its result was:\n\n{evidence}\n\nIf your reply \
+                         says anything this does not show (a step done, a screen reached, a code \
+                         accepted, an app opened), rewrite it to say what the screen shows and \
+                         what you will do next. If it already matches, repeat it unchanged."
+                    ),
+                )
+            {
                 desktop_gate_fired = true;
                 info!(iteration, session_id, "desktop gate fired");
-                pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
-                    "Before this reply goes to the owner, check it against what your last \
-                     action actually did. Its result was:\n\n{evidence}\n\nIf your reply \
-                     says anything this does not show (a step done, a screen reached, a code \
-                     accepted, an app opened), rewrite it to say what the screen shows and \
-                     what you will do next. If it already matches, repeat it unchanged."
-                )));
                 continue;
             }
         }
@@ -8134,7 +8157,7 @@ async fn run_loop(
             if let Some(summary_provider) = prov_lock.first() {
                 let mut summary_messages =
                     convert_messages(&sessions.get_messages(session_id).unwrap_or_default());
-                attach_stream_reminders(&mut summary_messages, &pending_stream_reminders);
+                attach_stream_reminders(&mut summary_messages, pending_stream_reminders.as_slice());
 
                 let summary_req = ChatRequest {
                     tool_choice: Default::default(),
@@ -8185,6 +8208,7 @@ async fn run_loop(
         exit_reason = %turn_exit_reason,
         iterations = final_iteration,
         max_iterations,
+        steering = %pending_stream_reminders.tally(),
         "turn ended"
     );
 
@@ -10605,5 +10629,64 @@ mod out_of_bounds_tests {
             hand_off_out_of_bounds(&store, "coo", "agent:coo:cron", OP, DISPLAY, REASON).is_none(),
             "with no authority seat the owner decides",
         );
+    }
+}
+
+#[cfg(test)]
+mod steering_switch_tests {
+    use super::*;
+
+    /// `NEBO_STEERING=off`, end to end in a process of its own (the switch is
+    /// read once per process): every gate says no and records what it held
+    /// back, while the facts still reach the model — the owner's mid-turn
+    /// message, a tool result, and the stop record.
+    #[test]
+    fn steering_off_holds_every_gate_and_keeps_the_facts() {
+        const NAME: &str = "runner::steering_switch_tests::steering_off_holds_every_gate_and_keeps_the_facts";
+        if std::env::var("NEBO_STEERING").as_deref() != Ok("off") {
+            let out = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", NAME, "--nocapture"])
+                .env("NEBO_STEERING", "off")
+                .output()
+                .expect("child test run");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+            assert!(stdout.contains("1 passed"), "the child ran the test: {stdout}");
+            return;
+        }
+
+        let mut stream = steering::StreamReminders::default();
+        for name in steering::names() {
+            assert!(!steering::enabled(name), "{name} is off");
+            assert!(!stream.gate(name), "{name} gate holds");
+        }
+        assert!(!stream.steer("done_gate", "run the checks"), "steering never reaches the stream");
+        stream.push(steering::wrap_system_reminder("Message sent at noon."));
+        assert_eq!(stream.as_slice().len(), 1, "facts still ride it");
+        assert!(stream.tally().contains("done_gate:fired=0,suppressed=2"), "{}", stream.tally());
+
+        let path = std::env::temp_dir().join(format!("nebo-steering-off-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(Store::new(&path.to_string_lossy()).expect("store"));
+        let sessions = SessionManager::new(store);
+        let session = sessions.get_or_create("agent:a:web", "").expect("session");
+        let sid = session.id.as_str();
+        sessions.append_message(sid, "user", "find the lease", None, None, None).unwrap();
+        let calls = r#"[{"id":"c1","name":"os","input":{}},{"id":"c2","name":"web","input":{}}]"#;
+        sessions.append_message(sid, "assistant", "", Some(calls), None, None).unwrap();
+        let done = serde_json::json!([{"tool_call_id": "c1", "content": "lease.pdf found", "is_error": false}]).to_string();
+        sessions.append_message(sid, "tool", "", None, Some(&done), None).unwrap();
+        record_interrupt(&sessions, sid);
+        let meta = r#"{"arrivedMidTurn":true,"via":"web"}"#;
+        sessions.append_message(sid, "user", "stop and tell me", None, None, Some(meta)).unwrap();
+
+        let window = format!("{:?}", convert_messages(&sessions.get_messages(sid).unwrap()));
+        assert!(window.contains("lease.pdf found"), "tool result arrives: {window}");
+        assert!(window.contains(INTERRUPTED_TOOL_RESULT), "open call closed as interrupted");
+        assert!(window.contains("[Request interrupted by user] The owner stopped"), "stop record arrives");
+        assert!(
+            window.contains("The owner sent a new message while you were working (via web):"),
+            "mid-turn message arrives framed"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
