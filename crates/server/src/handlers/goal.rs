@@ -46,7 +46,7 @@ fn status_of(session_key: &str, goal: &AgreedGoal) -> SessionGoalStatus {
 }
 
 /// Tell every open thread a session's goal changed.
-pub(crate) fn broadcast(state: &AppState, session_key: &str, goal: &AgreedGoal) {
+fn broadcast(state: &AppState, session_key: &str, goal: &AgreedGoal) {
     state.hub.broadcast(
         "goal_status",
         serde_json::to_value(status_of(session_key, goal)).unwrap_or_default(),
@@ -77,7 +77,7 @@ fn session_for(
 }
 
 /// The session's goal, if it ever had one.
-pub(crate) fn current(
+fn current(
     state: &AppState,
     key_or_id: &str,
 ) -> Result<Option<SessionGoalStatus>, NeboError> {
@@ -90,7 +90,7 @@ pub(crate) fn current(
 }
 
 /// The owner sets the goal. `Err` is the message the owner reads.
-pub(crate) fn set(
+fn set(
     state: &AppState,
     key_or_id: &str,
     condition: &str,
@@ -106,7 +106,7 @@ pub(crate) fn set(
 }
 
 /// The owner clears the goal. `None` when there was none being pursued.
-pub(crate) fn clear(
+fn clear(
     state: &AppState,
     key_or_id: &str,
 ) -> Result<Option<SessionGoalStatus>, NeboError> {

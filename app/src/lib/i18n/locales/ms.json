@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Konteks giliran ini: {files} fail dibaca semula {times} kali, {passes} pusingan pemadatan.",
+		"goalLine": "Matlamat: {condition} ({turns} giliran)",
+		"goalLastCheck": "semakan terakhir: {reason}",
+		"goalPaused": "Dijeda. Mesej anda seterusnya menyambungnya.",
 		"resumedActivity": "Masih bekerja: {tool}",
 		"waitingForYou": "Menunggu anda",
 		"subagentStep": "{op} · langkah {n}",
@@ -2463,6 +2466,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} tindakan dalam satu langkah perlukan kelulusan anda",
+			"goalHeadline": "Setuju dengan matlamat ini? Kerja diteruskan sehingga semakan mengesahkan ia tercapai.",
 			"yourAgent": "Pekerja anda"
 		},
 		"approvalModal": {

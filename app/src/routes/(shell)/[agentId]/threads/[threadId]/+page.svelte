@@ -251,6 +251,7 @@
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
   contextStats={chat.contextStats}
+  goal={chat.goal}
   quotaWarning={chat.quotaWarning}
   chatError={chat.chatError}
   activityStatus={chat.activityStatus}

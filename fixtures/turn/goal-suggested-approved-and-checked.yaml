@@ -1,9 +1,9 @@
-id: goal-proposed-approved-and-checked
-name: "An agreed goal is proposed from the owner's words, approved, and checked until met"
+id: goal-suggested-approved-and-checked
+name: "An agreed goal is suggested from the owner's words, approved, and checked until met"
 description: |
   The owner asks for an outcome with a checkable end state that takes many
-  steps. On the turn controller the employee proposes it as the agreed goal
-  (`propose_goal`; the owner's own words stated the end state, so it may be
+  steps. On the turn controller the employee suggests it as the agreed goal
+  (`suggest_goal`; the owner's own words stated the end state, so it may be
   set directly or through the approval card, which this harness approves),
   and the done check at the end of each stop judges the transcript against
   it: not met keeps the turn going, met ends it. The goal's condition
@@ -44,10 +44,10 @@ tool_config:
 
 prompt_assertions:
   first_call:
-    - id: goal-is-proposed
-      text: "The employee proposes (or, from the owner's own words, sets) the agreed goal"
+    - id: goal-is-suggested
+      text: "The employee suggests (or, from the owner's own words, sets) the agreed goal"
       severity: critical
-      check: { tool: propose_goal }
+      check: { tool: suggest_goal }
   recovery:
     - id: goal-follows-the-request
       text: "The goal's condition states the owner's end state — all eight inbox files summarized in summaries.md, one line each starting with the file name — without adding work (no replies drafted, no files moved) or dropping any of it"
@@ -72,7 +72,7 @@ prompt_assertions:
 ideal_behavior:
   tool_calls: 17
   narrative: |
-    propose_goal("All eight files in inbox have a one-line summary in
+    suggest_goal("All eight files in inbox have a one-line summary in
     summaries.md, one line each starting with the file name"), approved;
     then read and write through msg-08; the done check finds it met and the
     turn ends: "All eight are summarized in summaries.md."
