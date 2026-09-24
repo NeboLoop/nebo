@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use chromiumoxide::cdp::browser_protocol::browser::CloseParams;
 use chromiumoxide::{Browser, Page};
 use futures::StreamExt;
 use rand::Rng;
@@ -31,6 +32,8 @@ use crate::human_input;
 /// `new_page`, recycle the whole connection) instead of trapping the tool for
 /// minutes — the long-session wedge this module previously suffered.
 const NEW_PAGE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a browser asked to exit gets before it is killed.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const NAV_TIMEOUT: Duration = Duration::from_secs(45);
 const EVAL_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -55,8 +58,9 @@ pub struct ObscuraConfig {
 /// The launched Obscura process + browser + its open pages. Recreated on demand
 /// via [`CdpBridge::get_core`] whenever the previous connection dies.
 struct CdpCore {
-    /// The `obscura serve` process — killed on drop (`Command::kill_on_drop`).
-    _obscura: Child,
+    /// The browser process. [`CdpCore::close`] asks it to exit; if a core is
+    /// dropped without that, `Command::kill_on_drop` kills it.
+    process: Mutex<Child>,
     browser: Browser,
     /// One tab per `session_id` (1:1 sub-agent→tab). Locked only to get/insert, never across a
     /// page operation, so sessions navigate/read concurrently.
@@ -80,6 +84,21 @@ impl CdpCore {
     fn idle(&self) -> Duration {
         let last = self.last_used_s.load(Ordering::Relaxed);
         self.started.elapsed().saturating_sub(Duration::from_secs(last))
+    }
+
+    /// Ask the browser to exit, as a user quitting it would, and wait for
+    /// it. Chromium then releases its profile whole: it removes its
+    /// `SingletonLock` and flushes cookies and storage. A kill does neither —
+    /// the profile stays locked and cannot be committed with the bot's state.
+    /// A browser that does not exit within [`CLOSE_TIMEOUT`] is killed.
+    async fn close(&self) {
+        // The answer rarely arrives: the browser exits while replying.
+        let _ = tokio::time::timeout(CLOSE_TIMEOUT, self.browser.execute(CloseParams::default())).await;
+        let mut process = self.process.lock().await;
+        if tokio::time::timeout(CLOSE_TIMEOUT, process.wait()).await.is_err() {
+            warn!("built-in browser did not exit when asked — killing it");
+            let _ = process.kill().await;
+        }
     }
 }
 
@@ -132,13 +151,24 @@ impl CdpBridge {
         *self.core.lock().await = None;
     }
 
+    /// Shut the built-in browser down cleanly ([`CdpCore::close`]); the next
+    /// use relaunches it. The lock is held until the browser has exited, so a
+    /// relaunch never starts on a profile the old browser still holds. The
+    /// graceful drain calls this before the bot's state is committed.
+    pub async fn shutdown(&self) {
+        let mut guard = self.core.lock().await;
+        if let Some(core) = guard.take() {
+            core.close().await;
+            info!("built-in browser shut down");
+        }
+    }
+
     /// Idle-timeout reaper: tear the tier-2 browser down after `idle_after` with
     /// no CDP activity (observed live 2026-08-29: a cloud bot's chromium resident
-    /// 6.7 days, holding ~450 MB of guest memory for nothing). Teardown reuses
-    /// the ONE existing pathway — dropping the core, whose `kill_on_drop` child
-    /// dies when the last in-flight reference releases — so a job that is still
-    /// mid-operation finishes safely and the next job just relaunches. Runs for
-    /// the life of the process; `idle_after` = zero disables it.
+    /// 6.7 days, holding ~450 MB of guest memory for nothing). Teardown is the
+    /// same clean close as [`CdpBridge::shutdown`] — a killed Chromium leaves its
+    /// profile locked — and the next job just relaunches. Runs for the life of
+    /// the process; `idle_after` = zero disables it.
     pub fn spawn_idle_reaper(self: &Arc<Self>, idle_after: Duration) {
         if idle_after.is_zero() {
             return;
@@ -150,14 +180,13 @@ impl CdpBridge {
                 tokio::time::sleep(tick).await;
                 let Some(bridge) = bridge.upgrade() else { return };
                 let mut guard = bridge.core.lock().await;
-                if let Some(core) = guard.as_ref() {
-                    if core.idle() >= idle_after {
-                        info!(
-                            idle_secs = core.idle().as_secs(),
-                            "tier-2 browser idle — shutting it down (relaunches on next use)"
-                        );
-                        *guard = None;
-                    }
+                if guard.as_ref().is_some_and(|core| core.idle() >= idle_after) {
+                    let core = guard.take().expect("checked");
+                    info!(
+                        idle_secs = core.idle().as_secs(),
+                        "tier-2 browser idle — shutting it down (relaunches on next use)"
+                    );
+                    core.close().await;
                 }
             }
         });
@@ -183,6 +212,15 @@ impl CdpBridge {
                 .arg("--no-sandbox")
                 .arg("about:blank");
             if let Some(dir) = &self.config.storage_dir {
+                // A lock left by a Chromium that was killed, or by the one on
+                // the pod this profile came from, makes Chromium refuse the
+                // profile as "in use on another computer". This bridge is the
+                // profile's only user and the browser before it has exited
+                // (the core lock is held across close and launch), so any
+                // lock here is stale.
+                for lock in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+                    let _ = std::fs::remove_file(dir.join(lock));
+                }
                 cmd.arg(format!("--user-data-dir={}", dir.display()));
             }
         } else {
@@ -240,7 +278,7 @@ impl CdpBridge {
         });
         info!("Obscura connected over CDP");
         Ok(CdpCore {
-            _obscura: child,
+            process: Mutex::new(child),
             browser,
             pages: Mutex::new(HashMap::new()),
             alive,
@@ -704,4 +742,58 @@ mod tests {
         assert!(out.is_object() || out.is_string());
         assert!(bridge.core.lock().await.is_some(), "browser relaunched");
     }
+
+    /// A stale lock from another machine does not stop the launch; a clean
+    /// shutdown leaves the Chromium profile unlocked, so the bot's state can
+    /// commit it; the idle reaper takes the same path. A killed Chromium
+    /// leaves `SingletonLock` behind.
+    #[tokio::test]
+    #[ignore = "requires a Chromium or Chrome; run with --ignored"]
+    async fn shutdown_releases_the_chromium_profile() {
+        let Some(binary) = crate::chrome::find_chrome() else {
+            eprintln!("no Chromium found — skipping");
+            return;
+        };
+        let profile = std::env::temp_dir().join(format!("nebo-cdp-close-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&profile);
+        let bridge = Arc::new(CdpBridge::new(ObscuraConfig {
+            binary,
+            storage_dir: Some(profile.clone()),
+            stealth: false,
+            log_path: None,
+            chromium: true,
+        }));
+        let lock = profile.join("SingletonLock");
+        // Left by a Chromium on another pod: must not stop this one starting.
+        std::fs::create_dir_all(&profile).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("another-pod-37", &lock).unwrap();
+
+        bridge
+            .execute("navigate", &json!({"url": "about:blank"}), "close-test")
+            .await
+            .expect("navigate");
+        assert!(std::fs::symlink_metadata(&lock).is_ok(), "a running Chromium holds its profile");
+        bridge.shutdown().await;
+        assert!(bridge.core.lock().await.is_none());
+        assert!(std::fs::symlink_metadata(&lock).is_err(), "shutdown left the profile locked");
+
+        bridge.spawn_idle_reaper(Duration::from_secs(1));
+        bridge
+            .execute("navigate", &json!({"url": "about:blank"}), "close-test-2")
+            .await
+            .expect("relaunch after shutdown");
+        let mut reaped = false;
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if bridge.core.lock().await.is_none() {
+                reaped = true;
+                break;
+            }
+        }
+        assert!(reaped, "idle reaper never closed the browser");
+        assert!(std::fs::symlink_metadata(&lock).is_err(), "the idle reaper left the profile locked");
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
 }
