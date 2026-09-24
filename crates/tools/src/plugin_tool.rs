@@ -475,13 +475,16 @@ impl PluginTool {
     /// `interfaceBindings` values (a binding command may be multi-word, e.g.
     /// `documents list`), and returns the operation only when the catalog marks
     /// it gated — ungated reads stay runnable through exec.
-    fn gated_operation_for_command(&self, slug: &str, command: &str) -> Option<String> {
+    /// The gated operation a raw command IS, with the binding template that
+    /// says how the typed call is shaped (`{field}` placeholders name its
+    /// input fields).
+    fn gated_operation_for_command(&self, slug: &str, command: &str) -> Option<(String, String)> {
         let manifest = self.plugin_store.get_manifest(slug)?;
         let command = command.trim();
         for (op, bound_cmd) in &manifest.interface_bindings {
             if command_matches_binding(command, bound_cmd) && crate::interface_catalog::is_gated(op)
             {
-                return Some(op.clone());
+                return Some((op.clone(), bound_cmd.clone()));
             }
         }
         None
@@ -968,10 +971,14 @@ impl DynTool for PluginTool {
     fn description(&self) -> String {
         let slugs = self.installed_slugs();
         if slugs.is_empty() {
-            return "Run installed plugin binaries. No plugins are installed yet — use \
-                    plugin(action: \"list\") to confirm, and plugin(action: \"discover\", \
-                    query: \"<keyword>\") to find plugins in the marketplace (installing \
-                    offers the user a card to approve). Once one is installed, every command \
+            return "Run installed plugin binaries. No plugins are installed yet. When the user \
+                    asks for something no installed tool does (post a tweet, message a Slack \
+                    channel, look up an invoice), your FIRST move is plugin(action: \"discover\", \
+                    query: \"<keyword>\") — never tell the user to set something up in Settings \
+                    or to do it by hand before you have searched the marketplace. Discover is a \
+                    read-only search: run it without asking the user first; only installing \
+                    offers the user a card to approve. plugin(action: \"list\") shows what is \
+                    installed. Once one is installed, every command \
                     call names it by the slug plugin(action: \"list\") shows: \
                     plugin(resource: \"<slug>\", action: \"exec\", command: \"<subcommand and flags>\")."
                 .to_string();
@@ -979,7 +986,8 @@ impl DynTool for PluginTool {
 
         let mut out = String::from(
             "Run installed plugin binaries. plugin(action: \"list\") shows what's installed; \
-             plugin(action: \"discover\", query: \"…\") searches the marketplace.\n\n",
+             plugin(action: \"discover\", query: \"…\") searches the marketplace (read-only; \
+             run it without asking — only installing offers a card).\n\n",
         );
         out.push_str("ALWAYS use this tool for channel messaging — Slack, Discord, Teams, and any other channel-backed plugin. \
                       `plugin(resource: \"<channel-slug>\", command: \"upload|post|dm|reply ...\")` is the canonical pathway for \
@@ -1335,12 +1343,18 @@ impl DynTool for PluginTool {
                     // gate (Blocked / Approval) applies. Observed live: an agent
                     // whose kb.article.create was Blocked offered to run the
                     // same write via exec instead.
-                    if let Some(op) = self.gated_operation_for_command(&pi.resource, &pi.command) {
+                    // The refusal carries the binding: a gate run (2026-09-23)
+                    // showed the model retrying the identical exec three times
+                    // and spawning a sub-agent because `input: {...}` named no
+                    // field it could fill.
+                    if let Some((op, template)) = self.gated_operation_for_command(&pi.resource, &pi.command) {
                         return ToolResult::error(format!(
                             "'{}' on {} is the gated operation '{op}'. Call it as \
                              plugin(operation: \"{op}\", input: {{...}}, display: \"<plain-language \
                              summary for the owner>\") so the owner's approval controls apply — \
-                             do not retry it through exec.",
+                             do not retry it through exec. The binding is `{template}`: each \
+                             {{field}} is an input field by that name, and input fields the \
+                             binding does not name are passed on as --key value flags.",
                             pi.command, pi.resource
                         ));
                     }
@@ -3363,6 +3377,36 @@ mod budget_and_install_tests {
     /// Through the port path itself: a template binding shapes the call, and
     /// the one input field the template does not mention still reaches the
     /// plugin as `--key value`, appended after the shaped words.
+    /// The refusal names the binding's fields, so the second call can be the
+    /// typed one instead of the same exec again.
+    #[tokio::test]
+    async fn a_gated_exec_is_refused_with_the_binding_it_should_have_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let version_dir = tmp.path().join("plugins").join("quickbooks").join("0.1.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(
+            version_dir.join("plugin.json"),
+            serde_json::json!({
+                "id": "quickbooks", "slug": "quickbooks", "name": "quickbooks", "version": "0.1.0", "platforms": {},
+                "interfaceBindings": {"ledger.payment.apply": "payment create --customer-ref {customerRef} --total-amt {totalAmt}"},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let tool = PluginTool::new(plugin_store, db_store);
+        let ctx = ToolContext { session_key: "agent:ic:main".into(), ..Default::default() };
+        let r = tool
+            .execute_dyn(
+                &ctx,
+                serde_json::json!({"resource": "quickbooks", "action": "exec", "command": "payment create --dry-run --json"}),
+            )
+            .await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("ledger.payment.apply"), "{}", r.content);
+        assert!(r.content.contains("--customer-ref {customerRef}"), "the binding template is in the refusal: {}", r.content);
+    }
+
     #[tokio::test]
     async fn port_call_takes_its_shape_from_the_binding() {
         let tmp = tempfile::tempdir().unwrap();

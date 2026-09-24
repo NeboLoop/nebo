@@ -172,6 +172,13 @@ jobs:
           NEBO_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
           NEBO_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
           NEBO_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
+          # No company Memory on the gate: the shared KB at kb.neboai.com is
+          # keyed on the bot, so every earlier gate run leaked into each fixture
+          # (2026-09-23: "you declined the X card" on a fixture's FIRST run, and
+          # one run in three answered from memory with no tool call). An empty
+          # URL means the server wires no Memory integration; recall is the
+          # fresh NEBO_HOME's alone.
+          NEBOAI_MEMORY_URL: ""
           RUST_LOG: info,nebo_agent=debug
         run: |
           test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" && test -n "$NEBO_BOOT_TOKEN" \

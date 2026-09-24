@@ -395,7 +395,12 @@ impl ShellTool {
                     result.push_str(&stderr);
                 }
 
-                if !output.status.success() {
+                // A pipeline exits with its LAST stage's status: `frobnicate
+                // --version | head -1` is exit 0 with "frobnicate: command not
+                // found" on stderr, and the hint below never fired. The shell
+                // named a missing program; that is the failure, whatever the code.
+                let missing_in_pipeline = output.status.success() && missing_command_name(&stderr).is_some();
+                if !output.status.success() || missing_in_pipeline {
                     let code = output.status.code().unwrap_or(-1);
                     let (is_error, semantic_msg) =
                         interpret_exit_code(&input.command, code, &result);
@@ -1069,7 +1074,8 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str) -> (bool, Op
                 Some(match missing_command_name(output) {
                     Some(name) => format!(
                         "The command '{}' is not available on this system. Tell the user it isn't \
-                         installed — do not substitute another command or install it without asking.",
+                         installed — do not search the disk for it, substitute another command, or \
+                         install it without asking.",
                         name
                     ),
                     None => "A command in this pipeline is not installed (the shell's message above names it). Tell the user; do not substitute another command.".to_string(),
@@ -1258,6 +1264,20 @@ mod tests {
         // the tool, so the test is what kills it.
         unsafe { libc::kill(escaped, libc::SIGKILL) };
         let _ = std::fs::remove_file(&file);
+    }
+
+    // `frobnicate --version | head -1` exits 0 (the pipeline takes head's
+    // status) with "frobnicate: command not found" on stderr; the gate saw
+    // the model search the disk for it because no hint was appended.
+    #[tokio::test]
+    async fn a_missing_first_stage_is_the_failure_even_when_the_pipeline_exits_zero() {
+        let t = tool();
+        let res = t
+            .execute(&ctx(), json!({"action": "exec", "command": "frobnicate_zz --version | head -1"}))
+            .await;
+        assert!(res.is_error, "{}", res.content);
+        assert!(res.content.contains("'frobnicate_zz' is not available"), "{}", res.content);
+        assert!(res.content.contains("do not search the disk"), "{}", res.content);
     }
 
     #[tokio::test]

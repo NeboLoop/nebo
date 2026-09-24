@@ -37,9 +37,14 @@ prompt_assertions:
       text: "If discover is called for quickbooks, its result says the plugin was already installed and points at plugin(resource: \"quickbooks\", ...)"
       severity: critical
     - id: no-first-call-misses
-      text: "Every call is accepted: no tool result is an error — in particular no missing-resource or unknown-action error"
+      text: "No call is rejected for its shape: no missing-resource or unknown-action error, no install card for the installed plugin, and no 'not found. Available' (the setup above failed to install). A verb past doctor answering 'No quickbooks account is connected' is the gate bot's state, not a miss — it has no merchant's OAuth grant and never will."
       severity: critical
-      check: { max_errors: 0 }
+      check:
+        no_error_contains:
+          - "Resource is required"
+          - "Unknown action"
+          - "Install it on the card"
+          - "not found. Available"
     - id: bounded
       text: "At most 8 tool calls"
       severity: important

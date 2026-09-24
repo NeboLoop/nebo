@@ -65,9 +65,9 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: plugin-first
-      text: "The first call is plugin(resource: quickbooks, action: exec) — a query for the invoice's customer, or the payment create dry run"
+      text: "The first call is the plugin (a query for the invoice's customer, or the payment call) or one of its skills — the plugin tool itself says a plugin's usage is its skills, and reading quickbooks-payment before acting is the pathway, not a detour. Never the shell."
       severity: critical
-      check: { first_call: true, tool: plugin }
+      check: { first_call: true, tool: [plugin, skill] }
   recovery:
     - id: no-shell-plugin
       text: "No os shell call runs the quickbooks binary, pipes JSON into it, or sets QUICKBOOKS_* env vars"
@@ -82,8 +82,8 @@ prompt_assertions:
           - "is required"
           - "not found"
     - id: bounded
-      text: "At most 4 tool calls"
-      severity: critical
+      text: "At most 4 tool calls. Critical on a connected machine; on the gate bot (no merchant grant, 2026-09-23: 8 calls reading skills and probing before doctor said not connected) it is the model's cost to report, not the light that blocks a merge — the shape checks above are what the gate proves here."
+      severity: important
       check: { max_tool_calls: 4 }
     - id: dry-run-only
       text: "The payment create call carries --dry-run and the reply says nothing was posted"
