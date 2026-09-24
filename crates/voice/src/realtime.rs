@@ -347,7 +347,7 @@ async fn run_session(
     }
 
     // The session ended mid-utterance: the words so far are all there will be.
-    if state.utterance_open {
+    if state.utterance != Utterance::Closed {
         let _ = event_tx.send(ConversationEvent::TranscriptionEnd).await;
     }
 
@@ -365,10 +365,24 @@ struct SessionState {
     /// the client still hears buffered audio, sends Interrupt, and upstream
     /// rejects the cancel with "no active response found".
     response_active: bool,
-    /// The user's utterance has started and its one `TranscriptionEnd` has
-    /// not been sent yet. Consumers commit a user turn on every end, so each
-    /// utterance gets exactly one.
-    utterance_open: bool,
+    /// Where the user's current utterance is. Consumers commit a user turn
+    /// on every `TranscriptionEnd`, so each utterance gets exactly one.
+    utterance: Utterance,
+}
+
+/// The user's utterance, from its first sound to its one `TranscriptionEnd`.
+#[derive(Debug, Default, PartialEq)]
+enum Utterance {
+    /// No utterance in progress; its end has been sent.
+    #[default]
+    Closed,
+    /// Speech started; the finished transcript has not arrived.
+    Open,
+    /// Still open, and the model has started answering it. xAI's finished
+    /// transcript can land after the reply starts, so this is not the end:
+    /// the end is the finished transcript, or, failing that, the reply's
+    /// `response.done`.
+    Answered,
 }
 
 /// Translate one xAI server event into `ConversationEvent`s. Returns Err when
@@ -407,7 +421,12 @@ async fn handle_server_event(
             }
         }
         "input_audio_buffer.speech_started" => {
-            state.utterance_open = true;
+            // A new utterance: a previous one still open will get no more
+            // words, so it ends here, before this one starts.
+            if state.utterance != Utterance::Closed {
+                send(ConversationEvent::TranscriptionEnd).await?;
+            }
+            state.utterance = Utterance::Open;
             send(ConversationEvent::TranscriptionStart).await?;
         }
         // xAI-specific rename of OpenAI's `...transcription.delta` — the
@@ -415,23 +434,27 @@ async fn handle_server_event(
         // never append.
         "conversation.item.input_audio_transcription.updated" => {
             if let Some(t) = ev.get("transcript").and_then(|v| v.as_str()) {
-                state.utterance_open = true;
+                if state.utterance == Utterance::Closed {
+                    state.utterance = Utterance::Open;
+                }
                 send(ConversationEvent::TranscriptionText(t.to_string())).await?;
             }
         }
         // What xAI sends today (2026-09-17, probed against grok-voice-latest):
         // ONE finished transcript per utterance, and it lands AFTER
-        // `speech_stopped`. This is the utterance's end: the final words,
-        // then its one `TranscriptionEnd`. A transcript for an utterance
-        // already closed (by `response.created`) is dropped — a second end
-        // would commit the same speech as a second user turn.
+        // `speech_stopped`, and it can land after the model's reply has
+        // started. This is the utterance's end: the final words, then its one
+        // `TranscriptionEnd`. A transcript for an utterance already closed
+        // (by the next `speech_started`, the reply's `response.done`, or
+        // session end) is dropped — a second end would commit the same
+        // speech as a second user turn.
         "conversation.item.input_audio_transcription.completed" => {
-            if !state.utterance_open {
+            if state.utterance == Utterance::Closed {
                 debug!(frame = %text, "transcript for a closed utterance (dropped)");
             } else if let Some(t) = ev.get("transcript").and_then(|v| v.as_str())
                 && !t.is_empty()
             {
-                state.utterance_open = false;
+                state.utterance = Utterance::Closed;
                 send(ConversationEvent::TranscriptionText(t.to_string())).await?;
                 send(ConversationEvent::TranscriptionEnd).await?;
             }
@@ -441,12 +464,8 @@ async fn handle_server_event(
         "input_audio_buffer.speech_stopped" => {}
         "response.created" => {
             state.response_active = true;
-            // The model's turn started, so the user's utterance is final. If
-            // no finished transcript closed it, close it here with the words
-            // already sent.
-            if state.utterance_open {
-                state.utterance_open = false;
-                send(ConversationEvent::TranscriptionEnd).await?;
+            if state.utterance == Utterance::Open {
+                state.utterance = Utterance::Answered;
             }
             send(ConversationEvent::PlaybackStart).await?;
         }
@@ -482,6 +501,13 @@ async fn handle_server_event(
         }
         "response.done" => {
             state.response_active = false;
+            // The reply to the utterance is over and no finished transcript
+            // came: the words already sent are its final words. An utterance
+            // the reply did not answer (a barge-in) stays open.
+            if state.utterance == Utterance::Answered {
+                state.utterance = Utterance::Closed;
+                send(ConversationEvent::TranscriptionEnd).await?;
+            }
             send(ConversationEvent::PlaybackEnd).await?;
         }
         "error" => {
@@ -666,16 +692,48 @@ mod tests {
         assert!(matches!(events.last(), Some(ConversationEvent::PlaybackStart)));
     }
 
+    /// The order the owner's phone hit: the model starts answering before
+    /// the finished transcript lands. The utterance stays open through
+    /// `response.created`; the late transcript is its final words and its one
+    /// end.
+    #[tokio::test]
+    async fn late_transcript_after_reply_starts_is_the_end() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"what I want is just"}"#,
+            r#"{"type":"input_audio_buffer.speech_stopped"}"#,
+            r#"{"type":"response.created"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"what I want is just a list","status":"completed"}"#,
+            r#"{"type":"response.done"}"#,
+        ])
+        .await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::TranscriptionText(partial),
+                    ConversationEvent::PlaybackStart,
+                    ConversationEvent::TranscriptionText(full),
+                    ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::PlaybackEnd,
+                ] if partial == "what I want is just" && full == "what I want is just a list"
+            ),
+            "{events:?}"
+        );
+    }
+
     /// A provider that never sends the finished transcript: the utterance
-    /// ends when the model's turn starts, with the words already sent, and a
+    /// ends when the reply to it is done, with the words already sent, and a
     /// transcript arriving after that is dropped rather than ending it twice.
     #[tokio::test]
-    async fn utterance_ends_on_response_created_without_completed() {
+    async fn utterance_ends_on_response_done_without_completed() {
         let events = replay(&[
             r#"{"type":"input_audio_buffer.speech_started"}"#,
             r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"hello"}"#,
             r#"{"type":"input_audio_buffer.speech_stopped"}"#,
             r#"{"type":"response.created"}"#,
+            r#"{"type":"response.done"}"#,
             r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"hello world","status":"completed"}"#,
         ])
         .await;
@@ -685,9 +743,42 @@ mod tests {
                 [
                     ConversationEvent::TranscriptionStart,
                     ConversationEvent::TranscriptionText(t),
-                    ConversationEvent::TranscriptionEnd,
                     ConversationEvent::PlaybackStart,
+                    ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::PlaybackEnd,
                 ] if t == "hello"
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// Barge-in: the user speaks over a reply. The earlier utterance, still
+    /// without its finished transcript, ends when the new one starts; the
+    /// interrupted reply's `response.done` does not end the new one.
+    #[tokio::test]
+    async fn barge_in_ends_the_previous_utterance_not_the_new_one() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"first"}"#,
+            r#"{"type":"response.created"}"#,
+            r#"{"type":"input_audio_buffer.speech_started"}"#,
+            r#"{"type":"response.done"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"second","status":"completed"}"#,
+        ])
+        .await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::TranscriptionText(first),
+                    ConversationEvent::PlaybackStart,
+                    ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::PlaybackEnd,
+                    ConversationEvent::TranscriptionText(second),
+                    ConversationEvent::TranscriptionEnd,
+                ] if first == "first" && second == "second"
             ),
             "{events:?}"
         );
