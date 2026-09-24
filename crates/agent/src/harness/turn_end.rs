@@ -20,8 +20,6 @@ pub struct TurnEnd<'a> {
     pub step: u32,
     /// End checks that already continued this turn.
     pub checks_this_turn: u8,
-    /// Helpers or background work the turn started are still running.
-    pub background_running: bool,
 }
 
 /// A check the turn must pass before it ends.
@@ -152,7 +150,6 @@ mod tests {
             transcript,
             step,
             checks_this_turn: 0,
-            background_running: false,
         }
     }
 

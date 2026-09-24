@@ -14,7 +14,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ai::{ChatRequest, Message, Provider, ProviderError, RequestTrace, StreamEvent, StreamEventType};
+use ai::{
+    ChatRequest, Message, Provider, ProviderError, RequestTrace, StreamEvent, StreamEventType,
+};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use types::NeboError;
@@ -801,7 +803,9 @@ impl Suggestions {
                     }
                 }
                 Ok(_) => {
-                    if let Err(e) = GoalStore::new(&sessions, &session_id).record_decline(&condition) {
+                    if let Err(e) =
+                        GoalStore::new(&sessions, &session_id).record_decline(&condition)
+                    {
                         warn!(session_id, error = %e, "goal: recording the decline failed");
                     }
                 }
@@ -899,7 +903,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!("nebo-goal-{}.db", uuid::Uuid::new_v4()));
         let store = Arc::new(db::Store::new(path.to_str().unwrap()).expect("store"));
         let sessions = SessionManager::new(store);
-        let id = sessions.get_or_create("agent:a1:web", "").expect("session").id;
+        let id = sessions
+            .get_or_create("agent:a1:web", "")
+            .expect("session")
+            .id;
         (sessions, id)
     }
 
@@ -911,7 +918,11 @@ mod tests {
         }
     }
 
-    fn goal_check(sessions: &SessionManager, id: &str, judge: &Arc<Judge>) -> (GoalCheck, Arc<Seen>) {
+    fn goal_check(
+        sessions: &SessionManager,
+        id: &str,
+        judge: &Arc<Judge>,
+    ) -> (GoalCheck, Arc<Seen>) {
         let seen = Arc::new(Seen::default());
         (
             GoalCheck {
@@ -993,7 +1004,11 @@ mod tests {
         assert_eq!(req.messages.len(), 3);
         assert_eq!(req.messages[0].content, "Send the three invoices.");
         assert_eq!(req.messages[1].content, "Sent invoice 1 of 3.");
-        assert!(req.messages[2].content.ends_with("Goal: all three invoices are sent"));
+        assert!(
+            req.messages[2]
+                .content
+                .ends_with("Goal: all three invoices are sent")
+        );
 
         let goal = GoalStore::new(&sessions, &id).get().unwrap().unwrap();
         assert_eq!(goal.status, GoalStatus::Active);
@@ -1002,7 +1017,11 @@ mod tests {
             goal.last_reason.as_deref(),
             Some("\"Sent invoice 1 of 3\" - two are still unsent")
         );
-        assert_eq!(seen.statuses.lock().unwrap().len(), 1, "the owner sees the bumped count");
+        assert_eq!(
+            seen.statuses.lock().unwrap().len(),
+            1,
+            "the owner sees the bumped count"
+        );
     }
 
     #[tokio::test]
@@ -1011,7 +1030,9 @@ mod tests {
         set(&sessions, &id, "the site is live");
         let judge = Judge::new(vec![
             Reply::Text("Here: {\"met\": true, \"reason\": \"\\\"Deployed to example.com\\\"\"}"),
-            Reply::Text("{\"met\": false, \"impossible\": true, \"reason\": \"no host account exists\"}"),
+            Reply::Text(
+                "{\"met\": false, \"impossible\": true, \"reason\": \"no host account exists\"}",
+            ),
         ]);
         let (check, _) = goal_check(&sessions, &id, &judge);
         let EndVerdict::Exit(exit) = check.check(&end(&[], 0)).await else {
@@ -1051,7 +1072,10 @@ mod tests {
         assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
         let paused = goals.get().unwrap().unwrap();
         assert_eq!(paused.status, GoalStatus::Paused(Pause::CheckUnavailable));
-        assert_eq!(seen.statuses.lock().unwrap().last().unwrap().status, paused.status);
+        assert_eq!(
+            seen.statuses.lock().unwrap().last().unwrap().status,
+            paused.status
+        );
 
         // A paused goal is not checked; the owner's next message resumes it.
         assert!(matches!(check.check(&end(&[], 0)).await, EndVerdict::Stop));
@@ -1081,7 +1105,10 @@ mod tests {
         set(&sessions, &id, "the backlog is empty");
         let judge = Judge::new(vec![Reply::Down, UNMET]);
         let (check, _) = goal_check(&sessions, &id, &judge);
-        assert!(matches!(check.check(&end(&[], 0)).await, EndVerdict::Continue(_)));
+        assert!(matches!(
+            check.check(&end(&[], 0)).await,
+            EndVerdict::Continue(_)
+        ));
         assert_eq!(judge.calls.load(Ordering::SeqCst), 2);
     }
 
@@ -1112,12 +1139,16 @@ mod tests {
         [
             Message {
                 role: "assistant".into(),
-                tool_calls: Some(serde_json::json!([{"id": id, "name": "run_command", "input": {"command": "cargo test"}}])),
+                tool_calls: Some(
+                    serde_json::json!([{"id": id, "name": "run_command", "input": {"command": "cargo test"}}]),
+                ),
                 ..Default::default()
             },
             Message {
                 role: "tool".into(),
-                tool_results: Some(serde_json::json!([{"tool_call_id": id, "content": output, "is_error": false}])),
+                tool_results: Some(
+                    serde_json::json!([{"tool_call_id": id, "content": output, "is_error": false}]),
+                ),
                 ..Default::default()
             },
         ]
@@ -1128,16 +1159,19 @@ mod tests {
         let (sessions, id) = session();
         set(&sessions, &id, "all tests pass");
         // A long tool result is sent whole: its last line is the evidence.
-        let long = format!("{}\ntest result: ok. 412 passed; 0 failed", "running…\n".repeat(2_000));
+        let long = format!(
+            "{}\ntest result: ok. 412 passed; 0 failed",
+            "running…\n".repeat(1_500)
+        );
         let mut transcript = vec![said("user", "Make the tests pass.")];
-        for i in 0..30 {
-            transcript.extend(tool_step(i, if i == 29 { &long } else { "2 failed" }));
+        for i in 0..200 {
+            transcript.extend(tool_step(i, if i == 199 { &long } else { "2 failed" }));
         }
         let judge = Judge::new(vec![
             Reply::Overflow,
             Reply::Text("{\"met\": true, \"reason\": \"\\\"0 failed\\\"\"}"),
         ]);
-        let dj = judged_by(&judge, 20_000);
+        let dj = judged_by(&judge, 12_000);
         let goal = GoalStore::new(&sessions, &id).active().unwrap().unwrap();
         let verdict = check_goal(&dj, RequestTrace::new("goal_check"), &transcript, &goal).await;
         assert!(verdict.unwrap().met);
@@ -1145,23 +1179,38 @@ mod tests {
         let seen = judge.seen.lock().unwrap();
         let tokens = |req: &ChatRequest| req.messages.iter().map(message_tokens).sum::<usize>();
         let first = &seen[0];
-        let last_result = first.messages[first.messages.len() - 2].tool_results.as_ref().unwrap();
+        let last_result = first.messages[first.messages.len() - 2]
+            .tool_results
+            .as_ref()
+            .unwrap();
         assert_eq!(last_result[0]["content"], long.as_str(), "nothing clipped");
-        assert!(tokens(first) <= 10_000 + 200, "half the window: {}", tokens(first));
+        assert!(
+            tokens(first) <= 6_000 + 200,
+            "half the window: {}",
+            tokens(first)
+        );
         assert!(first.messages[0].content.contains("left out to fit"));
         assert!(
             first.messages[1].tool_results.is_none(),
             "a kept tool result never goes without its call"
         );
         // The overflow retry sends a quarter of the window.
-        assert!(tokens(&seen[1]) <= 5_000 + 200, "a quarter: {}", tokens(&seen[1]));
+        assert!(
+            tokens(&seen[1]) <= 3_000 + 200,
+            "a quarter: {}",
+            tokens(&seen[1])
+        );
         assert!(tokens(&seen[1]) < tokens(first));
     }
 
     #[test]
     fn a_transcript_that_fits_is_sent_whole() {
         let transcript = vec![said("user", "hi"), said("assistant", "hello")];
-        assert_eq!(fit_transcript(&transcript, 1_000), transcript);
+        let kept: Vec<String> = fit_transcript(&transcript, 1_000)
+            .into_iter()
+            .map(|m| m.content)
+            .collect();
+        assert_eq!(kept, ["hi", "hello"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1170,18 +1219,29 @@ mod tests {
         set(&sessions, &id, "the research is written up");
         let judge = Judge::new(vec![]);
         let (check, seen) = goal_check(&sessions, &id, &judge);
-        seen.running.lock().unwrap().push("h1 · read the filings".into());
+        seen.running
+            .lock()
+            .unwrap()
+            .push("h1 · read the filings".into());
 
         assert!(matches!(check.check(&end(&[], 0)).await, EndVerdict::Stop));
         assert!(matches!(check.check(&end(&[], 0)).await, EndVerdict::Stop));
-        assert_eq!(judge.calls.load(Ordering::SeqCst), 0, "nothing judged while it runs");
+        assert_eq!(
+            judge.calls.load(Ordering::SeqCst),
+            0,
+            "nothing judged while it runs"
+        );
         assert!(GoalStore::new(&sessions, &id).active().unwrap().is_some());
 
         // One timer at a time; the first check-in after 30 min lists the work.
         tokio::time::sleep(CHECK_IN_AFTER + Duration::from_secs(1)).await;
         let kickoffs = seen.kickoffs.lock().unwrap().clone();
         assert_eq!(kickoffs.len(), 1);
-        assert!(kickoffs[0].contains("still running:\n- h1 · read the filings"), "{}", kickoffs[0]);
+        assert!(
+            kickoffs[0].contains("still running:\n- h1 · read the filings"),
+            "{}",
+            kickoffs[0]
+        );
         assert!(kickoffs[0].contains("30 min"));
 
         // Backed off: the next waits 60 min, the third 120 and says it is the
@@ -1204,7 +1264,10 @@ mod tests {
         let judge = Judge::new(vec![UNMET]);
         let mut check = check;
         check.judge = Some(judged_by(&judge, DEFAULT_WINDOW_TOKENS));
-        assert!(matches!(check.check(&end(&[], 0)).await, EndVerdict::Continue(_)));
+        assert!(matches!(
+            check.check(&end(&[], 0)).await,
+            EndVerdict::Continue(_)
+        ));
         assert!(check.check_ins.sessions.lock().unwrap().is_empty());
     }
 
@@ -1239,7 +1302,10 @@ mod tests {
             "the goal line is UI only; the kickoff is the model's word of it"
         );
         let kickoff = goal.kickoff();
-        assert!(kickoff.starts_with("Agreed goal: the report is sent."), "{kickoff}");
+        assert!(
+            kickoff.starts_with("Agreed goal: the report is sent."),
+            "{kickoff}"
+        );
         assert!(kickoff.contains("start"), "{kickoff}");
     }
 
@@ -1252,17 +1318,25 @@ mod tests {
             Err(GoalError::Empty)
         ));
         goals
-            .set(&"é".repeat(MAX_OWNER_CONDITION_CHARS), GoalSource::OwnerCommand)
+            .set(
+                &"é".repeat(MAX_OWNER_CONDITION_CHARS),
+                GoalSource::OwnerCommand,
+            )
             .unwrap();
         assert!(matches!(
-            goals.set(&"é".repeat(MAX_OWNER_CONDITION_CHARS + 1), GoalSource::OwnerCommand),
+            goals.set(
+                &"é".repeat(MAX_OWNER_CONDITION_CHARS + 1),
+                GoalSource::OwnerCommand
+            ),
             Err(GoalError::TooLong(4001, 4000))
         ));
         assert!(matches!(
             goals.set(&"é".repeat(501), GoalSource::OwnersOwnWords),
             Err(GoalError::TooLong(501, 500))
         ));
-        goals.set("the second goal", GoalSource::OwnerCommand).unwrap();
+        goals
+            .set("the second goal", GoalSource::OwnerCommand)
+            .unwrap();
         assert_eq!(
             goals.get().unwrap().unwrap().condition,
             "the second goal",
@@ -1303,7 +1377,12 @@ mod tests {
             }
         }
 
-        async fn suggest(&self, call_id: &str, condition: &str, ask_owner: bool) -> Result<String, String> {
+        async fn suggest(
+            &self,
+            call_id: &str,
+            condition: &str,
+            ask_owner: bool,
+        ) -> Result<String, String> {
             let call = ai::ToolCall {
                 id: call_id.into(),
                 name: "suggest_goal".into(),
@@ -1333,7 +1412,12 @@ mod tests {
         }
 
         async fn answer(&self, call_id: &str, decision: &str) {
-            let tx = self.approvals.lock().await.remove(call_id).expect("a card waits");
+            let tx = self
+                .approvals
+                .lock()
+                .await
+                .remove(call_id)
+                .expect("a card waits");
             tx.send(decision.to_string()).unwrap();
             self.settle().await;
         }
@@ -1354,38 +1438,69 @@ mod tests {
         let ev = card.rx.recv().await.unwrap();
         assert_eq!(ev.event_type, StreamEventType::ApprovalRequest);
         let shown = ev.tool_call.unwrap();
-        assert_eq!((shown.id.as_str(), shown.name.as_str()), ("call-1", "suggest_goal"));
+        assert_eq!(
+            (shown.id.as_str(), shown.name.as_str()),
+            ("call-1", "suggest_goal")
+        );
         assert_eq!(shown.input["condition"], "all tests in the auth suite pass");
-        assert!(card.goals().active().unwrap().is_none(), "nothing is set before the owner answers");
+        assert!(
+            card.goals().active().unwrap().is_none(),
+            "nothing is set before the owner answers"
+        );
 
         // One suggestion out at a time.
-        assert!(card.suggest("call-2", "something else", true).await.is_err());
+        assert!(
+            card.suggest("call-2", "something else", true)
+                .await
+                .is_err()
+        );
 
         card.answer("call-1", "once").await;
         let goal = card.goals().active().unwrap().expect("approved");
         assert_eq!(goal.source, GoalSource::SuggestedApproved);
         assert_eq!(card.seen.statuses.lock().unwrap().len(), 1);
-        assert_eq!(*card.seen.kickoffs.lock().unwrap(), [goal.kickoff()], "work starts on it once");
+        assert_eq!(
+            *card.seen.kickoffs.lock().unwrap(),
+            [goal.kickoff()],
+            "work starts on it once"
+        );
     }
 
     #[tokio::test]
     async fn declined_goal_is_never_suggested_again() {
         let card = Card::new();
-        card.suggest("call-1", "the whole site is rewritten", true).await.unwrap();
+        card.suggest("call-1", "the whole site is rewritten", true)
+            .await
+            .unwrap();
         card.answer("call-1", "deny").await;
         assert!(card.goals().active().unwrap().is_none());
-        assert!(card.seen.kickoffs.lock().unwrap().is_empty(), "a decline is not told to the model");
+        assert!(
+            card.seen.kickoffs.lock().unwrap().is_empty(),
+            "a decline is not told to the model"
+        );
 
-        let again = card.suggest("call-2", "The whole  site is REWRITTEN", true).await;
+        let again = card
+            .suggest("call-2", "The whole  site is REWRITTEN", true)
+            .await;
         assert!(again.unwrap_err().contains("declined"));
         // Not even set directly.
-        assert!(card.suggest("call-3", "the whole site is rewritten", false).await.is_err());
+        assert!(
+            card.suggest("call-3", "the whole site is rewritten", false)
+                .await
+                .is_err()
+        );
         assert!(card.approvals.lock().await.is_empty(), "no second card");
 
         // The decline outlives a goal set and cleared later.
-        card.goals().set("the homepage loads", GoalSource::OwnerCommand).unwrap();
+        card.goals()
+            .set("the homepage loads", GoalSource::OwnerCommand)
+            .unwrap();
         card.goals().clear().unwrap();
-        assert!(card.suggest("call-4", "the whole site is rewritten", true).await.is_err());
+        assert!(
+            card.suggest("call-4", "the whole site is rewritten", true)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1393,29 +1508,41 @@ mod tests {
         let mut card = Card::new();
         // ask_owner false: the model says the owner's own words stated it;
         // the goal is set at once, visibly, without a card, and kicked off.
-        let told = card.suggest("call-1", "the migration runs clean", false).await.unwrap();
+        let told = card
+            .suggest("call-1", "the migration runs clean", false)
+            .await
+            .unwrap();
         assert!(told.contains("owner's own words"));
         let goal = card.goals().active().unwrap().unwrap();
         assert_eq!(goal.source, GoalSource::OwnersOwnWords);
         assert!(card.approvals.lock().await.is_empty());
         assert!(card.rx.try_recv().is_err(), "no card");
-        assert_eq!(card.seen.statuses.lock().unwrap().len(), 1, "the owner sees it set");
+        assert_eq!(
+            card.seen.statuses.lock().unwrap().len(),
+            1,
+            "the owner sees it set"
+        );
         assert_eq!(card.seen.kickoffs.lock().unwrap().len(), 1);
 
         // Left out, ask_owner defaults to asking.
-        let input: SuggestInput = serde_json::from_value(serde_json::json!({"condition": "x"})).unwrap();
+        let input: SuggestInput =
+            serde_json::from_value(serde_json::json!({"condition": "x"})).unwrap();
         assert!(input.ask_owner);
     }
 
     #[tokio::test]
     async fn an_unanswered_card_neither_sets_nor_declines() {
         let card = Card::new();
-        card.suggest("call-1", "the inbox is at zero", true).await.unwrap();
+        card.suggest("call-1", "the inbox is at zero", true)
+            .await
+            .unwrap();
         drop(card.approvals.lock().await.remove("call-1"));
         card.settle().await;
         assert!(card.goals().get().unwrap().is_none());
         assert!(card.suggestions.waiting.lock().unwrap().is_empty());
-        card.suggest("call-2", "the inbox is at zero", true).await.unwrap();
+        card.suggest("call-2", "the inbox is at zero", true)
+            .await
+            .unwrap();
     }
 
     #[test]
@@ -1424,7 +1551,8 @@ mod tests {
             parse_verdict("{\"met\": false}").unwrap().reason,
             "the transcript does not show it yet"
         );
-        let v = parse_verdict("{\"met\": true, \"impossible\": true, \"reason\": \"done\"}").unwrap();
+        let v =
+            parse_verdict("{\"met\": true, \"impossible\": true, \"reason\": \"done\"}").unwrap();
         assert!(v.met && !v.impossible, "met wins over impossible");
         assert!(parse_verdict("yes").is_none());
         assert!(parse_verdict("{\"reason\": \"no verdict\"}").is_none());

@@ -2,7 +2,7 @@
 //! actions over REST, one implementation for both. Every change is
 //! broadcast as `goal_status` so the thread's goal line follows it.
 
-use agent::harness::goal::{AgreedGoal, GoalSource, GoalStore};
+use agent::harness::goal::{AgreedGoal, CLEAR_WORDS, GoalSource, GoalStore};
 use axum::extract::{Path, State};
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
@@ -77,10 +77,7 @@ fn session_for(
 }
 
 /// The session's goal, if it ever had one.
-fn current(
-    state: &AppState,
-    key_or_id: &str,
-) -> Result<Option<SessionGoalStatus>, NeboError> {
+fn current(state: &AppState, key_or_id: &str) -> Result<Option<SessionGoalStatus>, NeboError> {
     let Some((id, key)) = session_for(state, key_or_id, false)? else {
         return Ok(None);
     };
@@ -89,12 +86,13 @@ fn current(
         .map(|g| status_of(&key, &g)))
 }
 
-/// The owner sets the goal. `Err` is the message the owner reads.
+/// The owner sets the goal. `Ok` carries the kickoff that starts work on
+/// it; `Err` is the message the owner reads.
 fn set(
     state: &AppState,
     key_or_id: &str,
     condition: &str,
-) -> Result<SessionGoalStatus, String> {
+) -> Result<(SessionGoalStatus, String), String> {
     let (id, key) = session_for(state, key_or_id, true)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "That conversation was not found.".to_string())?;
@@ -102,14 +100,11 @@ fn set(
         .set(condition, GoalSource::OwnerCommand)
         .map_err(|e| e.to_string())?;
     broadcast(state, &key, &goal);
-    Ok(status_of(&key, &goal))
+    Ok((status_of(&key, &goal), goal.kickoff()))
 }
 
 /// The owner clears the goal. `None` when there was none being pursued.
-fn clear(
-    state: &AppState,
-    key_or_id: &str,
-) -> Result<Option<SessionGoalStatus>, NeboError> {
+fn clear(state: &AppState, key_or_id: &str) -> Result<Option<SessionGoalStatus>, NeboError> {
     let Some((id, key)) = session_for(state, key_or_id, false)? else {
         return Ok(None);
     };
@@ -129,14 +124,19 @@ pub async fn get_session_goal(
     Ok(Json(SessionGoalResponse { goal }))
 }
 
-/// PUT /api/v1/agent/sessions/:id/goal
+/// PUT /api/v1/agent/sessions/:id/goal — sets the goal and starts work on it.
 pub async fn set_session_goal(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<SetGoalRequest>,
 ) -> HandlerResult<SessionGoalResponse> {
-    let goal = set(&state, &id, &body.condition)
+    let (goal, kickoff) = set(&state, &id, &body.condition)
         .map_err(|e| to_error_response(NeboError::Validation(e)))?;
+    // Work starts on it now, as with `/goal` in the chat.
+    let session_key = goal.session_id.clone();
+    tokio::spawn(async move {
+        super::ws::dispatch_hidden_prompt(&state, &session_key, kickoff).await;
+    });
     Ok(Json(SessionGoalResponse { goal: Some(goal) }))
 }
 
@@ -150,30 +150,50 @@ pub async fn clear_session_goal(
     Ok(Json(SessionGoalResponse { goal }))
 }
 
-/// `/goal` in the chat: no argument shows the goal, `clear` clears it,
-/// anything else sets it.
-pub(crate) fn slash(state: &AppState, session_key: &str, args: &str) -> String {
+/// What `/goal` answers: the owner's reply, and the kickoff when a goal was
+/// set.
+pub(crate) struct GoalReply {
+    pub text: String,
+    pub kickoff: Option<String>,
+}
+
+/// The arguments of a `/goal` command, `None` when the prompt is not one.
+pub(crate) fn command_args(prompt: &str) -> Option<&str> {
+    let rest = prompt.trim().strip_prefix("/goal")?;
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
+}
+
+/// `/goal` in the chat: no argument shows the goal, a clear word clears it,
+/// anything else sets it and starts work on it.
+pub(crate) fn slash(state: &AppState, session_key: &str, args: &str) -> GoalReply {
+    let reply = |text: String| GoalReply {
+        text,
+        kickoff: None,
+    };
     let args = args.trim();
     if args.is_empty() {
-        return match current(state, session_key) {
+        return reply(match current(state, session_key) {
             Ok(Some(g)) if g.status != "cleared" => describe(&g),
-            Ok(_) => "No goal is set. `/goal <end state>` sets one; work then continues until a check confirms it's met.".to_string(),
+            Ok(_) => "No goal is set. `/goal <end state>` sets one; work starts on it and continues until a check confirms it's met.".to_string(),
             Err(e) => format!("Couldn't read the goal: {e}"),
-        };
+        });
     }
-    if args.eq_ignore_ascii_case("clear") {
-        return match clear(state, session_key) {
+    if CLEAR_WORDS.iter().any(|w| args.eq_ignore_ascii_case(w)) {
+        return reply(match clear(state, session_key) {
             Ok(Some(_)) => "Goal cleared.".to_string(),
             Ok(None) => "There's no goal to clear.".to_string(),
             Err(e) => format!("Couldn't clear the goal: {e}"),
-        };
+        });
     }
     match set(state, session_key, args) {
-        Ok(g) => format!(
-            "Goal set: {}\n\nWork continues until a separate check confirms it's met. `/goal clear` stops it.",
-            g.condition
-        ),
-        Err(e) => e,
+        Ok((g, kickoff)) => GoalReply {
+            text: format!(
+                "Goal set: {}\n\nWork continues until a separate check confirms it's met. `/goal clear` stops it.",
+                g.condition
+            ),
+            kickoff: Some(kickoff),
+        },
+        Err(e) => reply(e),
     }
 }
 
@@ -210,5 +230,17 @@ mod tests {
         );
         g.status = "paused:unmet_too_often".into();
         assert!(describe(&g).ends_with("Your next message resumes it."));
+    }
+
+    #[test]
+    fn only_a_goal_command_is_one() {
+        assert_eq!(command_args("/goal"), Some(""));
+        assert_eq!(
+            command_args("  /goal  all tests pass "),
+            Some("all tests pass")
+        );
+        assert_eq!(command_args("/goal\tclear"), Some("clear"));
+        assert_eq!(command_args("/goals"), None);
+        assert_eq!(command_args("set a /goal"), None);
     }
 }
