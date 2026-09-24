@@ -370,7 +370,7 @@ mod idempotency_tests {
     fn a_rolling_summary_becomes_a_checkpoint_boundary() {
         let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
         let conn = Connection::open(&path).unwrap();
-        run_migrations_to(&conn, 166).unwrap();
+        run_migrations_to(&conn, 167).unwrap();
         conn.execute_batch(
             "INSERT INTO chats (id, title) VALUES ('long', 'Long'), ('short', 'Short');
              INSERT INTO sessions (id, name, active_chat_id, summary, created_at, updated_at) VALUES ('s-long', 'agent:a:web', 'long', 'Owner wants the Q3 report.', 1, 1);
