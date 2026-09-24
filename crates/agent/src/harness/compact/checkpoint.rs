@@ -152,22 +152,71 @@ carries on without drifting. If the last task was finished, write \"None\" unles
 
 /// Opens every boundary row.
 pub const BOUNDARY_LEAD: &str = "This conversation continues from an earlier part that was summarized:";
+/// Where the conversation before the boundary can still be read: its rows
+/// stay stored, and the session search reads them.
+pub const HISTORY_POINTER: &str = "If you need a specific detail from before this summary (an exact snippet, an \
+error message, something you wrote), the earlier conversation is still stored: search it with \
+agent(resource: \"session\", action: \"query\", query: \"...\").";
 /// Added when the oldest part did not fit the summary call.
 pub const HEAD_CUT_NOTE: &str = "The earliest part of the conversation was too long to include and is not covered by \
-this summary. If the work turns out to depend on it, say so plainly instead of guessing.";
+this summary (the stored conversation above still has it). If the work turns out to depend on it, say so plainly \
+instead of guessing.";
 /// Closes a boundary the turn took for itself: the turn carries on.
-pub const RESUME_LINE: &str = "Resume the work directly. Don't acknowledge this summary, don't recap it and don't \
-open by saying you are continuing: pick up the last task as if there had been no break.";
+pub const RESUME_LINE: &str = "Carry on from where the work stopped without asking the owner any further questions. \
+Resume directly: don't acknowledge this summary, don't recap it and don't open by saying you are continuing. Pick up \
+the last task as if there had been no break.";
 
 /// Output room for the summary.
-const CHECKPOINT_MAX_TOKENS: i32 = 16_384;
+const CHECKPOINT_MAX_TOKENS: i32 = 20_000;
 /// Times the oldest fifth is dropped before the checkpoint gives up.
 const MAX_HEAD_CUTS: usize = 3;
+
+/// Most output room kept free for the summary below the window.
+pub const SUMMARY_RESERVE_MAX: usize = 20_000;
+/// Room kept free below that, so the checkpoint runs before the provider
+/// refuses the request.
+pub const BUFFER_TOKENS: usize = 13_000;
+/// Checkpoints that fail in a row before the turn stops trying.
+pub const MAX_FAILURES: u8 = 3;
+
+/// When the turn takes a checkpoint for itself. It is due when the request
+/// passes the window less the summary's output room (the model's output
+/// cap, at most 20k) and a 13k buffer. After three failures in a row the
+/// breaker trips and neither the threshold nor an overflow tries again until
+/// a checkpoint succeeds (the owner's `/compact` always runs).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Trigger {
+    failures: u8,
+}
+
+impl Trigger {
+    /// The request size, in tokens, at which a checkpoint is due.
+    pub fn threshold(context_window: usize, max_output: usize) -> usize {
+        context_window
+            .saturating_sub(max_output.min(SUMMARY_RESERVE_MAX))
+            .saturating_sub(BUFFER_TOKENS)
+    }
+
+    /// Three failures in a row: stop trying.
+    pub fn tripped(&self) -> bool {
+        self.failures >= MAX_FAILURES
+    }
+
+    /// Whether a request of `request_tokens` should be checkpointed first.
+    pub fn due(&self, request_tokens: usize, context_window: usize, max_output: usize) -> bool {
+        !self.tripped() && request_tokens >= Self::threshold(context_window, max_output)
+    }
+
+    /// Count a checkpoint's outcome: a success resets the count.
+    pub fn record(&mut self, outcome: &Result<Checkpoint, String>) {
+        self.failures = if outcome.is_ok() { 0 } else { self.failures.saturating_add(1) };
+    }
+}
 
 /// The boundary row's text. The turn's own checkpoints tell the model to
 /// carry on; after the owner's `/compact` the owner speaks next.
 pub fn boundary_text(summary: &str, head_cut: bool, why: CheckpointReason) -> String {
-    let mut text = format!("{BOUNDARY_LEAD}\n\n{}", summary.trim());
+    let mut text = format!("{BOUNDARY_LEAD}\n\n{}\n\n{HISTORY_POINTER}", summary.trim());
     if head_cut {
         text.push_str("\n\n");
         text.push_str(HEAD_CUT_NOTE);
@@ -188,7 +237,7 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
         hook.before_checkpoint(cx.session_id, why).await;
     }
 
-    // The rows as stored, untrimmed: what the tool failures and the restore
+    // The rows as stored, untrimmed: what the loaded tools and the restore
     // list are read from.
     let store = cx.sessions.store();
     let stored = store
@@ -196,7 +245,7 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
         .map_err(|e| format!("could not load the conversation: {e}"))?;
 
     let (reply, head_cut) = summarize(cx).await?;
-    let summary = crate::compaction::enhanced_summary(&stored, &extract_checkpoint(&reply)?);
+    let summary = extract_checkpoint(&reply)?;
 
     // The deferred tools loaded so far carry over on the boundary.
     let mut metadata = serde_json::json!({
@@ -551,6 +600,7 @@ mod tests {
         assert_eq!(after[0].id, done.boundary_id);
         assert!(is_boundary(&after[0]));
         assert!(after[0].content.starts_with(BOUNDARY_LEAD));
+        assert!(after[0].content.contains(HISTORY_POINTER), "the boundary says how to read what came before");
         assert!(after[0].content.contains("every file you create goes in /tmp/out"));
         assert!(!after[0].content.contains("scratch thinking"), "the notes are stripped");
         assert!(!after[0].content.contains(RESUME_LINE), "after /compact the owner speaks next");
@@ -776,18 +826,19 @@ mod tests {
         assert!(!s.conversation().iter().any(is_boundary), "nothing written");
     }
 
-    /// Tool failures survive into the summary; the deferred tools loaded so
-    /// far are recorded on the boundary and still count as loaded after
-    /// the next checkpoint (`tool_surface::loaded_names`).
+    /// The deferred tools loaded so far are recorded on the boundary and
+    /// still count as loaded after the next checkpoint
+    /// (`tool_surface::loaded_names`). The summary is the model's own: no
+    /// list is appended outside its sections.
     #[tokio::test]
-    async fn failures_and_loaded_tools_carry_over() {
+    async fn loaded_tools_carry_over_and_nothing_is_appended() {
         let s = Setup::new();
         s.say("user", "Send the invoice.");
         s.call("f1", tools::find_tools::FIND_TOOLS, serde_json::json!({ "query": "mail" }), "<functions>\n<function>{\"name\":\"mail\"}</function>\n</functions>\nLoaded: mail. Call them directly.", false);
         s.call("m1", "mail", serde_json::json!({ "action": "send" }), "SMTP 550 mailbox unavailable", true);
         let provider = Scripted::new(vec![Reply::Say("summary".into()), Reply::Say("summary".into())]);
         let done = s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
-        assert!(done.summary.contains("## Tool Failures") && done.summary.contains("mailbox unavailable"));
+        assert_eq!(done.summary, "summary");
         let boundary = s.conversation().remove(0);
         assert_eq!(metadata(&boundary).unwrap()[tool_surface::LOADED_TOOLS_KEY], serde_json::json!(["mail"]));
 
@@ -817,8 +868,27 @@ mod tests {
     fn a_migrated_summary_reads_like_an_owner_checkpoint() {
         assert_eq!(
             boundary_text("Owner wants the Q3 report.", false, CheckpointReason::OwnerAsked),
-            "This conversation continues from an earlier part that was summarized:\n\nOwner wants the Q3 report."
+            format!("This conversation continues from an earlier part that was summarized:\n\nOwner wants the Q3 report.\n\n{HISTORY_POINTER}")
         );
+    }
+
+    /// Due at the window less min(max output, 20k) less 13k; three failures
+    /// in a row trip the breaker until a checkpoint succeeds.
+    #[test]
+    fn the_trigger_keeps_room_and_trips_after_three_failures() {
+        assert_eq!(Trigger::threshold(200_000, 64_000), 167_000);
+        assert_eq!(Trigger::threshold(200_000, 8_000), 179_000);
+        let mut t = Trigger::default();
+        assert!(!t.due(166_999, 200_000, 64_000));
+        assert!(t.due(167_000, 200_000, 64_000));
+        let failed: Result<Checkpoint, String> = Err("no".into());
+        for _ in 0..3 {
+            t.record(&failed);
+        }
+        assert!(t.tripped());
+        assert!(!t.due(190_000, 200_000, 64_000), "a tripped breaker takes no more checkpoints");
+        t.record(&Ok(Checkpoint { boundary_id: "b".into(), summary: "s".into(), restore: vec![] }));
+        assert!(t.due(190_000, 200_000, 64_000), "a success resets it");
     }
 
     /// The owner's `/compact` runs it on a spawned task.

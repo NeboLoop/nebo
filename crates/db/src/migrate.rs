@@ -370,7 +370,7 @@ mod idempotency_tests {
     fn a_rolling_summary_becomes_a_checkpoint_boundary() {
         let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
         let conn = Connection::open(&path).unwrap();
-        run_migrations_to(&conn, 165).unwrap();
+        run_migrations_to(&conn, 166).unwrap();
         conn.execute_batch(
             "INSERT INTO chats (id, title) VALUES ('long', 'Long'), ('short', 'Short');
              INSERT INTO sessions (id, name, active_chat_id, summary, created_at, updated_at) VALUES ('s-long', 'agent:a:web', 'long', 'Owner wants the Q3 report.', 1, 1);
@@ -406,12 +406,15 @@ mod idempotency_tests {
         assert_eq!(long[0].role, "user");
         assert_eq!(
             long[0].content,
-            "This conversation continues from an earlier part that was summarized:\n\nOwner wants the Q3 report."
+            "This conversation continues from an earlier part that was summarized:\n\nOwner wants the Q3 report.\n\n\
+             If you need a specific detail from before this summary (an exact snippet, an error message, something you \
+             wrote), the earlier conversation is still stored: search it with \
+             agent(resource: \"session\", action: \"query\", query: \"...\")."
         );
         assert_eq!(long[1].id, "l020");
         let short = store.get_chat_messages_since_checkpoint("short").unwrap();
         assert_eq!(short.len(), 4, "every row stays after the boundary");
-        assert!(short[0].content.ends_with("Owner asked for a haiku."));
+        assert!(short[0].content.contains("Owner asked for a haiku."));
         assert_eq!(store.get_chat_messages("long").unwrap().len(), 101, "the thread keeps every row");
     }
 

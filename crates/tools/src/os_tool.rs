@@ -1352,17 +1352,9 @@ impl DynTool for OsTool {
         }
     }
 
-    fn trim_priority(&self) -> u8 {
-        crate::registry::TRIM_EARLY
-    }
-
-    fn keeps_content_when_trimmed(&self, input: &serde_json::Value) -> bool {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        match OsTool::resolved_resource(input) {
-            "calendar" | "mail" | "contacts" | "reminders" => true,
-            "file" => matches!(action, "read" | "grep" | "glob" | "search"),
-            _ => false,
-        }
+    /// File reads, searches and changes, and commands.
+    fn cleared_when_stale(&self, input: &serde_json::Value) -> bool {
+        matches!(OsTool::resolved_resource(input), "file" | "shell")
     }
 
     fn emits_image(&self, input: &serde_json::Value) -> bool {
