@@ -213,6 +213,8 @@ pub struct SurfaceInputs<'a> {
     /// A workflow activity's scoped set: its declaration, deferred tools
     /// included, with the `exit` primitive.
     pub workflow: Option<&'a crate::runner::WorkflowMode>,
+    /// A helper's kind and depth take the helper tools off its surface.
+    pub mode: &'a crate::harness::TurnMode,
 }
 
 /// One step's tool surface.
@@ -259,7 +261,9 @@ pub async fn surface(
     }
     let always: HashSet<String> = seat.always_load.iter().cloned().chain(own).collect();
     let mut declared = declared(all, &deferred, &always, &loaded);
+    declared.retain(|d| crate::harness::delegation::on_surface(seat.mode, &d.name));
     let mut listed = listed(&deferred, &declared);
+    listed.retain(|n| crate::harness::delegation::on_surface(seat.mode, n));
     if let Some(allowlist) = seat.allowlist {
         declared.retain(|d| crate::runner::allowlist_admits(allowlist, &d.name));
         listed.retain(|n| crate::runner::allowlist_admits(allowlist, n));

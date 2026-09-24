@@ -185,8 +185,8 @@ impl SessionManager {
 
     /// The conversation the harness sends: the active chat from its latest
     /// checkpoint boundary on (a row whose metadata carries
-    /// `"checkpoint": true`), with typed attachment rows kept, stored legacy
-    /// steering dropped and tool results whose call is not loaded removed.
+    /// `"checkpoint": true`), with typed attachment rows and notification rows
+    /// kept, stored legacy steering dropped and tool results whose call is not loaded removed.
     /// The sliding-window path keeps `get_messages` until the cutover deletes
     /// it.
     pub fn get_messages_since_checkpoint(&self, session_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
@@ -197,7 +197,11 @@ impl SessionManager {
         }
         let messages = messages
             .into_iter()
-            .filter(|m| !is_stored_steering(m) || crate::harness::reminders::attachment_kind(m).is_some())
+            .filter(|m| {
+                !is_stored_steering(m)
+                    || crate::harness::reminders::attachment_kind(m).is_some()
+                    || crate::harness::delegation::notify::is_notification_row(m)
+            })
             .collect();
         Ok(drop_orphan_results(messages))
     }

@@ -204,6 +204,9 @@ pub(crate) struct RoundContext<'a> {
     pub workflow_mode: Option<&'a WorkflowMode>,
     pub decide: Option<&'a Arc<ai::DecideClient>>,
     pub active_task: &'a String,
+    /// The turn's mode: a helper's kind is an enforced tool set and its
+    /// depth caps delegation (`delegation::permits`). `None` for `Runner`.
+    pub turn_mode: Option<&'a crate::harness::TurnMode>,
     pub guard_cfg: &'a crate::guardrails::GuardrailConfig,
     /// The trace a side call of this run carries: its purpose and the agent.
     pub side_trace: &'a (dyn Fn(&'static str) -> RequestTrace + Sync),
@@ -276,6 +279,7 @@ pub(crate) async fn run_tool_round(
         workflow_mode,
         decide,
         active_task,
+        turn_mode,
         guard_cfg,
         side_trace,
     } = *cx;
@@ -399,6 +403,17 @@ pub(crate) async fn run_tool_round(
         targets.push(tools.target(&tc.name, &tc.input).await);
     }
     let targets = targets;
+
+    // A helper's kind and depth, whatever shape the call arrives in.
+    if let Some(mode) = turn_mode {
+        for (idx, tc) in tool_calls.iter().enumerate() {
+            if let (None, Some(target)) = (&blocked_results[idx], &targets[idx])
+                && let Err(refusal) = crate::harness::delegation::permits(mode, target)
+            {
+                blocked_results[idx] = Some((tc.clone(), ToolResult::error(refusal)));
+            }
+        }
+    }
 
     // Hard guard: block tool calls that keep repeating identical args WITHOUT
     // making progress.

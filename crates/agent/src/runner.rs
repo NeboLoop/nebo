@@ -3385,6 +3385,7 @@ async fn run_loop(
                     workflow_mode,
                     decide,
                     active_task: &active_task,
+                    turn_mode: None,
                     guard_cfg: &guard_cfg,
                     side_trace: &side_trace,
                 },

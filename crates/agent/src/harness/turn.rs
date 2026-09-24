@@ -50,9 +50,6 @@ use crate::selector;
 pub const DEFAULT_MAX_STEPS: u32 = 100;
 /// Context window assumed for a model that reports none.
 const DEFAULT_CONTEXT_WINDOW: usize = 80_000;
-/// Metadata of a notification row: the model reads it, the owner's thread
-/// never shows it.
-const NOTIFICATION_ROW_METADATA: &str = r#"{"notification":true,"isMeta":true}"#;
 
 /// What one turn runs with, fixed for the turn.
 pub struct TurnContext {
@@ -231,8 +228,9 @@ impl TurnExit {
         match self {
             TurnExit::Answered => "text_response".into(),
             TurnExit::Cancelled => "cancelled".into(),
-            TurnExit::MaxSteps { steps } => format!("max_iterations_reached({steps})"),
-            TurnExit::BudgetReached => "spend_cap_reached".into(),
+            // What a helper's collector reads as a partial result.
+            TurnExit::MaxSteps { .. } => super::delegation::collect::STOP_MAX_STEPS.into(),
+            TurnExit::BudgetReached => super::delegation::collect::STOP_SPEND_CAP.into(),
             TurnExit::TerminalTool { .. } => "terminal_tool_error".into(),
             TurnExit::WorkflowEnded(reason) => reason.clone(),
             TurnExit::ProviderFailed(_) => "provider_failed".into(),
@@ -314,7 +312,7 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
                 &super::delegation::render_notification(c),
                 None,
                 None,
-                Some(NOTIFICATION_ROW_METADATA),
+                Some(super::delegation::notify::ROW_METADATA),
             )
             .map(|_| ()),
         TurnInput::None => Ok(()),
@@ -383,16 +381,9 @@ fn heard_nothing_since(h: &Harness, session_id: &str, seen: &[ChatMessage]) -> b
         .iter()
         .rev()
         .take_while(|m| last_seen != Some(m.id.as_str()))
-        .any(|m| m.role == "user" && (conversation::arrived_mid_turn(m).is_some() || is_notification_row(m)))
+        .any(|m| m.role == "user" && (conversation::arrived_mid_turn(m).is_some() || super::delegation::notify::is_notification_row(m)))
 }
 
-fn is_notification_row(msg: &ChatMessage) -> bool {
-    msg.metadata
-        .as_deref()
-        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-        .and_then(|v| v.get("notification").and_then(|b| b.as_bool()))
-        == Some(true)
-}
 
 /// The next turn on the same session and seat: its input is already in the
 /// conversation.
@@ -638,7 +629,7 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
                         &super::delegation::render_notification(c),
                         None,
                         None,
-                        Some(NOTIFICATION_ROW_METADATA),
+                        Some(super::delegation::notify::ROW_METADATA),
                     )
                     .map(|_| ())
                     .map_err(|e| format!("failed to store the notification: {e}"));
@@ -742,6 +733,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             allowlist: cx.request.seat.tool_allowlist.as_ref(),
             company_memory_sealed: cx.seat.company_memory_sealed,
             workflow: cx.workflow(),
+            mode: &cx.request.mode,
         };
         let surface = tool_surface::surface(&h.tools, &h.store, &conversation, &surface_seat).await;
         st.loaded_tools = surface.loaded.clone();
@@ -1281,6 +1273,7 @@ async fn tool_round(
             workflow_mode: cx.workflow(),
             decide: None,
             active_task: &no_objective,
+            turn_mode: Some(&cx.request.mode),
             guard_cfg,
             side_trace,
         },
@@ -1563,6 +1556,7 @@ mod tests {
     struct Echo {
         name: &'static str,
         deferred: bool,
+        read_only: bool,
     }
 
     impl tools::registry::DynTool for Echo {
@@ -1579,7 +1573,7 @@ mod tests {
             self.deferred
         }
         fn read_only(&self, _input: &serde_json::Value) -> bool {
-            true
+            self.read_only
         }
         fn execute_dyn<'a>(
             &'a self,
@@ -1594,8 +1588,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!("nebo-turn-{}.db", uuid::Uuid::new_v4()));
         let store = Arc::new(db::Store::new(path.to_str().unwrap()).expect("store"));
         let registry = Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone()))));
-        registry.register(Box::new(Echo { name: "echo", deferred: false })).await;
-        registry.register(Box::new(Echo { name: "weather", deferred: true })).await;
+        registry.register(Box::new(Echo { name: "echo", deferred: false, read_only: true })).await;
+        registry.register(Box::new(Echo { name: "weather", deferred: true, read_only: true })).await;
+        registry.register(Box::new(Echo { name: "writer", deferred: false, read_only: false })).await;
+        registry.register(Box::new(Echo { name: "delegate", deferred: false, read_only: true })).await;
         registry.register(Box::new(tools::find_tools::FindToolsTool::new(registry.clone()))).await;
         Harness::new(
             store,
@@ -1843,7 +1839,7 @@ mod tests {
             park: None,
         }));
         let events = run_turn(&h, req).await;
-        assert_eq!(exit_of(&events), "spend_cap_reached");
+        assert_eq!(exit_of(&events), super::super::delegation::collect::STOP_SPEND_CAP);
         assert_eq!(model.calls().len(), 1, "no step after the limit");
         let status = events
             .iter()
@@ -1896,5 +1892,27 @@ mod tests {
         for call in model.calls() {
             assert!(!call.system.contains(RECAP) && !texts(&call).iter().any(|t| t.contains(RECAP)), "a recap entered a request");
         }
+    }
+
+    /// An explore helper's surface has no helper tool, and a call that
+    /// changes something is refused whatever it arrives as.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explore_helper_only_looks() {
+        let model = Scripted::new(vec![Step::Call("writer", serde_json::json!({})), Step::Say("Found it.")]);
+        let h = harness(&model).await;
+        let mut req = owner("Look around");
+        req.session_key = "subagent:agent:ops:web:h-1".into();
+        req.mode = TurnMode::Helper {
+            parent_session_key: KEY.into(),
+            kind: crate::harness::delegation::HelperKind::Explore,
+            depth: 1,
+        };
+        let mut handle = h.start_turn(req).await.expect("start");
+        while handle.events.recv().await.is_some() {}
+        let calls = model.calls();
+        assert!(!calls[0].tools.iter().any(|t| t.name == "delegate"), "no helper tool for an explore helper");
+        assert!(calls[0].tools.iter().any(|t| t.name == "echo"));
+        let result = calls[1].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+        assert!(result.contains("only looks") && !result.contains("writer ran"), "{result}");
     }
 }
