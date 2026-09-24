@@ -90,6 +90,9 @@ fixtures:
   - ../fixtures/engine/concurrency/concurrency-the-store-and-the-ledger-hold-under-contention.yaml
   - ../fixtures/engine/concurrency/concurrency-a-fan-out-finishes-at-the-permit-floor.yaml
   - ../fixtures/engine/concurrency/concurrency-a-429-slows-the-whole-bot-and-it-recovers.yaml
+  - ../fixtures/engine/concurrency/concurrency-a-parents-message-reaches-its-running-sub-agent.yaml
+  - ../fixtures/engine/concurrency/concurrency-a-message-that-lands-as-the-sub-agent-finishes-is-heard.yaml
+  - ../fixtures/engine/concurrency/concurrency-a-sub-agent-with-a-message-waiting-can-still-be-cancelled.yaml
   # Server paths
   - ../fixtures/engine/server/server-turns-time-out-by-the-clock-and-by-silence.yaml
   - ../fixtures/engine/server/server-heartbeats-are-armed-inside-their-windows.yaml

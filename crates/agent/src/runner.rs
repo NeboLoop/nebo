@@ -1162,6 +1162,9 @@ pub struct ActiveTurn {
     /// The turn's cancel token: set means the owner stopped it and its loop
     /// is unwinding, so the slot frees in a moment.
     pub cancel_token: CancellationToken,
+    /// Its loop has ended (`TurnGuard::close`): nothing reads the thread for
+    /// it any more, and the slot frees in a moment.
+    pub closing: bool,
 }
 
 pub type ActiveTurns = Arc<std::sync::Mutex<HashMap<String, ActiveTurn>>>;
@@ -1180,20 +1183,20 @@ pub fn admit_turn(
     }
     map.insert(
         session_key.to_string(),
-        ActiveTurn { started: std::time::Instant::now(), progress, cancel_token },
+        ActiveTurn { started: std::time::Instant::now(), progress, cancel_token, closing: false },
     );
     Ok(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() })
 }
 
-/// True when the turn holding `session_key` has been cancelled: it is on its
-/// way out, and the next message should wait for the slot rather than be
-/// queued into a loop that is about to exit.
-pub fn turn_is_cancelled(turns: &ActiveTurns, session_key: &str) -> bool {
+/// True when the turn holding `session_key` is on its way out — cancelled, or
+/// its loop has ended — so the next message should wait for the slot rather
+/// than be queued into a loop that will not read it.
+pub fn turn_is_closing(turns: &ActiveTurns, session_key: &str) -> bool {
     turns
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .get(session_key)
-        .is_some_and(|t| t.cancel_token.is_cancelled())
+        .is_some_and(|t| t.closing || t.cancel_token.is_cancelled())
 }
 
 /// The typed stop reason a busy session answers with. Consumers render it as
@@ -1205,6 +1208,18 @@ pub const QUEUED_INTO_RUNNING_TURN: &str = "queued_into_running_turn";
 pub struct TurnGuard {
     turns: ActiveTurns,
     session_key: String,
+}
+
+impl TurnGuard {
+    /// The turn's loop has ended. The task still has its tail to run (the
+    /// report, title, cleanup) before the slot frees; a message arriving now
+    /// waits for the slot and starts the next turn instead of being queued
+    /// into this one, which will not read it.
+    pub fn close(&self) {
+        if let Some(t) = self.turns.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&self.session_key) {
+            t.closing = true;
+        }
+    }
 }
 
 impl Drop for TurnGuard {
@@ -1641,13 +1656,14 @@ impl Runner {
         let turn_guard = match admit_turn(&self.active_turns, &session_key, progress.clone(), req.cancel_token.clone()) {
             Ok(guard) => guard,
             Err(status) => {
-                // The owner pressed stop and typed the next thing at once. The
-                // stopped turn is unwinding; queuing this message into it would
-                // leave it in the thread unanswered (that queue is read by a
-                // loop that is about to exit). Wait for the slot, briefly, and
-                // start the new turn.
+                // The owner pressed stop and typed the next thing at once, or
+                // the turn's loop has just ended. The turn is unwinding;
+                // queuing this message into it would leave it in the thread
+                // unanswered (that queue is read by a loop that has exited or
+                // is about to). Wait for the slot, briefly, and start the new
+                // turn.
                 let mut admitted = None;
-                if turn_is_cancelled(&self.active_turns, &session_key) {
+                if turn_is_closing(&self.active_turns, &session_key) {
                     for _ in 0..100 {
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         if let Ok(g) = admit_turn(&self.active_turns, &session_key, progress.clone(), req.cancel_token.clone()) {
@@ -1666,11 +1682,8 @@ impl Runner {
                 // the way Claude Code keeps the transcript clean and frames the
                 // queued message for the model only. Untrusted caller framing
                 // (phone lines) rides along in the briefing below.
-                let meta = serde_json::json!({
-                    "arrivedMidTurn": true,
-                    "via": if req.channel.is_empty() { "chat" } else { req.channel.as_str() },
-                })
-                .to_string();
+                let via = if req.channel.is_empty() { "chat" } else { req.channel.as_str() };
+                let meta = MidTurnFrom::Owner { via: via.to_string() }.metadata();
                 if let Err(e) = self.sessions.append_message(&session_id, "user", &req.prompt, None, None, Some(&meta)) {
                     warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
                 }
@@ -1692,10 +1705,10 @@ impl Runner {
                     }
                 }
                 info!(session_id = %session_id, channel = %req.channel, "second request on a busy session queued into the running turn");
-                // ponytail: no follow-up turn is started if the running loop ends
-                // before its next history reload; the message stays in the thread
-                // (the status line says so). Add a queued-turn hand-off to the
-                // dispatcher if that shows up as a real gap.
+                // The running loop hears it at its next step, or before it ends
+                // the turn on a reply (`mid_turn_message_landed`); once the loop
+                // has ended the turn is closing and the wait above starts a new
+                // turn.
                 let (tx, rx) = mpsc::channel(4);
                 // A send fails only if the caller already dropped the receiver;
                 // there is nobody left to tell.
@@ -2060,7 +2073,7 @@ impl Runner {
 
         tokio::spawn(async move {
             // Releases the session for the next turn when this task ends.
-            let _turn = turn_guard;
+            let turn = turn_guard;
             // Sub-agent runs close their own browser tab/page when the run ends
             // (normal, error, or cancellation). Top-level runs are cleaned up by
             // their dispatcher, so gate on the subagent session key.
@@ -2264,6 +2277,7 @@ impl Runner {
                 decide.as_ref(),
             )
             .await;
+            turn.close();
 
             if cancel_token.is_cancelled() {
                 record_interrupt(&session_mgr, &session_id);
@@ -4830,18 +4844,13 @@ async fn run_loop(
         // The message can land between this step's history load and now (it
         // did, in the same second as a tool result): re-read the tail, and if
         // the owner spoke, start the step over with their words in it.
-        if let Ok(fresh) = sessions.get_messages(session_id) {
-            let last_seen = all_messages.last().map(|m| m.id.clone());
-            let landed = fresh
-                .iter()
-                .rev()
-                .take_while(|m| last_seen.as_deref() != Some(m.id.as_str()))
-                .any(|m| m.role == "user" && arrived_mid_turn(m).is_some());
-            if landed {
-                info!(session_id, iteration, "owner spoke mid-turn: restarting the step with their message");
-                continue;
-            }
+        if sessions.get_messages(session_id).is_ok_and(|fresh| mid_turn_message_landed(&fresh, &all_messages)) {
+            info!(session_id, iteration, "a message landed mid-turn: restarting the step with it");
+            continue;
         }
+        // A parent's message carries the parent's taint into this run, the way
+        // a woken payload's taint does (the wake rail above).
+        run_taint.lock().unwrap().extend(parent_taint(&all_messages));
         let owner_spoke_mid_turn = unanswered_mid_turn_message(&window_messages);
         if owner_spoke_mid_turn {
             info!(session_id, iteration, "owner spoke mid-turn: this step is a reply in words");
@@ -8153,6 +8162,17 @@ async fn run_loop(
             }
         }
 
+        // A message queued into this turn while this step's call ran was not
+        // in the call. Hear it before the turn ends: otherwise the owner's
+        // sits in the thread unanswered and a parent's never reaches the
+        // report it is waiting on.
+        if !cancel_token.is_cancelled()
+            && sessions.get_messages(session_id).is_ok_and(|fresh| mid_turn_message_landed(&fresh, &all_messages))
+        {
+            info!(iteration, session_id, "a message landed during the last step: continuing to hear it");
+            continue;
+        }
+
         // Conversation turn complete — normal exit with text response
         // The label is persisted on run_usage and read by `test runs`: a
         // plain word, never a Debug-printed Option.
@@ -8676,21 +8696,111 @@ fn named_tool_invocation(
         .then(|| ai::ToolChoice::Tool(name))
 }
 
-/// The channel a message the owner typed mid-turn arrived on, if it is one
-/// (metadata `arrivedMidTurn` / `via`, written by the queue path in `run`).
-pub(crate) fn arrived_mid_turn(msg: &ChatMessage) -> Option<String> {
+/// Who a message queued into a running turn came from. Both senders store
+/// their words as typed with this mark (`metadata`); the loop hears the row at
+/// its next step (`mid_turn_message_landed`), and the model reads it framed
+/// for its sender (`frame_mid_turn_message`). One queue, two senders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MidTurnFrom {
+    /// The owner typed it while the turn ran; `via` is the channel.
+    Owner { via: String },
+    /// The employee that handed this sub-agent its task sent it through
+    /// `agent(task, send)`. The sender's session and the task are recorded so
+    /// the thread shows where it came from; the sender's taint rides along
+    /// into the run that hears it.
+    Parent { session_key: String, task_id: String, taint: Vec<types::provenance::ProvenanceClass> },
+}
+
+impl MidTurnFrom {
+    /// The row metadata that marks a message as queued into a running turn.
+    pub fn metadata(&self) -> String {
+        match self {
+            Self::Owner { via } => serde_json::json!({ "arrivedMidTurn": true, "via": via }),
+            Self::Parent { session_key, task_id, taint } => {
+                let mut meta = serde_json::json!({
+                    "arrivedMidTurn": true,
+                    "from": "parent",
+                    "parentSessionKey": session_key,
+                    "taskId": task_id,
+                });
+                if !taint.is_empty() {
+                    meta["provenance"] = serde_json::json!(taint);
+                }
+                meta
+            }
+        }
+        .to_string()
+    }
+}
+
+/// Who sent a message that arrived while a turn ran, if it is one (the mark
+/// `MidTurnFrom::metadata` writes).
+pub(crate) fn arrived_mid_turn(msg: &ChatMessage) -> Option<MidTurnFrom> {
     let meta: serde_json::Value = serde_json::from_str(msg.metadata.as_deref()?).ok()?;
     if meta.get("arrivedMidTurn").and_then(|v| v.as_bool()) != Some(true) {
         return None;
     }
-    Some(meta.get("via").and_then(|v| v.as_str()).unwrap_or("chat").to_string())
+    let text = |key: &str| meta.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    if meta.get("from").and_then(|v| v.as_str()) == Some("parent") {
+        return Some(MidTurnFrom::Parent {
+            session_key: text("parentSessionKey"),
+            task_id: text("taskId"),
+            taint: meta
+                .get("provenance")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default(),
+        });
+    }
+    Some(MidTurnFrom::Owner { via: meta.get("via").and_then(|v| v.as_str()).unwrap_or("chat").to_string() })
+}
+
+/// True when a message queued into this turn landed after `seen`, the history
+/// a step was built from: that step never had it.
+pub(crate) fn mid_turn_message_landed(fresh: &[ChatMessage], seen: &[ChatMessage]) -> bool {
+    let last_seen = seen.last().map(|m| m.id.as_str());
+    fresh
+        .iter()
+        .rev()
+        .take_while(|m| last_seen != Some(m.id.as_str()))
+        .any(|m| m.role == "user" && arrived_mid_turn(m).is_some())
+}
+
+/// The taint the parent's messages in this thread carry: the run that reads
+/// them has read the parent's content.
+pub(crate) fn parent_taint(messages: &[ChatMessage]) -> Vec<types::provenance::ProvenanceClass> {
+    messages
+        .iter()
+        .filter_map(|m| match arrived_mid_turn(m) {
+            Some(MidTurnFrom::Parent { taint, .. }) => Some(taint),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// True when the parent's latest message to this sub-agent has no model step
+/// after it. The loop hears a message that lands before it ends
+/// (`mid_turn_message_landed`), so after a turn has ended a parent row with
+/// no assistant row after it arrived too late for that turn.
+pub(crate) fn parent_message_unheard(messages: &[ChatMessage]) -> bool {
+    let Some(at) = messages
+        .iter()
+        .rposition(|m| m.role == "user" && matches!(arrived_mid_turn(m), Some(MidTurnFrom::Parent { .. })))
+    else {
+        return false;
+    };
+    !messages[at + 1..].iter().any(|m| m.role == "assistant")
 }
 
 /// True while the owner's latest mid-turn message has no worded reply after
 /// it. An assistant row that only calls tools (narration or not) is not a
-/// reply; the model is still on its old plan.
+/// reply; the model is still on its old plan. A parent's message never makes
+/// the next step a reply: the sub-agent's report is its answer.
 pub(crate) fn unanswered_mid_turn_message(messages: &[ChatMessage]) -> bool {
-    let Some(at) = messages.iter().rposition(|m| m.role == "user" && arrived_mid_turn(m).is_some()) else {
+    let Some(at) = messages
+        .iter()
+        .rposition(|m| m.role == "user" && matches!(arrived_mid_turn(m), Some(MidTurnFrom::Owner { .. })))
+    else {
         return false;
     };
     !messages[at + 1..].iter().any(|m| {
@@ -8704,14 +8814,27 @@ pub(crate) fn unanswered_mid_turn_message(messages: &[ChatMessage]) -> bool {
 /// framing, plus that the owner is waiting and the next step is the reply:
 /// a changed instruction takes effect now, and the interrupted plan is not
 /// continued past it.
-pub(crate) fn frame_mid_turn_message(words: &str, via: &str) -> String {
-    format!(
-        "The owner sent a new message while you were working (via {via}):\n{words}\n\n\
-         IMPORTANT: reply to the owner now, in words, before any further tool use. If this \
-         changes what they want, act on the new instruction and do not continue the interrupted \
-         plan. If they asked you to continue or to add something, say so in one line; the work \
-         resumes at your next step. They are waiting."
-    )
+///
+/// A parent's message is framed as the parent's, not the owner's: it adds to
+/// or changes the task, the sub-agent keeps working, and its report is the
+/// answer — the parent is not waiting on a reply in between.
+pub(crate) fn frame_mid_turn_message(words: &str, from: &MidTurnFrom) -> String {
+    match from {
+        MidTurnFrom::Owner { via } => format!(
+            "The owner sent a new message while you were working (via {via}):\n{words}\n\n\
+             IMPORTANT: reply to the owner now, in words, before any further tool use. If this \
+             changes what they want, act on the new instruction and do not continue the interrupted \
+             plan. If they asked you to continue or to add something, say so in one line; the work \
+             resumes at your next step. They are waiting."
+        ),
+        MidTurnFrom::Parent { .. } => format!(
+            "The employee who gave you this task sent you a message while you were working:\n\
+             {words}\n\n\
+             Take it into the task now. If it changes what they want, follow the new instruction and \
+             drop the part of your plan it replaces; if it adds something, fold it in. Keep working \
+             with your tools and do not delegate it; your final report goes back to them as usual."
+        ),
+    }
 }
 
 pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
@@ -8769,7 +8892,7 @@ pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
             // their words; the model gets it framed: it arrived mid-work and
             // they are waiting on it.
             let content = match arrived_mid_turn(msg) {
-                Some(via) => frame_mid_turn_message(&msg.content, &via),
+                Some(from) => frame_mid_turn_message(&msg.content, &from),
                 None => msg.content.clone(),
             };
 
@@ -10059,6 +10182,86 @@ mod tests {
         assert!(unanswered_mid_turn_message(&[mid.clone(), narrating.clone()]));
         assert!(!unanswered_mid_turn_message(&[mid.clone(), narrating, reply]));
         assert!(!unanswered_mid_turn_message(&[row("hello", None)]));
+    }
+
+    /// A parent employee's message to its running sub-agent is stored as
+    /// sent, marked with where it came from and the parent's taint, and read
+    /// by the model as the parent's — never as the owner waiting on a reply.
+    #[test]
+    fn a_parents_mid_turn_message_is_its_own_and_asks_for_no_reply() {
+        let row = |id: &str, role: &str, content: &str, metadata: Option<String>| ChatMessage {
+            id: id.into(),
+            chat_id: "c".into(),
+            role: role.into(),
+            content: content.into(),
+            metadata,
+            created_at: 0,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        };
+        let from = MidTurnFrom::Parent {
+            session_key: "agent:ops:web".into(),
+            task_id: "sa-1".into(),
+            taint: vec![types::provenance::ProvenanceClass::Web],
+        };
+        let meta = from.metadata();
+        let v: serde_json::Value = serde_json::from_str(&meta).unwrap();
+        assert_eq!(v["from"], "parent");
+        assert_eq!(v["parentSessionKey"], "agent:ops:web");
+        assert_eq!(v["taskId"], "sa-1");
+        assert_eq!(v["provenance"], serde_json::json!(["web"]));
+        let owner = MidTurnFrom::Owner { via: "web".into() }.metadata();
+        assert_eq!(owner, r#"{"arrivedMidTurn":true,"via":"web"}"#, "the owner's mark is unchanged");
+
+        let msg = row("p", "user", "also cover pricing", Some(meta));
+        assert_eq!(arrived_mid_turn(&msg), Some(from));
+        let framed = &convert_messages(std::slice::from_ref(&msg))[0].content;
+        assert!(framed.starts_with("The employee who gave you this task sent you a message"), "{framed}");
+        assert!(framed.contains("also cover pricing"));
+        assert!(!framed.contains("owner") && !framed.contains("They are waiting"), "{framed}");
+        assert_eq!(parent_taint(std::slice::from_ref(&msg)), vec![types::provenance::ProvenanceClass::Web]);
+        assert!(parent_taint(&[row("o", "user", "hi", Some(owner.clone()))]).is_empty());
+
+        // The owner's rule (the next step is a reply in words) never fires
+        // for a parent's message: the sub-agent's report is its answer.
+        assert!(!unanswered_mid_turn_message(std::slice::from_ref(&msg)));
+        assert!(unanswered_mid_turn_message(&[row("o", "user", "stop", Some(owner))]));
+
+        // Unheard until a model step follows it.
+        let step = row("a", "assistant", "done", None);
+        assert!(parent_message_unheard(std::slice::from_ref(&msg)));
+        assert!(!parent_message_unheard(&[msg.clone(), step.clone()]));
+        assert!(parent_message_unheard(&[step.clone(), msg.clone()]));
+        assert!(!parent_message_unheard(&[row("u", "user", "task", None), step.clone()]));
+
+        // A queued message that landed after the history a step was built
+        // from was not in that step; one it was built with was.
+        let seen = vec![row("u", "user", "task", None), step.clone()];
+        assert!(mid_turn_message_landed(&[seen[0].clone(), step.clone(), msg.clone()], &seen));
+        assert!(!mid_turn_message_landed(&[seen[0].clone(), msg.clone(), step.clone()], &[seen[0].clone(), msg.clone(), step]));
+        assert!(!mid_turn_message_landed(&seen, &seen));
+    }
+
+    /// A turn whose loop has ended is closing: a message arriving then waits
+    /// for the slot and starts the next turn instead of being queued into a
+    /// loop that will not read it.
+    #[test]
+    fn a_turn_whose_loop_ended_is_closing() {
+        let turns: ActiveTurns = Default::default();
+        let guard = admit_turn(&turns, "subagent:p:sa-1", progress(), CancellationToken::new()).unwrap();
+        assert!(!turn_is_closing(&turns, "subagent:p:sa-1"), "running");
+        guard.close();
+        assert!(turn_is_closing(&turns, "subagent:p:sa-1"), "loop ended");
+        assert!(session_is_busy(&turns, "subagent:p:sa-1"), "still holds the slot until its task ends");
+        drop(guard);
+        assert!(!session_is_busy(&turns, "subagent:p:sa-1"));
+        let cancel = CancellationToken::new();
+        let _g = admit_turn(&turns, "k", progress(), cancel.clone()).unwrap();
+        cancel.cancel();
+        assert!(turn_is_closing(&turns, "k"), "a stopped turn is closing too");
     }
 
     #[test]

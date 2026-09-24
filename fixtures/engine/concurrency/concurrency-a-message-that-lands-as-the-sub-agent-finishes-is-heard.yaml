@@ -1,0 +1,9 @@
+id: concurrency-a-message-that-lands-as-the-sub-agent-finishes-is-heard
+name: "A message that lands as the sub-agent finishes is heard"
+description: |
+  The parent's message lands while the sub-agent's last step is writing its
+  report. The loop reads it before ending the turn, and the report the
+  parent gets answers it. Nothing sent to a sub-agent is left unread.
+target_component: engine
+proof: engine::proof::concurrency::a_message_that_lands_as_the_sub_agent_finishes_is_heard
+conversation: []

@@ -403,3 +403,270 @@ async fn a_429_slows_the_whole_bot_and_it_recovers() {
     );
     assert_eq!(concurrency.effective_permits(), 8, "successes grew the pool back to the machine's bound");
 }
+
+/// A sub-agent's model, given call by call. Every call on the child's task
+/// waits until the scenario lets it answer, then gives the next scripted
+/// reply; what each call was shown is recorded. Calls that are not the
+/// child's (none are expected) answer at once.
+struct Scripted(Arc<Script>);
+
+enum Reply {
+    /// Call a tool: the step ends and the loop goes on.
+    Tool,
+    /// Answer in words: the turn can end.
+    Text(&'static str),
+}
+
+struct Script {
+    /// Words only the child's own calls carry.
+    marker: &'static str,
+    replies: std::sync::Mutex<std::collections::VecDeque<Reply>>,
+    /// The user-role messages each of the child's calls was shown.
+    seen: std::sync::Mutex<Vec<Vec<String>>>,
+    /// One permit per call allowed to answer.
+    go: tokio::sync::Semaphore,
+    started_tx: tokio::sync::mpsc::UnboundedSender<usize>,
+    started_rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<usize>>,
+}
+
+impl Script {
+    fn new(marker: &'static str, replies: impl IntoIterator<Item = Reply>) -> Arc<Self> {
+        let (started_tx, started_rx) = tokio::sync::mpsc::unbounded_channel();
+        Arc::new(Self {
+            marker,
+            replies: std::sync::Mutex::new(replies.into_iter().collect()),
+            seen: std::sync::Mutex::new(Vec::new()),
+            go: tokio::sync::Semaphore::new(0),
+            started_tx,
+            started_rx: tokio::sync::Mutex::new(started_rx),
+        })
+    }
+
+    /// Wait until the child's call number `n` (0-based) is in flight.
+    async fn started(&self, n: usize) {
+        let mut rx = self.started_rx.lock().await;
+        loop {
+            let got = tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
+                .await
+                .expect("the sub-agent made no model call")
+                .expect("script dropped");
+            if got == n {
+                return;
+            }
+        }
+    }
+
+    /// Let the next `n` calls answer.
+    fn answer(&self, n: usize) {
+        self.go.add_permits(n);
+    }
+
+    fn seen(&self, n: usize) -> Vec<String> {
+        self.seen.lock().unwrap()[n].clone()
+    }
+
+    fn calls(&self) -> usize {
+        self.seen.lock().unwrap().len()
+    }
+}
+
+#[async_trait::async_trait]
+impl ai::Provider for Scripted {
+    fn id(&self) -> &str {
+        "scripted"
+    }
+    async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let script = self.0.clone();
+        if !req.messages.iter().any(|m| m.content.contains(script.marker)) {
+            tokio::spawn(async move {
+                let _ = tx.send(ai::StreamEvent::text("ok")).await;
+                let _ = tx.send(ai::StreamEvent::done()).await;
+            });
+            return Ok(rx);
+        }
+        let n = {
+            let mut seen = script.seen.lock().unwrap();
+            seen.push(req.messages.iter().filter(|m| m.role == "user").map(|m| m.content.clone()).collect());
+            seen.len() - 1
+        };
+        let _ = script.started_tx.send(n);
+        tokio::spawn(async move {
+            let Ok(permit) = script.go.acquire().await else { return };
+            permit.forget();
+            let reply = script.replies.lock().unwrap().pop_front().unwrap_or(Reply::Text("done"));
+            let event = match reply {
+                Reply::Tool => ai::StreamEvent::tool_call(ai::ToolCall {
+                    id: format!("call-{n}"),
+                    name: "look_around".into(),
+                    input: json!({}),
+                }),
+                Reply::Text(words) => ai::StreamEvent::text(words),
+            };
+            let _ = tx.send(event).await;
+            let _ = tx.send(ai::StreamEvent::done()).await;
+        });
+        Ok(rx)
+    }
+}
+
+/// The parent a scenario's sub-agent reports to: an interactive session.
+const PARENT: &str = "agent:ops:web";
+
+/// A real orchestrator over a real runner and store, the child's words given.
+fn scripted_orchestrator(script: Arc<Script>) -> (agent::Orchestrator, Arc<agent::Runner>, Arc<db::Store>) {
+    let store = Arc::new(fresh_store());
+    let runner = Arc::new(agent::Runner::new(
+        store.clone(),
+        Arc::new(tools::Registry::new(tools::Policy::new())),
+        vec![Arc::new(Scripted(script)) as Arc<dyn ai::Provider>],
+        agent::selector::ModelSelector::new(Default::default()),
+        Arc::new(agent::ConcurrencyController::new(Some(4))),
+        Arc::new(napp::HookDispatcher::new()),
+        None,
+        Default::default(),
+        None,
+    ));
+    (agent::Orchestrator::new(runner.clone(), store.clone()), runner, store)
+}
+
+/// A background child of `PARENT` whose prompt carries the script's marker.
+fn background_child(marker: &str) -> tools::SpawnRequest {
+    tools::SpawnRequest {
+        prompt: format!("{marker}: research the market"),
+        description: "market research".into(),
+        agent_type: "general".into(),
+        model_override: String::new(),
+        parent_session_id: String::new(),
+        parent_session_key: PARENT.into(),
+        user_id: "owner".into(),
+        wait: false,
+        parent_cancel: None,
+        max_iterations: 10,
+        skills: vec![],
+        plugins: vec![],
+        tools: vec![],
+        parent_stream_tx: None,
+        handoff_depth: 0,
+        isolate: String::new(),
+        workspace: String::new(),
+    }
+}
+
+/// The child's report once it holds `expect`, as the parent is woken with it.
+async fn report_holding(store: &db::Store, task_id: &str, expect: &str) -> String {
+    for _ in 0..1000 {
+        if let Ok(Some(task)) = store.get_pending_task(task_id)
+            && let Some(output) = task.output
+            && output.contains(expect)
+        {
+            return output;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the sub-agent never reported '{expect}'");
+}
+
+/// The child's thread, as stored.
+fn child_thread(runner: &agent::Runner, task_id: &str) -> Vec<db::models::ChatMessage> {
+    let sessions = runner.sessions();
+    let id = sessions.resolve_session_id_by_key(&format!("subagent:{PARENT}:{task_id}")).expect("the child's session");
+    sessions.get_messages(&id).expect("the child's thread")
+}
+
+/// A parent reaches a sub-agent that is still working, the way the owner
+/// reaches an employee mid-turn. Two messages sent while its first step runs
+/// both come back "delivered" at once, are in its thread as sent (marked as
+/// the parent's, with the parent's taint), and its next step reads both, in
+/// order, framed as the parent's. Its report reaches the parent as spawned.
+/// Once it has finished, a message continues it as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parents_message_reaches_its_running_sub_agent() {
+    use tools::SubAgentOrchestrator as _;
+    let script = Script::new("MARKET-7", [Reply::Tool, Reply::Text("Report: pricing and edge cases covered.")]);
+    let (orchestrator, runner, store) = scripted_orchestrator(script.clone());
+    let task = orchestrator.spawn(background_child("MARKET-7")).await.expect("spawned").task_id;
+    script.started(0).await;
+
+    let web = vec![types::provenance::ProvenanceClass::Web];
+    for words in ["Also cover pricing.", "And the edge cases."] {
+        let sent = orchestrator.send(&task, words, PARENT, web.clone(), None, None).await.expect("sent");
+        assert!(matches!(sent, tools::FollowUp::Delivered { .. }), "a running child takes the message: {sent:?}");
+    }
+    assert_eq!(script.calls(), 1, "delivering does not start a second run beside the first");
+
+    script.answer(2);
+    let report = report_holding(&store, &task, "pricing and edge cases").await;
+    assert!(report.contains("Report: pricing and edge cases covered."), "{report}");
+
+    let second = script.seen(1);
+    let pricing = second.iter().position(|m| m.contains("Also cover pricing.")).expect("the next step read the first message");
+    let edges = second.iter().position(|m| m.contains("And the edge cases.")).expect("the next step read the second message");
+    assert!(pricing < edges, "in the order sent");
+    assert!(second[pricing].starts_with("The employee who gave you this task sent you a message"), "{}", second[pricing]);
+    assert!(!script.seen(0).iter().any(|m| m.contains("Also cover pricing.")), "the first step was already in flight");
+
+    let thread = child_thread(&runner, &task);
+    let rows: Vec<_> = thread.iter().filter(|m| m.content == "Also cover pricing." || m.content == "And the edge cases.").collect();
+    assert_eq!(rows.len(), 2, "both persist in the child's thread, as sent");
+    for row in rows {
+        let meta: serde_json::Value = serde_json::from_str(row.metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(meta["from"], "parent");
+        assert_eq!(meta["parentSessionKey"], PARENT);
+        assert_eq!(meta["taskId"], task.as_str());
+        assert_eq!(meta["provenance"], json!(["web"]), "the parent's taint rides with its words");
+    }
+
+    // Finished: a message continues it on its own session, as before.
+    script.answer(1);
+    let sent = orchestrator.send(&task, "One more thing.", PARENT, vec![], None, None).await.expect("sent");
+    assert!(matches!(sent, tools::FollowUp::Continued(ref r) if r.success), "a finished child continues: {sent:?}");
+    report_holding(&store, &task, "done").await;
+    let follow_up = child_thread(&runner, &task).into_iter().find(|m| m.content.ends_with("One more thing.")).expect("the follow-up turn");
+    assert!(follow_up.content.starts_with(agent::orchestrator::CONTINUATION_FRAME), "{}", follow_up.content);
+}
+
+/// A message that lands while the sub-agent's last step is writing its
+/// report is not lost: the step it missed ends, the loop reads the message
+/// before ending the turn, and the report the parent gets answers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_message_that_lands_as_the_sub_agent_finishes_is_heard() {
+    use tools::SubAgentOrchestrator as _;
+    let script = Script::new("MARKET-8", [Reply::Text("First report."), Reply::Text("Revised: prices in euros.")]);
+    let (orchestrator, runner, store) = scripted_orchestrator(script.clone());
+    let task = orchestrator.spawn(background_child("MARKET-8")).await.expect("spawned").task_id;
+    script.started(0).await;
+
+    let sent = orchestrator.send(&task, "Prices in euros, please.", PARENT, vec![], None, None).await.expect("sent");
+    assert!(matches!(sent, tools::FollowUp::Delivered { .. }), "{sent:?}");
+    script.answer(2);
+
+    let report = report_holding(&store, &task, "Revised").await;
+    assert!(report.contains("First report.") && report.contains("Revised: prices in euros."), "{report}");
+    assert!(script.seen(1).iter().any(|m| m.contains("Prices in euros, please.")), "the step after the report read it");
+    let thread = child_thread(&runner, &task);
+    let at = thread.iter().position(|m| m.content == "Prices in euros, please.").expect("persisted");
+    assert!(thread[at + 1..].iter().any(|m| m.role == "assistant" && m.content.contains("Revised")), "answered after it");
+}
+
+/// Cancel still stops a sub-agent that has a message waiting for it: the run
+/// ends, it takes no further model call, and it is no longer running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sub_agent_with_a_message_waiting_can_still_be_cancelled() {
+    use tools::SubAgentOrchestrator as _;
+    let script = Script::new("MARKET-9", [Reply::Tool, Reply::Text("never")]);
+    let (orchestrator, _runner, store) = scripted_orchestrator(script.clone());
+    let task = orchestrator.spawn(background_child("MARKET-9")).await.expect("spawned").task_id;
+    script.started(0).await;
+
+    let sent = orchestrator.send(&task, "Stop at the summary.", PARENT, vec![], None, None).await.expect("sent");
+    assert!(matches!(sent, tools::FollowUp::Delivered { .. }), "{sent:?}");
+    orchestrator.cancel(&task).await.expect("cancelled");
+    assert!(orchestrator.list_active().await.iter().all(|(id, _, _)| id != &task), "no longer running");
+
+    script.answer(2);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(script.calls(), 1, "a cancelled child makes no further model call");
+    let task_row = store.get_pending_task(&task).unwrap().expect("the task");
+    assert_ne!(task_row.status, "completed", "a cancelled child does not complete");
+}
