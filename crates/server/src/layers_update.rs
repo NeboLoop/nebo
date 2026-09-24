@@ -136,6 +136,7 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
         user_id: String::new(),
         channel: "layers".to_string(),
         origin: tools::Origin::System,
+        door: types::permissions::Door::Chat,
         agent_id: seat.id.clone(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::COMM.to_string(),
@@ -623,11 +624,27 @@ fn company_policy_from(packs: &HashMap<String, napp::Pack>) -> Option<tools::pol
             freshness_secs: num(company_ids::FRESHNESS_SECS),
         },
         pages: values.get(company_ids::PAGES).cloned(),
-        // Per-operation company rules are not written from files: laws give
-        // Blocked, the reserved list gives the owner's hand, and nothing else
-        // at company level needs a rule of its own.
-        ..Default::default()
     })
+}
+
+/// One law on one seat: a locked rule on the operation, written by the pack.
+fn write_law(state: &AppState, seat_id: &str, op: &str, effect: types::permissions::Effect, pack: &str) {
+    use types::permissions::{Rule, RuleKey, RuleSource, Scope, Writer};
+    let suffix = tools::plugin_tool::port_suffix(op);
+    let rule = Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope: Scope::Employee(seat_id.to_string()),
+        key: RuleKey::Operation(suffix),
+        field: None,
+        effect,
+        money: None,
+        source: RuleSource::Law { pack: pack.to_string() },
+        locked: true,
+        created_at: chrono::Utc::now().timestamp(),
+    };
+    if let Err(e) = state.store.write_permission_rule(&rule, &Writer::Package { package: pack.to_string() }) {
+        warn!(agent = %seat_id, error = %e, "pack laws: rule write failed");
+    }
 }
 
 pub fn apply_pack_floors(state: &AppState, packs: &HashMap<String, napp::Pack>) {
@@ -650,6 +667,7 @@ pub fn apply_pack_floors(state: &AppState, packs: &HashMap<String, napp::Pack>) 
     let mut ordered: Vec<&napp::Pack> = packs.values().collect();
     ordered.sort_by_key(|p| p.layer.rank());
     let mut laws: Vec<(String, String)> = Vec::new();
+    let reserved: Vec<String> = company_policy_from(packs).map(|c| c.reserved).unwrap_or_default();
     let mut values: HashMap<String, serde_json::Value> = HashMap::new();
     for pack in &ordered {
         laws.extend(pack.ceilings());
@@ -659,37 +677,14 @@ pub fn apply_pack_floors(state: &AppState, packs: &HashMap<String, napp::Pack>) 
     }
     let seats = state.store.list_agents(10_000, 0).unwrap_or_default();
     for seat in seats.iter().filter(|a| a.is_app.unwrap_or(0) == 0) {
-        // Laws → locked Blocked in the one policy.
-        if !laws.is_empty() {
-            let current = crate::entity_config::resolve_for_chat(&state.store, "agent", &seat.id)
-                .and_then(|c| c.operation_policy);
-            let mut policy = tools::policy::OperationPolicy::from_json(current.as_deref());
-            let mut changed = false;
-            for (op, law) in &laws {
-                let suffix = tools::plugin_tool::port_suffix(op);
-                let already = policy.operations.get(&suffix).is_some_and(|r| r.is_law());
-                if already {
-                    continue;
-                }
-                policy.operations.insert(
-                    suffix,
-                    tools::policy::OperationRule {
-                        access: tools::policy::OperationAccess::Blocked,
-                        bounds: None,
-                        source: Some(format!("law:{law}")),
-                        evidence: None,
-                        granted_at: Some(chrono::Utc::now().timestamp()),
-                        locked: true,
-                    },
-                );
-                changed = true;
-            }
-            if changed {
-                let patch = serde_json::json!({ "operationPolicy": policy.to_json() });
-                if let Err(e) = state.store.upsert_entity_config("agent", &seat.id, &patch) {
-                    warn!(agent = %seat.id, error = %e, "pack laws: policy write failed");
-                }
-            }
+        // Laws → locked deny rules on the seat, and the operations the
+        // company reserves to the owner → locked ask rules: an employee
+        // rule on the same operation never outranks them.
+        for (op, law) in &laws {
+            write_law(state, &seat.id, op, types::permissions::Effect::Deny, law);
+        }
+        for op in &reserved {
+            write_law(state, &seat.id, op, types::permissions::Effect::Ask, "company");
         }
         // Standards and defaults → the seat's inputs, by semantic id, only
         // where the seat asks the question and has no value.
@@ -835,19 +830,6 @@ mod tests {
         // every seat as a law, which is a different mechanism.
         assert_eq!(policy.reserved, vec!["equity.issue".to_string()]);
         assert!(!policy.is_reserved("ledger.payment.send"));
-        // A standing grant past the company's per-operation bound is refused.
-        let beyond = tools::policy::OperationRule {
-            access: tools::policy::OperationAccess::Always,
-            bounds: Some(tools::policy::Bounds {
-                max_amount_cents: Some(300_000),
-                ..Default::default()
-            }),
-            source: None,
-            evidence: None,
-            granted_at: None,
-            locked: false,
-        };
-        assert!(policy.permits("ledger.payment.send", &beyond).is_err());
     }
 
     /// The owner edits a layer the way they edit any document: a save, a reread,

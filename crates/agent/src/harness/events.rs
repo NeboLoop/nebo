@@ -111,7 +111,7 @@ pub const NAMES: &[&str] = &[
 ];
 
 /// Most memories one recall surfaces.
-const MAX_RECALLED: usize = 5;
+pub const MAX_RECALLED: usize = 5;
 
 const MICROCENTS_PER_DOLLAR: f64 = 100_000_000.0;
 
@@ -126,15 +126,23 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::RunBriefing(text) => ("run_briefing", non_empty(text)?),
         TurnEvent::RestrictedRun(text) => ("restricted_run", non_empty(text)?),
         TurnEvent::RelevantMemories(found) => {
-            if found.is_empty() {
+            let shown = &found[..found.len().min(MAX_RECALLED)];
+            if shown.is_empty() {
                 return None;
             }
-            let lines: Vec<String> = found
+            let lines: Vec<String> = shown
                 .iter()
-                .take(MAX_RECALLED)
                 .map(|m| format!("- {}: {}", m.memory.key, m.memory.value))
                 .collect();
-            ("relevant_memories", format!("Memories that may apply:\n{}", lines.join("\n")))
+            // The row keeps the ids it surfaced, so what this session was
+            // already shown is folded back from its rows
+            // (`memory_context::surfaced_memories`).
+            let ids: Vec<i64> = shown.iter().map(|m| m.memory.id).collect();
+            return Some(Attachment {
+                kind: "relevant_memories",
+                text: format!("Memories that may apply:\n{}", lines.join("\n")),
+                data: serde_json::Map::from_iter([("ids".to_string(), serde_json::json!(ids))]),
+            });
         }
         TurnEvent::FilesChanged(notes) => ("files_changed", non_empty(&notes.join("\n"))?),
         TurnEvent::Diagnostics(notes) => ("diagnostics", non_empty(&notes.join("\n"))?),

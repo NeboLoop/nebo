@@ -363,6 +363,7 @@ async fn start_employee_run(
             user_id: String::new(),
             channel: CHANNEL.to_string(),
             origin: tools::Origin::Visitor,
+            door: types::permissions::Door::LocalApi,
             agent_id: agent_id.to_string(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),

@@ -97,6 +97,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 // of the owner typing locally. The taint seed below was already
                 // calling this input untrusted; the origin now agrees with it.
                 origin: tools::Origin::Comm,
+                door: types::permissions::Door::Chat,
                 agent_id: agent_id.to_string(),
                 cancel_token: cancel_token.clone(),
                 lane: types::constants::lanes::COMM.to_string(),

@@ -162,15 +162,23 @@ pub struct ToolContext {
     /// a handoff). The loop tool stamps it on outbound sends so receiving bots
     /// enforce the depth cap on tool-authored messages too.
     pub handoff_depth: u8,
-    /// Per-entity permission overrides (tool category → allowed).
-    pub entity_permissions: Option<std::collections::HashMap<String, bool>>,
-    /// Per-employee three-state approval policy over gated interface operations
-    /// (Always / Approval / Blocked). `None` = no per-employee overrides; the
-    /// gate falls back to the seat's declared defaults. The single decision
-    /// function both the chat gate and the workflow checkpoint consult.
-    pub operation_policy: Option<crate::policy::OperationPolicy>,
-    /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
-    pub resource_grants: Option<std::collections::HashMap<String, String>>,
+    /// The seat's permissions for this run: its mode, the company's and the
+    /// employee's rules, and the ceiling it runs under. The registry's
+    /// permission check decides every call against it. `None`: the check
+    /// loads the grant of the employee the session belongs to.
+    pub grant: Option<std::sync::Arc<types::permissions::Grant>>,
+    /// The entry this run came through (chat, helper, workflow, schedule,
+    /// heartbeat, coworker, voice, MCP, the local API). Recorded with every
+    /// decision.
+    pub door: types::permissions::Door,
+    /// Engine-set only: the owner already answered the ask this exact call
+    /// parked on (a workflow resuming the approved call). The check still
+    /// applies the hard limits, the ceiling and deny rules.
+    pub answered_ask: Option<String>,
+    /// Engine-set: the run's input arrived from outside (a workflow run
+    /// started by an inbound payload). A catalog-gated operation asks, the
+    /// same as for an untrusted origin.
+    pub untrusted_input: bool,
     /// Dispatch-time tool whitelist for restricted internal runs (the
     /// self-improvement review fork). `Some` = only these tool names may
     /// execute; everything else is denied with a corrective error at the ONE
@@ -200,9 +208,6 @@ pub struct ToolContext {
     /// unless its name is here — the fork must write against actual on-disk
     /// content, never a recollection inferred from the transcript.
     pub skills_read: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    /// Allowed filesystem paths — if set, file writes and shell commands are restricted
-    /// to these directories and their children. Empty = unrestricted.
-    pub allowed_paths: Vec<String>,
     /// Default working directory for shell commands and relative file paths
     /// (a worktree or scratch copy for isolated sub-agents). None = the
     /// process cwd, exactly as before.
@@ -256,21 +261,6 @@ pub struct ToolContext {
     /// shell — that would hand every plugin credential to the model. Not
     /// forgeable from tool input: it lives on the context, not the payload.
     pub trusted_plugin_env: bool,
-    /// Capability categories the runner has cleared for execution this turn —
-    /// pre-granted (capability ON), covered by Full Access, matched by the
-    /// per-command allowlist, or user-approved via the ApprovalModal. In
-    /// UNATTENDED runs an OFF capability is never inserted here — there is no
-    /// autonomy bypass; the category stays ungranted and Phase 1b/1c
-    /// hard-blocks (OFF means OFF when nobody can answer a prompt). The gate
-    /// treats an OFF capability as allowed only when its category is present,
-    /// so interactively "off" means ASK rather than a hard error. Empty for
-    /// callers that don't run the approval gate (their OFF capabilities still
-    /// hard-block, preserving enforcement).
-    pub approved_categories: std::collections::HashSet<String>,
-    /// The owner's Full Access switch as this run has it (after the outside
-    /// fence). Engine-set; a sub-agent inherits it with the rest of the
-    /// parent's limits, and it never overrides a per-employee operation gate.
-    pub full_access: bool,
     /// Engine-stamped provenance snapshot of the run at this iteration — the
     /// classes of untrusted content the run has touched so far (accumulated by
     /// the runner from the static tool→class table). Read-only for tools; the
@@ -361,6 +351,23 @@ impl ToolContext {
         wl.iter().any(|e| {
             e.strip_suffix('*')
                 .is_some_and(|prefix| !prefix.is_empty() && tool.starts_with(prefix))
+        })
+    }
+
+    /// The first of `paths` outside the folders this run may change (the
+    /// job's folder rules and the run's own fence), as the refusal; `None`
+    /// when every path is inside or nothing fences the run. For a call whose
+    /// paths the input can't show (a restore's manifest).
+    pub fn outside_folders(&self, verb: &str, paths: &[String]) -> Option<String> {
+        let grant = self.grant.as_ref()?;
+        let strings = |v: &[std::path::PathBuf]| -> Vec<String> {
+            v.iter().map(|p| p.to_string_lossy().into_owned()).collect()
+        };
+        crate::safeguard::outside_allowed(verb, paths, &strings(&grant.folders())).or_else(|| {
+            grant
+                .fence
+                .as_ref()
+                .and_then(|f| crate::safeguard::outside_allowed(verb, paths, &strings(f)))
         })
     }
 

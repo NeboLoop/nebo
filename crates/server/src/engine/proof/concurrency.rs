@@ -324,7 +324,7 @@ fn given_words_runner(
     let store = Arc::new(fresh_store());
     let runner = Arc::new(agent::Runner::new(
         store.clone(),
-        Arc::new(tools::Registry::new(tools::Policy::new())),
+        Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone())))),
         vec![Arc::new(GivenWords(words)) as Arc<dyn ai::Provider>],
         agent::selector::ModelSelector::new(Default::default()),
         concurrency,
@@ -528,7 +528,7 @@ fn scripted_orchestrator(script: Arc<Script>) -> (agent::Orchestrator, Arc<agent
     let store = Arc::new(fresh_store());
     let runner = Arc::new(agent::Runner::new(
         store.clone(),
-        Arc::new(tools::Registry::new(tools::Policy::new())),
+        Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone())))),
         vec![Arc::new(Scripted(script)) as Arc<dyn ai::Provider>],
         agent::selector::ModelSelector::new(Default::default()),
         Arc::new(agent::ConcurrencyController::new(Some(4))),

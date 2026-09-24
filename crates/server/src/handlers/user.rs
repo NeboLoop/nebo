@@ -153,7 +153,6 @@ fn profile_to_json(profile: Option<db::models::UserProfile>) -> serde_json::Valu
             "onboardingCompleted": p.onboarding_completed.map_or(false, |v| v != 0),
             "onboardingStep": p.onboarding_step,
             "accountType": p.account_type,
-            "toolPermissions": p.tool_permissions,
             "termsAcceptedAt": p.terms_accepted_at,
             "createdAt": p.created_at,
             "updatedAt": p.updated_at,
@@ -194,44 +193,49 @@ pub async fn update_preferences(
     Ok(Json(serde_json::json!(prefs)))
 }
 
-/// GET /api/v1/user/me/permissions
+/// GET /api/v1/user/me/permissions — the company's capability toggles and
+/// saved commands, read from the company rules.
 pub async fn get_permissions(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    let profile = state.store.get_user_profile().map_err(to_error_response)?;
-    let raw = profile
-        .and_then(|p| p.tool_permissions)
-        .unwrap_or_else(|| "{}".to_string());
-    // `tool_permissions` is stored as a JSON object map `{tool: allowed}`. The API contract
-    // (`UserGetPermissionsResponse`) declares `permissions: ToolPermission[]`, so emit that
-    // array shape. Returning the raw string made clients iterate it character-by-character,
-    // producing a phantom `"undefined"` key → the bogus "Undefined" toggle.
-    let map: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&raw).unwrap_or_default();
-    let permissions: Vec<serde_json::Value> = map
+    // The API contract (`UserGetPermissionsResponse`) declares
+    // `permissions: ToolPermission[]`.
+    let mut permissions: Vec<serde_json::Value> = crate::entity_config::company_toggles(&state.store)
         .into_iter()
-        .map(|(tool, allowed)| {
-            serde_json::json!({ "tool": tool, "allowed": allowed.as_bool().unwrap_or(false) })
-        })
+        .map(|(tool, allowed)| serde_json::json!({ "tool": tool, "allowed": allowed }))
         .collect();
+    permissions.sort_by(|a, b| a["tool"].as_str().cmp(&b["tool"].as_str()));
     // `capabilities` is the canonical toggle list (key/label/desc) from the
-    // single source of truth in `tools::capabilities`. The frontend renders its
-    // Settings → Permissions switches from this instead of a hardcoded list, so
-    // the UI, the persisted keys, and the backend gate cannot drift apart.
-    // `approvedCommands` are the "Approve Always" shell-command prefixes — surfaced
-    // so Settings can show + revoke them (no invisible durable grants).
-    let approved_commands = state.store.get_approved_commands().unwrap_or_default();
+    // single source of truth in `tools::capabilities`. `approvedCommands` are
+    // the always-allowed shell-command prefixes — surfaced so Settings can
+    // show + revoke them (no invisible durable grants).
     Ok(Json(serde_json::json!({
         "permissions": permissions,
         "capabilities": tools::capabilities::CAPABILITIES,
-        "approvedCommands": approved_commands,
+        "approvedCommands": approved_commands(&state.store).into_iter().map(|(_, p)| p).collect::<Vec<_>>(),
     })))
 }
 
-/// PUT /api/v1/user/me/approved-commands — replace the "Approve Always" prefix
+/// The company's always-allowed command prefixes: allow rules on
+/// `run_command` with a command-prefix field.
+fn approved_commands(store: &db::Store) -> Vec<(String, String)> {
+    store
+        .permission_rules_in(&types::permissions::Scope::Company)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.effect == types::permissions::Effect::Allow && r.key == types::permissions::RuleKey::Tool("run_command".into()))
+        .filter_map(|r| match r.field {
+            Some(types::permissions::RuleField::CommandPrefix(p)) => Some((r.id, p)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// PUT /api/v1/user/me/approved-commands — replace the always-allowed prefix
 /// list (used by Settings to remove an entry).
 pub async fn update_approved_commands(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
+    use types::permissions::{Effect, Rule, RuleField, RuleKey, RuleSource, Scope, Writer};
     let commands: Vec<String> = body
         .get("commands")
         .and_then(|v| v.as_array())
@@ -241,27 +245,41 @@ pub async fn update_approved_commands(
                 .collect()
         })
         .unwrap_or_default();
-    state
-        .store
-        .set_approved_commands(&commands)
-        .map_err(to_error_response)?;
+    let rule_err = |e: types::permissions::RuleError| to_error_response(types::NeboError::Validation(e.to_string()));
+    for (id, prefix) in approved_commands(&state.store) {
+        if !commands.contains(&prefix) {
+            state.store.remove_permission_rule(&id, &Writer::Owner).map_err(rule_err)?;
+        }
+    }
+    for prefix in commands {
+        let rule = Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: Scope::Company,
+            key: RuleKey::Tool("run_command".into()),
+            field: Some(RuleField::CommandPrefix(prefix)),
+            effect: Effect::Allow,
+            money: None,
+            source: RuleSource::Owner,
+            locked: false,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        state.store.write_permission_rule(&rule, &Writer::Owner).map_err(rule_err)?;
+    }
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
-/// PUT /api/v1/user/me/permissions
+/// PUT /api/v1/user/me/permissions — the company's capability toggles, as
+/// the company's rules.
 pub async fn update_permissions(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    // Clients send `{ permissions: { tool: allowed, … } }`. Persist the INNER flat map —
-    // the canonical `{tool: bool}` shape that enforcement (`entity_config`) and
-    // `get_permissions` both read. Storing the whole wrapper persisted `{"permissions":{…}}`,
-    // which fails to parse as `{tool: bool}` downstream (permissions silently lost).
+    // Clients send `{ permissions: { tool: allowed, … } }`: the main
+    // assistant's toggles are the company's.
     let map = body.get("permissions").cloned().unwrap_or(body);
-    state
-        .store
-        .update_tool_permissions(&map.to_string())
-        .map_err(to_error_response)?;
+    let mut patch = serde_json::json!({ "permissions": map });
+    crate::entity_config::apply_permission_patch(&state.store, "main", "main", &mut patch)
+        .map_err(|e| to_error_response(types::NeboError::Validation(e.to_string())))?;
     Ok(Json(serde_json::json!({"success": true})))
 }
 

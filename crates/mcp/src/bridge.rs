@@ -27,10 +27,10 @@ pub trait ProxyToolRegistry: Send + Sync {
     );
     fn unregister_proxy(&self, name: &str);
     /// Called after a connect finishes registering a server's tools — the ONE
-    /// hook where the server's persisted tool-permission map reconciles with
-    /// the live tool list (new tools default to needs-approval, vanished tools
-    /// are pruned). `tool_names` are the server's original tool names.
-    fn tools_synced(&self, integration_id: &str, tool_names: &[String]);
+    /// hook where the server's tools get their default permission rule (they
+    /// ask until the owner says otherwise). `server_slug` is the tool-name
+    /// prefix (`mcp__<server_slug>__<tool>`).
+    fn tools_synced(&self, integration_id: &str, server_slug: &str);
 }
 
 /// Launch spec for a local stdio MCP server, parsed from an integration's
@@ -140,9 +140,8 @@ impl Bridge {
         }
 
         // Every connect IS the tool sync (startup reconnect, settings connect,
-        // OAuth callback, refresh) — reconcile the persisted tool-permission
-        // map with what the server offers right now.
-        self.registry.tools_synced(integration_id, &original_names);
+        // OAuth callback, refresh): the server's tools get their default rule.
+        self.registry.tools_synced(integration_id, &server_slug(server_type));
 
         let mut conns = self.connections.lock().await;
         conns.insert(
@@ -255,9 +254,29 @@ impl Bridge {
 
 /// Generate a namespaced tool name: mcp__{server_type}__{tool_name}
 pub fn make_tool_name(server_type: &str, original: &str) -> String {
-    let st = server_type.to_lowercase().replace(' ', "_");
     let tn = original.to_lowercase().replace(' ', "_");
-    format!("mcp__{}__{}", st, tn)
+    format!("mcp__{}__{}", server_slug(server_type), tn)
+}
+
+/// MCP tool-name prefix for an integration — e.g. "monument.sh" →
+/// "monument_sh", "My GitHub" → "my_github".
+///
+/// DELIBERATELY not `comm::handle::slugify` (the routing-handle slugifier):
+/// the underscore alphabet here is load-bearing — these prefixes are baked
+/// into stored MCP tool names and permission rules, so the mapping must stay
+/// byte-stable even though it doesn't collapse runs the way handle slugs do.
+pub fn tool_name_prefix(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
+}
+
+/// The server part of its proxy tools' names (`mcp__<slug>__<tool>`).
+pub fn server_slug(server_type: &str) -> String {
+    server_type.to_lowercase().replace(' ', "_")
 }
 
 #[cfg(test)]

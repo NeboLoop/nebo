@@ -41,6 +41,9 @@ impl StructuredRunner {
         let mut ctx = ToolContext::default();
         ctx.session_key = tab_key.to_string();
         ctx.session_id = tab_key.to_string();
+        // A research helper: the permission check decides its calls under
+        // the grant of the employee its session key names.
+        ctx.door = types::permissions::Door::Helper;
         ctx
     }
 }

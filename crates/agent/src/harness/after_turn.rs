@@ -1,13 +1,20 @@
-//! After the turn: memory extraction scheduling, personality synthesis, the
-//! chat title and the background tool summary, moved here from `runner.rs`
-//! (WP1.5). WP2.7 turns extraction into a background pass over the finished
-//! exchange with no pre-gate and adds the review fork.
+//! After the turn: memory extraction, personality synthesis, the chat title
+//! and the background tool summary.
+//!
+//! Memory extraction works the way Claude Code's extraction service works:
+//! after each turn, one background call over the messages since the
+//! session's last extraction writes the durable memories it finds. There is
+//! no pre-gate. It is skipped when the employee already saved memory itself
+//! during those messages. One pass runs per session at a time; a turn that
+//! ends meanwhile becomes the trailing pass, which starts where the running
+//! one stopped.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use ai::{Provider, RequestTrace, StreamEvent};
 use db::Store;
+use db::models::ChatMessage;
 use napp::agent::MemoryTopic;
 use tokio::sync::{RwLock, mpsc};
 use tools::ToolResult;
@@ -162,7 +169,7 @@ pub(crate) async fn hand_off_tool_summary(
     }
 }
 
-/// What a finished run hands the memory extraction pass.
+/// What a finished turn hands the memory extraction service.
 pub(crate) struct MemoryExtraction<'a> {
     pub sessions: &'a SessionManager,
     pub session_id: &'a str,
@@ -170,120 +177,202 @@ pub(crate) struct MemoryExtraction<'a> {
     pub store: &'a Arc<Store>,
     pub concurrency: &'a Arc<ConcurrencyController>,
     pub embedding_provider: Option<&'a Arc<dyn ai::EmbeddingProvider>>,
-    /// The gate's judge: the runner's own decide handle (the one client the
-    /// server builds).
-    pub decide: Option<&'a Arc<ai::DecideClient>>,
+    /// Tells a memory write in the conversation: a call whose rule key is
+    /// `remember`.
+    pub tools: &'a Arc<tools::Registry>,
     pub memory_user_id: &'a str,
     pub memory_topics: &'a [MemoryTopic],
     pub memory_write_bar: &'a [ProvenanceClass],
     pub run_taint: &'a std::sync::Mutex<BTreeSet<ProvenanceClass>>,
-    /// The objective line: evidence for the gate.
-    pub objective: &'a str,
+    /// The session's agreed goal, when it has one: the one piece of context
+    /// extraction reads besides the messages.
+    pub goal: Option<&'a str>,
     pub skip_memory: bool,
-    pub gate_trace: RequestTrace,
     pub trace: RequestTrace,
 }
 
+/// One extraction pass, owned so it can run in the background and wait as
+/// a session's trailing pass.
+struct ExtractionJob {
+    sessions: SessionManager,
+    session_id: String,
+    providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    store: Arc<Store>,
+    concurrency: Arc<ConcurrencyController>,
+    embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    tools: Arc<tools::Registry>,
+    memory_user_id: String,
+    memory_topics: Vec<MemoryTopic>,
+    taint: Vec<ProvenanceClass>,
+    goal: Option<String>,
+    trace: RequestTrace,
+}
+
+/// A session's extraction state: the cursor (the last message a pass
+/// covered), whether a pass is running, and the pass that arrived while it
+/// ran (only the latest is kept: it covers everything since the cursor).
+#[derive(Default)]
+struct SessionExtraction {
+    cursor: Option<String>,
+    running: bool,
+    trailing: Option<ExtractionJob>,
+}
+
+static EXTRACTIONS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, SessionExtraction>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn extractions() -> std::sync::MutexGuard<'static, HashMap<String, SessionExtraction>> {
+    EXTRACTIONS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 impl MemoryExtraction<'_> {
-    /// Debounced memory extraction: only runs after 5s idle per session.
-    /// Extract from last exchange only (last user msg + assistant response + tool
-    /// calls) to avoid re-extracting facts from old messages and creating duplicates.
+    /// Hand the finished turn to the extraction service. It runs in the
+    /// background over the messages since the session's last extraction —
+    /// no pre-gate. A write bar the run's taint crosses, a run that skips
+    /// memory, or no provider hands nothing. A pass already running for the
+    /// session keeps this one as its trailing pass.
     pub(crate) async fn schedule(self) {
         let session_id = self.session_id;
-        let has_providers = !self.providers.read().await.is_empty();
-        let final_taint: Vec<ProvenanceClass> =
+        let taint: Vec<ProvenanceClass> =
             self.run_taint.lock().unwrap().iter().copied().collect();
-        let extraction_barred = final_taint
-            .iter()
-            .any(|c| self.memory_write_bar.contains(c));
-        if extraction_barred {
+        if taint.iter().any(|c| self.memory_write_bar.contains(c)) {
             info!(
                 session_id,
-                classes = %types::provenance::label_classes(&final_taint),
+                classes = %types::provenance::label_classes(&taint),
                 "memory extraction barred by scope write bar"
             );
+            return;
         }
-        if !self.skip_memory && has_providers && !extraction_barred {
-            let all_msgs = self.sessions.get_messages(session_id).unwrap_or_default();
-            // Find the last user message and take everything from there onward.
-            let last_exchange: Vec<_> = {
-                let last_user_idx = all_msgs.iter().rposition(|m| m.role == "user");
-                match last_user_idx {
-                    Some(idx) => all_msgs[idx..].to_vec(),
-                    None => vec![],
-                }
-            };
-            if last_exchange.len() >= 2 {
-                use crate::memory_debounce::MemoryDebouncer;
-                use std::sync::OnceLock;
-                static DEBOUNCER: OnceLock<MemoryDebouncer> = OnceLock::new();
-                let debouncer = DEBOUNCER.get_or_init(MemoryDebouncer::default);
+        if self.skip_memory || self.providers.read().await.is_empty() {
+            return;
+        }
+        let job = ExtractionJob {
+            sessions: self.sessions.clone(),
+            session_id: session_id.to_string(),
+            providers: self.providers.clone(),
+            store: self.store.clone(),
+            concurrency: self.concurrency.clone(),
+            embedding_provider: self.embedding_provider.cloned(),
+            tools: self.tools.clone(),
+            memory_user_id: self.memory_user_id.to_string(),
+            memory_topics: self.memory_topics.to_vec(),
+            taint,
+            goal: self.goal.map(str::to_string),
+            trace: self.trace,
+        };
+        {
+            let mut all = extractions();
+            let state = all.entry(job.session_id.clone()).or_default();
+            if state.running {
+                debug!(session_id, "memory extraction running; this turn waits as its trailing pass");
+                state.trailing = Some(job);
+                return;
+            }
+            state.running = true;
+        }
+        let handle = tokio::spawn(run_extractions(job));
+        crate::memory_flush::track_extraction(handle).await;
+    }
+}
 
-                let providers = self.providers.clone();
-                let store = self.store.clone();
-                let mem_uid = self.memory_user_id.to_string();
-                let session_id_owned = session_id.to_string();
-                let embed_prov = self.embedding_provider.cloned();
-                let topics = self.memory_topics.to_vec();
-                let taint = final_taint.clone();
-                let conc = self.concurrency.clone();
-                let decide = self.decide.cloned();
-                let objective = self.objective.to_string();
-                let gate_trace = self.gate_trace;
-                let trace = self.trace;
-
-                debouncer
-                    .schedule(session_id, move || async move {
-                        // One typed decision before the chat-model extraction:
-                        // skip only when the new turn plausibly holds nothing
-                        // durable; every doubt runs extraction as before.
-                        let gate_state = crate::memory_gate::gate_state(&last_exchange, &objective);
-                        if !crate::memory_gate::should_extract(
-                            decide.as_deref(),
-                            &gate_trace,
-                            &gate_state,
-                        )
-                        .await
-                        {
-                            debug!(
-                                session_id = session_id_owned,
-                                "memory extraction skipped: nothing durable in the turn"
-                            );
-                            return;
-                        }
-                        let resolved = {
-                            let prov_lock = providers.read().await;
-                            resolve_aux(&config::ModelsConfig::load(), &prov_lock)
-                                .or_else(|| {
-                                    prefer_non_gateway(&prov_lock).map(|p| (p, String::new()))
-                                })
-                                .map(|(p, m)| (conc.background(p), m))
-                        };
-                        if let Some((provider, aux_model)) = resolved
-                            && let Some(facts) = memory::extract_facts(
-                                trace,
-                                provider.as_ref(),
-                                &last_exchange,
-                                Some(&store),
-                                Some(&mem_uid),
-                                &topics,
-                                &aux_model,
-                            )
-                            .await
-                        {
-                            memory::store_facts(
-                                &store, &facts, &mem_uid, embed_prov, &topics, &taint,
-                            );
-                            debug!(
-                                session_id = session_id_owned,
-                                "extracted and stored memory facts"
-                            );
-                        }
-                    })
-                    .await;
+/// Run `job`, then each trailing pass that arrived meanwhile.
+async fn run_extractions(mut job: ExtractionJob) {
+    loop {
+        let cursor = extractions().get(&job.session_id).and_then(|s| s.cursor.clone());
+        let advanced = extract_once(&job, cursor.as_deref()).await;
+        let mut all = extractions();
+        let state = all.entry(job.session_id.clone()).or_default();
+        if advanced.is_some() {
+            state.cursor = advanced;
+        }
+        match state.trailing.take() {
+            Some(next) => job = next,
+            None => {
+                state.running = false;
+                return;
             }
         }
     }
+}
+
+/// One pass over the messages after `cursor`. Returns the new cursor: the
+/// last message the pass covered, or None when the pass failed and those
+/// messages wait for the next one.
+async fn extract_once(job: &ExtractionJob, cursor: Option<&str>) -> Option<String> {
+    let all = job.sessions.get_messages(&job.session_id).unwrap_or_default();
+    let last = all.last()?.id.clone();
+    let messages = messages_since(&all, cursor);
+    if messages.len() < 2 {
+        return Some(last);
+    }
+    // The employee saved memory itself during these messages: it already
+    // did the work this pass would do.
+    if wrote_memory(&job.tools, &messages).await {
+        debug!(session_id = %job.session_id, "memory extraction skipped: the employee wrote memory itself");
+        return Some(last);
+    }
+    let resolved = {
+        let prov_lock = job.providers.read().await;
+        resolve_aux(&config::ModelsConfig::load(), &prov_lock)
+            .or_else(|| prefer_non_gateway(&prov_lock).map(|p| (p, String::new())))
+            .map(|(p, m)| (job.concurrency.background(p), m))
+    };
+    let (provider, aux_model) = resolved?;
+    let facts = memory::extract_facts(
+        job.trace.clone(),
+        provider.as_ref(),
+        &messages,
+        Some((job.store.as_ref(), job.memory_user_id.as_str())),
+        &job.memory_topics,
+        &aux_model,
+        job.goal.as_deref(),
+    )
+    .await?;
+    memory::store_facts(
+        &job.store,
+        &facts,
+        &job.memory_user_id,
+        job.embedding_provider.clone(),
+        &job.memory_topics,
+        &job.taint,
+    );
+    debug!(session_id = %job.session_id, "extracted and stored memory facts");
+    Some(last)
+}
+
+/// The messages after `cursor`, attachment rows left out (they are the
+/// system's words, not the conversation's). A cursor the conversation no
+/// longer holds (a checkpoint, a new chat, a restart) falls back to the
+/// last exchange: the last owner message and everything after it.
+fn messages_since(all: &[ChatMessage], cursor: Option<&str>) -> Vec<ChatMessage> {
+    let visible = |m: &&ChatMessage| crate::harness::reminders::attachment_kind(m).is_none();
+    let start = match cursor.and_then(|c| all.iter().position(|m| m.id == c)) {
+        Some(i) => i + 1,
+        None => match all.iter().rposition(|m| m.role == "user" && visible(&m)) {
+            Some(i) => i,
+            None => return Vec::new(),
+        },
+    };
+    all[start..].iter().filter(visible).cloned().collect()
+}
+
+/// Whether any assistant message calls a tool whose rule key is `remember`.
+async fn wrote_memory(tools: &tools::Registry, messages: &[ChatMessage]) -> bool {
+    for m in messages.iter().filter(|m| m.role == "assistant") {
+        let Some(calls) = m
+            .tool_calls
+            .as_deref()
+            .and_then(|tc| serde_json::from_str::<Vec<ai::ToolCall>>(tc).ok())
+        else {
+            continue;
+        };
+        for call in calls {
+            if tools.target(&call.name, &call.input).await.is_some_and(|t| t.key == "remember") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Background personality synthesis: if enough style observations exist,
@@ -331,6 +420,199 @@ mod tests {
             tool_summary_due(sid, t0 + TOOL_SUMMARY_MIN_GAP),
             "label resumes after the gap"
         );
+    }
+
+    /// A provider that records each extraction prompt and answers with
+    /// nothing to keep.
+    #[derive(Default)]
+    struct Recorder {
+        prompts: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Recorder {
+        fn id(&self) -> &str {
+            "recorder"
+        }
+        async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            self.prompts
+                .lock()
+                .unwrap()
+                .push(req.messages.iter().map(|m| m.content.clone()).collect());
+            let (tx, rx) = mpsc::channel(4);
+            let _ = tx.send(StreamEvent::text("{}".to_string())).await;
+            let _ = tx.send(StreamEvent::done()).await;
+            Ok(rx)
+        }
+    }
+
+    struct Fixture {
+        store: Arc<Store>,
+        sessions: SessionManager,
+        session_id: String,
+        recorder: Arc<Recorder>,
+        providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+        concurrency: Arc<ConcurrencyController>,
+        tools: Arc<tools::Registry>,
+    }
+
+    impl Fixture {
+        async fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("nebo-extract-{}.db", uuid::Uuid::new_v4()));
+            let store = Arc::new(Store::new(path.to_str().unwrap()).expect("test store"));
+            let sessions = SessionManager::new(store.clone());
+            let session_id = sessions.get_or_create("agent:a1:web", "").expect("session").id;
+            let recorder = Arc::new(Recorder::default());
+            let providers: Arc<RwLock<Vec<Arc<dyn Provider>>>> =
+                Arc::new(RwLock::new(vec![recorder.clone() as Arc<dyn Provider>]));
+            let tools = Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone()))));
+            tools
+                .register(Box::new(tools::AgentTool::new(store.clone(), tools::new_handle())))
+                .await;
+            Fixture {
+                store,
+                sessions,
+                session_id,
+                recorder,
+                providers,
+                concurrency: Arc::new(ConcurrencyController::new(None)),
+                tools,
+            }
+        }
+
+        fn say(&self, role: &str, text: &str, tool_calls: Option<serde_json::Value>) {
+            let calls = tool_calls.map(|c| c.to_string());
+            self.sessions
+                .append_message(&self.session_id, role, text, calls.as_deref(), None, None)
+                .expect("append");
+        }
+
+        /// End a turn: hand it to the service and wait for its passes.
+        async fn end_turn(&self, goal: Option<&str>) {
+            let taint = std::sync::Mutex::new(BTreeSet::new());
+            MemoryExtraction {
+                sessions: &self.sessions,
+                session_id: &self.session_id,
+                providers: &self.providers,
+                store: &self.store,
+                concurrency: &self.concurrency,
+                embedding_provider: None,
+                tools: &self.tools,
+                memory_user_id: "local:agent:a1",
+                memory_topics: &[],
+                memory_write_bar: &[],
+                run_taint: &taint,
+                goal,
+                skip_memory: false,
+                trace: RequestTrace::new("memory_extract"),
+            }
+            .schedule()
+            .await;
+            for _ in 0..400 {
+                if !extractions().get(&self.session_id).is_some_and(|s| s.running) {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            panic!("the extraction never finished");
+        }
+
+        fn prompts(&self) -> Vec<String> {
+            self.recorder.prompts.lock().unwrap().clone()
+        }
+    }
+
+    /// A status exchange with nothing durable in it — what the old Jev gate
+    /// skipped — still gets its extraction call: nothing decides before it.
+    #[tokio::test]
+    async fn extraction_runs_without_a_gate() {
+        let f = Fixture::new().await;
+        f.say("user", "status?", None);
+        f.say("assistant", "All quiet.", None);
+        f.end_turn(None).await;
+        assert_eq!(f.prompts().len(), 1, "one extraction call per turn, ungated");
+
+        // The next turn covers only the messages since the last extraction.
+        f.say("user", "My accountant is Dana Lee; send her the quarterly numbers.", None);
+        f.say("assistant", "Noted.", None);
+        f.end_turn(None).await;
+        let prompts = f.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].contains("Dana Lee"));
+        assert!(!prompts[1].contains("All quiet."), "the first turn is not extracted again");
+    }
+
+    /// When the employee saved memory itself during the messages, the pass
+    /// has nothing to add: no call, and the cursor moves past them.
+    #[tokio::test]
+    async fn extraction_skipped_when_employee_wrote_memory() {
+        let f = Fixture::new().await;
+        f.say("user", "Remember that invoices go out on the 1st.", None);
+        let store_call = serde_json::json!([{
+            "id": "call-1",
+            "name": "agent",
+            "input": {"resource": "memory", "action": "store", "key": "invoice/day", "value": "Invoices go out on the 1st"}
+        }]);
+        f.say("assistant", "", Some(store_call));
+        f.say("assistant", "Saved.", None);
+        f.end_turn(None).await;
+        assert!(f.prompts().is_empty(), "the employee already wrote memory");
+
+        // A recall is not a write.
+        f.say("user", "What day do invoices go out? I prefer email reminders.", None);
+        let recall_call = serde_json::json!([{
+            "id": "call-2",
+            "name": "agent",
+            "input": {"resource": "memory", "action": "recall", "key": "invoice/day"}
+        }]);
+        f.say("assistant", "", Some(recall_call));
+        f.say("assistant", "On the 1st.", None);
+        f.end_turn(None).await;
+        let prompts = f.prompts();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains("email reminders"));
+        assert!(!prompts[0].contains("Remember that invoices"), "the written range is behind the cursor");
+    }
+
+    /// Extraction reads the messages and the agreed goal. The session's
+    /// objective line never reaches it, and neither do attachment rows.
+    #[tokio::test]
+    async fn extraction_input_has_no_objective() {
+        let f = Fixture::new().await;
+        f.sessions
+            .set_active_task(&f.session_id, "OBJECTIVE-LINE reconcile the ledger")
+            .unwrap();
+        f.say("user", "Draft the renewal letter for the client.", None);
+        let attachment = crate::harness::reminders::Attachment {
+            kind: "relevant_memories",
+            text: "Memories that may apply:\n- RECALLED-ROW: v".into(),
+            data: serde_json::Map::new(),
+        };
+        f.sessions
+            .append_message(
+                &f.session_id,
+                "user",
+                &crate::harness::reminders::wrap(&attachment.text),
+                None,
+                None,
+                Some(&attachment.metadata().to_string()),
+            )
+            .unwrap();
+        f.say("assistant", "Here is the draft.", None);
+        f.end_turn(Some("Send every renewal letter before Friday")).await;
+
+        let prompts = f.prompts();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains("The agreed goal of this work: Send every renewal letter before Friday"));
+        assert!(prompts[0].contains("Draft the renewal letter"));
+        assert!(!prompts[0].contains("OBJECTIVE-LINE"), "no objective in the extraction input");
+        assert!(!prompts[0].contains("RECALLED-ROW"), "attachment rows are not the conversation");
+
+        // No goal, no goal line.
+        f.say("user", "Also copy the partner.", None);
+        f.say("assistant", "Done.", None);
+        f.end_turn(None).await;
+        assert!(!f.prompts()[1].contains("agreed goal"));
     }
 
     /// Sessions are rate-limited independently.

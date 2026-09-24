@@ -755,7 +755,7 @@ mod tests {
         });
         let runner = crate::runner::Runner::new(
             store.clone(),
-            Arc::new(tools::Registry::new(tools::Policy::new())),
+            Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone())))),
             vec![model.clone() as Arc<dyn ai::Provider>],
             crate::selector::ModelSelector::new(Default::default()),
             Arc::new(crate::concurrency::ConcurrencyController::new(Some(2))),
@@ -839,7 +839,7 @@ mod tests {
         });
         let runner = crate::runner::Runner::new(
             store.clone(),
-            Arc::new(tools::Registry::new(tools::Policy::new())),
+            Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone())))),
             vec![model.clone() as Arc<dyn ai::Provider>],
             crate::selector::ModelSelector::new(Default::default()),
             Arc::new(crate::concurrency::ConcurrencyController::new(Some(2))),

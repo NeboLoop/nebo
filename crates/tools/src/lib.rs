@@ -40,6 +40,7 @@ pub mod execute_tool;
 pub mod exit_tool;
 pub mod file_tool;
 pub mod find_tools;
+pub mod gate;
 pub mod grep_tool;
 pub mod input_schema;
 pub mod interface_catalog;
@@ -150,7 +151,7 @@ pub use origin::{
     workflow_session_key,
 };
 pub use os_tool::OsTool;
-pub use policy::Policy;
+pub use gate::{GateVerdict, PermissionGate, ResolvedCall};
 pub use process::ProcessRegistry;
 pub use registry::{Registry, ResourceKind, ToolResult};
 pub use shell_tool::ShellTool;
