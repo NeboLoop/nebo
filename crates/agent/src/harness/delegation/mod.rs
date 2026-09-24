@@ -515,7 +515,7 @@ impl Helpers {
     ) -> Result<String, String> {
         let caller = turn.session_key.as_str();
         let row = self.own_row(caller, task_id)?;
-        let from = crate::runner::MidTurnFrom::Parent {
+        let from = crate::harness::conversation::MidTurnFrom::Parent {
             session_key: caller.to_string(),
             task_id: task_id.to_string(),
             taint: run_taint.to_vec(),
@@ -900,7 +900,7 @@ fn input_unheard(messages: &[db::models::ChatMessage]) -> bool {
     let Some(at) = messages.iter().rposition(|m| {
         m.role == "user"
             && (notify::is_notification_row(m)
-                || matches!(crate::runner::arrived_mid_turn(m), Some(crate::runner::MidTurnFrom::Parent { .. })))
+                || matches!(crate::harness::conversation::arrived_mid_turn(m), Some(crate::harness::conversation::MidTurnFrom::Parent { .. })))
     }) else {
         return false;
     };
@@ -1285,7 +1285,7 @@ mod tests {
         let child_id = rig.sessions.resolve_session_id_by_key(&child.request.session_key).unwrap();
         let row = rig.sessions.get_messages(&child_id).unwrap().pop().unwrap();
         assert_eq!(row.content, "Include April too.");
-        assert!(matches!(crate::runner::arrived_mid_turn(&row), Some(crate::runner::MidTurnFrom::Parent { .. })));
+        assert!(matches!(crate::harness::conversation::arrived_mid_turn(&row), Some(crate::harness::conversation::MidTurnFrom::Parent { .. })));
 
         // The turn ended before a step read it: one more turn hears it, and
         // the parent gets both reports.
