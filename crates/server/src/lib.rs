@@ -27,6 +27,7 @@ mod redact;
 pub mod routes;
 pub mod run_display;
 pub mod run_registry;
+mod residency;
 mod scheduler;
 pub mod wake;
 pub mod layers_update;
@@ -764,8 +765,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Register the shutdown signals now, so one that arrives while Nebo is
     // still starting is held for the graceful path below instead of killing
-    // the process with its children still running.
-    let shutdown = shutdown_signal()?;
+    // the process with its children still running. A cloud bot that parks
+    // (residency) starts the same drain through `park`.
+    let park = std::sync::Arc::new(tokio::sync::Notify::new());
+    let shutdown = shutdown_signal(park.clone())?;
 
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
@@ -2836,6 +2839,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // The one durable-work loop (heartbeats and schedules are its timers). Dark until the conversion migration moves
     // the seven mechanisms into its tables; real from day one.
     engine::spawn(state.clone());
+    // A cloud bot answers the hub's requests to park; parking is the
+    // graceful drain below. A desktop never parks (nothing subscribes, so
+    // the hub is told so).
+    if tools::server_mode() {
+        residency::spawn(state.clone(), park.clone());
+    }
     // The workforce reporter: runs and duties pushed to the platform as they
     // happen, so an owner hears about a failure from us in seconds instead of
     // when they next open the console (accountability W2, bot half).
@@ -3072,12 +3081,13 @@ async fn drain_in_flight_runs(registry: &run_registry::RunRegistry) {
 }
 
 /// The shutdown signals: SIGTERM (kill, Kubernetes, hot reload), SIGINT
-/// (Ctrl+C) and SIGHUP (the terminal closed) on Unix, Ctrl+C everywhere.
-/// They are registered when this is called; the returned future resolves on
-/// the first one to arrive. This is the only shutdown signal handler in the
+/// (Ctrl+C) and SIGHUP (the terminal closed) on Unix, Ctrl+C everywhere —
+/// and `park`, notified when a cloud bot parks (`residency`). They are
+/// registered when this is called; the returned future resolves on the
+/// first one to arrive. This is the only shutdown signal handler in the
 /// process: the graceful drain it starts owns shutdown end to end.
 #[cfg(unix)]
-fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError> {
+fn shutdown_signal(park: std::sync::Arc<tokio::sync::Notify>) -> Result<impl std::future::Future<Output = ()>, NeboError> {
     use tokio::signal::unix::{SignalKind, signal};
     let register = |kind: SignalKind, name: &str| {
         signal(kind).map_err(|e| NeboError::Server(format!("failed to install {name} handler: {e}")))
@@ -3090,16 +3100,19 @@ fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError>
             _ = term.recv() => "SIGTERM",
             _ = int.recv() => "SIGINT",
             _ = hup.recv() => "SIGHUP",
+            _ = park.notified() => "park",
         };
         info!(signal = sig, "received shutdown signal");
     })
 }
 
 #[cfg(not(unix))]
-fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>, NeboError> {
-    Ok(async {
-        tokio::signal::ctrl_c().await.ok();
-        info!("received Ctrl+C");
+fn shutdown_signal(park: std::sync::Arc<tokio::sync::Notify>) -> Result<impl std::future::Future<Output = ()>, NeboError> {
+    Ok(async move {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => info!("received Ctrl+C"),
+            _ = park.notified() => info!("parking"),
+        }
     })
 }
 

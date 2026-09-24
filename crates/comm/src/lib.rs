@@ -9,6 +9,7 @@ pub mod lease;
 mod loopback;
 mod manager;
 pub mod neboai;
+pub mod residency;
 pub mod roster;
 pub mod tunnel;
 mod types;

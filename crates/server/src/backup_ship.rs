@@ -40,6 +40,7 @@ use comm::api::NeboAIApi;
 use db::Store;
 
 pub use pack::Manifest;
+pub(crate) use pack::chromium_running;
 use pack::{ChunkMeta, ChunkRef, Fingerprint, KEY_VERSION, ObjectEntry, Source};
 
 use crate::state::AppState;
@@ -108,6 +109,21 @@ struct Committed {
     at: i64,
     /// Its objects: what is reused when unchanged.
     objects: Vec<ObjectEntry>,
+    /// The idle signal it carried: the hub decides parking from the latest
+    /// generation's signals, so a bot that fell idle commits again.
+    idle: Option<bool>,
+}
+
+/// Why a commit is being considered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Occasion {
+    /// The scheduler's minute tick.
+    Tick,
+    /// The graceful drain: commit what changed, at once.
+    Drain,
+    /// The drain of a bot that is parking: commit even when nothing
+    /// changed, so the hub's handoff check has the generation made for it.
+    Park,
 }
 
 static LAST: std::sync::Mutex<Option<Committed>> = std::sync::Mutex::new(None);
@@ -230,17 +246,23 @@ async fn commit_tick(store: &Arc<Store>, state: &AppState, key: &[u8; 32], drain
             .map_err(|e| e.to_string())??
     };
     let now = now_secs();
-    if !commit_due(&last, &sources, &prints, now, drain) {
+    let occasion = match (drain, crate::residency::parking()) {
+        (false, _) => Occasion::Tick,
+        (true, false) => Occasion::Drain,
+        (true, true) => Occasion::Park,
+    };
+    let residency = crate::residency::signals(state).await;
+    let idle = residency["idle"].as_bool().unwrap_or(false);
+    if !commit_due(&last, &sources, &prints, idle, now, occasion) {
         return Ok(None);
     }
     let lease_epoch = commit_epoch(comm::lease::process())?;
 
-    let residency = serde_json::json!({
-        "idle": state.run_registry.list_all().await.is_empty(),
-        "channel_bridges": state.channel_bridges.read().await.len(),
-        "watch_bindings": agent::running_watchers(),
-        "chromium_running": pack::chromium_running(&data_dir),
-    });
+    // The drain has stopped the engine loop, the only other thing that arms
+    // timers: arm them now so next_wake is the true next one.
+    if occasion != Occasion::Tick {
+        crate::engine::arm_timers(state).await;
+    }
     let next_wake = store.engine_next_timer_due().map_err(|e| e.to_string())?;
     let started = std::time::Instant::now();
     let manifest = commit(&CommitRequest {
@@ -267,11 +289,12 @@ async fn commit_tick(store: &Arc<Store>, state: &AppState, key: &[u8; 32], drain
     Ok(Some(manifest))
 }
 
-/// Due when nothing was ever committed, when something changed and the
-/// last commit is 15 minutes old (at once, on the drain), or when a day has
+/// Due when the bot is parking; when nothing was ever committed; when
+/// something changed — its files, or whether it is idle — and the last
+/// commit is 15 minutes old (at once, on the drain); or when a day has
 /// passed.
-fn commit_due(last: &Committed, sources: &[Source], prints: &[Fingerprint], now: i64, drain: bool) -> bool {
-    if last.objects.is_empty() {
+fn commit_due(last: &Committed, sources: &[Source], prints: &[Fingerprint], idle: bool, now: i64, occasion: Occasion) -> bool {
+    if occasion == Occasion::Park || last.objects.is_empty() {
         return true;
     }
     let age = now - last.at;
@@ -279,8 +302,9 @@ fn commit_due(last: &Committed, sources: &[Source], prints: &[Fingerprint], now:
         return true;
     }
     let changed = sources.len() != last.objects.len()
-        || sources.iter().zip(prints).any(|(s, p)| reusable(&last.objects, s, p).is_none());
-    changed && (drain || age >= COMMIT_SPACING_SECS)
+        || sources.iter().zip(prints).any(|(s, p)| reusable(&last.objects, s, p).is_none())
+        || last.idle != Some(idle);
+    changed && (occasion == Occasion::Drain || age >= COMMIT_SPACING_SECS)
 }
 
 /// The committed entry for this object, if its files have not changed.
@@ -295,6 +319,11 @@ fn fingerprints(data_dir: &Path, sources: &[Source]) -> Result<Vec<Fingerprint>,
         .collect()
 }
 
+/// The idle signal residency signals carry.
+fn signal_idle(signals: Option<&serde_json::Value>) -> Option<bool> {
+    signals.and_then(|s| s.get("idle")).and_then(|v| v.as_bool())
+}
+
 fn known() -> Option<Committed> {
     LAST.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
@@ -306,15 +335,15 @@ fn remember(c: Option<Committed>) {
 /// What the hub holds for this bot: the head, and the latest state's objects.
 async fn load_committed(api: &NeboAIApi) -> Result<Committed, String> {
     let resp = api.bot_state(None).await.map_err(|e| format!("read committed state: {e}"))?;
-    let (at, objects) = match resp.state {
+    let (at, objects, idle) = match resp.state {
         Some(st) => {
             let m: Manifest = serde_json::from_value(st.manifest).map_err(|e| format!("committed manifest: {e}"))?;
             let at = chrono::DateTime::parse_from_rfc3339(&st.committed_at).map(|t| t.timestamp()).unwrap_or(0);
-            (at, m.objects)
+            (at, m.objects, signal_idle(m.residency_signals.as_ref()))
         }
-        None => (0, Vec::new()),
+        None => (0, Vec::new(), None),
     };
-    let c = Committed { head: resp.head, at, objects };
+    let c = Committed { head: resp.head, at, objects, idle };
     remember(Some(c.clone()));
     Ok(c)
 }
@@ -426,6 +455,7 @@ async fn commit_staged(req: &CommitRequest<'_>, staging: &Path) -> Result<Manife
             if req.role == Role::State {
                 next.at = taken_at;
                 next.objects = manifest.objects.clone();
+                next.idle = signal_idle(req.residency.as_ref());
             }
             remember(Some(next));
             Ok(manifest)
@@ -510,7 +540,7 @@ pub async fn archive(api_url: &str) -> Result<Manifest, String> {
     let db_path = data_dir.join(pack::DATABASE_PATH);
     // Reuse the latest state's chunks where they match; an archive otherwise
     // packs everything.
-    let base = Committed { head: last.head, at: last.at, objects: last.objects.clone() };
+    let base = Committed { head: last.head, at: last.at, objects: last.objects.clone(), idle: last.idle };
     commit(&CommitRequest {
         api: &api,
         key: &key,
@@ -1052,17 +1082,25 @@ mod tests {
             .map(|(s, p)| ObjectEntry { role: s.role.clone(), root: s.root.clone(), sha256: String::new(), bytes: 0, fingerprint: p.clone(), chunks: vec![] })
             .collect();
         let now = 1_800_000_000;
-        let at = |age: i64| Committed { head: 1, at: now - age, objects: objects.clone() };
-        assert!(commit_due(&Committed { head: 0, at: 0, objects: vec![] }, &sources, &prints, now, false), "never committed");
-        assert!(!commit_due(&at(20 * 60), &sources, &prints, now, false), "unchanged");
-        assert!(commit_due(&at(25 * 3600), &sources, &prints, now, false), "a day has passed");
+        let at = |age: i64| Committed { head: 1, at: now - age, objects: objects.clone(), idle: Some(true) };
+        let tick = Occasion::Tick;
+        assert!(commit_due(&Committed { head: 0, at: 0, objects: vec![], idle: None }, &sources, &prints, true, now, tick), "never committed");
+        assert!(!commit_due(&at(20 * 60), &sources, &prints, true, now, tick), "unchanged");
+        assert!(commit_due(&at(25 * 3600), &sources, &prints, true, now, tick), "a day has passed");
         let mut changed = prints.clone();
         changed[2].max_mtime_ns += 1;
-        assert!(!commit_due(&at(5 * 60), &sources, &changed, now, false), "changed, but committed 5 minutes ago");
-        assert!(commit_due(&at(16 * 60), &sources, &changed, now, false), "changed and 16 minutes old");
+        assert!(!commit_due(&at(5 * 60), &sources, &changed, true, now, tick), "changed, but committed 5 minutes ago");
+        assert!(commit_due(&at(16 * 60), &sources, &changed, true, now, tick), "changed and 16 minutes old");
         // The drain commits anything changed at once, and nothing unchanged.
-        assert!(commit_due(&at(5 * 60), &sources, &changed, now, true), "drain: changed 5 minutes after a commit");
-        assert!(!commit_due(&at(5 * 60), &sources, &prints, now, true), "drain: unchanged");
+        assert!(commit_due(&at(5 * 60), &sources, &changed, true, now, Occasion::Drain), "drain: changed 5 minutes after a commit");
+        assert!(!commit_due(&at(5 * 60), &sources, &prints, true, now, Occasion::Drain), "drain: unchanged");
+        // Falling idle is a change the hub must see (it parks from the latest
+        // generation's signals), on the same spacing.
+        assert!(!commit_due(&at(5 * 60), &sources, &prints, false, now, tick), "idle changed 5 minutes after a commit");
+        assert!(commit_due(&at(16 * 60), &sources, &prints, false, now, tick), "idle changed, 16 minutes old");
+        // Parking commits even an unchanged state: the handoff check needs a
+        // generation made after it asked.
+        assert!(commit_due(&at(60), &sources, &prints, true, now, Occasion::Park), "parking: unchanged, a minute after a commit");
     }
 
     /// A commit is made only under a held lease, and carries its epoch.

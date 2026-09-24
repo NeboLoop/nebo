@@ -35,6 +35,9 @@ pub const TYPE_CLOSE: u8 = 13;
 /// Hub → bot answer to a lease renewal carried on the bot's ping
 /// (`wire::LeaseAnswer`). Only lease-aware bots receive it.
 pub const TYPE_LEASE: u8 = 14;
+/// Residency, both directions (`wire::ResidencyFrame`): the hub asks a
+/// lease-aware cloud bot to park; the bot answers only to decline.
+pub const TYPE_RESIDENCY: u8 = 15;
 
 // Flag bits.
 pub const FLAG_COMPRESSED: u8 = 1 << 0;

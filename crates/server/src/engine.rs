@@ -867,6 +867,15 @@ fn settle_task(state: &AppState, run: &EngineRun, s: Settle<'_>, success: bool, 
 /// idempotent, so this only bounds how soon a settings change is noticed.
 const HEARTBEAT_ARM_SECS: i64 = 60;
 
+/// Arm every durable timer now — schedules and heartbeats, the two arming
+/// passes the loop runs — so the earliest undelivered timer is the bot's true
+/// next wake. The graceful drain and a parking decision call this: once the
+/// drain stops the loop, nothing else arms.
+pub(crate) async fn arm_timers(state: &AppState) -> usize {
+    let t = now();
+    arm_schedules(&state.store, t) + arm_heartbeats(state, t).await
+}
+
 /// Reconcile pending heartbeat timers with the entities whose heartbeat is
 /// on: a timer for an entity now off (or with a changed interval) is
 /// dropped; every enabled entity without one gets its next fire — the last

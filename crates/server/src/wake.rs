@@ -34,6 +34,11 @@ const PAYLOAD_CLIP: usize = 2000;
 static IN_FLIGHT: LazyLock<Mutex<HashMap<String, Vec<i64>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// How many sessions have a wake run dispatched and not yet finished.
+pub fn in_flight() -> usize {
+    IN_FLIGHT.lock().expect("wake in-flight lock").len()
+}
+
 /// Producer entry: persist the wake, then try to deliver it. Never blocks the
 /// producer on the woken run.
 pub fn enqueue(
