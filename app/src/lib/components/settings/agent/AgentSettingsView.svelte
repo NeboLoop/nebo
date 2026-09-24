@@ -24,6 +24,7 @@
   import { installFlow } from '$lib/stores/installFlow';
   import { addToast } from '$lib/stores/toast';
   import { capabilityLabel } from '$lib/utils/operationLabels';
+  import { accountsSectionFor } from './sections';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -1010,7 +1011,7 @@
   // of the employee, not "an account" — but both sections render the SAME
   // accounts machinery, just filtered: phonecall here, everything else there.
   const shownPlugins = $derived(
-    accountPlugins.filter((p) => (section === 'phone') === (p.slug === 'phonecall'))
+    accountPlugins.filter((p) => accountsSectionFor(p.slug) === section)
   );
 
   const accountAuthUnsubs: (() => void)[] = [];

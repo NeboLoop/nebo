@@ -113,12 +113,16 @@ impl Store {
     }
 
     /// R7: a binding that cannot run says why, instead of vanishing. Empty
-    /// reason clears it.
+    /// reason clears it; the need the owner was told, when it was this
+    /// reason, is met with it and forgotten (see [`Store::tell_binding_need`]).
     pub fn set_agent_workflow_degraded_reason(&self, agent_id: &str, binding_name: &str, reason: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         let value: Option<&str> = if reason.is_empty() { None } else { Some(reason) };
         conn.execute(
-            "UPDATE agent_workflows SET degraded_reason = ?3 WHERE agent_id = ?1 AND binding_name = ?2",
+            "UPDATE agent_workflows
+             SET need_told = CASE WHEN ?3 IS NULL AND need_told = degraded_reason THEN NULL ELSE need_told END,
+                 degraded_reason = ?3
+             WHERE agent_id = ?1 AND binding_name = ?2",
             params![agent_id, binding_name, value],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -155,6 +159,43 @@ impl Store {
                  WHERE w.id = ?1
                  ORDER BY length(aw.binding_name) DESC LIMIT 1)",
             params![run_id, outcome, at],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The owner is about to be told this binding stands on `need`: true when
+    /// it is news (they were told nothing, or something else), and it is
+    /// recorded as told; false when they were already told exactly this.
+    /// One statement, so two fires or runs at once tell it once. A need is
+    /// forgotten when it is met: the binding's degraded reason clears
+    /// ([`Store::set_agent_workflow_degraded_reason`]) or a run of the
+    /// binding completes ([`Store::forget_told_need_of_run`]).
+    pub fn tell_binding_need(&self, agent_id: &str, binding_name: &str, need: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let n = conn
+            .execute(
+                "UPDATE agent_workflows SET need_told = ?3
+                 WHERE agent_id = ?1 AND binding_name = ?2 AND need_told IS NOT ?3",
+                params![agent_id, binding_name, need],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(n > 0)
+    }
+
+    /// A run of a binding completed its work: nothing it was told to stand
+    /// on stands any more. A run of no binding changes nothing.
+    pub fn forget_told_need_of_run(&self, run_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agent_workflows SET need_told = NULL
+             WHERE need_told IS NOT NULL AND id = (
+                 SELECT aw.id FROM workflow_runs w JOIN agent_workflows aw
+                   ON w.workflow_id = 'agent:' || aw.agent_id
+                  AND (w.trigger_detail = aw.binding_name OR w.trigger_detail LIKE aw.binding_name || ':%')
+                 WHERE w.id = ?1
+                 ORDER BY length(aw.binding_name) DESC LIMIT 1)",
+            params![run_id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())

@@ -241,6 +241,11 @@ pub(crate) async fn execute_graph(
         // A standing outcome (an exit, a terminal refusal) ends the run
         // cleanly with its reason — never a failure.
         Err(e) if let Some(reason) = e.standing_outcome() => {
+            // What the owner must supply, when the refusing tool named it:
+            // kept on the run as data for whoever tells the owner.
+            if let Some(need) = e.owner_need() {
+                let _ = store.set_workflow_run_owner_need(run_id, need);
+            }
             let _ = store.complete_workflow_run(
                 run_id,
                 "exited",
@@ -1871,7 +1876,10 @@ mod walk_tests {
                 let (tx, rx) = tokio::sync::mpsc::channel(4);
                 tokio::spawn(async move {
                     let _ = tx
-                        .send(ai::StreamEvent::control_notice(refusal, "terminal_tool_error"))
+                        .send(
+                            ai::StreamEvent::control_notice(refusal, "terminal_tool_error")
+                                .with_owner_need(Some(types::OwnerNeed::Account { plugin: "example".into() })),
+                        )
                         .await;
                     let _ = tx
                         .send(ai::StreamEvent::done_with_reason("terminal_tool_error"))
@@ -2013,6 +2021,7 @@ mod walk_tests {
             let (mut ti, mut to) = (0i32, 0i32);
             let mut exit: Option<String> = None;
             let mut notice = String::new();
+            let mut need = None;
             let mut stop_reason = String::new();
             let mut tainted = false;
             while let Some(ev) = rx.recv().await {
@@ -2037,7 +2046,10 @@ mod walk_tests {
                             to = to.max(u.output_tokens);
                         }
                     }
-                    ai::StreamEventType::ControlNotice => notice = ev.text.clone(),
+                    ai::StreamEventType::ControlNotice => {
+                        need = ev.owner_need();
+                        notice = ev.text.clone();
+                    }
                     ai::StreamEventType::Done => {
                         if let Some(u) = ev.usage {
                             ti = ti.max(u.input_tokens);
@@ -2054,7 +2066,7 @@ mod walk_tests {
                 return Err(WorkflowError::Exited(reason));
             }
             if stop_reason == "terminal_tool_error" {
-                return Err(WorkflowError::Blocked(notice));
+                return Err(WorkflowError::Blocked(notice, need));
             }
             Ok(crate::LoopOutcome {
                 text,
@@ -3403,6 +3415,11 @@ mod walk_tests {
         assert_eq!((a.status.as_str(), a.error.as_deref()), ("exited", Some(reason.as_str())));
         let (outcome, _at) = store.agent_workflow_last_outcome("emp", "sweep").unwrap().expect("standing outcome");
         assert_eq!(outcome, reason);
+        // What the refusing tool named is kept on the run as data.
+        assert_eq!(
+            store.workflow_run_owner_need(&run_id).unwrap(),
+            Some(types::OwnerNeed::Account { plugin: "example".into() })
+        );
     }
 
     /// on_error.retry is the activity-level retry budget: after

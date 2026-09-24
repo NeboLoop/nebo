@@ -27,3 +27,10 @@ export const agentSettingsSections = [
 	{ id: 'approvals', label: 'agentSettings.approvals' },
 	{ id: 'memory', label: 'agentSettings.memory' }
 ] as const;
+
+// The section a plugin's accounts live in: a phone line reads as a capability
+// of the employee (its own Phone section); every other plugin's accounts are
+// under Connected Accounts. The ONE place that split is decided.
+export function accountsSectionFor(pluginSlug: string): 'phone' | 'accounts' {
+	return pluginSlug === 'phonecall' ? 'phone' : 'accounts';
+}

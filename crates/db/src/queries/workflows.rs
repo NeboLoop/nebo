@@ -447,7 +447,32 @@ impl Store {
                 self.record_standing_outcome(id, reason, now())?;
             }
         }
+        // A run that did its work: whatever need its binding was told to
+        // stand on is met, so its return would be news.
+        if status == "completed" {
+            self.forget_told_need_of_run(id)?;
+        }
         Ok(())
+    }
+
+    /// A blocked run keeps what the refusing tool named as missing.
+    pub fn set_workflow_run_owner_need(&self, run_id: &str, need: &types::OwnerNeed) -> Result<(), NeboError> {
+        let json = serde_json::to_string(need).map_err(|e| NeboError::Database(e.to_string()))?;
+        let conn = self.conn()?;
+        conn.execute("UPDATE workflow_runs SET owner_need = ?2 WHERE id = ?1", params![run_id, json])
+            .db_err("set_workflow_run_owner_need")?;
+        Ok(())
+    }
+
+    /// What a blocked run's refusing tool named as missing, if anything.
+    pub fn workflow_run_owner_need(&self, run_id: &str) -> Result<Option<types::OwnerNeed>, NeboError> {
+        let conn = self.conn()?;
+        let json: Option<String> = conn
+            .query_row("SELECT owner_need FROM workflow_runs WHERE id = ?1", params![run_id], |r| r.get(0))
+            .optional()
+            .db_err("workflow_run_owner_need")?
+            .flatten();
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
     }
 
     pub fn list_workflow_runs(

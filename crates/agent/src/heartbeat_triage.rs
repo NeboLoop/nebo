@@ -20,10 +20,15 @@
 //!    there was nothing to do, and why) is not a change and not a failure:
 //!    its span is [`STANDING_FLOOR_MULTIPLE`] cadences, capped at
 //!    [`STANDING_FLOOR_CAP`].
-//! 3. One decision, two Nouls in one call ([`verdict_from`]): does the job
-//!    still need to run now although nothing changed, and is anything
-//!    urgent. The thresholds are in code, looser after a standing outcome
-//!    ([`STANDING_SKIP_WORTH`], [`STANDING_SKIP_URGENT`]).
+//! 3. One decision, one call ([`gate_from`]): does the job still need to
+//!    run now although nothing changed, and is anything urgent — the
+//!    thresholds in code, looser after a standing outcome
+//!    ([`STANDING_SKIP_WORTH`], [`STANDING_SKIP_URGENT`]). In the same call:
+//!    does the last outcome say the duty cannot be done until the owner adds
+//!    or connects something, and which of the employee's declared needs
+//!    ([`MISSING_NEED_HOLD`], [`WHICH_NEED_CONFIDENCE`]). A missing need
+//!    holds the fire ([`Gate::Hold`]) and the caller tells the owner once;
+//!    the model is not paid to rediscover the wall every cadence.
 //!
 //! A wrong skip looks exactly like a right one, so every skip is logged at
 //! info with `site="heartbeat_triage"` and the numbers that made it.
@@ -77,6 +82,28 @@ pub const STANDING_SKIP_WORTH: f64 = 0.5;
 /// UNTUNED. `urgent` must be at or under this to skip after a standing
 /// outcome.
 pub const STANDING_SKIP_URGENT: f64 = 0.5;
+
+// A last outcome that says the duty cannot be done until the owner adds or
+// connects something is not "nothing to do": it is a wall only the owner
+// can take down. First live sample (owner's desktop, 2026-09-24): a sweep
+// whose run said "No telephony plugin available for voicemail or call log
+// retrieval…" was scored urgent 0.83 and re-ran every 15 minutes, each run
+// rediscovering the same wall.
+
+/// UNTUNED. `missing_need` at or over this holds the fire and the owner is
+/// told. High on purpose: a hold stops the duty until the owner acts, and a
+/// wrong hold looks like a quiet employee. It is bounded like a skip: a hold
+/// counts toward [`MAX_CONSECUTIVE_SKIPS`] and the floor's span, and any
+/// flag (a changed setting, a plugin installed or an account connected)
+/// runs the fire unasked. Set from shadow data like the other ceilings.
+pub const MISSING_NEED_HOLD: f64 = 0.8;
+/// UNTUNED. `which_need` names one of the employee's declared needs only at
+/// or over this confidence; under it (or `other`/`unclear`) the owner is
+/// told the duty needs something connected, without naming what.
+pub const WHICH_NEED_CONFIDENCE: f64 = 0.6;
+/// The most of the last outcome quoted to the owner: its first sentence,
+/// capped here. Everything else the owner reads is written in code.
+const CLAUSE_CAP: usize = 120;
 
 // ── The floor: enforced in code, before the decision ─────────────────────
 
@@ -137,7 +164,10 @@ pub struct Flags {
     pub other_runs: i64,
     /// Assignments handed to the employee since then.
     pub new_assignments: i64,
-    /// The employee's settings or instructions changed since then.
+    /// The employee's settings or instructions changed since then, or a
+    /// plugin was installed, turned on or off or updated, or one of the
+    /// employee's plugin accounts was connected or changed: what a held
+    /// fire waits on.
     pub settings_changed: bool,
 }
 
@@ -199,15 +229,60 @@ pub struct Binding {
     /// Seconds between fires, when the binding's schedule says.
     pub cadence: Option<Duration>,
     pub flags: Flags,
+    /// The workflow binding this fire runs, when it is one. Only a binding
+    /// can be held on a missing need (the owner is told once per binding).
+    pub duty: Option<String>,
+    /// What the employee declares it may need: its `requires.interfaces`,
+    /// its `requires.plugins`, and the binding's watch plugin. The options
+    /// of `which_need`.
+    pub declared: Vec<Declared>,
+}
+
+/// One thing an employee declares it may need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Declared {
+    /// A capability (`telephony`, `mail`): some plugin must provide it.
+    Capability(String),
+    /// A plugin by name.
+    Plugin(String),
+}
+
+impl Declared {
+    pub fn name(&self) -> &str {
+        match self {
+            Declared::Capability(n) | Declared::Plugin(n) => n,
+        }
+    }
+
+    fn criterion(&self) -> String {
+        match self {
+            Declared::Capability(n) => format!("the missing thing is something that provides {n}, or an account or access for {n}"),
+            Declared::Plugin(n) => format!("the missing thing is the {n} plugin, or an account or access on it"),
+        }
+    }
+}
+
+/// The need a held fire stands on, for the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldNeed {
+    /// The declared need the decision named with confidence, or None.
+    pub which: Option<Declared>,
+    /// The last outcome's first sentence, capped: the one piece of the
+    /// run's own words the owner is shown.
+    pub clause: String,
 }
 
 /// What triage decided for one fire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Gate {
     /// Nothing changed and nothing is due: the fire does not run.
     Skip,
     /// Run the fire exactly as before (also the fail-open answer).
     Run,
+    /// The last outcome says the duty cannot be done until the owner adds
+    /// or connects something: the fire does not run, and the caller tells
+    /// the owner (once per need).
+    Hold(HeldNeed),
 }
 
 /// Per-binding counts since boot.
@@ -285,6 +360,45 @@ pub fn verdict_from(decision: &Decision, standing: bool) -> Gate {
     }
 }
 
+/// The need the decision reads the last outcome as standing on, or None:
+/// `missing_need` at or over [`MISSING_NEED_HOLD`]. `which_need` names a
+/// declared need only at or over [`WHICH_NEED_CONFIDENCE`]. A missing
+/// answer holds nothing.
+pub fn held_need(decision: &Decision, b: &Binding) -> Option<HeldNeed> {
+    b.duty.as_ref()?;
+    let missing = decision.answer("missing_need").and_then(|a| a.noul)?;
+    if missing < MISSING_NEED_HOLD {
+        return None;
+    }
+    let which = decision
+        .answer("which_need")
+        .filter(|a| a.confidence.unwrap_or(0.0) >= WHICH_NEED_CONFIDENCE)
+        .and_then(|a| a.choice.as_deref())
+        .and_then(|c| b.declared.iter().find(|d| d.name() == c))
+        .cloned();
+    Some(HeldNeed { which, clause: first_clause(&b.last_outcome) })
+}
+
+/// The whole decision for one fire: a missing need holds it; otherwise
+/// [`verdict_from`].
+pub fn gate_from(decision: &Decision, b: &Binding) -> Gate {
+    match held_need(decision, b) {
+        Some(need) => Gate::Hold(need),
+        None => verdict_from(decision, b.standing),
+    }
+}
+
+/// The first sentence of an outcome, capped at [`CLAUSE_CAP`].
+fn first_clause(outcome: &str) -> String {
+    let line = outcome.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let sentence = line.find(". ").map_or(line, |i| &line[..=i]);
+    if sentence.len() <= CLAUSE_CAP {
+        sentence.to_string()
+    } else {
+        format!("{}…", truncate_str(sentence, CLAUSE_CAP).trim_end())
+    }
+}
+
 /// Elapsed time as words, so the decision never does arithmetic.
 pub fn elapsed_label(secs: i64) -> String {
     let secs = secs.max(0);
@@ -311,14 +425,14 @@ pub fn state(b: &Binding) -> serde_json::Value {
             "no new messages to this employee",
             "no other work by this employee started or finished, apart from its own scheduled runs",
             "no new assignments to this employee",
-            "no change to this employee's settings or instructions",
+            "no change to this employee's settings or instructions, to the installed plugins, or to its connected accounts",
             "the last run ended cleanly",
         ],
     })
 }
 
-fn questions() -> BTreeMap<&'static str, Question> {
-    BTreeMap::from([
+fn questions(b: &Binding) -> BTreeMap<&'static str, Question> {
+    let mut asked = BTreeMap::from([
         (
             "worth_a_run",
             Question::noul(
@@ -331,7 +445,33 @@ fn questions() -> BTreeMap<&'static str, Question> {
                 "`purpose` or `last_run_outcome` describes something that needs attention right now: a problem left open, someone waiting on an answer, or a deadline today.",
             ),
         ),
-    ])
+    ]);
+    if b.duty.is_none() {
+        return asked;
+    }
+    let mut options: Vec<(String, String)> = b
+        .declared
+        .iter()
+        .filter(|d| !matches!(d.name(), "other" | "unclear"))
+        .map(|d| (d.name().to_string(), d.criterion()))
+        .collect();
+    options.push(("other".into(), "something is missing, but none of the options above".into()));
+    options.push(("unclear".into(), "the outcome does not say what is missing, or nothing is".into()));
+    let options: Vec<(&str, &str)> = options.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    asked.insert(
+        "missing_need",
+        Question::noul(
+            "`last_run_outcome` says this duty cannot be done until something is added or connected — a plugin, an account, access or a setting the owner controls.",
+        ),
+    );
+    asked.insert(
+        "which_need",
+        Question::choice(
+            "If `last_run_outcome` says something must be added or connected before this duty can be done, which one it is.",
+            &options,
+        ),
+    );
+    asked
 }
 
 fn log_run(b: &Binding, reason: &str, tally: Tally) {
@@ -375,7 +515,7 @@ pub async fn triage(decide: Option<&DecideClient>, mode: Mode, b: &Binding, time
 
     let trace = ai::RequestTrace { agent_id: b.agent_id.clone(), ..ai::RequestTrace::new("heartbeat_triage") };
     let state = state(b);
-    let questions = questions();
+    let questions = questions(b);
     let decision = match tokio::time::timeout(timeout, client.decide(&trace, &state, &questions)).await {
         Ok(Ok(d)) => d,
         Ok(Err(e)) => {
@@ -390,21 +530,32 @@ pub async fn triage(decide: Option<&DecideClient>, mode: Mode, b: &Binding, time
         }
     };
     let noul = |name: &str| decision.answer(name).and_then(|a| a.noul);
-    let (Some(worth), Some(urgent)) = (noul("worth_a_run"), noul("urgent")) else {
-        debug!(site = "heartbeat_triage", binding = %b.key, model = %decision.model, "triage answer incomplete; running");
-        log_run(b, "incomplete", record(&b.key, false));
-        return Gate::Run;
+    let missing_need = noul("missing_need").unwrap_or(-1.0);
+    let which = decision.answer("which_need");
+    let which_need = which.and_then(|a| a.choice.clone()).unwrap_or_default();
+    let which_confidence = which.and_then(|a| a.confidence).unwrap_or(-1.0);
+    let verdict = gate_from(&decision, b);
+    let (worth, urgent) = match (noul("worth_a_run"), noul("urgent")) {
+        (Some(w), Some(u)) => (w, u),
+        _ if matches!(verdict, Gate::Hold(_)) => (-1.0, -1.0),
+        _ => {
+            debug!(site = "heartbeat_triage", binding = %b.key, model = %decision.model, missing_need, "triage answer incomplete; running");
+            log_run(b, "incomplete", record(&b.key, false));
+            return Gate::Run;
+        }
     };
 
-    let verdict = verdict_from(&decision, b.standing);
     let shadow = mode == Mode::Shadow;
-    let outcome = match (verdict, shadow) {
+    let outcome = match (&verdict, shadow) {
         (Gate::Skip, false) => "skip",
         (Gate::Skip, true) => "would_skip",
+        (Gate::Hold(_), false) => "hold",
+        (Gate::Hold(_), true) => "would_hold",
         (Gate::Run, false) => "run",
         (Gate::Run, true) => "would_run",
     };
-    let after = record(&b.key, verdict == Gate::Skip);
+    // A hold counts as a skip: the floor bounds it the same way.
+    let after = record(&b.key, verdict != Gate::Run);
     macro_rules! decided {
         ($level:ident) => {
             $level!(
@@ -414,6 +565,9 @@ pub async fn triage(decide: Option<&DecideClient>, mode: Mode, b: &Binding, time
                 outcome,
                 worth_a_run = worth,
                 urgent,
+                missing_need,
+                which_need = %which_need,
+                which_confidence,
                 standing = b.standing,
                 consecutive_skips = after.consecutive_skips,
                 since_last_run = b.since_last_run.unwrap_or(-1),
@@ -426,10 +580,10 @@ pub async fn triage(decide: Option<&DecideClient>, mode: Mode, b: &Binding, time
             )
         };
     }
-    if verdict == Gate::Skip {
-        decided!(info);
-    } else {
+    if verdict == Gate::Run {
         decided!(debug);
+    } else {
+        decided!(info);
     }
     if shadow { Gate::Run } else { verdict }
 }
@@ -477,6 +631,8 @@ mod tests {
             cadence: Some(Duration::from_secs(120)),
             standing: false,
             flags: Flags::default(),
+            duty: None,
+            declared: Vec::new(),
         }
     }
 
@@ -824,6 +980,82 @@ mod tests {
         let (counting, calls) = counting_client();
         assert_eq!(triage(Some(&counting), Mode::On, &quiet(key), T).await, Gate::Run);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// A duty whose last outcome said it cannot be done until something is
+    /// connected.
+    fn walled(key: &str) -> Binding {
+        let mut b = quiet(key);
+        b.standing = true;
+        b.duty = Some("inbox-sweep".into());
+        b.declared = vec![Declared::Capability("mail".into()), Declared::Plugin("ledgerly".into())];
+        b.last_outcome = "No mail provider is available to read the inbox. The referenced plugin is not installed, so nothing was read.".into();
+        b
+    }
+
+    fn need_decision(missing: f64, which: &str, confidence: f64) -> Decision {
+        let mut d = decision(0.64, 0.83);
+        d.answers.insert("missing_need".into(), noul(missing));
+        d.answers.insert(
+            "which_need".into(),
+            Answer { kind: "choice".into(), choice: Some(which.into()), score: None, noul: None, confidence: Some(confidence), probabilities: BTreeMap::new() },
+        );
+        d
+    }
+
+    #[test]
+    fn a_missing_need_holds_at_the_inclusive_threshold_and_names_only_what_is_declared() {
+        let b = walled("test:need-pure");
+        let clause = "No mail provider is available to read the inbox.";
+        assert_eq!(
+            gate_from(&need_decision(MISSING_NEED_HOLD, "mail", WHICH_NEED_CONFIDENCE), &b),
+            Gate::Hold(HeldNeed { which: Some(Declared::Capability("mail".into())), clause: clause.into() })
+        );
+        // Under the threshold it is the ordinary verdict (here: urgent runs).
+        assert_eq!(gate_from(&need_decision(0.79, "mail", 0.9), &b), Gate::Run);
+        // An unsure or unlisted choice holds without naming.
+        for (which, conf) in [("mail", 0.59), ("other", 0.95), ("unclear", 0.95), ("fax", 0.95)] {
+            assert_eq!(gate_from(&need_decision(0.9, which, conf), &b), Gate::Hold(HeldNeed { which: None, clause: clause.into() }), "{which} {conf}");
+        }
+        // No missing_need answer, or no binding to hold: never a hold.
+        assert_eq!(gate_from(&decision(0.64, 0.83), &b), Gate::Run);
+        let mut plain = b.clone();
+        plain.duty = None;
+        assert_eq!(gate_from(&need_decision(0.99, "mail", 0.99), &plain), Gate::Run);
+        // The need questions are asked only of a binding, with its declared options.
+        assert!(questions(&plain).get("missing_need").is_none());
+        let asked = serde_json::to_value(&questions(&b)["which_need"]).unwrap().to_string();
+        for option in ["mail", "ledgerly", "other", "unclear"] {
+            assert!(asked.contains(&format!("\"{option}\"")), "{option} in {asked}");
+        }
+        // A long outcome is quoted as one capped clause.
+        assert_eq!(first_clause(&"x".repeat(400)).chars().count(), CLAUSE_CAP + 1);
+    }
+
+    #[tokio::test]
+    async fn a_missing_need_holds_the_fire_counts_toward_the_floor_and_flags_still_win() {
+        let key = "test:need-hold";
+        let b = walled(key);
+        let client = serving(serde_json::json!({
+            "worth_a_run": {"type": "noul", "noul": 0.64},
+            "urgent": {"type": "noul", "noul": 0.83},
+            "missing_need": {"type": "noul", "noul": 0.93},
+            "which_need": {"type": "choice", "choice": "mail", "confidence": 0.88},
+        }))
+        .await;
+        assert!(matches!(triage(Some(&client), Mode::On, &b, T).await, Gate::Hold(HeldNeed { which: Some(Declared::Capability(ref m)), .. }) if m == "mail"));
+        assert_eq!(tally(key).consecutive_skips, 1, "a hold counts as a skip");
+        // Shadow logs the hold and runs.
+        assert_eq!(triage(Some(&client), Mode::Shadow, &walled("test:need-shadow"), T).await, Gate::Run);
+        // A plugin installed or an account connected is a flag: runs unasked.
+        let (counting, calls) = counting_client();
+        let mut changed = walled("test:need-flag");
+        changed.flags.settings_changed = true;
+        assert_eq!(triage(Some(&counting), Mode::On, &changed, T).await, Gate::Run);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        // Jev silent (no answer at all): the fire runs as today.
+        let (silent, _) = counting_client();
+        assert_eq!(triage(Some(&silent), Mode::On, &walled("test:need-silent"), T).await, Gate::Run);
     }
 
     #[tokio::test]

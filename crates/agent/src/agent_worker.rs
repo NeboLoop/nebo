@@ -246,6 +246,7 @@ impl AgentWorker {
                                 let reason = capability_degraded_reason(&watch_cfg.plugin, &installed);
                                 warn!(agent = %agent_id, binding = %binding.binding_name, %reason, "capability trigger has no connection; binding kept, marked degraded");
                                 let _ = store.set_agent_workflow_degraded_reason(&agent_id, &binding.binding_name, &reason);
+                                workflow_manager.announce_binding_need(&agent_id, &binding.binding_name, &reason);
                                 continue;
                             }
                         }
