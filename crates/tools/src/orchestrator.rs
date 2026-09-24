@@ -56,6 +56,18 @@ pub struct SpawnResult {
     pub error: Option<String>,
 }
 
+/// What `send` did with a message.
+#[derive(Debug, Clone)]
+pub enum FollowUp {
+    /// The sub-agent was running: the message is in its thread and it hears
+    /// it at its next step. Its result arrives the way it was spawned to
+    /// report (a wake for a background spawn).
+    Delivered { task_id: String },
+    /// The sub-agent had finished: it ran again with the message as its next
+    /// turn.
+    Continued(SpawnResult),
+}
+
 /// Trait implemented by agent::Orchestrator, consumed by tools::AgentTool.
 /// Uses Pin<Box<dyn Future>> for object safety (async_trait alternative).
 pub trait SubAgentOrchestrator: Send + Sync {
@@ -92,17 +104,23 @@ pub trait SubAgentOrchestrator: Send + Sync {
         task_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>>;
 
-    /// Continue a finished sub-agent with a follow-up. It keeps its session
-    /// (everything it read and did), runs again the way it was spawned, and
-    /// answers the same way. Fails while it is still running, or once its
-    /// context has been released.
+    /// Send a sub-agent a message. A running one hears it at its next step
+    /// and reports the way it was spawned to (`FollowUp::Delivered`); a
+    /// finished one keeps its session (everything it read and did), runs again
+    /// the way it was spawned with the message as its next turn, and answers
+    /// the same way (`FollowUp::Continued`). `from_session_key` and `taint`
+    /// are the sender's: a running child records where the message came from
+    /// and takes on its taint. Fails once a finished child's context has been
+    /// released.
     fn send(
         &self,
         task_id: &str,
         message: &str,
+        from_session_key: &str,
+        taint: Vec<types::provenance::ProvenanceClass>,
         parent_cancel: Option<CancellationToken>,
         parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
-    ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<FollowUp, String>> + Send + '_>>;
 
     /// List all active sub-agents: (task_id, description, status).
     fn list_active(

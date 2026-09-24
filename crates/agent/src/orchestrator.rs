@@ -60,7 +60,7 @@ fn subagent_depth(parent_session_key: &str) -> usize {
 
 use ai::{StreamEventType, ToolCall};
 use db::Store;
-use tools::{SpawnRequest, SpawnResult, SubAgentOrchestrator};
+use tools::{FollowUp, SpawnRequest, SpawnResult, SubAgentOrchestrator};
 
 /// Build a human-readable description from a tool call.
 ///
@@ -96,7 +96,7 @@ fn describe_tool_call(tc: &ToolCall) -> String {
 
 use crate::decompose;
 use crate::lanes::{self, LaneManager};
-use crate::runner::{RunRequest, Runner};
+use crate::runner::{MidTurnFrom, RunRequest, Runner};
 use crate::task_graph::{AgentType, TaskGraph};
 
 /// Maximum characters of dependency context injected per dependency.
@@ -108,6 +108,10 @@ struct ActiveAgent {
     description: String,
     status: String,
     cancel: CancellationToken,
+    /// The session a `send` reaches while this child runs. `None` for the
+    /// children of a parallel batch or a DAG: the caller waits on the whole
+    /// batch and nothing hears a late message for one of them.
+    session_key: Option<String>,
 }
 
 /// Enough for any realistic pasted payload (the observed SVG + brief was ~1.6K);
@@ -180,6 +184,107 @@ fn remember_resumable<T>(
         ring.pop_front();
     }
 }
+
+/// Register `task_id` as running and hand back its cancel token, derived from
+/// the parent's so cancelling the parent cascades. The caller holds the
+/// `active` lock: `send` decides "running or finished" and admits under the
+/// one lock, so two sends cannot both start a run on the child's session.
+fn admit(active: &mut HashMap<String, ActiveAgent>, task_id: &str, req: &SpawnRequest) -> CancellationToken {
+    let cancel = req
+        .parent_cancel
+        .as_ref()
+        .map(|p| p.child_token())
+        .unwrap_or_else(CancellationToken::new);
+    active.insert(
+        task_id.to_string(),
+        ActiveAgent {
+            task_id: task_id.to_string(),
+            description: req.description.clone(),
+            status: "running".to_string(),
+            cancel: cancel.clone(),
+            session_key: Some(format!("subagent:{}:{}", req.parent_session_key, task_id)),
+        },
+    );
+    cancel
+}
+
+/// Run a child's turn to its end, then release it from `active`.
+///
+/// A message its parent sent while it ran is heard inside the turn (the
+/// runner's loop reads it at the next step, and before ending the turn). One
+/// that lands after the loop has ended — between its last check and here —
+/// has no model step after it; the child runs one more turn on its own
+/// session to hear it, with no new prompt (the message is already in its
+/// thread), and the parent gets both reports. The check and the release
+/// happen under the `active` lock `send` delivers under, so a message
+/// either lands before the check or finds the child finished.
+///
+/// A cancelled or stalled child does not go on: its message stays in its
+/// thread, and the error or report says it was not heard.
+async fn run_child(
+    runner: &Arc<Runner>,
+    active: &Arc<RwLock<HashMap<String, ActiveAgent>>>,
+    task_id: &str,
+    session_key: &str,
+    first_prompt: String,
+    spawn_req: &SpawnRequest,
+    cancel: CancellationToken,
+    parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
+) -> Result<String, String> {
+    let mut prompt = first_prompt;
+    let mut reports: Vec<String> = Vec::new();
+    loop {
+        let mut run_req = build_subagent_request(
+            session_key,
+            &prompt,
+            &spawn_req.model_override,
+            &spawn_req.user_id,
+            &cancel,
+            spawn_req.max_iterations,
+        );
+        apply_spawn_context(&mut run_req, spawn_req);
+        let result = run_and_collect(
+            runner,
+            run_req,
+            cancel.clone(),
+            None,
+            parent_stream_tx.clone(),
+            Some(SUBAGENT_INACTIVITY_TIMEOUT),
+        )
+        .await;
+
+        let mut active = active.write().await;
+        let unheard = runner
+            .sessions()
+            .resolve_session_id_by_key(session_key)
+            .and_then(|id| runner.sessions().get_messages(&id))
+            .is_ok_and(|messages| crate::runner::parent_message_unheard(&messages));
+        match result {
+            Ok(report) if unheard && !cancel.is_cancelled() => {
+                info!(task_id = %task_id, "a message from the parent landed as the turn ended: running a turn to hear it");
+                reports.push(report);
+                prompt = String::new();
+                drop(active);
+            }
+            Ok(report) => {
+                active.remove(task_id);
+                reports.push(report);
+                if unheard {
+                    reports.push(UNHEARD_NOTE.to_string());
+                }
+                return Ok(reports.join("\n\n"));
+            }
+            Err(e) => {
+                active.remove(task_id);
+                return Err(if unheard { format!("{e}. {UNHEARD_NOTE}") } else { e });
+            }
+        }
+    }
+}
+
+/// Said to the parent when a child ended without hearing its last message.
+const UNHEARD_NOTE: &str = "It stopped before it read your last message; that message is in its \
+thread, and a send continues it from there.";
 
 impl Orchestrator {
     pub fn new(runner: Arc<Runner>, store: Arc<Store>) -> Self {
@@ -267,16 +372,27 @@ impl Orchestrator {
         self.launch(task_id, req, prefixed_prompt).await
     }
 
-    /// `agent(task, send)`: continue a finished child on its own session. The
-    /// follow-up goes in as the next user turn, with no task prefix and no
-    /// original-request block: the child already has both.
+    /// `agent(task, send)`. A running child hears the message at its next
+    /// step: it goes into the child's thread the way an owner's mid-turn
+    /// message goes into theirs (`runner::MidTurnFrom`), and the child keeps
+    /// working. A finished child continues on its own session with the
+    /// message as its next user turn, with no task prefix and no
+    /// original-request block: it already has both.
+    ///
+    /// The decision and the delivery happen under the `active` lock, the same
+    /// lock `run_child` takes to check for an unheard message and release the
+    /// child — so a message either reaches a child that will hear it, or
+    /// finds it finished and continues it. It is never left in a thread no
+    /// turn will read.
     async fn send_internal(
         &self,
         task_id: &str,
         message: &str,
+        from_session_key: &str,
+        taint: Vec<types::provenance::ProvenanceClass>,
         parent_cancel: Option<CancellationToken>,
         parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
-    ) -> Result<SpawnResult, String> {
+    ) -> Result<FollowUp, String> {
         let remembered = self
             .resumable
             .read()
@@ -284,6 +400,30 @@ impl Orchestrator {
             .iter()
             .find(|(id, _)| id == task_id)
             .map(|(_, req)| req.clone());
+        let mut active = self.active.write().await;
+        if let Some(agent) = active.get(task_id) {
+            let Some(session_key) = agent.session_key.as_deref() else {
+                return Err(format!(
+                    "Sub-agent {task_id} is part of a parallel batch and takes no messages while \
+                     the batch runs. Wait for the batch's results, then spawn a new sub-agent \
+                     with the follow-up."
+                ));
+            };
+            let sessions = self.runner.sessions();
+            let session_id = sessions
+                .resolve_session_id_by_key(session_key)
+                .map_err(|e| format!("Could not reach sub-agent {task_id}: {e}"))?;
+            let from = MidTurnFrom::Parent {
+                session_key: from_session_key.to_string(),
+                task_id: task_id.to_string(),
+                taint,
+            };
+            sessions
+                .append_message(&session_id, "user", message, None, None, Some(&from.metadata()))
+                .map_err(|e| format!("Could not deliver the message to sub-agent {task_id}: {e}"))?;
+            info!(task_id = %task_id, "message delivered into a running sub-agent");
+            return Ok(FollowUp::Delivered { task_id: task_id.to_string() });
+        }
         let Some(mut req) = remembered else {
             return Err(format!(
                 "No sub-agent {task_id} to continue: it was not spawned from here, or it is not among \
@@ -295,63 +435,49 @@ impl Orchestrator {
         req.prompt = follow_up.clone();
         req.parent_cancel = parent_cancel;
         req.parent_stream_tx = parent_stream_tx;
-        self.launch(task_id.to_string(), req, follow_up).await
+        let cancel = admit(&mut active, task_id, &req);
+        drop(active);
+        self.start(task_id.to_string(), req, follow_up, cancel)
+            .await
+            .map(FollowUp::Continued)
     }
 
-    /// Run `req` as `task_id` in the mode it asked for: blocking returns the
-    /// output, background returns the ack and wakes the parent when done.
-    /// Shared by a first spawn and a `send` continuation.
+    /// Run `req` as a new child `task_id`: admit it, then start it.
     async fn launch(
         &self,
         task_id: String,
         req: SpawnRequest,
         prefixed_prompt: String,
     ) -> Result<SpawnResult, String> {
-        // Derive a child token from the parent so cancelling the parent cascades.
-        let cancel = req
-            .parent_cancel
-            .as_ref()
-            .map(|p| p.child_token())
-            .unwrap_or_else(CancellationToken::new);
-        {
-            // One check-and-insert under the lock: two `send`s for the same child
-            // cannot both start a run on its session. A fresh spawn never collides.
-            let mut active = self.active.write().await;
-            if active.contains_key(&task_id) {
-                return Err(format!(
-                    "Sub-agent {task_id} is still running. Check it with status, or cancel \
-                     it, before sending a follow-up."
-                ));
-            }
-            active.insert(
-                task_id.clone(),
-                ActiveAgent {
-                    task_id: task_id.clone(),
-                    description: req.description.clone(),
-                    status: "running".to_string(),
-                    cancel: cancel.clone(),
-                },
-            );
-        }
+        let cancel = admit(&mut *self.active.write().await, &task_id, &req);
+        self.start(task_id, req, prefixed_prompt, cancel).await
+    }
+
+    /// Run an admitted child in the mode it asked for: blocking returns the
+    /// output, background returns the ack and wakes the parent when done.
+    /// Shared by a first spawn and a `send` continuation.
+    async fn start(
+        &self,
+        task_id: String,
+        req: SpawnRequest,
+        prefixed_prompt: String,
+        cancel: CancellationToken,
+    ) -> Result<SpawnResult, String> {
+        let session_key = format!("subagent:{}:{}", req.parent_session_key, task_id);
         if req.wait {
             // Blocking: run and return result
-            let result = self
-                .run_subagent(
-                    &task_id,
-                    &prefixed_prompt,
-                    &req.model_override,
-                    &req.user_id,
-                    "",
-                    cancel.clone(),
-                    &format!("subagent:{}:{}", req.parent_session_key, task_id),
-                    req.max_iterations,
-                    &req,
-                    req.parent_stream_tx.clone(),
-                )
-                .await;
-
-            // Clean up active map
-            self.active.write().await.remove(&task_id);
+            let _ = self.store.update_task_running(&task_id);
+            let result = run_child(
+                &self.runner,
+                &self.active,
+                &task_id,
+                &session_key,
+                prefixed_prompt,
+                &req,
+                cancel,
+                req.parent_stream_tx.clone(),
+            )
+            .await;
 
             match result {
                 Ok(output) => {
@@ -380,35 +506,23 @@ impl Orchestrator {
             let active = self.active.clone();
             let task_id_clone = task_id.clone();
             let prompt = prefixed_prompt;
-            let model_override = req.model_override.clone();
-            let user_id = req.user_id.clone();
-            let max_iterations = req.max_iterations;
             let parent_stream_tx = req.parent_stream_tx.clone();
             let spawn_req = req.clone();
 
-            let bg_session_key = format!("subagent:{}:{}", req.parent_session_key, task_id_clone);
             let parent_session_key = req.parent_session_key.clone();
             let description = req.description.clone();
             let wake_notify = self.wake_notify.clone();
 
             tokio::spawn(async move {
-                let mut run_req = build_subagent_request(
-                    &bg_session_key,
-                    &prompt,
-                    &model_override,
-                    &user_id,
-                    &cancel,
-                    max_iterations,
-                );
-                apply_spawn_context(&mut run_req, &spawn_req);
-
-                let result = run_and_collect(
+                let result = run_child(
                     &runner,
-                    run_req,
+                    &active,
+                    &task_id_clone,
+                    &session_key,
+                    prompt,
+                    &spawn_req,
                     cancel,
-                    None,
                     parent_stream_tx,
-                    Some(SUBAGENT_INACTIVITY_TIMEOUT),
                 )
                 .await;
 
@@ -443,8 +557,6 @@ impl Orchestrator {
                         let _ = tx.send(parent_session_key);
                     }
                 }
-
-                active.write().await.remove(&task_id_clone);
             });
 
             Ok(SpawnResult {
@@ -454,40 +566,6 @@ impl Orchestrator {
                 error: None,
             })
         }
-    }
-
-    /// Run a sub-agent and collect its text output.
-    async fn run_subagent(
-        &self,
-        task_id: &str,
-        prompt: &str,
-        model_override: &str,
-        user_id: &str,
-        dep_context: &str,
-        cancel: CancellationToken,
-        session_key: &str,
-        max_iterations: usize,
-        spawn_req: &SpawnRequest,
-        parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
-    ) -> Result<String, String> {
-        let _ = self.store.update_task_running(task_id);
-
-        let full_prompt = if dep_context.is_empty() {
-            prompt.to_string()
-        } else {
-            format!("{}\n\n{}", dep_context, prompt)
-        };
-
-        let mut req = build_subagent_request(
-            session_key,
-            &full_prompt,
-            model_override,
-            user_id,
-            &cancel,
-            max_iterations,
-        );
-        apply_spawn_context(&mut req, spawn_req);
-        run_and_collect(&self.runner, req, cancel, None, parent_stream_tx, Some(SUBAGENT_INACTIVITY_TIMEOUT)).await
     }
 
     /// Execute a DAG of sub-tasks with reactive scheduling.
@@ -851,6 +929,7 @@ impl Orchestrator {
                         description: description.clone(),
                         status: "running".to_string(),
                         cancel: cancel.clone(),
+                        session_key: None,
                     },
                 );
             }
@@ -1494,13 +1573,16 @@ impl SubAgentOrchestrator for Orchestrator {
         &self,
         task_id: &str,
         message: &str,
+        from_session_key: &str,
+        taint: Vec<types::provenance::ProvenanceClass>,
         parent_cancel: Option<CancellationToken>,
         parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
-    ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<FollowUp, String>> + Send + '_>> {
         let task_id = task_id.to_string();
         let message = message.to_string();
+        let from_session_key = from_session_key.to_string();
         Box::pin(async move {
-            self.send_internal(&task_id, &message, parent_cancel, parent_stream_tx)
+            self.send_internal(&task_id, &message, &from_session_key, taint, parent_cancel, parent_stream_tx)
                 .await
         })
     }
