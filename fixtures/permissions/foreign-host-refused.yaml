@@ -1,0 +1,18 @@
+id: foreign-host-refused
+name: "A request with a foreign Host header is refused"
+description: |
+  PRD-Permissions §4.8 / §7 (Doors): "requests whose Host isn't loopback, the
+  app, or the tunnel's forwarded host are refused. This closes DNS
+  rebinding, where a website points its own domain at 127.0.0.1 and calls
+  the REST API as same-origin, and the owner never notices it." Technical
+  design §2.12.8 and §3 (`fix/local-api-host-check-and-mcp-gates`, shipping
+  ahead of this plan as an independent PR, PRD-Permissions rollout step 1).
+  This proof sends a request to the local API with `Host: evil.example.com`
+  (never loopback, the app's own host, or the tunnel's forwarded host) and
+  asserts it is refused before any handler or permission check runs — the
+  Host check is a hard limit ahead of routing, not a rule.
+  Pure HTTP-layer behaviour with no model involved, so it is a deterministic
+  proof rather than a conversation.
+target_component: permissions
+proof: harness::permissions::proof::foreign_host_refused
+conversation: []
