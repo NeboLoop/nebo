@@ -197,7 +197,92 @@ pub async fn output_within(
     }
 }
 
-/// A background shell session.
+/// The session that started a command, told when it ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Caller {
+    pub session_key: String,
+    /// What the command does, in the words the owner read.
+    pub description: String,
+}
+
+/// How a command starts. Every `run_command` process is one of these, on
+/// the one registry: a foreground command is waited on by its call and moves
+/// to the background at its timeout (Claude Code's Bash does the same,
+/// `BashTool.tsx` onTimeout → startBackgrounding); a background command
+/// returns its id at once. Either way its end reaches its caller, once it is
+/// in the background.
+#[derive(Debug, Clone)]
+pub enum Spawn {
+    Foreground,
+    Background(Option<Caller>),
+}
+
+/// A command that finished in the background, for the session that started
+/// it (Claude Code's task notification for a background shell,
+/// `LocalShellTask.tsx` enqueueShellNotification).
+#[derive(Debug, Clone)]
+pub struct CommandExit {
+    pub caller: Caller,
+    pub task_id: String,
+    pub command: String,
+    /// `None`: ended by a signal.
+    pub exit_code: Option<i32>,
+    /// Everything it printed, stdout and stderr as they came.
+    pub output: String,
+}
+
+/// How much of a finished command's output its notification carries; the
+/// rest is one `read_output` away.
+const EXIT_TAIL_CHARS: usize = 1200;
+
+impl CommandExit {
+    /// The notification body: what ended and how, the end of its output, and
+    /// where the rest is.
+    pub fn render(&self) -> String {
+        let status = match self.exit_code {
+            Some(0) => "completed (exit code 0)".to_string(),
+            Some(code) => format!("failed with exit code {code}"),
+            None => "was ended by a signal".to_string(),
+        };
+        let what = if self.caller.description.is_empty() {
+            self.command.as_str()
+        } else {
+            self.caller.description.as_str()
+        };
+        let chars = self.output.chars().count();
+        let tail: String = self.output.chars().skip(chars.saturating_sub(EXIT_TAIL_CHARS)).collect();
+        let output = if self.output.trim().is_empty() {
+            "It printed nothing.".to_string()
+        } else if chars > EXIT_TAIL_CHARS {
+            format!("The end of its output:\n{}", tail.trim_end())
+        } else {
+            format!("Its output:\n{}", tail.trim_end())
+        };
+        format!(
+            "Background command {id} \"{what}\" {status}.\n{output}\nThe whole output: read_output(task_id: \"{id}\").",
+            id = self.task_id
+        )
+    }
+}
+
+/// Where a finished background command is reported. Filled late by the
+/// server, like the notify function: the registry exists before the wake
+/// rail does.
+pub type ExitSink = Arc<dyn Fn(CommandExit) + Send + Sync>;
+
+/// Where a session stands, decided under one lock so a move to the
+/// background and the process's end cannot cross.
+#[derive(Debug, Default)]
+struct Lifecycle {
+    /// A call is waiting on it; it is nobody's background work yet.
+    foreground: bool,
+    /// Told when it ends. Cleared by a stop the caller asked for: nobody
+    /// needs telling what they did themselves.
+    notify: Option<Caller>,
+    ended: bool,
+}
+
+/// A shell session in the registry.
 #[derive(Debug)]
 pub struct BackgroundSession {
     pub id: String,
@@ -208,8 +293,8 @@ pub struct BackgroundSession {
     output: Arc<Mutex<String>>,
     pending_stdout: Arc<Mutex<Vec<u8>>>,
     pending_stderr: Arc<Mutex<Vec<u8>>>,
+    lifecycle: Arc<std::sync::Mutex<Lifecycle>>,
     stdin_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
-    kill_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl BackgroundSession {
@@ -222,80 +307,81 @@ impl BackgroundSession {
         let stderr = std::mem::take(&mut *self.pending_stderr.lock().await);
         (stdout, stderr)
     }
+
+    fn lifecycle(&self) -> std::sync::MutexGuard<'_, Lifecycle> {
+        self.lifecycle.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
-/// Manages background shell processes.
+/// A started command: its id, the session, and its exit status when it ends
+/// (`None` when it could not be waited on or was stopped).
+pub struct Started {
+    pub session: Arc<BackgroundSession>,
+    pub exited: tokio::sync::oneshot::Receiver<Option<std::process::ExitStatus>>,
+}
+
+type Sessions = Arc<Mutex<HashMap<String, Arc<BackgroundSession>>>>;
+
+/// Every `run_command` process.
+#[derive(Clone, Default)]
 pub struct ProcessRegistry {
-    running: Arc<Mutex<HashMap<String, Arc<BackgroundSession>>>>,
-    finished: Arc<Mutex<HashMap<String, Arc<BackgroundSession>>>>,
+    running: Sessions,
+    finished: Sessions,
+    exit_sink: Arc<std::sync::RwLock<Option<ExitSink>>>,
 }
 
 impl ProcessRegistry {
     pub fn new() -> Self {
-        Self {
-            running: Arc::new(Mutex::new(HashMap::new())),
-            finished: Arc::new(Mutex::new(HashMap::new())),
-        }
+        Self::default()
     }
 
-    /// Spawn a background process and return its session.
-    pub async fn spawn_background(
-        &self,
-        command: &str,
-        cwd: Option<&str>,
-        extra_env: &[(String, String)],
-    ) -> Result<String, String> {
-        let (shell, shell_args) = shell_command();
-        let mut cmd = Command::new(shell);
-        for arg in &shell_args {
-            cmd.arg(arg);
-        }
-        cmd.arg(command);
+    /// Where finished background commands are reported.
+    pub fn set_exit_sink(&self, sink: ExitSink) {
+        *self.exit_sink.write().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+    }
 
-        if let Some(dir) = cwd {
-            cmd.current_dir(dir);
-        }
-
+    /// Start `cmd` (the shell running `command`, its env and cwd already
+    /// set) as a session. A background start is refused past the session
+    /// cap; a foreground one never is, since its call is waiting on it.
+    pub async fn spawn(&self, mut cmd: Command, command: &str, spawn: Spawn) -> std::io::Result<Started> {
+        let (foreground, notify) = match spawn {
+            Spawn::Foreground => (true, None),
+            Spawn::Background(caller) => {
+                let running = self.running.lock().await;
+                let background: Vec<String> = running
+                    .values()
+                    .filter(|s| !s.lifecycle().foreground)
+                    .map(|s| format!("{} ({})", s.id, s.command))
+                    .collect();
+                if background.len() >= MAX_BACKGROUND_SESSIONS {
+                    let mut ids = background;
+                    ids.sort();
+                    return Err(std::io::Error::other(format!(
+                        "{MAX_BACKGROUND_SESSIONS} background sessions are already running; stop one first with stop_task: {}",
+                        ids.join(", ")
+                    )));
+                }
+                (false, caller)
+            }
+        };
         hide_window(&mut cmd);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        cmd.stdin(Stdio::piped());
-        cmd.env_clear();
-        for (k, v) in sanitized_env() {
-            cmd.env(k, v);
-        }
-        for (k, v) in extra_env {
-            cmd.env(k, v);
-        }
-
-        {
-            let running = self.running.lock().await;
-            if running.len() >= MAX_BACKGROUND_SESSIONS {
-                let mut ids: Vec<String> = running.values().map(|s| format!("{} ({})", s.id, s.command)).collect();
-                ids.sort();
-                return Err(format!(
-                    "{MAX_BACKGROUND_SESSIONS} background sessions are already running; kill one first: {}",
-                    ids.join(", ")
-                ));
-            }
-        }
+        // A foreground command has nobody to type into it: input it waits
+        // for would hold its call to the timeout. A background one takes
+        // send_input.
+        cmd.stdin(if foreground { Stdio::null() } else { Stdio::piped() });
         in_own_group(&mut cmd);
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("failed to spawn '{}': {}", command, e))?;
+        let child = cmd.spawn()?;
 
         let pid = child.id().unwrap_or(0);
         // The shutdown handler kills registered children, so a Nebo restart
-        // takes its background sessions with it instead of orphaning them.
+        // takes its sessions with it instead of orphaning them.
         napp::child_guard::register_child(pid);
         let session_id = format!("{SESSION_ID_PREFIX}{}", &Uuid::new_v4().to_string()[..8]);
 
-        let output = Arc::new(Mutex::new(String::new()));
-        let pending_stdout = Arc::new(Mutex::new(Vec::new()));
-        let pending_stderr = Arc::new(Mutex::new(Vec::new()));
-
         let (stdin_tx, stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
-        let (kill_tx, kill_rx) = tokio::sync::oneshot::channel();
+        let (exit_tx, exited) = tokio::sync::oneshot::channel();
 
         let session = Arc::new(BackgroundSession {
             id: session_id.clone(),
@@ -303,157 +389,132 @@ impl ProcessRegistry {
             command: command.to_string(),
             exited: false,
             exit_code: None,
-            output: output.clone(),
-            pending_stdout: pending_stdout.clone(),
-            pending_stderr: pending_stderr.clone(),
+            output: Arc::default(),
+            pending_stdout: Arc::default(),
+            pending_stderr: Arc::default(),
+            lifecycle: Arc::new(std::sync::Mutex::new(Lifecycle { foreground, notify, ended: false })),
             stdin_tx: Some(stdin_tx),
-            kill_tx: Some(kill_tx),
         });
 
-        self.running
-            .lock()
-            .await
-            .insert(session_id.clone(), session.clone());
+        self.running.lock().await.insert(session_id, session.clone());
 
-        // Spawn IO handler
-        let running = self.running.clone();
-        let finished = self.finished.clone();
-        let sid = session_id.clone();
+        let registry = self.clone();
+        let s = session.clone();
+        tokio::spawn(async move { registry.handle_process(child, s, stdin_rx, exit_tx).await });
 
-        tokio::spawn(async move {
-            Self::handle_process(
-                child,
-                sid,
-                output,
-                pending_stdout,
-                pending_stderr,
-                stdin_rx,
-                kill_rx,
-                running,
-                finished,
-            )
-            .await;
-        });
-
-        Ok(session_id)
+        Ok(Started { session, exited })
     }
 
+    /// Hand a foreground command, still running, to the background: it keeps
+    /// running and `caller` is told when it ends. False when it already
+    /// ended, in which case its call gets its result as usual.
+    pub fn move_to_background(&self, session: &BackgroundSession, caller: Option<Caller>) -> bool {
+        let mut life = session.lifecycle();
+        if life.ended {
+            return false;
+        }
+        life.foreground = false;
+        life.notify = caller;
+        true
+    }
+
+    /// Read the session's output until it ends, then settle it: a
+    /// foreground command's status goes to its call, a background one is
+    /// kept for read_output and its caller is told. A stop (`kill_session`)
+    /// ends it the same way, with nobody told.
     async fn handle_process(
+        self,
         mut child: Child,
-        session_id: String,
-        output: Arc<Mutex<String>>,
-        pending_stdout: Arc<Mutex<Vec<u8>>>,
-        pending_stderr: Arc<Mutex<Vec<u8>>>,
+        session: Arc<BackgroundSession>,
         mut stdin_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
-        kill_rx: tokio::sync::oneshot::Receiver<()>,
-        running: Arc<Mutex<HashMap<String, Arc<BackgroundSession>>>>,
-        finished: Arc<Mutex<HashMap<String, Arc<BackgroundSession>>>>,
+        exit_tx: tokio::sync::oneshot::Sender<Option<std::process::ExitStatus>>,
     ) {
-        let pid = child.id().unwrap_or(0);
-        let mut child_stdout = child.stdout.take();
-        let mut child_stderr = child.stderr.take();
+        let pid = session.pid;
+        let session_id = session.id.clone();
+        let reader = |pipe: Option<Box<dyn tokio::io::AsyncRead + Send + Unpin>>, pending: Arc<Mutex<Vec<u8>>>| {
+            let output = session.output.clone();
+            tokio::spawn(async move {
+                let Some(mut pipe) = pipe else { return };
+                let mut buf = [0u8; 4096];
+                let mut carry: Vec<u8> = Vec::new();
+                loop {
+                    match pipe.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let data = &buf[..n];
+                            carry.extend_from_slice(data);
+                            output.lock().await.push_str(&drain_utf8(&mut carry));
+                            pending.lock().await.extend_from_slice(data);
+                        }
+                    }
+                }
+            })
+        };
+        let stdout_handle = reader(
+            child.stdout.take().map(|p| Box::new(p) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
+            session.pending_stdout.clone(),
+        );
+        let stderr_handle = reader(
+            child.stderr.take().map(|p| Box::new(p) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
+            session.pending_stderr.clone(),
+        );
         let mut child_stdin = child.stdin.take();
-
-        // Read stdout in background
-        let stdout_output = output.clone();
-        let stdout_pending = pending_stdout.clone();
-        let stdout_handle = tokio::spawn(async move {
-            if let Some(ref mut stdout) = child_stdout {
-                let mut buf = [0u8; 4096];
-                let mut carry: Vec<u8> = Vec::new();
-                loop {
-                    match stdout.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let data = &buf[..n];
-                            carry.extend_from_slice(data);
-                            stdout_output.lock().await.push_str(&drain_utf8(&mut carry));
-                            stdout_pending.lock().await.extend_from_slice(data);
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-        });
-
-        // Read stderr in background
-        let stderr_output = output.clone();
-        let stderr_pending = pending_stderr.clone();
-        let stderr_handle = tokio::spawn(async move {
-            if let Some(ref mut stderr) = child_stderr {
-                let mut buf = [0u8; 4096];
-                let mut carry: Vec<u8> = Vec::new();
-                loop {
-                    match stderr.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let data = &buf[..n];
-                            carry.extend_from_slice(data);
-                            stderr_output.lock().await.push_str(&drain_utf8(&mut carry));
-                            stderr_pending.lock().await.extend_from_slice(data);
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-        });
-
-        // Handle stdin writes and kill signal
         let stdin_handle = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    data = stdin_rx.recv() => {
-                        match data {
-                            Some(bytes) => {
-                                if let Some(ref mut stdin) = child_stdin {
-                                    let _ = stdin.write_all(&bytes).await;
-                                }
-                            }
-                            None => break,
-                        }
-                    }
+            while let Some(bytes) = stdin_rx.recv().await {
+                if let Some(ref mut stdin) = child_stdin {
+                    let _ = stdin.write_all(&bytes).await;
                 }
             }
         });
 
-        // Wait for process to exit or kill signal
-        tokio::select! {
-            status = child.wait() => {
-                let exit_code = status.ok().and_then(|s| s.code());
-                debug!(session = %session_id, exit_code = ?exit_code, "background process exited");
-                // The leader is gone; whatever it left behind in the group goes too.
-                kill_group(pid);
-                napp::child_guard::unregister_child(pid);
+        let status = child.wait().await.ok();
+        let exit_code = status.and_then(|s| s.code());
+        debug!(session = %session_id, exit_code = ?exit_code, "command exited");
+        // The leader is gone; whatever it left behind in the group goes too.
+        kill_group(pid);
+        napp::child_guard::unregister_child(pid);
 
-                // Wait for IO to drain
-                let _ = stdout_handle.await;
-                let _ = stderr_handle.await;
-                stdin_handle.abort();
+        // The output drains once the group is gone, bounded: a child the kill
+        // cannot reach holds the pipe open (see REAP_BOUND).
+        let drained_by = tokio::time::Instant::now() + REAP_BOUND;
+        let _ = tokio::time::timeout_at(drained_by, stdout_handle).await;
+        let _ = tokio::time::timeout_at(drained_by, stderr_handle).await;
+        stdin_handle.abort();
 
-                // Move from running to finished
-                let mut running_lock = running.lock().await;
-                if let Some(sess) = running_lock.remove(&session_id) {
-                    let finished_sess = Arc::new(BackgroundSession {
-                        id: sess.id.clone(),
-                        pid: sess.pid,
-                        command: sess.command.clone(),
-                        exited: true,
-                        exit_code,
-                        output: sess.output.clone(),
-                        pending_stdout: sess.pending_stdout.clone(),
-                        pending_stderr: sess.pending_stderr.clone(),
-                        stdin_tx: None,
-                        kill_tx: None,
-                    });
-                    finished.lock().await.insert(session_id, finished_sess);
-                }
-            }
-            _ = kill_rx => {
-                kill_group(pid);
-                let _ = child.kill().await;
-                napp::child_guard::unregister_child(pid);
-                debug!(session = %session_id, "background process killed");
-            }
+        let (foreground, notify) = {
+            let mut life = session.lifecycle();
+            life.ended = true;
+            (life.foreground, life.notify.take())
+        };
+        // A stopped session is already out of `running`; a foreground
+        // command's result goes to its call alone.
+        let removed = self.running.lock().await.remove(&session_id);
+        if let (Some(sess), false) = (removed, foreground) {
+            let finished_sess = Arc::new(BackgroundSession {
+                id: sess.id.clone(),
+                pid: sess.pid,
+                command: sess.command.clone(),
+                exited: true,
+                exit_code,
+                output: sess.output.clone(),
+                pending_stdout: sess.pending_stdout.clone(),
+                pending_stderr: sess.pending_stderr.clone(),
+                lifecycle: sess.lifecycle.clone(),
+                stdin_tx: None,
+            });
+            self.finished.lock().await.insert(session_id.clone(), finished_sess);
+        }
+        let _ = exit_tx.send(status);
+        let Some(caller) = notify else { return };
+        let sink = self.exit_sink.read().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(sink) = sink {
+            sink(CommandExit {
+                caller,
+                task_id: session_id,
+                command: session.command.clone(),
+                exit_code,
+                output: session.get_output().await,
+            });
         }
     }
 
@@ -465,9 +526,9 @@ impl ProcessRegistry {
         self.finished.lock().await.get(id).cloned()
     }
 
-    /// List running sessions.
+    /// Running background sessions (a foreground command is its call's).
     pub async fn list_running(&self) -> Vec<Arc<BackgroundSession>> {
-        self.running.lock().await.values().cloned().collect()
+        self.running.lock().await.values().filter(|s| !s.lifecycle().foreground).cloned().collect()
     }
 
     /// List finished sessions.
@@ -484,7 +545,7 @@ impl ProcessRegistry {
                 None => format!("session {} has already exited (terminated by signal)", id),
             };
         }
-        let mut ids: Vec<String> = self.running.lock().await.keys().cloned().collect();
+        let mut ids: Vec<String> = self.list_running().await.iter().map(|s| s.id.clone()).collect();
         ids.sort();
         if ids.is_empty() {
             format!("no session {}; no background sessions are running", id)
@@ -506,34 +567,19 @@ impl ProcessRegistry {
             .map_err(|e| format!("write error: {}", e))
     }
 
-    /// Kill a running session by sending the kill signal via oneshot channel.
+    /// Stop a running session. Its caller is not told it ended: the caller
+    /// asked for the stop (Claude Code's `notified` flag, set by TaskStop).
     pub async fn kill_session(&self, id: &str) -> Result<(), String> {
         let mut running = self.running.lock().await;
         let Some(sess) = running.remove(id) else {
             drop(running);
             return Err(self.not_running(id).await);
         };
-        // The group dies here, by pid: the oneshot below only tidies the IO
-        // task, and it cannot fire while another handle to the session exists.
+        sess.lifecycle().notify = None;
+        // The group dies by pid; the session's own task sees the end and
+        // tidies up.
         kill_group(sess.pid);
-
-        // We need mutable access to take the kill_tx. Since the session is wrapped in Arc,
-        // and we just removed the only reference from the map, we try to unwrap.
-        // If that fails (other references exist), we still drop which closes channels.
-        if let Ok(mut owned) = Arc::try_unwrap(sess) {
-            if let Some(kill_tx) = owned.kill_tx.take() {
-                let _ = kill_tx.send(());
-            }
-        }
-        // If Arc::try_unwrap fails, the session IO handler will detect that
-        // the stdin_tx was dropped and the process will be cleaned up.
         Ok(())
-    }
-}
-
-impl Default for ProcessRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -839,33 +885,119 @@ mod group_tests {
         }
     }
 
+    fn sh(command: &str) -> Command {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(command);
+        cmd
+    }
+
+    fn caller() -> Caller {
+        Caller { session_key: "agent:a1:web".into(), description: "build the site".into() }
+    }
+
+    /// A registry whose finished background commands land on a channel.
+    fn reported() -> (ProcessRegistry, tokio::sync::mpsc::UnboundedReceiver<CommandExit>) {
+        let reg = ProcessRegistry::new();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        reg.set_exit_sink(Arc::new(move |exit| {
+            let _ = tx.send(exit);
+        }));
+        (reg, rx)
+    }
+
     #[tokio::test]
     async fn killing_a_background_session_takes_its_children_with_it() {
         let file = pid_file();
         let reg = ProcessRegistry::new();
-        let id = reg
-            .spawn_background(&format!("sleep 30 & echo $! > {}; wait", file.display()), None, &[])
+        let started = reg
+            .spawn(sh(&format!("sleep 30 & echo $! > {}; wait", file.display())), "sleep", Spawn::Background(None))
             .await
             .unwrap();
         let pid = grandchild_pid(&file).await;
         assert!(alive(pid));
-        reg.kill_session(&id).await.unwrap();
+        reg.kill_session(&started.session.id).await.unwrap();
         settle().await;
         assert!(!alive(pid), "the session's grandchild outlived the kill");
         let _ = std::fs::remove_file(file);
     }
 
     #[tokio::test]
-    async fn background_sessions_are_capped() {
+    async fn background_sessions_are_capped_and_foreground_commands_are_not() {
         let reg = ProcessRegistry::new();
         let mut ids = Vec::new();
         for _ in 0..MAX_BACKGROUND_SESSIONS {
-            ids.push(reg.spawn_background("sleep 30", None, &[]).await.unwrap());
+            ids.push(reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None)).await.unwrap().session.id.clone());
         }
-        let err = reg.spawn_background("sleep 30", None, &[]).await.unwrap_err();
-        assert!(err.contains("kill one first"), "{err}");
+        let err = reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None)).await.err().expect("capped");
+        assert!(err.to_string().contains("stop one first"), "{err}");
+        let fg = reg.spawn(sh("echo still-runs"), "echo", Spawn::Foreground).await.expect("a foreground command is never capped");
+        assert!(fg.exited.await.unwrap().is_some_and(|s| s.success()));
         for id in ids {
             reg.kill_session(&id).await.unwrap();
         }
+    }
+
+    /// A background command's end reaches the session that started it
+    /// (Claude Code's task notification for a background shell).
+    #[tokio::test]
+    async fn a_finished_background_command_tells_its_caller() {
+        let (reg, mut rx) = reported();
+        let started = reg
+            .spawn(sh("echo built 12 pages; exit 3"), "make site", Spawn::Background(Some(caller())))
+            .await
+            .unwrap();
+        let exit = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("told in time").expect("told");
+        assert_eq!(exit.caller, caller());
+        assert_eq!(exit.task_id, started.session.id);
+        assert_eq!(exit.exit_code, Some(3));
+        let body = exit.render();
+        assert!(
+            body.starts_with(&format!("Background command {} \"build the site\" failed with exit code 3.\nIts output:\nbuilt 12 pages", started.session.id)),
+            "{body}"
+        );
+        assert!(body.ends_with(&format!("read_output(task_id: \"{}\").", started.session.id)), "{body}");
+        let kept = reg.get_any_session(&started.session.id).await.expect("kept for read_output");
+        assert!(kept.exited && kept.get_output().await.contains("built 12 pages"));
+    }
+
+    /// A stop the caller asked for is not reported back to it, and a
+    /// foreground command belongs to its call alone: neither is told.
+    #[tokio::test]
+    async fn a_stopped_or_foreground_command_tells_nobody() {
+        let (reg, mut rx) = reported();
+        let started = reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(Some(caller()))).await.unwrap();
+        reg.kill_session(&started.session.id).await.unwrap();
+        let fg = reg.spawn(sh("echo done"), "echo done", Spawn::Foreground).await.unwrap();
+        assert!(fg.exited.await.unwrap().is_some());
+        assert!(reg.get_any_session(&fg.session.id).await.is_none(), "a foreground result is its call's alone");
+        settle().await;
+        assert!(rx.try_recv().is_err(), "nobody is told");
+    }
+
+    /// A foreground command moved to the background at its timeout keeps
+    /// running and is reported like any background command.
+    #[tokio::test]
+    async fn a_moved_command_is_reported_when_it_ends() {
+        let (reg, mut rx) = reported();
+        let fg = reg.spawn(sh("sleep 0.5; echo finally"), "slow", Spawn::Foreground).await.unwrap();
+        assert!(reg.list_running().await.is_empty(), "a foreground command is not listed as background work");
+        assert!(reg.move_to_background(&fg.session, Some(caller())));
+        let exit = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("told in time").expect("told");
+        assert_eq!((exit.exit_code, exit.output.trim()), (Some(0), "finally"));
+        assert!(!reg.move_to_background(&fg.session, None), "an ended command cannot move");
+    }
+
+    #[test]
+    fn the_report_names_a_signal_and_cuts_long_output_to_its_end() {
+        let exit = CommandExit {
+            caller: Caller { session_key: "s".into(), description: String::new() },
+            task_id: "bg-1".into(),
+            command: "npm run dev".into(),
+            exit_code: None,
+            output: format!("{}END", "x".repeat(5000)),
+        };
+        let body = exit.render();
+        assert!(body.starts_with("Background command bg-1 \"npm run dev\" was ended by a signal.\nThe end of its output:\n"), "{body}");
+        assert!(body.contains("xEND\n") && body.len() < 1500, "{body}");
     }
 }

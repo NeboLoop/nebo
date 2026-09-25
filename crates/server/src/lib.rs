@@ -2321,6 +2321,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
+    // A background command that ends reports to the session that started it,
+    // through the same rail.
+    {
+        let exit_state = state.clone();
+        state.tools.process_registry().set_exit_sink(Arc::new(move |exit: tools::process::CommandExit| {
+            wake::enqueue(&exit_state, &exit.caller.session_key, "task_done", &exit.render(), &[], 0);
+        }));
+    }
+
     // Bind the harness's outlets: the chat-title sink (the harness generates
     // and stores titles; this broadcasts them and pushes them to the loop),
     // owner-facing events outside a turn, and the agreed goal's status,
