@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::UpdateError;
+use crate::{ApplyMode, UpdateError};
 
 static PRE_APPLY_HOOK: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
 
@@ -129,14 +129,20 @@ fn spawn_detached_sh(script: &str) -> Result<(), UpdateError> {
 ///
 /// - `app_bundle`: downloaded file is a DMG / NSIS installer / AppImage — swap the
 ///   installed bundle via a detached helper that runs after this process exits.
-/// - `direct`: downloaded file is the raw binary — replace and `execve`.
+/// - `direct`: downloaded file is the raw binary — replace, then `execve` when
+///   `mode` is [`ApplyMode::Restart`] or return when it is [`ApplyMode::ReplaceOnly`].
 ///
 /// `data_dir` is where a rollback writes `UPDATE_FAILED.json` (see [`marker_path`]).
-pub fn apply(new_path: &Path, data_dir: &Path) -> Result<(), UpdateError> {
+pub fn apply(new_path: &Path, data_dir: &Path, mode: ApplyMode) -> Result<(), UpdateError> {
     let method = crate::detect_install_method();
-    match method {
-        "app_bundle" => apply_app_bundle(new_path, data_dir),
-        _ => apply_direct(new_path, data_dir),
+    match (method, mode) {
+        ("app_bundle", ApplyMode::Restart) => apply_app_bundle(new_path, data_dir),
+        // The bundle swap only happens after this process exits — there is no
+        // "replace and keep running" for an app bundle.
+        ("app_bundle", ApplyMode::ReplaceOnly) => Err(UpdateError::Other(
+            "app bundle updates always restart the app".into(),
+        )),
+        _ => apply_direct(new_path, mode),
     }
 }
 
@@ -522,7 +528,7 @@ exit 0
 /// `execve` into it. Renaming first is permitted while the binary is executing and
 /// avoids `ETXTBSY` from truncating an in-use executable in place.
 #[cfg(unix)]
-fn apply_direct(new_binary_path: &Path, _data_dir: &Path) -> Result<(), UpdateError> {
+fn apply_direct(new_binary_path: &Path, mode: ApplyMode) -> Result<(), UpdateError> {
     use std::ffi::CString;
 
     let current_exe = std::env::current_exe()
@@ -548,6 +554,10 @@ fn apply_direct(new_binary_path: &Path, _data_dir: &Path) -> Result<(), UpdateEr
     // Clean temp.
     let _ = std::fs::remove_file(new_binary_path);
 
+    if mode == ApplyMode::ReplaceOnly {
+        return Ok(());
+    }
+
     // Release resources.
     run_pre_apply();
 
@@ -568,7 +578,7 @@ fn apply_direct(new_binary_path: &Path, _data_dir: &Path) -> Result<(), UpdateEr
 
 /// Windows: rename current → .old, copy new → current, spawn new process.
 #[cfg(windows)]
-fn apply_direct(new_binary_path: &Path, _data_dir: &Path) -> Result<(), UpdateError> {
+fn apply_direct(new_binary_path: &Path, mode: ApplyMode) -> Result<(), UpdateError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| UpdateError::Other(format!("resolve executable: {}", e)))?;
 
@@ -586,6 +596,10 @@ fn apply_direct(new_binary_path: &Path, _data_dir: &Path) -> Result<(), UpdateEr
         return Err(UpdateError::Other(format!("copy new binary: {}", e)));
     }
     let _ = std::fs::remove_file(new_binary_path);
+
+    if mode == ApplyMode::ReplaceOnly {
+        return Ok(());
+    }
 
     run_pre_apply();
 
