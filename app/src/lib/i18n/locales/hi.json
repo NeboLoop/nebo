@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "इस बारी में संदर्भ: {files} फ़ाइलें {times} बार फिर से पढ़ी गईं, {passes} संपीड़न पास।",
+		"goalLine": "लक्ष्य: {condition} ({turns} दौर)",
+		"goalLastCheck": "पिछली जाँच: {reason}",
+		"goalPaused": "रुका हुआ है। आपका अगला संदेश इसे फिर शुरू करेगा।",
 		"resumedActivity": "अब भी काम पर: {tool}",
 		"waitingForYou": "आपकी प्रतीक्षा में",
 		"subagentStep": "{op} · चरण {n}",
@@ -2463,6 +2466,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "एक ही चरण की {n} क्रियाओं को आपकी मंज़ूरी चाहिए",
+			"goalHeadline": "क्या यह लक्ष्य तय करें? जाँच से पुष्टि होने तक काम चलता रहेगा।",
 			"yourAgent": "आपका कर्मचारी"
 		},
 		"approvalModal": {

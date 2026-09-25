@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Context this turn: {files} files were re-read {times} times, {passes} compaction passes.",
+		"goalLine": "Goal: {condition} ({turns} turns)",
+		"goalLastCheck": "last check: {reason}",
+		"goalPaused": "Paused. Your next message resumes it.",
 		"resumedActivity": "Still working: {tool}",
 		"waitingForYou": "Waiting for you",
 		"subagentStep": "{op} · step {n}",
@@ -2478,6 +2481,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} actions in one step need your OK",
+			"goalHeadline": "Agree on this goal? Work continues until a check confirms it's met.",
 			"yourAgent": "Your agent"
 		},
 		"approvalModal": {

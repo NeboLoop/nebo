@@ -258,7 +258,10 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         ),
         TurnEvent::GoalSet(condition) => (
             "goal_set",
-            format!("Agreed goal: {}. Work continues until a separate check confirms it is met.", non_empty(condition)?),
+            format!(
+                "Agreed goal: {}. Work continues until a separate check confirms it is met. Briefly acknowledge it, then start (or continue) working toward it now; don't stop to ask.",
+                non_empty(condition)?
+            ),
         ),
         TurnEvent::GoalCleared => ("goal_cleared", "The agreed goal was cleared.".to_string()),
         TurnEvent::GoalCheck { reason, condition } => (

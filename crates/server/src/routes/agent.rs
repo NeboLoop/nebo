@@ -23,6 +23,12 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::agent::get_session_messages),
         )
         .route(
+            "/agent/sessions/{id}/goal",
+            axum::routing::get(handlers::goal::get_session_goal)
+                .put(handlers::goal::set_session_goal)
+                .delete(handlers::goal::clear_session_goal),
+        )
+        .route(
             "/agent/settings",
             axum::routing::get(handlers::agent::get_settings),
         )

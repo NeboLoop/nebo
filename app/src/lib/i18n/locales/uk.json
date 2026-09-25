@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Контекст цього ходу: файлів перечитано — {files}, разів — {times}, ущільнень — {passes}.",
+		"goalLine": "Мета: {condition} ({turns} ходів)",
+		"goalLastCheck": "остання перевірка: {reason}",
+		"goalPaused": "Призупинено. Ваше наступне повідомлення відновить.",
 		"resumedActivity": "Досі працює: {tool}",
 		"waitingForYou": "Чекає на вас",
 		"subagentStep": "{op} · крок {n}",
@@ -2463,6 +2466,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "Дій на одному кроці, що потребують вашої згоди: {n}",
+			"goalHeadline": "Погодити цю мету? Робота триває, доки перевірка не підтвердить, що її досягнуто.",
 			"yourAgent": "Ваш співробітник"
 		},
 		"approvalModal": {

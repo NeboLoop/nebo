@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Contexto de este turno: {files} archivos releídos {times} veces, {passes} pases de compactación.",
+		"goalLine": "Objetivo: {condition} ({turns} turnos)",
+		"goalLastCheck": "última comprobación: {reason}",
+		"goalPaused": "En pausa. Tu próximo mensaje lo reanuda.",
 		"resumedActivity": "Sigue trabajando: {tool}",
 		"waitingForYou": "Esperándote",
 		"subagentStep": "{op} · paso {n}",
@@ -2463,6 +2466,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} acciones en un solo paso necesitan tu visto bueno",
+			"goalHeadline": "¿Acordar este objetivo? El trabajo continúa hasta que una comprobación confirme que se cumplió.",
 			"yourAgent": "Tu empleado"
 		},
 		"approvalModal": {

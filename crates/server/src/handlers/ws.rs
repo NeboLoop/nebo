@@ -1100,6 +1100,7 @@ async fn handle_builtin_slash(
                 "| `/new` | Start a new conversation (preserves history) |",
                 "| `/clear` | Clear current conversation messages |",
                 "| `/compact` | Summarize & compress old messages |",
+                "| `/goal [end state \\| clear]` | Work until a check confirms the end state; starts now |",
                 "| `/model [name]` | Show or switch model |",
                 "| `/status` | Show agent & system status |",
                 "| `/help` | Show this help |",
@@ -1277,6 +1278,9 @@ struct ChatPayload {
     /// Explicit model for this run (empty = the selector's choice). The test
     /// harness's `--model` arrives here.
     model_override: String,
+    /// App-provided context (the chat embed's `setContext`), shown to the
+    /// model beside the prompt.
+    app_context: Option<String>,
 }
 
 impl ChatPayload {
@@ -1295,6 +1299,13 @@ impl ChatPayload {
             scope: data["scope"].as_str().unwrap_or("").to_string(),
             cwd: data["cwd"].as_str().unwrap_or("").to_string(),
             model_override: data["model_override"].as_str().unwrap_or("").to_string(),
+            app_context: data.get("context").filter(|v| !v.is_null()).map(|v| {
+                if let Some(s) = v.as_str() {
+                    s.to_string()
+                } else {
+                    format!("App context: {}", v)
+                }
+            }),
             // Uploaded attachment metadata from the WS payload
             attachments: data
                 .get("attachments")
@@ -1313,7 +1324,24 @@ impl ChatPayload {
 /// server-side and persist; explicit cancellation goes through the RunRegistry
 /// (the "cancel" WS message), never through connection lifetime.
 async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
-    let data = &msg["data"];
+    dispatch_payload(state, ChatPayload::parse(&msg["data"]), false).await;
+}
+
+/// Run a platform-written prompt the owner never sees (a goal's kickoff) on
+/// `session_key`, through the same path as the owner's messages: while a
+/// turn runs there, it takes the prompt at its next step.
+pub(crate) async fn dispatch_hidden_prompt(state: &AppState, session_key: &str, prompt: String) {
+    let data = serde_json::json!({
+        "session_id": session_key,
+        "agent_id": types::keyparser::extract_agent_id(session_key),
+        "prompt": prompt,
+    });
+    dispatch_payload(state, ChatPayload::parse(&data), true).await;
+}
+
+/// One chat message, the owner's own (`hidden` false) or a platform-written
+/// prompt they never see.
+async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) {
     let ChatPayload {
         session_id,
         prompt,
@@ -1325,7 +1353,8 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         attachments: ws_attachments,
         cwd,
         model_override,
-    } = ChatPayload::parse(data);
+        app_context,
+    } = payload;
 
     info!(
         session_id = %session_id,
@@ -1465,6 +1494,31 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
 
     info!(session_key = %session_key, agent_id = %agent_id, channel = %channel, "[THREAD-DEBUG] dispatch_chat final session_key");
 
+    // `/goal`: set, show or clear the agreed goal. Setting one starts work
+    // on it now: its kickoff runs as a hidden prompt through the same path as
+    // any message, so a running turn takes it at its next step.
+    let mut hidden_prompt = hidden;
+    let goal_command = if hidden { None } else { super::goal::command_args(&prompt).map(str::to_string) };
+    let prompt = match goal_command {
+        Some(args) => {
+            let reply = super::goal::slash(state, &session_key, &args);
+            state.hub.broadcast(
+                "chat_stream",
+                serde_json::json!({ "session_id": &session_key, "content": &reply.text }),
+            );
+            let Some(kickoff) = reply.kickoff else {
+                state.hub.broadcast(
+                    "chat_complete",
+                    serde_json::json!({ "session_id": &session_key }),
+                );
+                return;
+            };
+            hidden_prompt = true;
+            kickoff
+        }
+        None => prompt,
+    };
+
     // Resolve entity config for the active entity
     let entity_config = {
         let (etype, eid) = if !agent_id.is_empty() {
@@ -1549,7 +1603,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     // The relay markers are the canonical "this is the OWNER's own message
     // relayed by the bot" shape (same as the reconcile backfill) — without
     // them the web renders the mirrored prompt as the agent speaking.
-    if let Some(ref reply_cfg) = comm_reply {
+    if let Some(reply_cfg) = comm_reply.as_ref().filter(|_| !hidden_prompt) {
         let mut meta = std::collections::HashMap::new();
         meta.insert("relay".to_string(), "true".to_string());
         meta.insert("role".to_string(), "user".to_string());
@@ -1579,16 +1633,6 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     }
 
     // Extract app-provided context (sent by chat embed's setContext)
-    let app_context: Option<String> = data
-        .get("context")
-        .filter(|v| !v.is_null())
-        .map(|v| {
-            if let Some(s) = v.as_str() {
-                s.to_string()
-            } else {
-                format!("App context: {}", v)
-            }
-        });
 
     // @mentions route the message to the addressed agent(s). When the user
     // @mentions other agents, ONLY they respond — the thread's own agent stays
@@ -1621,7 +1665,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             handoff_depth: 0,
             seed_taint: vec![],
             tool_allowlist: None,
-            hidden_prompt: false,
+            hidden_prompt,
             audience: None,
             cwd: (!cwd.is_empty()).then(|| std::path::PathBuf::from(cwd)),
             model_override: (!model_override.is_empty()).then_some(model_override),

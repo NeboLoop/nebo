@@ -118,6 +118,27 @@ export function deleteSession(id: string) {
 }
 
 /**
+ * @description "Get session goal"
+ */
+export function getSessionGoal(id: string) {
+	return webapi.get<components.SessionGoalResponse>(`/api/v1/agent/sessions/${id}/goal`)
+}
+
+/**
+ * @description "Set session goal"
+ */
+export function setSessionGoal(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.SessionGoalResponse>(`/api/v1/agent/sessions/${id}/goal`, req)
+}
+
+/**
+ * @description "Clear session goal"
+ */
+export function clearSessionGoal(id: string) {
+	return webapi.delete<components.SessionGoalResponse>(`/api/v1/agent/sessions/${id}/goal`)
+}
+
+/**
  * @description "Get session messages"
  */
 export function getSessionMessages(id: string, limit?: number, before?: string) {

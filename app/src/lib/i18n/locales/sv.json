@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Kontext denna omgång: {files} filer lästes om {times} gånger, {passes} komprimeringar.",
+		"goalLine": "Mål: {condition} ({turns} omgångar)",
+		"goalLastCheck": "senaste kontroll: {reason}",
+		"goalPaused": "Pausad. Ditt nästa meddelande återupptar den.",
 		"resumedActivity": "Arbetar fortfarande: {tool}",
 		"waitingForYou": "Väntar på dig",
 		"subagentStep": "{op} · steg {n}",
@@ -2463,6 +2466,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} åtgärder i ett steg behöver ditt godkännande",
+			"goalHeadline": "Enas om det här målet? Arbetet fortsätter tills en kontroll bekräftar att det är uppnått.",
 			"yourAgent": "Din medarbetare"
 		},
 		"approvalModal": {

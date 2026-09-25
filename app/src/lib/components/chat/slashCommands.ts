@@ -19,6 +19,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/new',      category: 'Session', desc: 'Start a new conversation' },
   { name: '/clear',    category: 'Session', desc: 'Clear current conversation' },
   { name: '/compact',  category: 'Session', desc: 'Summarize & clear old messages' },
+  { name: '/goal',     category: 'Session', desc: 'Keep working until a check confirms the end state', args: '[end state | clear]' },
 
   // Model
   { name: '/model',    category: 'Model', desc: 'Show or switch model',              args: '[name]' },
