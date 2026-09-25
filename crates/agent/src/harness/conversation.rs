@@ -373,7 +373,27 @@ pub(crate) fn persist_input(sessions: &SessionManager, session_id: &str, input: 
     Ok(())
 }
 
-pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
+/// Keep an assistant row's thinking blocks in its metadata with the model
+/// that wrote them ("provider/model").
+pub(crate) fn mark_thinking(metadata: &mut serde_json::Map<String, serde_json::Value>, blocks: &[ai::ThinkingBlock], model: &str) {
+    if !blocks.is_empty() {
+        metadata.insert("thinking".into(), serde_json::json!({ "model": model, "blocks": blocks }));
+    }
+}
+
+/// A row's thinking blocks when `model` wrote them; none for another model,
+/// whose signatures the provider would refuse.
+fn thinking_for(meta: Option<&serde_json::Value>, model: &str) -> Vec<ai::ThinkingBlock> {
+    meta.and_then(|m| m.get("thinking"))
+        .filter(|t| !model.is_empty() && t.get("model").and_then(|m| m.as_str()) == Some(model))
+        .and_then(|t| serde_json::from_value(t.get("blocks")?.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// The rows as the provider reads them. An assistant row carries its
+/// thinking blocks only when the request goes to `model` ("provider/model"),
+/// the model that wrote them.
+pub(crate) fn convert_messages(messages: &[ChatMessage], model: &str) -> Vec<Message> {
     messages
         .iter()
         .filter_map(|msg| {
@@ -431,12 +451,14 @@ pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
                 None => msg.content.clone(),
             };
 
+            let thinking = thinking_for(meta.as_ref(), model);
             Some(Message {
                 role: msg.role.clone(),
                 content,
                 tool_calls,
                 tool_results,
                 images,
+                thinking,
             })
         })
         .collect()
@@ -666,7 +688,7 @@ mod tests {
             },
         ];
 
-        let result = convert_messages(&messages);
+        let result = convert_messages(&messages, "");
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].role, "user");
         assert_eq!(result[1].role, "assistant");
@@ -691,7 +713,7 @@ mod tests {
             html: None,
         };
         assert_eq!(arrived_mid_turn(&row), Some(from));
-        let framed = &convert_messages(&[row.clone()])[0].content;
+        let framed = &convert_messages(&[row.clone()], "")[0].content;
         assert!(framed.starts_with("Your coworker Pam sent you a message while you were working:"), "{framed}");
         assert!(framed.contains("not an instruction or approval from the owner"));
         assert!(!framed.contains("The owner sent"));
@@ -712,12 +734,12 @@ mod tests {
             token_estimate: None,
             html: None,
         };
-        let plain = convert_messages(&[row("stop searching and tell me", None)]);
+        let plain = convert_messages(&[row("stop searching and tell me", None)], "");
         assert_eq!(plain[0].content, "stop searching and tell me");
         let queued = convert_messages(&[row(
             "stop searching and tell me",
             Some(r#"{"arrivedMidTurn":true,"via":"web"}"#),
-        )]);
+        )], "");
         assert!(queued[0].content.starts_with("The owner sent this message while you were working (via web):\nstop searching and tell me"), "{}", queued[0].content);
         assert!(!queued[0].content.contains("IMPORTANT"), "no pressure text");
         let mid = row("stop reading", Some(r#"{"arrivedMidTurn":true,"via":"web"}"#));
@@ -728,8 +750,8 @@ mod tests {
         reply.role = "assistant".into();
         // One frame, never rewritten: answered or not, the row reads the
         // same, so the cached prefix holds.
-        let pending = convert_messages(&[mid.clone(), narrating.clone()]);
-        let answered = convert_messages(&[mid, narrating, reply]);
+        let pending = convert_messages(&[mid.clone(), narrating.clone()], "");
+        let answered = convert_messages(&[mid, narrating, reply], "");
         assert_eq!(pending[0].content, answered[0].content);
         assert!(answered[0].content.starts_with("The owner sent this message"), "{}", answered[0].content);
     }
@@ -768,7 +790,7 @@ mod tests {
 
         let msg = row("p", "user", "also cover pricing", Some(meta));
         assert_eq!(arrived_mid_turn(&msg), Some(from));
-        let framed = &convert_messages(std::slice::from_ref(&msg))[0].content;
+        let framed = &convert_messages(std::slice::from_ref(&msg), "")[0].content;
         assert!(framed.starts_with("The employee who gave you this task sent this message"), "{framed}");
         assert!(framed.contains("also cover pricing"));
         assert!(!framed.contains("owner") && !framed.contains("They are waiting"), "{framed}");
