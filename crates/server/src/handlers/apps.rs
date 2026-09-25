@@ -540,7 +540,7 @@ pub async fn proxy_to_sidecar(
             }
             if let Some(tool_dir) = super::agents::app_tool_dir(&agent) {
                 let mut lifecycle = crate::app_lifecycle::AppLifecycle::new(
-                    agent_id.clone(),
+                    &agent,
                     tool_dir,
                     state.hub.clone(),
                     state.tools.clone(),

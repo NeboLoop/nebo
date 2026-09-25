@@ -85,9 +85,13 @@ pub struct TurnContext {
     pub max_steps: u32,
     /// The owner's spending limit for the run, microcents; 0 = none.
     pub spend_cap_microcents: i64,
-    /// Declared on every step: the employee's `requires.tools`, and the
-    /// plugin tool when its job needs plugins.
+    /// Declared on every step: the employee's `requires.tools` and its
+    /// required plugins' `plugin__<slug>` tools.
     pub always_load: HashSet<String>,
+    /// The catalog interfaces the employee binds (`requires.interfaces`):
+    /// their operation tools are declared on every step, as the connected
+    /// plugins provide them then.
+    pub interfaces: Vec<String>,
     /// The run's provenance: seeded by the input, grown by its tool calls,
     /// stamped on its last event.
     pub taint: Mutex<BTreeSet<types::provenance::ProvenanceClass>>,
@@ -180,7 +184,6 @@ struct RoundCarry {
     error_streak: crate::guardrails::ErrorStreak,
     files_read_this_session: HashSet<String>,
     recent_result_content_hashes: Vec<u64>,
-    tool_doc_cache: Vec<(String, String)>,
     plan_touch: Option<(usize, String)>,
     edits_since_check: usize,
     last_desktop_act: Option<String>,
@@ -587,12 +590,18 @@ pub(crate) async fn prepare(
             .tool_scope
             .as_deref()
             .and_then(|s| cfg.scopes.get(s))
-            .is_some_and(|s| !s.plugins.is_empty());
-        if !cfg.requires.plugins.is_empty() || scope_plugins {
-            set.insert("plugin".to_string());
+            .map(|s| s.plugins.as_slice())
+            .unwrap_or_default();
+        for slug in cfg.requires.plugins.iter().chain(scope_plugins) {
+            set.insert(tools::plugin_tools::plugin_tool_name(slug));
         }
         set
     });
+    let interfaces = agent
+        .as_ref()
+        .and_then(|a| a.config.as_ref())
+        .map(|cfg| cfg.requires.interfaces.clone())
+        .unwrap_or_default();
 
     let (max_steps, spend_cap_microcents) = match &req.mode {
         TurnMode::Workflow(m) => (if m.max_steps > 0 { m.max_steps } else { DEFAULT_MAX_STEPS }, m.spend_cap_microcents),
@@ -667,6 +676,7 @@ pub(crate) async fn prepare(
         max_steps,
         spend_cap_microcents,
         always_load: always_load.unwrap_or_default(),
+        interfaces,
         taint,
         after_turn,
         review_fork,
@@ -790,9 +800,11 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         if conversation::mid_turn_message_landed(&conversation, &st.seen) && st.step > 1 {
             st.transition = Transition::MidTurnInput;
         }
+        let mut always_load = cx.always_load.clone();
+        always_load.extend(h.tools.operation_tools_for(&cx.interfaces).await);
         let surface_seat = SurfaceInputs {
             agent_id: cx.agent_id(),
-            always_load: &cx.always_load,
+            always_load: &always_load,
             allowlist: cx.request.seat.tool_allowlist.as_ref(),
             company_memory_sealed: cx.seat.company_memory_sealed,
             workflow: cx.workflow(),
@@ -1385,7 +1397,6 @@ async fn tool_round(
             files_read_this_session: &mut carry.files_read_this_session,
             recent_result_content_hashes: &mut carry.recent_result_content_hashes,
             read_ledger: &mut st.read_ledger,
-            tool_doc_cache: &mut carry.tool_doc_cache,
             plan_touch: &mut carry.plan_touch,
             edits_since_check: &mut carry.edits_since_check,
             last_desktop_act: &mut carry.last_desktop_act,

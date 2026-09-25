@@ -1,4 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tracing::{info, warn};
@@ -6,38 +5,138 @@ use tracing::{info, warn};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
-/// The tool's registered name, shared with the Registry so it can refresh
-/// this tool's cached description whenever the proxy roster changes.
-pub const MCP_TOOL_NAME: &str = "mcp";
+/// Longest MCP tool description sent to the model; past it the text is cut
+/// and marked.
+pub const MAX_DESCRIPTION_CHARS: usize = 2_048;
 
-/// The MCP proxy tools the Registry currently holds, keyed by server slug
-/// (the `<server>` in `mcp__<server>__<tool>`), in name order. Maintained at
-/// the ONE place proxies are registered and unregistered (`Registry` as
-/// `ProxyToolRegistry`) and read here, so this tool's description and the
-/// model's toolset never disagree: the bridge's own connection map lags proxy
-/// registration and is locked during disconnect, and a description cached
-/// from it said "No MCP servers currently connected" beside forty proxies
-/// (audit 2026-09-05).
-pub type ProxyRoster = Arc<std::sync::RwLock<BTreeMap<String, BTreeSet<String>>>>;
-
-pub fn new_roster() -> ProxyRoster {
-    Arc::new(std::sync::RwLock::new(BTreeMap::new()))
+/// An MCP server's tool, exposed as its own tool (`mcp__<server>__<tool>`)
+/// with the server's real input schema. Deferred unless the server asks for
+/// it to be loaded always; read-only (and so parallel) only when the server
+/// says so.
+pub struct McpProxyTool {
+    name: String,
+    def: mcp::McpToolDef,
+    description: String,
+    hint: String,
+    integration_id: String,
+    bridge: Arc<mcp::Bridge>,
+    store: Arc<db::Store>,
 }
 
-/// The server slug a proxy tool name belongs to (`mcp__<server>__<tool>`).
-pub fn roster_server(proxy_name: &str) -> Option<&str> {
-    let rest = proxy_name.strip_prefix("mcp__")?;
-    let (server, tool) = rest.split_once("__")?;
-    (!server.is_empty() && !tool.is_empty()).then_some(server)
+impl McpProxyTool {
+    pub fn new(
+        name: &str,
+        def: &mcp::McpToolDef,
+        integration_id: &str,
+        bridge: Arc<mcp::Bridge>,
+        store: Arc<db::Store>,
+    ) -> Self {
+        let description = cut_description(&def.description);
+        let hint = def.search_hint().unwrap_or_else(|| {
+            let words: Vec<String> = name
+                .trim_start_matches("mcp__")
+                .split(['_', '-'])
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .collect();
+            words.join(" ")
+        });
+        Self {
+            name: name.to_string(),
+            def: def.clone(),
+            description,
+            hint,
+            integration_id: integration_id.to_string(),
+            bridge,
+            store,
+        }
+    }
 }
 
-/// McpTool enumerates connected MCP servers. It is the discovery verb for MCP —
-/// `mcp(action: "list")` — NOT a call path. Each MCP tool is exposed to the model as
-/// its own proxy tool (`mcp__<server>__<tool>`) carrying the server's real input
-/// schema, so the model calls it with correct arguments. Those proxies are the single
-/// canonical call pathway (see `call_mcp_tool` + `McpProxyTool` in registry.rs).
-pub struct McpTool {
-    roster: ProxyRoster,
+/// An MCP description as the model gets it: at most
+/// [`MAX_DESCRIPTION_CHARS`], and marked when cut.
+fn cut_description(description: &str) -> String {
+    if description.chars().count() <= MAX_DESCRIPTION_CHARS {
+        return description.to_string();
+    }
+    let cut: String = description.chars().take(MAX_DESCRIPTION_CHARS).collect();
+    format!("{cut}… [truncated]")
+}
+
+impl DynTool for McpProxyTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> String {
+        self.description.clone()
+    }
+
+    fn schema(&self) -> serde_json::Value {
+        self.def
+            .input_schema
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}))
+    }
+
+    fn search_hint(&self) -> &str {
+        &self.hint
+    }
+
+    fn should_defer(&self) -> bool {
+        !self.def.always_load()
+    }
+
+    fn read_only(&self, _input: &serde_json::Value) -> bool {
+        self.def.read_only()
+    }
+
+    /// A destructive tool's effects are unknown deletes; any other writer's
+    /// are unknown.
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        if self.read_only(input) {
+            return types::permissions::CallEffects::none();
+        }
+        let mut effects = types::permissions::CallEffects::unknown();
+        if self.def.destructive() {
+            effects.deletes.push(self.name.clone());
+        }
+        effects
+    }
+
+    fn max_result_chars(&self, _input: &serde_json::Value) -> Option<usize> {
+        Some(self.def.max_result_chars().unwrap_or(crate::registry::DEFAULT_MAX_RESULT_CHARS))
+    }
+
+    fn mcp_proxy_info(&self) -> Option<(String, String)> {
+        Some((self.integration_id.clone(), self.def.name.clone()))
+    }
+
+    fn execute_dyn<'a>(
+        &'a self,
+        ctx: &'a ToolContext,
+        mut input: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+        // Repair model-stringified object/array args against the server's real
+        // schema before forwarding (see coerce_schema_types).
+        if let Some(schema) = &self.def.input_schema {
+            coerce_schema_types(&mut input, schema);
+        }
+        // The run's confidentiality scope rides along as a header, so a sealed
+        // employee reaches only its own matter on the server side.
+        let matter = ctx.memory_matter.clone();
+        Box::pin(async move {
+            call_mcp_tool_scoped(
+                &self.store,
+                &self.bridge,
+                &self.integration_id,
+                &self.def.name,
+                input,
+                matter.as_deref(),
+            )
+            .await
+        })
+    }
 }
 
 /// Check if a stored OAuth token is expired (with 60s buffer).
@@ -415,133 +514,6 @@ pub async fn call_mcp_tool_scoped(
     }
 }
 
-impl McpTool {
-    pub fn new(roster: ProxyRoster) -> Self {
-        Self { roster }
-    }
-
-    /// A snapshot of the roster: server slug → proxy tool names, name order.
-    fn servers(&self) -> Vec<(String, Vec<String>)> {
-        match self.roster.read() {
-            Ok(roster) => roster
-                .iter()
-                .map(|(server, tools)| (server.clone(), tools.iter().cloned().collect()))
-                .collect(),
-            // Poisoned: a panic elsewhere while writing; the roster is a
-            // derived index, so an empty view is the honest fallback.
-            Err(_) => Vec::new(),
-        }
-    }
-
-    /// One line per connected server, the same for the description and for
-    /// `list`: the callable proxy prefix and one real example name.
-    fn server_lines(servers: &[(String, Vec<String>)]) -> String {
-        servers
-            .iter()
-            .map(|(server, tools)| {
-                // Only the callable name is shown: a prettified display
-                // name beside it reads as a second server.
-                format!(
-                    "- server {} ({} tools): mcp__{}__<tool> (e.g. {})",
-                    server,
-                    tools.len(),
-                    server,
-                    tools.first().map(String::as_str).unwrap_or("<tool>")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// Build a dynamic description listing connected servers. This tool only
-    /// enumerates servers; each server's tools are called via their own proxy tools.
-    fn build_description(&self) -> String {
-        let mut desc = String::from(
-            "List connected MCP servers. Usage: mcp(action: \"list\").\n\n\
-             To CALL a tool on a server, use that tool's own proxy tool named \
-             `mcp__<server>__<tool>`. Discover the exact \
-             names and argument schemas with find_tools(query: \"<server or capability>\"), \
-             then call the proxy directly — its arguments match the server's real schema.\n\n",
-        );
-
-        let servers = self.servers();
-        if servers.is_empty() {
-            desc.push_str(
-                "No MCP servers currently connected. Add servers in Connectors settings.\n",
-            );
-        } else {
-            desc.push_str("Connected servers:\n");
-            desc.push_str(&Self::server_lines(&servers));
-            desc.push('\n');
-        }
-
-        desc
-    }
-}
-
-impl DynTool for McpTool {
-    fn name(&self) -> &str {
-        MCP_TOOL_NAME
-    }
-
-    fn description(&self) -> String {
-        self.build_description()
-    }
-
-    fn schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["list"],
-                    "description": "Only \"list\" — enumerate connected MCP servers. To call a tool, use its `mcp__<server>__<tool>` proxy (find it with find_tools)."
-                }
-            },
-            "additionalProperties": false
-        })
-    }
-
-
-    fn search_hint(&self) -> &str {
-        "connected mcp servers list"
-    }
-
-    fn should_defer(&self) -> bool {
-        false
-    }
-
-    fn read_only(&self, _input: &serde_json::Value) -> bool {
-        true
-    }
-
-    /// Pre-interface: it settles its own call shapes (see
-    /// `DynTool::validates_input`).
-    fn validates_input(&self) -> bool {
-        false
-    }
-
-    fn execute_dyn<'a>(
-        &'a self,
-        _ctx: &'a ToolContext,
-        _input: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
-        Box::pin(async move {
-            let servers = self.servers();
-            if servers.is_empty() {
-                return ToolResult::ok(
-                    "No MCP servers connected. Add servers in Connectors settings.",
-                );
-            }
-            ToolResult::ok(format!(
-                "{} connected MCP server(s). Discover a tool's schema with find_tools, then call its mcp__<server>__<tool> proxy:\n{}",
-                servers.len(),
-                Self::server_lines(&servers)
-            ))
-        })
-    }
-}
-
 #[cfg(test)]
 mod neboai_token_tests {
     use super::{resolve_mcp_token, TokenResolution};
@@ -668,57 +640,46 @@ mod matter_scope_tests {
 }
 
 #[cfg(test)]
-mod roster_tests {
-    use super::{McpTool, MCP_TOOL_NAME, roster_server};
-    use crate::registry::{DynTool, Registry};
-    use mcp::bridge::ProxyToolRegistry;
-    use std::sync::Arc;
+mod proxy_tests {
+    use super::*;
 
-    #[test]
-    fn a_proxy_name_names_its_server() {
-        assert_eq!(roster_server("mcp__google_calendar__list_events"), Some("google_calendar"));
-        assert_eq!(roster_server("mcp__nebo_kb__search"), Some("nebo_kb"));
-        assert_eq!(roster_server("web"), None);
-        assert_eq!(roster_server("mcp__only_one"), None);
-        assert_eq!(roster_server("mcp____tool"), None);
+    fn def(json: serde_json::Value) -> mcp::McpToolDef {
+        serde_json::from_value(json).unwrap()
     }
 
-    /// The description the model reads is re-derived from the registry's own
-    /// proxy set every time a proxy is registered or removed: a server that
-    /// has proxies in the toolset is a connected server, and one with none
-    /// is not. `block_in_place` needs the multi-thread runtime.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn the_description_follows_the_proxies_in_the_registry() {
+    /// Claude Code's rules for an MCP tool: the description cut at 2,048
+    /// characters, `readOnlyHint` makes it read-only (and so parallel),
+    /// `_meta` can load it always, name its search words and its result
+    /// size; with no hints it is a deferred writer.
+    #[tokio::test]
+    async fn a_proxy_follows_the_servers_annotations_and_meta() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap());
-        let registry = Arc::new(Registry::new(crate::gate::test_gate()));
+        let registry = Arc::new(crate::registry::Registry::new(crate::gate::test_gate()));
         let client = Arc::new(mcp::McpClient::new(Arc::new(mcp::crypto::Encryptor::generate())));
-        let bridge = Arc::new(mcp::Bridge::new(client, registry.clone()));
-        registry.set_bridge(bridge);
-        registry.set_store(store);
-        registry
-            .register(Box::new(McpTool::new(registry.mcp_proxy_roster())))
-            .await;
+        let bridge = Arc::new(mcp::Bridge::new(client, registry));
+        let proxy = |d: &mcp::McpToolDef| McpProxyTool::new("mcp__docs__search", d, "int-1", bridge.clone(), store.clone());
 
-        async fn description(r: &Registry) -> String {
-            r.definition(MCP_TOOL_NAME).await.expect("mcp is registered").description
-        }
-        assert!(description(&registry).await.contains("No MCP servers currently connected"));
+        let plain = proxy(&def(serde_json::json!({"name": "search", "description": "x".repeat(3_000)})));
+        assert!(plain.should_defer());
+        assert!(!plain.read_only(&serde_json::json!({})) && !plain.concurrency_safe(&serde_json::json!({})));
+        assert_eq!(plain.description().chars().count(), MAX_DESCRIPTION_CHARS + "… [truncated]".chars().count());
+        assert!(plain.description().ends_with("… [truncated]"));
+        assert_eq!(plain.search_hint(), "docs search");
+        assert_eq!(plain.max_result_chars(&serde_json::json!({})), Some(crate::registry::DEFAULT_MAX_RESULT_CHARS));
 
-        registry.register_proxy("mcp__google_calendar__list_events", "list_events", "lists events", None, "int-1");
-        registry.register_proxy("mcp__google_calendar__create_event", "create_event", "creates", None, "int-1");
-        let text = description(&registry).await;
-        assert!(!text.contains("No MCP servers"), "{text}");
-        assert!(text.contains("server google_calendar (2 tools)"), "{text}");
-        assert!(text.contains("e.g. mcp__google_calendar__create_event"), "{text}");
-        // `list` reads the same roster the description does.
-        let listed = McpTool::new(registry.mcp_proxy_roster())
-            .execute_dyn(&crate::origin::ToolContext::default(), serde_json::json!({"action": "list"}))
-            .await;
-        assert!(listed.content.contains("1 connected MCP server(s)"), "{}", listed.content);
+        let hinted = proxy(&def(serde_json::json!({
+            "name": "search", "description": "Searches the docs.",
+            "annotations": {"readOnlyHint": true},
+            "_meta": {"anthropic/alwaysLoad": true, "anthropic/searchHint": "find docs\n pages", "anthropic/maxResultSizeChars": 20000}
+        })));
+        assert!(!hinted.should_defer());
+        assert!(hinted.read_only(&serde_json::json!({})) && hinted.concurrency_safe(&serde_json::json!({})));
+        assert_eq!(hinted.description(), "Searches the docs.");
+        assert_eq!(hinted.search_hint(), "find docs pages");
+        assert_eq!(hinted.max_result_chars(&serde_json::json!({})), Some(20_000));
 
-        registry.unregister_proxy("mcp__google_calendar__list_events");
-        registry.unregister_proxy("mcp__google_calendar__create_event");
-        assert!(description(&registry).await.contains("No MCP servers currently connected"));
+        let destructive = proxy(&def(serde_json::json!({"name": "drop", "annotations": {"destructiveHint": true}})));
+        assert_eq!(destructive.effects(&serde_json::json!({})).deletes, vec!["mcp__docs__search".to_string()]);
     }
 }

@@ -861,15 +861,14 @@ impl Loader {
             "## Installed Plugins ({})\n\
              {}\n\n\
              To use a plugin:\n\
-             1. plugin(action: \"list\") - installed plugins and their commands\n\
-             2. plugin(action: \"discover\", query: \"what you need\") - search the marketplace when nothing installed fits\n\
-             3. use_skill(name: \"<skill name>\") - the plugin's skills are listed by name under it in the plugin tool; load the one for the job BEFORE the first exec\n\
-             4. plugin(resource: \"<slug>\", action: \"exec\", command: \"<subcommand> +<flags>\")\n\n\
-             IMPORTANT: Always read docs (step 3) before your first exec of any plugin.\n\
+             1. Its tool is plugin__<slug>, listed by name; load it with find_tools. find_plugins searches the marketplace when nothing installed fits\n\
+             2. use_skill(name: \"<skill name>\") - the plugin's tool names its skills; load the one for the job BEFORE the first command\n\
+             3. plugin__<slug> with command: \"<subcommand> +<flags>\"\n\n\
+             IMPORTANT: Always read docs (step 2) before your first command on any plugin.\n\
              The command field is CLI args, NOT colon syntax. Never use \"service:method\".\n\n\
              For content with special characters, use args instead of command:\n\
-             plugin(resource: \"<slug>\", action: \"exec\", command: \"docx +create\", args: {{\"name\": \"report.docx\", \"content\": \"...\"}})\n\n\
-             If you already know the plugin slug, skip to step 3.",
+             plugin__<slug> with command: \"docx +create\" and args: {{\"name\": \"report.docx\", \"content\": \"...\"}}\n\n\
+             If you already know the plugin, skip to step 2.",
             total,
             categories_text,
         )

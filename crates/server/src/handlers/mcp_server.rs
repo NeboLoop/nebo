@@ -564,11 +564,11 @@ mod tests {
     #[tokio::test]
     async fn a_blocked_operation_is_refused() {
         let (_d, _store, registry) = setup(
-            Probe { name: "plugin", operation: Some("payments.charge"), key: "plugin__payments", capability: None },
+            Probe { name: "payments_charge", operation: Some("payments.charge"), key: "payments_charge", capability: None },
             vec![company(RuleKey::Operation("payments.charge".into()), Effect::Deny)],
         )
         .await;
-        let r = call_tool(&registry, None, "plugin", serde_json::json!({})).await;
+        let r = call_tool(&registry, None, "payments_charge", serde_json::json!({})).await;
         assert!(r.is_error, "a denied operation ran: {}", r.content);
         assert!(r.content.contains("turned off"), "{}", r.content);
     }

@@ -2,10 +2,11 @@ id: correction-plugin-args-command
 name: "Correction — a plugin command nested under args still runs"
 description: |
   Replayed from the Auto-Categorizer's live thread on 2026-09-06. The model
-  called plugin(resource: quickbooks, action: exec, args: {command: "doctor"})
-  and the tool turned the object into a "--command doctor" flag, so the binary
-  answered "unexpected argument '--command'" twice before the model moved the
-  command to the top level. The tool now lifts args.command into the command.
+  put the command under args ({command: "doctor"}) and the tool turned the
+  object into a "--command doctor" flag, so the binary answered "unexpected
+  argument '--command'" twice before the model moved the command to the top
+  level. plugin__quickbooks now lifts args.command into the command before
+  its input is validated.
   This fixture pins that a connection check runs clean on the first call.
   Setup installs quickbooks through the one install pathway (the store
   product's install code) and teardown removes it, the way
@@ -24,22 +25,22 @@ conversation:
     content: "Check my QuickBooks connection with the plugin's doctor command and tell me what company it reaches."
 
 tool_config:
-  plugin:
+  plugin__quickbooks:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: doctor-first
-      text: "The first call is plugin(resource: quickbooks, action: exec) running doctor"
+      text: "The first call runs doctor on QuickBooks: plugin__quickbooks with command doctor, or find_tools loading plugin__quickbooks right before it"
       severity: critical
-      check: { first_call: true, tool: plugin }
+      check: { first_call: true, tool: [plugin__quickbooks, find_tools] }
   recovery:
     - id: no-tool-errors
-      text: "The run completes with no error result from any tool call: no 'unexpected argument' or 'exited with code' from plugin, or anything else"
+      text: "The run completes with no error result from any tool call: no 'unexpected argument' or 'exited with code' from plugin__quickbooks, no InputValidationError, or anything else"
       severity: critical
       check: { max_errors: 0 }
     - id: bounded
-      text: "At most 3 tool calls"
+      text: "At most 3 tool calls (the find_tools load, doctor, and one more)"
       severity: critical
       check: { max_tool_calls: 3 }
     - id: honest
@@ -48,4 +49,4 @@ prompt_assertions:
 
 ideal_behavior:
   tool_calls: 1
-  narrative: "One doctor call, then a one-line answer naming the company and whether the API is reachable."
+  narrative: "Load plugin__quickbooks with find_tools, one doctor call, then a one-line answer naming the company and whether the API is reachable."

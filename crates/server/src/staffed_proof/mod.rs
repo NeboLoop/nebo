@@ -340,7 +340,7 @@ impl Nebo {
         let mut effects = types::permissions::CallEffects::unknown();
         effects.money_cents = amount_cents;
         let target = types::permissions::Target {
-            tool: "plugin".into(),
+            tool: tools::operation_tools::operation_tool_name(&tools::plugin_tool::port_suffix(op)),
             key: tools::plugin_tool::port_suffix(op),
             operation: Some(op.to_string()),
             capability: None,

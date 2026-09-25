@@ -449,7 +449,7 @@ pub async fn uninstall_store_product(
     // (disk + DB registry + hooks). Remove them via the SAME canonical path the
     // settings page uses, so a plugin uninstalls identically from both surfaces.
     if artifact_type == "plugin" {
-        super::plugins::remove_plugin_by_slug(&state, &slug).map_err(to_error_response)?;
+        super::plugins::remove_plugin_by_slug(&state, &slug).await.map_err(to_error_response)?;
         return Ok(Json(serde_json::json!({ "success": true })));
     }
 
