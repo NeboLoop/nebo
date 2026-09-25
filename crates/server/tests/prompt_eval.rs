@@ -35,7 +35,7 @@ enum Check {
     TextMustNotContain(String),
     /// No text should appear alongside tool calls (silent execution)
     NoTextWithToolCalls,
-    /// The ask tool should be used (agent resource:"ask")
+    /// The ask tool should be used (ask_owner)
     UsesAskTool,
 }
 
@@ -178,21 +178,12 @@ fn evaluate_check(
                     .or_else(|| tc.get("tool_name"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let input = tc.get("input").or_else(|| tc.get("arguments"));
-                if name == "agent" || name == "bot" {
-                    if let Some(args) = input {
-                        return args
-                            .get("resource")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|r| r == "ask");
-                    }
-                }
-                false
+                name == "ask_owner"
             });
             if found {
                 Ok(())
             } else {
-                Err("UsesAskTool: no agent(resource:\"ask\") call found".into())
+                Err("UsesAskTool: no ask_owner call found".into())
             }
         }
     }
@@ -356,7 +347,7 @@ fn eval_scenarios() -> Vec<Scenario> {
         Scenario {
             name: "no_file_creation",
             prompt: "Give me a summary of the top 5 news stories today.",
-            checks: vec![Check::NoToolCallNamed("os".into())],
+            checks: vec![Check::NoToolCallNamed("write_file".into())],
             timeout_secs: 60,
             tags: &["identity"],
         },

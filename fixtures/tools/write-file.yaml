@@ -1,0 +1,52 @@
+id: write-file
+name: "Write file — correct tool routing"
+description: |
+  The user asks the agent to create a file with specific content. The model
+  must use write_file(path, content) — NOT hallucinate "write" as a
+  standalone tool or use echo/redirect through run_command.
+target_component: write_file
+
+setup:
+  - "rm -f {{scratch}}/nebo-test-output.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Create a file at {{scratch}}/nebo-test-output.txt with the content 'hello world'."
+
+tool_config:
+  write_file:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'write_file', not 'write', 'bash', 'run_command', or 'os'"
+      severity: critical
+      check: { first_call: true, tool: write_file }
+    - id: correct-path
+      text: "Model passes the correct path '{{scratch}}/nebo-test-output.txt'"
+      severity: critical
+      check: { first_call: true, tool: write_file, arg: path, equals: "{{scratch}}/nebo-test-output.txt" }
+    - id: correct-content
+      text: "Model passes content: 'hello world'"
+      severity: critical
+      check: { first_call: true, tool: write_file, arg: content, contains: "hello world" }
+  recovery:
+    - id: no-shell-fallback
+      text: "Model does NOT use echo/redirect through run_command to write the file"
+      severity: important
+  cost:
+    - id: write-then-verify
+      text: "Task completes in no more than 2 tool calls: the write, and a read_file that verifies the file landed"
+      severity: important
+      check: { max_tool_calls: 2 }
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 2000
+  narrative: |
+    Single write_file(path: "{{scratch}}/nebo-test-output.txt",
+    content: "hello world") call, optionally a read_file to verify. Model
+    confirms the file was created.

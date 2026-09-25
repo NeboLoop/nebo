@@ -38,8 +38,8 @@ Ask what they do and what they're hoping Nebo helps with — *their* words. This
 
 Store what you learn so you never ask twice:
 ```
-agent(resource: "memory", action: "store", key: "user/role", value: "<what they do>")
-agent(resource: "memory", action: "store", key: "user/goals", value: "<what they want help with>")
+remember(key: "user/role", value: "<what they do>")
+remember(key: "user/goals", value: "<what they want help with>")
 ```
 
 ### 3. Make Nebo theirs (optional, light touch)

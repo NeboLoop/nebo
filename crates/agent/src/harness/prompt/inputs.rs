@@ -143,8 +143,7 @@ pub fn self_context(agent: &tools::ActiveAgent) -> String {
         }
         wf_lines.push(String::new());
         wf_lines.push(
-            "Use work(resource: \"<name>\", action: \"run\") to trigger a workflow manually. \
-             Use work(resource: \"<name>\", action: \"status\") to check its last run."
+            "Start a workflow by hand with run_workflow; workflow_status shows its last run."
                 .to_string(),
         );
         parts.push(wf_lines.join("\n"));
@@ -158,7 +157,7 @@ pub fn self_context(agent: &tools::ActiveAgent) -> String {
         }
         sk_lines.push(String::new());
         sk_lines.push(
-            "These skills are part of your configuration. Use skill(action: \"discover\", query: \"...\") to find one and skill(action: \"load\", name: \"...\") to read it."
+            "These skills are part of your job. They are in the skill listing; load one with use_skill when the work calls for it."
                 .to_string(),
         );
         parts.push(sk_lines.join("\n"));

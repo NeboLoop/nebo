@@ -54,6 +54,12 @@ fn name_param() -> serde_json::Value {
     serde_json::json!({ "type": "string", "description": "The employee's name or id, as list_employees shows it." })
 }
 
+/// The draft the owner said yes to: `create_employee` and
+/// `update_employee` send it alone to make exactly what was drafted.
+fn draft_param() -> serde_json::Value {
+    serde_json::json!({ "type": "string", "description": "The draft the owner said yes to, from the first call's result. Send it alone." })
+}
+
 /// One recurring or triggered duty, the item `automations` and
 /// `add_automations` take.
 fn automation_item() -> serde_json::Value {
@@ -173,7 +179,9 @@ impl Kind {
                 - Codes are issued by the marketplace, never made from a name. To hire someone, find them with find_employees; its card hires them.\n\
                 - An employee already in list_employees needs no install."
                 .to_string(),
-            Kind::CreateEmployee => "Makes a new employee: its name, what it does, and its duties.\n\
+            Kind::CreateEmployee => "Makes a new employee: its name, what it does, and its duties. It takes two calls.\n\
+                - The first call drafts it and returns one plain line of what it will be able to do; nothing is created yet. Say that line to the owner and ask them to confirm.\n\
+                - When they say yes, call again with only the `draft_id`: that creates exactly the drafted job. If they want it different, draft again.\n\
                 - Every recurring duty goes in `automations`: each becomes the employee's own workflow, run as it. Never make separate schedules for it.\n\
                 - Steps must be concrete — which tools, files and destinations, what to check, what to produce — because the workflow runs unattended on these words alone.\n\
                 - `app` or `ui`/`ui_jsx` makes it an app with its own page; load the build-an-app skill before writing one.\n\
@@ -183,7 +191,8 @@ impl Kind {
                 - `instructions` replaces its instructions and keeps the rest; `agent_md` replaces its whole AGENT.md.\n\
                 - `automations` replaces ALL its workflows. To change some, use add_automations, remove_automations, update_automation or toggle_automation.\n\
                 - `input_values` sets the values its workflows read; `inputs` changes the form that asks for them.\n\
-                - `new_name` renames it."
+                - `new_name` renames it.\n\
+                - An edit that adds to its job drafts first: tell the owner only what is new, and on their yes call again with only the `draft_id`."
                 .to_string(),
             Kind::DeleteEmployee => "Permanently deletes an employee: its record, workflows, schedules and the files it was made with.\n\
                 - It can't be undone; only when the owner asked for it."
@@ -247,7 +256,8 @@ impl Kind {
                     "agent_json".into(),
                     json!({ "type": ["string", "object"], "description": "A raw agent.json (workflows, triggers, skills). Rarely needed: automations covers it." }),
                 );
-                json!({ "type": "object", "properties": props, "required": ["name"] })
+                props.insert("draft_id".into(), draft_param());
+                json!({ "type": "object", "properties": props })
             }
             Kind::UpdateEmployee => {
                 let mut props = job_properties();
@@ -309,7 +319,8 @@ impl Kind {
                         }
                     }),
                 );
-                json!({ "type": "object", "properties": props, "required": ["name"] })
+                props.insert("draft_id".into(), draft_param());
+                json!({ "type": "object", "properties": props })
             }
             Kind::SetEmployeeActive => json!({
                 "type": "object",
@@ -421,6 +432,21 @@ impl DynTool for EmployeeTool {
         self.kind.effects(input)
     }
 
+    /// A create or update names its employee, or sends the draft the owner
+    /// said yes to — one or the other.
+    fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
+        if !matches!(self.kind, Kind::CreateEmployee | Kind::UpdateEmployee) {
+            return Ok(());
+        }
+        match (str_field(input, "draft_id").is_some(), str_field(input, "name").is_some()) {
+            (false, false) => Err(format!(
+                "{} needs `name` (to draft), or `draft_id` alone (to make what the owner said yes to).",
+                self.kind.name()
+            )),
+            _ => Ok(()),
+        }
+    }
+
     fn activity(&self, input: &serde_json::Value) -> String {
         self.kind.labels(input).0
     }
@@ -441,8 +467,8 @@ impl DynTool for EmployeeTool {
                 Kind::GetEmployee => p.handle_info(&input).await,
                 Kind::FindEmployees => p.handle_discover(&input, ctx).await,
                 Kind::HireEmployee => p.handle_install(&input).await,
-                Kind::CreateEmployee => p.handle_create(&input).await,
-                Kind::UpdateEmployee => p.handle_update(&input).await,
+                Kind::CreateEmployee => p.create_with_consent(&input, ctx).await,
+                Kind::UpdateEmployee => p.update_with_consent(&input, ctx).await,
                 Kind::DeleteEmployee => p.handle_delete(&input).await,
                 Kind::SetEmployeeActive => match input.get("active").and_then(|v| v.as_bool()) {
                     Some(false) => p.handle_deactivate(&input).await,

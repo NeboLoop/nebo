@@ -32,6 +32,22 @@ export interface ActiveTurnStatus {
 	currentTool: string
 }
 
+export interface ActivityPage {
+	rows: ActivityRow[]
+	total: number
+}
+
+export interface ActivityRow {
+	at: number
+	employeeId: string
+	employee: string
+	action: string
+	decision: string
+	why: string
+	door: string
+	unreviewed: boolean
+}
+
 export interface Advisor {
 	id: number
 	name: string
@@ -367,6 +383,13 @@ export interface ChatMessagesResponse {
 	hasMore: boolean
 	activeRun?: ActiveTurnStatus
 	pendingAsk?: PendingAsk
+}
+
+export interface ChatRecap {
+	chatId: string
+	turnId: string
+	text: string
+	createdAt: number
 }
 
 export interface ChatStreamResponse {
@@ -768,6 +791,13 @@ export interface MessageResponse {
 	message: string
 }
 
+export interface MoneyAmounts {
+	perActionCents?: number
+	perDayCents?: number
+	perDayCount?: number
+	perCounterpartyDayCents?: number
+}
+
 export interface Notification {
 	id: string
 	userId: string
@@ -882,6 +912,47 @@ export interface PendingWrite {
 	status: string
 	createdAt: number
 	resolvedAt?: number
+}
+
+export interface PermissionAskCard {
+	id: string
+	agentId: string
+	employee: string
+	sessionKey: string
+	sentence: string
+	reason: string
+	allowAlways: boolean
+	thisOnce: boolean
+	status: string
+	answer?: string
+	createdAt: number
+	expiresAt: number
+}
+
+export interface PermissionAsksResponse {
+	asks: PermissionAskCard[]
+}
+
+export interface PermissionItem {
+	id: string
+	sentence: string
+	removable: boolean
+	fromCompany: boolean
+	money?: MoneyAmounts
+}
+
+export interface PermissionsPage {
+	mode: string
+	modeFromCompany: boolean
+	companyMode: string
+	job: PermissionItem[]
+	canAdd: PermissionItem[]
+	money: PermissionItem[]
+	folders: PermissionItem[]
+	alwaysAllowed: PermissionItem[]
+	asksFirst: PermissionItem[]
+	never: PermissionItem[]
+	fixed: PermissionItem[]
 }
 
 export interface PluginRegistry {
@@ -1519,7 +1590,7 @@ export interface EnableAgentChannelResponse {
 }
 
 export interface GetAgentOperationsResponse {
-	default: unknown
+	default: string
 	configured: unknown
 	interfaces: unknown
 	available: unknown[]
@@ -1681,10 +1752,6 @@ export interface GetTeamMessagesResponse {
 export interface GetToolOutputResponse {
 	output: string
 	isError: boolean
-}
-
-export interface GetWorkflowApprovalStatusResponse {
-	status: string
 }
 
 export interface GetWorkflowResponse {
@@ -2034,9 +2101,17 @@ export interface ReloadAgentResponse {
 	agent: Agent
 }
 
+export interface RemoveAgentPermissionResponse {
+	message: string
+}
+
 export interface RemoveCollectionItemResponse {
 	collection: unknown
 	removedItem: string
+}
+
+export interface RemoveCompanyPermissionResponse {
+	message: string
 }
 
 export interface RemovePluginResponse {
@@ -2049,11 +2124,6 @@ export interface RemoveTeamResponse {
 
 export interface ResolveLearningResponse {
 	status: string
-}
-
-export interface ResolveWorkflowApprovalResponse {
-	status: string
-	runId: string
 }
 
 export interface RevertLearningResponse {
@@ -2323,6 +2393,13 @@ export interface UserUpdateProfileResponse {
 	profile: unknown
 }
 
+export interface WorkOutAgentNeedsResponse {
+	line: string
+	items: string[]
+	accounts: string[]
+	draftId: string | null
+}
+
 // ── Common Types ───────────────────────────────────────────────────
 
 export interface ErrorResponse {
@@ -2548,11 +2625,11 @@ export type WSServerEventType =
 	| "chat_cancelled"
 	| "chat_message"
 	| "session_reset"
-	| "session_compact"
 	| "chat_complete"
 	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
+	| "session_compact"
 
 export interface AppActionEvent {
 	agentId: string
@@ -2577,12 +2654,6 @@ export interface ChatMessageEvent {
 	artifacts: unknown
 }
 
-export interface SessionCompactEvent {
-	session_id: string
-	success: boolean
-	error: string
-}
-
 export interface ChatCompleteEvent {
 	session_id: string
 	skipped: boolean
@@ -2601,6 +2672,11 @@ export interface ChatStreamEvent {
 export interface ChatErrorEvent {
 	error: string
 	session_id: string
+}
+
+export interface SessionCompactEvent {
+	success: boolean
+	error: string
 }
 
 /** Client → Server WebSocket message types */

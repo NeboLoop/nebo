@@ -244,17 +244,10 @@ export function revertLearning(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
- * @description "Get workflow approval status"
+ * @description "Work out agent needs"
  */
-export function getWorkflowApprovalStatus(runId: string) {
-	return webapi.get<components.GetWorkflowApprovalStatusResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`)
-}
-
-/**
- * @description "Resolve workflow approval"
- */
-export function resolveWorkflowApproval(runId: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.ResolveWorkflowApprovalResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`, req)
+export function workOutAgentNeeds(req: Record<string, unknown> = {}) {
+	return webapi.post<components.WorkOutAgentNeedsResponse>(`/api/v1/agents/needs`, req)
 }
 
 /**
@@ -409,6 +402,27 @@ export function updateAgentInputs(id: string, req: Record<string, unknown> = {})
  */
 export function getAgentOperations(id: string) {
 	return webapi.get<components.GetAgentOperationsResponse>(`/api/v1/agents/${id}/operations`)
+}
+
+/**
+ * @description "Get agent permissions"
+ */
+export function getAgentPermissions(id: string) {
+	return webapi.get<components.PermissionsPage>(`/api/v1/agents/${id}/permissions`)
+}
+
+/**
+ * @description "Update agent permissions"
+ */
+export function updateAgentPermissions(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.PermissionsPage>(`/api/v1/agents/${id}/permissions`, req)
+}
+
+/**
+ * @description "Remove agent permission"
+ */
+export function removeAgentPermission(id: string, ruleId: string) {
+	return webapi.delete<components.RemoveAgentPermissionResponse>(`/api/v1/agents/${id}/permissions/items/${ruleId}`)
 }
 
 /**
@@ -1431,6 +1445,55 @@ export function markRead(id: string, req: Record<string, unknown> = {}) {
  */
 export function installOrg(req: Record<string, unknown> = {}) {
 	return webapi.post<components.InstallOrgResponse>(`/api/v1/org/install`, req)
+}
+
+/**
+ * @description "List permission activity"
+ */
+export function listPermissionActivity(agentId?: string, door?: string, decision?: string, limit?: number, offset?: number) {
+	return webapi.get<components.ActivityPage>(`/api/v1/permissions/activity`, { agentId, door, decision, limit, offset })
+}
+
+/**
+ * @description "List permission asks"
+ */
+export function listPermissionAsks(session?: string) {
+	return webapi.get<components.PermissionAsksResponse>(`/api/v1/permissions/asks`, { session })
+}
+
+/**
+ * @description "Get permission ask"
+ */
+export function getPermissionAsk(id: string) {
+	return webapi.get<components.PermissionAskCard>(`/api/v1/permissions/asks/${id}`)
+}
+
+/**
+ * @description "Answer permission ask"
+ */
+export function answerPermissionAsk(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.PermissionAskCard>(`/api/v1/permissions/asks/${id}/answer`, req)
+}
+
+/**
+ * @description "Get company permissions"
+ */
+export function getCompanyPermissions() {
+	return webapi.get<components.PermissionsPage>(`/api/v1/permissions/company`)
+}
+
+/**
+ * @description "Update company permissions"
+ */
+export function updateCompanyPermissions(req: Record<string, unknown> = {}) {
+	return webapi.put<components.PermissionsPage>(`/api/v1/permissions/company`, req)
+}
+
+/**
+ * @description "Remove company permission"
+ */
+export function removeCompanyPermission(ruleId: string) {
+	return webapi.delete<components.RemoveCompanyPermissionResponse>(`/api/v1/permissions/company/items/${ruleId}`)
 }
 
 /**

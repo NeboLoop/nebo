@@ -24,11 +24,11 @@ pub const TEAM_UPDATED_EVENT: &str = "team_updated";
 pub const TEAM_ACTIVITY_EVENT: &str = "team_activity";
 
 /// The one create call, as the model should write it.
-pub const CREATE_USAGE: &str = "team(action: \"create\", name: \"Operations\", mission: \"Keep the office running\", agents: [\"Chief of Staff\", \"Executive Assistant\"])";
+pub const CREATE_USAGE: &str = "create_team(name: \"Operations\", mission: \"Keep the office running\", members: [\"Chief of Staff\", \"Executive Assistant\"])";
 
 /// Wording for the empty state: teams are local, here is how to make one.
-/// Also the tail of the loop tool's no-loop answer — a Nebo outside every
-/// hub loop still has teams.
+/// Also the tail of the NeboAI loop tools' no-loop answer — a Nebo outside
+/// every hub loop still has teams.
 pub fn no_teams_hint() -> String {
     format!(
         "No teams yet on this Nebo; teams work locally and need no hub. Create one with {CREATE_USAGE}."
@@ -86,7 +86,7 @@ pub async fn create(
     {
         return Err(format!(
             "A team named \"{}\" already exists (id: {}). Post into it with \
-             team(action: \"send\", team: \"{}\", text: \"...\"), or create a team with a \
+             send_message(to: \"{}\", message: \"...\"), or create a team with a \
              new, distinct name.",
             existing.name, existing.id, existing.name
         ));
@@ -233,7 +233,7 @@ pub fn resolve_team(store: &Store, label: &str) -> Result<Team, String> {
         format!("No team named \"{label}\". {}", no_teams_hint())
     } else {
         format!(
-            "No team named \"{label}\". Teams on this Nebo: {}. Use one of those names, or team(action: \"list\").",
+            "No team named \"{label}\". Teams on this Nebo: {}. Use one of those names; list_teams shows them all.",
             known.join(", ")
         )
     })

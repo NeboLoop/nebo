@@ -7,6 +7,10 @@ use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
+/// Every background session's id starts with this, which is how a `bg-…`
+/// id is told apart from a helper's or a run's.
+pub const SESSION_ID_PREFIX: &str = "bg-";
+
 /// Background sessions alive at once. Past this the model is told to end one:
 /// each is a process tree that nothing else will ever stop.
 pub const MAX_BACKGROUND_SESSIONS: usize = 8;
@@ -284,7 +288,7 @@ impl ProcessRegistry {
         // The shutdown handler kills registered children, so a Nebo restart
         // takes its background sessions with it instead of orphaning them.
         napp::child_guard::register_child(pid);
-        let session_id = format!("bg-{}", &Uuid::new_v4().to_string()[..8]);
+        let session_id = format!("{SESSION_ID_PREFIX}{}", &Uuid::new_v4().to_string()[..8]);
 
         let output = Arc::new(Mutex::new(String::new()));
         let pending_stdout = Arc::new(Mutex::new(Vec::new()));
@@ -779,7 +783,7 @@ mod group_tests {
     /// A child the kill cannot reach must not hold up the answer.
     ///
     /// The gate's shell door went silent for the harness's whole 180 s under a
-    /// 120 s timeout (`os-shell-retry-spiral`, run 3): the `find` grandchild
+    /// 120 s timeout (`run-command-retry-spiral`, run 3): the `find` grandchild
     /// was in uninterruptible sleep on a virtiofs mount, and the kill-and-wait
     /// waited on it. Nothing in this module may block on a process that will
     /// not exit — it signals the group, reaps with a bound, and answers

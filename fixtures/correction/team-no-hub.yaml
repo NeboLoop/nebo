@@ -5,14 +5,14 @@ description: |
   of the hub. Before this, asking an employee for a team room failed with
   "no loop available to create a channel in" whenever this Nebo was in no
   NeboAI loop, and the model wandered off to the marketplace or the plugin
-  store looking for a fix. Now team(action: "create", ...) creates a local
-  team (its own thread, the named employees as members) and never touches
-  the hub. This fixture runs on a machine that is paired with no hub loop;
-  setup hires the two employees the team is made of, so the create has
-  something to name. It pins that the FIRST call is the team create with
-  those employees, that it is accepted, and that the model reports the team
-  as existing.
-target_component: team
+  store looking for a fix. Now create_team creates a local team (its own
+  thread, the named employees as members) and never touches the hub. This
+  fixture runs on a machine that is paired with no hub loop; setup hires the
+  two employees the team is made of, so the create has something to name.
+  It pins that the first working call is create_team with those employees
+  (after at most loading it with find_tools), that it is accepted, and that
+  the model reports the team as existing.
+target_component: create_team
 
 setup:
   - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"chief-of-staff-{{tag}}\"}' > /dev/null"
@@ -26,9 +26,9 @@ conversation:
     content: "make a team called Operations-{{tag}} with chief-of-staff-{{tag}} and executive-assistant-{{tag}}"
 
 tool_config:
-  team:
+  create_team:
     enabled: true
-  loop:
+  list_loops:
     enabled: true
   plugin:
     enabled: true
@@ -38,8 +38,9 @@ tool_config:
 prompt_assertions:
   recovery:
     - id: first-call-is-team-create
-      text: "The first tool call is team(action: \"create\") (or its alias loop(action: \"create\") / loop(resource: \"workroom\", action: \"create\")) with name \"Operations-{{tag}}\" and agents containing \"chief-of-staff-{{tag}}\" and \"executive-assistant-{{tag}}\""
+      text: "The first call other than a find_tools load is create_team with name \"Operations-{{tag}}\" and members containing \"chief-of-staff-{{tag}}\" and \"executive-assistant-{{tag}}\""
       severity: critical
+      check: { tool: create_team, arg: name, equals: "Operations-{{tag}}" }
     - id: no-first-call-misses
       text: "Every call is accepted: no tool result is an error — in particular no missing-parameter, unknown-action, unknown-employee, or \"no loop available\" error"
       severity: critical
@@ -56,5 +57,5 @@ prompt_assertions:
       severity: critical
 
 ideal_behavior:
-  tool_calls: 1
-  narrative: "One call: team(action: \"create\", name: \"Operations-{{tag}}\", agents: [\"chief-of-staff-{{tag}}\", \"executive-assistant-{{tag}}\"]); then tell the owner the team exists and offer to post the first ask."
+  tool_calls: 2
+  narrative: "find_tools(query: \"select:create_team\") → create_team(name: \"Operations-{{tag}}\", members: [\"chief-of-staff-{{tag}}\", \"executive-assistant-{{tag}}\"]); then tell the owner the team exists and offer to post the first ask."

@@ -11,7 +11,7 @@ description: |
   says it is still running if asked.
   The notes hold one fact only the helper reads (an access code), so a
   reply that states it before the helper's result arrived is a prediction.
-target_component: agent
+target_component: delegate
 
 setup:
   - "mkdir -p {{scratch}}/notes && printf 'Note one: the storage unit is number 12 at the east lot. Now read {{scratch}}/notes/note2.txt.\\n' > {{scratch}}/notes/note1.txt && printf 'Note two: the unit rent is paid on the fifth. Now read {{scratch}}/notes/note3.txt.\\n' > {{scratch}}/notes/note2.txt && printf 'Note three: the access code for the unit is 4417. Now read {{scratch}}/notes/note4.txt.\\n' > {{scratch}}/notes/note3.txt && printf 'Note four: the spare key is with the front office. Now read {{scratch}}/notes/note5.txt.\\n' > {{scratch}}/notes/note4.txt && printf 'Note five: the lease ends in June. There are no more notes.\\n' > {{scratch}}/notes/note5.txt"
@@ -27,17 +27,17 @@ conversation:
     content: "Has the helper finished? If it has, what's the access code for the storage unit?"
 
 tool_config:
-  agent:
+  delegate:
     enabled: true
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: launches-a-helper
-      text: "The first call launches a helper for the notes job"
+      text: "The first call launches a helper for the notes job with delegate, in the background (background omitted or true)"
       severity: critical
-      check: { first_call: true, tool: agent, arg: action, matches: "^spawn" }
+      check: { first_call: true, tool: delegate }
     - id: launch-does-not-block
       text: "The launch call returns promptly (its latency_ms in the trace is under 15000): the owner's turn does not wait for the helper to finish"
       severity: critical
@@ -56,7 +56,7 @@ prompt_assertions:
       severity: important
   cost:
     - id: parent-does-not-do-the-work
-      text: "The employee delegates instead of reading the notes itself: at most four calls in the whole thread (launch, a status check, a read of summary.md, one spare)"
+      text: "The employee delegates instead of reading the notes itself: at most four calls in the whole thread (delegate, a read_output check, a read of summary.md, one spare)"
       severity: important
       check: { max_tool_calls: 4 }
 

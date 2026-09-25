@@ -1,12 +1,13 @@
 id: correction-spawn-prompt-with-path
-name: "Correction — a sub-agent prompt that mentions a Nebo file path is not naming an employee"
+name: "Correction — a helper prompt that mentions a Nebo file path is not naming an employee"
 description: |
   Replayed from the Auto-Categorizer's live thread on 2026-09-06. A large
   QuickBooks result was written to a file under
-  ".../Application Support/Nebo/sessions/..." and the model asked a sub-agent
-  to parse it. The spawn guard saw "Nebo" inside the path, decided the prompt
-  named the employee called Nebo, and refused. Names now match as whole
-  words outside path tokens. This fixture pins that the spawn is accepted.
+  ".../Application Support/Nebo/sessions/..." and the model asked a helper
+  to parse it. The delegate guard saw "Nebo" inside the path, decided the
+  prompt named the employee called Nebo, and refused. Names now match as whole
+  words outside path tokens. This fixture pins that the delegate call is
+  accepted.
 target_component: tool
 
 setup:
@@ -19,20 +20,20 @@ conversation:
     content: "Use a sub-agent to read {{scratch}}/Nebo/sessions/purchases.txt (QuickBooks Purchase JSON) and report which purchases have no account on their lines. Hand the whole file-reading job to the sub-agent; just relay its findings."
 
 tool_config:
-  agent:
+  delegate:
     enabled: true
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: spawn-first
-      text: "The first call is agent(resource: task, action: spawn) with a prompt that names the file"
+      text: "The first call is delegate with a prompt that names the file"
       severity: critical
-      check: { first_call: true, tool: agent }
+      check: { first_call: true, tool: delegate, arg: prompt, contains: "purchases.txt" }
   recovery:
     - id: spawn-accepted
-      text: "No tool result says the spawn names an employee or tells the model to message a coworker instead"
+      text: "No tool result says the delegate call names an employee or tells the model to message a coworker instead"
       severity: critical
       check: { no_error_contains: ["named employee"] }
     - id: no-tool-errors
@@ -40,9 +41,9 @@ prompt_assertions:
       severity: critical
       check: { max_errors: 0 }
     - id: answer
-      text: "The reply says the Corner Cafe purchase (Id 2) has no account on its line, from the sub-agent's result"
+      text: "The reply says the Corner Cafe purchase (Id 2) has no account on its line, from the helper's result"
       severity: important
 
 ideal_behavior:
   tool_calls: 2
-  narrative: "One spawn with the file path in the prompt, one wait/collect of the sub-agent's result, then a two-line answer naming purchase 2 as uncategorized."
+  narrative: "One delegate call with the file path in the prompt (background: false, or in the background and relayed when its notification arrives), then a two-line answer naming purchase 2 as uncategorized."

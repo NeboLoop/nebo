@@ -16,10 +16,10 @@ fixtures:
   - ../fixtures/correction/work-name-in-definition.yaml
   - ../fixtures/correction/employee-update-instructions.yaml
   - ../fixtures/correction/employee-edit-user-created.yaml
-  - ../fixtures/correction/os-shell-session.yaml
+  - ../fixtures/correction/background-command-session.yaml
   - ../fixtures/correction/employee-update-description.yaml
   - ../fixtures/correction/plugin-discover-installed.yaml
-  - ../fixtures/correction/event-reminder-shape.yaml
+  - ../fixtures/correction/schedule-reminder-once.yaml
   - ../fixtures/correction/team-no-hub.yaml
   - ../fixtures/correction/plugin-args-command.yaml
   - ../fixtures/correction/spawn-prompt-with-path.yaml
@@ -29,4 +29,4 @@ fixtures:
   - ../fixtures/correction/read-over-budget-ranged.yaml
   - ../fixtures/correction/stop-means-stop.yaml
   - ../fixtures/correction/message-while-working.yaml
-  - ../fixtures/correction/os-glob-no-action.yaml
+  - ../fixtures/correction/input-validation-missing-param.yaml

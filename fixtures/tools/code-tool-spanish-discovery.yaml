@@ -25,7 +25,7 @@ conversation:
     content: "Revisa el archivo /tmp/nebo-test/es/calc.py y dime qué función calcula mal el área. Responde en español, sin editar nada."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
   code:
     enabled: true
@@ -39,7 +39,7 @@ prompt_assertions:
       text: "The model never says it cannot inspect or read code"
       severity: critical
     - id: no-edit
-      text: "No write or edit call is made"
+      text: "No write_file or edit_file call is made"
       severity: critical
   cost:
     - id: bounded
@@ -50,4 +50,4 @@ prompt_assertions:
 ideal_behavior:
   tool_calls: 1
   total_tokens: 3500
-  narrative: "read calc.py (or code outline) → 'area suma en vez de multiplicar'"
+  narrative: "read_file calc.py (or code outline) → 'area suma en vez de multiplicar'"

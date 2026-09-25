@@ -1,115 +1,205 @@
+//! The schedule tools: create, list, delete, pause, run now and history of
+//! scheduled work (Claude Code's cron tools, in our words). One purpose per
+//! tool over the one cron store.
+
 use std::sync::Arc;
 
-use crate::domain::DomainInput;
-use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use chrono::Local;
 use db::Store;
 
-/// EventTool manages scheduled tasks and cron jobs.
-/// Flat domain (no resources, actions map directly).
-pub struct EventTool {
-    store: Arc<Store>,
-    runner: Option<Arc<dyn crate::bot_tool::AdvisorDeliberator>>,
+/// One tool of the schedule family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Create,
+    List,
+    Delete,
+    SetPaused,
+    RunNow,
+    History,
 }
 
-impl EventTool {
-    pub fn new(store: Arc<Store>) -> Self {
-        Self {
-            store,
-            runner: None,
+const KINDS: &[Kind] = &[Kind::Create, Kind::List, Kind::Delete, Kind::SetPaused, Kind::RunNow, Kind::History];
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Create => "create_schedule",
+            Kind::List => "list_schedules",
+            Kind::Delete => "delete_schedule",
+            Kind::SetPaused => "set_schedule_paused",
+            Kind::RunNow => "run_schedule_now",
+            Kind::History => "schedule_history",
         }
     }
 
-    pub fn with_runner(mut self, runner: Arc<dyn crate::bot_tool::AdvisorDeliberator>) -> Self {
-        self.runner = Some(runner);
-        self
+    fn search_hint(self) -> &'static str {
+        match self {
+            Kind::Create => "schedule a reminder or recurring job",
+            Kind::List => "list scheduled reminders and jobs",
+            Kind::Delete => "delete a scheduled reminder or job",
+            Kind::SetPaused => "pause or resume a schedule",
+            Kind::RunNow => "run a scheduled job right now",
+            Kind::History => "past runs of a scheduled job",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Kind::Create => "Schedules work to run later, once or on a repeat.\n\
+                - `at` runs it once, a relative time from now (\"in 20 minutes\", \"in 3 hours\"). `cron` sets a clock time or a repeat, six fields starting with seconds: \"0 0 9 * * 1-5\" is 9am on weekdays, \"0 30 8 * * *\" is 8:30 every day.\n\
+                - `prompt` is what you do when it fires, with your tools and memory; `command` runs a shell command instead.\n\
+                - It runs with your own permissions: scheduling grants nothing new.\n\
+                - Not for checking on work in progress: helpers report back when they finish, and a run's outcome lands in its history. Never schedule a check on a run.",
+            Kind::List => "Lists the scheduled reminders and jobs with their timing and whether each is paused.",
+            Kind::Delete => "Deletes a scheduled reminder or job by name. It never fires again.",
+            Kind::SetPaused => "Pauses a schedule (`paused: true`) so it stops firing, or resumes it (`paused: false`). The schedule is kept.",
+            Kind::RunNow => "Runs a scheduled job once, now, and waits for its outcome. Its regular schedule is unchanged.",
+            Kind::History => "Shows the recent runs of a scheduled job and whether each succeeded.",
+        }
+    }
+
+    fn schema(self) -> serde_json::Value {
+        let name = serde_json::json!({ "type": "string", "description": "The schedule's name, as list_schedules shows it." });
+        match self {
+            Kind::Create => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "A short unique name, e.g. \"call-back-kristi\"." },
+                    "at": { "type": "string", "description": "Run once, this long from now: \"in 5 minutes\", \"in 2 hours\"." },
+                    "cron": { "type": "string", "description": "Run at a clock time or on a repeat: second minute hour day month weekday." },
+                    "prompt": { "type": "string", "description": "What to do when it fires; you run it with your tools and memory." },
+                    "command": { "type": "string", "description": "A shell command to run instead of a prompt." }
+                },
+                "required": ["name"]
+            }),
+            Kind::List => serde_json::json!({ "type": "object", "properties": {} }),
+            Kind::SetPaused => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": name,
+                    "paused": { "type": "boolean", "description": "true pauses it; false resumes it." }
+                },
+                "required": ["name", "paused"]
+            }),
+            Kind::Delete | Kind::RunNow | Kind::History => serde_json::json!({
+                "type": "object",
+                "properties": { "name": name },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    fn read_only(self) -> bool {
+        matches!(self, Kind::List | Kind::History)
+    }
+
+    fn labels(self, input: &serde_json::Value) -> (String, String) {
+        let name = input["name"].as_str().unwrap_or("").trim();
+        let paused = input["paused"].as_bool().unwrap_or(true);
+        match self {
+            Kind::Create => (format!("scheduling {name}"), format!("Scheduled {name}")),
+            Kind::List => ("checking the schedule".into(), "Checked the schedule".into()),
+            Kind::Delete => (format!("removing the {name} schedule"), format!("Removed the {name} schedule")),
+            Kind::SetPaused if paused => (format!("pausing {name}"), format!("Paused {name}")),
+            Kind::SetPaused => (format!("resuming {name}"), format!("Resumed {name}")),
+            Kind::RunNow => (format!("running {name} now"), format!("Ran {name}")),
+            Kind::History => (format!("checking the runs of {name}"), format!("Checked the runs of {name}")),
+        }
     }
 }
 
-impl DynTool for EventTool {
+fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {
+    input.get(key).and_then(|v| v.as_str()).map(str::trim).unwrap_or("")
+}
+
+/// The time field of a create: `cron`, or `schedule` for it.
+fn cron_field(input: &serde_json::Value) -> &str {
+    Some(str_field(input, "cron")).filter(|c| !c.is_empty()).unwrap_or_else(|| str_field(input, "schedule"))
+}
+
+/// One tool of the schedule family, over the cron store.
+pub struct ScheduleTool {
+    store: Arc<Store>,
+    kind: Kind,
+}
+
+/// Every schedule tool, sharing one store.
+pub fn tools(store: Arc<Store>) -> Vec<ScheduleTool> {
+    KINDS.iter().map(|&kind| ScheduleTool { store: store.clone(), kind }).collect()
+}
+
+impl DynTool for ScheduleTool {
     fn name(&self) -> &str {
-        "event"
+        self.kind.name()
     }
 
     fn description(&self) -> String {
-        "Scheduling & reminders — one-time and recurring time-based triggers.\n\
-         USE THIS when: user mentions \"every\", \"remind me\", \"daily\", \"weekly\", \"in X minutes\", or any time-based trigger.\n\
-         NOT for a created/named employee's recurring duties — those belong on the employee itself via update_employee (automations, add_automations). Use event only for YOUR OWN reminders and standalone tasks.\n\
-         Prefer task_type: \"agent\" — this means YOU execute the task when it fires, with full access to all your tools and memory.\n\n\
-         One-time reminders (use \"at\" with relative time):\n\
-         - event(action: \"create\", name: \"call-kristi\", at: \"in 10 minutes\", task_type: \"agent\", prompt: \"Remind user to call Kristi\")\n\n\
-         Recurring tasks (use \"cron\" expression: second minute hour day month weekday):\n\
-         - event(action: \"create\", name: \"morning-brief\", cron: \"0 0 8 * * 1-5\", task_type: \"agent\", prompt: \"Check today's calendar and send a summary\")\n\n\
-         Management:\n\
-         - event(action: \"list\") — List all reminders\n\
-         - event(action: \"delete\", name: \"...\") — Remove a reminder\n\
-         - event(action: \"pause\", name: \"...\") / event(action: \"resume\", name: \"...\") — Pause or resume\n\
-         - event(action: \"run\", name: \"...\") — Trigger immediately\n\
-         - event(action: \"history\", name: \"...\") — View execution history\n\n\
-         Common cron patterns: \"0 0 9 * * 1-5\" (9am weekdays), \"0 30 8 * * *\" (8:30am daily), \"0 0 */2 * * *\" (every 2h)"
-            .to_string()
+        self.kind.description().to_string()
     }
 
     fn schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "Action to perform",
-                    "enum": ["create", "list", "delete", "pause", "resume", "run", "history"]
-                },
-                "name": { "type": "string", "description": "Task name (unique identifier)" },
-                "cron": { "type": "string", "description": "Cron expression: second minute hour day month weekday [year] (e.g. \"0 30 9 * * *\" = 9:30 AM daily, \"0 30 9 * * * *\" with year wildcard)" },
-                "at": { "type": "string", "description": "Relative time for one-shot tasks (e.g. \"in 5 minutes\", \"in 1 hour\"). Converted to a cron expression automatically." },
-                "task_type": {
-                    "type": "string",
-                    "description": "Task type: bash (shell command) or agent (LLM prompt)",
-                    "enum": ["bash", "agent"]
-                },
-                "command": { "type": "string", "description": "Shell command (for bash tasks)" },
-                "prompt": { "type": "string", "description": "Agent prompt (for agent tasks)" }
-            },
-            "required": ["action"]
-        })
+        self.kind.schema()
     }
-
 
     fn search_hint(&self) -> &str {
-        "schedule reminders recurring jobs cron"
+        self.kind.search_hint()
     }
 
-    fn should_defer(&self) -> bool {
-        false
+    fn read_only(&self, _input: &serde_json::Value) -> bool {
+        self.kind.read_only()
     }
 
-    fn read_only(&self, input: &serde_json::Value) -> bool {
-        matches!(input.get("action").and_then(|v| v.as_str()), Some("list" | "history"))
+    /// A scheduled command is a shell command run later: the same shell
+    /// rules decide it now, so scheduling grants nothing new.
+    fn rule_field(&self, input: &serde_json::Value) -> Option<types::permissions::RuleField> {
+        let command = str_field(input, "command");
+        (self.kind == Kind::Create && !command.is_empty())
+            .then(|| types::permissions::RuleField::CommandPrefix(command.to_string()))
     }
 
-    fn rule_key(&self, input: &serde_json::Value) -> String {
-        match input.get("action").and_then(|v| v.as_str()).unwrap_or("") {
-            "list" => "list_schedules",
-            "delete" => "delete_schedule",
-            "pause" | "resume" => "set_schedule_paused",
-            "run" => "run_schedule_now",
-            "history" => "schedule_history",
-            _ => "create_schedule",
+    fn capability(&self, input: &serde_json::Value) -> Option<&'static str> {
+        (self.kind == Kind::Create && !str_field(input, "command").is_empty()).then_some("shell")
+    }
+
+    /// A schedule is the employee's own work; a scheduled prompt runs later
+    /// with the employee's own permissions. What a shell command does can't
+    /// be known from its text.
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        if self.kind == Kind::Create && !str_field(input, "command").is_empty() {
+            types::permissions::CallEffects::unknown()
+        } else {
+            types::permissions::CallEffects::none()
         }
-        .to_string()
     }
 
-    /// A schedule is the employee's own work.
-    fn effects(&self, _input: &serde_json::Value) -> types::permissions::CallEffects {
-        types::permissions::CallEffects::none()
+    fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
+        if self.kind != Kind::Create {
+            return Ok(());
+        }
+        let (at, cron) = (str_field(input, "at"), cron_field(input));
+        if at.is_empty() == cron.is_empty() {
+            return Err("Give exactly one of `at` (once, e.g. \"in 3 hours\") or `cron` (a clock time or repeat).".into());
+        }
+        let (prompt, command) = (str_field(input, "prompt"), str_field(input, "command"));
+        if prompt.is_empty() == command.is_empty() {
+            return Err("Give exactly one of `prompt` (what you do when it fires) or `command` (a shell command).".into());
+        }
+        if !at.is_empty() && parse_relative_time(at).is_none() {
+            return Err(format!(
+                "Could not read at: \"{at}\". Use a time from now like \"in 5 minutes\" or \"in 2 hours\"; for a clock time use `cron`."
+            ));
+        }
+        Ok(())
     }
 
-    /// Pre-interface: it settles its own call shapes (see
-    /// `DynTool::validates_input`).
-    fn validates_input(&self) -> bool {
-        false
+    fn activity(&self, input: &serde_json::Value) -> String {
+        self.kind.labels(input).0
+    }
+
+    fn outcome(&self, input: &serde_json::Value) -> String {
+        self.kind.labels(input).1
     }
 
     fn execute_dyn<'a>(
@@ -118,411 +208,239 @@ impl DynTool for EventTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
-                Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
-            };
-
-            match domain_input.action.as_str() {
-                "create" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    let cron_val = input["cron"]
-                        .as_str()
-                        .filter(|v| !v.is_empty())
-                        // `schedule` is the natural synonym models reach for — accept it.
-                        .or_else(|| input["schedule"].as_str())
-                        .unwrap_or("");
-                    let at_val = input["at"].as_str().unwrap_or("");
-                    let task_type = input["task_type"].as_str().unwrap_or("bash");
-                    let command = input["command"].as_str().unwrap_or("");
-                    let prompt = input["prompt"].as_str().unwrap_or("");
-
-                    if let Some(text) = reminder_shape_error(&input) {
-                        return ToolResult::error(text);
-                    }
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "create",
-                            "name",
-                            "event(action: \"create\", name: \"daily-report\", cron: \"0 30 9 * * *\", command: \"echo hello\")",
-                        ));
-                    }
-
-                    // Resolve schedule: prefer `cron`, fall back to `at` (relative time)
-                    let mut fires_at: Option<String> = None;
-                    let schedule = if !cron_val.is_empty() {
-                        cron_val.to_string()
-                    } else if !at_val.is_empty() {
-                        match parse_relative_time(at_val) {
-                            Some((s, target)) => {
-                                fires_at = Some(target.format("%Y-%m-%d %H:%M:%S %Z").to_string());
-                                s
-                            }
-                            None => {
-                                return ToolResult::error(format!(
-                                    "Could not parse '{}'. Use format like 'in 5 minutes', 'in 1 hour', 'in 30 seconds'.",
-                                    at_val
-                                ));
-                            }
-                        }
-                    } else {
-                        return ToolResult::error(
-                            "Either 'cron' or 'at' is required. Use cron: \"0 30 9 * * *\" or at: \"in 5 minutes\".",
-                        );
-                    };
-
-                    let (cmd, msg) = if task_type == "agent" {
-                        ("", Some(prompt))
-                    } else {
-                        if command.is_empty() {
-                            return ToolResult::error(errors::missing_param(
-                                "create",
-                                "command",
-                                "Missing 'command' for a bash task. For an agent task pass task_type: \"agent\", prompt: \"...\". Example bash: command: \"echo hello\"",
-                            ));
-                        }
-                        // Cron commands execute later without going through the
-                        // interactive shell pipeline — run the same unconditional
-                        // safeguard here at creation time so a scheduled job can't
-                        // smuggle a command the shell tool would refuse.
-                        if let Some(block) = crate::safeguard::check_safeguard(
-                            "shell",
-                            &serde_json::json!({
-                                "resource": "bash",
-                                "action": "exec",
-                                "command": command,
-                            }),
-                        ) {
-                            return ToolResult::error(format!(
-                                "Refusing to schedule this command: {}",
-                                block
-                            ));
-                        }
-                        (command, None::<&str>)
-                    };
-
-                    // Capture the originating agent + channel context so the
-                    // scheduler can route the response back to the same place
-                    // (e.g. timer set in a Slack thread → alert in the same
-                    // thread). agent_id is parsed from session_key, channel
-                    // is read from ctx.channel — both NULL when the task was
-                    // created outside an agent-bound channel conversation.
-                    let agent_id = Some(types::keyparser::extract_agent_id(&ctx.session_key))
-                        .filter(|id| !id.is_empty());
-                    let channel_ctx_json = ctx.channel.as_ref().map(|ch| {
-                        serde_json::json!({
-                            "kind": ch.kind,
-                            "channel_id": ch.channel_id,
-                            "thread_ts": ch.thread_ts,
-                        })
-                        .to_string()
-                    });
-
-                    match self.store.create_cron_job(
-                        name,
-                        &schedule,
-                        cmd,
-                        task_type,
-                        msg,
-                        None,
-                        None,
-                        true,
-                        agent_id.as_deref(),
-                        channel_ctx_json.as_deref(),
-                    ) {
-                        Ok(job) => ToolResult::ok(format!(
-                            "Created scheduled task '{}' (id={}): {} ({}){}",
-                            name,
-                            job.id,
-                            schedule,
-                            task_type,
-                            fires_at
-                                .map(|t| format!("; fires at {t}"))
-                                .unwrap_or_default()
-                        )),
-                        Err(e) if e.to_string().contains("UNIQUE constraint failed: cron_jobs.name") => {
-                            ToolResult::error(format!(
-                                "A task named '{name}' already exists. Delete it first with \
-                                 event(action: \"delete\", name: \"{name}\") or pick another name."
-                            ))
-                        }
-                        Err(e) => ToolResult::error(format!("Failed to create task: {}", e)),
-                    }
-                }
-                "list" => match self.store.list_cron_jobs(LIST_CAP, 0) {
-                    Ok(jobs) => {
-                        if jobs.is_empty() {
-                            ToolResult::ok("No scheduled tasks.")
-                        } else {
-                            let total = self
-                                .store
-                                .count_cron_jobs()
-                                .map(|n| n.max(jobs.len() as i64) as usize)
-                                .unwrap_or(jobs.len());
-                            let lines: Vec<String> = jobs
-                                .iter()
-                                .map(|j| {
-                                    let enabled = if j.enabled.unwrap_or(0) != 0 {
-                                        "enabled"
-                                    } else {
-                                        "disabled"
-                                    };
-                                    format!(
-                                        "- {} [{}] ({}) — {}",
-                                        j.name, enabled, j.task_type, j.schedule
-                                    )
-                                })
-                                .collect();
-                            ToolResult::ok(format!(
-                                "{}\n{}",
-                                list_header(jobs.len(), total),
-                                lines.join("\n")
-                            ))
-                        }
-                    }
-                    Err(e) => ToolResult::error(format!("Failed to list tasks: {}", e)),
+            let name = str_field(&input, "name");
+            match self.kind {
+                Kind::Create => self.create(ctx, &input).await,
+                Kind::List => self.list(),
+                Kind::Delete => match self.store.delete_cron_job_by_name(name) {
+                    Ok(count) if count > 0 => ToolResult::ok(format!("Deleted schedule: {name}")),
+                    Ok(_) => not_found(name),
+                    Err(e) => ToolResult::error(format!("Failed to delete: {e}")),
                 },
-                "delete" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "delete",
-                            "name",
-                            "event(action: \"delete\", name: \"daily-report\")",
-                        ));
-                    }
-                    match self.store.delete_cron_job_by_name(name) {
-                        Ok(count) => {
-                            if count > 0 {
-                                ToolResult::ok(format!("Deleted task: {}", name))
-                            } else {
-                                ToolResult::error(format!("Task '{}' not found", name))
-                            }
-                        }
-                        Err(e) => ToolResult::error(format!("Failed to delete: {}", e)),
-                    }
-                }
-                "pause" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "pause",
-                            "name",
-                            "event(action: \"pause\", name: \"daily-report\")",
-                        ));
-                    }
+                Kind::SetPaused => {
                     match self.store.get_cron_job_by_name(name) {
-                        Ok(None) => return ToolResult::error(format!("Task '{}' not found", name)),
-                        Err(e) => return ToolResult::error(format!("Failed to find task: {}", e)),
+                        Ok(None) => return not_found(name),
+                        Err(e) => return ToolResult::error(format!("Failed to find schedule: {e}")),
                         Ok(Some(_)) => {}
                     }
-                    match self.store.disable_cron_job_by_name(name) {
-                        Ok(_) => ToolResult::ok(format!("Paused task: {}", name)),
-                        Err(e) => ToolResult::error(format!("Failed to pause: {}", e)),
-                    }
-                }
-                "resume" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "resume",
-                            "name",
-                            "event(action: \"resume\", name: \"daily-report\")",
-                        ));
-                    }
-                    match self.store.get_cron_job_by_name(name) {
-                        Ok(None) => return ToolResult::error(format!("Task '{}' not found", name)),
-                        Err(e) => return ToolResult::error(format!("Failed to find task: {}", e)),
-                        Ok(Some(_)) => {}
-                    }
-                    match self.store.enable_cron_job_by_name(name) {
-                        Ok(_) => ToolResult::ok(format!("Resumed task: {}", name)),
-                        Err(e) => ToolResult::error(format!("Failed to resume: {}", e)),
-                    }
-                }
-                "run" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "run",
-                            "name",
-                            "event(action: \"run\", name: \"daily-report\")",
-                        ));
-                    }
-                    match self.store.get_cron_job_by_name(name) {
-                        Ok(Some(job)) => {
-                            // One fire, queued to the engine — the same way a
-                            // scheduled fire runs. Wait for it to settle so the
-                            // caller gets the outcome, not a promise.
-                            let run_id = match self.store.queue_cron_run(&job, true) {
-                                Ok(id) => id,
-                                Err(e) => {
-                                    return ToolResult::error(format!("Failed to queue task: {}", e));
-                                }
-                            };
-                            let deadline = tokio::time::Instant::now()
-                                + std::time::Duration::from_secs(RUN_NOW_WAIT_SECS);
-                            loop {
-                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                                match self.store.engine_get_run(&run_id) {
-                                    Ok(Some(run)) if run.state == "done" => {
-                                        return ToolResult::ok(format!(
-                                            "Task '{}' executed successfully:\n{}",
-                                            name,
-                                            run.result.unwrap_or_default()
-                                        ));
-                                    }
-                                    Ok(Some(run)) if matches!(run.state.as_str(), "failed" | "cancelled") => {
-                                        return ToolResult::error(format!(
-                                            "Task '{}' failed:\n{}",
-                                            name,
-                                            run.error.or(run.result).unwrap_or_default()
-                                        ));
-                                    }
-                                    Ok(Some(_)) => {}
-                                    Ok(None) => {
-                                        return ToolResult::error(format!(
-                                            "Task '{}' run record disappeared",
-                                            name
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        return ToolResult::error(format!("Failed to read run: {}", e));
-                                    }
-                                }
-                                if tokio::time::Instant::now() >= deadline {
-                                    return ToolResult::ok(format!(
-                                        "Task '{}' is still running after {}s; check event(action: \"history\", name: \"{}\") for the outcome.",
-                                        name, RUN_NOW_WAIT_SECS, name
-                                    ));
-                                }
-                            }
+                    if input["paused"].as_bool().unwrap_or(true) {
+                        match self.store.disable_cron_job_by_name(name) {
+                            Ok(_) => ToolResult::ok(format!("Paused schedule: {name}")),
+                            Err(e) => ToolResult::error(format!("Failed to pause: {e}")),
                         }
-                        Ok(None) => ToolResult::error(format!("Task '{}' not found", name)),
-                        Err(e) => ToolResult::error(format!("Failed to find task: {}", e)),
+                    } else {
+                        match self.store.enable_cron_job_by_name(name) {
+                            Ok(_) => ToolResult::ok(format!("Resumed schedule: {name}")),
+                            Err(e) => ToolResult::error(format!("Failed to resume: {e}")),
+                        }
                     }
                 }
-                "history" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "history",
-                            "name",
-                            "event(action: \"history\", name: \"daily-report\")",
-                        ));
-                    }
-                    // Get the job by name to find its ID, then fetch history
-                    match self.store.get_cron_job_by_name(name) {
-                        Ok(Some(job)) => match self.store.get_recent_cron_history(job.id) {
-                            Ok(history) => {
-                                if history.is_empty() {
-                                    ToolResult::ok(format!("No execution history for '{}'.", name))
-                                } else {
-                                    let lines: Vec<String> = history
-                                        .iter()
-                                        .map(|h| {
-                                            let status = if h.success.unwrap_or(0) != 0 {
-                                                "OK"
-                                            } else {
-                                                "FAIL"
-                                            };
-                                            format!(
-                                                "- [{}] {}",
-                                                status,
-                                                h.output.as_deref().unwrap_or("-")
-                                            )
-                                        })
-                                        .collect();
-                                    ToolResult::ok(format!(
-                                        "History for '{}':\n{}",
-                                        name,
-                                        lines.join("\n")
-                                    ))
-                                }
-                            }
-                            Err(e) => ToolResult::error(format!("Failed to get history: {}", e)),
-                        },
-                        Ok(None) => ToolResult::error(format!("Task '{}' not found", name)),
-                        Err(e) => ToolResult::error(format!("Failed to find task: {}", e)),
-                    }
-                }
-                other => ToolResult::error(format!(
-                    "Unknown action: {}. Available: create, list, delete, pause, resume, run, history",
-                    other
-                )),
+                Kind::RunNow => self.run_now(name).await,
+                Kind::History => self.history(name),
             }
         })
     }
 }
 
-/// Parse relative time strings like "in 5 minutes" into a one-shot cron expression.
-/// Returns a cron string like "0 25 18 14 3 *" (specific second/minute/hour/day/month).
-///
-/// Cron expressions are emitted in **local time** because Nebo is a desktop
-/// AI companion — the machine's local timezone IS the user's wall clock, and
-/// agents author schedules in those terms (e.g. "morning briefing at 7 AM"
-/// means 7 AM local). The scheduler (`crates/server/src/scheduler.rs::tick`)
-/// reads `Local::now()` and evaluates `schedule.after()` with a local-time
-/// `last_run`, so this side must match.
-/// Cap on the `list` action; the header says "showing N of M" when it applies.
+fn not_found(name: &str) -> ToolResult {
+    ToolResult::error(format!("No schedule named '{name}'. list_schedules shows the names."))
+}
+
+impl ScheduleTool {
+    async fn create(&self, ctx: &ToolContext, input: &serde_json::Value) -> ToolResult {
+        let name = str_field(input, "name");
+        let cron_val = cron_field(input);
+        let command = str_field(input, "command");
+        let prompt = str_field(input, "prompt");
+
+        let mut fires_at: Option<String> = None;
+        let schedule = if !cron_val.is_empty() {
+            cron_val.to_string()
+        } else {
+            match parse_relative_time(str_field(input, "at")) {
+                Some((s, target)) => {
+                    fires_at = Some(target.format("%Y-%m-%d %H:%M:%S %Z").to_string());
+                    s
+                }
+                None => return ToolResult::error("Could not read `at`; use a time from now like \"in 5 minutes\"."),
+            }
+        };
+
+        let (task_type, cmd, msg) = if command.is_empty() {
+            ("agent", "", Some(prompt))
+        } else {
+            // Cron commands execute later without going through the
+            // interactive shell pipeline — run the same unconditional
+            // safeguard here at creation time so a scheduled job can't
+            // smuggle a command the shell tool would refuse.
+            if let Some(block) =
+                crate::safeguard::check_safeguard("run_command", &serde_json::json!({ "command": command }))
+            {
+                return ToolResult::error(format!("Refusing to schedule this command: {block}"));
+            }
+            ("bash", command, None::<&str>)
+        };
+
+        // Capture the originating agent + channel context so the
+        // scheduler can route the response back to the same place
+        // (e.g. timer set in a Slack thread → alert in the same
+        // thread). agent_id is parsed from session_key, channel
+        // is read from ctx.channel — both NULL when the task was
+        // created outside an agent-bound channel conversation.
+        let agent_id = Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|id| !id.is_empty());
+        let channel_ctx_json = ctx.channel.as_ref().map(|ch| {
+            serde_json::json!({
+                "kind": ch.kind,
+                "channel_id": ch.channel_id,
+                "thread_ts": ch.thread_ts,
+            })
+            .to_string()
+        });
+
+        match self.store.create_cron_job(
+            name,
+            &schedule,
+            cmd,
+            task_type,
+            msg,
+            None,
+            None,
+            true,
+            agent_id.as_deref(),
+            channel_ctx_json.as_deref(),
+        ) {
+            Ok(job) => ToolResult::ok(format!(
+                "Created schedule '{}' (id={}): {} ({}){}",
+                name,
+                job.id,
+                schedule,
+                if command.is_empty() { "prompt" } else { "command" },
+                fires_at.map(|t| format!("; fires at {t}")).unwrap_or_default()
+            )),
+            Err(e) if e.to_string().contains("UNIQUE constraint failed: cron_jobs.name") => ToolResult::error(format!(
+                "A schedule named '{name}' already exists. Delete it first with delete_schedule or pick another name."
+            )),
+            Err(e) => ToolResult::error(format!("Failed to create schedule: {e}")),
+        }
+    }
+
+    fn list(&self) -> ToolResult {
+        match self.store.list_cron_jobs(LIST_CAP, 0) {
+            Ok(jobs) if jobs.is_empty() => ToolResult::ok("No schedules."),
+            Ok(jobs) => {
+                let total = self
+                    .store
+                    .count_cron_jobs()
+                    .map(|n| n.max(jobs.len() as i64) as usize)
+                    .unwrap_or(jobs.len());
+                let lines: Vec<String> = jobs
+                    .iter()
+                    .map(|j| {
+                        let state = if j.enabled.unwrap_or(0) != 0 { "active" } else { "paused" };
+                        let work = if j.task_type == "agent" { "prompt" } else { "command" };
+                        format!("- {} [{}] ({}) — {}", j.name, state, work, j.schedule)
+                    })
+                    .collect();
+                ToolResult::ok(format!("{}\n{}", list_header(jobs.len(), total), lines.join("\n")))
+            }
+            Err(e) => ToolResult::error(format!("Failed to list schedules: {e}")),
+        }
+    }
+
+    async fn run_now(&self, name: &str) -> ToolResult {
+        let job = match self.store.get_cron_job_by_name(name) {
+            Ok(Some(job)) => job,
+            Ok(None) => return not_found(name),
+            Err(e) => return ToolResult::error(format!("Failed to find schedule: {e}")),
+        };
+        // One fire, queued to the engine — the same way a scheduled fire
+        // runs. Wait for it to settle so the caller gets the outcome, not a
+        // promise.
+        let run_id = match self.store.queue_cron_run(&job, true) {
+            Ok(id) => id,
+            Err(e) => return ToolResult::error(format!("Failed to queue the run: {e}")),
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(RUN_NOW_WAIT_SECS);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            match self.store.engine_get_run(&run_id) {
+                Ok(Some(run)) if run.state == "done" => {
+                    return ToolResult::ok(format!("'{}' ran successfully:\n{}", name, run.result.unwrap_or_default()));
+                }
+                Ok(Some(run)) if matches!(run.state.as_str(), "failed" | "cancelled") => {
+                    return ToolResult::error(format!(
+                        "'{}' failed:\n{}",
+                        name,
+                        run.error.or(run.result).unwrap_or_default()
+                    ));
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => return ToolResult::error(format!("The run record of '{name}' disappeared")),
+                Err(e) => return ToolResult::error(format!("Failed to read the run: {e}")),
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return ToolResult::ok(format!(
+                    "'{name}' is still running after {RUN_NOW_WAIT_SECS}s. It carries on by itself and its outcome lands in its history; go on with other work."
+                ));
+            }
+        }
+    }
+
+    fn history(&self, name: &str) -> ToolResult {
+        let job = match self.store.get_cron_job_by_name(name) {
+            Ok(Some(job)) => job,
+            Ok(None) => return not_found(name),
+            Err(e) => return ToolResult::error(format!("Failed to find schedule: {e}")),
+        };
+        match self.store.get_recent_cron_history(job.id) {
+            Ok(history) if history.is_empty() => ToolResult::ok(format!("'{name}' has not run yet.")),
+            Ok(history) => {
+                let lines: Vec<String> = history
+                    .iter()
+                    .map(|h| {
+                        let status = if h.success.unwrap_or(0) != 0 { "OK" } else { "FAIL" };
+                        format!("- [{}] {}", status, h.output.as_deref().unwrap_or("-"))
+                    })
+                    .collect();
+                ToolResult::ok(format!("Runs of '{}':\n{}", name, lines.join("\n")))
+            }
+            Err(e) => ToolResult::error(format!("Failed to get history: {e}")),
+        }
+    }
+}
+
+/// Cap on `list_schedules`; the header says "showing N of M" when it applies.
 const LIST_CAP: i64 = 100;
 
-/// How long `run` waits for the engine to settle a run-now before handing
-/// the caller to `history`.
+/// How long `run_schedule_now` waits for the engine to settle a run.
 const RUN_NOW_WAIT_SECS: u64 = 600;
 
-/// Header for the `list` action: "N scheduled tasks" when the list is complete,
-/// "showing N of M scheduled tasks" when the cap cut it.
+/// Header for `list_schedules`: "N schedules" when the list is complete,
+/// "showing N of M schedules" when the cap cut it.
 fn list_header(shown: usize, total: usize) -> String {
     if total > shown {
-        format!("showing {shown} of {total} scheduled tasks (list cap {LIST_CAP}):")
+        format!("showing {shown} of {total} schedules (list cap {LIST_CAP}):")
     } else {
-        format!("{shown} scheduled tasks:")
+        format!("{shown} schedules:")
     }
 }
 
-/// The fields a scheduled task needs, named together. A call shaped like the
-/// reminder an early system prompt taught (`title`, `when`, nothing the tool
-/// reads) used to earn three errors in a row: name, then cron/at, then
-/// command. One error, all three fields, one valid call.
-fn reminder_shape_error(input: &serde_json::Value) -> Option<String> {
-    let has = |k: &str| input[k].as_str().is_some_and(|v| !v.trim().is_empty());
-    let reminder_shaped = has("title") || has("when");
-    let has_a_required_field = ["name", "cron", "schedule", "at", "command"].iter().any(|k| has(k));
-    if !reminder_shaped || has_a_required_field {
-        return None;
-    }
-    let title = input["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("reminder");
-    let name = Some(comm::handle::slugify(title)).filter(|n| !n.is_empty()).unwrap_or_else(|| "reminder".to_string());
-    let when = input["when"].as_str().map(str::trim).unwrap_or("");
-    let (at, when_note) = if !when.is_empty() && parse_relative_time(when).is_some() {
-        (when.to_string(), String::new())
-    } else if when.is_empty() {
-        ("in 3 hours".to_string(), String::new())
-    } else {
-        (
-            "in 3 hours".to_string(),
-            format!(" `at` takes a relative time, not \"{when}\": say how long from now (\"in 2 hours\"), or give a cron for a clock time."),
-        )
-    };
-    Some(format!(
-        "A scheduled task needs three fields, and `title`/`when` are not fields: name (a unique id), \
-         a time (at: \"in 3 hours\" or cron: \"0 0 15 * * *\"), and the work (task_type: \"agent\", prompt: \"...\", \
-         or command: \"...\" for a shell command). Example: event(action: \"create\", name: \"{name}\", at: \"{at}\", \
-         task_type: \"agent\", prompt: \"Remind the user: {title}\").{when_note}"
-    ))
-}
-
-/// Parse "in 5 minutes" style input into a 7-field cron expression plus the
-/// local time it resolves to, so the result can say when the task fires.
+/// Parse relative time strings like "in 5 minutes" into a one-shot cron
+/// expression plus the local time it resolves to, so the result can say when
+/// the schedule fires.
+///
+/// Cron expressions are emitted in **local time**: the machine's local
+/// timezone IS the owner's wall clock, and employees author schedules in
+/// those terms (e.g. "morning briefing at 7 AM" means 7 AM local). The
+/// scheduler (`crates/server/src/scheduler.rs::tick`) reads `Local::now()`
+/// and evaluates `schedule.after()` with a local-time `last_run`, so this
+/// side must match.
 fn parse_relative_time(input: &str) -> Option<(String, chrono::DateTime<Local>)> {
     let s = input.trim().to_lowercase();
     let s = s.strip_prefix("in ").unwrap_or(&s);
 
-    // Extract number and unit
     let mut parts = s.split_whitespace();
-    let num_str = parts.next()?;
-    let num: i64 = num_str.parse().ok()?;
+    let num: i64 = parts.next()?.parse().ok()?;
     let unit = parts.next().unwrap_or("");
 
     let duration = if unit.starts_with("second") || unit == "s" || unit == "sec" {
@@ -552,58 +470,22 @@ fn parse_relative_time(input: &str) -> Option<(String, chrono::DateTime<Local>)>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn store() -> (Arc<Store>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("s.db").to_string_lossy()).unwrap());
+        (store, dir)
+    }
+
+    fn tool(store: &Arc<Store>, name: &str) -> ScheduleTool {
+        tools(store.clone()).into_iter().find(|t| t.name() == name).unwrap()
+    }
 
     #[test]
     fn list_header_says_showing_n_of_m_only_when_capped() {
-        assert_eq!(list_header(3, 3), "3 scheduled tasks:");
-        assert_eq!(
-            list_header(100, 240),
-            "showing 100 of 240 scheduled tasks (list cap 100):"
-        );
-    }
-
-    #[test]
-    fn a_reminder_shaped_call_gets_one_error_naming_all_three_fields() {
-        use serde_json::json;
-        let call = json!({"action": "create", "resource": "reminder", "title": "Call back", "when": "3pm"});
-        let text = reminder_shape_error(&call).expect("refused");
-        for needle in ["name", "at:", "cron:", "prompt:", "command:", "name: \"call-back\"", "not \"3pm\""] {
-            assert!(text.contains(needle), "{needle}: {text}");
-        }
-        let relative = json!({"action": "create", "title": "Call back", "when": "in 2 hours"});
-        let text = reminder_shape_error(&relative).expect("refused");
-        assert!(text.contains("at: \"in 2 hours\""), "{text}");
-        assert!(!text.contains("relative time, not"), "{text}");
-        let well_formed = json!({"action": "create", "name": "call-back", "at": "in 3 hours", "task_type": "agent", "prompt": "x", "title": "Call back"});
-        assert!(reminder_shape_error(&well_formed).is_none());
-        assert!(reminder_shape_error(&json!({"action": "create"})).is_none());
-        assert!(reminder_shape_error(&json!({"action": "create", "when": "3pm", "command": "echo hi"})).is_none());
-    }
-
-    /// The refusal fires before the name check, and the corrected call lands.
-    #[tokio::test]
-    async fn create_refuses_the_reminder_shape_before_asking_for_a_name() {
-        use crate::registry::DynTool;
-        let path = std::env::temp_dir().join(format!("nebo-event-reminder-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
-        let tool = EventTool::new(store);
-        let ctx = ToolContext::default();
-        let refused = tool
-            .execute_dyn(&ctx, serde_json::json!({"action": "create", "title": "Call back", "when": "3pm"}))
-            .await;
-        assert!(refused.is_error, "{}", refused.content);
-        assert!(refused.content.contains("three fields"), "{}", refused.content);
-        assert!(!refused.content.contains("Missing required parameter"), "{}", refused.content);
-        let created = tool
-            .execute_dyn(
-                &ctx,
-                serde_json::json!({"action": "create", "name": "call-back", "at": "in 5 minutes", "task_type": "agent", "prompt": "Remind the user: call back"}),
-            )
-            .await;
-        assert!(!created.is_error, "{}", created.content);
-        assert!(created.content.contains("Created scheduled task 'call-back'"), "{}", created.content);
-        let _ = std::fs::remove_file(&path);
+        assert_eq!(list_header(3, 3), "3 schedules:");
+        assert_eq!(list_header(100, 240), "showing 100 of 240 schedules (list cap 100):");
     }
 
     #[test]
@@ -615,5 +497,69 @@ mod tests {
         assert!(delta >= chrono::Duration::minutes(5) - chrono::Duration::seconds(1));
         assert!(delta <= chrono::Duration::minutes(5) + chrono::Duration::seconds(5));
         assert!(parse_relative_time("next tuesday").is_none());
+    }
+
+    /// A create needs exactly one time and exactly one kind of work, and a
+    /// relative time it can read; each refusal says the call to make.
+    #[test]
+    fn a_create_names_one_time_and_one_kind_of_work() {
+        let (s, _d) = store();
+        let create = tool(&s, "create_schedule");
+        let ok = json!({"name": "call-back", "at": "in 3 hours", "prompt": "Remind the owner to call back"});
+        assert!(create.validate_input(&ok).is_ok());
+        assert!(create.validate_input(&json!({"name": "x", "cron": "0 0 9 * * 1-5", "command": "echo hi"})).is_ok());
+        let no_time = create.validate_input(&json!({"name": "x", "prompt": "p"})).unwrap_err();
+        assert!(no_time.contains("`at`") && no_time.contains("`cron`"), "{no_time}");
+        assert!(create.validate_input(&json!({"name": "x", "at": "in 1 hour", "cron": "0 0 9 * * *", "prompt": "p"})).is_err());
+        let no_work = create.validate_input(&json!({"name": "x", "at": "in 1 hour"})).unwrap_err();
+        assert!(no_work.contains("`prompt`") && no_work.contains("`command`"), "{no_work}");
+        let clock = create.validate_input(&json!({"name": "x", "at": "3pm", "prompt": "p"})).unwrap_err();
+        assert!(clock.contains("\"3pm\"") && clock.contains("`cron`"), "{clock}");
+    }
+
+    /// Create, list, pause, resume and delete, each through its own tool.
+    #[tokio::test]
+    async fn each_tool_does_its_one_job() {
+        let (s, _d) = store();
+        let ctx = ToolContext::default();
+        let r = tool(&s, "create_schedule")
+            .execute_dyn(&ctx, json!({"name": "call-back", "at": "in 5 minutes", "prompt": "Remind the owner: call back"}))
+            .await;
+        assert!(!r.is_error && r.content.contains("Created schedule 'call-back'") && r.content.contains("fires at"), "{}", r.content);
+        let listed = tool(&s, "list_schedules").execute_dyn(&ctx, json!({})).await;
+        assert!(listed.content.contains("call-back [active] (prompt)"), "{}", listed.content);
+        let paused = tool(&s, "set_schedule_paused").execute_dyn(&ctx, json!({"name": "call-back", "paused": true})).await;
+        assert!(!paused.is_error, "{}", paused.content);
+        assert!(tool(&s, "list_schedules").execute_dyn(&ctx, json!({})).await.content.contains("[paused]"));
+        tool(&s, "set_schedule_paused").execute_dyn(&ctx, json!({"name": "call-back", "paused": false})).await;
+        assert!(tool(&s, "list_schedules").execute_dyn(&ctx, json!({})).await.content.contains("[active]"));
+        let history = tool(&s, "schedule_history").execute_dyn(&ctx, json!({"name": "call-back"})).await;
+        assert!(history.content.contains("has not run yet"), "{}", history.content);
+        let deleted = tool(&s, "delete_schedule").execute_dyn(&ctx, json!({"name": "call-back"})).await;
+        assert!(!deleted.is_error, "{}", deleted.content);
+        let gone = tool(&s, "delete_schedule").execute_dyn(&ctx, json!({"name": "call-back"})).await;
+        assert!(gone.is_error && gone.content.contains("list_schedules"), "{}", gone.content);
+    }
+
+    /// A scheduled command meets the shell's rules at creation: the shell
+    /// capability and its command prefix, and the shell safeguard. A
+    /// scheduled prompt is the employee's own work.
+    #[test]
+    fn a_scheduled_command_is_decided_as_a_command() {
+        let (s, _d) = store();
+        let create = tool(&s, "create_schedule");
+        let cmd = json!({"name": "x", "cron": "0 0 9 * * *", "command": "rm -rf /tmp/cache"});
+        assert_eq!(create.capability(&cmd), Some("shell"));
+        assert_eq!(
+            create.rule_field(&cmd),
+            Some(types::permissions::RuleField::CommandPrefix("rm -rf /tmp/cache".into()))
+        );
+        assert_eq!(create.effects(&cmd), types::permissions::CallEffects::unknown());
+        let prompt = json!({"name": "x", "at": "in 1 hour", "prompt": "check the calendar"});
+        assert_eq!(create.capability(&prompt), None);
+        assert_eq!(create.rule_field(&prompt), None);
+        assert_eq!(create.effects(&prompt), types::permissions::CallEffects::none());
+        assert!(tool(&s, "list_schedules").read_only(&json!({})));
+        assert!(!tool(&s, "delete_schedule").read_only(&json!({"name": "x"})));
     }
 }

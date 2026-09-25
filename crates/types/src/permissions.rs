@@ -41,6 +41,10 @@ pub struct CallEffects {
     pub publishes: Knowable,
     pub deletes: Vec<String>,
     pub overwrites: Vec<String>,
+    /// The call gives an employee more room (a standing grant, a wider
+    /// limit). Only the owner does that: it always asks, in every mode.
+    #[serde(default)]
+    pub widens: bool,
 }
 
 impl CallEffects {
@@ -336,6 +340,8 @@ pub enum Why {
     Mode { mode: Mode },
     BasicWork,
     AnsweredOnce { ask_id: String },
+    /// The owner already said no to this same call in this session.
+    Declined { ask_id: String },
     Judged { by: String, reason: String },
     Unreviewed { reason: String },
 }
@@ -351,6 +357,11 @@ pub enum AskCase {
     UntrustedInput { source: String },
     AskRule { rule_id: String },
     AskMode,
+    /// The call gives an employee more room; only the owner does that.
+    Widens,
+    /// An employee made by an employee needs more than its creator holds:
+    /// the one card at creation, listing the extras.
+    CreatedExtras { capabilities: Vec<String> },
 }
 
 /// What the check decided for one call.
@@ -421,6 +432,10 @@ pub enum Writer {
     Package { package: String },
     /// An employee narrowing.
     Employee { agent_id: String },
+    /// An employee making another: it hands the new employee part of its
+    /// own job, never more (the caller checks each rule against the
+    /// creator's grant before writing).
+    Creator { creator_id: String },
 }
 
 /// Why a rule was not written or removed.

@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use types::permissions::{
-    Effect, Grant, MoneyLimit, Mode, Rule, RuleField, RuleKey, Scope, Target,
+    Effect, Grant, MoneyLimit, Mode, Rule, RuleField, RuleKey, RuleSource, Scope, Target,
 };
 
 /// An employee's rules for one run, split by scope.
@@ -81,6 +81,16 @@ impl RuleSet {
                 .deciding(t)
                 .iter()
                 .any(|r| r.effect == Effect::Allow && !matches!(r.key, RuleKey::Capability(_)) && matches(r, t))
+    }
+
+    /// Whether the owner answered "Allow always" to an ask for this call:
+    /// an allow written by that answer covers it.
+    pub fn answered_always(&self, t: &Target) -> bool {
+        matches!(self.decide(t), Some((_, Effect::Allow)))
+            && self
+                .deciding(t)
+                .iter()
+                .any(|r| r.effect == Effect::Allow && matches!(r.source, RuleSource::AllowAlways { .. }) && matches(r, t))
     }
 
     /// The job's folders (see [`types::permissions::folders_of`]).

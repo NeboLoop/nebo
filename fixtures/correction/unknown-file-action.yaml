@@ -1,10 +1,15 @@
 id: correction-unknown-file-action
-name: "Correction — a refused action is corrected on the next call"
+name: "Correction — appending with no append mode keeps the file and finishes the job"
 description: |
-  Appending to a file tempts an action that does not exist (append). The file
-  tool's refusal names the actions that do. The model must correct on the
-  next call and finish the job, not loop on the refused shape or give up.
-target_component: os
+  Appending to a file tempts a mode that does not exist: write_file takes
+  path and content and replaces the file, it has no append. A call with an
+  invented parameter comes back as an InputValidationError that names the
+  parameters that exist. The model must append a valid way (edit_file
+  anchored on the last line, run_command `printf 'gamma\n' >> file`, or a
+  read then a write_file of the whole content), never clobber the file with
+  write_file(content: "gamma"), and finish the job without looping on a
+  refused shape or giving up.
+target_component: write_file
 
 setup:
   - "mkdir -p {{scratch}} && printf 'alpha\nbeta\n' > {{scratch}}/notes.txt"
@@ -16,17 +21,24 @@ conversation:
     content: "Append a line that says 'gamma' to the end of {{scratch}}/notes.txt, then show me the whole file."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  edit_file:
+    enabled: true
+  write_file:
+    enabled: true
+  run_command:
     enabled: true
 
 prompt_assertions:
   first_call:
-    - id: uses-os
-      text: "Model uses the os tool"
+    - id: uses-file-or-command-tool
+      text: "Model's first call is one of the file tools or run_command"
       severity: critical
+      check: { first_call: true, tool: [read_file, edit_file, write_file, run_command] }
   recovery:
     - id: corrects-after-refusal
-      text: "If a call is refused for an unknown action, the very next call uses a valid way (file edit, file write, or a shell append) instead of repeating the refused shape"
+      text: "If a call is refused (an invented parameter such as append, or an edit anchor that does not match), the very next call uses a valid way (edit_file, write_file with the whole content, or a run_command append) instead of repeating the refused shape; no write_file ever replaces the file with just 'gamma'"
       severity: critical
     - id: job-finished
       text: "The file ends up with gamma on its own last line and the model shows all three lines"
@@ -44,5 +56,5 @@ ideal_behavior:
   tool_calls: 2
   total_tokens: 2500
   narrative: |
-    One write or shell append, one read (or a single edit that appends), then
-    the three lines.
+    One run_command append (or edit_file anchored on beta), one read_file
+    (or cat in the same command), then the three lines.

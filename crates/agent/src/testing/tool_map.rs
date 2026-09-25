@@ -61,7 +61,7 @@ const ROWS: &[Row] = &[
     row("os", &["shell"], &["list", "info"], "list_processes", &[]),
     row("os", &["shell"], &["poll", "log"], "read_output", &[("session_id", "task_id")]),
     row("os", &["shell"], &["kill"], "stop_task", &[("session_id", "task_id")]),
-    row("os", &["shell"], &["write"], "send_input", &[("session_id", "task_id")]),
+    row("os", &["shell"], &["write"], "send_input", &[("session_id", "task_id"), ("data", "text")]),
     row("os", &["file"], &["share", "present", "send"], "share_file", &[]),
     row("os", &["file"], &["convert"], "convert_file", &[]),
     row("os", &["file"], &["checkpoint"], "checkpoint_files", &[]),
@@ -70,7 +70,7 @@ const ROWS: &[Row] = &[
     row("os", &["file"], &["plan"], "write_plan", &[]),
     row("os", &["file"], &["plan_check"], "check_plan", &[]),
     // agent: helpers and tasks
-    row("agent", &["task"], &["spawn", "spawn_parallel"], "delegate", &[("agent_type", "helper_type")]),
+    row("agent", &["task"], &["spawn", "spawn_parallel"], "delegate", &[("agent_type", "helper_type"), ("isolate", "isolation")]),
     row("agent", &["task"], &["orchestrate"], "orchestrate", &[]),
     row("agent", &["task"], &["send"], "send_message", &[("task_id", "to"), ("text", "message")]),
     row("agent", &["task"], &["status"], "read_output", &[]),
@@ -83,7 +83,8 @@ const ROWS: &[Row] = &[
     row("agent", &["task"], &["assignments"], "list_assignments", &[]),
     // agent: memory
     row("agent", &["memory"], &["store", "save"], "remember", &[]),
-    row("agent", &["memory"], &["recall", "search", "list"], "recall", &[]),
+    row("agent", &["memory"], &["recall"], "recall", &[("key", "query")]),
+    row("agent", &["memory"], &["search", "list"], "recall", &[]),
     row("agent", &["memory"], &["delete"], "forget", &[]),
     // agent: the rest
     row("agent", &["ask"], &["prompt", "confirm", "select"], "ask_owner", &[("text", "question")]),
@@ -91,6 +92,12 @@ const ROWS: &[Row] = &[
     row("agent", &["session"], &["history"], "read_session", &[]),
     row("agent", &["session"], &["list"], "list_sessions", &[]),
     row("agent", &["runs"], &["list"], "list_runs", &[]),
+    row("agent", &["runs"], &["cancel"], "stop_task", &[("run_id", "task_id")]),
+    row("agent", &["advisors"], &["deliberate"], "consult_advisors", &[("task", "question")]),
+    row("agent", &["advisors"], &["list"], "list_advisors", &[]),
+    row("agent", &["profile"], &["get"], "get_profile", &[]),
+    row("agent", &["profile"], &["update"], "update_profile", &[]),
+    row("agent", &["profile"], &["open_billing"], "open_billing", &[]),
     row("agent", &["research"], &["deep_research"], "deep_research", &[]),
     row("agent", &["research"], &["research"], "quick_research", &[]),
     row("agent", &["research"], &["submit_findings"], "submit_findings", &[]),
@@ -109,8 +116,14 @@ const ROWS: &[Row] = &[
     row("agent", &["registry"], &["stats"], "employee_stats", &[]),
     // skills
     row("skill", &[], &["load"], "use_skill", &[]),
-    row("skill", &[], &["discover", "browse"], "find_skills", &[]),
-    row("skill", &[], &["read_resource"], "read_skill_file", &[]),
+    row("skill", &[], &["discover", "list"], "find_skills", &[]),
+    row("skill", &[], &["read_resource", "browse"], "read_skill_file", &[]),
+    row("skill", &[], &["create", "update"], "save_skill", &[]),
+    row("skill", &[], &["delete"], "delete_skill", &[]),
+    row("skill", &[], &["install"], "install_skill", &[]),
+    row("skill", &[], &["configure", "secrets"], "configure_skill", &[]),
+    row("skill", &[], &["rate"], "rate_skill", &[]),
+    row("skill", &[], &["reviews"], "read_skill_reviews", &[]),
     row("tool_search", &[], &[], "find_tools", &[]),
     // web
     row("web", &["search"], &["search"], "search_web", &[]),
@@ -138,28 +151,58 @@ const ROWS: &[Row] = &[
     // messages
     row("message", &["coworker"], &["send"], "send_message", &[("text", "message")]),
     row("message", &["owner"], &["notify"], "message_owner", &[("text", "message")]),
-    row("message", &["notify"], &["send", "alert"], "push_notification", &[]),
+    row("message", &["notify"], &["send", "alert"], "push_notification", &[("text", "message")]),
     row("message", &["notify"], &["dnd_status"], "check_dnd", &[]),
     row("message", &["sms"], &["send"], "sms_message_send", &[]),
     // plugins other than exec (exec is `plugin__<slug>`, below)
     row("plugin", &[], &["discover"], "find_plugins", &[]),
     row("plugin", &[], &["events"], "read_plugin_events", &[]),
-    // scheduling and workflows
-    row("event", &[], &["create"], "create_schedule", &[]),
+    // scheduling, teams, the NeboAI hub, workflows and events
+    row("event", &[], &["create"], "create_schedule", &[("schedule", "cron")]),
     row("event", &[], &["list"], "list_schedules", &[]),
     row("event", &[], &["delete"], "delete_schedule", &[]),
-    row("work", &[], &["list"], "list_workflows", &[]),
+    row("event", &[], &["pause", "resume"], "set_schedule_paused", &[]),
+    row("event", &[], &["run"], "run_schedule_now", &[]),
+    row("event", &[], &["history"], "schedule_history", &[]),
+    row("team", &[], &["create"], "create_team", &[("agents", "members")]),
+    row("team", &[], &["update", "edit"], "update_team", &[("agents", "members")]),
+    row("team", &[], &["list"], "list_teams", &[]),
+    row("team", &[], &["send", "post"], "send_message", &[("team", "to"), ("text", "message")]),
+    row("team", &[], &["messages", "history"], "team_messages", &[]),
+    row("team", &[], &["members"], "team_members", &[]),
+    row("loop", &["channel", "dm"], &["send"], "send_loop_message", &[]),
+    row("loop", &["channel", "dm"], &["share"], "share_to_loop", &[]),
+    row("loop", &["channel"], &["ensure"], "ensure_loop_channel", &[]),
+    row("loop", &["channel"], &["list"], "list_loop_channels", &[]),
+    row("loop", &["channel"], &["messages"], "read_loop_channel", &[]),
+    row("loop", &["channel"], &["members"], "loop_channel_members", &[]),
+    row("loop", &["loop", "group"], &["list"], "list_loops", &[]),
+    row("loop", &["loop", "group"], &["get"], "get_loop", &[]),
+    row("loop", &["loop", "group"], &["members"], "loop_members", &[]),
+    row("loop", &["topic"], &["subscribe"], "subscribe_topic", &[]),
+    row("loop", &["topic"], &["unsubscribe"], "unsubscribe_topic", &[]),
+    row("loop", &["topic"], &["status"], "topic_status", &[]),
+    row("loop", &["workroom"], &["create", "ensure"], "create_team", &[("agents", "members")]),
+    row("loop", &["workroom"], &["send"], "send_message", &[("team", "to"), ("text", "message")]),
+    row("work", &[], &["list"], "list_workflows", &[("agent", "employee")]),
     row("work", &[], &["install"], "install_workflow", &[]),
     row("work", &[], &["uninstall"], "uninstall_workflow", &[]),
-    row("work", &[], &["create"], "create_workflow", &[]),
-    row("work", &[], &["update"], "update_workflow", &[]),
-    row("work", &[], &["delete"], "delete_workflow", &[]),
-    row("work", &[], &["run"], "run_workflow", &[]),
-    row("work", &[], &["status"], "workflow_status", &[]),
+    row("work", &[], &["create"], "create_workflow", &[("agent", "employee")]),
+    row("work", &[], &["update", "edit"], "update_workflow", &[("agent", "employee")]),
+    row("work", &[], &["delete"], "delete_workflow", &[("agent", "employee")]),
+    row("work", &[], &["cancel"], "stop_task", &[("id", "task_id")]),
+    row("work", &[], &["run"], "run_workflow", ON_WORKFLOW),
+    row("work", &[], &["status"], "workflow_status", ON_WORKFLOW),
+    row("work", &[], &["runs"], "list_workflow_runs", ON_WORKFLOW),
+    row("work", &[], &["toggle"], "set_workflow_enabled", ON_WORKFLOW),
+    row("emit", &[], &[], "emit_event", &[]),
     // remaining built-ins
     row("notebook", &[], &["edit"], "edit_notebook", &[]),
     row("exit", &[], &[], "end_activity", &[]),
 ];
+
+/// A call on one workflow: `work` named it in `resource`.
+const ON_WORKFLOW: &[(&str, &str)] = &[("resource", "workflow"), ("agent", "employee")];
 
 /// The old browser actions `browser_act` takes as its own `action` argument
 /// (the one enum surface, as Chrome's `computer` tool).
@@ -205,7 +248,14 @@ fn old_to_new(tool: &str, args: &Value) -> Option<(String, Value)> {
             && (r.actions.is_empty() || action.is_some_and(|a| r.actions.contains(&a)))
             && (r.resources.is_empty() || resource.is_none_or(|res| r.resources.contains(&res)))
     })?;
-    let keep = if row.actions == BROWSER_ACT { &["resource"][..] } else { &["resource", "action"][..] };
+    // A row with no resources is a tool whose `resource`, when a call
+    // carries one, names what it acts on (`work`'s workflow): a parameter,
+    // renamed like the rest.
+    let keep = match (row.actions == BROWSER_ACT, row.resources.is_empty()) {
+        (true, _) => &["resource"][..],
+        (false, true) => &["action"][..],
+        (false, false) => &["resource", "action"][..],
+    };
     let mut rest = without(args, keep);
     rename(&mut rest, row.renames.iter().map(|(o, n)| (*o, *n)));
     Some((row.new_tool.to_string(), rest))
@@ -342,6 +392,18 @@ mod tests {
         let (tool, args) = translate("browser_act", &json!({"action": "type", "text": "hi"})).unwrap();
         assert_eq!(tool, "web");
         assert_eq!(args, json!({"action": "type", "text": "hi", "resource": "browser"}));
+    }
+
+    #[test]
+    fn a_workflow_named_in_resource_is_the_workflow_parameter() {
+        let (tool, args) = translate("work", &json!({"resource": "weekly-report", "action": "run", "agent": "Ava"})).unwrap();
+        assert_eq!(tool, "run_workflow");
+        assert_eq!(args, json!({"workflow": "weekly-report", "employee": "Ava"}));
+        let (tool, args) = translate("run_workflow", &json!({"workflow": "weekly-report"})).unwrap();
+        assert_eq!(tool, "work");
+        assert_eq!(args, json!({"resource": "weekly-report", "action": "run"}));
+        let (tool, args) = translate("team", &json!({"action": "send", "team": "Ops", "text": "hi"})).unwrap();
+        assert_eq!((tool.as_str(), args), ("send_message", json!({"to": "Ops", "message": "hi"})));
     }
 
     #[test]

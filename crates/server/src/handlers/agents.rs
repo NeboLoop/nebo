@@ -662,7 +662,14 @@ pub async fn create_agent(
     // "+ new employee" flow names it at birth — hiring starts with a name.
     if body.get("blank").and_then(|v| v.as_bool()).unwrap_or(false) {
         let name = body["name"].as_str().filter(|n| !n.trim().is_empty());
-        return create_blank_agent(state, name).await;
+        // The builder's Create: the drafted job (`POST /agents/needs`), less
+        // the items the owner removed, named by their words.
+        let draft_id = body["draftId"].as_str().filter(|d| !d.is_empty());
+        let removed: Vec<String> = body["removed"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|w| w.as_str().and_then(tools::needs::capability_for_words)).collect())
+            .unwrap_or_default();
+        return create_blank_agent(state, name, draft_id, &removed).await;
     }
 
     let agent_md = body["agentMd"].as_str().ok_or_else(|| {
@@ -1342,7 +1349,85 @@ pub async fn update_agent(
         });
     }
 
+    // Save on the owner's page is the consent to the edit's line (drafted
+    // by `POST /agents/needs` with this agent): what it adds joins the job.
+    if let Some(draft_id) = body["draftId"].as_str().filter(|d| !d.is_empty()) {
+        match tools::needs::open_draft(&state.store, draft_id, "edit") {
+            Ok((row, _, added)) if row.agent_id == id => {
+                let source = types::permissions::RuleSource::JobEdit;
+                if let Err(e) = agent::harness::permissions::consent::grant_job(&state.store, &id, &added, source) {
+                    warn!(agent = %id, error = %e, "the edit's added needs were not granted");
+                }
+                let _ = state.store.use_employee_draft(draft_id);
+            }
+            Ok(_) => warn!(agent = %id, draft = draft_id, "an edit draft for another employee was ignored"),
+            Err(e) => warn!(agent = %id, error = %e, "the edit draft could not be used"),
+        }
+    }
+
     Ok(Json(serde_json::json!({ "agent": updated })))
+}
+
+/// POST /agents/needs — the one needs step for the owner's pages. With
+/// `typeConfig` (a package's agent.json), the line above Hire, read off the
+/// manifest with no model call. With `description`, the line above Create in
+/// the builder, drafted so Create grants what was shown; with `agentId` too,
+/// only what an edit adds, drafted for Save. Items and accounts are plain
+/// words; no rule string reaches the page.
+pub async fn work_out_agent_needs(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    use tools::needs::{self, DeclaredNeeds, Draft, JobSource};
+    let name = body["name"].as_str().map(str::trim).filter(|n| !n.is_empty()).unwrap_or("This employee");
+    let description = body["description"].as_str().unwrap_or("");
+    let agent_id = body["agentId"].as_str().unwrap_or("");
+    let declared = body
+        .get("typeConfig")
+        .filter(|v| v.is_object())
+        .and_then(|tc| napp::agent::parse_agent_config(&tc.to_string()).ok())
+        .map(|c| DeclaredNeeds::of(&c));
+    let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.runner.providers());
+    let src = JobSource {
+        name,
+        description,
+        skills: &[],
+        plugins: &[],
+        workflows: &[],
+        declared: declared.as_ref(),
+        installed: &installed,
+    };
+    let mut worked_out = needs::work_out_needs(&src, &reader).await;
+    if declared.is_none() && !agent_id.is_empty() {
+        let before = agent::harness::permissions::consent::job_of(&state.store, agent_id).map_err(to_error_response)?;
+        worked_out = needs::added(&before, &worked_out);
+    }
+    let (draft_id, line) = if declared.is_some() {
+        (serde_json::Value::Null, needs::consent_line(name, &worked_out))
+    } else {
+        let input = serde_json::json!({ "name": name, "description": description });
+        let draft = Draft {
+            kind: if agent_id.is_empty() { "create" } else { "edit" },
+            agent_id,
+            creator_id: "",
+            chat_id: "",
+            name,
+            input: &input,
+            needs: &worked_out,
+        };
+        let (id, line) =
+            needs::save_draft(&state.store, &draft).map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+        (serde_json::Value::String(id), line)
+    };
+    let items: Vec<String> = worked_out.items().into_iter().map(|t| t.words).collect();
+    let accounts: Vec<&str> = worked_out.accounts.iter().filter_map(|a| needs::words_of(&a.capability)).collect();
+    Ok(Json(serde_json::json!({
+        "line": line,
+        "items": items,
+        "accounts": accounts,
+        "draftId": draft_id,
+    })))
 }
 
 /// DELETE /agents/{id}
@@ -1683,15 +1768,36 @@ pub async fn process_agent_bindings(
 async fn create_blank_agent(
     state: AppState,
     name: Option<&str>,
+    draft_id: Option<&str>,
+    removed: &[String],
 ) -> HandlerResult<serde_json::Value> {
     let id = uuid::Uuid::new_v4().to_string();
     let name = name.map(str::trim).unwrap_or("New Agent");
-    let agent_md = format!("---\nname: {:?}\ndescription: \"\"\n---\n", name);
+    let draft = match draft_id {
+        Some(d) => Some(
+            tools::needs::open_draft(&state.store, d, "create")
+                .map_err(|e| to_error_response(types::NeboError::Validation(e)))?,
+        ),
+        None => None,
+    };
+    let description = draft.as_ref().and_then(|(_, input, _)| input["description"].as_str()).unwrap_or("").trim();
+    let agent_md = format!("---\nname: {:?}\ndescription: {:?}\n---\n", name, description);
 
     let agent = state
         .store
-        .create_agent(&id, None, name, "", &agent_md, "{}", None, None)
+        .create_agent(&id, None, name, description, &agent_md, "{}", None, None)
         .map_err(to_error_response)?;
+
+    // Create is the owner's consent to the line it showed: the drafted
+    // needs, less what the owner removed, become the job.
+    if let (Some((row, _, needs)), Some(draft_id)) = (&draft, draft_id) {
+        let kept = needs.without(removed);
+        let source = types::permissions::RuleSource::Created { draft_id: draft_id.to_string() };
+        if let Err(e) = agent::harness::permissions::consent::grant_job(&state.store, &id, &kept, source) {
+            warn!(agent = %id, error = %e, "the builder's job was not granted");
+        }
+        let _ = state.store.use_employee_draft(&row.id);
+    }
 
     // Auto-activate: insert into agent_registry so it shows in sidebar
     let active = tools::ActiveAgent {
@@ -4322,7 +4428,7 @@ pub async fn start_workflow_chat(
          Node types (ONLY these, ONLY inside call trees): \n\
          - greeting (params: text — spoken word-for-word; exactly one required)\n\
          - intent (params: name kebab-case unique, description, and the intent's grants as \
-           comma-separated strings — tools e.g. \"agent:memory, os:calendar\", workflows \
+           comma-separated strings — tools e.g. \"recall, os:calendar\", workflows \
            (this agent's workflow names), plugins (slugs), mcp (server names)). Grants are \
            ENFORCED: a caller in that intent can touch nothing else.\n\
          - transfer (params: when; to — WHO the caller is told they're being connected \
@@ -4459,6 +4565,20 @@ pub async fn handle_available(
     Ok(Json(HandleAvailableResponse { available }))
 }
 
+/// The capabilities the company has connected: every interface its active
+/// plugins bind, with the plugins that bind it.
+pub fn connected_capabilities(state: &AppState) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut by_capability: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for slug in tools::plugin_tool::active_plugin_slugs(&state.plugin_store, &state.store) {
+        if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
+            for capability in agent::agent_worker::interfaces_of(&manifest.interface_bindings) {
+                by_capability.entry(capability).or_default().push(slug.clone());
+            }
+        }
+    }
+    by_capability
+}
+
 /// GET /api/v1/agents/{id}/operations — the per-employee Approvals view.
 ///
 /// Lists every gated operation this employee can reach, with its three-state
@@ -4503,18 +4623,7 @@ pub async fn get_agent_operations(
     // runtime performs itself and every seat can reach. An empty list is the
     // honest answer — nothing is connected yet — not a menu of things that
     // would fail on the first call.
-    let mut providers_by_capability: std::collections::BTreeMap<String, Vec<String>> =
-        std::collections::BTreeMap::new();
-    for slug in tools::plugin_tool::active_plugin_slugs(&state.plugin_store, &state.store) {
-        if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
-            for capability in agent::agent_worker::interfaces_of(&manifest.interface_bindings) {
-                providers_by_capability
-                    .entry(capability)
-                    .or_default()
-                    .push(slug.clone());
-            }
-        }
-    }
+    let mut providers_by_capability = connected_capabilities(&state);
     for op in tools::interface_catalog::gated_operations() {
         let capability = op.split('.').next().unwrap_or("");
         if tools::interface_catalog::is_builtin_capability(capability) {
@@ -4646,79 +4755,6 @@ pub async fn get_agent_operations(
         "operations": operations,
         "total": operations.len(),
     })))
-}
-
-#[derive(Deserialize)]
-pub struct WorkflowApprovalBody {
-    pub approved: bool,
-}
-
-/// POST /api/v1/agents/workflow-runs/{run_id}/approval — resolve a run parked
-/// at the approval checkpoint.
-///
-/// Deny → the suspension is dropped and the run completes as denied.
-/// Approve → the run is re-triggered through the ONE `run_inline` pathway with
-/// the reserved `_approved_op` input: a one-shot token (operation + exact input
-/// hash) that admits exactly the call the owner saw. Re-derivation that drifts
-/// from that call re-suspends rather than executing something unapproved.
-pub async fn resolve_workflow_approval(
-    State(state): State<AppState>,
-    Path(run_id): Path<String>,
-    Json(body): Json<WorkflowApprovalBody>,
-) -> HandlerResult<serde_json::Value> {
-    // The owner's answer is an event aimed at the run's live wait. The
-    // engine delivers it: the wait is released, the run re-queued, and the
-    // loop resumes it at the approved call (with the definition it started
-    // with) or ends it as denied. One answer per wait generation: a second
-    // click on the same card is a duplicate, not a second resume.
-    let run = state
-        .store
-        .engine_get_run(&run_id)
-        .map_err(to_error_response)?
-        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
-    let enqueued = state.store.engine_answer_wait(&run_id, body.approved).map_err(to_error_response)?;
-    let status = if body.approved { "approved" } else { "denied" };
-    match enqueued {
-        db::Enqueued::Inserted(_) => {
-            info!(run_id, agent_id = %run.agent_id, status, "workflow approval recorded for the engine");
-        }
-        db::Enqueued::Duplicate => {
-            info!(run_id, "workflow approval already recorded; nothing more to do");
-        }
-    }
-    // Resolved-delta: clear the mirror row in the owner's web inbox no matter
-    // which surface answered.
-    crate::codes::push_inbox(
-        &state,
-        serde_json::json!({ "id": format!("wf-approval:{}", run_id), "resolved": true }),
-    );
-    Ok(Json(serde_json::json!({ "status": status, "runId": run_id })))
-}
-
-/// GET /api/v1/agents/workflow-runs/{run_id}/approval — approval status for
-/// the Inbox: "pending" while the suspension row exists, otherwise the run's
-/// resolved state (approved runs were superseded → "resumed", plus "denied" /
-/// "completed" / "failed"). Read-side only; the POST above is the resolver.
-pub async fn get_workflow_approval_status(
-    State(state): State<AppState>,
-    Path(run_id): Path<String>,
-) -> HandlerResult<serde_json::Value> {
-    let run_status = state
-        .store
-        .get_workflow_run(&run_id)
-        .ok()
-        .flatten()
-        .map(|r| r.status)
-        .unwrap_or_else(|| "unknown".to_string());
-    if run_status == "awaiting_approval" {
-        return Ok(Json(serde_json::json!({ "status": "pending" })));
-    }
-    // "resumed" means the owner approved and the run was re-executed.
-    let status = match run_status.as_str() {
-        "resumed" => "approved",
-        other => other,
-    };
-    Ok(Json(serde_json::json!({ "status": status })))
 }
 
 #[derive(serde::Deserialize)]
@@ -4884,11 +4920,11 @@ pub async fn resolve_learning(
         skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
         ..Default::default()
     };
-    let mut input = serde_json::json!({ "action": row.action, "name": row.target });
+    let mut input = serde_json::json!({ "name": row.target });
     if let Some(content) = body.content.as_deref().or(row.content.as_deref()) {
         input["content"] = serde_json::json!(content);
     }
-    let result = state.tools.execute(&ctx, "skill", input).await;
+    let result = state.tools.execute(&ctx, learned_write_tool(&row.action), input).await;
     if result.is_error {
         // Leave the row pending — the owner can retry after the cause clears.
         return Err(to_error_response(types::NeboError::Internal(format!(
@@ -4911,6 +4947,12 @@ pub async fn resolve_learning(
         );
     info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning approved and applied");
     Ok(Json(serde_json::json!({ "status": "approved" })))
+}
+
+/// The skill tool a learned write's action goes through: a create or an
+/// update is a save, a delete is a delete.
+fn learned_write_tool(action: &str) -> &'static str {
+    if action == "delete" { "delete_skill" } else { "save_skill" }
 }
 
 /// POST /api/v1/agents/learnings/{id}/revert — undo an APPLIED learned
@@ -5017,11 +5059,11 @@ pub async fn revert_learning(
         skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
         ..Default::default()
     };
-    let mut input = serde_json::json!({ "action": inverse_action, "name": row.target });
+    let mut input = serde_json::json!({ "name": row.target });
     if let Some(ref content) = inverse_content {
         input["content"] = serde_json::json!(content);
     }
-    let result = state.tools.execute(&ctx, "skill", input).await;
+    let result = state.tools.execute(&ctx, learned_write_tool(inverse_action), input).await;
     if result.is_error {
         return Err(to_error_response(types::NeboError::Internal(format!(
             "revert failed: {}",

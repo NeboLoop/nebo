@@ -45,11 +45,11 @@ const MAX_SUBAGENT_DEPTH: usize = 2;
 /// temptation is right after spawning, when the model narrates onward as if
 /// the result already exists. Until the wake arrives it knows nothing.
 pub(crate) const BACKGROUND_SPAWN_ACK: &str =
-    "Sub-agent spawned in background. When it finishes or fails you will be woken \
+    "Working in the background. When it finishes or fails you will be woken \
      automatically to act on the result and report. Until that wake arrives you know \
      NOTHING about its outcome — do not report, assume, or predict its results. If the \
-     user asks before then, check agent(resource: \"task\", action: \"status\") or say \
-     it is still running.";
+     owner asks before then, say it is still running (read_output with its id shows \
+     where it is).";
 
 /// How deeply a session sits in the sub-agent tree — the number of `subagent:`
 /// prefixes on its key. Top-level (user/channel) agents are depth 0; their
@@ -1267,23 +1267,6 @@ fn build_subagent_request(
     if !spawn_req.skills.is_empty() {
         run_req.preload_skills = spawn_req.skills.clone();
     }
-    if !spawn_req.plugins.is_empty() {
-        run_req.preload_plugins = spawn_req.plugins.clone();
-        // Pre-activate the "plugin" tool so it's available from turn 1
-        // (it's normally deferred and discovered via find_tools).
-        if !run_req.preactivate_tools.contains(&"plugin".to_string()) {
-            run_req.preactivate_tools.push("plugin".to_string());
-        }
-    }
-    if !spawn_req.tools.is_empty() {
-        run_req.preload_tools = spawn_req.tools.clone();
-        // Pre-activate all specified tools so they pass the tool filter
-        for tool in &spawn_req.tools {
-            if !run_req.preactivate_tools.contains(tool) {
-                run_req.preactivate_tools.push(tool.clone());
-            }
-        }
-    }
     run_req
 }
 
@@ -1579,7 +1562,6 @@ impl SubAgentOrchestrator for Orchestrator {
 mod child_limits {
     use super::*;
     use tools::ToolContext;
-    use tools::registry::DynTool;
     use types::provenance::ProvenanceClass;
     type Fut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -1637,12 +1619,13 @@ mod child_limits {
         }
     }
 
-    fn agent_tool(rec: &Recorder) -> (tempfile::TempDir, tools::AgentTool) {
+    /// The helper tools (`delegate`, `orchestrate`, …) over the recorder.
+    fn helper_tools(rec: &Recorder) -> (tempfile::TempDir, Vec<Box<dyn tools::registry::DynTool>>) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
         let handle = tools::new_handle();
         let _ = handle.set(Box::new(rec.clone()));
-        (dir, tools::AgentTool::new(store, handle))
+        (dir, tools::helper_tools::Helpers::new(store, handle).tools())
     }
 
     fn rule(key: types::permissions::RuleKey, field: Option<types::permissions::RuleField>, effect: types::permissions::Effect) -> types::permissions::Rule {
@@ -1705,8 +1688,13 @@ mod child_limits {
         assert_eq!(child.origin, tools::Origin::System, "{path}: a child never asks the owner");
     }
 
-    async fn call(tool: &tools::AgentTool, ctx: &ToolContext, input: serde_json::Value) -> tools::ToolResult {
-        tool.execute_dyn(ctx, input).await
+    async fn call(
+        tools: &[Box<dyn tools::registry::DynTool>],
+        ctx: &ToolContext,
+        name: &str,
+        input: serde_json::Value,
+    ) -> tools::ToolResult {
+        tools.iter().find(|t| t.name() == name).expect("helper tool").execute_dyn(ctx, input).await
     }
 
     /// The escalation: a sub-agent of an employee with shell OFF and a path
@@ -1715,9 +1703,9 @@ mod child_limits {
     #[tokio::test]
     async fn a_sub_agent_keeps_its_parents_limits() {
         let rec = Recorder::default();
-        let (_dir, tool) = agent_tool(&rec);
+        let (_dir, tools) = helper_tools(&rec);
         let ctx = limited_parent();
-        call(&tool, &ctx, serde_json::json!({"resource": "task", "action": "spawn", "prompt": "list the files", "wait": true})).await;
+        call(&tools, &ctx, "delegate", serde_json::json!({"description": "list", "prompt": "list the files", "background": false})).await;
         let req = rec.take().pop().expect("spawn reached the orchestrator");
         let child = build_subagent_request(&req, "subagent:agent:a1:web:sa-1", "p", &CancellationToken::new());
         let denied = match &child.ceiling {
@@ -1737,23 +1725,19 @@ mod child_limits {
     #[tokio::test]
     async fn every_spawn_path_inherits_the_parents_limits() {
         let rec = Recorder::default();
-        let (_dir, tool) = agent_tool(&rec);
+        let (_dir, tools) = helper_tools(&rec);
         let ctx = limited_parent();
         let cancel = CancellationToken::new();
         let key = "subagent:agent:a1:web:sa-1";
 
-        let cases: [(&str, serde_json::Value); 4] = [
-            ("spawn", serde_json::json!({"resource": "task", "action": "spawn", "prompt": "a", "wait": true})),
-            ("spawn in background", serde_json::json!({"resource": "task", "action": "spawn", "prompt": "a", "wait": false})),
-            (
-                "spawn_parallel",
-                serde_json::json!({"resource": "task", "action": "spawn_parallel",
-                    "tasks": [{"prompt": "a"}, {"prompt": "b", "model_override": "janus/other", "skills": ["x"]}]}),
-            ),
-            ("orchestrate", serde_json::json!({"resource": "task", "action": "orchestrate", "prompt": "a then b"})),
+        let cases: [(&str, &str, serde_json::Value); 4] = [
+            ("foreground", "delegate", serde_json::json!({"description": "a", "prompt": "a", "background": false})),
+            ("background", "delegate", serde_json::json!({"description": "a", "prompt": "a"})),
+            ("isolated", "delegate", serde_json::json!({"description": "b", "prompt": "b", "isolation": "worktree"})),
+            ("orchestrate", "orchestrate", serde_json::json!({"prompt": "a then b"})),
         ];
-        for (path, input) in cases {
-            call(&tool, &ctx, input).await;
+        for (path, name, input) in cases {
+            call(&tools, &ctx, name, input).await;
             let reqs = rec.take();
             assert!(!reqs.is_empty(), "{path}: nothing reached the orchestrator");
             for req in reqs {
@@ -1787,7 +1771,7 @@ mod child_limits {
     #[tokio::test]
     async fn an_unrestricted_parent_has_an_unrestricted_child() {
         let rec = Recorder::default();
-        let (_dir, tool) = agent_tool(&rec);
+        let (_dir, tools) = helper_tools(&rec);
         let grant = types::permissions::Grant::new("", types::permissions::Mode::FullAccess);
         let ctx = ToolContext {
             session_id: "s1".into(),
@@ -1795,7 +1779,7 @@ mod child_limits {
             grant: Some(std::sync::Arc::new(grant)),
             ..Default::default()
         };
-        call(&tool, &ctx, serde_json::json!({"resource": "task", "action": "spawn", "prompt": "a"})).await;
+        call(&tools, &ctx, "delegate", serde_json::json!({"description": "a", "prompt": "a"})).await;
         let req = rec.take().pop().unwrap();
         let child = build_subagent_request(&req, "subagent:agent:assistant:web:sa-1", "p", &CancellationToken::new());
         assert!(child.tool_allowlist.is_none() && child.fence.is_none() && child.seed_taint.is_empty());
@@ -1813,13 +1797,13 @@ mod child_limits {
     #[tokio::test]
     async fn taint_travels_to_the_child() {
         let rec = Recorder::default();
-        let (_dir, tool) = agent_tool(&rec);
+        let (_dir, tools) = helper_tools(&rec);
         let ctx = ToolContext {
             session_key: "agent:a1:web".into(),
             run_taint: vec![ProvenanceClass::Channel],
             ..Default::default()
         };
-        call(&tool, &ctx, serde_json::json!({"resource": "task", "action": "spawn", "prompt": "a"})).await;
+        call(&tools, &ctx, "delegate", serde_json::json!({"description": "a", "prompt": "a"})).await;
         let req = rec.take().pop().unwrap();
         let child = build_subagent_request(&req, "subagent:agent:a1:web:sa-1", "p", &CancellationToken::new());
         assert_eq!(child.seed_taint, vec![ProvenanceClass::Channel]);
@@ -1877,8 +1861,6 @@ mod tests {
             parent_cancel: Some(CancellationToken::new()),
             max_iterations: 1,
             skills: vec![],
-            plugins: vec![],
-            tools: vec![],
             parent_stream_tx: Some(tx),
             handoff_depth: 0,
             isolate: String::new(),

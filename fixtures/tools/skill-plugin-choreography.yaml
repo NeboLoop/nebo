@@ -2,8 +2,8 @@ id: skill-plugin-choreography
 name: "Skill to Plugin — capability discovery"
 description: |
   The user asks for a capability that has no native tool. The model must
-  use skill discovery (skill discover/list) or find_tools to find relevant
-  capabilities — NOT hallucinate a tool that doesn't exist.
+  look for it (the skill listing, find_skills, plugin discover or find_tools)
+  — NOT hallucinate a tool that doesn't exist.
 target_component: plugin
 
 conversation:
@@ -11,7 +11,9 @@ conversation:
     content: "Post a tweet on my Twitter account saying 'Excited to announce our new product launch!'"
 
 tool_config:
-  skill:
+  use_skill:
+    enabled: true
+  find_skills:
     enabled: true
   plugin:
     enabled: true
@@ -19,9 +21,9 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: uses-discovery
-      text: "Model's FIRST call is a discovery action (skill discover, plugin discover, or find_tools), not an execution attempt and not a refusal without looking"
+      text: "Model's FIRST call is a discovery action (find_skills, use_skill on a listed skill, plugin discover, or find_tools), not an execution attempt and not a refusal without looking"
       severity: critical
-      check: { first_call: true, tool: [skill, plugin, find_tools] }
+      check: { first_call: true, tool: [find_skills, use_skill, plugin, find_tools] }
     - id: no-hallucinated-tool
       text: "Model does NOT call 'twitter', 'tweet', 'social', or any hallucinated standalone tool name"
       severity: critical
@@ -44,5 +46,5 @@ ideal_behavior:
   tool_calls: 2
   total_tokens: 3000
   narrative: |
-    1. find_tools(query: "twitter") or skill(action: "discover", query: "twitter") to search for capability
+    1. find_tools(query: "twitter") or plugin(action: "discover", query: "twitter") to search for capability
     2. Report to user — no Twitter skill/plugin is available, suggest installing one from the marketplace

@@ -27,7 +27,16 @@ fn get_file(name: &str) -> Option<EmbeddedFile> {
 /// embedded files, so it is whatever actually ships — never a number a
 /// caller has to keep in step by hand.
 pub fn head_version() -> i64 {
-    iter_files().iter().filter_map(|f| extract_version(f)).max().unwrap_or(0)
+    versions().last().copied().unwrap_or(0)
+}
+
+/// Every migration version this binary carries, in order. Parallel branches
+/// take numbers as they land, so the list may skip one; the migrator applies
+/// each version it has not applied, whatever its neighbours.
+pub fn versions() -> Vec<i64> {
+    let mut versions: Vec<i64> = iter_files().iter().filter_map(|f| extract_version(f)).collect();
+    versions.sort_unstable();
+    versions
 }
 
 /// Run all pending migrations on the database connection.
@@ -409,7 +418,7 @@ mod idempotency_tests {
             "This conversation continues from an earlier part that was summarized:\n\nOwner wants the Q3 report.\n\n\
              If you need a specific detail from before this summary (an exact snippet, an error message, something you \
              wrote), the earlier conversation is still stored: search it with \
-             agent(resource: \"session\", action: \"query\", query: \"...\")."
+             search_history(query: \"...\")."
         );
         assert_eq!(long[1].id, "l020");
         let short = store.get_chat_messages_since_checkpoint("short").unwrap();

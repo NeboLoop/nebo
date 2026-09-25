@@ -538,3 +538,48 @@
   .agent-working::before { animation: none; --nebo-orbit: 200deg; }
   .agent-working-dot { animation: none; }
 }
+
+/* ===== Permission ask card: one step waits on the owner ===== */
+.permission-ask-card {
+  @apply rounded-2xl border border-warning/60 bg-warning/10 px-4 py-3 flex flex-col gap-1.5;
+}
+.permission-ask-title {
+  @apply m-0 text-sm font-semibold;
+}
+.permission-ask-sentence {
+  @apply m-0 text-sm text-base-content;
+}
+.permission-ask-reason {
+  @apply text-base-content/60;
+}
+.permission-ask-actions {
+  @apply flex flex-wrap gap-1.5 pt-1;
+}
+.permission-ask-settled {
+  @apply m-0 text-xs font-medium text-base-content/60;
+}
+.permission-ask-error {
+  @apply m-0 text-xs text-error;
+}
+
+/* The consent line: what an employee will be able to do, in plain words,
+   above Hire and Create and inline in the chat. The owner consents to jobs,
+   not actions; each builder item is removable before Create. */
+.consent-line {
+  @apply text-sm text-base-content/80 leading-relaxed;
+}
+.consent-items {
+  @apply flex flex-wrap gap-1.5;
+}
+.consent-item {
+  @apply inline-flex items-center gap-1 rounded-full bg-base-200 px-2.5 py-1 text-xs text-base-content/80;
+}
+.consent-item-remove {
+  @apply inline-flex items-center text-base-content/50 hover:text-base-content cursor-pointer;
+}
+.consent-chip {
+  @apply flex flex-col gap-1 my-2.5 rounded-xl border border-base-content/10 bg-base-200/60 px-3 py-2;
+}
+.consent-chip-hint {
+  @apply text-xs text-base-content/50;
+}

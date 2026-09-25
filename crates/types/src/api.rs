@@ -163,7 +163,8 @@ pub struct DashboardCounts {
 }
 
 /// Something waiting on the owner: a gated tool call in a chat (`kind` =
-/// "tool") or a workflow parked at an approval step (`kind` = "workflow").
+/// "tool") or a step parked on an ask (`kind` = "permission_ask"; `id` is
+/// the ask's).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardApproval {

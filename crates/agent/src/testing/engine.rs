@@ -84,10 +84,7 @@ pub async fn run_live(
         let all_tool_names: Vec<String> = vec![
             "os".into(),
             "agent".into(),
-            "event".into(),
-            "loop".into(),
             "message".into(),
-            "skill".into(),
         ];
         let strap_section =
             crate::prompt::build_strap_section(&all_tool_names);

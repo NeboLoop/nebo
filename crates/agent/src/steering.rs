@@ -48,6 +48,9 @@ const STATE_CHANGING_ACTIONS: &[&str] = &[
     "create", "send", "schedule", "delete", "remove", "move", "rename", "edit", "write", "post",
     "upload", "book", "buy", "pay", "reply", "share", "cancel",
 ];
+/// Tools whose every call changes a file the owner sees, with the action
+/// word the confirmation names.
+const STATE_CHANGING_TOOLS: &[(&str, &str)] = &[("write_file", "write"), ("edit_file", "edit")];
 
 /// Lightweight context for reminder checks, built after tool results in run_loop.
 pub struct ReminderContext<'a> {
@@ -463,13 +466,14 @@ impl Reminder for SilenceBreaker {
 fn state_changing_action(tool_calls_json: &str) -> Option<String> {
     let calls: serde_json::Value = serde_json::from_str(tool_calls_json).ok()?;
     for c in calls.as_array()? {
+        let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("a tool");
         let action = c
             .get("input")
             .and_then(|i| i.get("action"))
             .and_then(|a| a.as_str())
+            .or_else(|| STATE_CHANGING_TOOLS.iter().find(|(t, _)| *t == name).map(|(_, a)| *a))
             .unwrap_or("");
         if STATE_CHANGING_ACTIONS.contains(&action) {
-            let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("a tool");
             return Some(format!("{action} via {name}"));
         }
     }
@@ -1052,7 +1056,7 @@ fn calls_since_unexecuted_skill_load(messages: &[ChatMessage]) -> Option<usize> 
         if arr.iter().any(|c| name_of(c) == "plugin") {
             return deepest; // plugin execution counts as producing
         }
-        if arr.iter().any(|c| name_of(c) == "skill") {
+        if arr.iter().any(|c| name_of(c) == tools::skill_tool::USE_SKILL) {
             deepest = Some(calls_since);
         }
         calls_since += arr.len();
@@ -1255,7 +1259,7 @@ impl Reminder for ResearchModeNudge {
         }
         Some(
             "This task calls for multi-source research. Use \
-             agent(resource: \"research\", action: \"deep_research\", query: \"<the user's research question>\") \
+             deep_research(query: \"<the user's research question>\") \
              to run the verified deep-research harness rather than searching ad-hoc."
                 .to_string(),
         )
@@ -1495,12 +1499,14 @@ fn last_discovery_query(messages: &[ChatMessage]) -> String {
         };
         for c in calls.iter().rev() {
             let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            if !matches!(name, "skill" | "plugin") {
-                continue;
-            }
             let input = c.get("input").cloned().unwrap_or(serde_json::Value::Null);
             let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            if !matches!(action, "discover" | "search" | "browse") {
+            let discovery = match name {
+                "find_skills" => true,
+                "plugin" => matches!(action, "discover" | "search" | "browse"),
+                _ => false,
+            };
+            if !discovery {
                 continue;
             }
             if let Some(q) = input.get("query").and_then(|v| v.as_str())
@@ -1591,9 +1597,9 @@ impl Reminder for TaskTrackingNudge {
 fn task_tracking_text() -> String {
     "This looks like a multi-stage request. If it will take many tool calls across \
      several distinct stages, track it so the user can see progress:\n\
-     1. Create tasks: agent(resource: \"task\", action: \"create\", subject: \"...\")\n\
-     2. Update as you work: agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
-     3. Mark complete with output: agent(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
+     1. Create tasks: create_task(subject: \"...\")\n\
+     2. Update as you work: update_task(task_id: N, status: \"in_progress\")\n\
+     3. Mark complete with output: update_task(task_id: N, status: \"completed\", output: \"...\")\n\
      If you can finish it in a handful of calls, skip the task list and just do the work."
         .to_string()
 }
@@ -1624,7 +1630,7 @@ impl Reminder for TaskCompletionNudge {
         Some(
             "You have tasks but none are marked in_progress or completed. \
              Update task status as you work: \
-             agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\") \
+             update_task(task_id: N, status: \"in_progress\") \
              before starting, then status: \"completed\" with output when done."
                 .to_string(),
         )
@@ -1661,8 +1667,8 @@ fn recent_tool_calls(messages: &[ChatMessage], limit: usize) -> Vec<(String, Str
 }
 
 /// Detects when the main agent is in an exploratory research loop —
-/// repeatedly calling discovery-flavored tools (`find_tools`, `skill
-/// discover`, repeated `plugin` probes) trying to figure out how to do
+/// repeatedly calling discovery-flavored tools (`find_tools`,
+/// `find_skills`, repeated `plugin` probes) trying to figure out how to do
 /// something — and nudges it to delegate the discovery to a sub-agent instead.
 ///
 /// Why: every exploratory tool call adds a user message + tool result pair
@@ -1670,8 +1676,8 @@ fn recent_tool_calls(messages: &[ChatMessage], limit: usize) -> Vec<(String, Str
 /// downstream turn. A sub-agent burns its OWN context on the research and
 /// returns one consolidated answer, keeping the main chat history clean.
 ///
-/// The prescribed chain `skill discover` → `skill load` → `plugin help` →
-/// `plugin exec` is not exploration: `skill load` and `plugin help` never
+/// The prescribed chain `find_skills` → `use_skill` → `plugin help` →
+/// `plugin exec` is not exploration: `use_skill` and `plugin help` never
 /// count. Triggers when RESEARCH_DELEGATION_THRESHOLD or more of the last
 /// RESEARCH_DELEGATION_WINDOW calls were discovery-flavored.
 struct ResearchDelegationNudge;
@@ -1694,8 +1700,8 @@ impl Reminder for ResearchDelegationNudge {
         let mut plugin_count = 0usize;
         for (name, action) in &window {
             match (name.as_str(), action.as_str()) {
-                ("skill", "load") | ("plugin", "help") => {} // the prescribed chain
-                ("find_tools", _) | ("skill", _) => discovery_count += 1,
+                ("use_skill", _) | ("plugin", "help") => {} // the prescribed chain
+                ("find_tools", _) | ("find_skills", _) => discovery_count += 1,
                 ("plugin", _) => plugin_count += 1,
                 _ => {}
             }
@@ -1712,16 +1718,16 @@ impl Reminder for ResearchDelegationNudge {
         Some(
             "You've made several discovery / how-to tool calls in your last few tool calls. \
              STOP exploring inline — it pollutes the main context. \
-             Spawn a sub-agent to do the research and report back: \
-             agent(resource: \"task\", action: \"spawn\", prompt: \"Figure out exactly how to <specific question>. Return the exact command / syntax / path as a single answer.\"). \
-             The sub-agent uses its own context for the exploration; you get one consolidated answer to act on."
+             Hand the research to a helper and have it report back: \
+             delegate(description: \"find how to <thing>\", prompt: \"Figure out exactly how to <specific question>. Return the exact command / syntax / path as a single answer.\"). \
+             The helper uses its own context for the exploration; you get one consolidated answer to act on."
                 .to_string(),
         )
     }
 }
 
 /// True if this assistant turn made EXACTLY ONE tool call and it was a read-type
-/// filesystem exploration (`os`/`system` read/glob/grep/list). This is the per-turn
+/// filesystem exploration (`read_file`, or a find/grep/ls command). This is the per-turn
 /// signal for the serial grind: many turns each doing one read. A healthy PARALLEL
 /// batch has ≥2 calls in the turn, so it returns false — that's the whole point of
 /// counting per-turn rather than by flat tool-name frequency.
@@ -1738,16 +1744,24 @@ fn is_serial_read_turn(tool_calls_json: &str) -> bool {
         return false;
     }
     let c = &arr[0];
-    let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
-    if name != "os" {
-        return false;
+    match c.get("name").and_then(|n| n.as_str()).unwrap_or("") {
+        "read_file" => true,
+        "run_command" => matches!(command_program(c.get("input")), "find" | "grep" | "rg" | "ls"),
+        _ => false,
     }
-    let action = c
-        .get("input")
-        .and_then(|i| i.get("action"))
-        .and_then(|a| a.as_str())
-        .unwrap_or("");
-    matches!(action, "read" | "glob" | "grep" | "list" | "ls")
+}
+
+/// The program a `run_command` call runs: its first word that is not an
+/// environment assignment, without its directory.
+fn command_program(input: Option<&serde_json::Value>) -> &str {
+    input
+        .and_then(|i| i.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .split_whitespace()
+        .find(|w| !w.contains('='))
+        .map(|w| w.rsplit('/').next().unwrap_or(w))
+        .unwrap_or("")
 }
 
 /// SerialReadGrind — a weak-model failure seen in production runs: reading a
@@ -1768,8 +1782,8 @@ const READ_ONLY_GRIND_TURNS: usize = 8;
 /// Assistant text this long inside the window counts as something produced.
 const READ_ONLY_GRIND_ANSWER_CHARS: usize = 200;
 
-/// Every call in the turn only looks: an `os` read/glob/grep/list, or a shell
-/// command whose program is in [`READ_ONLY_COMMANDS`]. The serial-read
+/// Every call in the turn only looks: a `read_file`, or a command whose
+/// program is in [`READ_ONLY_COMMANDS`]. The serial-read
 /// classifier above only knows the file actions; a model that varies its
 /// shell command every turn (cat, wc, xxd, grep) walks straight past it.
 fn is_read_only_turn(tool_calls_json: &str) -> bool {
@@ -1778,23 +1792,13 @@ fn is_read_only_turn(tool_calls_json: &str) -> bool {
     if arr.is_empty() {
         return false;
     }
-    arr.iter().all(|c| {
-        let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        if name != "os" {
-            return false;
+    arr.iter().all(|c| match c.get("name").and_then(|n| n.as_str()).unwrap_or("") {
+        "read_file" => true,
+        "run_command" => {
+            let program = command_program(c.get("input"));
+            !program.is_empty() && READ_ONLY_COMMANDS.contains(&program)
         }
-        let input = c.get("input");
-        let action = input.and_then(|i| i.get("action")).and_then(|a| a.as_str()).unwrap_or("");
-        if matches!(action, "read" | "glob" | "grep" | "list" | "ls") {
-            return true;
-        }
-        let command = input.and_then(|i| i.get("command")).and_then(|v| v.as_str()).unwrap_or("");
-        let program = command
-            .split_whitespace()
-            .find(|w| !w.contains('='))
-            .map(|w| w.rsplit('/').next().unwrap_or(w))
-            .unwrap_or("");
-        !program.is_empty() && READ_ONLY_COMMANDS.contains(&program)
+        _ => false,
     })
 }
 
@@ -1894,9 +1898,9 @@ impl Reminder for SerialReadGrind {
             "You've read files one at a time for several turns, which fills your context. \
              Two fixes, both faster: (1) batch independent reads \
              into ONE message — Nebo runs read-only tools in parallel, so request every \
-             file you need at once; (2) for a whole directory or open-ended search, spawn \
-             an explore sub-agent: agent(resource: \"task\", action: \"spawn\", \
-             agent_type: \"explore\", prompt: \"Read <dir> and report <what you need> as a \
+             file you need at once; (2) for a whole directory or open-ended search, start \
+             an explore helper: delegate(description: \"survey <dir>\", helper_type: \"explore\", \
+             prompt: \"Read <dir> and report <what you need> as a \
              consolidated summary\"). It explores in its own context and hands you one \
              answer. Don't keep grinding file-by-file."
                 .to_string(),
@@ -1957,7 +1961,7 @@ mod tests {
     #[test]
     fn read_only_grind_fires_on_varied_looking_and_not_on_work() {
         let shell = |cmd: &str| ChatMessage {
-            tool_calls: Some(format!(r#"[{{"name":"os","input":{{"action":"exec","command":"{cmd}"}}}}]"#)),
+            tool_calls: Some(format!(r#"[{{"name":"run_command","input":{{"command":"{cmd}"}}}}]"#)),
             ..make_msg("assistant", "checking")
         };
         let mut messages = vec![make_msg("user", "poll the file")];
@@ -1970,7 +1974,7 @@ mod tests {
         // One write inside the window is work: no grind.
         let mut with_write = messages.clone();
         with_write[4] = ChatMessage {
-            tool_calls: Some(r#"[{"name":"os","input":{"action":"write","path":"/t/out.md","content":"x"}}]"#.into()),
+            tool_calls: Some(r#"[{"name":"write_file","input":{"path":"/t/out.md","content":"x"}}]"#.into()),
             ..make_msg("assistant", "writing")
         };
         let wctx = ReminderContext { messages: &with_write, ..base_rctx() };
@@ -1991,11 +1995,11 @@ mod tests {
     fn serial_read_grind_fires_on_one_at_a_time_reads() {
         let read = |path: &str| ChatMessage {
             tool_calls: Some(format!(
-                r#"[{{"name":"os","input":{{"action":"read","path":"{path}"}}}}]"#
+                r#"[{{"name":"read_file","input":{{"path":"{path}"}}}}]"#
             )),
             ..make_msg("assistant", "reading")
         };
-        // 6 turns, each a single os read → the grind. Fires.
+        // 6 turns, each a single read_file → the grind. Fires.
         let mut messages = Vec::new();
         for i in 0..6 {
             messages.push(make_msg("user", "go"));
@@ -2016,11 +2020,11 @@ mod tests {
         // exactly what we want the model to do, so it must not false-fire.
         let batched = ChatMessage {
             tool_calls: Some(
-                r#"[{"name":"os","input":{"action":"read","path":"/a"}},
-                    {"name":"os","input":{"action":"read","path":"/b"}},
-                    {"name":"os","input":{"action":"read","path":"/c"}},
-                    {"name":"os","input":{"action":"read","path":"/d"}},
-                    {"name":"os","input":{"action":"read","path":"/e"}}]"#
+                r#"[{"name":"read_file","input":{"path":"/a"}},
+                    {"name":"read_file","input":{"path":"/b"}},
+                    {"name":"read_file","input":{"path":"/c"}},
+                    {"name":"read_file","input":{"path":"/d"}},
+                    {"name":"read_file","input":{"path":"/e"}}]"#
                     .to_string(),
             ),
             ..make_msg("assistant", "batch")
@@ -2305,7 +2309,7 @@ mod tests {
 
         // A large result from a non-web tool is not counted as web content.
         let mut os_call = make_msg("assistant", "");
-        os_call.tool_calls = Some(r#"[{"id":"o1","name":"os","input":{"action":"read"}}]"#.into());
+        os_call.tool_calls = Some(r#"[{"id":"o1","name":"read_file","input":{"path":"/a"}}]"#.into());
         let os_res = ChatMessage {
             tool_results: Some(
                 serde_json::json!([{ "tool_call_id": "o1", "content": "y".repeat(5000), "is_error": false }]).to_string(),
@@ -2330,16 +2334,16 @@ mod tests {
 
     #[test]
     fn test_research_delegation_nudge_on_discovery_loop() {
-        let msgs = calls_as_msgs(&[("find_tools", ""), ("skill", "discover"), ("find_tools", "")]);
+        let msgs = calls_as_msgs(&[("find_tools", ""), ("find_skills", ""), ("find_tools", "")]);
         assert!(
             ResearchDelegationNudge
                 .check(&rctx_tools(&msgs, &[], 3))
                 .unwrap()
-                .contains("Spawn a sub-agent"),
+                .contains("Hand the research to a helper"),
             "fires after 3 discovery calls"
         );
         // Only one discovery call → no fire.
-        let few = calls_as_msgs(&[("find_tools", ""), ("web", "search"), ("os", "read")]);
+        let few = calls_as_msgs(&[("find_tools", ""), ("web", "search"), ("read_file", "")]);
         assert!(ResearchDelegationNudge.check(&rctx_tools(&few, &[], 3)).is_none());
     }
 
@@ -2348,8 +2352,8 @@ mod tests {
     #[test]
     fn test_research_delegation_nudge_spares_the_prescribed_chain() {
         let chain = calls_as_msgs(&[
-            ("skill", "discover"),
-            ("skill", "load"),
+            ("find_skills", ""),
+            ("use_skill", ""),
             ("plugin", "help"),
             ("plugin", "exec"),
         ]);
@@ -2359,19 +2363,19 @@ mod tests {
         );
         // Genuine probing around that chain still fires.
         let probing = calls_as_msgs(&[
-            ("skill", "discover"),
-            ("skill", "load"),
+            ("find_skills", ""),
+            ("use_skill", ""),
             ("plugin", "help"),
             ("find_tools", ""),
-            ("skill", "discover"),
+            ("find_skills", ""),
         ]);
         assert!(ResearchDelegationNudge.check(&rctx_tools(&probing, &[], 5)).is_some());
     }
 
     #[test]
     fn test_skill_execution_nudge_preparation_loop() {
-        let skill = r#"[{"name":"skill","input":{"action":"load","name":"pptx"}}]"#;
-        let reads = r#"[{"name":"os","input":{"action":"read","path":"a"}},{"name":"os","input":{"action":"read","path":"b"}}]"#;
+        let skill = r#"[{"name":"use_skill","input":{"name":"pptx"}}]"#;
+        let reads = r#"[{"name":"read_file","input":{"path":"a"}},{"name":"read_file","input":{"path":"b"}}]"#;
         let mut msgs = vec![
             make_msg("user", "make me a deck"),
             make_assistant_with_tools("", skill),
@@ -2392,7 +2396,7 @@ mod tests {
             "4 burned calls is under the stall threshold"
         );
         // A write after the skill load = producing → no fire.
-        let write = r#"[{"name":"os","input":{"action":"write","path":"deck.pptx"}}]"#;
+        let write = r#"[{"name":"write_file","input":{"path":"deck.pptx"}}]"#;
         msgs.push(make_assistant_with_tools("", write));
         assert!(SkillExecutionNudge.check(&rctx_tools(&msgs, &[], 7)).is_none());
         // A plugin invocation also counts as producing.

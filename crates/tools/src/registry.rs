@@ -366,6 +366,9 @@ pub struct Registry {
     /// SAME cell is shared with `PersonaTool` at registration and filled LATE by the
     /// server once `AppState` exists (registration runs before `AppState` is built).
     code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+    /// The permission system's side of making and changing jobs, shared
+    /// with `PersonaTool` and filled LATE like `code_installer`.
+    job_consent: crate::needs::JobConsentCell,
     /// Broadcast callback (wired to ClientHub by the server), shared with MessageTool
     /// so owner alerts reach the frontend bell + desktop HUD. Filled LATE like
     /// `code_installer` (registration runs before `AppState`/hub exist).
@@ -373,6 +376,9 @@ pub struct Registry {
     /// Coworker message rail (server-implemented dispatch of agent→agent
     /// messages), shared with MessageTool. Filled LATE like `notify_fn`.
     coworker_rail: crate::coworker::CoworkerRailCell,
+    /// The harness's agreed goal, bound LATE once the harness exists; the
+    /// `suggest_goal` tool shares the handle.
+    goals: crate::goal_tool::GoalHandle,
     resource_permits: ResourcePermits,
     /// This process's lease (`comm::lease`): the gate in `execute`.
     lease: &'static comm::lease::Lease,
@@ -398,8 +404,10 @@ impl Registry {
             mcp_proxies: crate::mcp_tool::new_roster(),
             browser_manager: std::sync::RwLock::new(None),
             code_installer: Arc::new(std::sync::RwLock::new(None)),
+            job_consent: Arc::new(std::sync::RwLock::new(None)),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             coworker_rail: crate::coworker::new_rail_cell(),
+            goals: crate::goal_tool::new_handle(),
             resource_permits: ResourcePermits::new(),
             lease: comm::lease::process(),
         }
@@ -468,6 +476,13 @@ impl Registry {
         *self.code_installer.write().unwrap() = Some(installer);
     }
 
+    /// Set the permission system's job consent. Called LATE by the server;
+    /// `PersonaTool` shares this cell, so create and update draft and grant
+    /// jobs through it from then on.
+    pub fn set_job_consent(&self, consent: Arc<dyn crate::needs::JobConsent>) {
+        *self.job_consent.write().unwrap() = Some(consent);
+    }
+
     /// Set the broadcast callback (wired to ClientHub). Called LATE by the server
     /// once the hub exists; MessageTool reads it at construction to surface owner
     /// alerts to the frontend (bell + desktop HUD).
@@ -479,6 +494,12 @@ impl Registry {
     /// exists; MessageTool shares the cell and reads it at execution time.
     pub fn set_coworker_rail(&self, rail: Arc<dyn crate::coworker::CoworkerRail>) {
         *self.coworker_rail.write().unwrap() = Some(rail);
+    }
+
+    /// Bind the harness's agreed goal: `suggest_goal` calls go to it. Until
+    /// it is bound, the tool says goals can't be set here.
+    pub fn bind_goals(&self, goals: Arc<dyn crate::goal_tool::GoalSuggester>) {
+        let _ = self.goals.set(goals);
     }
 
     /// Set the agent loader for PersonaTool filesystem access.
@@ -494,7 +515,7 @@ impl Registry {
     }
 
     /// Files `session_key` has seen that someone else changed since, one
-    /// reminder each, each reported once. Empty until the os tool is registered.
+    /// reminder each, each reported once. Empty until the file tools are registered.
     pub fn external_edit_notes(&self, session_key: &str) -> Vec<String> {
         let state = match self.read_state.read() {
             Ok(guard) => guard.clone(),
@@ -945,16 +966,52 @@ impl Registry {
         &self.process_registry
     }
 
-    /// Register the default set of tools (os tool only — no DB access).
+    /// Register the tools that need no database: the file and command
+    /// tools and the os tool.
     pub async fn register_defaults(&self) {
-        let mut os_tool = crate::os_tool::OsTool::new(self.process_registry.clone());
+        let helpers = crate::command_tools::Helpers {
+            orchestrator: crate::orchestrator::new_handle(),
+            store: None,
+            runs: None,
+        };
+        self.register_files_and_commands(helpers).await;
+        let mut os_tool = crate::os_tool::OsTool::new();
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
         }
-        // Startup: a poisoned lock here is a bug to surface, not a state to handle.
-        *self.read_state.write().unwrap() = Some(os_tool.file_tool().read_state());
         self.register(Box::new(os_tool)).await;
+    }
+
+    /// The file and command tools, on one [`crate::file_tools::Machine`]
+    /// so they share the read ledger the runner sweeps for outside edits.
+    async fn register_files_and_commands(&self, helpers: crate::command_tools::Helpers) {
+        use crate::command_tools::*;
+        use crate::file_tools::*;
+        let plugins = self.plugin_store.read().unwrap().clone();
+        let machine = Arc::new(Machine::new(self.process_registry.clone(), plugins));
+        // Startup: a poisoned lock here is a bug to surface, not a state to handle.
+        *self.read_state.write().unwrap() = Some(machine.file.read_state());
+        let tools: Vec<Box<dyn DynTool>> = vec![
+            Box::new(ReadFileTool(machine.clone())),
+            Box::new(EditFileTool(machine.clone())),
+            Box::new(WriteFileTool(machine.clone())),
+            Box::new(ShareFileTool(machine.clone())),
+            Box::new(ConvertFileTool),
+            Box::new(CheckpointFilesTool(machine.clone())),
+            Box::new(ListCheckpointsTool(machine.clone())),
+            Box::new(RestoreCheckpointTool(machine.clone())),
+            Box::new(WritePlanTool(machine.clone())),
+            Box::new(CheckPlanTool(machine.clone())),
+            Box::new(RunCommandTool(machine.clone())),
+            Box::new(ReadOutputTool { machine: machine.clone(), helpers: helpers.clone() }),
+            Box::new(StopTaskTool { machine: machine.clone(), helpers }),
+            Box::new(ListProcessesTool(machine.clone())),
+            Box::new(SendInputTool(machine)),
+        ];
+        for tool in tools {
+            self.register(tool).await;
+        }
     }
 
     /// Register all domain tools including those that need DB access.
@@ -1031,24 +1088,21 @@ impl Registry {
         // their tab/page via `close_browser_session` (the web tool takes ownership below).
         *self.browser_manager.write().unwrap() = browser_manager.clone();
 
-        // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — CORE.
-        // The file/shell meta-tool is the agent's primary way to act; it must always be
-        // visible. It previously was deferred to save ~8-10K schema tokens, but that left
-        // the model blind to its own core capability — it had to find_tools to discover
-        // os, and the tool unloaded when that discovery message was evicted from the sliding
-        // window, causing mid-task thrashing. The system-prompt prefix is cached
-        // (Anthropic cache_control / Janus prefix caching), so the schema costs ~10% on
-        // cache reads — far cheaper than the discovery round-trips and context pollution
-        // that deferral caused. Reserve deferral for genuinely optional surface
-        // (per-skill, MCP, niche platform tools).
-        let mut os_tool = crate::os_tool::OsTool::new(self.process_registry.clone())
-            .with_store(store.clone());
+        // Files and commands: read_file, edit_file, write_file and
+        // run_command are core; the rest of the family is deferred.
+        self.register_files_and_commands(crate::command_tools::Helpers {
+            orchestrator: orchestrator.clone(),
+            store: Some(store.clone()),
+            runs: run_querier.clone(),
+        })
+        .await;
+
+        // OS tool (desktop, apps, settings, music, keychain, search, PIM).
+        let mut os_tool = crate::os_tool::OsTool::new().with_store(store.clone());
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
         }
-        // Startup: a poisoned lock here is a bug to surface, not a state to handle.
-        *self.read_state.write().unwrap() = Some(os_tool.file_tool().read_state());
         self.register(Box::new(os_tool)).await;
 
         // Code tool (tree-sitter outline/symbols/parse_check/query/context) — deferred.
@@ -1085,30 +1139,30 @@ impl Registry {
         // The seat's own context section (R15): the write half of the layers.
         self.register(Box::new(crate::rules_tool::RulesTool::new(store.clone(), active_agent.clone()))).await;
 
-        // Agent tool (memory, tasks, sessions, context, advisors, ask, runs, registry) — always registered (core)
-        let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator.clone())
-            .with_notify_fn(self.notify_fn.clone())
-            // The same cell the `message` tool gets: an unanswerable question
-            // in an unattended run travels up the reporting line on the ONE rail.
-            .with_coworker_rail(self.coworker_rail.clone());
-        let runner_for_events = advisor_runner.clone();
-        if let Some(runner) = advisor_runner {
-            agent_tool = agent_tool.with_advisor_runner(runner);
-        }
-        if let Some(searcher) = hybrid_searcher {
-            agent_tool = agent_tool.with_hybrid_searcher(searcher);
-        }
-        if let Some(embedder) = memory_embedder {
-            agent_tool = agent_tool.with_memory_embedder(embedder);
-        }
-        if let Some(sa) = structured_agent {
-            agent_tool = agent_tool.with_structured_agent(sa);
-        }
-        if let Some(rq) = run_querier {
-            agent_tool = agent_tool.with_run_querier(rq);
+        // Memory (core), helpers (delegate core), tasks and runs, past
+        // conversations, the advisor panel, research, the profile, asking
+        // and reaching the owner, and the agreed goal.
+        let run_querier = run_querier.unwrap_or_else(crate::run_querier::new_handle);
+        let families = [
+            crate::memory_tools::Memory::new(store.clone(), hybrid_searcher, memory_embedder).tools(),
+            crate::helper_tools::Helpers::new(store.clone(), orchestrator.clone()).tools(),
+            crate::task_tools::Tasks::new(store.clone(), run_querier).tools(),
+            crate::history_tools::History::new(store.clone()).tools(),
+            crate::advisor_tools::Advisors::new(store.clone(), advisor_runner).tools(),
+            crate::research_tools::Research::new(structured_agent).tools(),
+            crate::profile_tools::Profile::new(store.clone(), self.notify_fn.clone()).tools(),
+            crate::owner_tools::Owner::new(store.clone(), self.notify_fn.clone()).tools(),
+            vec![
+                Box::new(crate::ask_owner_tool::AskOwnerTool::new(store.clone(), self.coworker_rail.clone())) as Box<dyn DynTool>,
+                Box::new(crate::goal_tool::SuggestGoalTool::new(self.goals.clone())),
+            ],
+        ];
+        for tool in families.into_iter().flatten() {
+            self.register(tool).await;
         }
 
-        // Persona/registry resource — agent management, delegation, installed agents
+        // The employee tools (deferred): the roster, hiring, and making,
+        // changing and removing employees.
         {
             let agent_reg = active_agent.unwrap_or_else(|| {
                 std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
@@ -1126,52 +1180,39 @@ impl Registry {
                     ))
                 });
             let persona =
-                crate::agent_tool::PersonaTool::new(store.clone(), agent_reg.clone(), agent_loader.clone())
-                    .with_code_installer(self.code_installer.clone());
-            agent_tool = agent_tool.with_persona(persona);
-            // The employee tools (deferred): the roster, hiring, and making,
-            // changing and removing employees.
-            let persona = crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader)
-                .with_code_installer(self.code_installer.clone());
+                crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader)
+                    .with_code_installer(self.code_installer.clone())
+                    .with_job_consent(self.job_consent.clone());
             for tool in crate::employee_tools::tools(persona) {
                 self.register(Box::new(tool)).await;
             }
         }
 
-        self.register(Box::new(agent_tool)).await;
-
-        // Event tool (scheduled tasks / cron) — always registered (core)
-        let mut event_tool = crate::event_tool::EventTool::new(store.clone());
-        if let Some(runner) = runner_for_events {
-            event_tool = event_tool.with_runner(runner);
+        // The schedule tools (reminders and recurring jobs).
+        for tool in crate::event_tool::tools(store.clone()) {
+            self.register(Box::new(tool)).await;
         }
-        self.register(Box::new(event_tool)).await;
 
-        // Skill tool (skill management) — always registered (core)
-        if let Some(ref loader) = skill_loader {
-            let mut skill_tool = crate::skill_tool::SkillTool::new(loader.clone())
-                .with_store(store.clone())
-                .with_notify_fn(self.notify_fn.clone())
-                .with_code_installer(self.code_installer.clone());
-            // Wire the plugin registry so skill discover/help can redirect
-            // when the LLM confuses a plugin slug for a skill name.
-            let ps_opt = self.plugin_store.read().unwrap().clone();
-            if let Some(ps) = ps_opt {
-                skill_tool = skill_tool.with_plugin_store(ps);
-            }
-            self.register(Box::new(skill_tool)).await;
-        } else {
+        // The skill tools: use_skill (core) and the deferred family, sharing
+        // one core over the skill loader.
+        let loader = skill_loader.clone().unwrap_or_else(|| {
             let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let installed_dir = data.join("nebo").join("skills");
-            let user_dir = data.join("user").join("skills");
-            let loader_default = Arc::new(crate::skills::Loader::new(installed_dir, user_dir));
-            let mut skill_tool = crate::skill_tool::SkillTool::new(loader_default)
-                .with_code_installer(self.code_installer.clone());
-            let ps_opt = self.plugin_store.read().unwrap().clone();
-            if let Some(ps) = ps_opt {
-                skill_tool = skill_tool.with_plugin_store(ps);
-            }
-            self.register(Box::new(skill_tool)).await;
+            Arc::new(crate::skills::Loader::new(data.join("nebo").join("skills"), data.join("user").join("skills")))
+        });
+        let mut skills = crate::skill_tool::SkillCore::new(loader)
+            .with_notify_fn(self.notify_fn.clone())
+            .with_code_installer(self.code_installer.clone());
+        if skill_loader.is_some() {
+            skills = skills.with_store(store.clone());
+        }
+        // Wire the plugin registry so a skill search can say when the query
+        // named a plugin.
+        let ps_opt = self.plugin_store.read().unwrap().clone();
+        if let Some(ps) = ps_opt {
+            skills = skills.with_plugin_store(ps);
+        }
+        for tool in crate::skill_tool::tools(skills) {
+            self.register(Box::new(tool)).await;
         }
 
         // Execute tool (script execution) — deferred (only activated when user mentions scripts/code)
@@ -1188,18 +1229,18 @@ impl Registry {
             self.register(Box::new(execute_tool)).await;
         }
 
-        // Message tool (owner notifications + coworker messages) — always registered (core)
+        // Message tool (coworker messages + SMS) — always registered (core)
         self.register(Box::new(crate::message_tool::MessageTool::new(
             store.clone(),
-            self.notify_fn.clone(),
             self.coworker_rail.clone(),
         )))
         .await;
 
-        // Work tool (workflow lifecycle + execution) — deferred (only activated when user mentions workflows)
+        // The workflow tools (lifecycle and runs).
         if let Some(manager) = workflow_manager {
-            self.register(Box::new(crate::workflows::WorkTool::new(manager)))
-                .await;
+            for tool in crate::workflows::tools(manager) {
+                self.register(Box::new(tool)).await;
+            }
         }
 
         self.register(Box::new(crate::publisher_tool::PublisherTool::new(
@@ -1230,16 +1271,18 @@ impl Registry {
         self.register(Box::new(crate::vm_tool::VmTool::new()))
             .await;
 
-        // Team tool (teams of local employees) — always registered (core): a
-        // team is a local object and works with no hub at all. The comm
-        // handle, when present, only adds the optional hub mirror.
-        self.register(Box::new(crate::team_tool::TeamTool::new(
+        // The team tools (teams of local employees): a team is a local
+        // object and works with no hub at all. The comm handle, when
+        // present, only adds the optional hub mirror.
+        let teams = Arc::new(crate::team_tool::Teams::new(
             Some(store.clone()),
             comm_plugin.clone(),
             broadcaster.clone(),
             self.coworker_rail.clone(),
-        )))
-        .await;
+        ));
+        for tool in crate::team_tool::tools(teams) {
+            self.register(Box::new(tool)).await;
+        }
 
         // Authority tool (standing authority inside the constitution). Deferred:
         // it reaches the model only when a seat's `requires.tools` names
@@ -1247,19 +1290,17 @@ impl Registry {
         self.register(Box::new(crate::authority_tool::AuthorityTool::new(store.clone())))
             .await;
 
-        // Loop tool (NeboAI comms: dm, channel, loop, topic) — requires "loop" permission.
-        // The comm handle exists from startup; the real LoopTool's per-action
-        // `is_connected()` check reflects the live connection state, so it is always
-        // registered when the handle is available (even before NeboAI connects).
-        if allowed("loop") {
-            if let Some(ref comm) = comm_plugin {
-                self.register(Box::new(crate::loop_tool::LoopTool::new(
-                    comm.clone(),
-                    Some(store.clone()),
-                    broadcaster.clone(),
-                    self.coworker_rail.clone(),
-                )))
-                .await;
+        // The NeboAI loop tools (hub messages, channels, loops, topics) —
+        // require the "loop" permission. The comm handle exists from startup;
+        // each call's `is_connected()` check reflects the live connection
+        // state, so they are registered whenever the handle is available
+        // (even before NeboAI connects).
+        if allowed("loop")
+            && let Some(ref comm) = comm_plugin
+        {
+            let core = crate::loop_tool::LoopCore::new(comm.clone(), Some(store.clone()));
+            for tool in crate::loop_tool::tools(core) {
+                self.register(Box::new(tool)).await;
             }
         }
     }
@@ -1457,26 +1498,6 @@ pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json
         "gws" | "google-workspace" | "gmail" | "gcalendar" | "gdrive" | "gsheets" | "gdocs" => {
             ("plugin", vec![("resource", "gws")])
         }
-        // File operations → os
-        "file_read" | "read_file" | "fileread" | "read" => {
-            ("os", vec![("resource", "file"), ("action", "read")])
-        }
-        "file_write" | "write_file" | "filewrite" => {
-            ("os", vec![("resource", "file"), ("action", "write")])
-        }
-        "file_edit" | "edit_file" | "fileedit" | "edit" => {
-            ("os", vec![("resource", "file"), ("action", "edit")])
-        }
-        "grep" | "grep_tool" | "greptool" | "file_grep" => {
-            ("os", vec![("resource", "file"), ("action", "grep")])
-        }
-        "glob" | "glob_tool" | "globtool" | "file_glob" => {
-            ("os", vec![("resource", "file"), ("action", "glob")])
-        }
-        // Shell → os
-        "bash" | "shell" | "bash_tool" | "bashtool" | "run_command" | "exec" => {
-            ("os", vec![("resource", "shell"), ("action", "exec")])
-        }
         _ => return None,
     };
     let params = params
@@ -1662,8 +1683,8 @@ mod tests {
         assert!(emit.read_only(&json!({"source": "inventory.low"})));
         assert!(!emit.concurrency_safe(&json!({"source": "inventory.low"})));
         let (registry, _dir) = os_registry().await;
-        assert!(!registry.has_side_effects("os", &json!({"action": "read", "path": "/tmp/a"})).await);
-        assert!(registry.has_side_effects("os", &json!({"action": "write", "path": "/tmp/a"})).await);
+        assert!(!registry.has_side_effects("read_file", &json!({"path": "/tmp/a"})).await);
+        assert!(registry.has_side_effects("write_file", &json!({"path": "/tmp/a", "content": "x"})).await);
         assert!(registry.has_side_effects("unknown", &json!({})).await, "unknown means acting");
     }
 
@@ -1725,7 +1746,8 @@ mod tests {
         assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
-    /// A registry holding the real `os` tool, and a scratch directory.
+    /// A registry holding the real file, command and os tools, and a
+    /// scratch directory.
     async fn os_registry() -> (Registry, tempfile::TempDir) {
         let registry = Registry::new(crate::gate::test_gate());
         registry.register_defaults().await;
@@ -1740,23 +1762,23 @@ mod tests {
     }
 
     /// The runner's gates read the call through the same door: the settled
-    /// call names its action and resource, is gated on its own capability,
-    /// and settling it twice changes nothing.
+    /// call is gated on its own key and capability, and settling it twice
+    /// changes nothing.
     #[tokio::test]
     async fn the_runner_gates_read_the_settled_call() {
         let (registry, _dir) = os_registry().await;
-        let settled = registry
-            .normalize_input("os", serde_json::json!({ "command": "ls" }))
-            .await;
-        assert_eq!(settled["action"], "exec");
-        assert_eq!(settled["resource"], "shell");
-        let target = registry.target("os", &settled).await.unwrap();
+        let target = registry
+            .target("run_command", &serde_json::json!({ "command": "ls", "description": "List files" }))
+            .await
+            .unwrap();
         assert_eq!((target.key.as_str(), target.capability.as_deref()), ("run_command", Some("shell")));
-        assert_eq!(registry.normalize_input("os", settled.clone()).await, settled);
-        // A file-management verb stays unresolved: the tool answers it with a
-        // shell correction, and the capability gate leaves it alone.
-        let mv = serde_json::json!({ "action": "move", "path": "/tmp/a", "destination": "/tmp/b" });
-        assert_eq!(registry.normalize_input("os", mv.clone()).await, mv);
+        let settled = registry
+            .normalize_input("read_file", serde_json::json!({ "file_path": "/tmp/a" }))
+            .await;
+        assert_eq!(settled, serde_json::json!({ "path": "/tmp/a" }));
+        assert_eq!(registry.normalize_input("read_file", settled.clone()).await, settled);
+        let target = registry.target("read_file", &settled).await.unwrap();
+        assert_eq!((target.key.as_str(), target.capability.as_deref()), ("read_file", Some("file")));
     }
 
     /// An `mcp__<server>__<tool>` name is an MCP proxy or nothing: it never
@@ -1768,18 +1790,17 @@ mod tests {
         let result = registry
             .execute(
                 &ToolContext::default(),
-                "mcp__anything__os",
+                "mcp__anything__run_command",
                 serde_json::json!({
-                    "resource": "shell",
-                    "action": "exec",
                     "command": format!("touch {}; test -d '{}'", marker.display(), db_dir()),
+                    "description": "Touch a marker",
                 }),
             )
             .await;
         assert!(result.is_error, "{}", result.content);
         assert!(!marker.exists(), "a built-in ran under an MCP name");
         assert!(
-            !registry.concurrency_safe("mcp__anything__os", &serde_json::json!({"action": "read", "path": "/tmp/x"})).await,
+            !registry.concurrency_safe("mcp__anything__read_file", &serde_json::json!({"path": "/tmp/x"})).await,
             "an MCP name answered with a built-in's concurrency"
         );
     }
@@ -2052,9 +2073,8 @@ mod tests {
     /// The tools that still carry several jobs behind `action`/`resource`.
     /// Each tool package removes its names; nothing is ever added.
     const PRE_INTERFACE_TOOLS: &[&str] = &[
-        "a2ui", "agent", "authority", "code", "emit", "event", "execute", "exit", "loop",
-        "mcp", "message", "notebook", "os", "pack", "plugin", "publisher", "rules", "skill",
-        "team", "vm", "work",
+        "a2ui", "authority", "code", "execute", "exit", "mcp", "message", "notebook",
+        "os", "pack", "plugin", "publisher", "rules", "vm",
     ];
 
     /// The enum-dispatch surfaces the interface allows (device surfaces).
@@ -2111,24 +2131,31 @@ mod tests {
 
     #[test]
     fn the_pre_interface_list_is_closed_and_the_allowed_surfaces_are_the_device_ones() {
-        assert_eq!(PRE_INTERFACE_TOOLS.len(), 21, "packages only remove names from this list");
+        assert_eq!(PRE_INTERFACE_TOOLS.len(), 14, "packages only remove names from this list");
         assert!(ENUM_SURFACES.iter().all(|(t, _)| is_tool_name(t)));
     }
 
-    /// Characters of every always-loaded definition (description + schema),
-    /// measured at WP0: the pre-interface core tools plus find_tools. The os
-    /// tool describes the desktop surfaces its platform has, so the number is
-    /// per platform: 52,728 on macOS (agent 17,451 · os 14,219 · web 8,361 ·
-    /// message 3,270 · skill 3,102 · team 2,747 · event 2,229 · find_tools
-    /// 704 · mcp 645) and 53,032 on Linux (os 14,524 · web 8,362 · mcp 643).
-    /// The plugin tool (core too, and sized by the installed plugins) needs a
-    /// plugin store and is not in this roster. Each package that lands lowers
-    /// the numbers; they never rise. WP5 deferred the web family: −8,361 on
-    /// macOS, −8,362 on Linux.
+    /// Characters of every always-loaded definition (description + schema).
+    /// The os tool describes the desktop surfaces its platform has, so the
+    /// number is per platform. Measured at WP0: 52,728 on macOS (agent
+    /// 17,451 · os 14,219 · web 8,361 · message 3,270 · skill 3,102 · team
+    /// 2,747 · event 2,229 · find_tools 704 · mcp 645) and 53,032 on Linux
+    /// (os 14,524 · web 8,362 · mcp 643). WP5 deferred the web family
+    /// (−8,361); WP9 the schedule and team families (−4,976). WP1 moved
+    /// files and commands off os: 37,495 on macOS (os 9,304 · run_command
+    /// 1,087 · read_file 782 · edit_file 705 · write_file 448) and 37,798
+    /// on Linux (os 9,609). The plugin tool (core too, and sized by the
+    /// installed plugins) needs a plugin store and is not in this roster.
+    /// WP4 swapped skill (3,102) for use_skill (585): −2,517. Tools WP2
+    /// moved helpers, memory and asking off agent and message (agent 6,005 ·
+    /// message 2,657 · delegate 1,702 · remember 1,039 · recall 701 ·
+    /// ask_owner 618 · forget 336). Tools WP3 deferred the employee family
+    /// and deleted agent: −6,005. Each package that lands lowers the
+    /// numbers; they never rise.
     #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 44_367;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 21_162;
     #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 44_670;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 21_614;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2146,17 +2173,27 @@ mod tests {
         assert!(total <= CORE_DEFINITION_CHARS_BUDGET, "always-loaded definitions are {total} chars, over the {CORE_DEFINITION_CHARS_BUDGET} budget: {core:?}");
     }
 
-    /// Deferred at WP0: everything but the core. Code, loop, work, emit,
-    /// pack, rules, a2ui, publisher, notebook, vm and authority are listed
-    /// and loadable, never dropped.
+    /// Deferred: everything but the core. Code, loop, work, emit, pack,
+    /// rules, a2ui, publisher, notebook, vm and authority are listed and
+    /// loadable, never dropped. The pre-interface tools stay core until
+    /// their package replaces them.
     #[tokio::test]
     async fn the_core_is_the_strap_tools_and_find_tools() {
         let (registry, _dir) = full_registry().await;
         let deferred = registry.get_deferred_names().await;
         let mut core: Vec<String> = registry.get_tool_names().await.into_iter().filter(|n| !deferred.contains(n)).collect();
         core.sort();
-        assert_eq!(core, ["agent", "event", "find_tools", "mcp", "message", "os", "skill", "team"]);
-        for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules"] {
+        assert_eq!(
+            core,
+            [
+                "ask_owner", "delegate", "edit_file", "find_tools", "forget", "mcp", "message", "os",
+                "read_file", "recall", "remember", "run_command", "use_skill", "write_file"
+            ]
+        );
+        for name in ["read_output", "stop_task", "list_processes", "send_input", "share_file", "convert_file", "checkpoint_files", "list_checkpoints", "restore_checkpoint", "write_plan", "check_plan"] {
+            assert!(deferred.contains(name), "{name} is deferred");
+        }
+        for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules", "create_schedule", "list_teams"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
     }
@@ -2166,14 +2203,20 @@ mod tests {
     async fn rule_keys_are_tool_names() {
         let (registry, _dir) = full_registry().await;
         let calls = [
-            ("os", serde_json::json!({"action": "exec", "command": "ls"})),
-            ("os", serde_json::json!({"action": "read", "path": "/tmp/x"})),
-            ("agent", serde_json::json!({"resource": "memory", "action": "store"})),
-            ("agent", serde_json::json!({"resource": "task", "action": "spawn"})),
-            ("skill", serde_json::json!({"action": "load", "name": "x"})),
+            ("run_command", serde_json::json!({"command": "ls", "description": "List files"})),
+            ("read_file", serde_json::json!({"path": "/tmp/x"})),
+            ("read_output", serde_json::json!({"task_id": "bg-1a2b3c4d"})),
+            ("stop_task", serde_json::json!({"task_id": "sa-1"})),
+            ("find_employees", serde_json::json!({"query": "bookkeeper"})),
+            ("update_employee", serde_json::json!({"name": "x", "description": "d"})),
+            ("remember", serde_json::json!({"key": "k", "value": "v"})),
+            ("delegate", serde_json::json!({"description": "d", "prompt": "p"})),
+            ("use_skill", serde_json::json!({"name": "x"})),
+            ("save_skill", serde_json::json!({"name": "x", "content": "y"})),
             ("fetch_url", serde_json::json!({"url": "https://example.com"})),
             ("browser_act", serde_json::json!({"action": "click", "ref": "e1"})),
-            ("message", serde_json::json!({"resource": "owner", "action": "notify"})),
+            ("message", serde_json::json!({"resource": "sms", "action": "send"})),
+            ("message_owner", serde_json::json!({"message": "m"})),
             ("find_tools", serde_json::json!({"query": "x"})),
         ];
         for (tool, input) in calls {
@@ -2197,15 +2240,17 @@ mod tests {
             let registry = registry.clone();
             async move { registry.get(name).await.unwrap().cleared_when_stale(&input) }
         };
-        assert!(cleared("os", json!({"action": "read", "path": "/tmp/x"})).await);
-        assert!(cleared("os", json!({"resource": "file", "action": "write", "path": "/tmp/x"})).await);
-        assert!(cleared("os", json!({"action": "exec", "command": "ls"})).await);
+        assert!(cleared("read_file", json!({"path": "/tmp/x"})).await);
+        assert!(cleared("write_file", json!({"path": "/tmp/x", "content": "x"})).await);
+        assert!(cleared("edit_file", json!({"path": "/tmp/x", "old_string": "a", "new_string": "b"})).await);
+        assert!(cleared("run_command", json!({"command": "ls", "description": "List files"})).await);
         assert!(cleared("search_web", json!({"queries": ["x"]})).await);
         assert!(cleared("fetch_url", json!({"url": "https://example.com"})).await);
         assert!(!cleared("browser_act", json!({"action": "click", "ref": "e1"})).await);
         assert!(!cleared("os", json!({"resource": "calendar", "action": "today"})).await);
-        assert!(!cleared("agent", json!({"resource": "memory", "action": "recall"})).await);
-        assert!(!cleared("skill", json!({"action": "load", "name": "x"})).await);
+        assert!(!cleared("recall", json!({"query": "x"})).await);
+        assert!(!cleared("use_skill", json!({"name": "x"})).await);
+        assert!(cleared("find_skills", json!({"query": "x"})).await);
         let taint = |name: &'static str, input: serde_json::Value| {
             let registry = registry.clone();
             async move { registry.get(name).await.unwrap().taint(&input) }
@@ -2215,7 +2260,7 @@ mod tests {
         assert_eq!(taint("os", json!({"resource": "mail", "action": "unread"})).await, Some(ProvenanceClass::ExternalEmail));
         assert_eq!(taint("os", json!({"resource": "mail", "action": "send", "to": "a@example.com"})).await, None);
         assert_eq!(taint("message", json!({"resource": "sms", "action": "read"})).await, Some(ProvenanceClass::Channel));
-        assert_eq!(taint("os", json!({"action": "read", "path": "/tmp/x"})).await, None, "the owner's own files carry no taint");
+        assert_eq!(taint("read_file", json!({"path": "/tmp/x"})).await, None, "the owner's own files carry no taint");
     }
 
 

@@ -1,7 +1,9 @@
 #![recursion_limit = "256"]
 
 pub mod a2ui_tool;
+pub mod advisor_tools;
 pub mod agent_tool;
+pub mod ask_owner_tool;
 pub mod authority_tool;
 pub mod rules_tool;
 pub mod pack_tool;
@@ -15,6 +17,7 @@ pub mod humanize;
 pub mod installed;
 pub mod channel_bridge;
 pub mod code_tool;
+pub mod command_tools;
 pub mod coworker;
 
 /// A subprocess result (shell exec, plugin exec) longer than this, in
@@ -40,9 +43,13 @@ pub mod events;
 pub mod execute_tool;
 pub mod exit_tool;
 pub mod file_tool;
+pub mod file_tools;
 pub mod find_tools;
 pub mod gate;
+pub mod goal_tool;
 pub mod grep_tool;
+pub mod helper_tools;
+pub mod history_tools;
 pub mod input_schema;
 pub mod interface_catalog;
 pub mod keychain_tool;
@@ -50,22 +57,27 @@ pub mod loop_tool;
 pub mod lsp;
 pub mod mcp_tool;
 pub mod memory_guard;
+pub mod memory_tools;
 pub mod message_tool;
 pub mod music_tool;
+pub mod needs;
 pub mod notebook_tool;
 pub mod orchestrator;
 mod organizer;
 pub mod origin;
 pub mod os_tool;
 pub mod owner_notify;
+pub mod owner_tools;
 pub mod plan;
 pub mod plugin_tool;
 pub mod policy;
 pub mod process;
+pub mod profile_tools;
 pub mod publisher_tool;
 pub mod registry;
 pub mod rename_map;
 pub mod research;
+pub mod research_tools;
 pub mod result_shape;
 pub mod run_querier;
 pub mod safeguard;
@@ -79,6 +91,7 @@ pub mod spotlight_tool;
 pub mod vm_tool;
 pub mod walk_bounds;
 pub mod web_tool;
+pub mod task_tools;
 pub mod team;
 pub mod team_tool;
 pub mod workflows;
@@ -122,7 +135,7 @@ pub use agent_tool::{
 };
 pub use app_tool::AppTool;
 pub use bot_tool::{
-    AdvisorDeliberator, AgentTool, CodeInstaller, HybridSearchResult, HybridSearcher,
+    AdvisorDeliberator, CodeInstaller, HybridSearchResult, HybridSearcher,
     MemoryEmbedder,
 };
 pub use channel_bridge::{
@@ -135,13 +148,11 @@ pub use coworker::{
 };
 pub use domain::*;
 pub use emit_tool::EmitTool;
-pub use event_tool::EventTool;
 pub use events::{Event, EventBus};
 pub use execute_tool::ExecuteTool;
 pub use exit_tool::{EXIT_SENTINEL, ExitTool};
 pub use file_tool::FileTool;
 pub use keychain_tool::KeychainTool;
-pub use loop_tool::LoopTool;
 pub use message_tool::MessageTool;
 pub use music_tool::MusicTool;
 pub use orchestrator::{
@@ -153,13 +164,14 @@ pub use origin::{
 };
 pub use os_tool::OsTool;
 pub use gate::{GateVerdict, PermissionGate, ResolvedCall};
+pub use goal_tool::GoalSuggester;
 pub use process::ProcessRegistry;
 pub use registry::{Registry, ResourceKind, ToolResult};
 pub use shell_tool::ShellTool;
 pub use skill_tool::SkillTool;
 pub use find_tools::FindToolsTool;
 pub use web_tool::WebTool;
-pub use workflows::{WorkTool, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
+pub use workflows::{WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 
 /// Build a NeboAI API client from a Store (for tool install actions).
 pub(crate) fn build_neboai_api(store: &db::Store) -> Result<comm::api::NeboAIApi, String> {

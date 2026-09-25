@@ -25,7 +25,7 @@ tool_config:
     enabled: true
   create_employee:
     enabled: true
-  skill:
+  use_skill:
     enabled: true
 
 prompt_assertions:

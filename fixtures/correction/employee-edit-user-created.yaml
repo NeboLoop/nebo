@@ -32,7 +32,9 @@ tool_config:
     enabled: true
   update_employee:
     enabled: true
-  os:
+  read_file:
+    enabled: true
+  run_command:
     enabled: true
 
 prompt_assertions:
@@ -43,7 +45,7 @@ prompt_assertions:
       check: { tool: [get_employee, update_employee], arg: name, contains: "night-desk-{{tag}}" }
   recovery:
     - id: no-wrong-tree-search
-      text: "The model never globs or reads under the installed-agents directory (Nebo/nebo/agents) looking for this employee; if it reads files, they are under the path the get_employee result named"
+      text: "The model never lists, finds, or reads under the installed-agents directory (Nebo/nebo/agents) looking for this employee; if it reads files, they are under the path the get_employee result named"
       severity: critical
     - id: no-reinstall
       text: "No hire_employee call is made; the employee already exists"
