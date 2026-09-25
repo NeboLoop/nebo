@@ -183,6 +183,8 @@ fn grades_a_kept_run_in_place_and_skips_what_is_judged() {
     assert!(out.status.success(), "{}", stdout(&out));
     // The same per-fixture summary `test run` prints.
     assert!(stdout(&out).contains("nebo test run — demo-fixture"), "{}", stdout(&out));
+    // Each trace is announced as its grade is written.
+    assert!(stdout(&out).contains("graded smoke/demo-fixture_run-1.json"), "{}", stdout(&out));
     // One judge call per completed run, with the model asked for.
     assert_eq!(kept.judge_calls(), 2);
     assert!(std::fs::read_to_string(kept.path("calls")).unwrap().contains("--model sonnet"));
