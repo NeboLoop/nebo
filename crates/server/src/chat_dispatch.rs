@@ -1660,6 +1660,59 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 /// stream events while preserving the agent lens: lane queueing, RunRegistry,
 /// persona, permissions, model preference, memory/session behavior, presence,
 /// and proactive inbox.
+/// The owner's `/compact` on session `session_key`: a turn of its own on
+/// the harness (`TurnInput::Compact`), so it is the turn's checkpoint with
+/// the same request, hooks and restore, and it waits for a running turn.
+/// `instructions` are the owner's words after `/compact`.
+pub async fn compact(state: &AppState, session_key: &str, agent_id: &str, instructions: &str) -> Result<(), String> {
+    let entity_config = if agent_id.is_empty() {
+        crate::entity_config::resolve_for_chat(&state.store, "main", "main")
+    } else {
+        crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id)
+    };
+    let config = ChatConfig {
+        session_key: session_key.to_string(),
+        prompt: String::new(),
+        user_id: String::new(),
+        channel: "web".to_string(),
+        origin: Origin::User,
+        door: types::permissions::Door::Chat,
+        agent_id: agent_id.to_string(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        lane: types::constants::lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config,
+        images: vec![],
+        attachments: vec![],
+        entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context: None,
+        tool_scope: None,
+        channel_ctx: None,
+        handoff_depth: 0,
+        seed_taint: vec![],
+        tool_allowlist: None,
+        hidden_prompt: false,
+        coworker: None,
+        audience: None,
+        cwd: None,
+        model_override: None,
+    };
+    let (_, run_handle) = register_run(state, &config).await;
+    let mut req = turn_request(state, &config, &run_handle);
+    req.input = agent::harness::TurnInput::Compact { instructions: instructions.to_string() };
+    let mut events = state.harness.start_turn(req).await.map_err(|e| e.to_string())?.events;
+    let mut outcome = Err("the compact ended without a checkpoint".to_string());
+    while let Some(event) = events.recv().await {
+        match event.event_type {
+            StreamEventType::Error => outcome = Err(event.error.unwrap_or(event.text)),
+            StreamEventType::Done if event.stop_reason.as_deref() == Some("compacted") => outcome = Ok(()),
+            _ => {}
+        }
+    }
+    outcome
+}
+
 pub async fn run_chat_events(
     state: &AppState,
     config: ChatConfig,

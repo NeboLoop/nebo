@@ -607,7 +607,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         .as_str()
                                         .unwrap_or("default")
                                         .to_string();
-                                    tokio::spawn(compact_session(state.clone(), session_key, String::new()));
+                                    let instructions = parsed["data"]["instructions"].as_str().unwrap_or("").to_string();
+                                    tokio::spawn(compact_session(state.clone(), session_key, String::new(), instructions));
                                 }
                                 "list_active_runs" => {
                                     let runs = state.run_registry.list_top_level().await;
@@ -1163,7 +1164,7 @@ async fn handle_builtin_slash(
             } else {
                 session_id.to_string()
             };
-            tokio::spawn(compact_session(state.clone(), session_key, agent_id.to_string()));
+            tokio::spawn(compact_session(state.clone(), session_key, agent_id.to_string(), args.to_string()));
             Some("Compacting conversation...".to_string())
         }
 
@@ -2496,27 +2497,13 @@ mod cancel_precedence_tests {
     }
 }
 
-/// The owner's compact, from `/compact` or the `session_compact` message: the
-/// conversation checkpointed to a boundary row (`checkpoint(OwnerAsked)`),
-/// the result broadcast as `session_compact`.
-async fn compact_session(state: AppState, session_key: String, agent_id: String) {
-    let reply = |result: serde_json::Value| {
-        let mut data = serde_json::json!({ "session_id": session_key });
-        if let (Some(d), Some(r)) = (data.as_object_mut(), result.as_object()) {
-            d.extend(r.clone());
-        }
-        state.hub.broadcast("session_compact", data);
+/// The owner's compact, from `/compact` or the `session_compact` message: a
+/// turn of its own that checkpoints the conversation
+/// (`chat_dispatch::compact`), the result broadcast as `session_compact`.
+async fn compact_session(state: AppState, session_key: String, agent_id: String, instructions: String) {
+    let result = match crate::chat_dispatch::compact(&state, &session_key, &agent_id, &instructions).await {
+        Ok(()) => serde_json::json!({ "session_id": session_key, "success": true }),
+        Err(e) => serde_json::json!({ "session_id": session_key, "success": false, "error": e }),
     };
-    let Ok(session_id) = state.harness.sessions().resolve_session_id_by_key(&session_key) else {
-        return reply(serde_json::json!({ "success": false, "error": "session not found" }));
-    };
-    let Some(provider) = state.harness.providers().read().await.first().cloned() else {
-        return reply(serde_json::json!({ "success": false, "error": "no AI provider available" }));
-    };
-    match agent::harness::compact::checkpoint::owner_compact(state.harness.sessions(), provider.as_ref(), &session_id, &agent_id)
-        .await
-    {
-        Ok(c) => reply(serde_json::json!({ "success": true, "summary_length": c.summary.len() })),
-        Err(e) => reply(serde_json::json!({ "success": false, "error": e })),
-    }
+    state.hub.broadcast("session_compact", result);
 }

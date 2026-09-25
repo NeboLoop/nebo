@@ -531,6 +531,24 @@ impl ProcessRegistry {
         self.running.lock().await.values().filter(|s| !s.lifecycle().foreground).cloned().collect()
     }
 
+    /// The background commands session `session_key` started that are
+    /// still running: (the command's session, what it does), oldest id first.
+    pub async fn running_for(&self, session_key: &str) -> Vec<(Arc<BackgroundSession>, Caller)> {
+        let mut out: Vec<(Arc<BackgroundSession>, Caller)> = self
+            .running
+            .lock()
+            .await
+            .values()
+            .filter_map(|s| {
+                let life = s.lifecycle();
+                let caller = life.notify.clone().filter(|c| !life.foreground && !life.ended && c.session_key == session_key)?;
+                Some((s.clone(), caller))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+        out
+    }
+
     /// List finished sessions.
     pub async fn list_finished(&self) -> Vec<Arc<BackgroundSession>> {
         self.finished.lock().await.values().cloned().collect()

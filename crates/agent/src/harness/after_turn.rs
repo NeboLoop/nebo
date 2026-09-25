@@ -176,6 +176,8 @@ pub(crate) struct MemoryExtraction<'a> {
     pub providers: &'a Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     pub store: &'a Arc<Store>,
     pub concurrency: &'a Arc<ConcurrencyController>,
+    /// The extraction model's window: the conversation fills half of it.
+    pub selector: &'a Arc<crate::selector::ModelSelector>,
     pub embedding_provider: Option<&'a Arc<dyn ai::EmbeddingProvider>>,
     /// Tells a memory write in the conversation: a call whose rule key is
     /// `remember`.
@@ -199,6 +201,7 @@ struct ExtractionJob {
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     store: Arc<Store>,
     concurrency: Arc<ConcurrencyController>,
+    selector: Arc<crate::selector::ModelSelector>,
     embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
     tools: Arc<tools::Registry>,
     memory_user_id: String,
@@ -252,6 +255,7 @@ impl MemoryExtraction<'_> {
             providers: self.providers.clone(),
             store: self.store.clone(),
             concurrency: self.concurrency.clone(),
+            selector: self.selector.clone(),
             embedding_provider: self.embedding_provider.cloned(),
             tools: self.tools.clone(),
             memory_user_id: self.memory_user_id.to_string(),
@@ -315,9 +319,12 @@ async fn extract_once(job: &ExtractionJob, cursor: Option<&str>) -> Option<Strin
         let prov_lock = job.providers.read().await;
         resolve_aux(&config::ModelsConfig::load(), &prov_lock)
             .or_else(|| prefer_non_gateway(&prov_lock).map(|p| (p, String::new())))
-            .map(|(p, m)| (job.concurrency.background(p), m))
+            .map(|(p, m)| {
+                let window = job.selector.context_window(&format!("{}/{}", p.id(), m));
+                (job.concurrency.background(p), m, window)
+            })
     };
-    let (provider, aux_model) = resolved?;
+    let (provider, aux_model, window_tokens) = resolved?;
     let facts = memory::extract_facts(
         job.trace.clone(),
         provider.as_ref(),
@@ -326,6 +333,7 @@ async fn extract_once(job: &ExtractionJob, cursor: Option<&str>) -> Option<Strin
         &job.memory_topics,
         &aux_model,
         job.goal.as_deref(),
+        window_tokens,
     )
     .await?;
     memory::store_facts(
@@ -545,6 +553,7 @@ mod tests {
         recorder: Arc<Recorder>,
         providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
         concurrency: Arc<ConcurrencyController>,
+        selector: Arc<crate::selector::ModelSelector>,
         tools: Arc<tools::Registry>,
     }
 
@@ -570,6 +579,7 @@ mod tests {
                 recorder,
                 providers,
                 concurrency: Arc::new(ConcurrencyController::new(None)),
+                selector: Arc::new(crate::selector::ModelSelector::new(Default::default())),
                 tools,
             }
         }
@@ -590,6 +600,7 @@ mod tests {
                 providers: &self.providers,
                 store: &self.store,
                 concurrency: &self.concurrency,
+                selector: &self.selector,
                 embedding_provider: None,
                 tools: &self.tools,
                 memory_user_id: "local:agent:a1",

@@ -102,11 +102,7 @@ pub enum TurnEvent {
     /// the ones loaded before it; for a helper, the ones its parent loaded.
     InvokedSkills(Vec<(String, String)>),
     /// After a checkpoint: work started before it that is still running.
-    RunningWork {
-        id: String,
-        description: String,
-        status: String,
-    },
+    RunningWork(super::compact::restore::RunningWork),
 }
 
 /// What a session knows about itself outside the conversation. Nothing here
@@ -388,10 +384,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
                 format!("Skills loaded for this work. Their instructions apply:\n\n{}", sections.join("\n\n")),
             )
         }
-        TurnEvent::RunningWork { id, description, status } => (
-            "running_work",
-            format!("Still running from before the checkpoint: {description} [{id}]: {status}"),
-        ),
+        TurnEvent::RunningWork(work) => ("running_work", work.text()),
     };
     Some(Attachment {
         kind,
@@ -1025,11 +1018,11 @@ mod tests {
                 content: "a".into(),
             },
             TurnEvent::InvokedSkills(vec![("letters".into(), "write plainly".into())]),
-            TurnEvent::RunningWork {
+            TurnEvent::RunningWork(crate::harness::compact::restore::RunningWork {
                 id: "task-1".into(),
                 description: "research".into(),
-                status: "running".into(),
-            },
+                kind: crate::harness::compact::restore::WorkKind::Helper,
+            }),
             TurnEvent::TurnTime("It is 2:05 PM (America/Denver, UTC-06:00) on Thursday, September 24, 2026.".into()),
             TurnEvent::PhoneLocation(Some(crate::phone_location::SharedPosition {
                 text: "The owner's phone is at 40.000000, -111.000000.".into(),

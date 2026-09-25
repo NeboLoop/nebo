@@ -26,14 +26,57 @@ pub const SKILLS_TOKENS: usize = 25_000;
 
 const CUT_NOTE: &str = "\n…(cut to fit after the checkpoint; read it again for the rest)";
 
-/// Work started before the checkpoint that has not finished: a helper, a
-/// background shell, a workflow run.
+/// Work started before the checkpoint that has not finished: a helper or a
+/// background command (Claude Code's post-compact `task_status` rows for
+/// running agents and background shells).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningWork {
     pub id: String,
     pub description: String,
-    /// Where it stands, one line.
-    pub status: String,
+    pub kind: WorkKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkKind {
+    Helper,
+    /// A command running in the background.
+    Command { command: String },
+}
+
+impl RunningWork {
+    /// A helper started from the session.
+    pub fn helper(id: impl Into<String>, description: impl Into<String>) -> Self {
+        Self { id: id.into(), description: description.into(), kind: WorkKind::Helper }
+    }
+
+    /// One line naming it: `helper h1 "read the filings"`.
+    pub fn line(&self) -> String {
+        let what = match self.kind {
+            WorkKind::Helper => "helper",
+            WorkKind::Command { .. } => "command",
+        };
+        format!("{what} {} \"{}\"", self.id, self.description)
+    }
+
+    /// What the model is told: it is still running, not to start it again,
+    /// and how it hears the end (Claude Code's words, m0342 `task_status`).
+    pub fn text(&self) -> String {
+        match &self.kind {
+            WorkKind::Helper => format!(
+                "Background helper \"{}\" ({}) is still running. Don't start a duplicate: you'll get a \
+                 notification when it finishes.",
+                self.description, self.id
+            ),
+            WorkKind::Command { command } => format!(
+                "Background command {} (\"{}\") is still running (command: `{}`). Don't start it again; to \
+                 restart it, stop it with stop_task first. Read its output with read_output(task_id: \"{}\").",
+                self.id,
+                self.description,
+                command.replace('\n', " "),
+                self.id
+            ),
+        }
+    }
 }
 
 /// What the turn knows that the conversation does not carry.
@@ -86,11 +129,7 @@ pub fn restore(before: &[ChatMessage], state: &RestoreState<'_>) -> Vec<TurnEven
     }
 
     for work in state.running {
-        events.push(TurnEvent::RunningWork {
-            id: work.id.clone(),
-            description: work.description.clone(),
-            status: work.status.clone(),
-        });
+        events.push(TurnEvent::RunningWork(work.clone()));
     }
 
     if state.plan_mode {

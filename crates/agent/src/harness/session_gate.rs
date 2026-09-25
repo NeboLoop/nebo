@@ -102,6 +102,26 @@ pub async fn admit_or_queue(
     unreachable!("the last step always admits or queues")
 }
 
+/// Admit a turn on `session_key` once no turn holds it: the turn waits for
+/// the running one to finish rather than joining it. `None` when it is
+/// cancelled while it waits.
+pub async fn admit_when_free(
+    turns: &ActiveTurns,
+    session_key: &str,
+    progress: RunProgress,
+    cancel_token: CancellationToken,
+) -> Option<TurnGuard> {
+    loop {
+        if let Ok(guard) = admit_turn(turns, session_key, progress.clone(), cancel_token.clone()) {
+            return Some(guard);
+        }
+        tokio::select! {
+            _ = cancel_token.cancelled() => return None,
+            _ = tokio::time::sleep(SLOT_WAIT_STEP) => {}
+        }
+    }
+}
+
 /// True when the turn holding `session_key` is on its way out — cancelled, or
 /// its loop has ended — so the next message should wait for the slot rather
 /// than be queued into a loop that will not read it.

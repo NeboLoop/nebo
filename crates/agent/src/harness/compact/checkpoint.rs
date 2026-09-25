@@ -5,7 +5,8 @@
 //!
 //! One path for every reason: the turn takes a checkpoint when the request
 //! passes the window's compaction threshold or the provider says it
-//! overflowed, and the owner takes one with `/compact`. Pre-checkpoint hooks
+//! overflowed, and the owner takes one with `/compact`, a turn of its own
+//! (`TurnInput::Compact`) that checkpoints its first step. Pre-checkpoint hooks
 //! run first (the memory flush is one). The summary call forks the step's
 //! own request, so the provider's prompt cache is reused, with the checkpoint
 //! instruction as the last message and tools off. A conversation too long for
@@ -60,8 +61,9 @@ pub trait PreCheckpointHook: Send + Sync {
 }
 
 /// The pre-checkpoint memory flush: durable facts are extracted from the
-/// conversation before it is summarized. Barred when the run's taint meets
-/// the memory scope's write bar.
+/// conversation the checkpoint summarizes, in the background, for this
+/// session only; the checkpoint never waits on it. Barred when the run's
+/// taint meets the memory scope's write bar.
 pub struct MemoryFlush {
     pub provider: Arc<dyn ai::Provider>,
     pub store: Arc<db::Store>,
@@ -70,6 +72,8 @@ pub struct MemoryFlush {
     pub embedding: Option<Arc<dyn ai::EmbeddingProvider>>,
     pub taint: Vec<types::provenance::ProvenanceClass>,
     pub barred: bool,
+    /// The flush model's window: the conversation fills half of it.
+    pub window_tokens: usize,
 }
 
 #[async_trait::async_trait]
@@ -87,14 +91,15 @@ impl PreCheckpointHook for MemoryFlush {
             );
             return;
         }
-        crate::memory_flush::run_memory_flush(
-            self.provider.as_ref(),
-            &self.store,
-            session_id,
-            &self.user_id,
-            &self.topics,
+        crate::memory_flush::spawn_memory_flush(
+            self.provider.clone(),
+            self.store.clone(),
+            session_id.to_string(),
+            self.user_id.clone(),
+            self.topics.clone(),
             self.embedding.clone(),
-            &self.taint,
+            self.taint.clone(),
+            self.window_tokens,
         )
         .await;
     }
@@ -131,14 +136,16 @@ pub struct CheckpointContext<'a> {
     pub provider: &'a dyn ai::Provider,
     pub session_id: &'a str,
     /// The conversation as the step sends it: loaded since the last
-    /// boundary and trimmed. The owner's `/compact` passes it as loaded.
+    /// boundary and trimmed.
     pub conversation: &'a [ChatMessage],
     /// The step's request. The summary call forks it (system prompt, tools,
-    /// model, cache breakpoints) and replaces its messages. Outside a turn,
-    /// a request carrying only the model and trace.
+    /// model, cache breakpoints) and replaces its messages.
     pub fork_of: &'a ChatRequest,
     pub hooks: &'a [Box<dyn PreCheckpointHook>],
     pub restore: RestoreState<'a>,
+    /// What the owner asked the summary to keep or focus on (`/compact
+    /// <instructions>`, Claude Code's "Additional Instructions").
+    pub instructions: Option<&'a str>,
 }
 
 /// The instruction the summary call ends with.
@@ -320,37 +327,6 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
     })
 }
 
-/// The owner's `/compact`, outside a turn: the conversation since the last
-/// boundary checkpointed on the provider's default model. The owner speaks
-/// next, so the boundary asks the model to carry on with nothing.
-pub async fn owner_compact(
-    sessions: &SessionManager,
-    provider: &dyn ai::Provider,
-    session_id: &str,
-    agent_id: &str,
-) -> Result<Checkpoint, String> {
-    let conversation = sessions
-        .get_messages_since_checkpoint(session_id)
-        .map_err(|e| format!("could not load the conversation: {e}"))?;
-    let fork_of = ChatRequest::new(ai::RequestTrace {
-        agent_id: agent_id.to_string(),
-        ..ai::RequestTrace::new("checkpoint")
-    });
-    checkpoint(
-        &CheckpointContext {
-            sessions,
-            provider,
-            session_id,
-            conversation: &conversation,
-            fork_of: &fork_of,
-            hooks: &[],
-            restore: RestoreState::default(),
-        },
-        CheckpointReason::OwnerAsked,
-    )
-    .await
-}
-
 /// The summary call, forked from the step's request. Returns the reply and
 /// whether the oldest part had to be dropped to fit.
 async fn summarize(cx: &CheckpointContext<'_>) -> Result<(String, bool), String> {
@@ -362,7 +338,7 @@ async fn summarize(cx: &CheckpointContext<'_>) -> Result<(String, bool), String>
         let mut messages = crate::harness::conversation::convert_messages(&cx.conversation[start..], &model);
         messages.push(Message {
             role: "user".into(),
-            content: CHECKPOINT_INSTRUCTION.into(),
+            content: instruction(cx.instructions),
             ..Default::default()
         });
         // Everything but the messages is the step's request as it was sent:
@@ -393,6 +369,15 @@ async fn summarize(cx: &CheckpointContext<'_>) -> Result<(String, bool), String>
             }
             Err(CallError::Failed(e)) => return Err(e),
         }
+    }
+}
+
+/// The summary call's closing instruction, with the owner's own
+/// instructions for this checkpoint when they gave any.
+fn instruction(owner: Option<&str>) -> String {
+    match owner.map(str::trim).filter(|i| !i.is_empty()) {
+        Some(extra) => format!("{CHECKPOINT_INSTRUCTION}\n\nAdditional instructions from the owner:\n{extra}"),
+        None => CHECKPOINT_INSTRUCTION.to_string(),
     }
 }
 
@@ -475,7 +460,7 @@ mod tests {
     use db::Store;
 
     use super::*;
-    use crate::harness::compact::restore::RunningWork;
+    use crate::harness::compact::restore::{RunningWork, WorkKind};
     use crate::harness::goal::{AgreedGoal, GoalSource, GoalStatus};
     use crate::session::SessionManager;
 
@@ -594,6 +579,7 @@ mod tests {
                 fork_of: &fork_of,
                 hooks,
                 restore,
+                instructions: None,
             };
             checkpoint(&cx, why).await
         }
@@ -769,7 +755,14 @@ mod tests {
             last_reason: None,
             declined: vec![],
         };
-        let running = [RunningWork { id: "task-7".into(), description: "research the client".into(), status: "reading page 3".into() }];
+        let running = [
+            RunningWork { id: "task-7".into(), description: "research the client".into(), kind: WorkKind::Helper },
+            RunningWork {
+                id: "bg-1a2b3c4d".into(),
+                description: "build the site".into(),
+                kind: WorkKind::Command { command: "pnpm build".into() },
+            },
+        ];
         let provider = Scripted::new(vec![Reply::Say("summary".into()), Reply::Say("summary".into())]);
 
         let done = s
@@ -782,7 +775,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(done.restore, vec!["invoked_skills", "goal_set", "running_work", "plan_mode"]);
+        assert_eq!(done.restore, vec!["invoked_skills", "goal_set", "running_work", "running_work", "plan_mode"]);
         let rows = s.conversation();
         let text = |k: &str| rows.iter().find(|m| kind(m) == k).unwrap().content.clone();
         let skills = text("invoked_skills");
@@ -790,7 +783,10 @@ mod tests {
         assert!(skills.contains("### invoices\nINVOICES"), "every loaded skill");
         assert!(!skills.contains("broken"), "a failed load stays out");
         assert!(text("goal_set").contains("the letter is sent"));
-        assert!(text("running_work").contains("research the client [task-7]: reading page 3"));
+        let running_rows: Vec<String> = rows.iter().filter(|m| kind(m) == "running_work").map(|m| m.content.clone()).collect();
+        assert_eq!(running_rows.len(), 2, "one row per piece of running work");
+        assert!(running_rows[0].contains("Background helper \"research the client\" (task-7) is still running. Don't start a duplicate"), "{}", running_rows[0]);
+        assert!(running_rows[1].contains("Background command bg-1a2b3c4d (\"build the site\") is still running (command: `pnpm build`)"), "{}", running_rows[1]);
         assert!(rows.iter().all(|m| !metadata(m).is_some_and(|v| v["attachment"].is_object()) || m.content.starts_with("<system-reminder>")));
 
         let paused = AgreedGoal { status: GoalStatus::Paused(crate::harness::goal::Pause::Stopped), ..goal };
@@ -975,6 +971,7 @@ mod tests {
             fork_of: &fork_of,
             hooks: &[],
             restore: RestoreState::default(),
+            instructions: None,
         };
         send(&checkpoint(&cx, CheckpointReason::OwnerAsked));
     }
