@@ -206,21 +206,9 @@ pub fn normalize_alias(kind: &str, raw: &str) -> Option<String> {
     Some(v)
 }
 
-/// E.164 from what people type. Digits only; a leading `+` keeps the country
-/// code; ten digits are read as North American; eleven digits starting with
-/// 1 likewise. ponytail: no libphonenumber — anything else is kept as `+`
-/// plus its digits, which is exact-match stable even when not canonical.
+/// E.164 from what people type (see [`types::permissions::normalize_phone`]).
 pub fn normalize_phone(s: &str) -> Option<String> {
-    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.len() < 7 {
-        return None;
-    }
-    let plus = s.trim_start().starts_with('+');
-    Some(match (plus, digits.len()) {
-        (false, 10) => format!("+1{digits}"),
-        (false, 11) if digits.starts_with('1') => format!("+{digits}"),
-        _ => format!("+{digits}"),
-    })
+    types::permissions::normalize_phone(s)
 }
 
 fn value_at(payload: &serde_json::Value, path: &str) -> Option<String> {
@@ -305,6 +293,13 @@ pub fn route_signal(
     }
     let source = format!("{}:{}:{}", b.agent_id, b.binding_name, channel);
     let (subject, merged) = store.engine_resolve_subject(aliases, &source, t)?;
+    // Whoever wrote in is someone this employee works with: replying to
+    // them is not speaking for the owner somewhere new.
+    for (kind, value) in aliases.iter().filter(|(k, _)| k == "email" || k == "phone") {
+        if let Err(e) = store.add_employee_counterparty(b.agent_id, value, "inbound") {
+            tracing::warn!(kind, error = %e, "inbound counterparty not recorded");
+        }
+    }
     for loser in &merged {
         for conflicted in store.engine_rekey_open_runs(loser, &subject)? {
             let reason = format!("two open cases now name one person after a merge: {conflicted} and the case for subject {subject}; keep one");

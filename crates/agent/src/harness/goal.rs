@@ -818,16 +818,18 @@ impl Suggestions {
 }
 
 /// The `suggest_goal` tool's door onto [`Suggestions`]: the call's own
-/// conversation, its approval card on the harness's approval channels, the
-/// goal told and kicked off through the harness's goal outlet.
+/// conversation, its approval card on the channels the owner's answer
+/// comes back on, the goal told and kicked off through the harness's goal
+/// outlet.
 pub struct GoalSuggestions {
     harness: super::Harness,
+    approvals: tools::ApprovalChannels,
     suggestions: Suggestions,
 }
 
 impl GoalSuggestions {
-    pub fn new(harness: super::Harness) -> Self {
-        Self { harness, suggestions: Suggestions::default() }
+    pub fn new(harness: super::Harness, approvals: tools::ApprovalChannels) -> Self {
+        Self { harness, approvals, suggestions: Suggestions::default() }
     }
 }
 
@@ -841,7 +843,7 @@ impl tools::GoalSuggester for GoalSuggestions {
         Box::pin(async move {
             let unavailable = || "Goals can't be set in this conversation. Keep working toward what the owner asked.".to_string();
             let observer = self.harness.goal_observer().ok_or_else(unavailable)?;
-            let approvals = self.harness.approval_channels.as_ref().ok_or_else(unavailable)?;
+            let approvals = &self.approvals;
             // A card needs someone watching this conversation; without a
             // stream only the owner's own words can set a goal.
             let events = match (&ctx.stream_tx, ask_owner) {

@@ -1778,7 +1778,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(skill_loader.clone()),
     )
     .with_ask_channels(ask_channels.clone())
-    .with_approval_channels(approval_channels.clone())
     // Same adapter instance as the memory tool — one search pathway, one
     // TurboVec index cache — powering the turn's recall.
     .with_hybrid_searcher(hybrid_searcher);
@@ -2314,7 +2313,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             goal_observer: Some(Arc::new(handlers::goal::GoalOutlet::new(state.clone()))),
         });
         // `suggest_goal` reaches the agreed goal through the harness.
-        state.tools.bind_goals(Arc::new(agent::harness::goal::GoalSuggestions::new(state.harness.clone())));
+        state.tools.bind_goals(Arc::new(agent::harness::goal::GoalSuggestions::new(
+            state.harness.clone(),
+            state.approval_channels.clone(),
+        )));
     }
 
     // Wire the comm incoming-message handler now that AppState exists. Install

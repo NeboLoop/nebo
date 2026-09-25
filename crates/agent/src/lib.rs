@@ -43,7 +43,6 @@ pub mod structured_agent;
 pub mod summarizer;
 pub mod task_graph;
 pub mod tool_credentials;
-pub mod tool_guardrail;
 pub mod testing;
 pub mod transcript;
 

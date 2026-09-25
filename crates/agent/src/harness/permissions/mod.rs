@@ -8,7 +8,9 @@
 
 pub mod activity;
 pub mod ask;
+pub mod cases;
 pub mod consent;
+pub mod judgement;
 pub mod limits;
 pub mod migrate;
 pub mod plan;
@@ -17,7 +19,7 @@ pub mod rules;
 use std::sync::Arc;
 
 use tools::{GateVerdict, PermissionGate, ResolvedCall, ToolContext, ToolResult};
-use types::permissions::{AskCase, Decision, Effect, Grant, Mode, Target, Why};
+use types::permissions::{AskCase, Decision, Effect, Grant, JudgementMode, Mode, Target, Verdict, Why};
 
 pub use ask::{Answer, AnsweredVia, Ask, AskError, AskStatus, AskSurfaces, Asks, Settled};
 pub use rules::RuleSet;
@@ -79,7 +81,7 @@ impl PermissionGate for Check {
         };
         let cx = CheckCx { ctx, input: call.input, grant, store: &self.store };
         let t = &call.target;
-        let mut decision = decide(&cx, t);
+        let (mut decision, judged) = decide_judged(&cx, t);
         // The owner already said no to this same call in this session: it
         // is refused without a card.
         if matches!(decision, Decision::Ask { .. })
@@ -94,7 +96,13 @@ impl PermissionGate for Check {
             Decision::Ask { case } => Some(self.asks.park(&cx, call, case)),
             _ => None,
         };
-        if let Err(e) = activity::record(&self.store, &cx, t, call.tool.activity(call.input), &decision, ask_id.as_deref()) {
+        let entry = activity::Entry {
+            activity: call.tool.activity(call.input),
+            decision: &decision,
+            ask_id: ask_id.as_deref(),
+            judged: judged.as_ref(),
+        };
+        if let Err(e) = activity::record(&self.store, &cx, t, &entry) {
             tracing::warn!(tool = %t.tool, error = %e, "permission decision not recorded");
         }
         match decision {
@@ -111,47 +119,146 @@ impl PermissionGate for Check {
             }
         }
     }
+
+    /// What a call that ran brought into being is the employee's own work
+    /// from now on: a later delete or overwrite of it is not case 3.
+    async fn ran(&self, ctx: &ToolContext, call: &ResolvedCall<'_>, result: &ToolResult) {
+        let agent_id = match &ctx.grant {
+            Some(g) => g.agent_id.clone(),
+            None => types::keyparser::extract_agent_id(&ctx.session_key),
+        };
+        let mut created = call.target.effects.creates.clone();
+        // A typed create names its new record in its result.
+        if let Some(op) = &call.target.operation
+            && let Some((resource, "create")) = tools::plugin_tool::port_suffix(op).rsplit_once('.')
+            && let Some(id) = serde_json::from_str::<serde_json::Value>(&result.content)
+                .ok()
+                .as_ref()
+                .and_then(tools::plugin_tool::record_id)
+        {
+            created.push(format!("{resource}:{id}"));
+        }
+        for target in created {
+            if let Err(e) = self.store.add_employee_created(&agent_id, &target) {
+                tracing::warn!(error = %e, "created work not recorded");
+            }
+        }
+    }
+}
+
+/// A judge's verdict as the check applied it: recorded with the decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Judged {
+    pub mode: JudgementMode,
+    pub verdict: Verdict,
+}
+
+impl Judged {
+    /// Neither judge could answer: the call ran unreviewed.
+    pub fn unreviewed(&self) -> bool {
+        self.verdict == Verdict::Unjudged
+    }
+}
+
+/// What the code decided for one call: a decision, or a question for the
+/// judgement with the answer that stands when no judge is asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Decided(Decision),
+    Undecided { question: cases::Question, code: Decision },
+}
+
+/// The question the judgement is asked about this call, when the code
+/// can't decide it (the tool round asks once for all of its calls).
+pub fn question_for(cx: &CheckCx<'_>, t: &Target) -> Option<cases::Question> {
+    match decide_code(cx, t) {
+        Outcome::Undecided { question, .. } => Some(question),
+        Outcome::Decided(_) => None,
+    }
 }
 
 /// The decision for one call, in the fixed order.
 pub fn decide(cx: &CheckCx<'_>, t: &Target) -> Decision {
+    decide_judged(cx, t).0
+}
+
+/// The decision, and the judgement it applied when the call carried one.
+/// Shadow records the verdict and keeps the code's answer; enforce acts on
+/// it. With no verdict on the call (no judge was asked: a door outside the
+/// tool round) the code's answer stands.
+fn decide_judged(cx: &CheckCx<'_>, t: &Target) -> (Decision, Option<Judged>) {
+    let code = match decide_code(cx, t) {
+        Outcome::Decided(d) => return (d, None),
+        Outcome::Undecided { code, .. } => code,
+    };
+    let Some(verdict) = cx.ctx.judgement.clone() else {
+        return (code, None);
+    };
+    let mode = cx.store.permission_judgement_mode().unwrap_or_default();
+    let decision = match (mode, &verdict) {
+        (JudgementMode::Shadow, _) => code,
+        (JudgementMode::Enforce, Verdict::Allow { by, reason }) => {
+            Decision::Allow { why: Why::Judged { by: by.as_str().to_string(), reason: reason.clone() } }
+        }
+        (JudgementMode::Enforce, Verdict::Ask { case, .. }) => Decision::Ask { case: case.clone() },
+        (JudgementMode::Enforce, Verdict::Unjudged) => {
+            Decision::Allow { why: Why::Unreviewed { reason: types::permissions::UNREVIEWED_REASON.to_string() } }
+        }
+    };
+    (decision, Some(Judged { mode, verdict }))
+}
+
+/// The code's decision for one call, in the fixed order (§2.12.3).
+fn decide_code(cx: &CheckCx<'_>, t: &Target) -> Outcome {
+    Outcome::Decided(match decide_rules(cx, t) {
+        Ok(d) => d,
+        Err(Automatic { rules, by_rule }) => return automatic(cx, t, &rules, by_rule),
+    })
+}
+
+/// Past the rules and the mode: a call the cases decide.
+struct Automatic {
+    rules: RuleSet,
+    by_rule: Why,
+}
+
+/// Hard limits, the fence and ceiling, the rules and the mode. `Err` is a
+/// call the surfaced cases decide.
+fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
     // 1. Hard limits: never asked, never lifted.
     if let Some(d) = limits::hard_limits(cx, t) {
-        return d;
+        return Ok(d);
     }
     // 2. The run's own fence (an isolated helper's copy) and the ceiling it
     //    runs under (its parent's grant): it can only narrow.
     if let Some(fence) = &cx.grant.fence
         && let Some(reason) = rules::outside(fence, t, cx.input)
     {
-        return Decision::Deny { reason, why: Why::Ceiling };
+        return Ok(Decision::Deny { reason, why: Why::Ceiling });
     }
     if let Some(ceiling) = &cx.grant.ceiling
         && let Some(reason) = beyond(ceiling.grant(), cx, t)
     {
-        return Decision::Deny { reason, why: Why::Ceiling };
+        return Ok(Decision::Deny { reason, why: Why::Ceiling });
     }
     // 3. Rules.
     let rules = RuleSet::of(cx.grant);
     let decided = rules.decide(t);
     if let Some((rule, Effect::Deny)) = decided {
-        return Decision::Deny { reason: refusal(t, rule), why: Why::Rule { rule_id: rule.id.clone() } };
+        return Ok(Decision::Deny { reason: refusal(t, rule), why: Why::Rule { rule_id: rule.id.clone() } });
     }
     if let Some(ask_id) = &cx.ctx.answered_ask {
-        return Decision::Allow { why: Why::AnsweredOnce { ask_id: ask_id.clone() } };
+        return Ok(Decision::Allow { why: Why::AnsweredOnce { ask_id: ask_id.clone() } });
     }
     // Only the owner gives an employee more room, in every mode.
     if t.effects.widens {
-        return Decision::Ask { case: AskCase::Widens };
+        return Ok(Decision::Ask { case: AskCase::Widens });
     }
     let full = cx.grant.mode == Mode::FullAccess;
     if let Some((rule, Effect::Ask)) = decided
         && !full
     {
-        return Decision::Ask { case: AskCase::AskRule { rule_id: rule.id.clone() } };
-    }
-    if !full && let Some(case) = over_money(cx, &rules, t) {
-        return Decision::Ask { case };
+        return Ok(Decision::Ask { case: AskCase::AskRule { rule_id: rule.id.clone() } });
     }
     // 4. The mode.
     let by_rule = || match decided {
@@ -159,32 +266,31 @@ pub fn decide(cx: &CheckCx<'_>, t: &Target) -> Decision {
         None => Why::BasicWork,
     };
     match cx.grant.mode {
-        Mode::FullAccess => return Decision::Allow { why: Why::Mode { mode: Mode::FullAccess } },
+        Mode::FullAccess => return Ok(Decision::Allow { why: Why::Mode { mode: Mode::FullAccess } }),
         Mode::Plan if !t.read_only => {
-            return Decision::Deny { reason: plan::REFUSAL.to_string(), why: Why::Mode { mode: Mode::Plan } };
+            return Ok(Decision::Deny { reason: plan::REFUSAL.to_string(), why: Why::Mode { mode: Mode::Plan } });
         }
-        Mode::Plan => return Decision::Allow { why: Why::Mode { mode: Mode::Plan } },
+        Mode::Plan => return Ok(Decision::Allow { why: Why::Mode { mode: Mode::Plan } }),
         Mode::Ask if !t.read_only && !rules.owner_allowed(t) => {
-            return Decision::Ask { case: AskCase::AskMode };
+            return Ok(Decision::Ask { case: AskCase::AskMode });
         }
+        // A change the owner allowed, or a read: the surfaced cases still
+        // apply, as in Automatic.
         Mode::Ask | Mode::Automatic => {}
     }
-    // Automatic: someone else's words in the run never spend a gated
-    // operation unasked.
-    let gated = t.operation.as_deref().is_some_and(tools::interface_catalog::is_gated);
-    if gated && (!cx.ctx.origin.is_trusted() || cx.ctx.untrusted_input) && !rules.answered_always(t) {
-        let source = if cx.ctx.untrusted_input {
-            "the run's input".to_string()
-        } else {
-            limits::origin_label(cx.ctx.origin).to_string()
-        };
-        return Decision::Ask { case: AskCase::UntrustedInput { source } };
-    }
-    if rules.in_job(t, cx.input) {
-        Decision::Allow { why: by_rule() }
-    } else {
-        Decision::Ask {
-            case: AskCase::OutsideJob { capability: t.capability.clone().unwrap_or_else(|| t.key.clone()) },
+    let by_rule = by_rule();
+    Err(Automatic { rules, by_rule })
+}
+
+/// The five surfaced cases (`cases.rs`), then the call runs.
+fn automatic(cx: &CheckCx<'_>, t: &Target, rules: &RuleSet, by_rule: Why) -> Outcome {
+    let gathered = cases::Gathered::load(cx, rules, t);
+    let facts = gathered.facts(&cx.ctx.run_taint, cx.input);
+    match cases::surfaced(t, rules, &facts) {
+        cases::CaseVerdict::Clear => Outcome::Decided(Decision::Allow { why: by_rule }),
+        cases::CaseVerdict::Ask(case) => Outcome::Decided(Decision::Ask { case }),
+        cases::CaseVerdict::Undecided(question) => {
+            Outcome::Undecided { question, code: Decision::Allow { why: by_rule } }
         }
     }
 }
@@ -231,24 +337,6 @@ fn refusal(t: &Target, rule: &types::permissions::Rule) -> String {
 
 pub(super) fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
-}
-
-/// The money case: a standing allow's limits against today's spend.
-fn over_money(cx: &CheckCx<'_>, rules: &RuleSet, t: &Target) -> Option<AskCase> {
-    let limit = rules.money_limit(t)?;
-    let (rule, _) = rules.decide(t)?;
-    let cents = t.effects.money_cents.unwrap_or(0);
-    let counterparty = t.effects.counterparty.clone().unwrap_or_default();
-    let spent = cx
-        .store
-        .permission_spend(&cx.grant.agent_id, &today(), rule.key.value(), &counterparty)
-        .unwrap_or_default();
-    let over = |limit: Option<i64>, used: i64| limit.is_some_and(|l| used > l);
-    let exceeded = over(limit.per_action_cents, cents)
-        || over(limit.per_day_count, spent.count + 1)
-        || over(limit.per_day_cents, spent.cents + cents)
-        || (!counterparty.is_empty() && over(limit.per_counterparty_day_cents, spent.counterparty_cents + cents));
-    exceeded.then(|| AskCase::Money { cents, limit_cents: limit.per_action_cents.or(limit.per_day_cents) })
 }
 
 /// Count an allowed call against a standing allow's money limits, before it

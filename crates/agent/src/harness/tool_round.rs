@@ -142,6 +142,7 @@ impl RunToolScope<'_> {
             door: door.clone(),
             answered_ask: None,
             untrusted_input,
+            judgement: None,
             cwd: run_cwd.map(str::to_string),
             cancel_token: cancel_token.clone(),
             stream_tx: Some(tx.clone()),
@@ -195,8 +196,6 @@ pub(crate) struct RoundContext<'a> {
     pub hooks: &'a napp::HookDispatcher,
     pub user_prompt: &'a str,
     pub iteration: usize,
-    pub approval_channels: Option<&'a tools::ApprovalChannels>,
-    pub approval_relay: bool,
     pub workflow_mode: Option<&'a WorkflowMode>,
     pub decide: Option<&'a Arc<ai::DecideClient>>,
     pub active_task: &'a String,
@@ -262,8 +261,6 @@ pub(crate) async fn run_tool_round(
         hooks,
         user_prompt,
         iteration,
-        approval_channels,
-        approval_relay,
         workflow_mode,
         decide,
         active_task,
@@ -622,103 +619,46 @@ pub(crate) async fn run_tool_round(
         return RoundOutcome::Ended(crate::guardrails::Exit::RepeatedToolCalls);
     }
 
-    // ── Decide guardrail (crate::tool_guardrail) ──────────────────────
-    // Last, after every gate above, and only for calls that are about
-    // to run without the owner having answered a card for them: one
-    // typed decision per side-effecting call judges risk and scope,
-    // and the band is allow, ask (the SAME approval door as the gates
-    // above, one card for the batch) or block. Off by default
-    // (`NEBO_DECIDE_GUARDRAIL=1`; `=shadow` logs the band without
-    // acting). Fail-open: no client, error or timeout leaves the
-    // decision above unchanged.
-    let guardrail_mode = crate::tool_guardrail::mode();
-    if guardrail_mode != crate::tool_guardrail::Mode::Off && wf_break_reason.is_none() {
-        // A workflow turn has no session objective and an empty
-        // prompt; its task is the step it was given.
-        let (objective, last_message, context) = match workflow_mode {
-            Some(m) => (
-                m.objective.as_str(),
-                m.instruction.as_str(),
-                crate::tool_guardrail::Context::WorkflowStep,
-            ),
-            None => (active_task.as_str(), user_prompt, crate::tool_guardrail::Context::Chat),
-        };
-        let mut judged = Vec::new();
+    // ── The permission judgement (permissions::judgement) ─────────────
+    // The calls about to run whose outward effect the code could not
+    // decide (whether they publish, or speak for the owner outside) are
+    // asked about once, together: Jev first, the aux classifier for what
+    // it didn't settle. Each call carries its verdict to the permission
+    // check, which records it (shadow) or acts on it (enforce).
+    let mut judgements: Vec<Option<types::permissions::Verdict>> = vec![None; tool_calls.len()];
+    if wf_break_reason.is_none() {
+        let store = sessions.store();
+        let mut asked: Vec<(usize, crate::harness::permissions::cases::Question)> = Vec::new();
         for (idx, tc) in tool_calls.iter().enumerate() {
             if blocked_results[idx].is_some() {
                 continue;
             }
-            if !tools.has_side_effects(&tc.name, &tc.input).await {
-                continue;
-            }
-            let trace = side_trace("tool_guardrail");
-            judged.push(async move {
-                let judgment = crate::tool_guardrail::judge(
-                    decide.map(|d| d.as_ref()),
-                    &trace,
-                    guardrail_mode,
-                    &tc.name,
-                    &tc.input,
-                    objective,
-                    last_message,
-                    context,
-                )
-                .await;
-                (idx, judgment)
-            });
-        }
-        let mut guardrail_asks: Vec<usize> = Vec::new();
-        for (idx, judgment) in futures::future::join_all(judged).await {
-            let Some(judgment) = judgment else { continue };
-            match crate::tool_guardrail::action_for(guardrail_mode, judgment.band) {
-                crate::tool_guardrail::Band::Allow => {}
-                crate::tool_guardrail::Band::Block => {
-                    blocked_results[idx] = Some((
-                        tool_calls[idx].clone(),
-                        ToolResult::error(crate::tool_guardrail::BLOCKED_RESULT),
-                    ));
-                }
-                crate::tool_guardrail::Band::Ask => guardrail_asks.push(idx),
+            let Some(target) = tools.target(&tc.name, &tc.input).await else { continue };
+            let cx = crate::harness::permissions::CheckCx { ctx: &ctx, input: &tc.input, grant: scope.grant, store };
+            if let Some(mut q) = crate::harness::permissions::question_for(&cx, &target) {
+                q.activity = tools.labels(&tc.name, &tc.input).await.0;
+                asked.push((idx, q));
             }
         }
-        if !guardrail_asks.is_empty() {
-            let attended = tools::ExecutionMode::from(origin)
-                == tools::ExecutionMode::Interactive
-                || approval_relay;
-            match approval_channels {
-                Some(chs) if attended => {
-                    let calls: Vec<ai::ToolCall> =
-                        guardrail_asks.iter().map(|&i| tool_calls[i].clone()).collect();
-                    let decision = ask_tool_approval_batch(
-                        chs, tx, cancel_token, &calls, session_id, "guardrail",
-                    )
-                    .await;
-                    // "always" has nothing to persist here: the
-                    // guardrail holds no per-tool grant, so it is an
-                    // approval for this batch only.
-                    if !matches!(
-                        decision.as_str(),
-                        "always" | "once" | "approve" | "approved" | "yes" | "true"
-                    ) {
-                        for idx in guardrail_asks {
-                            blocked_results[idx] = Some((
-                                tool_calls[idx].clone(),
-                                ToolResult::error(crate::tool_guardrail::DECLINED_RESULT),
-                            ));
-                        }
-                    }
-                }
-                // Unattended (cron/workflow/comm/subagent) or no
-                // channel: nobody can answer, so the call does not
-                // run, the same as the gates above.
-                _ => {
-                    for idx in guardrail_asks {
-                        blocked_results[idx] = Some((
-                            tool_calls[idx].clone(),
-                            ToolResult::error(crate::tool_guardrail::UNATTENDED_RESULT),
-                        ));
-                    }
-                }
+        if !asked.is_empty() {
+            // A workflow turn has no session objective and an empty
+            // prompt; its task is the step it was given.
+            let (objective, last_message) = match workflow_mode {
+                Some(m) => (m.objective.as_str(), m.instruction.as_str()),
+                None => (active_task.as_str(), user_prompt),
+            };
+            let providers = providers.read().await.clone();
+            let judge = crate::harness::permissions::judgement::JudgeCx {
+                decide: decide.map(|d| d.as_ref()),
+                providers: &providers,
+                trace: side_trace,
+                objective,
+                last_message,
+            };
+            let questions: Vec<_> = asked.iter().map(|(_, q)| q.clone()).collect();
+            let verdicts = crate::harness::permissions::judgement::judge_round(&judge, &questions).await;
+            for ((idx, _), verdict) in asked.into_iter().zip(verdicts) {
+                judgements[idx] = Some(verdict);
             }
         }
     }
@@ -767,6 +707,7 @@ pub(crate) async fn run_tool_round(
         for idx in batch {
             let tools = tools.clone();
             let mut ctx = ctx.clone();
+            ctx.judgement = judgements[idx].clone();
             let tc = tool_calls[idx].clone();
             let concurrency = concurrency.clone();
             let pool = pool.clone();
@@ -1266,44 +1207,6 @@ pub(crate) async fn run_tool_round(
         summary_tool_calls,
         summary_tool_results,
     })
-}
-
-/// The batch form: one card, one decision, for every gated call in a batch
-/// (a person answering five cards in a row for one parallel step was the
-/// hazard). `calls` is never empty.
-async fn ask_tool_approval_batch(
-    channels: &tools::ApprovalChannels,
-    tx: &mpsc::Sender<StreamEvent>,
-    cancel_token: &CancellationToken,
-    calls: &[ai::ToolCall],
-    session_id: &str,
-    gate: &str,
-) -> String {
-    let tool_call = &calls[0];
-    let request_id = tool_call.id.clone();
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    channels.lock().await.insert(request_id.clone(), resp_tx);
-    let _ = tx
-        .send(if calls.len() > 1 {
-            StreamEvent::approval_request_batch(calls)
-        } else {
-            StreamEvent::approval_request(tool_call.clone())
-        })
-        .await;
-    info!(
-        session_id,
-        request_id = %request_id,
-        gate,
-        tool = %tool_call.name,
-        "tool approval: waiting for user decision"
-    );
-    tokio::select! {
-        _ = cancel_token.cancelled() => {
-            channels.lock().await.remove(&request_id);
-            "deny".to_string()
-        }
-        result = resp_rx => result.unwrap_or_else(|_| "deny".to_string()),
-    }
 }
 
 /// Hold one message's results to [`tools::result_shape::MESSAGE_RESULT_BUDGET`]

@@ -205,6 +205,42 @@ fn workflow_name(input: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
+/// How a workflow is named in the employee's created ledger:
+/// `workflow:<name>`, or `workflow:<employee>/<name>` when the call names
+/// another employee's workflows. Empty without a name.
+fn workflow_ref(input: &serde_json::Value) -> String {
+    let name = workflow_name(input).trim().to_lowercase();
+    if name.is_empty() {
+        return String::new();
+    }
+    match str_field(input, "employee") {
+        "" => format!("workflow:{name}"),
+        employee => format!("workflow:{}/{name}", employee.to_lowercase()),
+    }
+}
+
+/// Creating a workflow brings it into being; updating replaces one;
+/// deleting removes one. Each names the workflow the same way, so a delete
+/// of a workflow the employee created is its own work.
+fn workflow_effects(kind: Kind, input: &serde_json::Value) -> types::permissions::CallEffects {
+    use types::permissions::{CallEffects, Knowable};
+    if kind.read_only() {
+        return CallEffects::none();
+    }
+    let workflow = workflow_ref(input);
+    if workflow.is_empty() {
+        return CallEffects::unknown();
+    }
+    let mut effects = CallEffects { publishes: Knowable::No, ..CallEffects::default() };
+    match kind {
+        Kind::Create => effects.creates.push(workflow),
+        Kind::Update => effects.overwrites.push(workflow),
+        Kind::Delete => effects.deletes.push(workflow),
+        _ => return CallEffects::unknown(),
+    }
+    effects
+}
+
 /// Said only when the name is in neither place.
 const MISSING_NAME: &str = "The workflow needs a name: pass it as `name`, or as a \"name\" \
     field inside the definition. The definition you sent has no \"name\" field either.";
@@ -389,6 +425,10 @@ impl DynTool for WorkflowTool {
         self.kind.read_only()
     }
 
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        workflow_effects(self.kind, input)
+    }
+
     /// Never alongside other calls, reads included: a run's status changes
     /// between calls, and a concurrency-safe call is held to the
     /// identical-read ceiling, which would end a turn waiting on a run.
@@ -415,6 +455,27 @@ impl DynTool for WorkflowTool {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// A create, an update and a delete name the workflow the same way, so
+    /// the permission check can tell a delete of the employee's own work.
+    #[test]
+    fn a_workflow_is_named_the_same_by_create_update_and_delete() {
+        let def = r#"{"name":"Weekly Report"}"#;
+        let fx = |kind: Kind, v: serde_json::Value| super::workflow_effects(kind, &v);
+        assert_eq!(fx(Kind::Create, serde_json::json!({"definition": def})).creates, vec!["workflow:weekly report"]);
+        assert_eq!(
+            fx(Kind::Update, serde_json::json!({"name": "Weekly Report", "definition": def})).overwrites,
+            vec!["workflow:weekly report"]
+        );
+        assert_eq!(fx(Kind::Delete, serde_json::json!({"name": "weekly report"})).deletes, vec!["workflow:weekly report"]);
+        assert_eq!(
+            fx(Kind::Delete, serde_json::json!({"name": "Weekly Report", "employee": "Ava"})).deletes,
+            vec!["workflow:ava/weekly report"],
+            "another employee's workflow is named apart"
+        );
+        assert_eq!(fx(Kind::Run, serde_json::json!({"workflow": "x"})).publishes, types::permissions::Knowable::Unknown);
+        assert_eq!(fx(Kind::List, serde_json::json!({})), types::permissions::CallEffects::none());
+    }
+
     use super::*;
     use crate::workflows::{WorkflowInfo, WorkflowRunInfo};
     use serde_json::json;

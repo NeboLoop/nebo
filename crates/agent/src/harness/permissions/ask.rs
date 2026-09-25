@@ -725,6 +725,13 @@ mod tests {
     async fn rig() -> Rig {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("a.db").to_string_lossy()).unwrap());
+        // People the employees already text: these asks are about the job
+        // (case 4), never a first message (case 2).
+        for agent in ["emp", ""] {
+            for to in ["+15550142", "+15550177"] {
+                store.add_employee_counterparty(agent, to, "sent").unwrap();
+            }
+        }
         let check = Arc::new(Check::new(store.clone()));
         let asks = check.asks();
         let seen = Arc::new(Seen::default());
