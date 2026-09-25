@@ -33,6 +33,7 @@ pub mod desktop_tool;
 pub mod domain;
 pub mod effects;
 pub mod emit_tool;
+pub mod employee_tools;
 pub mod errors;
 pub mod event_tool;
 pub mod events;

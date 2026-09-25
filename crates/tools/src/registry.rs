@@ -1106,9 +1106,16 @@ impl Registry {
                     ))
                 });
             let persona =
-                crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader)
+                crate::agent_tool::PersonaTool::new(store.clone(), agent_reg.clone(), agent_loader.clone())
                     .with_code_installer(self.code_installer.clone());
             agent_tool = agent_tool.with_persona(persona);
+            // The employee tools (deferred): the roster, hiring, and making,
+            // changing and removing employees.
+            let persona = crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader)
+                .with_code_installer(self.code_installer.clone());
+            for tool in crate::employee_tools::tools(persona) {
+                self.register(Box::new(tool)).await;
+            }
         }
 
         self.register(Box::new(agent_tool)).await;
