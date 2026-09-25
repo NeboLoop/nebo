@@ -63,11 +63,6 @@ impl McpToolDef {
         self.meta.as_ref()?.get(&format!("anthropic/{key}"))
     }
 
-    /// `_meta` asks for the tool to be loaded on every call instead of deferred.
-    pub fn always_load(&self) -> bool {
-        self.meta("alwaysLoad").and_then(|v| v.as_bool()).unwrap_or(false)
-    }
-
     /// `_meta`'s words for tool search, whitespace collapsed (a newline would
     /// break the one-name-per-line listing).
     pub fn search_hint(&self) -> Option<String> {

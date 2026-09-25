@@ -140,6 +140,15 @@ mod tests {
         }
     }
 
+    /// The permission mode is its own reminder row (`events::mode_row`), not
+    /// a line of an environment below the prompt; the prompt says where it is.
+    #[test]
+    fn the_prompt_points_at_the_mode_row() {
+        let text = system_prompt();
+        assert!(!text.contains("environment below"), "a pointer at nothing");
+        assert!(text.contains("the permission mode a reminder names"));
+    }
+
     #[test]
     fn no_objective_or_topic_text_anywhere() {
         let lower = system_prompt().to_lowercase();
@@ -193,5 +202,5 @@ mod tests {
         assert!(chars < 8_000);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 5_456;
+    const SYSTEM_PROMPT_CHARS: usize = 5_483;
 }

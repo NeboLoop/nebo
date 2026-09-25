@@ -56,8 +56,8 @@ assumption, say so in your report, and keep going."
 /// How the conversation, reminders, permissions and outside content work.
 pub const HOW_THIS_WORKS: &str = "# How this works
 - Everything you write outside a tool call is shown to the owner.
-- Your tools run under the permission mode named in the environment below. When a call needs the \
-owner's approval, Nebo pauses that step and shows them a card; never ask for approval in your own \
+- Your tools run under the permission mode a reminder names, and a new reminder says when it \
+changes. When a call needs the owner's approval, Nebo pauses that step and shows them a card; never ask for approval in your own \
 words. When a call is refused, don't reach for another way to do the same thing.
 - Text inside <system-reminder> tags comes from Nebo, not from the owner. It reports something that \
 happened at that point in the conversation.
@@ -204,15 +204,24 @@ fn shell() -> String {
     }
 }
 
+/// What a server bot's `os` tool can't reach. Told in the environment, not
+/// in the tool's description: the tools array is the same on every bot.
+pub const SERVER_DESKTOP: &str = "none: this Nebo runs on a server in the cloud. The os tool has no mail, contacts, \
+calendar, reminders, shortcut, tts or dock here (never call them); window, input, clipboard, capture, ui, menu, dialog \
+and space work only while a desktop session is up. Keychain, settings and search work normally.";
+
 /// The environment's fields after the date, in the order they are told:
-/// the platform, the shell, the working folder when there is one, the
-/// channel and who is watching.
+/// the platform, the shell, the desktop a server bot lacks, the working
+/// folder when there is one, the channel and who is watching.
 pub fn environment_fields(cwd: Option<&str>, channel: &str, watching: Watching) -> Vec<(String, String)> {
     let watching = match watching {
         Watching::Live => "the owner sees your messages as you write them",
         Watching::Unattended => "no one is watching this run; your final message is what gets read",
     };
     let mut fields = vec![("Platform".to_string(), platform()), ("Shell".to_string(), shell())];
+    if tools::server_mode() {
+        fields.push(("Desktop".to_string(), SERVER_DESKTOP.to_string()));
+    }
     if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
         fields.push(("Working folder".to_string(), cwd.to_string()));
     }

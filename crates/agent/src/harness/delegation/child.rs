@@ -80,7 +80,8 @@ pub fn child_request(
         // A helper stays at its parent's hop depth: a helper must not
         // restart the coworker chain cap at zero.
         handoff_depth: p.handoff_depth,
-        model_override: p.model_override.clone(),
+        // The speed the helper was given, else its parent's model.
+        model_override: spec.speed.clone().unwrap_or_else(|| p.model_override.clone()),
         model_preference: p.model_preference.clone(),
         personality_snippet: None,
         tool_scope: p.tool_scope.clone(),
@@ -147,6 +148,7 @@ pub(crate) mod tests {
             background: true,
             isolation: None,
             skills: Vec::new(),
+            speed: None,
         }
     }
 
@@ -220,5 +222,24 @@ pub(crate) mod tests {
         };
         let req = child_request(&parent, "h-1", &spec(HelperKind::General), None, TurnInput::None);
         assert_eq!(req.seat.mode, Some(Mode::Plan));
+    }
+
+    /// A helper works at its parent's speed unless it was given its own
+    /// (fix plan E8): the speed is the model its every step runs on.
+    #[test]
+    fn a_helper_works_at_its_own_speed_when_given_one() {
+        let seat = SeatRequest { model_override: "janus/nebo-1".into(), ..parent_seat() };
+        let parent = Parent {
+            session_key: "agent:bookkeeper:web",
+            seat: &seat,
+            grant: None,
+            run_taint: &[],
+            cancel: CancellationToken::new(),
+        };
+        let inherits = child_request(&parent, "h-1", &spec(HelperKind::Explore), None, TurnInput::None);
+        assert_eq!(inherits.seat.model_override, "janus/nebo-1", "the parent's speed");
+        let fast = HelperSpec { speed: Some("janus/nebo-1-fast".into()), ..spec(HelperKind::Explore) };
+        let own = child_request(&parent, "h-2", &fast, None, TurnInput::None);
+        assert_eq!(own.seat.model_override, "janus/nebo-1-fast", "its own speed");
     }
 }

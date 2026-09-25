@@ -50,20 +50,37 @@ impl HelperDoor {
         out
     }
 
-    async fn spec(&self, req: &SpawnRequest, turn: &TurnRequest, background: bool) -> HelperSpec {
-        HelperSpec {
+    async fn spec(&self, req: &SpawnRequest, turn: &TurnRequest, background: bool) -> Result<HelperSpec, String> {
+        Ok(HelperSpec {
             description: req.description.clone(),
             prompt: req.prompt.clone(),
             kind: HelperKind::parse(&req.agent_type).unwrap_or(HelperKind::General),
             background,
             isolation: (req.isolate == "worktree").then_some(Isolation::Worktree),
             skills: self.skills(&req.skills, &turn.seat.agent_id).await,
+            speed: self.speed(&req.speed)?,
+        })
+    }
+
+    /// The model a `speed` names, resolved the way every turn resolves the
+    /// model it was given; `None` when the call named none. A name this bot
+    /// doesn't know starts nothing.
+    fn speed(&self, named: &str) -> Result<Option<String>, String> {
+        if named.is_empty() {
+            return Ok(None);
+        }
+        match self.harness.selector.resolve_fuzzy(named) {
+            Some(model) => Ok(Some(model)),
+            None => Err(format!(
+                "'{named}' isn't a speed on this Nebo. Leave speed out to run the helper at your own, or name one of:\n{}",
+                self.harness.selector.get_aliases_text()
+            )),
         }
     }
 
     async fn spawn_one(&self, req: SpawnRequest, background: bool) -> Result<SpawnResult, String> {
         let turn = parent_turn(&req);
-        let spec = self.spec(&req, &turn, background).await;
+        let spec = self.spec(&req, &turn, background).await?;
         let launched = self.helpers.launch(&turn, req.seat.grant.as_deref(), &req.seat.taint, spec).await?;
         Ok(match launched {
             Launch::Background { task_id } => SpawnResult {
@@ -330,6 +347,7 @@ mod tests {
             background: true,
             isolation: None,
             skills: Vec::new(),
+            speed: None,
         };
         child_request(&parent, "h1", &spec, None, TurnInput::None)
     }
