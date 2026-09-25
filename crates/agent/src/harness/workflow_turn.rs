@@ -1,8 +1,8 @@
 //! Workflow activities on the one loop: the `workflow::ActivityLoop`
 //! implementation. Every activity turn is a `TurnMode::Workflow` turn of
 //! `drive_turn`: the activity's instructions (a row in its conversation;
-//! the system prompt is every turn's one prompt), its scoped tools, the
-//! approval park, the `exit` primitive and its contract (`min_iterations`
+//! the system prompt is every turn's one prompt), its tools listed for it
+//! (declared like every turn's), the approval park, the `exit` primitive and its contract (`min_iterations`
 //! and `requires_tools`, checked at turn end by `WorkflowContractCheck`).
 //!
 //! History model: each turn gets a scratch session seeded from the engine's
@@ -38,8 +38,10 @@ pub struct WorkflowMode {
     pub objective: String,
     /// The work order this turn was given (the seed's final user message).
     pub instruction: String,
-    /// Only these tools' schemas ship to the model (context scoping, not
-    /// security): dispatch still resolves through the full registry.
+    /// The activity's tools: the deferred ones among them, `exit` included,
+    /// are its deferred listing (context scoping, not security). The tools
+    /// it declares are every run's; dispatch resolves through the full
+    /// registry.
     pub advertised_tools: HashSet<String>,
     /// The run's inputs carry untrusted content.
     pub tainted: bool,

@@ -333,7 +333,9 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::ToolsAvailable(d) => {
             let text = non_empty(&render_listing(d))?;
             let added = d.added.iter().map(|n| (n.clone(), String::new())).collect();
-            return Some(listing_row("tools_available", text, &added, &d.removed));
+            let mut row = listing_row("tools_available", text, &added, &d.removed);
+            row.data.extend(d.replaced_data());
+            return Some(row);
         }
         TurnEvent::SkillListing(d) => return d.attachment("skill_listing", &SKILL_WORDS),
         TurnEvent::HelperTypes(d) => return d.attachment("helper_types", &HELPER_WORDS),
@@ -1082,7 +1084,7 @@ mod tests {
         // conversation was told, and write a row only on a change.
         let step = |history: &mut Vec<ChatMessage>, now: &BTreeSet<String>| -> Option<Attachment> {
             let told: BTreeSet<String> = announced("tools_available", history).into_keys().collect();
-            let a = attachment_for(&TurnEvent::ToolsAvailable(ToolsDelta::between(&told, now)?))?;
+            let a = attachment_for(&TurnEvent::ToolsAvailable(ToolsDelta::between(&told, now, Default::default())?))?;
             history.push(stored(&a));
             Some(a)
         };

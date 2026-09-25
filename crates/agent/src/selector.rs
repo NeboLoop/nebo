@@ -3,31 +3,8 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use config::ModelsConfig;
-use db::models::ChatMessage;
 
 use crate::fuzzy::FuzzyMatcher;
-
-/// Task types for model routing.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TaskType {
-    Vision,
-    Audio,
-    Reasoning,
-    Code,
-    General,
-}
-
-impl TaskType {
-    pub fn as_str(&self) -> &str {
-        match self {
-            TaskType::Vision => "vision",
-            TaskType::Audio => "audio",
-            TaskType::Reasoning => "reasoning",
-            TaskType::Code => "code",
-            TaskType::General => "general",
-        }
-    }
-}
 
 /// Per-model failure tracking with exponential backoff.
 struct CooldownState {
@@ -224,17 +201,6 @@ impl ModelSelector {
         *lock = Some(new_fuzzy);
     }
 
-    /// Select the best model for the given messages.
-    pub fn select(&self, messages: &[ChatMessage]) -> String {
-        self.select_with_exclusions(messages, &[])
-    }
-
-    /// Select model, excluding specified model IDs.
-    pub fn select_with_exclusions(&self, messages: &[ChatMessage], exclude: &[String]) -> String {
-        let task = self.classify_task(messages);
-        self.select_for_task(&task, exclude)
-    }
-
     /// Mark a model as failed with exponential backoff cooldown.
     pub fn mark_failed(&self, model_id: &str) {
         let mut cooldowns = self.cooldowns.write().unwrap();
@@ -291,24 +257,6 @@ impl ModelSelector {
         }
     }
 
-    /// Check if a model supports extended thinking/reasoning.
-    pub fn supports_thinking(&self, model_id: &str) -> bool {
-        if let Some(info) = self.get_model_info(model_id) {
-            let thinking_caps = ["thinking", "reasoning", "extended_thinking"];
-            if info
-                .capabilities
-                .iter()
-                .any(|c| thinking_caps.contains(&c.as_str()))
-            {
-                return true;
-            }
-        }
-
-        // Name-based fallback
-        let lower = model_id.to_lowercase();
-        lower.contains("opus") || lower.contains("o1") || lower.contains("o3")
-    }
-
     /// Get the cheapest available model.
     pub fn get_cheapest_model(&self) -> String {
         let mut cheapest: Option<(String, f64)> = None;
@@ -355,91 +303,12 @@ impl ModelSelector {
         self.config.default_model.clone()
     }
 
-    /// Classify task type from messages.
-    pub fn classify_task(&self, messages: &[ChatMessage]) -> TaskType {
-        // Get last user message for keyword analysis
-        let last_user = messages.iter().rev().find(|m| m.role == "user");
-
-        let content = match last_user {
-            Some(m) => m.content.to_lowercase(),
-            None => return TaskType::General,
-        };
-
-        // Check for vision content (image data in the message)
-        if content.contains("data:image/")
-            || content.contains("\"type\":\"image\"")
-            || content.contains("\"type\": \"image\"")
-        {
-            return TaskType::Vision;
-        }
-
-        // Check for audio content
-        if content.contains("data:audio/") || content.contains("\"type\":\"audio\"") {
-            return TaskType::Audio;
-        }
-
-        // Reasoning keywords
-        let reasoning = [
-            "think through",
-            "analyze",
-            "prove",
-            "step by step",
-            "mathematical proof",
-            "logical reasoning",
-            "derive",
-            "theorem",
-            "hypothesis",
-            "contradict",
-            "paradox",
-            "evaluate the",
-            "compare and contrast",
-            "pros and cons",
-            "trade-offs",
-            "implications",
-        ];
-        if reasoning.iter().any(|kw| content.contains(kw)) {
-            return TaskType::Reasoning;
-        }
-
-        // Code keywords
-        let code = [
-            "code",
-            "function",
-            "implement",
-            "refactor",
-            "debug",
-            "python",
-            "javascript",
-            "typescript",
-            "react",
-            "rust",
-            "golang",
-            "java",
-            "swift",
-            "kotlin",
-            "sql",
-            "api",
-            "endpoint",
-            "database",
-            "algorithm",
-            "compile",
-            "syntax",
-            "variable",
-            "class",
-        ];
-        if code.iter().any(|kw| content.contains(kw)) {
-            return TaskType::Code;
-        }
-
-        TaskType::General
-    }
-
-    fn select_for_task(&self, task: &TaskType, exclude: &[String]) -> String {
+    /// The model a turn runs on when no one chose one: the general route,
+    /// its fallbacks, then the default, skipping models in cooldown. Chosen
+    /// once per turn; nothing reads the conversation to pick a model.
+    pub fn select(&self) -> String {
         let loaded = self.loaded_providers.read().unwrap();
         let is_usable = |model_id: &str| -> bool {
-            if exclude.contains(&model_id.to_string()) {
-                return false;
-            }
             // Check if the model's provider is actually loaded
             if !loaded.is_empty() {
                 let (provider_id, _) = parse_model_id(model_id);
@@ -455,28 +324,16 @@ impl ModelSelector {
             true
         };
 
-        // Try task-specific routing
-        let task_key = task.as_str();
-        if let Some(primary) = self.config.task_routing.get(task_key) {
-            if !primary.is_empty() && is_usable(primary) {
-                return primary.clone();
-            }
+        if let Some(primary) = self.config.task_routing.get("general")
+            && !primary.is_empty()
+            && is_usable(primary)
+        {
+            return primary.clone();
         }
-
-        // Try fallbacks for this task type
-        if let Some(fallbacks) = self.config.task_fallbacks.get(task_key) {
+        if let Some(fallbacks) = self.config.task_fallbacks.get("general") {
             for fb in fallbacks {
                 if !fb.is_empty() && is_usable(fb) {
                     return fb.clone();
-                }
-            }
-        }
-
-        // Fall back to general routing
-        if task_key != "general" {
-            if let Some(general) = self.config.task_routing.get("general") {
-                if !general.is_empty() && is_usable(general) {
-                    return general.clone();
                 }
             }
         }
@@ -548,26 +405,6 @@ mod tests {
         let (p, m) = parse_model_id("gpt-4o");
         assert_eq!(p, "");
         assert_eq!(m, "gpt-4o");
-    }
-
-    #[test]
-    fn test_task_classification() {
-        let selector = ModelSelector::new(ModelRoutingConfig::default());
-
-        let msg = ChatMessage {
-            id: "1".into(),
-            chat_id: "c".into(),
-            role: "user".into(),
-            content: "Can you implement a function that sorts an array?".into(),
-            metadata: None,
-            created_at: 0,
-            day_marker: None,
-            tool_calls: None,
-            tool_results: None,
-            token_estimate: None,
-            html: None,
-        };
-        assert_eq!(selector.classify_task(&[msg]).as_str(), "code");
     }
 
     #[test]
@@ -695,21 +532,7 @@ mod tests {
         // Only load anthropic — openai models should be filtered out
         selector.set_loaded_providers(vec!["anthropic".into()]);
 
-        let msg = ChatMessage {
-            id: "1".into(),
-            chat_id: "c".into(),
-            role: "user".into(),
-            content: "hello".into(),
-            metadata: None,
-            created_at: 0,
-            day_marker: None,
-            tool_calls: None,
-            tool_results: None,
-            token_estimate: None,
-            html: None,
-        };
-
-        let selected = selector.select(&[msg]);
+        let selected = selector.select();
         // Should pick an anthropic model since openai is not loaded
         assert!(
             selected.contains("anthropic"),
@@ -771,21 +594,7 @@ mod tests {
         // Only janus + CLI loaded — no direct anthropic provider
         selector.set_loaded_providers(vec!["claude-code".into(), "janus".into()]);
 
-        let msg = ChatMessage {
-            id: "1".into(),
-            chat_id: "c".into(),
-            role: "user".into(),
-            content: "hello".into(),
-            metadata: None,
-            created_at: 0,
-            day_marker: None,
-            tool_calls: None,
-            tool_results: None,
-            token_estimate: None,
-            html: None,
-        };
-
-        let selected = selector.select(&[msg]);
+        let selected = selector.select();
         // Should return empty (defer to runner index 0 = CLI), NOT "janus/nebo-1"
         assert!(
             selected.is_empty(),

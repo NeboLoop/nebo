@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use ai::{ChatRequest, Message, StreamEventType, ToolChoice};
+use ai::{ChatRequest, Message, StreamEventType};
 use db::models::ChatMessage;
 use tracing::{info, warn};
 
@@ -191,8 +191,6 @@ pub const RESUME_LINE: &str = "Carry on from where the work stopped without aski
 Resume directly: don't acknowledge this summary, don't recap it and don't open by saying you are continuing. Pick up \
 the last task as if there had been no break.";
 
-/// Output room for the summary.
-const CHECKPOINT_MAX_TOKENS: i32 = 20_000;
 /// Times the oldest fifth is dropped before the checkpoint gives up.
 const MAX_HEAD_CUTS: usize = 3;
 
@@ -278,7 +276,12 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
         "reason": why.as_str(),
         "headCut": head_cut,
     });
-    metadata[tool_surface::LOADED_TOOLS_KEY] = serde_json::json!(tool_surface::loaded_names(&stored));
+    metadata[tool_surface::LOADED_TOOLS_KEY] = serde_json::json!(
+        tool_surface::loaded(&stored)
+            .iter()
+            .map(|t| tools::find_tools::function_entry(&t.declared))
+            .collect::<Vec<_>>()
+    );
     let text = boundary_text(&summary, head_cut, why);
     let boundary = cx
         .sessions
@@ -361,10 +364,15 @@ async fn summarize(cx: &CheckpointContext<'_>) -> Result<(String, bool), String>
             content: CHECKPOINT_INSTRUCTION.into(),
             ..Default::default()
         });
+        // Everything but the messages is the step's request as it was sent:
+        // the tools, the tool choice and the output room are part of what
+        // the provider caches on, so the summary reads the step's cached
+        // prefix (Claude Code 2.1.280 sends its compact fork with the main
+        // thread's params and no output cap of its own, and refuses a tool
+        // call; `src/services/compact/compact.ts:1178-1195`). A tool call
+        // instead of a summary fails the checkpoint (`call`).
         let req = ChatRequest {
             messages,
-            tool_choice: ToolChoice::None,
-            max_tokens: CHECKPOINT_MAX_TOKENS,
             trace: ai::RequestTrace {
                 purpose: "checkpoint",
                 ..cx.fork_of.trace.clone()
@@ -464,7 +472,6 @@ mod tests {
     use std::sync::Mutex;
 
     use db::Store;
-    use std::collections::BTreeSet;
 
     use super::*;
     use crate::harness::compact::restore::RunningWork;
@@ -575,6 +582,7 @@ mod tests {
                     input_schema: serde_json::json!({ "type": "object" }),
                 }],
                 model: "model-a".into(),
+                max_tokens: 32_000,
                 ..ChatRequest::new(ai::RequestTrace::new("agent_turn"))
             };
             let cx = CheckpointContext {
@@ -648,8 +656,11 @@ mod tests {
             .map(|m| m.content.as_str())
             .collect();
         assert_eq!(typed.len(), 3, "the owner's two messages and the instruction, nothing else: {typed:?}");
-        assert_eq!(req.tool_choice, ToolChoice::None);
-        assert_eq!((req.system.as_str(), req.model.as_str(), req.tools.len()), ("SYSTEM", "model-a", 1), "the step's request, forked");
+        assert_eq!(
+            (req.system.as_str(), req.model.as_str(), req.tools.len(), &req.tool_choice, req.max_tokens),
+            ("SYSTEM", "model-a", 1, &ai::ToolChoice::Auto, 32_000),
+            "the step's request, forked: its tools, tool choice and output room, which the cache keys on"
+        );
         assert_eq!(req.trace.purpose, "checkpoint");
 
         let after = s.conversation();
@@ -884,7 +895,7 @@ mod tests {
 
     /// The deferred tools loaded so far are recorded on the boundary and
     /// still count as loaded after the next checkpoint
-    /// (`tool_surface::loaded_names`). The summary is the model's own: no
+    /// (`tool_surface::loaded`), as declared. The summary is the model's own: no
     /// list is appended outside its sections.
     #[tokio::test]
     async fn loaded_tools_carry_over_and_nothing_is_appended() {
@@ -896,12 +907,13 @@ mod tests {
         let done = s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
         assert_eq!(done.summary, "summary");
         let boundary = s.conversation().remove(0);
-        assert_eq!(metadata(&boundary).unwrap()[tool_surface::LOADED_TOOLS_KEY], serde_json::json!(["mail"]));
+        let mail = serde_json::json!({"description": "", "name": "mail", "parameters": {}});
+        assert_eq!(metadata(&boundary).unwrap()[tool_surface::LOADED_TOOLS_KEY], serde_json::json!([mail]));
 
         s.say("user", "Try again.");
         s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
-        let loaded = tool_surface::loaded_names(&s.conversation());
-        assert_eq!(loaded, BTreeSet::from(["mail".to_string()]), "carried across two boundaries");
+        let loaded: Vec<String> = tool_surface::loaded(&s.conversation()).into_iter().map(|t| t.declared.name).collect();
+        assert_eq!(loaded, ["mail"], "carried across two boundaries");
     }
 
     /// A summary call that asks for a tool saves nothing.

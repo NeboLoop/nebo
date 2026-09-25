@@ -26,6 +26,151 @@ impl AnthropicProvider {
         }
     }
 
+    /// The request as the API receives it, cache markers placed.
+    fn api_request(&self, req: &ChatRequest) -> AnthropicApiRequest {
+        let (mut messages, system_prompt) = self.build_messages(req);
+
+        let model = if req.model.is_empty() {
+            self.model.clone()
+        } else {
+            req.model.clone()
+        };
+
+        let max_tokens = if req.max_tokens > 0 {
+            req.max_tokens
+        } else if req.enable_thinking {
+            16384
+        } else {
+            8192
+        };
+
+        // Build system blocks with caching.
+        //
+        // When `cache_breakpoints` are provided (byte offsets into `system_prompt`),
+        // we split the system prompt at those offsets and mark each prefix block
+        // with `cache_control: { type: "ephemeral" }` so that the stable prefix
+        // can be served from Anthropic's prompt cache at ~90% discount.
+        //
+        // Without breakpoints the whole prompt is sent as a single cached block.
+        let system_blocks = if !system_prompt.is_empty() {
+            if !req.cache_breakpoints.is_empty() {
+                let mut blocks = Vec::new();
+                let mut cursor = 0usize;
+                let prompt_len = system_prompt.len();
+
+                for &bp in &req.cache_breakpoints {
+                    // Clamp to prompt length and skip invalid/duplicate offsets
+                    let bp = bp.min(prompt_len);
+                    if bp <= cursor {
+                        continue;
+                    }
+                    blocks.push(SystemBlock {
+                        text: system_prompt[cursor..bp].to_string(),
+                        block_type: "text".to_string(),
+                        cache_control: Some(CacheControl {
+                            cache_type: "ephemeral".to_string(),
+                        }),
+                    });
+                    cursor = bp;
+                }
+
+                // Remaining tail (dynamic portion) — no cache_control
+                if cursor < prompt_len {
+                    blocks.push(SystemBlock {
+                        text: system_prompt[cursor..].to_string(),
+                        block_type: "text".to_string(),
+                        cache_control: None,
+                    });
+                }
+
+                // Guard: if somehow we produced nothing, fall back to single block
+                if blocks.is_empty() {
+                    Some(vec![SystemBlock {
+                        text: system_prompt,
+                        block_type: "text".to_string(),
+                        cache_control: Some(CacheControl {
+                            cache_type: "ephemeral".to_string(),
+                        }),
+                    }])
+                } else {
+                    Some(blocks)
+                }
+            } else {
+                Some(vec![SystemBlock {
+                    text: system_prompt,
+                    block_type: "text".to_string(),
+                    cache_control: Some(CacheControl {
+                        cache_type: "ephemeral".to_string(),
+                    }),
+                }])
+            }
+        } else {
+            None
+        };
+
+        // Build tools with cache_control on the last tool for definition caching
+        let tools: Option<Vec<AnthropicTool>> = if req.tools.is_empty() {
+            None
+        } else {
+            let tool_list: Vec<AnthropicTool> = req
+                .tools
+                .iter()
+                .map(|t| {
+                    let schema = t.input_schema.as_object().cloned().unwrap_or_default();
+                    AnthropicTool {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        input_schema: AnthropicInputSchema {
+                            schema_type: "object".to_string(),
+                            properties: schema.get("properties").cloned(),
+                            required: schema.get("required").and_then(|v| {
+                                v.as_array().map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(String::from))
+                                        .collect()
+                                })
+                            }),
+                        },
+                    }
+                })
+                .collect();
+            Some(tool_list)
+        };
+
+        // Exactly one message marker, on the last message: a plain-text
+        // message becomes a text block to carry it (Claude Code 2.1.280,
+        // `addCacheBreakpoints` / `userMessageToMessageParam` in
+        // `src/services/api/claude.ts:588-620,3063-3091`). The tools carry
+        // none: they come before the system prompt, whose marker covers them.
+        mark_last_message(&mut messages);
+
+        // Map the cross-provider ToolChoice to Anthropic's shape (Auto → omitted).
+        let tool_choice = match &req.tool_choice {
+            ToolChoice::Auto => None,
+            ToolChoice::Any => Some(serde_json::json!({"type": "any"})),
+            ToolChoice::Tool(name) => Some(serde_json::json!({"type": "tool", "name": name})),
+            ToolChoice::None => Some(serde_json::json!({"type": "none"})),
+        };
+
+        AnthropicApiRequest {
+            model,
+            max_tokens,
+            messages,
+            system: system_blocks,
+            tools,
+            tool_choice,
+            stream: true,
+            thinking: if req.enable_thinking {
+                Some(ThinkingConfig {
+                    thinking_type: "enabled".to_string(),
+                    budget_tokens: 10000,
+                })
+            } else {
+                None
+            },
+        }
+    }
+
     /// Build Anthropic API messages from our generic format.
     fn build_messages(&self, req: &ChatRequest) -> (Vec<AnthropicMessage>, String) {
         let mut system_prompt = req.system.clone();
@@ -389,180 +534,8 @@ impl Provider for AnthropicProvider {
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
-        let (mut messages, system_prompt) = self.build_messages(req);
-
-        let model = if req.model.is_empty() {
-            &self.model
-        } else {
-            &req.model
-        };
-
-        let max_tokens = if req.max_tokens > 0 {
-            req.max_tokens
-        } else if req.enable_thinking {
-            16384
-        } else {
-            8192
-        };
-
-        // Build system blocks with caching.
-        //
-        // When `cache_breakpoints` are provided (byte offsets into `system_prompt`),
-        // we split the system prompt at those offsets and mark each prefix block
-        // with `cache_control: { type: "ephemeral" }` so that the stable prefix
-        // can be served from Anthropic's prompt cache at ~90% discount.
-        //
-        // Without breakpoints the whole prompt is sent as a single cached block.
-        let system_blocks = if !system_prompt.is_empty() {
-            if !req.cache_breakpoints.is_empty() {
-                let mut blocks = Vec::new();
-                let mut cursor = 0usize;
-                let prompt_len = system_prompt.len();
-
-                for &bp in &req.cache_breakpoints {
-                    // Clamp to prompt length and skip invalid/duplicate offsets
-                    let bp = bp.min(prompt_len);
-                    if bp <= cursor {
-                        continue;
-                    }
-                    blocks.push(SystemBlock {
-                        text: system_prompt[cursor..bp].to_string(),
-                        block_type: "text".to_string(),
-                        cache_control: Some(CacheControl {
-                            cache_type: "ephemeral".to_string(),
-                        }),
-                    });
-                    cursor = bp;
-                }
-
-                // Remaining tail (dynamic portion) — no cache_control
-                if cursor < prompt_len {
-                    blocks.push(SystemBlock {
-                        text: system_prompt[cursor..].to_string(),
-                        block_type: "text".to_string(),
-                        cache_control: None,
-                    });
-                }
-
-                // Guard: if somehow we produced nothing, fall back to single block
-                if blocks.is_empty() {
-                    Some(vec![SystemBlock {
-                        text: system_prompt,
-                        block_type: "text".to_string(),
-                        cache_control: Some(CacheControl {
-                            cache_type: "ephemeral".to_string(),
-                        }),
-                    }])
-                } else {
-                    Some(blocks)
-                }
-            } else {
-                Some(vec![SystemBlock {
-                    text: system_prompt,
-                    block_type: "text".to_string(),
-                    cache_control: Some(CacheControl {
-                        cache_type: "ephemeral".to_string(),
-                    }),
-                }])
-            }
-        } else {
-            None
-        };
-
-        // Build tools with cache_control on the last tool for definition caching
-        let tools: Option<Vec<AnthropicTool>> = if req.tools.is_empty() {
-            None
-        } else {
-            let mut tool_list: Vec<AnthropicTool> = req
-                .tools
-                .iter()
-                .map(|t| {
-                    let schema = t.input_schema.as_object().cloned().unwrap_or_default();
-                    AnthropicTool {
-                        name: t.name.clone(),
-                        description: t.description.clone(),
-                        input_schema: AnthropicInputSchema {
-                            schema_type: "object".to_string(),
-                            properties: schema.get("properties").cloned(),
-                            required: schema.get("required").and_then(|v| {
-                                v.as_array().map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|v| v.as_str().map(String::from))
-                                        .collect()
-                                })
-                            }),
-                        },
-                        cache_control: None,
-                    }
-                })
-                .collect();
-            // Mark the last tool with cache_control for tool definition caching
-            if let Some(last) = tool_list.last_mut() {
-                last.cache_control = Some(CacheControl {
-                    cache_type: "ephemeral".to_string(),
-                });
-            }
-            Some(tool_list)
-        };
-
-        // Anthropic allows max 4 blocks with cache_control. Budget them:
-        // system blocks + last tool + remaining → last N messages.
-        let system_cache_count = system_blocks.as_ref().map_or(0, |blocks| {
-            blocks.iter().filter(|b| b.cache_control.is_some()).count()
-        });
-        let tool_cache_count = if tools.as_ref().map_or(false, |t| {
-            t.last().map_or(false, |last| last.cache_control.is_some())
-        }) {
-            1
-        } else {
-            0
-        };
-        let message_cache_budget = 4usize.saturating_sub(system_cache_count + tool_cache_count);
-
-        if message_cache_budget > 0 {
-            let len = messages.len();
-            for i in (0..len).rev().take(message_cache_budget) {
-                if let AnthropicContent::Blocks(ref mut blocks) = messages[i].content {
-                    if let Some(last_block) = blocks.last_mut() {
-                        let cc = Some(CacheControl {
-                            cache_type: "ephemeral".to_string(),
-                        });
-                        match last_block {
-                            ContentBlock::Text { cache_control, .. } => *cache_control = cc,
-                            ContentBlock::Image { cache_control, .. } => *cache_control = cc,
-                            ContentBlock::ToolUse { cache_control, .. } => *cache_control = cc,
-                            ContentBlock::ToolResult { cache_control, .. } => *cache_control = cc,
-                        }
-                    }
-                }
-            }
-        }
-
-        // Map the cross-provider ToolChoice to Anthropic's shape (Auto → omitted).
-        let tool_choice = match &req.tool_choice {
-            ToolChoice::Auto => None,
-            ToolChoice::Any => Some(serde_json::json!({"type": "any"})),
-            ToolChoice::Tool(name) => Some(serde_json::json!({"type": "tool", "name": name})),
-            ToolChoice::None => Some(serde_json::json!({"type": "none"})),
-        };
-
-        let api_req = AnthropicApiRequest {
-            model: model.to_string(),
-            max_tokens,
-            messages,
-            system: system_blocks,
-            tools,
-            tool_choice,
-            stream: true,
-            thinking: if req.enable_thinking {
-                Some(ThinkingConfig {
-                    thinking_type: "enabled".to_string(),
-                    budget_tokens: 10000,
-                })
-            } else {
-                None
-            },
-        };
+        let api_req = self.api_request(req);
+        let model = api_req.model.as_str();
 
         info!(
             model = model,
@@ -759,6 +732,30 @@ enum ToolResultContent {
     Blocks(Vec<ToolResultContentBlock>),
 }
 
+/// Put the one message cache marker on the last block of the last message.
+fn mark_last_message(messages: &mut [AnthropicMessage]) {
+    let Some(last) = messages.last_mut() else {
+        return;
+    };
+    if let AnthropicContent::Text(text) = &mut last.content {
+        let text = std::mem::take(text);
+        last.content = AnthropicContent::Blocks(vec![ContentBlock::Text { text, cache_control: None }]);
+    }
+    let AnthropicContent::Blocks(blocks) = &mut last.content else {
+        return;
+    };
+    let cc = Some(CacheControl {
+        cache_type: "ephemeral".to_string(),
+    });
+    match blocks.last_mut() {
+        Some(ContentBlock::Text { cache_control, .. })
+        | Some(ContentBlock::Image { cache_control, .. })
+        | Some(ContentBlock::ToolUse { cache_control, .. })
+        | Some(ContentBlock::ToolResult { cache_control, .. }) => *cache_control = cc,
+        None => {}
+    }
+}
+
 /// Content block types allowed inside a tool_result content array.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
@@ -774,8 +771,6 @@ struct AnthropicTool {
     name: String,
     description: String,
     input_schema: AnthropicInputSchema,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Serialize)]
@@ -863,3 +858,73 @@ struct AnthropicError {
     message: String,
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(messages: Vec<Message>) -> ChatRequest {
+        ChatRequest {
+            messages,
+            system: "SYSTEM".into(),
+            cache_breakpoints: vec![6],
+            tools: vec![ToolDefinition {
+                name: "read_file".into(),
+                description: "Reads a file.".into(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            }],
+            ..ChatRequest::new(RequestTrace::new("agent_turn"))
+        }
+    }
+
+    fn user(text: &str) -> Message {
+        Message { role: "user".into(), content: text.into(), ..Default::default() }
+    }
+
+    fn sent(req: &ChatRequest) -> serde_json::Value {
+        let provider = AnthropicProvider::new("key".into(), "claude".into());
+        serde_json::to_value(provider.api_request(req)).unwrap()
+    }
+
+    fn markers(v: &serde_json::Value) -> usize {
+        match v {
+            serde_json::Value::Object(o) => o.iter().map(|(k, v)| usize::from(k == "cache_control") + markers(v)).sum(),
+            serde_json::Value::Array(a) => a.iter().map(markers).sum(),
+            _ => 0,
+        }
+    }
+
+    /// Claude Code's placement: the system prompt's marker, and exactly one
+    /// on the last message, which a plain-text message carries as a text
+    /// block. Before: none when the last row was plain text, and one on the
+    /// last tool.
+    #[test]
+    fn one_marker_on_the_last_message_even_when_it_is_plain_text() {
+        let body = sent(&request(vec![user("Hi"), Message { role: "assistant".into(), content: "Hello.".into(), ..Default::default() }, user("<system-reminder>\nIt is noon.\n</system-reminder>")]));
+        assert_eq!(markers(&body), 2, "the system prompt and the last message: {body}");
+        assert!(body["system"][0]["cache_control"].is_object());
+        assert!(body["tools"][0].get("cache_control").is_none(), "the tools carry none");
+        let last = body["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["content"][0]["text"], "<system-reminder>\nIt is noon.\n</system-reminder>");
+        assert!(last["content"][0]["cache_control"].is_object(), "{last}");
+        assert!(body["messages"][0]["content"].is_string(), "earlier messages stay as they are");
+    }
+
+    #[test]
+    fn a_tool_result_last_carries_the_marker_on_its_block() {
+        let call = Message {
+            role: "assistant".into(),
+            tool_calls: Some(serde_json::json!([{"id": "t1", "name": "read_file", "input": {}}])),
+            ..Default::default()
+        };
+        let result = Message {
+            role: "tool".into(),
+            tool_results: Some(serde_json::json!([{"tool_call_id": "t1", "content": "text"}])),
+            ..Default::default()
+        };
+        let body = sent(&request(vec![user("Read it"), call, result]));
+        assert_eq!(markers(&body), 2, "{body}");
+        let last = body["messages"].as_array().unwrap().last().unwrap();
+        assert!(last["content"][0]["cache_control"].is_object(), "{last}");
+    }
+}

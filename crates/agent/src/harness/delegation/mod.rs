@@ -61,12 +61,14 @@ pub struct HelperSpec {
     /// Skills the parent loaded, `(name, content)`: their instructions go
     /// with the work, written into the helper's thread before its first step.
     pub skills: Vec<(String, String)>,
+    /// The speed the helper works at (a model id); `None` = its parent's.
+    pub speed: Option<String>,
 }
 
 impl HelperSpec {
     /// A `delegate` call's input: `description` and `prompt` required,
     /// `helper_type` one of the listed types (default general), `background`
-    /// default true.
+    /// default true, `speed` the parent's unless named.
     pub fn from_input(input: &serde_json::Value) -> Result<Self, String> {
         let text = |key: &str| {
             input
@@ -85,7 +87,7 @@ impl HelperSpec {
             })?,
         };
         let background = input.get("background").and_then(|v| v.as_bool()).unwrap_or(true);
-        Ok(Self { description, prompt, kind, background, isolation: None, skills: Vec::new() })
+        Ok(Self { description, prompt, kind, background, isolation: None, skills: Vec::new(), speed: text("speed") })
     }
 }
 
@@ -184,21 +186,37 @@ pub fn helper_key(parent_key: &str, task_id: &str) -> String {
     format!("subagent:{parent_key}:{task_id}")
 }
 
-/// Whether the helper tool `tool_name` is on the surface of a turn in
-/// `mode`: never for Explore or Plan helpers, never at the depth cap.
+/// Whether a turn in `mode` is offered the tool `tool_name`: listed, and
+/// for the helper tool, able to start one. The helper tool never for Explore
+/// or Plan helpers or at the depth cap; the workflow `exit` primitive only
+/// to a workflow activity. Every run declares the same tools: what a run is
+/// not offered stays declared and [`permits`] refuses the call.
 pub fn on_surface(mode: &TurnMode, tool_name: &str) -> bool {
     match mode {
         TurnMode::Helper { kind, depth, .. } if tool_name == HELPER_TOOL => {
             !kind.read_only() && *depth < MAX_DEPTH
         }
-        _ => true,
+        TurnMode::Workflow(_) => true,
+        _ => tool_name != EXIT_TOOL,
     }
 }
 
+/// The workflow primitive that ends an activity early.
+const EXIT_TOOL: &str = "exit";
+
 /// Whether a turn in `mode` may make the call `target`. A helper's kind is
-/// an enforced tool set, and a helper at the depth cap cannot delegate,
-/// whatever tool shape the call arrives in.
+/// an enforced tool set, a helper at the depth cap cannot delegate, and only
+/// a workflow activity can exit one, whatever tool shape the call arrives
+/// in. The tools every run declares are the same; this is where a run's own
+/// narrower set holds.
 pub fn permits(mode: &TurnMode, target: &types::permissions::Target) -> Result<(), String> {
+    if target.tool == EXIT_TOOL && !matches!(mode, TurnMode::Workflow(_)) {
+        return Err(
+            "exit ends a workflow activity, and this run isn't one. Finish the work, or say plainly why you \
+             are stopping."
+                .to_string(),
+        );
+    }
     let TurnMode::Helper { kind, depth, .. } = mode else {
         return Ok(());
     };
@@ -255,6 +273,8 @@ struct Helper {
     session_key: String,
     description: String,
     kind: HelperKind,
+    /// The speed it was started at; `None` = its parent's.
+    speed: Option<String>,
     /// The seat the helper was built from (its parent's), kept so a
     /// notification turn is built by the same constructor.
     parent_seat: SeatRequest,
@@ -465,6 +485,7 @@ impl Helpers {
             "description": spec.description,
             "user_id": parent_seat.user_id,
             "helper_kind": spec.kind.as_str(),
+            "speed": spec.speed,
         })
         .to_string();
         let created = self
@@ -501,6 +522,7 @@ impl Helpers {
                     session_key,
                     description: spec.description.clone(),
                     kind: spec.kind,
+                    speed: spec.speed.clone(),
                     parent_seat: parent_seat.clone(),
                     parent_grant: grant.cloned(),
                     running: true,
@@ -554,6 +576,7 @@ impl Helpers {
                     session_key,
                     description: description.to_string(),
                     kind: HelperKind::General,
+                    speed: None,
                     parent_seat: turn.seat.clone(),
                     parent_grant: None,
                     running: true,
@@ -707,6 +730,7 @@ impl Helpers {
                 session_key: row.session_key.clone(),
                 description: spec.description.clone(),
                 kind: spec.kind,
+                speed: spec.speed.clone(),
                 parent_seat: turn.seat.clone(),
                 parent_grant: grant.cloned(),
                 running: false,
@@ -964,6 +988,7 @@ impl Helpers {
                     background: true,
                     isolation: None,
                     skills: Vec::new(),
+                    speed: h.speed.clone(),
                 };
                 let parent = Parent {
                     session_key: &h.parent_key,
@@ -1122,6 +1147,7 @@ impl State {
             background: true,
             isolation: None,
             skills: Vec::new(),
+            speed: p.speed.clone(),
         };
         let parent = Parent {
             session_key: &p.parent_key,
@@ -1178,29 +1204,33 @@ async fn isolate(
         .map_err(|e| format!("Could not isolate {}: {e}", workspace.display()))
 }
 
-/// The spec a helper was started with, read back from its row.
-/// The `helper_kind` a helper's row was stored with.
-fn spec_kind_of_row(store: &db::Store, row: &db::models::PendingTask) -> Option<String> {
+/// The inputs a helper's row was stored with.
+fn row_inputs(store: &db::Store, row: &db::models::PendingTask) -> Option<serde_json::Value> {
     store
         .engine_get_run(&row.id)
         .ok()
         .flatten()
         .and_then(|run| run.inputs)
         .and_then(|i| serde_json::from_str::<serde_json::Value>(&i).ok())
-        .and_then(|v| v.get("helper_kind")?.as_str().map(str::to_string))
 }
 
+/// The `helper_kind` a helper's row was stored with.
+fn spec_kind_of_row(store: &db::Store, row: &db::models::PendingTask) -> Option<String> {
+    row_inputs(store, row).and_then(|v| v.get("helper_kind")?.as_str().map(str::to_string))
+}
+
+/// The spec a helper was started with, read back from its row.
 fn spec_of_row(store: &db::Store, row: &db::models::PendingTask) -> HelperSpec {
+    let inputs = row_inputs(store, row);
+    let field = |key: &str| inputs.as_ref().and_then(|v| v.get(key)?.as_str().map(str::to_string));
     HelperSpec {
         description: row.description.clone().unwrap_or_default(),
         prompt: row.prompt.clone(),
-        kind: spec_kind_of_row(store, row)
-            .as_deref()
-            .and_then(HelperKind::parse)
-            .unwrap_or(HelperKind::General),
+        kind: field("helper_kind").as_deref().and_then(HelperKind::parse).unwrap_or(HelperKind::General),
         background: true,
         isolation: None,
         skills: Vec::new(),
+        speed: field("speed"),
     }
 }
 
@@ -1719,6 +1749,19 @@ mod tests {
         let general = helper_mode(HelperKind::General, 1);
         assert!(permits(&general, &target("write_file", false)).is_ok());
         assert!(permits(&TurnMode::Chat, &target("write_file", false)).is_ok());
+    }
+
+    /// Every run declares `exit`; only a workflow activity is offered it
+    /// and may call it.
+    #[test]
+    fn only_a_workflow_activity_exits() {
+        let activity = TurnMode::Workflow(Box::default());
+        assert!(on_surface(&activity, "exit") && permits(&activity, &target("exit", true)).is_ok());
+        for mode in [TurnMode::Chat, helper_mode(HelperKind::General, 1)] {
+            assert!(!on_surface(&mode, "exit"));
+            let refused = permits(&mode, &target("exit", true)).unwrap_err();
+            assert!(refused.contains("isn't one"), "{refused}");
+        }
     }
 
     #[tokio::test]

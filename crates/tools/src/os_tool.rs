@@ -440,15 +440,10 @@ impl DynTool for OsTool {
     }
 
     fn description(&self) -> String {
-        // Said up front in server mode: a gate run (2026-09-23) watched the
-        // model call os(action: "today", calendar: …) on a headless server
-        // and get the refusal below after the fact.
-        let server_note = if crate::server_mode() {
-            "SERVER MODE — this Nebo runs in the cloud: no mail, contacts, calendar, reminders, shortcut, tts or dock (never call them here); window, input, clipboard, capture, ui, menu, dialog and space only while a desktop session is up. Keychain, settings and search work normally.\n\n"
-        } else {
-            ""
-        };
-        format!("{server_note}{}", "Local machine operations — apps, desktop automation, settings, media, credentials, search, PIM. Files and commands have their own tools (read_file, edit_file, write_file, run_command).\n\n\
+        // The same text on every bot: it is part of the tools array every
+        // bot shares. A server bot is told what it lacks in its environment
+        // row (`sections::environment_fields`).
+        "Local machine operations — apps, desktop automation, settings, media, credentials, search, PIM. Files and commands have their own tools (read_file, edit_file, write_file, run_command).\n\n\
          Rules:\n\
          - Always pass `action`. `resource` is inferred when the action belongs to one resource (play→music, volume→settings) or its parameters settle it (move+app→window, click+label→input (resolved against the last capture)); pass it for actions several resources share (create, list, search, get, delete).\n\n\
          Resources:\n\
@@ -481,7 +476,7 @@ impl DynTool for OsTool {
          os(resource: \"music\", action: \"play\")\n  \
          os(resource: \"keychain\", action: \"get\", service: \"myapp\", account: \"user@example.com\")\n  \
          os(resource: \"mail\", action: \"unread\")"
-            .to_string())
+            .to_string()
     }
 
     fn schema(&self) -> serde_json::Value {
