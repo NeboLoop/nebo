@@ -1307,6 +1307,11 @@ impl Registry {
         self.register(Box::new(crate::notebook_tool::NotebookTool::new()))
             .await;
 
+        // The workflow `exit` primitive — deferred like any tool, so every
+        // run declares the same tools: a workflow activity lists and loads
+        // it, and the harness refuses it to any other run.
+        self.register(Box::new(crate::exit_tool::ExitTool::new())).await;
+
         // Plugins: the marketplace search and the events reader whenever a
         // plugin store exists (zero plugins installed included), then one
         // tool per installed plugin and per operation a connected one binds.
@@ -2111,8 +2116,9 @@ pub(crate) mod tests {
     }
 
     /// Characters of every always-loaded definition (description + schema).
-    /// The os tool describes the desktop surfaces its platform has, so the
-    /// number is per platform. Measured at WP0: 52,728 on macOS (agent
+    /// The definitions are the same on every bot, so the number is one for
+    /// every platform (batch C moved the os tool's server note into the
+    /// environment row). Measured at WP0: 52,728 on macOS (agent
     /// 17,451 · os 14,219 · web 8,361 · message 3,270 · skill 3,102 · team
     /// 2,747 · event 2,229 · find_tools 704 · mcp 645) and 53,032 on Linux
     /// (os 14,524 · web 8,362 · mcp 643). WP5 deferred the web family
@@ -2125,12 +2131,11 @@ pub(crate) mod tests {
     /// 1,039 · recall 701 · ask_owner 618 · forget 336). Tools WP3 deferred
     /// the employee family and deleted agent: −6,005. WP9 moved coworker
     /// messages off message to send_message (message 1,450: −1,207). WP6
-    /// deleted the mcp tool and deferred the plugin family (−657). Each
-    /// package that lands lowers the numbers; they never rise.
-    #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 19_298;
-    #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 19_750;
+    /// deleted the mcp tool and deferred the plugin family (−657). Batch C
+    /// gave delegate its `speed` (fix plan E8, +124: delegate 1,826) and took
+    /// the server note off os on server bots. Each package that lands lowers
+    /// the numbers; they never rise without an owner decision.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 19_412;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

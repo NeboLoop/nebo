@@ -10,9 +10,11 @@ use crate::registry::{DynTool, ToolResult};
 pub const MAX_DESCRIPTION_CHARS: usize = 2_048;
 
 /// An MCP server's tool, exposed as its own tool (`mcp__<server>__<tool>`)
-/// with the server's real input schema. Deferred unless the server asks for
-/// it to be loaded always; read-only (and so parallel) only when the server
-/// says so.
+/// with the server's real input schema. Always deferred: a server's
+/// `alwaysLoad` would put its tool in the tools array every bot shares and
+/// change that array when the server connects, so it is listed and loaded
+/// like every other deferred tool. Read-only (and so parallel) only when the
+/// server says so.
 pub struct McpProxyTool {
     name: String,
     def: mcp::McpToolDef,
@@ -81,10 +83,6 @@ impl DynTool for McpProxyTool {
 
     fn search_hint(&self) -> &str {
         &self.hint
-    }
-
-    fn should_defer(&self) -> bool {
-        !self.def.always_load()
     }
 
     fn read_only(&self, _input: &serde_json::Value) -> bool {
@@ -673,7 +671,7 @@ mod proxy_tests {
             "annotations": {"readOnlyHint": true},
             "_meta": {"anthropic/alwaysLoad": true, "anthropic/searchHint": "find docs\n pages", "anthropic/maxResultSizeChars": 20000}
         })));
-        assert!(!hinted.should_defer());
+        assert!(hinted.should_defer(), "alwaysLoad never puts a server's tool in the shared tools array");
         assert!(hinted.read_only(&serde_json::json!({})) && hinted.concurrency_safe(&serde_json::json!({})));
         assert_eq!(hinted.description(), "Searches the docs.");
         assert_eq!(hinted.search_hint(), "find docs pages");

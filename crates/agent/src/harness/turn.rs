@@ -65,8 +65,9 @@ pub struct TurnContext {
     pub channel: String,
     /// The owner's IANA timezone, when set: the date is theirs.
     pub timezone: Option<String>,
-    /// The model the owner or the employee chose (`provider/model`); empty
-    /// means the selector's.
+    /// The model the owner, the job or the helper's speed chose
+    /// (`provider/model`); empty when none did and the turn runs on the
+    /// selector's default (`TurnState::model`).
     pub model: String,
     /// Who the turn is for, told as the `identity` row; built once per turn.
     pub identity: String,
@@ -133,8 +134,6 @@ pub struct TurnState {
     pub call: model_call::CallState,
     /// Tokens, cost and the context thresholds, as the calls report them.
     pub(crate) usage: RunState,
-    /// Deferred tools loaded in the conversation, derived from it each step.
-    pub loaded_tools: BTreeSet<String>,
     /// Memory ids this session was already shown; seeded at Prepare from
     /// `memory_context::surfaced_memories`.
     pub surfaced_memories: HashSet<i64>,
@@ -145,7 +144,12 @@ pub struct TurnState {
     /// The conversation the last step sent: input stored after it is heard
     /// by the next turn.
     pub seen: Vec<ChatMessage>,
-    /// The model the last call ran on (`provider/model` or the name).
+    /// The model every step of the turn runs on (`provider/model`), chosen
+    /// once at Prepare: the one the owner, the job or the helper's speed
+    /// chose, else the selector's default. It never changes mid-turn, so the
+    /// provider's cache for it holds; a failed provider hands the call to
+    /// the next one (`model_call`), as Claude Code changes model only on
+    /// fallback (`src/query.ts:572-575,893-922`).
     pub model: String,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
@@ -606,8 +610,9 @@ pub(crate) async fn prepare(
     .filter(|p| !p.trim().is_empty())
     .collect::<Vec<_>>()
     .join("\n\n");
+    let turn_model = if model.is_empty() { h.selector.select() } else { model.clone() };
     let mode_facts = events::ModeFacts {
-        model: if model.is_empty() { h.selector.select(&[]) } else { model.clone() },
+        model: turn_model.clone(),
         permission_mode: permission_mode_name(grant.mode).to_string(),
     };
     let environment = sections::environment_fields(req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
@@ -662,7 +667,6 @@ pub(crate) async fn prepare(
         reminders: reminders::Reminders::default(),
         call: model_call::CallState::default(),
         usage: RunState::default(),
-        loaded_tools: BTreeSet::new(),
         surfaced_memories: surfaced,
         recall,
         end_checks_this_turn: 0,
@@ -671,7 +675,7 @@ pub(crate) async fn prepare(
             .get_chat_renderings(&h.store.resolve_session_chat_id(session_id))
             .unwrap_or_default(),
         seen: Vec::new(),
-        model: model.clone(),
+        model: turn_model,
         checkpoints: 0,
         last_call: None,
         persisted_renderings: HashSet::new(),
@@ -868,7 +872,6 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             withheld: &cx.withheld_tools,
         };
         let surface = tool_surface::surface(&h.tools, &conversation, &surface_seat).await;
-        st.loaded_tools = surface.loaded.clone();
         step_events(cx, st, &conversation, surface.listing.clone(), &surface.declared).await;
         if st.reminders.has_queued() {
             if let Err(e) = st.reminders.write(sessions, sid) {
@@ -885,15 +888,15 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             .extend(conversation::received_taint(&conversation));
 
         // 3. Trim; past the threshold, clear old results, else checkpoint.
-        let context_window = context_window(cx);
+        let context_window = context_window(cx, &st.model);
         st.usage.system_overhead_tokens = overhead_tokens(&surface.declared);
         let window = trim(st, &conversation);
         st.usage.last_request_estimate = pruning::estimate_total_tokens(&window);
         let window = conversation::sanitize_message_order(window);
 
         // 4-5. The request and the call.
-        let (provider_id, model_name, selected) = select_model(cx, &window);
-        st.model = selected.clone();
+        let selected = st.model.clone();
+        let (provider_id, model_name) = model_parts(&selected);
         let request = build_request(cx, st, &window, surface.declared, &model_name);
         let request_tokens =
             st.usage.last_request_estimate + st.usage.system_overhead_tokens + st.usage.estimate_correction;
@@ -1279,11 +1282,10 @@ async fn step_events(
 }
 
 /// The context window of the turn's model.
-fn context_window(cx: &TurnContext) -> usize {
-    let h = &cx.harness;
-    let model = if cx.model.is_empty() { h.selector.select(&[]) } else { cx.model.clone() };
-    h.selector
-        .get_model_info(&model)
+fn context_window(cx: &TurnContext, model: &str) -> usize {
+    cx.harness
+        .selector
+        .get_model_info(model)
         .map(|m| m.context_window as usize)
         .filter(|&w| w > 0)
         .unwrap_or(DEFAULT_CONTEXT_WINDOW)
@@ -1333,14 +1335,13 @@ async fn clear_old_results(cx: &TurnContext, st: &mut TurnState, conversation: &
     true
 }
 
-/// The provider, model name and full model id for this step.
-fn select_model(cx: &TurnContext, window: &[ChatMessage]) -> (String, String, String) {
-    let selected = if cx.model.is_empty() { cx.harness.selector.select(window) } else { cx.model.clone() };
-    if selected.is_empty() {
-        return (String::new(), String::new(), selected);
+/// The provider and model name of the turn's model.
+fn model_parts(model: &str) -> (String, String) {
+    if model.is_empty() {
+        return (String::new(), String::new());
     }
-    let (provider, name) = selector::parse_model_id(&selected);
-    (provider.to_string(), name.to_string(), selected)
+    let (provider, name) = selector::parse_model_id(model);
+    (provider.to_string(), name.to_string())
 }
 
 /// The step's request: the turn's system prompt, the conversation, the
@@ -1352,11 +1353,6 @@ fn build_request(
     declared: Vec<ai::ToolDefinition>,
     model_name: &str,
 ) -> ChatRequest {
-    let h = &cx.harness;
-    let enable_thinking = cx.workflow().is_none()
-        && !model_name.is_empty()
-        && h.selector.classify_task(window) == selector::TaskType::Reasoning
-        && h.selector.supports_thinking(&st.model);
     ChatRequest {
         tool_credential: None,
         tool_choice: Default::default(),
@@ -1366,7 +1362,12 @@ fn build_request(
         temperature: if cx.workflow().is_some() { 0.0 } else { 0.7 },
         system: prompt::system_prompt().to_string(),
         model: model_name.to_string(),
-        enable_thinking,
+        // One setting for every step of every turn, so thinking never
+        // changes the cached request mid-conversation (Claude Code sets it
+        // once for the session, `src/QueryEngine.ts:278-355`). It is off:
+        // the conversation doesn't store thinking blocks, and a direct
+        // Anthropic tool loop with thinking on is refused without them.
+        enable_thinking: false,
         metadata: st.call.sticky_metadata.clone(),
         cache_breakpoints: prompt::cache_breakpoints(),
         cancel_token: Some(cx.request.cancel.clone()),
@@ -1979,6 +1980,14 @@ mod tests {
     }
 
     async fn harness_with(model: &Arc<Scripted>, extra: Vec<Box<dyn tools::registry::DynTool>>) -> Harness {
+        harness_selecting(model, extra, crate::selector::ModelSelector::new(Default::default())).await
+    }
+
+    async fn harness_selecting(
+        model: &Arc<Scripted>,
+        extra: Vec<Box<dyn tools::registry::DynTool>>,
+        selector: crate::selector::ModelSelector,
+    ) -> Harness {
         let path = std::env::temp_dir().join(format!("nebo-turn-{}.db", uuid::Uuid::new_v4()));
         let store = Arc::new(db::Store::new(path.to_str().unwrap()).expect("store"));
         let registry = Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone()))));
@@ -1987,6 +1996,7 @@ mod tests {
         registry.register(Box::new(Echo { name: "writer", deferred: false, read_only: false })).await;
         registry.register(Box::new(Echo { name: "delegate", deferred: false, read_only: true })).await;
         registry.register(Box::new(tools::find_tools::FindToolsTool::new(registry.clone()))).await;
+        registry.register(Box::new(tools::ExitTool::new())).await;
         for tool in extra {
             registry.register(tool).await;
         }
@@ -1994,7 +2004,7 @@ mod tests {
             store,
             registry,
             vec![model.clone() as Arc<dyn ai::Provider>],
-            crate::selector::ModelSelector::new(Default::default()),
+            selector,
             Arc::new(crate::concurrency::ConcurrencyController::new(Some(4))),
             Arc::new(napp::HookDispatcher::new()),
             None,
@@ -2727,6 +2737,11 @@ mod tests {
         assert!(!names(&last).is_empty());
         assert_eq!(names(&recap), names(&last), "the turn's tools");
         assert_eq!(recap.tool_choice, last.tool_choice);
+        assert_eq!(
+            (recap.max_tokens, recap.temperature, recap.enable_thinking),
+            (last.max_tokens, last.temperature, last.enable_thinking),
+            "the settings the cache keys on"
+        );
         let n = last.messages.len();
         assert_eq!(recap.messages.len(), n + 2, "the last request, its answer, the instruction");
         for (a, b) in recap.messages.iter().zip(&last.messages) {
@@ -2791,11 +2806,16 @@ mod tests {
         assert!(heard(&calls[1]), "the owner's turn does");
     }
 
-    /// An explore helper's surface has no helper tool, and a call that
-    /// changes something is refused whatever it arrives as.
+    /// An explore helper declares the same tools as every run, the helper
+    /// tool included, and the one check refuses what it may not do: a call
+    /// that changes something, or starting a helper.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn explore_helper_only_looks() {
-        let model = Scripted::new(vec![Step::Call("writer", serde_json::json!({})), Step::Say("Found it.")]);
+        let model = Scripted::new(vec![
+            Step::Call("writer", serde_json::json!({})),
+            Step::Call("delegate", serde_json::json!({"description": "look", "prompt": "Look."})),
+            Step::Say("Found it."),
+        ]);
         let h = harness(&model).await;
         let mut req = owner("Look around");
         req.session_key = "subagent:agent:ops:web:h-1".into();
@@ -2807,10 +2827,11 @@ mod tests {
         let mut handle = h.start_turn(req).await.expect("start");
         while handle.events.recv().await.is_some() {}
         let calls = model.calls();
-        assert!(!calls[0].tools.iter().any(|t| t.name == "delegate"), "no helper tool for an explore helper");
-        assert!(calls[0].tools.iter().any(|t| t.name == "echo"));
+        assert!(calls[0].tools.iter().any(|t| t.name == "delegate"), "the one tool list, helper tool included");
         let result = calls[1].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
         assert!(result.contains("only looks") && !result.contains("writer ran"), "{result}");
+        let result = calls[2].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+        assert!(result.contains("only looks") && !result.contains("delegate ran"), "{result}");
     }
 
     /// The provider refuses the window: the conversation is checkpointed and
@@ -3154,15 +3175,16 @@ mod tests {
 
     /// The cached prefix is the same for every turn on every bot: two
     /// employees with different identities, apps, plugins and required
-    /// tools, a helper of each type and a workflow activity all send the one
-    /// system prompt with the one breakpoint, and the two employees declare
+    /// tools, a helper of each type, a workflow activity and a restricted
+    /// run all send the one system prompt with the one breakpoint and
     /// byte-identical tools. Who each turn is for arrives as its identity
-    /// row, the activity's instructions as its activity row.
+    /// row, the activity's instructions as its activity row; what a run may
+    /// use narrows only its listing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn every_turn_sends_the_same_system_prompt_and_every_employee_the_same_tools() {
+    async fn every_turn_sends_the_same_system_prompt_and_the_same_tools() {
         use crate::harness::delegation::HelperKind;
 
-        let model = Scripted::new((0..6).map(|_| Step::Say("Done.")).collect());
+        let model = Scripted::new((0..7).map(|_| Step::Say("Done.")).collect());
         let h = harness(&model).await;
         let config: napp::agent::AgentConfig = serde_json::from_value(serde_json::json!({
             "requires": {"tools": ["weather"], "plugins": ["ledger"], "interfaces": ["mail"]}
@@ -3186,26 +3208,42 @@ mod tests {
         activity.mode = TurnMode::Workflow(Box::new(crate::harness::WorkflowMode {
             trace: RequestTrace::new("agent_turn"),
             instructions: "## Task\nReconcile the ledger.".into(),
-            advertised_tools: ["echo".to_string()].into(),
+            advertised_tools: ["echo".to_string(), "weather".to_string(), "exit".to_string()].into(),
             ..Default::default()
         }));
         run_turn(&h, activity).await;
+        let mut restricted = seat_of(owner("What's on?"), "bo", "agent:bo:phone");
+        restricted.seat.tool_allowlist = Some(["echo".to_string()].into());
+        run_turn(&h, restricted).await;
 
         let calls = model.calls();
-        assert_eq!(calls.len(), 6, "one call per turn");
+        assert_eq!(calls.len(), 7, "one call per turn");
         for call in &calls {
             assert_eq!(call.system, crate::harness::prompt::system_prompt(), "byte-identical system prompt");
             assert_eq!(call.cache_breakpoints, vec![call.system.len()], "one breakpoint, the whole prompt");
         }
         let names = |c: &ChatRequest| c.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
-        assert_eq!(
-            serde_json::to_string(&calls[0].tools).unwrap(),
-            serde_json::to_string(&calls[1].tools).unwrap(),
-            "two employees declare byte-identical tools: {:?} vs {:?}",
-            names(&calls[0]),
-            names(&calls[1])
-        );
-        assert!(!names(&calls[0]).iter().any(|n| n == "weather" || n == "app__crm__lookup" || n == "plugin__ledger"));
+        for (i, call) in calls.iter().enumerate() {
+            assert_eq!(
+                serde_json::to_string(&call.tools).unwrap(),
+                serde_json::to_string(&calls[0].tools).unwrap(),
+                "run {i} declares the same tools as every run: {:?} vs {:?}",
+                names(call),
+                names(&calls[0])
+            );
+        }
+        assert!(!names(&calls[0]).iter().any(|n| n == "weather" || n == "app__crm__lookup" || n == "plugin__ledger" || n == "exit"));
+        let listing = |c: &ChatRequest| {
+            c.messages
+                .iter()
+                .map(|m| m.content.clone())
+                .filter(|t| t.contains("available through find_tools"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(listing(&calls[5]).contains("\nexit"), "the activity lists its exit: {}", listing(&calls[5]));
+        assert!(!listing(&calls[0]).contains("\nexit"), "a chat turn isn't offered exit: {}", listing(&calls[0]));
+        assert!(!listing(&calls[6]).contains("weather"), "a restricted run lists only what it may use: {}", listing(&calls[6]));
 
         let told = |c: &ChatRequest| c.messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
         let ava = told(&calls[0]);
@@ -3215,5 +3253,185 @@ mod tests {
         assert!(told(&calls[3]).contains("You are Ava, working as an explore helper on one task for Ava."));
         let activity = told(&calls[5]);
         assert!(activity.contains("You are Bo, an AI employee") && activity.contains("Reconcile the ledger."), "{activity}");
+    }
+
+    /// A helper given its own speed (fix plan E8) runs every step on it,
+    /// and its mode row names it; its parent's model is left alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_helper_at_its_own_speed_runs_every_step_on_it() {
+        let model = Scripted::new(vec![Step::Call("echo", serde_json::json!({})), Step::Say("Found it.")]);
+        let h = harness(&model).await;
+        let parent = crate::harness::SeatRequest { model_override: "scripted/steady".into(), ..owner("x").seat };
+        let spec = crate::harness::delegation::HelperSpec {
+            speed: Some("scripted/quick".into()),
+            ..crate::harness::delegation::HelperSpec::from_input(&serde_json::json!({"description": "look", "prompt": "Look."})).unwrap()
+        };
+        let req = crate::harness::delegation::child::child_request(
+            &crate::harness::delegation::child::Parent {
+                session_key: KEY,
+                seat: &parent,
+                grant: None,
+                run_taint: &[],
+                cancel: tokio_util::sync::CancellationToken::new(),
+            },
+            "h-1",
+            &spec,
+            None,
+            TurnInput::Platform { text: "Look.".into() },
+        );
+        let mut handle = h.start_turn(req).await.expect("start");
+        while handle.events.recv().await.is_some() {}
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|c| c.model == "quick"), "every step at the helper's speed");
+        assert!(texts(&calls[0]).iter().any(|t| t.contains("Model: scripted/quick.")), "its mode row names it");
+    }
+
+    /// A deferred tool whose definition a connecting provider rewrites.
+    struct Pay(&'static str);
+
+    impl tools::registry::DynTool for Pay {
+        fn name(&self) -> &str {
+            "weather"
+        }
+        fn description(&self) -> String {
+            self.0.to_string()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"provider": {"type": "string"}}})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::ok("weather ran") })
+        }
+    }
+
+    /// Everything the provider caches on before the messages, and the
+    /// messages, of one request.
+    fn cached_parts(req: &ChatRequest) -> (Vec<String>, String, Vec<String>) {
+        let tools = req.tools.iter().map(|t| serde_json::to_string(t).unwrap()).collect();
+        let params = serde_json::json!({
+            "system": req.system,
+            "breakpoints": req.cache_breakpoints,
+            "model": req.model,
+            "thinking": req.enable_thinking,
+            "temperature": req.temperature,
+            "tool_choice": serde_json::to_value(&req.tool_choice).unwrap(),
+            "max_tokens": req.max_tokens,
+        })
+        .to_string();
+        let messages = req.messages.iter().map(|m| serde_json::to_string(m).unwrap()).collect();
+        (tools, params, messages)
+    }
+
+    /// `earlier`'s prefix is a byte-prefix of `later`'s: its tools are the
+    /// first of `later`'s, its system prompt and cache settings are the
+    /// same, and (unless a checkpoint came between them) its messages are
+    /// the first of `later`'s.
+    fn assert_prefix(earlier: &ChatRequest, later: &ChatRequest, messages_reset: bool, what: &str) {
+        let (a_tools, a_params, a_messages) = cached_parts(earlier);
+        let (b_tools, b_params, b_messages) = cached_parts(later);
+        assert!(
+            b_tools.len() >= a_tools.len() && b_tools[..a_tools.len()] == a_tools[..],
+            "{what}: the tools only grow at their end\n{a_tools:#?}\n{b_tools:#?}"
+        );
+        assert_eq!(a_params, b_params, "{what}: system prompt, model, thinking and call settings");
+        if !messages_reset {
+            let first_difference = a_messages.iter().zip(&b_messages).position(|(a, b)| a != b);
+            assert!(
+                b_messages.len() >= a_messages.len() && first_difference.is_none(),
+                "{what}: the messages only grow at their end; message {first_difference:?} changed"
+            );
+        }
+    }
+
+    /// The shared cached prefix only ever grows by appending, across a
+    /// multi-step turn that loads a deferred tool, a provider connecting
+    /// mid-conversation (a new plugin tool, and a loaded tool's schema
+    /// rewritten), a permission-mode change between turns and a checkpoint:
+    /// each request's prefix is a byte-prefix of the next, except the
+    /// messages across the checkpoint boundary (Claude Code resets there
+    /// too). The model and thinking hold for the turn though the owner's
+    /// words would have routed a keyword classifier to another model, and
+    /// the checkpoint's summary call forks the step's request unchanged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_cached_prefix_only_grows_by_appending() {
+        let info = |id: &str| crate::selector::ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            context_window: 200_000,
+            input_price: 1.0,
+            output_price: 1.0,
+            cached_input_price: 0.1,
+            capabilities: vec!["tools".into()],
+            kind: Vec::new(),
+            preferred: false,
+            active: true,
+        };
+        let selector = crate::selector::ModelSelector::new(crate::selector::ModelRoutingConfig {
+            task_routing: [
+                ("general".to_string(), "scripted/steady".to_string()),
+                ("reasoning".to_string(), "scripted/opus-deep".to_string()),
+            ]
+            .into(),
+            default_model: "scripted/steady".into(),
+            provider_models: [("scripted".to_string(), vec![info("steady"), info("opus-deep")])].into(),
+            provider_credentials: [("scripted".to_string(), true)].into(),
+            ..Default::default()
+        });
+        let model = Arc::new(Scripted::default());
+        let h = harness_selecting(&model, Vec::new(), selector).await;
+        h.tools.register(Box::new(Pay("Looks up the weather."))).await;
+
+        // A provider connects while step 2's call is in flight: a new plugin
+        // tool, and the loaded tool gains a second provider.
+        let tools = h.tools.clone();
+        let connect: Hook = Box::pin(async move {
+            tools.register(Box::new(Echo { name: "ledger_pay", deferred: true, read_only: false })).await;
+            // The new definition reaches the conversation as a reminder row,
+            // and its words are ones a keyword classifier routed to a
+            // reasoning model.
+            tools.register(Box::new(Pay("Looks up the weather through one of: noaa, metoffice. Compare and contrast their forecasts."))).await;
+        });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::Call(tools::find_tools::FIND_TOOLS, serde_json::json!({"query": "select:weather"})),
+            Step::During(Box::new(Step::Call("weather", serde_json::json!({}))), connect),
+            Step::Say("Renew it: the terms are better."),
+            Step::Say("Drafted the notice."),
+            Step::Overflow,
+            Step::Say("Carried on."),
+        ]);
+        run_turn(&h, owner("Analyze the pros and cons of renewing the lease, step by step.")).await;
+        let mut planning = owner("Now draft the renewal notice.");
+        planning.seat.mode = Some(Mode::Plan);
+        run_turn(&h, planning).await;
+        run_turn(&h, owner("Keep going.")).await;
+
+        let calls = model.calls();
+        assert_eq!(calls.len(), 6);
+        let boundary = 4; // calls[4] overflowed; calls[5] is sent from the checkpoint
+        for i in 0..calls.len() - 1 {
+            assert_prefix(&calls[i], &calls[i + 1], i == boundary, &format!("request {i} → {}", i + 1));
+        }
+        assert!(calls.iter().all(|c| c.model == "steady" && !c.enable_thinking), "one model and one thinking setting");
+        assert_eq!(calls[1].tools.last().map(|t| t.name.as_str()), Some("weather"), "the loaded tool is appended");
+        let told: String = calls[2].messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(
+            told.contains("ledger_pay") && told.contains("These loaded tools changed") && told.contains("one of: noaa, metoffice"),
+            "the connection is told in the listing: {told}"
+        );
+        assert!(!told.contains("no longer available"), "a loaded tool stays listed: {told}");
+        assert!(texts(&calls[3]).iter().any(|t| t.contains("Permission mode: Plan")), "the mode change is a row");
+        assert!(texts(&calls[5])[0].starts_with(compact::checkpoint::BOUNDARY_LEAD));
+
+        let summary = model.side_call("checkpoint").await.expect("the checkpoint's summary call");
+        assert_prefix(&calls[4], &summary, false, "the summary call forks the step it checkpoints");
+        assert_eq!(summary.messages.len(), calls[4].messages.len() + 1, "the step's messages and the instruction");
     }
 }

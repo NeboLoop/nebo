@@ -129,6 +129,7 @@ impl Helpers {
             } else {
                 String::new()
             },
+            speed: input["speed"].as_str().unwrap_or("").trim().to_string(),
             ..SpawnRequest::child_of(ctx)
         };
         // The harness words what happened: the launch receipt, or the
@@ -293,7 +294,8 @@ impl DynTool for HelperTool {
                     "prompt": { "type": "string", "description": "The whole job: what to do, what you already know, and what to report back." },
                     "helper_type": { "type": "string", "enum": HELPER_TYPES, "description": "general (default); explore and plan only look and never change anything." },
                     "background": { "type": "boolean", "default": true, "description": "Run in the background and report by notification. false only when your very next step needs the result." },
-                    "isolation": { "type": "string", "enum": ["worktree"], "description": "Give the helper its own copy of the project, merged back when it finishes. Use it when helpers edit files in the same project." }
+                    "isolation": { "type": "string", "enum": ["worktree"], "description": "Give the helper its own copy of the project, merged back when it finishes. Use it when helpers edit files in the same project." },
+                    "speed": { "type": "string", "description": "The speed the helper works at, by model name. Leave it out and it works at yours." }
                 },
                 "required": ["description", "prompt"]
             }),

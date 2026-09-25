@@ -60,6 +60,10 @@ pub struct SpawnRequest {
     /// The project folder to isolate (empty = the parent's cwd, else the
     /// process cwd).
     pub workspace: String,
+    /// The speed the helper works at, by model name, as the call gave it
+    /// (empty = the parent's model, `model_override`). The harness resolves
+    /// it and refuses a name it doesn't know.
+    pub speed: String,
     /// The parent run's limits. See [`ChildSeat`].
     pub seat: ChildSeat,
 }

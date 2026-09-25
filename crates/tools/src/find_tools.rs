@@ -1,8 +1,8 @@
 //! `find_tools`: loads deferred tools. A deferred tool is listed by name
-//! until this tool returns its definition; from the next model call its
-//! schema is in the request and it is called like any other tool. The loaded
-//! set is re-derived from history each step ([`loaded_in_result`] reads it
-//! back out of a result).
+//! until this tool returns its definition; from the next model call that
+//! definition is in the request and it is called like any other tool. The
+//! loaded set is re-derived from history each step ([`loaded_in_result`]
+//! reads the definitions back out of a result).
 
 use std::sync::Arc;
 
@@ -122,16 +122,8 @@ pub fn answer(catalog: &[DeferredEntry], query: &str, max_results: usize) -> Str
              reminders: load one with \"select:<name>\", or try other keywords."
         );
     }
-    let mut out = String::from("<functions>\n");
-    for e in &found {
-        let def = json!({
-            "description": e.definition.description,
-            "name": e.definition.name,
-            "parameters": e.definition.input_schema,
-        });
-        out.push_str(&format!("<function>{def}</function>\n"));
-    }
-    out.push_str("</functions>\n");
+    let mut out = functions_block(found.iter().map(|e| &e.definition));
+    out.push('\n');
     let names: Vec<&str> = found.iter().map(|e| e.definition.name.as_str()).collect();
     out.push_str(&format!("Loaded: {}. Call them directly.", names.join(", ")));
     if !missing.is_empty() {
@@ -245,8 +237,38 @@ fn name_parts(name: &str) -> Vec<String> {
     parts
 }
 
-/// The tool names a `find_tools` result loaded (its `<function>` entries).
-pub fn loaded_in_result(content: &str) -> Vec<String> {
+/// A definition as the model reads it in text: the encoding of the tools
+/// array (`description`, `name`, `parameters`).
+pub fn function_entry(def: &ai::ToolDefinition) -> serde_json::Value {
+    json!({
+        "description": def.description,
+        "name": def.name,
+        "parameters": def.input_schema,
+    })
+}
+
+/// The definition a [`function_entry`] carries; `None` without a name.
+pub fn definition_of(entry: &serde_json::Value) -> Option<ai::ToolDefinition> {
+    Some(ai::ToolDefinition {
+        name: entry.get("name")?.as_str()?.to_string(),
+        description: entry.get("description").and_then(|d| d.as_str()).unwrap_or_default().to_string(),
+        input_schema: entry.get("parameters").cloned().unwrap_or_else(|| json!({})),
+    })
+}
+
+/// `definitions` in a `<functions>` block, one `<function>` line each.
+pub fn functions_block<'a>(definitions: impl IntoIterator<Item = &'a ai::ToolDefinition>) -> String {
+    let mut out = String::from("<functions>\n");
+    for def in definitions {
+        out.push_str(&format!("<function>{}</function>\n", function_entry(def)));
+    }
+    out.push_str("</functions>");
+    out
+}
+
+/// The definitions a `find_tools` result loaded (its `<function>` entries),
+/// as the result showed them.
+pub fn loaded_in_result(content: &str) -> Vec<ai::ToolDefinition> {
     content
         .lines()
         .filter_map(|line| {
@@ -255,7 +277,7 @@ pub fn loaded_in_result(content: &str) -> Vec<String> {
                 .strip_suffix("</function>")
         })
         .filter_map(|body| serde_json::from_str::<serde_json::Value>(body).ok())
-        .filter_map(|v| v.get("name")?.as_str().map(str::to_string))
+        .filter_map(|v| definition_of(&v))
         .collect()
 }
 
@@ -284,7 +306,7 @@ mod tests {
     }
 
     fn names(result: &str) -> Vec<String> {
-        loaded_in_result(result)
+        loaded_in_result(result).into_iter().map(|d| d.name).collect()
     }
 
     #[test]
@@ -294,6 +316,19 @@ mod tests {
         assert!(out.starts_with("<functions>\n<function>{"), "{out}");
         assert!(out.contains("\"parameters\":{"), "definitions carry the schema: {out}");
         assert!(out.ends_with("Loaded: mail_message_send, calendar_event_create. Call them directly. Not found: nope."));
+    }
+
+    /// What a result loaded reads back byte for byte: the request declares
+    /// the definition the model was shown.
+    #[test]
+    fn a_loaded_definition_reads_back_as_it_was_shown() {
+        let schema = json!({"type": "object", "properties": {"to": {"type": "string"}}, "required": ["to"]});
+        let catalog = vec![DeferredEntry {
+            definition: ai::ToolDefinition { name: "mail_message_send".into(), description: "Sends an email.".into(), input_schema: schema },
+            search_hint: String::new(),
+        }];
+        let loaded = loaded_in_result(&answer(&catalog, "select:mail_message_send", 5));
+        assert_eq!(serde_json::to_string(&loaded).unwrap(), serde_json::to_string(&[&catalog[0].definition]).unwrap());
     }
 
     #[test]
