@@ -731,7 +731,7 @@ impl DynTool for OsTool {
         } else {
             ""
         };
-        format!("{server_note}{}", "Local machine operations — files, shell, apps, desktop automation, settings, media, credentials, search, PIM.\n\n\
+        let full = format!("{server_note}{}", "Local machine operations — files, shell, apps, desktop automation, settings, media, credentials, search, PIM.\n\n\
          Rules:\n\
          - ALWAYS call this tool for file/system facts — NEVER answer from memory or training data. To read a file, call os(resource: \"file\", action: \"read\"); do NOT claim a file is missing or report its contents without calling first.\n\
          - Prefer file actions over shell: use file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find.\n\
@@ -775,7 +775,21 @@ impl DynTool for OsTool {
          os(resource: \"music\", action: \"play\")\n  \
          os(resource: \"keychain\", action: \"get\", service: \"myapp\", account: \"user@example.com\")\n  \
          os(resource: \"mail\", action: \"unread\")"
-            .to_string())
+            .to_string());
+        if !crate::server_mode() {
+            return full;
+        }
+        // A headless server does not list what it does not have: the gate
+        // watched a model read "calendar: … today" in this list and call it
+        // after the note above said not to (2026-09-24).
+        full.lines()
+            .filter(|l| {
+                !["- mail:", "- contacts:", "- calendar:", "- reminders:", "- notification:", "- shortcut:", "- tts:", "- dock:"]
+                    .iter()
+                    .any(|p| l.trim_start().starts_with(p))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn schema(&self) -> serde_json::Value {
