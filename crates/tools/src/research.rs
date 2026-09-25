@@ -20,7 +20,7 @@ Break the user's query into 3-5 independent, focused subtasks. Each subtask shou
 - Be searchable via web search
 - Not depend on other subtasks' results
 
-Write your decomposition as a JSON array to `plan_initial.json` in the research directory using os(resource: "file", action: "write"). Format:
+Write your decomposition as a JSON array to `plan_initial.json` in the research directory using write_file. Format:
 ```json
 [{"id": "subtask-slug", "question": "specific question to answer"}]
 ```

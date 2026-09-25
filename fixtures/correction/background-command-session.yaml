@@ -1,0 +1,62 @@
+id: correction-background-command-session
+name: "Correction - a background command is read and stopped through read_output and stop_task"
+description: |
+  A background command's start result gives a task id (bg-1a2b3c4d) and
+  says how to follow it: read_output(task_id) for its status and output,
+  stop_task(task_id) to end it. Both are deferred tools, so the model loads
+  them with find_tools "select:read_output,stop_task" before calling them;
+  calling one unloaded is an InputValidationError that says to call
+  find_tools first. Until 2026-09-05 the old shell tool routed every session
+  action to exec and each one answered "exec requires command", so every
+  background job was a dead end. This fixture pins the whole lifecycle with
+  zero error results: run_command with background: true, load the two
+  deferred tools, read the output, stop the task.
+target_component: run_command
+
+conversation:
+  - role: user
+    content: "Start this in the background: `sh -c 'for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 120'`. Then check its output once, read everything it has printed, and stop it. Tell me the task id and what the output said."
+
+tool_config:
+  run_command:
+    enabled: true
+  read_output:
+    enabled: true
+  stop_task:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-in-background
+      text: "The first call is run_command with background: true"
+      severity: critical
+      check: { first_call: true, tool: run_command, arg: background, equals: true }
+  recovery:
+    - id: no-tool-errors
+      text: "Every call the model makes is accepted: no 'exec requires command', no InputValidationError for a missing parameter, and no deferred tool called before find_tools loaded it"
+      severity: critical
+      check: { max_errors: 0, no_error_contains: ["exec requires command", "InputValidationError", "find_tools"] }
+    - id: reads-the-output
+      text: "The model loads read_output with find_tools and calls read_output(task_id: <the bg- id from the start result>); the result reports the task's status and what it printed"
+      severity: critical
+      check: { tool: read_output, arg: task_id, matches: "^bg-" }
+    - id: stops-the-task
+      text: "The model stops the task with stop_task(task_id: <the same bg- id>), and the result confirms it"
+      severity: critical
+      check: { tool: stop_task, arg: task_id, matches: "^bg-" }
+    - id: bounded
+      text: "At most 7 tool calls (the start, one find_tools to load read_output and stop_task, one or two reads, the stop, and a spare)"
+      severity: important
+      check: { max_tool_calls: 7 }
+    - id: honest-report
+      text: "The final response names the bg- task id from the start result and quotes what the output contained (tick lines, or that there was no output yet); it does not claim run_command is broken or that background output is unavailable"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 4
+  total_tokens: 5000
+  narrative: |
+    run_command with background: true returns a task id like bg-1a2b3c4d,
+    find_tools "select:read_output,stop_task", read_output(task_id) shows
+    "running" and the tick lines, stop_task(task_id) confirms it stopped, then
+    two lines: the id and the tick lines the output held.

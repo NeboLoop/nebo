@@ -783,7 +783,7 @@ mod group_tests {
     /// A child the kill cannot reach must not hold up the answer.
     ///
     /// The gate's shell door went silent for the harness's whole 180 s under a
-    /// 120 s timeout (`os-shell-retry-spiral`, run 3): the `find` grandchild
+    /// 120 s timeout (`run-command-retry-spiral`, run 3): the `find` grandchild
     /// was in uninterruptible sleep on a virtiofs mount, and the kill-and-wait
     /// waited on it. Nothing in this module may block on a process that will
     /// not exit — it signals the group, reaps with a bound, and answers

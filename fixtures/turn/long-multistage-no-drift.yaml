@@ -48,7 +48,11 @@ conversation:
     content: "Go ahead: work through {{scratch}}/inbox one file at a time — read a file, then add its line to {{scratch}}/summaries.md before reading the next."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  write_file:
+    enabled: true
+  edit_file:
     enabled: true
 
 prompt_assertions:
@@ -56,7 +60,7 @@ prompt_assertions:
     - id: starts-the-job
       text: "The job starts with a read of the first inbox file"
       severity: important
-      check: { tool: os, arg: path, contains: "msg-01" }
+      check: { tool: read_file, arg: path, contains: "msg-01" }
   recovery:
     - id: answers-the-aside
       text: "The quote-vs-invoice question gets a short direct answer while the job is under way"
@@ -65,11 +69,11 @@ prompt_assertions:
     - id: returns-to-the-job
       text: "After the aside the job continues to the last file: msg-08 is read"
       severity: critical
-      check: { tool: os, arg: path, contains: "msg-08" }
+      check: { tool: read_file, arg: path, contains: "msg-08" }
     - id: writes-the-summaries
       text: "The summaries file is written"
       severity: critical
-      check: { tool: os, arg: path, contains: "summaries.md" }
+      check: { tool: [write_file, edit_file], arg: path, contains: "summaries.md" }
     - id: no-restart-no-ask
       text: "The model does not restart from msg-01 after the aside, does not ask the owner what to do next, and does not treat the aside as the new task"
       severity: critical

@@ -1179,7 +1179,7 @@ mod tests {
 
     /// The shell door answers at its own timeout, even when the command left
     /// behind a process the kill cannot reach. The gate's run 3 of
-    /// `os-shell-retry-spiral` went silent for the harness's whole 180 s under
+    /// `run-command-retry-spiral` went silent for the harness's whole 180 s under
     /// a 120 s timeout, because the kill waited on a `find` grandchild stuck
     /// in uninterruptible sleep; the timeout sentence has to come back
     /// regardless, and the process that will not die is let go.

@@ -1664,7 +1664,7 @@ mod tests {
             }
         }
         // One tool-order rule, one task-list rule, one parallel-research rule.
-        assert_eq!(interactive.matches("Prefer file tools over shell").count(), 1);
+        assert_eq!(interactive.matches("for the shell (moving, copying, renaming, find, grep)").count(), 1);
         assert_eq!(interactive.matches("A task list is for work that will take many tool calls").count(), 1);
         assert_eq!(interactive.matches("queries: [...]").count(), 1);
         // Interactive allows one short line naming the step before a call; autonomous never alongside a call.

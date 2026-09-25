@@ -61,10 +61,10 @@ Then execute every test in plan.md, section by section, in order:
 14. Cleanup
 
 For agent tool tests: use the tool calls exactly as specified in the plan.
-For REST API tests: use os(resource: "shell", action: "exec", command: "curl ...") to call the API.
-For filesystem checks: use os(resource: "file", action: "read" or "glob") to verify files.
+For REST API tests: use run_command(command: "curl ...", description: "...") to call the API.
+For filesystem checks: use read_file(path: "...") to verify a file's contents, and run_command with find or ls to verify files exist.
 
-After each test, immediately write the result to the results file using os(resource: "file", action: "edit"). Do not batch — write results as you go so nothing is lost if the run is interrupted.
+After each test, immediately write the result to the results file using edit_file(path, old_string, new_string). Do not batch — write results as you go so nothing is lost if the run is interrupted.
 
 After all tests complete:
 - Fill in the Summary table with totals

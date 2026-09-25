@@ -2,7 +2,7 @@ id: naming-write-file
 name: "Naming test — write a file"
 description: |
   Baseline task: write a file. Measures first-call tool naming accuracy.
-target_component: os
+target_component: write_file
 
 setup:
   - "rm -f /tmp/nebo-greeting.txt"
@@ -16,8 +16,8 @@ conversation:
 prompt_assertions:
   first_call:
     - id: calls-any-write
-      text: "Model's first call writes the file — either os(resource: 'file', action: 'write') or file_write(path: '...') depending on convention"
-      check: { first_call: true, tool: [os, file_write] }
+      text: "Model's first call writes the file — write_file(path: '...', content: '...')"
+      check: { first_call: true, tool: write_file }
       severity: critical
     - id: correct-path
       text: "Model passes the correct file path"

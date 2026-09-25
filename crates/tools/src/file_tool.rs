@@ -85,7 +85,7 @@ struct FileInput {
 ///
 /// The old sentence always offered the parent of the folder just searched,
 /// and the model took the offer every time: in the gate's
-/// `os-file-discovery-spiral` two hints in a row walked `/home/<bot>/` up to
+/// `file-discovery-spiral` two hints in a row walked `/home/<bot>/` up to
 /// `/home` and then to `/`, and the root walk ran until the harness cancelled
 /// the run. The widening offered here never leaves the bot's own area
 /// (`walk_bounds::widen_within_own_area`), so `path: "/"` is not a sentence
@@ -1878,7 +1878,7 @@ mod tests {
     }
 
     /// The widening an empty glob offers must never leave the bot's own area.
-    /// The defect (gate fixture `os-file-discovery-spiral`): the hint always
+    /// The defect (gate fixture `file-discovery-spiral`): the hint always
     /// named the parent of the folder just searched, the model took the offer
     /// every time, and two hints in a row walked `/home/<bot>/` up to `/home`
     /// and then to `/`, where the walk ran until the harness cancelled the

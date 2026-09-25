@@ -1,27 +1,29 @@
-id: os-file-search-loop
-name: "OS file search — single pattern match, no directory-by-directory loop"
+id: file-search-loop
+name: "File search — single pattern match, no directory-by-directory loop"
 description: |
   The user asks to find a specific file type. The model should use a single
-  glob or find command with a pattern — not individually check directories
-  one by one in a loop.
-target_component: os
+  find (or rg --files) command with a pattern through run_command — not
+  individually check directories one by one in a loop.
+target_component: run_command
 
 conversation:
   - role: user
     content: "Can you locate 1 markdown file for me? Any markdown file is okay"
 
 tool_config:
-  os:
+  run_command:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: uses-pattern-search
-      text: "Model uses glob or find with a *.md pattern — not individual ls commands on separate directories"
+      text: "Model uses find (or grep/rg) with a *.md pattern — not individual ls commands on separate directories"
       severity: critical
+      check: { first_call: true, tool: run_command, arg: command, matches: "\\b(find|grep|rg)\\b" }
     - id: correct-tool
-      text: "Model uses os(resource: 'file', action: 'glob') or os(resource: 'shell', action: 'exec') with find/ls glob"
+      text: "Model uses run_command with a find/rg command and a short description"
       severity: critical
+      check: { first_call: true, tool: run_command }
   recovery:
     - id: no-directory-loop
       text: "Model does NOT check directories one by one (ls ~/Documents, ls ~/Desktop, ls ~/Downloads, etc.)"
@@ -41,6 +43,6 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    Single os(resource: "file", action: "glob", pattern: "~/**/*.md") or
-    os(resource: "shell", action: "exec", command: "find ~ -name '*.md' -maxdepth 3 -print -quit")
-    call. Model returns the first match found. No directory-by-directory enumeration.
+    Single run_command(command: "find ~ -maxdepth 3 -name '*.md' -print -quit",
+    description: "Find one markdown file") call. Model returns the first match
+    found. No directory-by-directory enumeration.
