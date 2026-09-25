@@ -63,7 +63,7 @@ pub async fn fake_model(script: Script) -> (u16, Calls) {
                 let (delta, finish) = match reply {
                     Reply::Text(text) => (json!({"role": "assistant", "content": text}), "stop"),
                     Reply::Call(name, args) => (
-                        json!({"role": "assistant", "tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                        json!({"role": "assistant", "tool_calls": [{"index": 0, "id": format!("call_{}", uuid::Uuid::new_v4().simple()), "type": "function",
                                "function": {"name": name, "arguments": args.to_string()}}]}),
                         "tool_calls",
                     ),

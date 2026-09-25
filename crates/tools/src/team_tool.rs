@@ -175,7 +175,13 @@ impl Teams {
         // the local side.
         let member_list: Vec<db::TeamMember> =
             member_ids.iter().map(db::TeamMember::local).collect();
-        match team::create(self.comm.as_ref(), store, name, mission, &member_list, &organizer).await {
+        let lifetime = match input["lifetime"].as_str().unwrap_or("saved") {
+            "temporary" => crate::workflows::Lifetime::Temporary { report_to: ctx.session_key.clone() },
+            "saved" => crate::workflows::Lifetime::Saved,
+            other => return ToolResult::error(format!("lifetime is \"temporary\" or \"saved\", not {other:?}.")),
+        };
+        let temporary = matches!(lifetime, crate::workflows::Lifetime::Temporary { .. });
+        match team::create(self.comm.as_ref(), store, name, mission, &member_list, &organizer, &lifetime).await {
             Ok(t) => {
                 if let Some(bc) = self.broadcast.as_ref() {
                     bc(team::TEAM_CREATED_EVENT, serde_json::json!({ "team": t }));
@@ -186,6 +192,15 @@ impl Teams {
                 } else {
                     ""
                 };
+                if temporary {
+                    return ToolResult::ok(format!(
+                        "Temporary team \"{}\" exists (id: {}). Members: {}.{} Give it its one piece of work with \
+                         assign_task(to: \"{}\", subject: \"...\", done_means: \"...\"): its lead takes it and hands \
+                         steps to teammates. When the lead closes it, you hear the outcome and the team disbands.",
+                        t.name, t.id, members, mirror, t.name
+                    ))
+                    .with_payload(serde_json::json!({ "kind": "team_created", "team": t }));
+                }
                 ToolResult::ok(format!(
                     "Team \"{}\" exists (id: {}). Members: {}.{} It works locally on this Nebo. \
                      Start the work by posting the first ask: send_message(to: \"{}\", \
@@ -510,7 +525,8 @@ impl Kind {
             Kind::Create => "Creates a team: employees on this Nebo who share a mission and one conversation. It needs no hub.\n\
                 - `members`: at least one employee besides you (you join the team you create).\n\
                 - `lead` answers the owner and hands steps to teammates by mention; without one the owner leads and every member answers.\n\
-                - Post the first ask with send_message to the team's name."
+                - Post the first ask with send_message to the team's name.\n\
+                - `lifetime: \"temporary\"` assembles it for one piece of work: it needs a lead, takes its work with assign_task(to: the team), and disbands after the lead closes that work and its outcome reaches the owner. Left out, the team stays."
                 .to_string(),
             Kind::Update => "Changes a team's name, mission, members or lead. Fields left out keep their value; `members` is the full new list; lead: \"owner\" makes the team owner-led."
                 .to_string(),
@@ -531,7 +547,12 @@ impl Kind {
                     "name": { "type": "string", "description": "The team's name." },
                     "members": names("Employee names to bring into the team: at least one besides you."),
                     "mission": { "type": "string", "description": "What the team exists to accomplish." },
-                    "lead": lead
+                    "lead": lead,
+                    "lifetime": {
+                        "type": "string",
+                        "enum": ["temporary", "saved"],
+                        "description": "temporary: for one piece of work, disbanded after its outcome reaches the owner. saved: stays."
+                    }
                 },
                 "required": ["name", "members"]
             }),

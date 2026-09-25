@@ -80,6 +80,7 @@ fixtures:
   # Long-running work (Batch E)
   - ../fixtures/engine/longrun/e4-an-ask-waits-four-days-across-a-restart-and-the-answer-resumes-it.yaml
   - ../fixtures/engine/longrun/e13-a-temporary-workflows-outcome-reaches-the-owner-once-before-it-goes.yaml
+  - ../fixtures/engine/longrun/e16-a-temporary-team-is-due-to-disband-when-its-lead-closes-its-work.yaml
   # Parity with the seven replaced mechanisms
   - ../fixtures/engine/parity/parity-parity-scheduled-jobs.yaml
   - ../fixtures/engine/parity/parity-parity-heartbeats.yaml

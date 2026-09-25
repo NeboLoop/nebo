@@ -951,6 +951,10 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
         },
     });
     let definition = default_assignment_definition();
+    // The case links to the assigner's run when that run is the engine's (a
+    // workflow step, a case turn). A chat turn is not an engine run: the
+    // assignment row still names it, and the case stands on its own.
+    let case_parent = req.parent_run_id.filter(|id| store.engine_get_run(id).ok().flatten().is_some());
     store.create_assignment(&db::NewAssignment {
         id: &assignment_id,
         assigner_agent_id: req.assigner_agent_id,
@@ -968,7 +972,7 @@ pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) ->
         session_key: &session_key,
         agent_id: req.assignee_agent_id,
         lane: "main",
-        parent_run_id: req.parent_run_id,
+        parent_run_id: case_parent,
         definition: Some(&definition),
         inputs: Some(&inputs.to_string()),
         external_ref: None,
@@ -1140,6 +1144,27 @@ mod assignment_tests {
         assert_eq!(s.get_assignment(&id).unwrap().unwrap().state, "blocked");
         let (again, _) = s.engine_claim_session_events("agent:gm:web", t + 121).unwrap();
         assert!(again.is_empty());
+    }
+
+    /// Work assigned from a chat turn, which is no engine run: the case
+    /// opens standing on its own, and the assignment still names the run.
+    #[test]
+    fn an_assignment_from_a_chat_turn_opens_its_case() {
+        let s = store();
+        let req = NewAssignmentRequest {
+            assigner_agent_id: "gm",
+            assigner_name: "General Manager",
+            assigner_session_key: "agent:gm:web",
+            parent_run_id: Some("chat-run-1"),
+            assignee_agent_id: "bk",
+            subject: "Find the budget",
+            done_means: "A number",
+            due: None,
+        };
+        let id = open_assignment(&s, &req, 1_700_000_000).expect("opened from a chat turn");
+        let case = s.engine_run_for_key("case:assignment", &id).unwrap().expect("case bound");
+        assert_eq!(case.parent_run_id, None);
+        assert_eq!(s.get_assignment(&id).unwrap().unwrap().parent_run_id.as_deref(), Some("chat-run-1"));
     }
 
     #[test]

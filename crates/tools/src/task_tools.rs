@@ -150,11 +150,38 @@ impl Tasks {
     fn assign(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let to = input["to"].as_str().map(str::trim).unwrap_or("");
         let subject = input["subject"].as_str().map(str::trim).unwrap_or("");
-        let Some(assignee) = self.find_employee(to) else {
+        // A team takes work through its lead, who hands steps to the others.
+        let team = match self.find_employee(to) {
+            Some(_) => None,
+            None => crate::team::resolve_team(&self.store, to).ok(),
+        };
+        let assignee = match &team {
+            None => self.find_employee(to),
+            Some(t) => match crate::team::lead_of(t) {
+                Some(lead) => self.store.get_agent(lead).ok().flatten(),
+                None => {
+                    return ToolResult::error(format!(
+                        "The {} team has no lead, so it can't take work. Set one with update_team(team: \"{}\", lead: \"Employee Name\"), or assign it to a member.",
+                        t.name, t.name
+                    ));
+                }
+            },
+        };
+        let Some(assignee) = assignee else {
             return ToolResult::error(format!(
-                "No employee named \"{to}\". Use the employee's exact name from the roster."
+                "No employee or team named \"{to}\". Use an exact name from the roster."
             ));
         };
+        // A temporary team is for one piece of work.
+        if let Some(t) = &team
+            && let Ok(Some(work)) = self.store.temporary_work(db::TemporaryKind::Team, "", &t.id)
+            && work.run_id.is_some()
+        {
+            return ToolResult::error(format!(
+                "The temporary {} team already has its one piece of work; it disbands when that is done. Assign this to a member, or make another team.",
+                t.name
+            ));
+        }
         let assigner_id = caller_entity(ctx);
         if assignee.id == assigner_id {
             return ToolResult::error(
@@ -192,12 +219,24 @@ impl Tasks {
             );
         };
         match opener.open(&req) {
-            Ok(id) => ToolResult::ok(format!(
-                "Assigned to {} as their own work (assignment {id}). You will hear assignment.done, \
-                 assignment.blocked, or assignment.failed when it closes; until then it is theirs — \
-                 do not do it yourself.",
-                assignee.name
-            )),
+            Ok(id) => {
+                let who = match &team {
+                    Some(t) => {
+                        // The temporary team's one piece of work: its case.
+                        if let Ok(Some(case)) = self.store.engine_run_for_key("case:assignment", &id) {
+                            let _ = self.store.claim_temporary_run(db::TemporaryKind::Team, "", &t.id, &case.id);
+                        }
+                        let label = if t.name.to_lowercase().contains("team") { t.name.clone() } else { format!("{} team", t.name) };
+                        format!("the {label} (its lead, {})", assignee.name)
+                    }
+                    None => assignee.name.clone(),
+                };
+                ToolResult::ok(format!(
+                    "Assigned to {who} as their own work (assignment {id}). You will hear assignment.done, \
+                     assignment.blocked, or assignment.failed when it closes; until then it is theirs — \
+                     do not do it yourself."
+                ))
+            }
             Err(e) => ToolResult::error(format!("Failed to assign: {e}")),
         }
     }
@@ -343,7 +382,7 @@ impl DynTool for TaskTool {
                 .to_string(),
             TaskOp::Get => "Reads one task: its status, output and any error.".to_string(),
             TaskOp::List => "Lists this conversation's tasks with their status.".to_string(),
-            TaskOp::Assign => "Gives a piece of work to another employee as their own work, not a helper of yours.\n\
+            TaskOp::Assign => "Gives a piece of work to another employee, or to a team through its lead, as their own work, not a helper of yours.\n\
                  - They work it as a case; you're told assignment.done, blocked or failed when it closes. Until then it's theirs: don't do it yourself.\n\
                  - `done_means` says what finished looks like; `due` is a date."
                 .to_string(),
@@ -380,7 +419,7 @@ impl DynTool for TaskTool {
             TaskOp::Assign => json!({
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "The employee's name from the roster." },
+                    "to": { "type": "string", "description": "An employee's name from the roster, or a team's: its lead takes it." },
                     "subject": { "type": "string", "description": "The work, in a sentence." },
                     "done_means": { "type": "string", "description": "What finished looks like." },
                     "due": { "type": "string", "description": "Due date, YYYY-MM-DD." }
@@ -609,7 +648,7 @@ mod tests {
             )
             .await;
         assert!(
-            r.is_error && r.content.contains("No employee named \"Ghost\""),
+            r.is_error && r.content.contains("No employee or team named \"Ghost\""),
             "{}",
             r.content
         );
