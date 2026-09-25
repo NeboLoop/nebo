@@ -80,7 +80,7 @@ export interface ToolUse {
    *  Known kinds render as rich cards (e.g. search_results). */
   payload?: { kind: string; [k: string]: unknown };
   /** Live deep-research panel snapshot (research_progress events) — replaced
-   *  whole on every update; the final state comes from the result payload. */
+   *  whole on every update, the last one marked complete. */
   research?: { kind: string; [k: string]: unknown };
   /** The stored result was cut to a preview; `response` is its first
    *  characters. Opening the row fetches the rest by `toolId`. */
@@ -742,12 +742,13 @@ export function createChatController(config: ChatControllerConfig) {
   function handleResearchProgress(data: any) {
     if (!isMyEvent(data)) return;
     const snap = data?.data;
-    if (!snap || typeof snap !== 'object') return;
+    if (!snap || typeof snap !== 'object' || !data.task_id) return;
+    // The research runs in the background: its card is the deep_research
+    // call that started it, found by the run's task id.
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.type !== 'assistant' || !m.tools?.length) continue;
-      // The research runs inside the call still running in this reply.
-      const ti = m.tools.findLastIndex((t) => t.status === 'running');
+      const ti = m.tools.findIndex((t) => t.payload?.kind === 'research_run' && t.payload?.task_id === data.task_id);
       if (ti === -1) continue;
       const tools = [...m.tools];
       tools[ti] = { ...tools[ti], research: snap };

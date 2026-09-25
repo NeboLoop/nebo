@@ -8,22 +8,22 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::bot_tool::StructuredAgent;
+use crate::orchestrator::{OrchestratorHandle, SpawnRequest};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
-
-/// A deep research run legitimately takes many minutes; the runner's
-/// default tool budget killed every standard and deep run mid-flight.
-const DEEP_RESEARCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 const DEPTHS: [&str; 3] = ["quick", "standard", "deep"];
 
 pub struct Research {
     agent: Option<Arc<dyn StructuredAgent>>,
+    /// The helper registry's door: a deep research run is one of the
+    /// caller's background helpers.
+    helpers: OrchestratorHandle,
 }
 
 impl Research {
-    pub fn new(agent: Option<Arc<dyn StructuredAgent>>) -> Self {
-        Self { agent }
+    pub fn new(agent: Option<Arc<dyn StructuredAgent>>, helpers: OrchestratorHandle) -> Self {
+        Self { agent, helpers }
     }
 
     pub fn tools(self) -> Vec<Box<dyn DynTool>> {
@@ -115,152 +115,90 @@ impl Research {
         }
     }
 
+    /// Start a deep research run in the background, as one of the caller's
+    /// helpers, and return its receipt at once. The run takes minutes; the
+    /// cited report comes back as the helper's notification and lands in the
+    /// Work panel. Like any long work, it never holds the conversation
+    /// (Claude Code runs long work as a background agent that notifies,
+    /// `AgentTool.tsx` / `LocalAgentTask.tsx`), and the owner's Stop reaches it.
     async fn deep(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
-        let query = input["query"].as_str().unwrap_or("").trim();
-        let agent = match &self.agent {
-            Some(a) => a.clone(),
-            None => {
-                return ToolResult::error(
-                    "Deep research is unavailable: no structured-output-capable AI provider is configured. \
-                     Configure a provider (Anthropic/OpenAI/Gemini/Janus) and retry.",
-                );
-            }
+        let query = input["query"].as_str().unwrap_or("").trim().to_string();
+        let Some(agent) = self.agent.clone() else {
+            return ToolResult::error(
+                "Deep research is unavailable: no structured-output-capable AI provider is configured. \
+                 Configure a provider (Anthropic/OpenAI/Gemini/Janus) and retry.",
+            );
         };
-
+        let Some(helpers) = self.helpers.get() else {
+            return ToolResult::error(
+                "Research can't start yet: the server is still starting. Try again in a moment.",
+            );
+        };
         let depth = input["depth"].as_str().unwrap_or("standard");
         let cfg = crate::deep_research::Config::for_depth(depth);
-
         let data_dir = match config::data_dir() {
             Ok(d) => d,
             Err(e) => return ToolResult::error(format!("Cannot determine data dir: {}", e)),
         };
         let run_id = format!("research-{}", uuid::Uuid::new_v4().as_simple());
-
-        // ── Scope checkpoint: decompose the question, then confirm the plan with the user
-        // before the (slow, credit-costly) fan-out. Only gate INTERACTIVE (User-origin) runs:
-        // automations/cron/channels/sub-agents (and an explicit `confirm: false`) proceed
-        // without prompting — an automation must never block on a UI button.
-        let confirm_flag = input["confirm"].as_bool().unwrap_or(true);
-        let confirm_gate = matches!(ctx.origin, crate::origin::Origin::User) && confirm_flag;
-        let scope = crate::deep_research::scope(&agent, query, &cfg).await;
-        let angle_labels: Vec<&str> = scope.angles.iter().map(|a| a.label.as_str()).collect();
-        let mut plan = format!(
-            "I'll research \"{}\" across {} angles at **{}** depth — a verified multi-source \
-             search that takes a couple of minutes.\n\nAngles: {}.",
-            query,
-            scope.angles.len(),
-            depth,
-            angle_labels.join(", "),
-        );
-        if scope.clarifying_questions.is_empty() {
-            plan.push_str("\n\nStart the research, or refine the plan first?");
-        } else {
-            plan.push_str("\n\nA few details would sharpen this:");
-            for q in &scope.clarifying_questions {
-                plan.push_str(&format!("\n• {q}"));
-            }
-            plan.push_str("\n\nStart as-is, refine the plan, or cancel?");
-        }
-        let mut gate_timed_out = false;
-        if confirm_gate {
-            let widgets = serde_json::json!([{ "type": "buttons", "options": ["Start research", "Refine the plan", "Cancel"] }]);
-            // Bounded gate: an unanswered plan must NEVER become a tool-timeout
-            // error (observed live: 300s timeout → the model 'tried different
-            // approaches' in a retry spiral, burning balance). No answer in 90s
-            // → start as planned; the run is cancelable and the plan is visible.
-            let gate = match tokio::time::timeout(
-                std::time::Duration::from_secs(90),
-                ctx.ask_user(&plan, widgets),
-            )
-            .await
-            {
-                Ok(answer) => answer,
-                Err(_) => {
-                    // timeout → start as planned, and the final report says so
-                    gate_timed_out = true;
-                    None
-                }
-            };
-            if let Some(resp) = gate {
-                let r = resp.to_lowercase();
-                if r.contains("cancel") {
-                    return ToolResult::ok(format!(
-                        "Research not started. I was going to cover: {}. Add any constraints \
-                         (budget, region, use-case, time window) and ask again.",
-                        angle_labels.join(", ")
-                    ));
-                }
-                if r.contains("refine") {
-                    // Hand control back to the conversation: the agent asks what to change,
-                    // then re-invokes deep_research with the refinement folded into the query.
-                    return ToolResult::ok(format!(
-                        "The user wants to adjust this research plan before running — do NOT start \
-                         the research yet. Ask them what to change: narrow or broaden the topic, \
-                         add or drop an angle, or change depth (quick/standard/deep). Then call \
-                         deep_research again with their changes folded into the query. The current \
-                         plan was {} angles ({}) at {} depth.",
-                        scope.angles.len(),
-                        angle_labels.join(", "),
-                        depth
-                    ));
-                }
-            }
-        }
-
-        // Pre-compute the run's report path + a unique, readable Work-panel filename
-        // (the harness writes a generic report.md per run-dir, which would collide in files/).
-        let report_src = data_dir.join("research").join(&run_id).join("report.md");
-        let files_dir = data_dir.join("files");
         let short = run_id.rsplit('-').next().unwrap_or(&run_id);
-        let work_name = format!(
-            "{}-{}.md",
-            research_slug(query),
-            &short[..short.len().min(8)]
-        );
-
-        let research_started = std::time::Instant::now();
-        match crate::deep_research::run(
-            agent,
-            data_dir,
-            run_id,
-            query.to_string(),
-            cfg,
-            ctx.cancel_token.clone(),
-            ctx.stream_tx.clone(),
-            Some(scope),
-        )
-        .await
-        {
-            Ok(report) => {
+        let work_name = format!("{}-{}.md", research_slug(&query), &short[..short.len().min(8)]);
+        let question = query.clone();
+        let work: crate::orchestrator::Work = Box::new(move |cancel, progress| {
+            Box::pin(async move {
+                let report_src = data_dir.join("research").join(&run_id).join("report.md");
+                let files_dir = data_dir.join("files");
+                let started = std::time::Instant::now();
+                let report = crate::deep_research::run(agent, data_dir, run_id, question, cfg, cancel, Some(progress.clone())).await?;
+                // The research card's final state.
+                let _ = progress
+                    .send(ai::StreamEvent {
+                        payload: Some(json!({
+                            "kind": "research_progress",
+                            "phase": "complete",
+                            "complete": true,
+                            "question": report.question,
+                            "sources_read": report.stats.sources_fetched,
+                            "results_found": report.stats.claims_extracted,
+                            "claims_verified": report.stats.confirmed,
+                            "elapsed_ms": started.elapsed().as_millis() as u64,
+                        })),
+                        ..ai::StreamEvent::text("")
+                    })
+                    .await;
                 let mut text = crate::deep_research::format_report(&report);
-                if gate_timed_out {
-                    text = format!(
-                        "(No answer to the plan prompt within 90s; research started as planned.)\n\n{}",
-                        text
-                    );
-                }
-                let mut result = ToolResult::ok(text)
-                    // Final card state for the live stream AND reloaded history.
-                    .with_payload(serde_json::json!({
-                        "kind": "research_summary",
-                        "question": report.question,
-                        "sources_read": report.stats.sources_fetched,
-                        "results_found": report.stats.claims_extracted,
-                        "claims_verified": report.stats.confirmed,
-                        "elapsed_ms": research_started.elapsed().as_millis() as u64,
-                    }));
-                // Surface the report in the Work panel under its unique name.
+                // The report in the Work panel, under a readable name (every
+                // run writes a generic report.md in its own folder).
                 if report_src.exists() {
                     let _ = std::fs::create_dir_all(&files_dir);
                     let dest = files_dir.join(&work_name);
                     if std::fs::copy(&report_src, &dest).is_ok() {
-                        result = result.with_image_url(dest.to_string_lossy().to_string());
+                        text.push_str(&format!("\nThe report is saved at {}.", dest.display()));
                     }
                 }
-                result
-            }
-            Err(e) => ToolResult::error(format!("Deep research failed: {}", e)),
+                Ok(text)
+            })
+        });
+        let req = SpawnRequest {
+            description: format!("research: {}", short_question(&query)),
+            prompt: query,
+            wait: false,
+            ..SpawnRequest::child_of(ctx)
+        };
+        match helpers.start_work(req, work).await {
+            // The research card follows the run by its id.
+            Ok(r) => ToolResult::ok(r.output).with_payload(json!({ "kind": "research_run", "task_id": r.task_id })),
+            Err(e) => ToolResult::error(format!("Couldn't start the research: {e}")),
         }
+    }
+}
+
+/// A question cut for the owner's activity line.
+fn short_question(q: &str) -> String {
+    if q.chars().count() > 60 {
+        format!("{}…", q.chars().take(60).collect::<String>())
+    } else {
+        q.to_string()
     }
 }
 
@@ -309,10 +247,9 @@ impl DynTool for ResearchTool {
 
     fn description(&self) -> String {
         match self.op {
-            ResearchOp::Deep => "Researches a question in depth and returns a cited report: it searches from several angles, reads the sources, fact-checks each claim against the others, then writes the report.\n\
+            ResearchOp::Deep => "Researches a question in depth in the background and reports a cited report: it searches from several angles, reads the sources, fact-checks each claim against the others, then writes the report.\n\
                  - For a fact-checked, multi-source answer. For one quick lookup, search the web directly.\n\
-                 - `depth`: quick, standard (default) or deep. It takes minutes.\n\
-                 - In a chat with the owner it shows the plan first; `confirm: false` skips that (unattended work)."
+                 - `depth`: quick, standard (default) or deep. It takes minutes; you're notified with the report when it ends."
                 .to_string(),
             ResearchOp::Quick => "Starts a research run you lead: you split the question into subtasks, start a helper for each, and write the report from their findings. Returns the run's folder and the method to follow.".to_string(),
             ResearchOp::SubmitFindings => "Hands a research helper's findings back to the research run it works for: each finding is a claim with its source, and gaps are questions it couldn't answer.".to_string(),
@@ -325,8 +262,7 @@ impl DynTool for ResearchTool {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "The question, with any constraints (region, time window, use case)." },
-                    "depth": { "type": "string", "enum": DEPTHS, "description": "How far to go (default standard)." },
-                    "confirm": { "type": "boolean", "description": "Show the owner the plan first (default true in a chat)." }
+                    "depth": { "type": "string", "enum": DEPTHS, "description": "How far to go (default standard)." }
                 },
                 "required": ["query"]
             }),
@@ -392,21 +328,6 @@ impl DynTool for ResearchTool {
         Ok(())
     }
 
-    /// Models routinely send `confirm` as the string "false" (observed
-    /// live): its string forms mean the boolean.
-    fn normalize_input(&self, mut input: Value) -> Value {
-        if self.op == ResearchOp::Deep
-            && let Some(s) = input["confirm"].as_str()
-        {
-            input["confirm"] = Value::Bool(!s.eq_ignore_ascii_case("false"));
-        }
-        input
-    }
-
-    fn execution_timeout(&self, _input: &Value) -> Option<std::time::Duration> {
-        (self.op == ResearchOp::Deep).then_some(DEEP_RESEARCH_BUDGET)
-    }
-
     fn activity(&self, input: &Value) -> String {
         match self.op {
             ResearchOp::Deep | ResearchOp::Quick => {
@@ -444,32 +365,85 @@ impl DynTool for ResearchTool {
 mod tests {
     use super::*;
 
+    /// A structured agent the tool never reaches: the research runs in the
+    /// background, not in the call.
+    struct Unused;
+    impl StructuredAgent for Unused {
+        fn run<'a>(&'a self, _: crate::bot_tool::StructuredTask, _: Option<Arc<std::sync::atomic::AtomicU64>>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send + 'a>> {
+            panic!("the pipeline ran inside the call")
+        }
+        fn execute_tool<'a>(&'a self, _: String, _: String, _: Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            panic!("the pipeline ran inside the call")
+        }
+        fn close_tab<'a>(&'a self, _: String) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+    }
+
+    /// Records the background work it was handed.
+    #[derive(Default)]
+    struct Door(std::sync::Mutex<Vec<SpawnRequest>>);
+    type Fut<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+    impl crate::orchestrator::SubAgentOrchestrator for Arc<Door> {
+        fn spawn(&self, _: SpawnRequest) -> Fut<'_, Result<crate::orchestrator::SpawnResult, String>> {
+            panic!("research is background work, not a model helper")
+        }
+        fn start_work(&self, req: SpawnRequest, _: crate::orchestrator::Work) -> Fut<'_, Result<crate::orchestrator::SpawnResult, String>> {
+            self.0.lock().unwrap().push(req);
+            Box::pin(async {
+                Ok(crate::orchestrator::SpawnResult {
+                    task_id: "h-1".into(),
+                    success: true,
+                    output: "Helper h-1 is working in the background.".into(),
+                    error: None,
+                })
+            })
+        }
+        fn cancel(&self, _: &str, _: &str) -> Fut<'_, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn status(&self, _: &str, _: &str) -> Fut<'_, Result<String, String>> {
+            Box::pin(async { Ok(String::new()) })
+        }
+        fn send(&self, _: &str, _: &str, _: SpawnRequest) -> Fut<'_, Result<crate::orchestrator::FollowUp, String>> {
+            Box::pin(async { Err("no".into()) })
+        }
+        fn list_active(&self, _: &str) -> Fut<'_, Vec<(String, String, String)>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn recover(&self) -> Fut<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    /// deep_research hands the run to the helper registry and returns its
+    /// receipt: no plan card to wait on, no hour-long call, no budget of its
+    /// own. Before: it ran the pipeline inside the call.
     #[tokio::test]
-    async fn deep_research_without_a_provider_says_why_and_has_its_budget() {
-        let tools = Research::new(None).tools();
+    async fn deep_research_starts_a_background_helper_and_returns_its_receipt() {
+        let door = Arc::new(Door::default());
+        let handle = crate::orchestrator::new_handle();
+        let _ = handle.set(Box::new(door.clone()));
+        let tools = Research::new(Some(Arc::new(Unused)), handle).tools();
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert_eq!(
-            names,
-            ["deep_research", "quick_research", "submit_findings"]
-        );
-        assert_eq!(
-            tools[0].execution_timeout(&json!({})),
-            Some(DEEP_RESEARCH_BUDGET)
-        );
-        assert_eq!(tools[1].execution_timeout(&json!({})), None);
-        let r = tools[0]
-            .execute_dyn(&ToolContext::default(), json!({"query": "q"}))
-            .await;
-        assert!(
-            r.is_error && r.content.contains("no structured-output-capable"),
-            "{}",
-            r.content
-        );
-        assert!(
-            tools[2]
-                .validate_input(&json!({"subtask_id": "s", "findings": [{"claim": ""}]}))
-                .is_err()
-        );
+        assert_eq!(names, ["deep_research", "quick_research", "submit_findings"]);
+        assert_eq!(tools[0].execution_timeout(&json!({})), None, "the call returns at once");
+        let ctx = ToolContext { session_key: "agent:analyst:web".into(), ..ToolContext::new(crate::origin::Origin::User) };
+        let r = tools[0].execute_dyn(&ctx, json!({"query": "Phoenix rents 2026", "depth": "quick"})).await;
+        assert_eq!(r.content, "Helper h-1 is working in the background.", "the harness's receipt");
+        let started = door.0.lock().unwrap();
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].parent_session_key, "agent:analyst:web", "one of the caller's helpers");
+        assert_eq!(started[0].description, "research: Phoenix rents 2026");
+        assert!(!started[0].wait);
+    }
+
+    #[tokio::test]
+    async fn deep_research_without_a_provider_says_why() {
+        let tools = Research::new(None, crate::orchestrator::new_handle()).tools();
+        let r = tools[0].execute_dyn(&ToolContext::default(), json!({"query": "q"})).await;
+        assert!(r.is_error && r.content.contains("no structured-output-capable"), "{}", r.content);
+        assert!(tools[2].validate_input(&json!({"subtask_id": "s", "findings": [{"claim": ""}]})).is_err());
     }
 
     #[test]

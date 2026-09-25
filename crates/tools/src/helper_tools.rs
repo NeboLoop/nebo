@@ -114,7 +114,6 @@ impl Helpers {
             Err(e) => return ToolResult::error(e),
         };
         let background = input["background"].as_bool().unwrap_or(true);
-        let isolated = input["isolation"].as_str() == Some("worktree");
         let req = SpawnRequest {
             prompt: input["prompt"].as_str().unwrap_or("").to_string(),
             description: input["description"].as_str().unwrap_or("").to_string(),
@@ -122,47 +121,21 @@ impl Helpers {
                 .as_str()
                 .unwrap_or("general")
                 .to_string(),
-            wait: !background || isolated,
-            isolate: if isolated {
+            wait: !background,
+            // An isolated helper works in its own copy of the project, merged
+            // back when it finishes; the report says how the merge went.
+            isolate: if input["isolation"].as_str() == Some("worktree") {
                 "worktree".to_string()
             } else {
                 String::new()
             },
             ..SpawnRequest::child_of(ctx)
         };
-        if isolated {
-            // An isolated helper runs in its own copy of the project, merged
-            // back when it finishes.
-            return match orch.spawn(req).await {
-                Ok(r) if r.success => ToolResult::ok(format!(
-                    "Helper [{}] finished in its own copy of the project; its changes are merged back.\n\n{}",
-                    r.task_id, r.output
-                )),
-                Ok(r) => ToolResult::error(format!(
-                    "Helper [{}] failed:\n\n{}\n\n{}",
-                    r.task_id,
-                    r.output,
-                    r.error.unwrap_or_default()
-                )),
-                Err(e) => ToolResult::error(format!("Couldn't start the helper: {e}")),
-            };
-        }
+        // The harness words what happened: the launch receipt, or the
+        // finished helper's report with how to continue it.
         match orch.spawn(req).await {
-            Ok(r) if r.success && background => {
-                ToolResult::ok(format!("Helper [{}]: {}", r.task_id, r.output))
-            }
-            Ok(r) if r.success => ToolResult::ok(format!(
-                "Helper [{id}] finished:\n\n{out}\n\nTo refine, extend or correct this, \
-                 send_message to {id}: it keeps its context and the files it read. Start a new \
-                 helper only for unrelated work.",
-                id = r.task_id,
-                out = r.output
-            )),
-            Ok(r) => ToolResult::error(format!(
-                "Helper [{}] failed: {}",
-                r.task_id,
-                r.error.unwrap_or_default()
-            )),
+            Ok(r) if r.success => ToolResult::ok(r.output),
+            Ok(r) => ToolResult::error(r.output),
             Err(e) => ToolResult::error(format!("Couldn't start the helper: {e}")),
         }
     }
@@ -440,6 +413,10 @@ mod tests {
         sent: Mutex<Vec<(String, String, String)>>,
     }
 
+    /// What the harness says for a helper that is still working: at launch,
+    /// or a foreground one that outlasted its budget.
+    const RECEIPT: &str = "Helper h1 is working in the background. You'll get a notification when it finishes.";
+
     fn done(output: &str) -> SpawnResult {
         SpawnResult {
             task_id: "h1".into(),
@@ -451,15 +428,20 @@ mod tests {
 
     impl SubAgentOrchestrator for Arc<Recorder> {
         fn spawn(&self, req: SpawnRequest) -> Fut<'_, Result<SpawnResult, String>> {
-            let background = !req.wait;
+            // A prompt with "slow" in it outlasts the foreground budget.
+            let background = !req.wait || req.prompt.contains("slow");
             self.spawned.lock().unwrap().push(req);
             Box::pin(async move {
-                Ok(done(if background {
-                    "working in the background"
+                Ok(if background {
+                    done(RECEIPT)
                 } else {
-                    "the report"
-                }))
+                    done("helper h1 \"map the repo\": done\nthe report\n\nTo continue it, use send_message to h1.")
+                })
             })
+        }
+        fn start_work(&self, req: SpawnRequest, _work: crate::orchestrator::Work) -> Fut<'_, Result<SpawnResult, String>> {
+            self.spawned.lock().unwrap().push(req);
+            Box::pin(async { Ok(done(RECEIPT)) })
         }
         fn cancel(&self, _task_id: &str, _caller: &str) -> Fut<'_, Result<(), String>> {
             Box::pin(async { Ok(()) })
@@ -600,7 +582,7 @@ mod tests {
                 json!({"description": "find the config", "prompt": "Find where the port is set."}),
             )
             .await;
-        assert_eq!(r.content, "Helper [h1]: working in the background");
+        assert_eq!(r.content, RECEIPT, "the harness's receipt, as it is");
         let spawned = rig.rec.spawned.lock().unwrap();
         assert!(!spawned[0].wait);
         assert_eq!(spawned[0].agent_type, "general");
@@ -618,26 +600,38 @@ mod tests {
             "{}",
             r.content
         );
+        assert_eq!(r.content.matches("send_message").count(), 1, "one way to continue, said once: {}", r.content);
         let spawned = rig.rec.spawned.lock().unwrap();
         assert!(spawned[0].wait);
         assert_eq!(spawned[0].agent_type, "explore");
     }
 
-    /// An isolated helper gets its own copy: the helper registry makes it
-    /// and merges it back.
+    /// An isolated helper gets its own copy, and runs in the background like
+    /// any other (Claude Code's `shouldRunAsync` ignores isolation). Before:
+    /// every worktree helper held its parent's step.
     #[tokio::test]
-    async fn an_isolated_helper_works_in_its_own_copy() {
+    async fn an_isolated_helper_works_in_its_own_copy_in_the_background() {
         let rig = Rig::new();
         let r = rig.call("delegate", json!({"description": "fix the tests", "prompt": "Fix them.", "isolation": "worktree"})).await;
-        assert!(
-            !r.is_error && r.content.contains("merged back"),
-            "{}",
-            r.content
-        );
+        assert_eq!(r.content, RECEIPT);
         let spawned = rig.rec.spawned.lock().unwrap();
         assert_eq!(spawned.len(), 1);
         assert_eq!(spawned[0].isolate, "worktree");
-        assert!(spawned[0].wait, "it reports when its copy is merged back");
+        assert!(!spawned[0].wait, "isolation does not force the foreground");
+    }
+
+    /// A foreground helper that outlasts its budget moves to the background,
+    /// and the tool says so: never "finished" or "merged back" for work
+    /// still running.
+    #[tokio::test]
+    async fn a_foreground_helper_that_moved_to_the_background_is_not_reported_finished() {
+        let rig = Rig::new();
+        let r = rig
+            .call("delegate", json!({"description": "port it", "prompt": "a slow port", "background": false, "isolation": "worktree"}))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.content, RECEIPT, "what actually happened: it is still working");
+        assert!(rig.rec.spawned.lock().unwrap()[0].wait, "it was asked for in the foreground");
     }
 
     #[tokio::test]

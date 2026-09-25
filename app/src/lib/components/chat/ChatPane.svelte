@@ -524,11 +524,8 @@
     elapsed_ms?: number;
     complete?: boolean;
   }
-  /** Live snapshot while running; final summary payload afterwards. */
+  /** The research run's live snapshot; its last one is marked complete. */
   function researchState(tool: ToolMsg): ResearchState | null {
-    if (tool.payload?.kind === 'research_summary') {
-      return { ...(tool.payload as ResearchState), complete: true, phase: 'complete' };
-    }
     if (tool.research && typeof tool.research === 'object') {
       return tool.research as ResearchState;
     }
