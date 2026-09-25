@@ -3,7 +3,6 @@ use crate::origin::ToolContext;
 use crate::process::{self, ProcessRegistry};
 use crate::registry::ToolResult;
 use serde::Deserialize;
-use std::process::Stdio;
 use std::sync::Arc;
 
 /// Shell operations: execute commands, manage processes and background sessions.
@@ -25,6 +24,10 @@ struct ShellInput {
     cwd: String,
     #[serde(default)]
     background: bool,
+    /// What the command does, as the owner read it: named when its end is
+    /// reported.
+    #[serde(default)]
+    description: String,
     #[serde(default)]
     pid: i64,
     #[serde(default)]
@@ -79,7 +82,7 @@ impl ShellTool {
         }
 
         match si.resource.as_str() {
-            "bash" => self.handle_bash(&si, ctx.trusted_plugin_env, ctx.cwd.as_deref()).await,
+            "bash" => self.handle_bash(&si, ctx).await,
             "process" => self.handle_process(&si).await,
             "session" => self.handle_session(&si).await,
             other => ToolResult::error(format!(
@@ -111,7 +114,7 @@ impl ShellTool {
         }
     }
 
-    async fn handle_bash(&self, input: &ShellInput, trusted_plugin_env: bool, default_cwd: Option<&str>) -> ToolResult {
+    async fn handle_bash(&self, input: &ShellInput, ctx: &ToolContext) -> ToolResult {
         if input.command.is_empty() {
             return ToolResult::error(errors::missing_param(
                 "exec",
@@ -148,7 +151,7 @@ impl ShellTool {
         // 401s and the model rotates through env vars, stdin pipes and direct
         // API calls trying to make it work (CFO, 2026-09-06: ten such calls).
         // Redirect to the plugin tool, which has all three.
-        if !trusted_plugin_env {
+        if !ctx.trusted_plugin_env {
             if let Some(ref ps) = self.plugin_store {
                 let names: std::collections::HashMap<String, String> = ps
                     .build_env_map()
@@ -233,9 +236,16 @@ impl ShellTool {
             );
         }
 
-        // Handle background execution
+        let cmd = match self.command(input, ctx.trusted_plugin_env, ctx.cwd.as_deref()) {
+            Ok(cmd) => cmd,
+            Err(refusal) => return refusal,
+        };
+        let caller = (!ctx.session_key.is_empty()).then(|| process::Caller {
+            session_key: ctx.session_key.clone(),
+            description: input.description.clone(),
+        });
         if input.background {
-            return self.execute_background(input).await;
+            return self.execute_background(cmd, input, caller).await;
         }
 
         let timeout_secs = if input.timeout > 0 {
@@ -243,7 +253,145 @@ impl ShellTool {
         } else {
             120
         };
+        let started_at = std::time::SystemTime::now();
+        let started = match self.registry.spawn(cmd, &input.command, process::Spawn::Foreground).await {
+            Ok(s) => s,
+            Err(e) => return spawn_failure(&input.command, &e),
+        };
+        // Until the command ends or moves to the background, its call owns
+        // it: a cancelled turn drops this and takes the whole group with it.
+        let mut owned = KillOnDrop(Some(started.session.pid));
+        let mut exited = started.exited;
+        let status = match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), &mut exited).await {
+            Ok(status) => status,
+            // A workflow's command step is parsed by the next step, and a
+            // run nobody started has nobody to tell: their timeout is the
+            // end of the command.
+            Err(_) if input.raw || caller.is_none() => {
+                return ToolResult::error(format!(
+                    "Command stopped at its timeout of {timeout_secs}s: `{}`",
+                    crate::truncate_str(&input.command, 80)
+                ));
+            }
+            Err(_) => {
+                if self.registry.move_to_background(&started.session, caller) {
+                    owned.0 = None;
+                    return ToolResult::ok(format!(
+                        "Command exceeded its timeout ({timeout_secs}s) and was moved to the background \
+                         with ID: {id}. It is still running; you'll be notified when it completes. Read \
+                         what it has printed so far with read_output(task_id: \"{id}\"); stop it with \
+                         stop_task(task_id: \"{id}\").",
+                        id = started.session.id
+                    ));
+                }
+                // It ended in the same instant: its status is on the way.
+                exited.await
+            }
+        };
+        owned.0 = None;
+        let Ok(Some(status)) = status else {
+            return ToolResult::error(format!(
+                "Command `{}` ended but its exit status could not be read.",
+                crate::truncate_str(&input.command, 80)
+            ));
+        };
+        let (stdout, stderr) = started.session.drain_pending().await;
+        let output = std::process::Output { status, stdout, stderr };
+        if input.raw {
+            if !output.status.success() {
+                return ToolResult::error(format!(
+                    "{}\n{}",
+                    exit_header(&output.status),
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            return ToolResult::ok(
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+            );
+        }
+        let mut result = String::new();
 
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.is_empty() {
+            result.push_str(&stdout);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        #[cfg(target_os = "windows")]
+        let stderr: std::borrow::Cow<'_, str> =
+            std::borrow::Cow::Owned(process::clean_powershell_stderr(&stderr));
+        if !stderr.is_empty() {
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            result.push_str("STDERR:\n");
+            result.push_str(&stderr);
+        }
+
+        // A pipeline exits with its LAST stage's status: `frobnicate
+        // --version | head -1` is exit 0 with "frobnicate: command not
+        // found" on stderr, and the hint below never fired. The shell
+        // named a missing program; that is the failure, whatever the code.
+        let missing_in_pipeline = output.status.success() && missing_command_name(&stderr).is_some();
+        if !output.status.success() || missing_in_pipeline {
+            let code = output.status.code().unwrap_or(-1);
+            let (is_error, semantic_msg) =
+                interpret_exit_code(&input.command, code, &result);
+            if let Some(msg) = semantic_msg {
+                if !result.is_empty() {
+                    result.push('\n');
+                }
+                result.push_str(&msg);
+            }
+            if is_error {
+                return ToolResult { payload: None, need: None, parked_ask: None,
+                    content: format!("{}\n{}", exit_header(&output.status), result),
+                    is_error: true,
+                    image_url: None,
+                    http_status: None,
+                    terminal: false,
+                };
+            }
+            // Non-error exit (e.g. grep exit 1 = no matches) — fall through to success path
+        }
+
+        if result.is_empty() {
+            result = "(exit 0, no output)".to_string();
+        }
+
+        // Long output is persisted by the registry (the one spill
+        // path, at this tool's `max_result_chars`), never here.
+
+        // A command that produced a work document (`python gen.py -o report.pdf`,
+        // `nebo-office pptx create … -o deck.pptx`) surfaces it exactly like an
+        // `os` write — same gate the plugin exec pathway uses.
+        // shlex chokes on quote-heavy commands (an HTML heredoc has
+        // apostrophes everywhere) and returned ZERO tokens — which made
+        // exactly the runs that write big documents the ones whose
+        // documents were never detected (observed live 2026-08-28: a
+        // dashboard.html heredoc left the Work panel empty). Fall back
+        // to whitespace tokens so redirect targets still surface.
+        let tokens = shlex::split(&input.command).unwrap_or_else(|| {
+            input
+                .command
+                .split_whitespace()
+                .map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '>').to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        });
+        let base = (!input.cwd.is_empty()).then(|| std::path::Path::new(&input.cwd));
+        let result = ToolResult::ok(result);
+        match crate::plugin_tool::produced_work_document(&tokens, base, started_at) {
+            Some(path) => result.with_image_url(path),
+            None => result,
+        }
+    }
+
+    /// The one command every run_command call runs: the shell with the
+    /// command, its folder, and the environment (sanitized, git's prompts off,
+    /// installed plugins on the PATH, and plugin auth for a workflow's
+    /// command step alone).
+    fn command(&self, input: &ShellInput, trusted_plugin_env: bool, default_cwd: Option<&str>) -> Result<tokio::process::Command, ToolResult> {
         let (shell, shell_args) = process::shell_command();
         let mut cmd = tokio::process::Command::new(&shell);
         for arg in &shell_args {
@@ -258,20 +406,17 @@ impl ShellTool {
         if !cwd.is_empty() {
             let cwd_path = std::path::Path::new(cwd);
             if !cwd_path.exists() {
-                return ToolResult::error(errors::path_not_found(cwd));
+                return Err(ToolResult::error(errors::path_not_found(cwd)));
             }
             if !cwd_path.is_dir() {
-                return ToolResult::error(format!(
+                return Err(ToolResult::error(format!(
                     "Not a directory: {}. The cwd parameter must be a directory path.",
                     cwd
-                ));
+                )));
             }
             cmd.current_dir(cwd);
         }
 
-        process::hide_window(&mut cmd);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
         cmd.env_clear();
         for (k, v) in process::sanitized_env() {
             cmd.env(k, v);
@@ -296,217 +441,19 @@ impl ShellTool {
                 }
             }
         }
-
-        let started = std::time::SystemTime::now();
-        // Kill the child if the timeout drops the output() future. Without this
-        // the process outlives the call FOREVER — it reparents to launchd/init
-        // and never exits. Same defect class that accumulated 330 orphaned
-        // plugin processes on a customer box (see PluginRuntime::run_capture);
-        // a never-exiting command like `dns-sd -B` under the default timeout
-        // leaked its process on every single invocation.
-        // The command's whole process group ends with the call (completion,
-        // timeout or a cancelled turn): a server it started would otherwise
-        // reparent to init and run forever. Servers belong in a background session.
-        let result = crate::process::output_within(cmd, std::time::Duration::from_secs(timeout_secs)).await;
-
-        match result {
-            Ok(crate::process::Outcome::TimedOut { stdout, stderr }) => ToolResult { payload: None, need: None, parked_ask: None,
-                content: format!(
-                    "Command killed after {}s (its timeout): `{}`\n\
-                     Output before the kill:\n{}\
-                     Pass a larger timeout for a longer job, or run it with background: true \
-                     and read its output with read_output.",
-                    timeout_secs,
-                    if input.command.len() > 80 {
-                        format!("{}...", crate::truncate_str(&input.command, 80))
-                    } else {
-                        input.command.clone()
-                    },
-                    {
-                        let out = String::from_utf8_lossy(&stdout);
-                        let err = String::from_utf8_lossy(&stderr);
-                        let mut text = String::new();
-                        if !out.trim().is_empty() {
-                            text.push_str(crate::truncate_str(&out, 4000));
-                            text.push('\n');
-                        }
-                        if !err.trim().is_empty() {
-                            text.push_str("STDERR:\n");
-                            text.push_str(crate::truncate_str(&err, 2000));
-                            text.push('\n');
-                        }
-                        if text.is_empty() {
-                            text.push_str("(nothing printed)\n");
-                        }
-                        text
-                    }
-                ),
-                is_error: true,
-                image_url: None,
-                http_status: None,
-                terminal: false,
-            },
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("No such file or directory") || err_str.contains("not found") {
-                    let base_cmd = extract_base_command(&input.command);
-                    ToolResult::error(errors::command_not_found(&base_cmd))
-                } else if err_str.contains("Permission denied") {
-                    ToolResult::error(errors::permission_denied(&input.command, "execute"))
-                } else {
-                    ToolResult::error(format!("Command failed to start: {}", e))
-                }
-            }
-            Ok(crate::process::Outcome::Done(output)) => {
-                if input.raw {
-                    if !output.status.success() {
-                        return ToolResult::error(format!(
-                            "{}\n{}",
-                            exit_header(&output.status),
-                            String::from_utf8_lossy(&output.stderr)
-                        ));
-                    }
-                    return ToolResult::ok(
-                        String::from_utf8_lossy(&output.stdout).into_owned(),
-                    );
-                }
-                let mut result = String::new();
-
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if !stdout.is_empty() {
-                    result.push_str(&stdout);
-                }
-
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                #[cfg(target_os = "windows")]
-                let stderr: std::borrow::Cow<'_, str> =
-                    std::borrow::Cow::Owned(process::clean_powershell_stderr(&stderr));
-                if !stderr.is_empty() {
-                    if !result.is_empty() {
-                        result.push('\n');
-                    }
-                    result.push_str("STDERR:\n");
-                    result.push_str(&stderr);
-                }
-
-                // A pipeline exits with its LAST stage's status: `frobnicate
-                // --version | head -1` is exit 0 with "frobnicate: command not
-                // found" on stderr, and the hint below never fired. The shell
-                // named a missing program; that is the failure, whatever the code.
-                let missing_in_pipeline = output.status.success() && missing_command_name(&stderr).is_some();
-                if !output.status.success() || missing_in_pipeline {
-                    let code = output.status.code().unwrap_or(-1);
-                    let (is_error, semantic_msg) =
-                        interpret_exit_code(&input.command, code, &result);
-                    if let Some(msg) = semantic_msg {
-                        if !result.is_empty() {
-                            result.push('\n');
-                        }
-                        result.push_str(&msg);
-                    }
-                    if is_error {
-                        return ToolResult { payload: None, need: None, parked_ask: None,
-                            content: format!("{}\n{}", exit_header(&output.status), result),
-                            is_error: true,
-                            image_url: None,
-                            http_status: None,
-                            terminal: false,
-                        };
-                    }
-                    // Non-error exit (e.g. grep exit 1 = no matches) — fall through to success path
-                }
-
-                if result.is_empty() {
-                    result = "(exit 0, no output)".to_string();
-                }
-
-                // Long output is persisted by the registry (the one spill
-                // path, at this tool's `max_result_chars`), never here.
-
-                // A command that produced a work document (`python gen.py -o report.pdf`,
-                // `nebo-office pptx create … -o deck.pptx`) surfaces it exactly like an
-                // `os` write — same gate the plugin exec pathway uses.
-                // shlex chokes on quote-heavy commands (an HTML heredoc has
-                // apostrophes everywhere) and returned ZERO tokens — which made
-                // exactly the runs that write big documents the ones whose
-                // documents were never detected (observed live 2026-08-28: a
-                // dashboard.html heredoc left the Work panel empty). Fall back
-                // to whitespace tokens so redirect targets still surface.
-                let tokens = shlex::split(&input.command).unwrap_or_else(|| {
-                    input
-                        .command
-                        .split_whitespace()
-                        .map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '>').to_string())
-                        .filter(|t| !t.is_empty())
-                        .collect()
-                });
-                let base = (!input.cwd.is_empty()).then(|| std::path::Path::new(&input.cwd));
-                let result = ToolResult::ok(result);
-                match crate::plugin_tool::produced_work_document(&tokens, base, started) {
-                    Some(path) => result.with_image_url(path),
-                    None => result,
-                }
-            }
-        }
+        Ok(cmd)
     }
 
-    async fn execute_background(&self, input: &ShellInput) -> ToolResult {
-        let cwd = if input.cwd.is_empty() {
-            None
-        } else {
-            Some(input.cwd.as_str())
-        };
-
-        let plugin_envs = self
-            .plugin_store
-            .as_ref()
-            .map(|ps| ps.build_env_map())
-            .unwrap_or_default();
-
-        match self
-            .registry
-            .spawn_background(&input.command, cwd, &plugin_envs)
-            .await
-        {
-            Ok(session_id) => {
-                // Brief pause to see initial output
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-                if let Some(sess) = self.registry.get_any_session(&session_id).await {
-                    let mut result = format!(
-                        "Background session started: **{}** (PID {})\n\nCommand: `{}`\n",
-                        sess.id, sess.pid, input.command
-                    );
-
-                    if sess.exited {
-                        let exit_code = sess
-                            .exit_code
-                            .map(|c| c.to_string())
-                            .unwrap_or_else(|| "?".to_string());
-                        result.push_str(&format!(
-                            "\nProcess completed with exit code {}\n",
-                            exit_code
-                        ));
-                        let output = sess.get_output().await;
-                        if !output.is_empty() {
-                            result.push_str("Output:\n");
-                            result.push_str(&output);
-                        }
-                    } else {
-                        result.push('\n');
-                        result.push_str(&session_next_steps(&sess.id));
-                        result.push('\n');
-                    }
-
-                    ToolResult::ok(result)
-                } else {
-                    ToolResult::ok(format!(
-                        "Background session started: {}\n{}",
-                        session_id,
-                        session_next_steps(&session_id)
-                    ))
-                }
-            }
+    async fn execute_background(&self, cmd: tokio::process::Command, input: &ShellInput, caller: Option<process::Caller>) -> ToolResult {
+        let told = if caller.is_some() { " You'll be notified when it ends." } else { "" };
+        match self.registry.spawn(cmd, &input.command, process::Spawn::Background(caller)).await {
+            Ok(started) => ToolResult::ok(format!(
+                "Background session started: **{}** (PID {})\n\nCommand: `{}`\n\n{}{told}\n",
+                started.session.id,
+                started.session.pid,
+                input.command,
+                session_next_steps(&started.session.id)
+            )),
             Err(e) => ToolResult::error(format!("Failed to start background process: {}", e)),
         }
     }
@@ -865,6 +812,30 @@ impl ShellTool {
     }
 }
 
+/// A foreground command's process group, killed when its call is dropped
+/// (a cancelled turn) before the command ended or moved to the background.
+struct KillOnDrop(Option<u32>);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            process::kill_group(pid);
+        }
+    }
+}
+
+/// Why the shell could not start the command.
+fn spawn_failure(command: &str, e: &std::io::Error) -> ToolResult {
+    let err_str = e.to_string();
+    if err_str.contains("No such file or directory") || err_str.contains("not found") {
+        ToolResult::error(errors::command_not_found(&extract_base_command(command)))
+    } else if err_str.contains("Permission denied") {
+        ToolResult::error(errors::permission_denied(command, "execute"))
+    } else {
+        ToolResult::error(format!("Command failed to start: {}", e))
+    }
+}
+
 /// The one status line for a background session, shared by poll and info.
 fn session_status(exited: bool, exit_code: Option<i32>) -> String {
     if exited {
@@ -1177,52 +1148,82 @@ mod tests {
         }
     }
 
-    /// The shell door answers at its own timeout, even when the command left
-    /// behind a process the kill cannot reach. The gate's run 3 of
-    /// `run-command-retry-spiral` went silent for the harness's whole 180 s under
-    /// a 120 s timeout, because the kill waited on a `find` grandchild stuck
-    /// in uninterruptible sleep; the timeout sentence has to come back
-    /// regardless, and the process that will not die is let go.
+    fn session_ctx() -> ToolContext {
+        let mut c = ctx();
+        c.session_key = "agent:a1:web".into();
+        c
+    }
+
+    /// Past its timeout a command moves to the background instead of being
+    /// killed (Claude Code's Bash, `BashTool.tsx` onTimeout), and its end
+    /// reaches the session that ran it. Before: "Command killed after 1s".
+    #[tokio::test]
+    async fn a_command_past_its_timeout_moves_to_the_background_and_reports() {
+        let registry = Arc::new(ProcessRegistry::new());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        registry.set_exit_sink(Arc::new(move |exit| {
+            let _ = tx.send(exit);
+        }));
+        let t = ShellTool::new(registry.clone());
+        let started = std::time::Instant::now();
+        let r = t
+            .execute(
+                &session_ctx(),
+                json!({"action": "exec", "command": "sleep 2; echo migrated", "timeout": 1, "description": "run the migration"}),
+            )
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("was moved to the background with ID: bg-"), "{}", r.content);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "the call answered at its timeout");
+        let exit = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await.expect("told in time").expect("told");
+        assert_eq!(exit.caller.session_key, "agent:a1:web");
+        assert_eq!(exit.caller.description, "run the migration");
+        assert_eq!((exit.exit_code, exit.output.trim()), (Some(0), "migrated"));
+        assert!(r.content.contains(&exit.task_id), "the id it was moved under is the one reported");
+    }
+
+    /// The call answers at its timeout even when the command left behind a
+    /// process the group kill cannot reach (the gate's
+    /// `run-command-retry-spiral`, run 3: a `find` grandchild in
+    /// uninterruptible sleep): the command moves to the background, so
+    /// nothing waits on it.
     #[cfg(unix)]
     #[tokio::test]
-    async fn the_timeout_sentence_arrives_even_with_a_child_the_kill_cannot_reach() {
+    async fn the_timeout_answer_arrives_even_with_a_child_the_kill_cannot_reach() {
         let file = std::env::temp_dir().join(format!("nebo-shell-escape-{}", std::process::id()));
         let _ = std::fs::remove_file(&file);
         let t = tool();
         let started = std::time::Instant::now();
-        // The grandchild puts itself in its own process group, which the group
-        // kill does not reach — the stand-in for a `D`-state child.
         let r = t
             .execute(
-                &ctx(),
-                json!({
-                    "action": "exec",
-                    "command": crate::process::escaped_child_command(&file),
-                    "timeout": 1
-                }),
+                &session_ctx(),
+                json!({"action": "exec", "command": crate::process::escaped_child_command(&file), "timeout": 1}),
             )
             .await;
-        let waited = started.elapsed();
-
-        assert!(r.is_error, "a killed command reports as an error: {}", r.content);
-        assert!(
-            r.content.contains("Command killed after 1s"),
-            "the timeout sentence must be what comes back: {}",
-            r.content
-        );
-        assert!(
-            waited < std::time::Duration::from_secs(10),
-            "the answer waited on a process that would not die ({waited:?})"
-        );
-
+        assert!(r.content.contains("moved to the background"), "{}", r.content);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        let id = r.content.split("ID: ").nth(1).and_then(|s| s.split('.').next()).unwrap().to_string();
+        let _ = t.execute(&ctx(), json!({"action": "kill", "session_id": id})).await;
         let escaped = crate::process::grandchild_pid(&file).await;
-        assert!(
-            crate::process::alive(escaped),
-            "the stand-in needs a grandchild the group kill misses; pid {escaped} died"
-        );
-        // SAFETY: a pid this test created; the escaped process is let go by
-        // the tool, so the test is what kills it.
+        // SAFETY: a pid this test created; the group kill misses it by design.
         unsafe { libc::kill(escaped, libc::SIGKILL) };
+        let _ = std::fs::remove_file(&file);
+    }
+
+    /// A cancelled turn drops its call, and a foreground command that has
+    /// not moved to the background dies with it, children included.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dropped_call_takes_its_foreground_command_with_it() {
+        let file = std::env::temp_dir().join(format!("nebo-shell-drop-{}", uuid::Uuid::new_v4()));
+        let t = tool();
+        let command = format!("sleep 30 & echo $! > {}; wait", file.display());
+        let c = session_ctx();
+        let call = t.execute(&c, json!({"action": "exec", "command": command, "timeout": 60}));
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), call).await;
+        let pid = crate::process::grandchild_pid(&file).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!crate::process::alive(pid), "the command outlived its cancelled call");
         let _ = std::fs::remove_file(&file);
     }
 
