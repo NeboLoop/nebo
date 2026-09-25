@@ -877,6 +877,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             workflow: cx.workflow(),
             mode: &cx.request.mode,
             withheld: &cx.withheld_tools,
+            desktop: tools::desktop_available(),
         };
         let surface = tool_surface::surface(&h.tools, &conversation, &surface_seat).await;
         step_events(cx, st, &conversation, surface.listing.clone(), &surface.declared).await;
@@ -1292,6 +1293,14 @@ async fn step_events(
         if let Some(delta) = events::LinedDelta::between(&announced, &now) {
             st.reminders.add(&TurnEvent::SkillListing(delta));
         }
+    }
+    // The helper types this run can start and when each fits: Claude Code's
+    // agent listing, a delta row rather than tool text so the tools array
+    // stays the same everywhere (2.1.280 m0342 `agent_listing_delta`;
+    // `shouldInjectAgentListInMessages`, `src/tools/AgentTool/prompt.ts`).
+    let helper_types = super::delegation::helper_types(&cx.request.mode);
+    if let Some(delta) = events::LinedDelta::between(&events::announced("helper_types", conversation), &helper_types) {
+        st.reminders.add(&TurnEvent::HelperTypes(delta));
     }
 
     let task_tools_declared = declared.iter().any(|d| events::TASK_TOOLS.contains(&d.name.as_str()));
@@ -3527,6 +3536,85 @@ mod tests {
         assert!(told(&calls[3]).contains("You are Ava, working as an explore helper on one task for Ava."));
         let activity = told(&calls[5]);
         assert!(activity.contains("You are Bo, an AI employee") && activity.contains("Reconcile the ledger."), "{activity}");
+    }
+
+    /// The real helper tools (delegate, send_message), with no helper
+    /// registry bound: a delegate call is refused as not ready, so a test
+    /// reads what the model was told, not what a helper did.
+    fn real_helper_tools(h: &Harness) -> Vec<Box<dyn tools::registry::DynTool>> {
+        let rail = tools::coworker::new_rail_cell();
+        let teams = Arc::new(tools::team_tool::Teams::new(Some(h.store.clone()), None, None, rail.clone()));
+        tools::helper_tools::Helpers::new(h.store.clone(), tools::orchestrator::new_handle(), teams, rail).tools()
+    }
+
+    /// D16 end to end: an owner asks for a search across the codebase. The
+    /// request the model answers carries the helper types listing (explore's
+    /// line naming wide searches), the delegate description with when to
+    /// hand off, and the system prompt sending wide searches to an explore
+    /// helper; the model's first action is a delegate to an explore helper.
+    /// Before, the listing was never sent, delegate only warned against
+    /// itself, and the prompt sent every search to run_command.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_wide_search_is_handed_to_an_explore_helper() {
+        let model = Scripted::new(vec![
+            Step::Call(
+                "delegate",
+                serde_json::json!({
+                    "helper_type": "explore",
+                    "description": "Find retry setting uses",
+                    "prompt": "Find every place the retry_backoff setting is read or set across the project. Report each file and line, under 200 words."
+                }),
+            ),
+            Step::Say("A helper is searching; I'll report when it's back."),
+        ]);
+        let h = harness(&model).await;
+        for tool in real_helper_tools(&h) {
+            h.tools.register(tool).await;
+        }
+        run_turn(&h, owner("Find every place retry_backoff is used across the codebase.")).await;
+
+        let calls = model.calls();
+        let first = &calls[0];
+        let told = texts(first).join("\n");
+        let listing = told
+            .split("<system-reminder>")
+            .find(|r| r.contains("Helper types for delegate"))
+            .unwrap_or_else(|| panic!("no helper types listing in the first request:\n{told}"));
+        assert!(
+            listing.contains("- explore: Wide searches: when answering means going through many files"),
+            "{listing}"
+        );
+        assert!(listing.contains("- general: ") && listing.contains("- plan: "), "{listing}");
+        let delegate = first.tools.iter().find(|t| t.name == "delegate").expect("delegate is always loaded");
+        assert!(delegate.description.contains("When to use: the work matches a helper type"), "{}", delegate.description);
+        assert!(delegate.description.contains("When not to use: the target is known"), "{}", delegate.description);
+        assert!(first.system.contains("A wide search, across the project or likely to take more than three searches, goes to an explore helper with delegate."));
+        let first_call = stored(&h)
+            .iter()
+            .find_map(|m| m.tool_calls.clone())
+            .expect("the model's first action is a call");
+        assert!(first_call.contains(r#""name":"delegate""#) && first_call.contains(r#""helper_type":"explore""#), "{first_call}");
+
+        // Told once: the next request doesn't list the types again.
+        let again = texts(&calls[1]).join("\n");
+        assert_eq!(again.matches("Helper types for delegate").count(), 1, "the listing is a row, written once");
+    }
+
+    /// D18: in plan mode a goal can't be proposed yet (Claude Code refuses a
+    /// proposal while plan mode is active).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_goal_is_proposed_in_plan_mode() {
+        use tools::GoalSuggester;
+        let model = Scripted::new(Vec::new());
+        let h = harness(&model).await;
+        let goals = goal::GoalSuggestions::new(h.clone(), Default::default());
+        let ctx = tools::ToolContext {
+            session_id: "s1".into(),
+            grant: Some(Arc::new(types::permissions::Grant::new("ops", Mode::Plan))),
+            ..Default::default()
+        };
+        let refused = goals.suggest(&ctx, "every test passes", true).await.unwrap_err();
+        assert!(refused.starts_with("Plan mode is on, so a goal can't be proposed yet."), "{refused}");
     }
 
     /// A helper given its own speed (fix plan E8) runs every step on it,

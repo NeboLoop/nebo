@@ -32,8 +32,21 @@ use types::permissions::Grant;
 use types::provenance::ProvenanceClass;
 
 /// Nesting depth cap. A helper at this depth has no helper tool; a launch
-/// from it is refused as a backstop.
+/// from it is refused as a backstop. Claude Code 2.1.280's default
+/// (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, m0238 `o=3`; refused in m0480:
+/// "Subagent nesting limit reached").
 pub const MAX_DEPTH: u8 = 3;
+
+/// Most helpers running at once in one conversation's tree: the owner's
+/// session, its helpers and theirs. A launch past it is refused, told not
+/// to retry. Claude Code 2.1.280's limit on the subagents a session runs at
+/// once (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, default 20, m0342 `aqn`;
+/// refused in m0480 `dn`: "Concurrent subagent limit reached. You can run N
+/// subagents at once. Do not retry."). It is a runaway brake on one tree,
+/// not a width limit on model calls: those take permits from the bot's one
+/// adaptive pool (`crate::concurrency`), which stays the only brake on
+/// fan-out width (CODE_AUDITOR §15).
+pub const MAX_RUNNING: usize = 20;
 
 /// How long a foreground helper holds its parent's step. Past it the helper
 /// moves to the background: it keeps running and reports by notification.
@@ -122,6 +135,36 @@ impl HelperKind {
     fn read_only(self) -> bool {
         matches!(self, Self::Explore | Self::Plan)
     }
+
+    pub const ALL: [HelperKind; 3] = [Self::General, Self::Explore, Self::Plan];
+
+    /// When the type fits, and the tools it has: its line in the helper
+    /// types listing. Claude Code 2.1.280's agent listing line is
+    /// `- type: whenToUse (Tools: …)` (`formatAgentLine`,
+    /// `src/tools/AgentTool/prompt.ts`), and these are its general-purpose,
+    /// Explore (m0342 `TJt`) and Plan (m0342 `JV`) lines, in our words.
+    pub fn when_to_use(self) -> &'static str {
+        match self {
+            Self::General => "Researching open questions, searching when you aren't sure the first few tries will find \
+the match, and carrying out work of several steps. (Tools: all of yours.)",
+            Self::Explore => "Wide searches: when answering means going through many files, folders or naming \
+patterns and you need only the conclusion, not the file contents. It finds things; it doesn't review or audit \
+them. Say how wide to search: \"medium\", or \"very thorough\" for several places and naming conventions. \
+(Tools: yours that only look; it changes nothing and starts no helpers.)",
+            Self::Plan => "Designing how to carry out a piece of work: it returns the steps, the files that matter \
+and the trade-offs. (Tools: yours that only look; it changes nothing and starts no helpers.)",
+        }
+    }
+}
+
+/// The helper types a turn in `mode` can start, each with its line (the
+/// `helper_types` listing): every type while the run can delegate, none
+/// for an explore or plan helper or at the depth cap.
+pub fn helper_types(mode: &TurnMode) -> std::collections::BTreeMap<String, String> {
+    if !on_surface(mode, HELPER_TOOL) {
+        return Default::default();
+    }
+    HelperKind::ALL.into_iter().map(|k| (k.as_str().to_string(), k.when_to_use().to_string())).collect()
 }
 
 /// Where an isolated helper works: its own copy of the project
@@ -184,6 +227,16 @@ pub fn split_helper_key(key: &str) -> Option<(&str, &str)> {
     key.strip_prefix("subagent:")?.rsplit_once(':')
 }
 
+/// The session at the top of the helper tree `key` belongs to: `key`
+/// itself for any session that is not a helper's.
+fn root_of(key: &str) -> &str {
+    let mut key = key;
+    while let Some((parent, _)) = split_helper_key(key) {
+        key = parent;
+    }
+    key
+}
+
 /// The session key of helper `task_id` of `parent_key`.
 pub fn helper_key(parent_key: &str, task_id: &str) -> String {
     format!("subagent:{parent_key}:{task_id}")
@@ -199,6 +252,7 @@ pub fn on_surface(mode: &TurnMode, tool_name: &str) -> bool {
         TurnMode::Helper { kind, depth, .. } if tool_name == HELPER_TOOL => {
             !kind.read_only() && *depth < MAX_DEPTH
         }
+        TurnMode::Helper { .. } if tool_name == GOAL_TOOL => false,
         TurnMode::Workflow(_) => true,
         _ => tool_name != EXIT_TOOL,
     }
@@ -206,6 +260,13 @@ pub fn on_surface(mode: &TurnMode, tool_name: &str) -> bool {
 
 /// The workflow primitive that ends an activity early.
 const EXIT_TOOL: &str = "exit";
+
+/// The tool that proposes the owner's agreed goal. A goal is the owner's,
+/// agreed in their own conversation: a helper never proposes one, as
+/// Claude Code's ProposeGoal is refused in agent contexts (2.1.280 m1493:
+/// "ProposeGoal cannot be used in agent contexts") and is left off every
+/// agent's tools (m0254).
+const GOAL_TOOL: &str = "suggest_goal";
 
 /// Whether a turn in `mode` may make the call `target`. A helper's kind is
 /// an enforced tool set, a helper at the depth cap cannot delegate, and only
@@ -223,6 +284,13 @@ pub fn permits(mode: &TurnMode, target: &types::permissions::Target) -> Result<(
     let TurnMode::Helper { kind, depth, .. } = mode else {
         return Ok(());
     };
+    if target.tool == GOAL_TOOL {
+        return Err(
+            "A goal is agreed with the owner in their own conversation; a helper doesn't propose one. Do \
+             the task you were given and report."
+                .to_string(),
+        );
+    }
     let delegating = target.key == HELPER_TOOL;
     if kind.read_only() && (delegating || !target.read_only) {
         return Err(format!(
@@ -305,6 +373,22 @@ struct State {
     /// parent session's, so the owner's Stop reaches every descendant,
     /// including background helpers from earlier turns.
     stops: HashMap<String, CancellationToken>,
+    /// Launches in progress per helper tree (its top session), counted
+    /// with the running helpers against [`MAX_RUNNING`].
+    starting: HashMap<String, usize>,
+}
+
+/// A launch's place in its tree, given back when the launch ends: by then
+/// the helper is running (and counted as such) or was never started.
+struct Place<'a> {
+    helpers: &'a Helpers,
+    root: String,
+}
+
+impl Drop for Place<'_> {
+    fn drop(&mut self) {
+        self.helpers.state().release_place(&self.root);
+    }
 }
 
 impl State {
@@ -314,6 +398,30 @@ impl State {
 
     fn running_children(&self, key: &str) -> bool {
         self.helpers.values().any(|h| h.parent_key == key && h.running)
+    }
+
+    /// Take a place for a helper launching in the tree `key` belongs to:
+    /// `None` when its running helpers and the launches in progress already
+    /// reach [`MAX_RUNNING`]. Counting and taking under one lock keeps
+    /// several delegate calls of one response from all passing the count.
+    fn take_place(&mut self, key: &str) -> Result<String, usize> {
+        let root = root_of(key).to_string();
+        let running = self.helpers.values().filter(|h| h.running && root_of(&h.session_key) == root).count();
+        let starting = self.starting.entry(root.clone()).or_default();
+        if running + *starting >= MAX_RUNNING {
+            return Err(running + *starting);
+        }
+        *starting += 1;
+        Ok(root)
+    }
+
+    fn release_place(&mut self, root: &str) {
+        if let Some(n) = self.starting.get_mut(root) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.starting.remove(root);
+            }
+        }
     }
 
     /// Drop a helper that is done with nothing running under it, and the
@@ -469,6 +577,17 @@ impl Helpers {
                  explore and plan helpers never can). Do this part yourself with your own tools."
             ));
         }
+        let taken = self.state().take_place(parent_key);
+        let _place = match taken {
+            Ok(root) => Place { helpers: self, root },
+            Err(running) => {
+                warn!(parent = %parent_key, running, "helper refused: the conversation's running-helper limit");
+                return Err(format!(
+                    "{MAX_RUNNING} helpers are already running in this conversation, the most at once. Don't \
+                     retry: do this part yourself with your own tools, or wait for one to report."
+                ));
+            }
+        };
         let task_id = format!("h-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
         let session_key = helper_key(parent_key, &task_id);
         let parent_seat = &turn.seat;
@@ -1864,5 +1983,73 @@ mod tests {
         assert_eq!((spec.kind, spec.background), (HelperKind::Plan, false));
         assert!(HelperSpec::from_input(&serde_json::json!({"description": "d"})).is_err());
         assert!(HelperSpec::from_input(&serde_json::json!({"description": "d", "prompt": "p", "helper_type": "coder"})).is_err());
+    }
+
+    /// D16: a run that can delegate is told each helper type and when it
+    /// fits, explore's line naming wide searches; a run that can't
+    /// delegate (explore, plan, the depth cap) is told none.
+    #[test]
+    fn the_helper_types_listing_says_when_each_type_fits() {
+        let listed = helper_types(&TurnMode::Chat);
+        assert_eq!(listed.keys().map(String::as_str).collect::<Vec<_>>(), ["explore", "general", "plan"]);
+        assert!(listed["explore"].starts_with("Wide searches: when answering means going through many files"), "{}", listed["explore"]);
+        assert!(listed["explore"].contains("it changes nothing and starts no helpers"));
+        assert!(listed["general"].contains("(Tools: all of yours.)"));
+        assert_eq!(helper_types(&helper_mode(HelperKind::General, 2)), listed, "a general helper under the cap");
+        for mode in [helper_mode(HelperKind::Explore, 1), helper_mode(HelperKind::Plan, 1), helper_mode(HelperKind::General, 3)] {
+            assert!(helper_types(&mode).is_empty());
+        }
+    }
+
+    /// D18: a goal is the owner's. A helper is neither offered
+    /// suggest_goal nor allowed to call it (Claude Code: "ProposeGoal
+    /// cannot be used in agent contexts"); the owner's own turn is.
+    #[test]
+    fn a_helper_never_proposes_a_goal() {
+        for kind in HelperKind::ALL {
+            let mode = helper_mode(kind, 1);
+            assert!(!on_surface(&mode, "suggest_goal"), "{kind:?}");
+            let refused = permits(&mode, &target("suggest_goal", true)).unwrap_err();
+            assert!(refused.contains("a helper doesn't propose one"), "{refused}");
+        }
+        assert!(on_surface(&TurnMode::Chat, "suggest_goal"));
+        assert!(permits(&TurnMode::Chat, &target("suggest_goal", true)).is_ok());
+    }
+
+    /// D17: at most MAX_RUNNING helpers run at once in one conversation's
+    /// tree, nested ones included (the fixture run where one helper started
+    /// about fifty). The next launch is refused and told not to retry;
+    /// another conversation is untouched, and a finished helper frees its
+    /// place.
+    #[tokio::test]
+    async fn a_conversation_runs_at_most_twenty_helpers_at_once() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:ops:web");
+        rig.helpers.delegate(&owner, None, &[], &call("Watch the others.", None)).await.unwrap();
+        let babysitter = rig.next_turn().await;
+        let mut started = Vec::new();
+        for i in 1..MAX_RUNNING {
+            rig.helpers
+                .delegate(&babysitter.request, None, &[], &call(&format!("check {i}"), None))
+                .await
+                .unwrap_or_else(|e| panic!("helper {i} of {MAX_RUNNING}: {e}"));
+            started.push(rig.next_turn().await);
+        }
+        let refused = rig.helpers.delegate(&babysitter.request, None, &[], &call("check again", None)).await.unwrap_err();
+        assert!(refused.contains("20 helpers are already running in this conversation") && refused.contains("Don't retry"), "{refused}");
+        assert!(rig.helpers.delegate(&owner, None, &[], &call("one more", None)).await.is_err(), "the owner's own launch counts the whole tree");
+
+        let other = rig.owner_turn("agent:sales:web");
+        rig.helpers.delegate(&other, None, &[], &call("elsewhere", None)).await.expect("another conversation has its own count");
+        let _elsewhere = rig.next_turn().await;
+
+        started.pop().unwrap().answer("done").await;
+        for _ in 0..200 {
+            if rig.helpers.delegate(&owner, None, &[], &call("now there's room", None)).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("a finished helper never freed its place");
     }
 }
