@@ -241,7 +241,10 @@ def num(x, unit=""):
 
 
 def per_turn(run):
-    first, steps, tools, prompt, cards, approvals, turns = [], [], [], [], 0, 0, 0
+    """Owner turns for latency and the turn count; every turn, woken ones
+    included (the session's own turns after a helper reported), for steps,
+    prompt size and cards: those are the task's cost."""
+    first, steps, tools, prompt, cards, approvals, turns, woken = [], [], [], [], 0, 0, 0, 0
     runs_with_turns = 0
     for _, _, t in run.all():
         rows = t.get("turns") or []
@@ -250,14 +253,17 @@ def per_turn(run):
             steps.append(sum(r.get("model_calls", 0) for r in rows))
         tools.append(t["metrics"].get("total_tool_calls", 0))
         for r in rows:
-            turns += 1
-            if r.get("first_reply_ms") is not None:
+            if r.get("woken"):
+                woken += 1
+            else:
+                turns += 1
+            if r.get("first_reply_ms") is not None and not r.get("woken"):
                 first.append(r["first_reply_ms"] / 1000)
             prompt.append(r.get("max_prompt_tokens", 0))
             cards += r.get("cards", 0)
             approvals += r.get("approvals", 0)
     return dict(first=first, steps=steps, tools=tools, prompt=[p for p in prompt if p],
-                cards=cards, approvals=approvals, turns=turns, runs_with_turns=runs_with_turns)
+                cards=cards, approvals=approvals, turns=turns, woken=woken, runs_with_turns=runs_with_turns)
 
 
 def thread_counts(run, sev):
@@ -455,7 +461,8 @@ def main():
         ("largest request per turn, p90 (tokens)", p90(ta["prompt"]), p90(tp["prompt"]), "", True),
     ]:
         w(f"| {name} | {num(xa)} | {num(xp)} | {delta(xa, xp, '{:+,.1f}', lower)} |")
-    w(f"| turns | {ta['turns']} | {tp['turns']} | |")
+    w(f"| owner turns | {ta['turns']} | {tp['turns']} | |")
+    w(f"| turns woken by the run's own background work | {ta['woken']} | {tp['woken']} | |")
     w(f"| permission asks (approval cards) | {ta['approvals']} | {tp['approvals']} | |")
     w(f"| other cards (install, connect, plan) | {ta['cards']} | {tp['cards']} | |\n")
 

@@ -58,9 +58,11 @@ name: Harness gate
 # /tmp, NEBO_HOME and working directory, and the server and the test runner
 # run in that view through scripts/gate-sandbox.sh (bubblewrap): no run sees
 # a file an earlier run left, another runner's work, or ~/harness-runs.
-# A replay sweep goes further: every run of every replay thread gets a fresh
-# server with an empty NEBO_HOME, home, /tmp and working directory
-# (scripts/gate-server.sh fresh), so no thread recalls another's memory.
+# Every run of every fixture, replay thread or not, gets a fresh server with
+# an empty NEBO_HOME, home, /tmp and working directory (scripts/gate-run.sh,
+# through scripts/gate-server.sh fresh), so no run recalls another's memory,
+# nor a run its own fixture's earlier run's (2026-09-25: a run quoted the
+# access code an earlier run of the same fixture had saved to memory).
 #
 # A sweep is the gate dispatched by hand with a `suites` list: any suites and
 # fixtures, program checks by default or judged three runs each with `judge`.
@@ -253,13 +255,29 @@ jobs:
           GATE_JUDGE: ${{ inputs.judge }}
         run: scripts/gate-server.sh start
 
+      # Every run on a fresh server (scripts/gate-run.sh); the bot's
+      # credentials are for that server, never for the test runner.
       - name: Smoke suite, program checks
         if: github.event_name != 'schedule' && !inputs.suites
-        run: scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --suite "$GITHUB_WORKSPACE/suites/smoke.yaml" --no-judge --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output "$GATE_JOB/traces/smoke"
+        env:
+          A_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
+          A_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          A_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
+          P_BOT_ID: ${{ secrets.HARNESS_P_NEBO_BOT_ID }}
+          P_BOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOT_TOKEN }}
+          P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
+        run: scripts/gate-run.sh suites/smoke.yaml 3 "$GATE_JOB/traces/smoke" scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --no-judge --model "$GATE_MODEL"
 
       - name: Error-correction suite, program checks
         if: github.event_name != 'schedule' && !inputs.suites
-        run: scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --suite "$GITHUB_WORKSPACE/suites/error-correction.yaml" --no-judge --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output "$GATE_JOB/traces/correction"
+        env:
+          A_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
+          A_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          A_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
+          P_BOT_ID: ${{ secrets.HARNESS_P_NEBO_BOT_ID }}
+          P_BOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOT_TOKEN }}
+          P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
+        run: scripts/gate-run.sh suites/error-correction.yaml 1 "$GATE_JOB/traces/correction" scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --no-judge --model "$GATE_MODEL"
 
       # The VM has no node. Anthropic's native installer puts a standalone
       # `claude` in ~/.local/bin; it persists on the runner, so this is a
@@ -274,9 +292,15 @@ jobs:
         if: github.event_name == 'schedule'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
+          A_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
+          A_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          A_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
+          P_BOT_ID: ${{ secrets.HARNESS_P_NEBO_BOT_ID }}
+          P_BOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOT_TOKEN }}
+          P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
         run: |
-          scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --suite "$GITHUB_WORKSPACE/suites/error-correction.yaml" --grader claude-opus-5 --runs 3 \
-            --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output "$GATE_JOB/traces/correction" || true
+          scripts/gate-run.sh suites/error-correction.yaml 3 "$GATE_JOB/traces/correction" \
+            scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --grader claude-opus-5 --model "$GATE_MODEL" || true
           python3 scripts/correction-rate.py "$GATE_JOB/traces/correction" suites/error-correction.yaml --min "$MIN_CORRECTION_RATE"
           python3 scripts/error-shapes.py "$GATE_JOB/traces/correction" --baseline suites/error-shapes.baseline.txt
 
@@ -284,12 +308,20 @@ jobs:
         if: github.event_name == 'schedule'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
-        run: scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --suite "$GITHUB_WORKSPACE/suites/smoke.yaml" --grader claude-opus-5 --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output "$GATE_JOB/traces/smoke"
+          A_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
+          A_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          A_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
+          P_BOT_ID: ${{ secrets.HARNESS_P_NEBO_BOT_ID }}
+          P_BOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOT_TOKEN }}
+          P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
+        run: scripts/gate-run.sh suites/smoke.yaml 3 "$GATE_JOB/traces/smoke" scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --grader claude-opus-5 --model "$GATE_MODEL"
 
       # Each entry runs to the end whatever the one before it did; the step
-      # fails if any entry did. Traces land in $GATE_JOB/traces/<entry name>.
-      # The bot's credentials are here for the fresh server each replay run
-      # gets (scripts/gate-server.sh fresh), never for the test runner.
+      # fails if any entry did. Traces land in $GATE_JOB/traces/<entry name>
+      # (a replay set's under its set name). Every run of every fixture gets
+      # a fresh server (scripts/gate-run.sh), so a run that fails leaves the
+      # next runs to go ahead on their own servers. The bot's credentials are
+      # here for those servers, never for the test runner.
       - name: Sweep the listed suites and fixtures
         if: inputs.suites
         env:
@@ -304,41 +336,16 @@ jobs:
           P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
         run: |
           if [ "$JUDGE" = "true" ]; then judge=(--grader claude-opus-5); runs=3; else judge=(--no-judge); runs=1; fi
-          runner=(env -u A_BOT_ID -u A_BOT_TOKEN -u A_BOOT_TOKEN -u P_BOT_ID -u P_BOT_TOKEN -u P_BOOT_TOKEN
-                  scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run)
           failed=""
           for entry in $SUITES; do
-            name=$(basename "$entry" .yaml)
-            path="$GITHUB_WORKSPACE/$entry"
-            case "$entry" in suites/*) what=--suite ;; *) what=--fixture ;; esac
-            # replays/<set>/suite.yaml: real owner threads, never in git. They
-            # live on the VM (~/harness-replays/<set>, put there by
-            # scripts/export-threads.py push) and are copied into this job's
-            # own directory, so no other run can read them. Every run of every
-            # thread gets a fresh server with an empty NEBO_HOME, home, /tmp
-            # and working directory, so no thread recalls another's memory,
-            # nor a run its own earlier run's; a run that fails leaves the
-            # thread's next runs to go ahead on their own servers.
-            case "$entry" in replays/*/suite.yaml)
-              set=$(basename "$(dirname "$entry")")
-              [ -d "$HOME/harness-replays/$set" ] || { echo "no replay set $set on this VM"; failed="$failed $entry"; continue; }
-              mkdir -p "$GATE_JOB/replays" && cp -R "$HOME/harness-replays/$set" "$GATE_JOB/replays/"
-              dir="$GATE_JOB/replays/$set"
-              mapfile -t fixtures < <(python3 -c 'import sys, yaml; print("\n".join(yaml.safe_load(open(sys.argv[1]))["fixtures"]))' "$dir/suite.yaml")
-              echo "::group::$entry"
-              for fixture in "${fixtures[@]}"; do
-                for run in $(seq 1 "$runs"); do
-                  scripts/gate-server.sh fresh
-                  "${runner[@]}" --fixture "$dir/$fixture" "${judge[@]}" --runs 1 --first-run "$run" --model "$GATE_MODEL" \
-                    --server "localhost:$(cat "$GATE_JOB/server.port")" --output "$GATE_JOB/traces/$set" || failed="$failed $entry:$fixture:run-$run"
-                done
-              done
-              echo "::endgroup::"
-              continue ;;
+            case "$entry" in
+              replays/*/suite.yaml) name=$(basename "$(dirname "$entry")") ;;
+              *) name=$(basename "$entry" .yaml) ;;
             esac
             echo "::group::$entry"
-            "${runner[@]}" "$what" "$path" "${judge[@]}" --runs "$runs" --model "$GATE_MODEL" \
-              --server "localhost:$(cat "$GATE_JOB/server.port")" --output "$GATE_JOB/traces/$name" || failed="$failed $entry"
+            scripts/gate-run.sh "$entry" "$runs" "$GATE_JOB/traces/$name" \
+              scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run "${judge[@]}" --model "$GATE_MODEL" \
+              || failed="$failed $entry"
             echo "::endgroup::"
           done
           [ -z "$failed" ] || { echo "failed:$failed"; exit 1; }
