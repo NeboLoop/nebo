@@ -38,3 +38,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc33-one-employee-works-three-conversations-at-once.yaml
   - ../fixtures/staffed-company/conversation/sc34-a-question-up-the-line-never-waits.yaml
   - ../fixtures/staffed-company/conversation/sc35-a-woken-turn-replies-where-the-work-came-from.yaml
+  - ../fixtures/staffed-company/conversation/sc36-an-employees-team-post-goes-to-the-lead.yaml

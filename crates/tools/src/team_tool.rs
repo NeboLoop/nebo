@@ -194,8 +194,9 @@ impl Teams {
                      message to ask the whole team.{}",
                     t.name, t.id, members, mirror, t.name,
                     if t.organizer_agent_id.is_empty() {
-                        " This team has no lead yet, so every member answers an owner post; set one \
-                         with update_team(team: \"...\", lead: \"Employee Name\")."
+                        " This team has no lead yet: an owner post reaches every member, and a post \
+                         from an employee must name who acts until one is set with \
+                         update_team(team: \"...\", lead: \"Employee Name\")."
                     } else {
                         ""
                     }

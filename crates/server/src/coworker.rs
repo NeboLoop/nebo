@@ -185,20 +185,29 @@ pub(crate) async fn send_coworker_message(
             } else {
                 roster.join(", ")
             };
-            let floor = if t.organizer_agent_id == to_id {
-                " You are the TEAM LEAD: the owner's posts come to you alone. Answer the owner \
-                 yourself, and hand a step to a teammate by writing their token with a specific \
-                 ask — only the teammates you address act. Write @everyone only when the whole \
-                 team must answer."
+            let floor = if tools::team::lead_of(t) == Some(to_id.as_str()) {
+                " You are the TEAM LEAD: a post to the team that names nobody — from the owner or \
+                 another employee — comes to you alone. Answer it yourself, and hand a step to a \
+                 teammate by writing their token with a specific ask — only the teammates you \
+                 address act. Write @everyone only when the whole team must answer."
             } else {
                 " You act only when addressed — by the owner, the lead, or a teammate — and the \
-                 lead runs the room; an owner post that does not name you is the lead's to answer."
+                 lead runs the room; a post that does not name you is the lead's to answer."
+            };
+            // Who wrote the post, as it is: the owner, a teammate, or a
+            // coworker directing the team from outside it.
+            let from_who = if msg.from_agent_id.is_empty() {
+                "the owner".to_string()
+            } else if t.members.iter().any(|m| m.agent_id == msg.from_agent_id) {
+                format!("{from_name}, a member of your team (not your owner)")
+            } else {
+                format!("your coworker {from_name}, who is not on the team (not your owner)")
             };
             (
                 team_envelope(&t.name, &t.mission, &from_name, &msg.text),
                 format!(
-                    "Team \"{name}\" — mission: {mission}. This post is from {from_name}, a member of \
-                     your team (not your owner), and you were asked to act on it. Teammates: {roster}. \
+                    "Team \"{name}\" — mission: {mission}. This post is from {from_who}, and you were \
+                     asked to act on it. Teammates: {roster}. \
                      Your reply is posted to the team automatically — do NOT relay it via other tools. \
                      Report concrete results: artifact, status, blockers, next action. To hand a step to \
                      a teammate, write their token exactly as listed in Teammates with a specific ask; a teammate you address \
@@ -208,7 +217,7 @@ pub(crate) async fn send_coworker_message(
                      spawn sub-agents to do a teammate's job.{floor}",
                     name = t.name,
                     mission = if t.mission.is_empty() { "(none stated)" } else { t.mission.as_str() },
-                    from_name = from_name,
+                    from_who = from_who,
                     roster = roster,
                     floor = floor,
                 ),

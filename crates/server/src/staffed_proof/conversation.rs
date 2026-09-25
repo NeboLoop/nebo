@@ -771,3 +771,73 @@ async fn a_woken_turn_replies_where_the_work_came_from() {
     )
     .await;
 }
+
+/// E15 (owner rule 2026-09-15): the employee the owner talks to directs a
+/// team without naming anyone. The lead answers, alone, and the reply
+/// comes back to the poster as a notification; the other member only reads
+/// the post. A team with no lead refuses such a post, with the reason, and
+/// nothing is recorded or sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_it() {
+    let nebo = session().await;
+    let assistant = nebo.hire("Proof E15 Assistant", json!({ "workflows": {} })).await;
+    let lead = nebo.hire("Proof E15 Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof E15 Member", json!({ "workflows": {} })).await;
+    let members = [db::TeamMember::local(&lead), db::TeamMember::local(&member)];
+    nebo.store()
+        .create_team("proof-team-e15", "Proof Marketing Team", "every campaign", &members, &lead, None)
+        .unwrap();
+    nebo.store()
+        .create_team("proof-team-e15-open", "Proof Sales Team", "every deal", &members, "", None)
+        .unwrap();
+    let member_ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| {
+            (t.opener().contains("MARK-E15") && t.says("You are Proof E15 Lead."))
+                .then(|| Step::say("E15-LEAD-RESULT: here is what fits the budget."))
+        }),
+        Box::new({
+            let member_ran = member_ran.clone();
+            move |t| {
+                (t.opener().contains("MARK-E15") && t.says("You are Proof E15 Member.")).then(|| {
+                    member_ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Step::say("E15-MEMBER-RESULT")
+                })
+            }
+        }),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    let poster = format!("agent:{assistant}:web");
+    rig.open_session(&poster);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(poster.clone(), "s1");
+    let posted = nebo
+        .tool(
+            &ctx,
+            "send_message",
+            json!({"to": "Proof Marketing Team", "message": "MARK-E15 what can we afford to run?"}),
+        )
+        .await;
+    assert!(!posted.is_error, "{}", posted.content);
+    assert!(posted.content.contains("Proof E15 Lead"), "the lead was asked: {}", posted.content);
+    rig.until(30, "the lead's answer comes back to the poster", || {
+        rig.notifications(&poster).join("\n").contains("E15-LEAD-RESULT")
+    })
+    .await;
+    assert_eq!(member_ran.load(std::sync::atomic::Ordering::SeqCst), 0, "the member only read the post");
+
+    let before = nebo.store().list_team_messages("proof-team-e15-open", 50).unwrap().len();
+    let refused = nebo
+        .tool(
+            &ctx,
+            "send_message",
+            json!({"to": "Proof Sales Team", "message": "MARK-E15 who takes the Rivera deal?"}),
+        )
+        .await;
+    assert!(refused.is_error, "{}", refused.content);
+    assert!(refused.content.contains("has no lead") && refused.content.contains("NOT sent"), "{}", refused.content);
+    assert_eq!(
+        nebo.store().list_team_messages("proof-team-e15-open", 50).unwrap().len(),
+        before,
+        "nothing was recorded"
+    );
+}
