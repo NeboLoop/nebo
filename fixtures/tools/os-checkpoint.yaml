@@ -27,7 +27,7 @@ prompt_assertions:
       severity: critical
       check: { tool: os, arg: action, equals: checkpoint }
     - id: reads-are-fine
-      text: "Reading the files before checkpointing is acceptable; using agent task bookkeeping for a four-step job is not required and counts against cost"
+      text: "Reading the files before checkpointing is acceptable; using task bookkeeping (create_task / update_task) for a four-step job is not required and counts against cost"
       severity: important
   recovery:
     - id: restore-called

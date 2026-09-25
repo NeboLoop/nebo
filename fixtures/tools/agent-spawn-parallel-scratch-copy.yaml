@@ -2,9 +2,9 @@ id: agent-spawn-parallel-scratch-copy
 name: "Parallel edits in a plain folder (no git) — scratch copies, merged back"
 description: |
   Same as the worktree fixture but the folder is NOT a git repository. The
-  same isolate option must work: each child gets a scratch copy, both files
+  same isolation option must work: each helper gets a scratch copy, both files
   land in the owner's folder, and no .git directory appears.
-target_component: agent
+target_component: delegate
 
 setup:
   - "rm -rf /tmp/nebo-test/plain && mkdir -p /tmp/nebo-test/plain && printf 'one\n' > /tmp/nebo-test/plain/a.txt && printf 'two\n' > /tmp/nebo-test/plain/b.txt"
@@ -13,30 +13,35 @@ teardown:
 
 conversation:
   - role: user
-    content: "In the folder /tmp/nebo-test/plain (it is not a git repo, leave it that way), run two sub-agents in parallel with worktree isolation: one changes a.txt to say ONE, the other changes b.txt to say TWO. Then tell me what the merge section said."
+    content: "In the folder /tmp/nebo-test/plain (it is not a git repo, leave it that way), run two helpers in parallel with worktree isolation: one changes a.txt to say ONE, the other changes b.txt to say TWO. Then tell me what the merge section said."
 
 tool_config:
   os:
     enabled: true
-  agent:
+  delegate:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: parallel-isolated
-      text: "The model calls agent task spawn_parallel with isolate: worktree"
+      text: "The model starts two helpers with two delegate calls in one response, each with isolation: worktree"
       severity: critical
-      check: { tool: agent, arg: isolate, equals: worktree }
+      check: { first_call: true, tool: delegate, arg: isolation, equals: worktree }
+    - id: second-helper-isolated
+      text: "The second call is also delegate with isolation: worktree (one helper per file)"
+      severity: critical
+      check: { call: 2, tool: delegate, arg: isolation, equals: worktree }
   recovery:
     - id: no-git-init
       text: "No tool call runs git init, and the model does not claim to have created a repository"
       severity: critical
     - id: both-merged
-      text: "The reported merge section lists both tasks as merged"
+      text: "The reported merge section lists both helpers as merged"
       severity: critical
 
 ideal_behavior:
-  tool_calls: 1
+  tool_calls: 2
   total_tokens: 6000
   narrative: |
-    spawn_parallel(isolate: worktree, workspace: /tmp/nebo-test/plain, tasks: [...]) → merge section reported.
+    Two delegate(isolation: worktree, prompt: "in /tmp/nebo-test/plain, change a.txt / b.txt ...")
+    calls in one response → merge section reported from the helpers' notifications.

@@ -1,18 +1,18 @@
 id: agent-spawn-parallel
-name: "Sub-agent batch — parallel independent research"
+name: "Helper batch — parallel independent research"
 description: |
-  Two independent research tasks. The STRAP contract says batch parallel
-  spawn (action: "spawn_parallel" with a tasks array) is preferred for 2+
-  independent tasks — one call, concurrent execution, results collected
-  together. Serial spawns or doing both itself wastes wall-clock.
-target_component: agent
+  Two independent research tasks. The delegate contract says independent
+  pieces are several delegate calls in ONE response — one helper per task,
+  running concurrently in the background, each reporting by notification.
+  Serial delegation across turns or doing both itself wastes wall-clock.
+target_component: delegate
 
 conversation:
   - role: user
     content: "Research two things for me at the same time: (1) what CRM systems realtors most commonly use, and (2) what typical transaction-coordination fees look like in the US. Keep the two summaries separate."
 
 tool_config:
-  agent:
+  delegate:
     enabled: true
   web:
     enabled: true
@@ -20,13 +20,15 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: parallel-action
-      text: "Model calls agent with resource: 'task', action: 'spawn_parallel'"
+      text: "Model starts one helper per topic with delegate, both delegate calls in one response"
       severity: critical
+      check: { first_call: true, tool: delegate }
     - id: two-tasks
-      text: "The tasks array contains exactly 2 entries, one per research topic"
+      text: "There are exactly 2 delegate calls, one per research topic"
       severity: critical
+      check: { call: 2, tool: delegate }
     - id: born-blind-web
-      text: "Each task entry passes tools including 'web'"
+      text: "Each delegate prompt states its whole topic on its own (CRM systems for one, transaction-coordination fees for the other) and what to report back"
       severity: critical
   recovery:
     - id: two-summaries
@@ -34,9 +36,9 @@ prompt_assertions:
       severity: important
 
 ideal_behavior:
-  tool_calls: 1
+  tool_calls: 2
   total_tokens: 8000
   narrative: |
-    Single agent(resource: "task", action: "spawn_parallel", tasks: [{prompt:
-    "...CRM...", tools: ["web"]}, {prompt: "...fees...", tools: ["web"]}])
-    call, then a two-part answer from the collected results.
+    Two delegate calls in one response — delegate(description: "research realtor CRMs",
+    prompt: "...CRM...") and delegate(description: "research TC fees",
+    prompt: "...fees...") — then a two-part answer once both helpers report.

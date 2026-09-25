@@ -1,28 +1,29 @@
 id: agent-memory-store
-name: "Agent memory store — correct resource routing"
+name: "Memory store — remember, not a task or registry call"
 description: |
-  Storing a preference should use agent(resource: "memory", action: "store").
-  Verifies the model correctly identifies the memory resource, not task or registry.
-target_component: agent
+  Storing a preference should use remember(key, value).
+  Verifies the model picks the memory tool, not a task, a helper or the registry.
+target_component: remember
 
 conversation:
   - role: user
     content: "Remember that my favorite color is blue."
 
 tool_config:
-  agent:
+  remember:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: correct-tool
-      text: "Model calls 'agent'"
+      text: "Model calls 'remember'"
       severity: critical
+      check: { first_call: true, tool: remember }
     - id: correct-resource
-      text: "Model uses resource: 'memory'"
+      text: "Model stores a fact (remember), not a task (create_task) or an employee (agent registry)"
       severity: critical
     - id: correct-action
-      text: "Model uses action: 'store'"
+      text: "The call stores the fact in one remember call — it does not recall or search first"
       severity: critical
     - id: has-key
       text: "Model passes a key related to 'favorite color'"
@@ -30,6 +31,7 @@ prompt_assertions:
     - id: has-value
       text: "Model passes value: 'blue' or similar"
       severity: important
+      check: { first_call: true, tool: remember, arg: value, contains: "blue" }
   cost:
     - id: single-call
       text: "Task completes in 1 tool call"
@@ -39,5 +41,4 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    Single agent(resource: "memory", action: "store", key: "favorite_color",
-    value: "blue") call.
+    Single remember(key: "favorite_color", value: "blue") call.

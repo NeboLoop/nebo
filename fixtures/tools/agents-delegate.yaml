@@ -1,8 +1,9 @@
 id: agents-delegate
 name: "Coworker routing — work for a named employee is a message"
 description: |
-  The user asks a named employee to do something. The delegate action was
-  removed: work for a named coworker goes through message(resource:
+  The user asks a named employee to do something. The old agent delegate
+  action was removed, and the delegate tool starts a blank helper, never a
+  named employee: work for a named coworker goes through message(resource:
   "coworker", action: "send"), which runs it in that employee's own session
   with its own memory and permissions. The employee exists (setup creates
   it), so the first call must succeed; a run that ends with "not installed"
@@ -50,7 +51,7 @@ prompt_assertions:
       check: { first_call: true, arg: to, contains: "chief" }
   recovery:
     - id: no-spawn
-      text: "Model does not spawn a blank sub-agent for a named employee's work"
+      text: "Model does not start a blank helper (delegate) for a named employee's work"
       severity: critical
     - id: accepted
       text: "The run completes with no error result from any tool call"
