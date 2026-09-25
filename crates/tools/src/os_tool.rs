@@ -1305,11 +1305,20 @@ impl DynTool for OsTool {
         let path = input.get("path").and_then(|v| v.as_str()).filter(|p| !p.is_empty());
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match (OsTool::resolved_resource(input), action) {
-            ("file", "write" | "append" | "edit") => CallEffects {
-                overwrites: path.map(crate::file_tool::expand_path).into_iter().collect(),
-                publishes: Knowable::No,
-                ..CallEffects::default()
-            },
+            // A write brings a new file into being, or replaces one that
+            // was there; an append takes nothing away.
+            ("file", "write" | "append" | "edit") => {
+                let mut effects = CallEffects { publishes: Knowable::No, ..CallEffects::default() };
+                if let Some(p) = path.map(crate::file_tool::expand_path) {
+                    let named = format!("file:{p}");
+                    if !std::path::Path::new(&p).exists() {
+                        effects.creates.push(named);
+                    } else if action != "append" {
+                        effects.overwrites.push(named);
+                    }
+                }
+                effects
+            }
             ("mail", "send") => CallEffects {
                 recipients: input
                     .get("to")

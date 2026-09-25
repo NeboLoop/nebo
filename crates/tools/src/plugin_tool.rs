@@ -275,6 +275,15 @@ fn default_action() -> String {
     "exec".to_string()
 }
 
+/// The id a typed operation's input or result names a record by.
+pub fn record_id(v: &serde_json::Value) -> Option<String> {
+    match v.get("id")? {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
 /// The `capability.resource.action` suffix a plugin binding matches on. A fully-
 /// qualified port (`department.role.capability.resource.action`) reduces to its
 /// last three segments; a bare operation is returned unchanged. This is what keeps
@@ -1244,6 +1253,26 @@ impl DynTool for PluginTool {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        let Some(operation) = self.operation_performed(input) else {
+            return effects;
+        };
+        let args = input.get("input").unwrap_or(&serde_json::Value::Null);
+        // A customer send names who it goes to; nothing else goes out.
+        if crate::effects::is_customer_send(&operation) {
+            effects.recipients = crate::effects::counterparty_of(args)
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            effects.publishes = types::permissions::Knowable::No;
+        }
+        // A delete names the record it removes; the record is named the way
+        // its create is recorded (`Check::ran`), by the operation's resource.
+        if let Some((resource, "delete")) = port_suffix(&operation).rsplit_once('.')
+            && let Some(id) = record_id(args)
+        {
+            effects.deletes.push(format!("{resource}:{id}"));
+        }
         effects
     }
 

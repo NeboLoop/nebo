@@ -55,6 +55,7 @@ pub fn spawn(
             // Cleanup expired snapshots
             snapshot_store.cleanup();
             nightly_backup(&store, &state).await;
+            permission_digest(&state);
             crate::backup_ship::commit_if_due(&store, &state).await;
         }
     });
@@ -569,6 +570,67 @@ async fn nightly_backup(store: &Arc<Store>, state: &AppState) {
             loud: true,
         },
     );
+}
+
+/// The doors of runs nobody watches as they happen: heartbeats, workflows,
+/// schedules, helpers and coworker requests.
+const UNATTENDED_DOORS: &[&str] = &["heartbeat", "workflow", "schedule", "helper", "coworker"];
+
+/// Once a day, the owner's Inbox lists yesterday's actions from unattended
+/// runs that ran unreviewed because the permission check couldn't run
+/// (both judges down). One item per day under a stable id; none when there
+/// is nothing to list.
+fn permission_digest(state: &AppState) {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST_DAY: AtomicI64 = AtomicI64::new(-1);
+    let today = now_secs() / 86_400;
+    let last = LAST_DAY.load(Ordering::Relaxed);
+    if last == today || LAST_DAY.compare_exchange(last, today, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+        return;
+    }
+    if let Some(item) = permission_digest_item(&state.store, today - 1) {
+        crate::codes::push_inbox(state, item);
+    }
+}
+
+/// The digest item for one UTC day (days since the epoch), or `None` when
+/// no unattended run acted unreviewed that day.
+pub(crate) fn permission_digest_item(store: &Store, day: i64) -> Option<serde_json::Value> {
+    let (start, end) = (day * 86_400, (day + 1) * 86_400);
+    let rows: Vec<_> = match store.unreviewed_permission_activity(start, UNATTENDED_DOORS) {
+        Ok(rows) => rows.into_iter().filter(|r| r.created_at < end).collect(),
+        Err(e) => {
+            warn!(error = %e, "permission digest: activity unreadable");
+            return None;
+        }
+    };
+    if rows.is_empty() {
+        return None;
+    }
+    let name_of = |agent_id: &str| match store.get_agent(agent_id) {
+        Ok(Some(a)) if !a.name.is_empty() => a.name,
+        _ => "Your assistant".to_string(),
+    };
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|r| format!("- {}: {} ({})", name_of(&r.agent_id), r.activity, r.door))
+        .collect();
+    let count = rows.len();
+    Some(serde_json::json!({
+        "id": format!("permission-digest:{day}"),
+        "type": "permission_digest",
+        "title": if count == 1 {
+            "1 action ran without a permission check".to_string()
+        } else {
+            format!("{count} actions ran without a permission check")
+        },
+        "body": format!(
+            "While no one was watching, {} because {}:\n{}",
+            if count == 1 { "this action ran" } else { "these actions ran" },
+            types::permissions::UNREVIEWED_REASON,
+            lines.join("\n")
+        ),
+    }))
 }
 
 fn now_secs() -> i64 {

@@ -41,6 +41,10 @@ pub struct CallEffects {
     pub publishes: Knowable,
     pub deletes: Vec<String>,
     pub overwrites: Vec<String>,
+    /// What the call brings into being, named the way a later delete or
+    /// overwrite of it names it: once it runs, it is the employee's own work.
+    #[serde(default)]
+    pub creates: Vec<String>,
 }
 
 impl CallEffects {
@@ -338,6 +342,105 @@ pub enum Why {
     AnsweredOnce { ask_id: String },
     Judged { by: String, reason: String },
     Unreviewed { reason: String },
+}
+
+/// Which judge answered a question the code could not decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgedBy {
+    /// The typed Jev decision: the primary judge.
+    Jev,
+    /// The classifier call on the turn's aux model route: the fallback.
+    AuxClassifier,
+}
+
+impl JudgedBy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            JudgedBy::Jev => "jev",
+            JudgedBy::AuxClassifier => "aux_classifier",
+        }
+    }
+}
+
+/// The judgement's answer for one call whose effects the code could not
+/// decide (Automatic mode, §2.12.4). The tool round asks the judges once
+/// for all such calls and hands each call its verdict on its context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Verdict {
+    Allow { by: JudgedBy, reason: String },
+    Ask { case: AskCase, by: JudgedBy, reason: String },
+    /// Neither judge answered: the call proceeds, marked unreviewed.
+    Unjudged,
+}
+
+/// Whether the judgement's verdicts decide calls or are only recorded.
+/// A company setting; shadow until its data shows the asks it would add
+/// are rare and right.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JudgementMode {
+    /// Recorded in the activity; the call proceeds on the code's answer.
+    #[default]
+    Shadow,
+    /// An Ask verdict asks.
+    Enforce,
+}
+
+impl JudgementMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            JudgementMode::Shadow => "shadow",
+            JudgementMode::Enforce => "enforce",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "shadow" => Some(JudgementMode::Shadow),
+            "enforce" => Some(JudgementMode::Enforce),
+            _ => None,
+        }
+    }
+}
+
+/// The reason an unreviewed action carries in the activity and the digest.
+pub const UNREVIEWED_REASON: &str = "the permission check couldn't run";
+
+/// Someone a message goes to, the way the employee's history keeps them:
+/// an email lowercased, a phone number as E.164, anything else trimmed and
+/// lowercased. `None` when there is nothing usable.
+pub fn address_key(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s.contains('@') {
+        return Some(s.to_lowercase());
+    }
+    let phone_like = s.chars().all(|c| c.is_ascii_digit() || " +-().".contains(c));
+    if phone_like && let Some(p) = normalize_phone(s) {
+        return Some(p);
+    }
+    Some(s.to_lowercase())
+}
+
+/// E.164 from what people type. Digits only; a leading `+` keeps the country
+/// code; ten digits are read as North American; eleven digits starting with
+/// 1 likewise. Anything else is kept as `+` plus its digits, which is
+/// exact-match stable even when not canonical.
+pub fn normalize_phone(s: &str) -> Option<String> {
+    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() < 7 {
+        return None;
+    }
+    let plus = s.trim_start().starts_with('+');
+    Some(match (plus, digits.len()) {
+        (false, 10) => format!("+1{digits}"),
+        (false, 11) if digits.starts_with('1') => format!("+{digits}"),
+        _ => format!("+{digits}"),
+    })
 }
 
 /// Why a call asks the owner.

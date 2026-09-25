@@ -35,6 +35,10 @@ pub enum GateVerdict {
 #[async_trait::async_trait]
 pub trait PermissionGate: Send + Sync {
     async fn check(&self, ctx: &ToolContext, call: &ResolvedCall<'_>) -> GateVerdict;
+
+    /// A call the gate let run has succeeded: what it created is now the
+    /// employee's own work. Default: nothing to keep.
+    async fn ran(&self, _ctx: &ToolContext, _call: &ResolvedCall<'_>, _result: &ToolResult) {}
 }
 
 /// Tests of the tools themselves run every call: the permission check is

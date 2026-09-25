@@ -54,6 +54,20 @@ fn workflow_name(parsed: &WorkInput) -> String {
         .unwrap_or_default()
 }
 
+/// How a workflow is named in the employee's created ledger:
+/// `workflow:<name>`, or `workflow:<agent>/<name>` when the call names
+/// another employee's workflows. Empty without a name.
+fn workflow_ref(parsed: &WorkInput) -> String {
+    let name = workflow_name(parsed).trim().to_lowercase();
+    if name.is_empty() {
+        return String::new();
+    }
+    match parsed.agent.trim() {
+        "" => format!("workflow:{name}"),
+        agent => format!("workflow:{}/{name}", agent.to_lowercase()),
+    }
+}
+
 /// Said only when the name is in neither place.
 const MISSING_NAME: &str = "name is required: pass it as the top-level `name` argument \
     (work(action: \"create\", name: \"...\", definition: \"...\")). The definition you \
@@ -403,6 +417,32 @@ impl DynTool for WorkTool {
     /// identical-read ceiling, which would end a turn waiting on a run.
     fn concurrency_safe(&self, _input: &serde_json::Value) -> bool {
         false
+    }
+
+    /// Creating a workflow brings it into being; updating replaces one;
+    /// deleting removes one. Each names the workflow the same way, so a
+    /// delete of a workflow the employee created is its own work.
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        use types::permissions::{CallEffects, Knowable};
+        if self.read_only(input) {
+            return CallEffects::none();
+        }
+        let named = serde_json::from_value::<WorkInput>(input.clone())
+            .ok()
+            .filter(|p| p.resource.is_empty())
+            .map(|p| (p.action.clone(), workflow_ref(&p)))
+            .filter(|(_, r)| !r.is_empty());
+        let Some((action, workflow)) = named else {
+            return CallEffects::unknown();
+        };
+        let mut effects = CallEffects { publishes: Knowable::No, ..CallEffects::default() };
+        match action.as_str() {
+            "create" => effects.creates.push(workflow),
+            "update" | "edit" => effects.overwrites.push(workflow),
+            "delete" => effects.deletes.push(workflow),
+            _ => return CallEffects::unknown(),
+        }
+        effects
     }
 
     fn rule_key(&self, input: &serde_json::Value) -> String {

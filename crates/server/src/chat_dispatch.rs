@@ -588,7 +588,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             }),
             tool_scope,
             plan_mode,
-            approval_relay: comm_reply.as_ref().map(|c| c.approval_relay).unwrap_or(false),
             handoff_depth: comm_reply
                 .as_ref()
                 .map(|c| c.handoff_depth)
