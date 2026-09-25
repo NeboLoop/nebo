@@ -1016,6 +1016,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 ),
                             );
                         }
+                        // Kept on the stored reply by the harness; nothing to show.
+                        StreamEventType::ThinkingBlock => {}
                         StreamEventType::Usage => {
                             if let Some(ref usage) = event.usage {
                                 // The same `usage` event also carries the current Janus

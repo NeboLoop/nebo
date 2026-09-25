@@ -215,6 +215,10 @@ pub(crate) struct ModelReply {
     pub block_order: Vec<(&'static str, Option<usize>)>,
     /// The provider that answered.
     pub provider: Arc<dyn Provider>,
+    /// The reply's thinking blocks, in order, and the model that wrote them
+    /// ("provider/model").
+    pub thinking: Vec<ai::ThinkingBlock>,
+    pub thinking_model: String,
 }
 
 /// Make one call, streaming its events on `call.tx`. `state` takes the
@@ -465,6 +469,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
     // Track the order of content blocks (text vs tool) for correct rehydration.
     // Each entry is either "text" (coalesced) or a tool index.
     let mut block_order: Vec<(&'static str, Option<usize>)> = Vec::new();
+    let mut thinking: Vec<ai::ThinkingBlock> = Vec::new();
     // CLI providers run multi-turn tool loops — save each turn incrementally.
     let cli_incremental = provider.handles_tools();
 
@@ -557,8 +562,11 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 let _ = tx.send(event).await;
             }
             StreamEventType::Thinking => {
-                info!(session_id, "received thinking block");
                 let _ = tx.send(event).await;
+            }
+            StreamEventType::ThinkingBlock => {
+                info!(session_id, "received thinking block");
+                thinking.extend(event.block());
             }
             StreamEventType::ToolCall => {
                 if let Some(ref tc) = event.tool_call {
@@ -855,6 +863,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         "[telemetry] stream complete"
     );
 
+    let thinking_model = format!("{}/{}", provider.id(), chat_req.model);
     CallOutcome::Reply(ModelReply {
         text: assistant_content,
         tool_calls,
@@ -862,6 +871,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         stream_error,
         block_order,
         provider,
+        thinking,
+        thinking_model,
     })
 }
 
