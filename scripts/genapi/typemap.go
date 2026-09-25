@@ -45,7 +45,7 @@ func rustTypeToTS(rustType string, structs map[string]*RustStruct) string {
 
 	// Primitives.
 	switch rustType {
-	case "String", "&str", "Cow<'_, str>", "Cow<str>":
+	case "String", "&str", "Cow<'_, str>", "Cow<str>", "PathBuf", "std::path::PathBuf":
 		return "string"
 	case "bool":
 		return "boolean"

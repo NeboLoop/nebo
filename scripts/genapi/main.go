@@ -47,6 +47,22 @@ func main() {
 	}
 	fmt.Printf("  Found %d serializable structs\n", len(allStructs))
 
+	// Enums a struct field holds (`mode: Mode`), emitted as the type serde
+	// writes, so every field's type is defined.
+	allEnums := make(map[string]*RustEnum)
+	for _, dir := range structDirs {
+		for _, e := range scanEnums(dir) {
+			if _, isStruct := allStructs[e.Name]; isStruct {
+				continue
+			}
+			if _, isExtra := extraInterfaces[e.Name]; isExtra {
+				continue
+			}
+			allEnums[e.Name] = e
+		}
+	}
+	fmt.Printf("  Found %d serializable enums\n", len(allEnums))
+
 	// ── 2. Parse routes ─────────────────────────────────────────────────
 	fmt.Println("Scanning routes...")
 	routes := scanRoutes(routesDir)
@@ -76,7 +92,7 @@ func main() {
 	// ── 6. Generate neboComponents.ts ───────────────────────────────────
 	fmt.Println("Generating neboComponents.ts...")
 	componentsPath := filepath.Join(outDir, "neboComponents.ts")
-	generateComponents(componentsPath, allStructs, handlers, wsEvents)
+	generateComponents(componentsPath, allStructs, allEnums, handlers, wsEvents)
 
 	// ── 7. Generate nebo.ts ─────────────────────────────────────────────
 	fmt.Println("Generating nebo.ts...")
