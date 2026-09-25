@@ -237,7 +237,6 @@
 		"working": "Pracuje"
 	},
 	"chat": {
-		"contextStats": "Kontekst w tej turze: plików odczytanych ponownie: {files}, razy: {times}, przebiegów kompaktowania: {passes}.",
 		"goalLine": "Cel: {condition} ({turns} tur)",
 		"goalLastCheck": "ostatnie sprawdzenie: {reason}",
 		"goalPaused": "Wstrzymano. Twoja następna wiadomość to wznowi.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Wskaż folder zawierający manifest Twojej aplikacji",
 		"sideloadPoint2": "Nebo wykrywa i ładuje aplikację w trybie deweloperskim",
 		"sideloadPoint3": "Zmiany w aplikacji są automatycznie przeładowywane na gorąco",
-		"sideloadPoint4": "Ręcznie wgrane aplikacje działają w środowisku piaskownicy",
-		"guardrails": "Zabezpieczenia pętli",
-		"guardrailsDesc": "Progi, które zatrzymują pracownika, gdy powtarza to samo bez postępu. Wartości domyślne są bezpieczne — zmieniaj tylko wtedy, gdy wiesz, co dostrajasz.",
-		"sameActionLimit": "Limit zapętlenia",
-		"sameActionLimitDesc": "Ile razy w jednej turze jedno działanie narzędzia może powtórzyć się bez efektu, zanim model zostanie od niego odciągnięty",
-		"identicalArgsBlockAfter": "Blokada identycznego wywołania",
-		"identicalArgsBlockAfterDesc": "Ile razy jedno dokładnie takie samo wywołanie (to samo narzędzie, te same argumenty) może powtórzyć się bez efektu, zanim zostanie zablokowane",
-		"hardStop": "Twarde zatrzymanie przy zapętleniu",
-		"hardStopDesc": "Zakończ turę, gdy limit zapętlenia zostanie przekroczony, zamiast nakłaniać model do zmiany podejścia",
-		"guardrailsSaved": "Zapisano zabezpieczenia",
-		"guardrailsSaveFailed": "Nie udało się zapisać zabezpieczeń",
-		"resetDefaults": "Przywróć domyślne",
-		"save": "Zapisz"
+		"sideloadPoint4": "Ręcznie wgrane aplikacje działają w środowisku piaskownicy"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

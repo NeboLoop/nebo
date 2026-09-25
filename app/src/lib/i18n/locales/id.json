@@ -237,7 +237,6 @@
 		"working": "Bekerja"
 	},
 	"chat": {
-		"contextStats": "Konteks giliran ini: {files} berkas dibaca ulang {times} kali, {passes} proses pemadatan.",
 		"goalLine": "Tujuan: {condition} ({turns} giliran)",
 		"goalLastCheck": "pemeriksaan terakhir: {reason}",
 		"goalPaused": "Dijeda. Pesan Anda berikutnya melanjutkannya.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Arahkan ke folder yang berisi manifes aplikasi Anda",
 		"sideloadPoint2": "Nebo menemukan dan memuat aplikasi dalam mode pengembangan",
 		"sideloadPoint3": "Perubahan pada aplikasi Anda dimuat ulang otomatis",
-		"sideloadPoint4": "Aplikasi yang dimuat lokal berjalan di lingkungan tersandbox",
-		"guardrails": "Pengaman Loop",
-		"guardrailsDesc": "Ambang batas yang menghentikan karyawan saat mengulang tindakan yang sama tanpa kemajuan. Nilai bawaan sudah aman — ubah hanya jika Anda paham yang Anda atur.",
-		"sameActionLimit": "Batas pengulangan",
-		"sameActionLimitDesc": "Pengulangan tanpa hasil dari satu tindakan alat per giliran sebelum model diarahkan menjauh",
-		"identicalArgsBlockAfter": "Blokir panggilan identik",
-		"identicalArgsBlockAfterDesc": "Pengulangan tanpa hasil dari satu panggilan yang sama persis (alat sama, argumen sama) sebelum diblokir",
-		"hardStop": "Hentikan paksa saat pengulangan",
-		"hardStopDesc": "Akhiri giliran saat batas pengulangan tercapai, alih-alih mengarahkan model mengubah pendekatan",
-		"guardrailsSaved": "Pengaman disimpan",
-		"guardrailsSaveFailed": "Gagal menyimpan pengaman",
-		"resetDefaults": "Kembalikan ke bawaan",
-		"save": "Simpan"
+		"sideloadPoint4": "Aplikasi yang dimuat lokal berjalan di lingkungan tersandbox"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

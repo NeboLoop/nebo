@@ -1,4 +1,3 @@
-pub mod call_budget;
 pub mod decide;
 pub mod embedding;
 pub mod http;

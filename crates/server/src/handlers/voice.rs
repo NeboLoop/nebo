@@ -697,7 +697,7 @@ async fn drain_voice_run(
                     agent::guardrails::RUN_IDLE_LIMIT.as_secs()
                 );
                 last_notice = agent::guardrails::stall_notice();
-                control_stop = Some((agent::guardrails::Exit::Stalled.label(), last_notice.clone()));
+                control_stop = Some((agent::guardrails::STALLED.to_string(), last_notice.clone()));
                 cancel_token.cancel();
                 break;
             }

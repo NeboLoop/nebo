@@ -237,7 +237,6 @@
 		"working": "Trabajando"
 	},
 	"chat": {
-		"contextStats": "Contexto de este turno: {files} archivos releídos {times} veces, {passes} pases de compactación.",
 		"goalLine": "Objetivo: {condition} ({turns} turnos)",
 		"goalLastCheck": "última comprobación: {reason}",
 		"goalPaused": "En pausa. Tu próximo mensaje lo reanuda.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Apunta a una carpeta que contenga el manifiesto de tu app",
 		"sideloadPoint2": "Nebo descubre y carga la app en modo desarrollo",
 		"sideloadPoint3": "Los cambios en tu app se recargan en caliente automáticamente",
-		"sideloadPoint4": "Las apps cargadas localmente se ejecutan en un entorno aislado",
-		"guardrails": "Protecciones del bucle",
-		"guardrailsDesc": "Umbrales que detienen a un empleado cuando repite la misma acción sin avanzar. Los valores por defecto son seguros — cámbialos solo si sabes qué estás ajustando.",
-		"sameActionLimit": "Límite de espiral",
-		"sameActionLimitDesc": "Repeticiones improductivas de una acción de herramienta por turno antes de apartar al modelo de ella",
-		"identicalArgsBlockAfter": "Bloqueo de llamada idéntica",
-		"identicalArgsBlockAfterDesc": "Repeticiones improductivas de una llamada exacta (misma herramienta, mismos argumentos) antes de bloquearla",
-		"hardStop": "Parada en seco ante una espiral",
-		"hardStopDesc": "Terminar el turno cuando salta el límite de espiral, en lugar de empujar al modelo a cambiar de enfoque",
-		"guardrailsSaved": "Protecciones guardadas",
-		"guardrailsSaveFailed": "No se pudieron guardar las protecciones",
-		"resetDefaults": "Restablecer valores por defecto",
-		"save": "Guardar"
+		"sideloadPoint4": "Las apps cargadas localmente se ejecutan en un entorno aislado"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

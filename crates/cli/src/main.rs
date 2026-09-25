@@ -164,10 +164,10 @@ enum TestCommands {
         #[arg(long)]
         experiment: Option<String>,
     },
-    /// List runs that ended in a guard or reviewer stop, newest first
+    /// List runs that ended in a step or spending-limit stop, newest first
     Runs {
-        /// Comma-separated exit reasons to list (default: the guard and
-        /// reviewer stops; text_response is never a failure)
+        /// Comma-separated exit reasons to list (default: the step and
+        /// spending-limit stops; text_response is never a failure)
         #[arg(long, value_delimiter = ',')]
         exit_reason: Vec<String>,
         /// Maximum rows
@@ -769,12 +769,11 @@ async fn run_chat(
 
 /// Rows `nebo-cli test runs` prints when `--limit` is not given.
 const DEFAULT_RUNS_LIMIT: usize = 20;
-/// The exit reasons `test runs` lists by default: a turn a loop guard
-/// stopped, one that ran out of steps and one that reached its spending
-/// limit (`TurnExit::label()` names). `text_response` is how a good run ends
+/// The exit reasons `test runs` lists by default: a turn that ran out of
+/// steps and one that reached its spending limit (`TurnExit::label()`
+/// names). `text_response` is how a good run ends
 /// and is deliberately absent.
 const DEFAULT_FAILURE_EXIT_REASONS: &[&str] = &[
-    agent::harness::turn::LOOPING,
     agent::harness::delegation::collect::STOP_MAX_STEPS,
     agent::harness::delegation::collect::STOP_SPEND_CAP,
 ];
@@ -1314,12 +1313,12 @@ mod tests {
     #[test]
     fn test_runs_and_export_parse() {
         let cli = Cli::try_parse_from([
-            "nebo", "test", "runs", "--exit-reason", "same_error_loop,stalled",
+            "nebo", "test", "runs", "--exit-reason", "max_steps,stalled",
         ])
         .unwrap();
         match cli.command {
             Some(Commands::Test { command: TestCommands::Runs { exit_reason, limit } }) => {
-                assert_eq!(exit_reason, vec!["same_error_loop".to_string(), "stalled".to_string()]);
+                assert_eq!(exit_reason, vec!["max_steps".to_string(), "stalled".to_string()]);
                 assert_eq!(limit, DEFAULT_RUNS_LIMIT);
             }
             _ => panic!("expected Test Runs"),
@@ -1347,12 +1346,12 @@ mod tests {
         }
     }
 
-    /// INVARIANT: the default failure list is the loop's stops only; a text
+    /// INVARIANT: the default failure list is the turn's limit stops only; a text
     /// response is how a good run ends and must never be listed as a failure
     /// by default.
     #[test]
     fn default_failure_reasons_exclude_text_response() {
-        assert_eq!(DEFAULT_FAILURE_EXIT_REASONS, ["looping", "max_steps", "spend_cap"]);
+        assert_eq!(DEFAULT_FAILURE_EXIT_REASONS, ["max_steps", "spend_cap"]);
         assert!(!DEFAULT_FAILURE_EXIT_REASONS.iter().any(|r| r.starts_with("text_response")));
     }
 

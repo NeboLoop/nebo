@@ -49,12 +49,8 @@ pub enum StreamEventType {
     /// Run-control status from the runner (spiral backstop, circuit breaker,
     /// terminal tool error). Rendered as a status/notice in the UI — NEVER
     /// accumulated into reply text (`text` is the human-readable status line;
-    /// `stop_reason` is the typed machine reason, e.g. "repeated_tool_calls").
+    /// `stop_reason` is the typed machine reason, e.g. "max_steps").
     ControlNotice,
-    /// End-of-turn context accounting (files re-read, compaction passes,
-    /// spilled results) so the owner can see where a session's tokens went.
-    /// Carried in `widgets`; never reply text.
-    ContextStats,
 }
 
 /// Token usage statistics from a streaming response.
@@ -171,7 +167,7 @@ impl StreamEvent {
     }
 
     /// Run-control status: `text` is the user-facing status line, `stop_reason`
-    /// the typed reason ("repeated_tool_calls", "user_requested_stop",
+    /// the typed reason ("max_steps", "user_requested_stop",
     /// "terminal_tool_error"). Consumers surface it as status — reply
     /// accumulators must ignore it by type.
     pub fn control_notice(text: impl Into<String>, stop_reason: impl Into<String>) -> Self {
@@ -341,22 +337,6 @@ impl StreamEvent {
             "batch": calls.iter().map(|c| serde_json::json!({"id": c.id, "tool": c.name, "input": c.input})).collect::<Vec<_>>()
         }));
         ev
-    }
-
-    pub fn context_stats(stats: serde_json::Value) -> Self {
-        Self { payload: None,
-            provenance: None,
-            event_type: StreamEventType::ContextStats,
-            text: String::new(),
-            tool_call: None,
-            error: None,
-            usage: None,
-            rate_limit: None,
-            widgets: Some(stats),
-            provider_metadata: None,
-            stop_reason: None,
-            image_url: None,
-        }
     }
 
     pub fn approval_request(tc: ToolCall) -> Self {

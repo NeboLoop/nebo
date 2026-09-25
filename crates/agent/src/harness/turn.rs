@@ -22,7 +22,7 @@
 //! There is no per-call state block and no stream reminder: everything the
 //! model reads is the system prompt or a stored row.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 
 use ai::{ChatRequest, RequestTrace, StreamEvent};
@@ -37,16 +37,13 @@ use super::prompt::{self, PromptInputs, SystemPrompt, sections};
 use super::seat::{self, GrantRequest, Seat};
 use types::permissions::{Grant, Mode};
 use super::session_gate::{self, Admission, RunProgress, TurnGuard};
-use super::tool_round::{self, RoundContext, RoundGuards, RoundOutcome, RunToolScope};
+use super::tool_round::{self, RoundContext, RoundOutcome, RoundState, RunToolScope};
 use super::tool_surface::{self, SurfaceInputs};
 use super::turn_end::{self, EndVerdict};
 use super::{Harness, HarnessError, TurnHandle, TurnInput, TurnMode, TurnRequest, compact, goal, reminders, usage};
 use crate::pruning;
 use super::usage::RunState;
 use crate::selector;
-
-/// The label of a turn a loop guard stopped.
-pub const LOOPING: &str = "looping";
 
 /// Steps one turn takes before it ends with `MaxSteps` (Claude Code's
 /// max-turns option).
@@ -143,7 +140,6 @@ pub struct TurnState {
     pub surfaced_memories: HashSet<i64>,
     pub end_checks_this_turn: u8,
     pub frozen_renderings: compact::trim::Frozen,
-    pub read_ledger: crate::read_ledger::ReadLedger,
     /// The relevant-memories search started at Prepare.
     pub recall: super::memory_context::RecallPrefetch,
     /// The conversation the last step sent: input stored after it is heard
@@ -170,19 +166,9 @@ pub struct TurnState {
 #[derive(Default)]
 struct RoundCarry {
     called_tools: Vec<String>,
-    identical_call_budget: ai::call_budget::CallBudget,
-    runaway_wrap_up: Option<String>,
-    runaway_wrap_up_issued: bool,
-    read_failures: HashMap<String, usize>,
-    action_call_counts: HashMap<String, usize>,
-    spiral_escalator: crate::guardrails::Escalator,
-    error_streak: crate::guardrails::ErrorStreak,
-    files_read_this_session: HashSet<String>,
-    recent_result_content_hashes: Vec<u64>,
     plan_touch: Option<(usize, String)>,
     edits_since_check: usize,
     last_desktop_act: Option<String>,
-    spilled_results: usize,
 }
 
 /// Why the loop is taking its next step.
@@ -217,9 +203,6 @@ pub enum TurnExit {
     /// A workflow primitive ended the turn (`workflow_exit:…`,
     /// `suspension_failed:…`); the engine reads the reason.
     WorkflowEnded(String),
-    /// A loop guard stopped repeated calls that made no progress; the
-    /// owner was told why.
-    Looping,
     ProviderFailed(String),
     Refused(String),
     AwaitingApproval,
@@ -245,7 +228,6 @@ impl TurnExit {
             TurnExit::BudgetReached => super::delegation::collect::STOP_SPEND_CAP.into(),
             TurnExit::TerminalTool { .. } => "terminal_tool_error".into(),
             TurnExit::WorkflowEnded(reason) => reason.clone(),
-            TurnExit::Looping => LOOPING.into(),
             TurnExit::ProviderFailed(_) => "provider_failed".into(),
             TurnExit::Refused(_) => "refused".into(),
             TurnExit::AwaitingApproval => "awaiting_approval".into(),
@@ -620,7 +602,6 @@ pub(crate) async fn prepare(
             .store
             .get_chat_renderings(&h.store.resolve_session_chat_id(session_id))
             .unwrap_or_default(),
-        read_ledger: Default::default(),
         seen: Vec::new(),
         model: model.clone(),
         checkpoints: 0,
@@ -758,8 +739,6 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
     let h = &cx.harness;
     let sessions = &h.sessions;
     let sid = cx.session_id.as_str();
-    let guard_cfg = crate::guardrails::GuardrailConfig::from_json(&h.store.get_guardrails().unwrap_or_else(|_| "{}".into()))
-        .sanitized();
     let side_trace = |purpose: &'static str| cx.trace(purpose);
 
     loop {
@@ -971,7 +950,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             if provider.handles_tools() {
                 return TurnExit::Answered;
             }
-            match tool_round(cx, st, &tool_scope, &guard_cfg, &side_trace, &text, &mut tool_calls).await {
+            match tool_round(cx, st, &tool_scope, &side_trace, &text, &mut tool_calls).await {
                 Some(exit) => return exit,
                 None => {
                     st.transition = Transition::AfterTools;
@@ -1353,7 +1332,6 @@ async fn tool_round(
     cx: &TurnContext,
     st: &mut TurnState,
     scope: &RunToolScope<'_>,
-    guard_cfg: &crate::guardrails::GuardrailConfig,
     side_trace: &(dyn Fn(&'static str) -> RequestTrace + Sync),
     text: &str,
     tool_calls: &mut [ai::ToolCall],
@@ -1374,26 +1352,13 @@ async fn tool_round(
             decide: None,
             active_task: &no_objective,
             turn_mode: Some(&cx.request.mode),
-            guard_cfg,
             side_trace,
         },
-        RoundGuards {
+        RoundState {
             called_tools: &mut carry.called_tools,
-            recent_tool_result_hashes: &[],
-            identical_call_budget: &carry.identical_call_budget,
-            runaway_wrap_up: &mut carry.runaway_wrap_up,
-            runaway_wrap_up_issued: &mut carry.runaway_wrap_up_issued,
-            read_failures: &mut carry.read_failures,
-            action_call_counts: &mut carry.action_call_counts,
-            spiral_escalator: &mut carry.spiral_escalator,
-            error_streak: &mut carry.error_streak,
-            files_read_this_session: &mut carry.files_read_this_session,
-            recent_result_content_hashes: &mut carry.recent_result_content_hashes,
-            read_ledger: &mut st.read_ledger,
             plan_touch: &mut carry.plan_touch,
             edits_since_check: &mut carry.edits_since_check,
             last_desktop_act: &mut carry.last_desktop_act,
-            ctx_spilled_results: &mut carry.spilled_results,
         },
         tool_calls,
     )
@@ -1401,18 +1366,17 @@ async fn tool_round(
     let results = match outcome {
         RoundOutcome::Ran(results) => results,
         RoundOutcome::Cancelled => return Some(TurnExit::Cancelled),
-        RoundOutcome::Ended(crate::guardrails::Exit::Workflow(reason)) if reason == "awaiting_approval" => {
+        RoundOutcome::Workflow(reason) if reason == "awaiting_approval" => {
             return Some(TurnExit::AwaitingApproval);
         }
-        RoundOutcome::Ended(crate::guardrails::Exit::Workflow(reason)) => return Some(TurnExit::WorkflowEnded(reason)),
+        RoundOutcome::Workflow(reason) => return Some(TurnExit::WorkflowEnded(reason)),
         // The round sent the owner its notice (with the need a tool named).
-        RoundOutcome::Ended(exit @ crate::guardrails::Exit::TerminalToolError) => {
+        RoundOutcome::Terminal => {
             return Some(TurnExit::TerminalTool {
-                notice: exit.label(),
+                notice: "terminal_tool_error".into(),
                 need: None,
             });
         }
-        RoundOutcome::Ended(_) => return Some(TurnExit::Looping),
     };
     for tc in tool_calls.iter() {
         if let Some(class) = h.tools.get(&tc.name).await.and_then(|t| t.taint(&tc.input)) {
@@ -1516,7 +1480,6 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         "turn ended"
     );
     usage::record_run_usage(&h.store, &h.selector, cx.agent_id(), &cx.request.session_key, &st.model, &st.usage, &exit.label());
-    usage::send_context_stats(&cx.tx, st.read_ledger.stats(), 0, st.checkpoints, st.round.spilled_results, &st.usage).await;
     if *exit == TurnExit::Cancelled {
         return;
     }
