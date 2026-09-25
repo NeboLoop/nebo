@@ -3165,5 +3165,16 @@
 		"moveTo": "Move to",
 		"dropHere": "Drop to report to this employee",
 		"cycleRefused": "That would make an employee answer to itself."
+	},
+	"permissionAsk": {
+		"title": "{name} wants your OK",
+		"allowAlways": "Allow always",
+		"thisOnce": "This once",
+		"no": "No",
+		"allowedAlways": "Allowed from now on",
+		"allowedOnce": "Allowed this once",
+		"declined": "Declined",
+		"expired": "Expired, counted as No",
+		"failed": "Could not send your answer. Try again."
 	}
 }

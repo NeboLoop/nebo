@@ -1546,7 +1546,7 @@ fn build_activity_prompt_with_context(
     let has_emit_cmd = activity.cmds.iter().any(|c| c == "emit");
     if has_emit_cmd && emit_source.is_none() {
         prompt.push_str(
-            "- emit(source: \"...\", payload: {...}) — call this to announce \
+            "- emit_event(source: \"...\", payload: {...}) — call this to announce \
              your result to other workflows. Can be called multiple times, \
              once per item, if processing a collection.\n",
         );

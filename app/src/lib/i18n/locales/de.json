@@ -3147,5 +3147,16 @@
 		"moveTo": "Verschieben nach",
 		"dropHere": "Hierher ziehen, um diesem Mitarbeiter zu berichten",
 		"cycleRefused": "Damit würde ein Mitarbeiter sich selbst berichten."
+	},
+	"permissionAsk": {
+		"title": "{name} braucht dein OK",
+		"allowAlways": "Immer erlauben",
+		"thisOnce": "Nur dieses Mal",
+		"no": "Nein",
+		"allowedAlways": "Ab jetzt erlaubt",
+		"allowedOnce": "Dieses Mal erlaubt",
+		"declined": "Abgelehnt",
+		"expired": "Abgelaufen, als Nein gewertet",
+		"failed": "Deine Antwort konnte nicht gesendet werden. Versuch es erneut."
 	}
 }

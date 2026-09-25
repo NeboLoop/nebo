@@ -3147,5 +3147,16 @@
 		"moveTo": "Sposta in",
 		"dropHere": "Trascina qui per rispondere a questo dipendente",
 		"cycleRefused": "Così un dipendente risponderebbe a sé stesso."
+	},
+	"permissionAsk": {
+		"title": "{name} ha bisogno del tuo OK",
+		"allowAlways": "Consenti sempre",
+		"thisOnce": "Solo questa volta",
+		"no": "No",
+		"allowedAlways": "Consentito d'ora in poi",
+		"allowedOnce": "Consentito questa volta",
+		"declined": "Rifiutato",
+		"expired": "Scaduto, contato come No",
+		"failed": "Impossibile inviare la risposta. Riprova."
 	}
 }
