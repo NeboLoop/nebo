@@ -197,26 +197,23 @@ pub(crate) struct RoundResults {
     pub summary_tool_results: Vec<ToolResult>,
 }
 
-/// Run the model's tool calls: hooks, the exit primitive, the gates, then execution, result caps and persistence. A pre-execute
-/// hook and input normalization may rewrite `tool_calls` in place.
+/// Run the model's tool calls: the exit primitive, then every call through
+/// the executor (hooks, gates, the tool), then result caps and persistence.
+/// A pre-execute hook and input normalization may rewrite `tool_calls`.
 pub(crate) async fn run_tool_round(
     cx: &RoundContext<'_>,
     st: RoundState<'_>,
+    exec: ToolExecutor<'_>,
     tool_calls: &mut [ai::ToolCall],
 ) -> RoundOutcome {
     let RoundContext {
         scope,
         tools,
         providers,
-        concurrency,
-        hooks,
-        user_prompt,
         iteration,
         workflow_mode,
-        decide,
-        active_task,
-        turn_mode,
         side_trace,
+        ..
     } = *cx;
     let RunToolScope {
         sessions,
@@ -225,7 +222,6 @@ pub(crate) async fn run_tool_round(
         origin,
         cancel_token,
         progress,
-        run_cwd,
         ..
     } = *scope;
     let RoundState {
@@ -234,7 +230,6 @@ pub(crate) async fn run_tool_round(
         edits_since_check,
         last_desktop_act,
     } = st;
-    let ctx = scope.tool_context();
 
     // Track tool names for context filtering
     for tc in tool_calls.iter() {
@@ -256,281 +251,44 @@ pub(crate) async fn run_tool_round(
             }
         }
     }
-    // Apply tool.pre_execute filter hooks — may block individual tools.
-    let mut blocked_results: Vec<Option<(ai::ToolCall, ToolResult)>> =
-        vec![None; tool_calls.len()];
-    // Workflow `exit` is a loop primitive, not a real tool: the first
-    // exit call ends the turn before anything in the batch executes.
-    let mut wf_break_reason: Option<String> = None;
+
+    // Workflow `exit` is a loop primitive, not a real tool: the first exit
+    // call ends the turn and nothing else in the reply runs (a read-only
+    // call the stream already started is dropped with the executor).
     if workflow_mode.is_some()
-        && let Some(tc) = tool_calls.iter().find(|tc| tc.name == "exit") {
-        let reason = tc
-            .input
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        wf_break_reason = Some(format!("workflow_exit:{reason}"));
-    }
-    // A pre hook that failed without blocking: its note rides on the
-    // call's result, after the tool's own output, keyed by tool id.
-    let mut pre_hook_notes: HashMap<String, String> = HashMap::new();
-    let has_pre_hook = hooks.has_subscribers("tool.pre_execute");
-    if has_pre_hook {
-        for idx in 0..tool_calls.len() {
-            let payload = serde_json::to_vec(&crate::hooks::ToolPreExecutePayload {
-                tool_name: tool_calls[idx].name.clone(),
-                input: tool_calls[idx].input.clone(),
-                session_id: session_id.to_string(),
-                tool_use_id: tool_calls[idx].id.clone(),
-                cwd: run_cwd.map(str::to_string).unwrap_or_default(),
-                agent_id: session_id.strip_prefix("subagent:").map(|_| session_id.to_string()),
-            })
-            .unwrap_or_default();
-            let (result, _handled) = hooks.apply_filter("tool.pre_execute", payload).await;
-            if let Ok(resp) =
-                serde_json::from_slice::<crate::hooks::ToolPreExecuteResponse>(&result)
-            {
-                if resp.blocked {
-                    let msg = resp
-                        .blocked_message
-                        .unwrap_or_else(|| "Blocked by plugin hook".into());
-                    blocked_results[idx] =
-                        Some((tool_calls[idx].clone(), ToolResult::error(msg)));
-                } else {
-                    if let Some(note) = resp.note {
-                        pre_hook_notes.insert(tool_calls[idx].id.clone(), note);
-                    }
-                    if let Some(mutated_input) = resp.input {
-                        tool_calls[idx].input = mutated_input;
-                    }
-                }
-            }
-        }
+        && let Some(tc) = tool_calls.iter().find(|tc| tc.name == "exit")
+    {
+        let reason = tc.input.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+        return RoundOutcome::Workflow(format!("workflow_exit:{reason}"));
     }
 
-    // Every gate below judges the call as it will run: the tool
-    // settles an inferred action or resource here (after any hook
-    // rewrote the input), so no call shape reaches execution past a
-    // gate that read a different call.
-    for tc in tool_calls.iter_mut() {
-        let input = std::mem::take(&mut tc.input);
-        tc.input = tools.normalize_input(&tc.name, input).await;
-    }
-    // What each settled call is, from its tool's spec: the guards below read
-    // the job a call does (its rule key and field), never a tool name.
-    let mut targets: Vec<Option<types::permissions::Target>> = Vec::with_capacity(tool_calls.len());
-    for tc in tool_calls.iter() {
-        targets.push(tools.target(&tc.name, &tc.input).await);
-    }
-    let targets = targets;
-
-    // A helper's kind and depth, whatever shape the call arrives in.
-    if let Some(mode) = turn_mode {
-        for (idx, tc) in tool_calls.iter().enumerate() {
-            if let (None, Some(target)) = (&blocked_results[idx], &targets[idx])
-                && let Err(refusal) = crate::harness::delegation::permits(mode, target)
-            {
-                blocked_results[idx] = Some((tc.clone(), ToolResult::error(refusal)));
-            }
-        }
-    }
-
-    // ── The permission judgement (permissions::judgement) ─────────────
-    // The calls about to run whose outward effect the code could not
-    // decide (whether they publish, or speak for the owner outside) are
-    // asked about once, together: Jev first, the aux classifier for what
-    // it didn't settle. Each call carries its verdict to the permission
-    // check, which records it (shadow) or acts on it (enforce).
-    let mut judgements: Vec<Option<types::permissions::Verdict>> = vec![None; tool_calls.len()];
-    if wf_break_reason.is_none() {
-        let store = sessions.store();
-        let mut asked: Vec<(usize, crate::harness::permissions::cases::Question)> = Vec::new();
-        for (idx, tc) in tool_calls.iter().enumerate() {
-            if blocked_results[idx].is_some() {
-                continue;
-            }
-            let Some(target) = tools.target(&tc.name, &tc.input).await else { continue };
-            let cx = crate::harness::permissions::CheckCx { ctx: &ctx, input: &tc.input, grant: scope.grant, store };
-            if let Some(mut q) = crate::harness::permissions::question_for(&cx, &target) {
-                q.activity = tools.labels(&tc.name, &tc.input).await.0;
-                asked.push((idx, q));
-            }
-        }
-        if !asked.is_empty() {
-            // A workflow turn has no session objective and an empty
-            // prompt; its task is the step it was given.
-            let (objective, last_message) = match workflow_mode {
-                Some(m) => (m.objective.as_str(), m.instruction.as_str()),
-                None => (active_task.as_str(), user_prompt),
-            };
-            let providers = providers.read().await.clone();
-            let judge = crate::harness::permissions::judgement::JudgeCx {
-                decide: decide.map(|d| d.as_ref()),
-                providers: &providers,
-                trace: side_trace,
-                objective,
-                last_message,
-            };
-            let questions: Vec<_> = asked.iter().map(|(_, q)| q.clone()).collect();
-            let verdicts = crate::harness::permissions::judgement::judge_round(&judge, &questions).await;
-            for ((idx, _), verdict) in asked.into_iter().zip(verdicts) {
-                judgements[idx] = Some(verdict);
-            }
-        }
-    }
-
-    // Workflow break (the exit primitive): the turn ends now — nothing in
-    // this batch executes.
-    if let Some(reason) = wf_break_reason {
-        return RoundOutcome::Workflow(reason);
-    }
-
-    // Claude Code's partitioning: consecutive concurrency-safe calls form
-    // one batch that runs in parallel, MAX_PARALLEL_CALLS at a time; every
-    // other call runs alone; the calls' order is kept. Invalid input is not
-    // safe (`Registry::concurrency_safe`).
-    let mut live: Vec<(usize, bool)> = Vec::new();
-    for (idx, tc) in tool_calls.iter().enumerate() {
-        if blocked_results[idx].is_none() {
-            live.push((idx, tools.concurrency_safe(&tc.name, &tc.input).await));
-        }
-    }
-
-    // Results as each completes; events sent immediately.
+    let Some(ran) = exec.finish(tool_calls).await else {
+        info!(session_id, "run cancelled during tool execution");
+        return RoundOutcome::Cancelled;
+    };
+    let workflow_park = workflow_mode.and_then(|m| m.park.as_ref());
     let mut results: Vec<Option<(ai::ToolCall, ToolResult)>> = vec![None; tool_calls.len()];
+    let mut targets: Vec<Option<types::permissions::Target>> = vec![None; tool_calls.len()];
     // The call's wall-clock time per tool id; persisted with the result.
     let mut durations: HashMap<String, u64> = HashMap::new();
     // Tool ids whose result a post-tool hook wrote into (the done gate's
     // "a check ran" signal).
     let mut hook_noted: HashSet<String> = HashSet::new();
-    // A workflow activity that can park runs its calls one at a time, so a
-    // call the permission check parks on the owner stops the step there.
-    let workflow_park = workflow_mode.and_then(|m| m.park.as_ref());
-    let batches = if workflow_park.is_some() {
-        live.iter().map(|(idx, _)| vec![*idx]).collect()
-    } else {
-        partition_tool_calls(&live)
-    };
     let mut parked_call: Option<usize> = None;
-    for batch in batches {
-        if parked_call.is_some() {
-            break;
+    for r in ran.into_iter().flatten() {
+        let Ran { idx, tc, target, result, duration_ms, hook_noted: noted } = r;
+        if let Some(d) = duration_ms {
+            durations.insert(tc.id.clone(), d);
         }
-        let mut futures = FuturesUnordered::new();
-        // A batch of safe calls runs through a pool of MAX_PARALLEL_CALLS;
-        // results still land as each call completes.
-        let pool = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_CALLS));
-        for idx in batch {
-            let tools = tools.clone();
-            let mut ctx = ctx.clone();
-            ctx.judgement = judgements[idx].clone();
-            let tc = tool_calls[idx].clone();
-            let concurrency = concurrency.clone();
-            let pool = pool.clone();
-            futures.push(async move {
-                let _slot = pool.acquire_owned().await;
-                let _permit = concurrency.acquire_tool_permit().await;
-                let input_str = tc.input.to_string();
-                let input_log = truncate_str(&input_str, 500);
-                info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool");
-                // Each tool's own timeout; the loop has none of its own.
-                let budget = tools.execution_timeout(&tc.name, &tc.input).await;
-                let started = std::time::Instant::now();
-                ctx.tool_call_id = tc.id.clone();
-                ctx.parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let parked = ctx.parked.clone();
-                let run = tools.execute(&ctx, &tc.name, tc.input.clone());
-                let result = match budget {
-                    None => run.await,
-                    Some(budget) => match run_within_budget(budget, parked, run).await {
-                        Some(r) => r,
-                        None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
-                    },
-                };
-                let duration_ms = started.elapsed().as_millis() as u64;
-                let result_log = truncate_str(&result.content, 300);
-                info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
-                (idx, tc, result, duration_ms)
-            });
+        if noted {
+            hook_noted.insert(tc.id.clone());
         }
-        loop {
-            let item = tokio::select! {
-                _ = cancel_token.cancelled() => {
-                    info!(session_id, "run cancelled during tool execution");
-                    return RoundOutcome::Cancelled;
-                }
-                next = futures.next() => match next {
-                    Some(v) => v,
-                    None => break,
-                }
-            };
-            let (idx, tc, mut result, duration_ms) = item;
-            if let Some(note) = pre_hook_notes.remove(&tc.id) {
-                result.content.push_str("\n\n");
-                result.content.push_str(&note);
-            }
-            if apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await {
-                hook_noted.insert(tc.id.clone());
-            }
-            // Send tool result event immediately as each completes
-            let _ = tx
-                .send(StreamEvent { payload: result.payload.clone(),
-                    provenance: None,
-                    event_type: StreamEventType::ToolResult,
-                    text: result.content.clone(),
-                    tool_call: Some(ai::ToolCall {
-                        id: tc.id.clone(),
-                        name: tc.name.clone(),
-                        input: tc.input.clone(),
-                    }),
-                    error: if result.is_error {
-                        Some(result.content.clone())
-                    } else {
-                        None
-                    },
-                    usage: None,
-                    rate_limit: None,
-                    // The call's wall-clock time rides in the widgets slot so the
-                    // live timeline and the reloaded one show the same duration.
-                    widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
-                    provider_metadata: None,
-                    stop_reason: None,
-                    image_url: result.image_url.clone(),
-                })
-                .await;
-            durations.insert(tc.id.clone(), duration_ms);
-            if workflow_park.is_some() && result.parked_ask.is_some() {
-                parked_call = Some(idx);
-            }
-            results[idx] = Some((tc, result));
+        if workflow_park.is_some() && result.parked_ask.is_some() {
+            parked_call = Some(idx);
         }
-    }
-
-    // Inject blocked tool results (from pre_execute hooks).
-    for (idx, blocked) in blocked_results.into_iter().enumerate() {
-        if let Some((tc, result)) = blocked {
-            let _ = tx
-                .send(StreamEvent { payload: None,
-                    provenance: None,
-                    event_type: StreamEventType::ToolResult,
-                    text: result.content.clone(),
-                    tool_call: Some(ai::ToolCall {
-                        id: tc.id.clone(),
-                        name: tc.name.clone(),
-                        input: tc.input.clone(),
-                    }),
-                    error: Some(result.content.clone()),
-                    usage: None,
-                    rate_limit: None,
-                    widgets: None,
-                    provider_metadata: None,
-                    stop_reason: None,
-                    image_url: None,
-                })
-                .await;
-            results[idx] = Some((tc, result));
-        }
+        tool_calls[idx] = tc.clone();
+        targets[idx] = target;
+        results[idx] = Some((tc, result));
     }
 
     // Sidecar vision verification — only for providers that can't include
@@ -878,26 +636,338 @@ async fn apply_post_tool_hooks(
     attached
 }
 
-/// Most calls of one parallel batch that run at once (Claude Code's pool).
+/// Most calls that run at once (Claude Code's pool).
 const MAX_PARALLEL_CALLS: usize = 10;
 
-/// Claude Code's partitioning. `calls` holds `(index, concurrency_safe)` in
-/// call order; each run of consecutive concurrency-safe calls is one batch,
-/// every other call is a batch of its own, and the batches keep the calls'
-/// order.
-fn partition_tool_calls(calls: &[(usize, bool)]) -> Vec<Vec<usize>> {
-    let mut batches: Vec<Vec<usize>> = Vec::new();
-    let mut open_safe = false;
-    for &(idx, safe) in calls {
-        match batches.last_mut() {
-            Some(batch) if safe && open_safe => batch.push(idx),
-            _ => batches.push(vec![idx]),
-        }
-        open_safe = safe;
-    }
-    batches
+/// Where a call of the reply stands in the executor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Status {
+    Queued,
+    Running,
+    Done,
 }
 
+/// One call run to its result.
+pub(crate) struct Ran {
+    idx: usize,
+    /// The call as it ran (a pre-execute hook may rewrite it).
+    tc: ai::ToolCall,
+    target: Option<types::permissions::Target>,
+    result: ToolResult,
+    /// The tool's wall-clock time; `None` for a call refused before it ran.
+    duration_ms: Option<u64>,
+    /// A post-execute hook wrote into the result.
+    hook_noted: bool,
+}
+
+/// A reply's tool calls, started as the stream hands them over (Claude
+/// Code's streaming tool executor). A concurrency-safe call starts as soon
+/// as its input is complete, while every running call is safe too; any
+/// other call waits for the reply to end, then runs alone and in order.
+/// Results come back in call order.
+pub(crate) struct ToolExecutor<'a> {
+    cx: &'a RoundContext<'a>,
+    ctx: ToolContext,
+    pool: Arc<tokio::sync::Semaphore>,
+    calls: Vec<ai::ToolCall>,
+    safe: Vec<bool>,
+    status: Vec<Status>,
+    done: Vec<Option<Ran>>,
+    running: FuturesUnordered<futures::future::BoxFuture<'a, Ran>>,
+    /// The reply is still streaming: only safe calls may start.
+    streaming: bool,
+    /// A workflow step parked on the owner: nothing more starts.
+    halted: bool,
+}
+
+impl<'a> ToolExecutor<'a> {
+    pub(crate) fn new(cx: &'a RoundContext<'a>) -> Self {
+        Self {
+            cx,
+            ctx: cx.scope.tool_context(),
+            pool: Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_CALLS)),
+            calls: Vec::new(),
+            safe: Vec::new(),
+            status: Vec::new(),
+            done: Vec::new(),
+            running: FuturesUnordered::new(),
+            streaming: true,
+            halted: false,
+        }
+    }
+
+    /// A workflow activity that can park runs its calls one at a time, so a
+    /// call the permission check parks on the owner stops the step there.
+    fn parks(&self) -> bool {
+        self.cx.workflow_mode.is_some_and(|m| m.park.is_some())
+    }
+
+    /// Take the calls as the stream hands them over, running what may run,
+    /// until the stream ends.
+    pub(crate) async fn stream(&mut self, mut calls: mpsc::UnboundedReceiver<ai::ToolCall>) {
+        loop {
+            tokio::select! {
+                next = calls.recv() => match next {
+                    Some(tc) => self.add(tc).await,
+                    None => return,
+                },
+                Some(ran) = self.running.next(), if !self.running.is_empty() => self.complete(ran),
+            }
+        }
+    }
+
+    /// The reply is complete: queue any call the stream did not hand over,
+    /// and run every call to its result, in call order. `None` when the run
+    /// was cancelled; a call that never started (after a park) is `None`.
+    async fn finish(mut self, calls: &[ai::ToolCall]) -> Option<Vec<Option<Ran>>> {
+        for tc in calls.iter().skip(self.calls.len()) {
+            self.add(tc.clone()).await;
+        }
+        self.streaming = false;
+        self.pump();
+        while !self.running.is_empty() {
+            tokio::select! {
+                _ = self.cx.scope.cancel_token.cancelled() => return None,
+                Some(ran) = self.running.next() => self.complete(ran),
+            }
+        }
+        Some(self.done)
+    }
+
+    /// Queue one call and start what may start. Invalid input is not safe
+    /// (`Registry::concurrency_safe`).
+    async fn add(&mut self, tc: ai::ToolCall) {
+        let safe = !self.parks() && {
+            let input = self.cx.tools.normalize_input(&tc.name, tc.input.clone()).await;
+            self.cx.tools.concurrency_safe(&tc.name, &input).await
+        };
+        self.calls.push(tc);
+        self.safe.push(safe);
+        self.status.push(Status::Queued);
+        self.done.push(None);
+        self.pump();
+    }
+
+    fn complete(&mut self, ran: Ran) {
+        let idx = ran.idx;
+        self.status[idx] = Status::Done;
+        if self.parks() && ran.result.parked_ask.is_some() {
+            self.halted = true;
+        }
+        self.done[idx] = Some(ran);
+        self.pump();
+    }
+
+    fn pump(&mut self) {
+        if self.halted {
+            return;
+        }
+        let view: Vec<(Status, bool)> = self.status.iter().copied().zip(self.safe.iter().copied()).collect();
+        for idx in startable(&view, self.streaming) {
+            self.status[idx] = Status::Running;
+            let cx = self.cx;
+            let run = run_call(cx, self.ctx.clone(), self.pool.clone(), idx, self.calls[idx].clone());
+            self.running.push(Box::pin(run));
+        }
+    }
+}
+
+/// Claude Code's queue rule. Walking the calls in order, a queued call
+/// starts when nothing runs, or when it and every running call are
+/// concurrency-safe; a queued unsafe call that cannot start holds every
+/// call after it. While the reply streams, an unsafe call cannot start.
+fn startable(calls: &[(Status, bool)], streaming: bool) -> Vec<usize> {
+    let running: Vec<bool> = calls.iter().filter(|(s, _)| *s == Status::Running).map(|(_, safe)| *safe).collect();
+    let mut any_running = !running.is_empty();
+    let mut all_safe = running.iter().all(|safe| *safe);
+    let mut start = Vec::new();
+    for (idx, &(status, safe)) in calls.iter().enumerate() {
+        if status != Status::Queued {
+            continue;
+        }
+        let can = (safe || !streaming) && (!any_running || (safe && all_safe));
+        if can {
+            start.push(idx);
+            any_running = true;
+            all_safe &= safe;
+        } else if !safe {
+            break;
+        }
+    }
+    start
+}
+
+/// One call from its hooks to its result: the pre-execute hook (which may
+/// refuse or rewrite it), the helper-kind check, the permission judgement
+/// for a call whose outward effect the code could not decide, the tool
+/// under its own timeout, then the post-execute hooks. Its result event
+/// goes out as it completes.
+async fn run_call(
+    cx: &RoundContext<'_>,
+    mut ctx: ToolContext,
+    pool: Arc<tokio::sync::Semaphore>,
+    idx: usize,
+    mut tc: ai::ToolCall,
+) -> Ran {
+    let RoundContext {
+        scope,
+        tools,
+        providers,
+        concurrency,
+        hooks,
+        user_prompt,
+        workflow_mode,
+        decide,
+        active_task,
+        turn_mode,
+        side_trace,
+        ..
+    } = *cx;
+    let RunToolScope { sessions, tx, session_id, run_cwd, .. } = *scope;
+    let _slot = pool.acquire_owned().await;
+
+    // tool.pre_execute filter hooks: may refuse the call, rewrite its
+    // input, or attach a note that rides after the tool's own output.
+    let mut refusal: Option<String> = None;
+    let mut pre_hook_note: Option<String> = None;
+    if hooks.has_subscribers("tool.pre_execute") {
+        let payload = serde_json::to_vec(&crate::hooks::ToolPreExecutePayload {
+            tool_name: tc.name.clone(),
+            input: tc.input.clone(),
+            session_id: session_id.to_string(),
+            tool_use_id: tc.id.clone(),
+            cwd: run_cwd.map(str::to_string).unwrap_or_default(),
+            agent_id: session_id.strip_prefix("subagent:").map(|_| session_id.to_string()),
+        })
+        .unwrap_or_default();
+        let (result, _handled) = hooks.apply_filter("tool.pre_execute", payload).await;
+        if let Ok(resp) = serde_json::from_slice::<crate::hooks::ToolPreExecuteResponse>(&result) {
+            if resp.blocked {
+                refusal = Some(resp.blocked_message.unwrap_or_else(|| "Blocked by plugin hook".into()));
+            } else {
+                pre_hook_note = resp.note;
+                if let Some(mutated_input) = resp.input {
+                    tc.input = mutated_input;
+                }
+            }
+        }
+    }
+
+    // Every gate below judges the call as it will run: the tool settles an
+    // inferred action or resource here (after any hook rewrote the input).
+    tc.input = tools.normalize_input(&tc.name, std::mem::take(&mut tc.input)).await;
+    let target = tools.target(&tc.name, &tc.input).await;
+
+    // A helper's kind and depth, whatever shape the call arrives in.
+    if refusal.is_none()
+        && let (Some(mode), Some(t)) = (turn_mode, &target)
+        && let Err(refused) = crate::harness::delegation::permits(mode, t)
+    {
+        refusal = Some(refused);
+    }
+    if let Some(msg) = refusal {
+        let result = ToolResult::error(msg);
+        let _ = tx
+            .send(StreamEvent {
+                payload: None,
+                provenance: None,
+                event_type: StreamEventType::ToolResult,
+                text: result.content.clone(),
+                tool_call: Some(tc.clone()),
+                error: Some(result.content.clone()),
+                usage: None,
+                rate_limit: None,
+                widgets: None,
+                provider_metadata: None,
+                stop_reason: None,
+                image_url: None,
+            })
+            .await;
+        return Ran { idx, tc, target, result, duration_ms: None, hook_noted: false };
+    }
+
+    // The permission judgement (permissions::judgement): a call whose
+    // outward effect the code could not decide (whether it publishes, or
+    // speaks for the owner outside) is asked about, Jev first, the aux
+    // classifier for what it didn't settle. The verdict rides to the
+    // permission check, which records it (shadow) or acts on it (enforce).
+    if let Some(t) = &target {
+        let question = {
+            let check = crate::harness::permissions::CheckCx {
+                ctx: &ctx,
+                input: &tc.input,
+                grant: scope.grant,
+                store: sessions.store(),
+            };
+            crate::harness::permissions::question_for(&check, t)
+        };
+        if let Some(mut q) = question {
+            q.activity = tools.labels(&tc.name, &tc.input).await.0;
+            // A workflow turn has no session objective and an empty
+            // prompt; its task is the step it was given.
+            let (objective, last_message) = match workflow_mode {
+                Some(m) => (m.objective.as_str(), m.instruction.as_str()),
+                None => (active_task.as_str(), user_prompt),
+            };
+            let providers = providers.read().await.clone();
+            let judge = crate::harness::permissions::judgement::JudgeCx {
+                decide: decide.map(|d| d.as_ref()),
+                providers: &providers,
+                trace: side_trace,
+                objective,
+                last_message,
+            };
+            ctx.judgement = crate::harness::permissions::judgement::judge_round(&judge, std::slice::from_ref(&q))
+                .await
+                .into_iter()
+                .next();
+        }
+    }
+
+    let _permit = concurrency.acquire_tool_permit().await;
+    let input_str = tc.input.to_string();
+    info!(tool = %tc.name, id = %tc.id, input = %truncate_str(&input_str, 500), "executing tool");
+    // Each tool's own timeout; the loop has none of its own.
+    let budget = tools.execution_timeout(&tc.name, &tc.input).await;
+    let started = std::time::Instant::now();
+    ctx.tool_call_id = tc.id.clone();
+    ctx.parked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let parked = ctx.parked.clone();
+    let run = tools.execute(&ctx, &tc.name, tc.input.clone());
+    let mut result = match budget {
+        None => run.await,
+        Some(budget) => match run_within_budget(budget, parked, run).await {
+            Some(r) => r,
+            None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
+        },
+    };
+    let duration_ms = started.elapsed().as_millis() as u64;
+    info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %truncate_str(&result.content, 300), "tool result");
+    if let Some(note) = pre_hook_note {
+        result.content.push_str("\n\n");
+        result.content.push_str(&note);
+    }
+    let hook_noted = apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await;
+    let _ = tx
+        .send(StreamEvent {
+            payload: result.payload.clone(),
+            provenance: None,
+            event_type: StreamEventType::ToolResult,
+            text: result.content.clone(),
+            tool_call: Some(tc.clone()),
+            error: if result.is_error { Some(result.content.clone()) } else { None },
+            usage: None,
+            rate_limit: None,
+            // The call's wall-clock time rides in the widgets slot so the
+            // live timeline and the reloaded one show the same duration.
+            widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
+            provider_metadata: None,
+            stop_reason: None,
+            image_url: result.image_url.clone(),
+        })
+        .await;
+    Ran { idx, tc, target, result, duration_ms: Some(duration_ms), hook_noted }
+}
 
 /// A shell command that IS a project check. Running one resets the edit
 /// count the done gate watches, exactly as a post-tool hook verdict does.
@@ -952,21 +1022,34 @@ mod tests {
         target("run_command", "run_command", Some(RuleField::CommandPrefix(cmd.into())))
     }
 
-    /// Claude Code's partitioning: consecutive concurrency-safe calls batch,
-    /// anything else runs alone, order is kept.
+    use Status::{Done, Queued, Running};
+
+    /// While the reply streams, safe calls start as they arrive; an unsafe
+    /// call waits and holds every call after it.
     #[test]
-    fn safe_runs_batch_and_everything_else_runs_alone_in_order() {
-        let calls = [(0, true), (1, true), (2, false), (3, true), (4, false), (5, false), (6, true)];
-        assert_eq!(partition_tool_calls(&calls), vec![vec![0, 1], vec![2], vec![3], vec![4], vec![5], vec![6]]);
-        assert!(partition_tool_calls(&[]).is_empty());
+    fn while_streaming_only_safe_calls_start_and_an_unsafe_one_holds_the_rest() {
+        assert_eq!(startable(&[(Queued, true), (Queued, true)], true), [0, 1]);
+        assert_eq!(startable(&[(Running, true), (Queued, true)], true), [1]);
+        assert!(startable(&[(Queued, false), (Queued, true)], true).is_empty());
+        assert_eq!(startable(&[(Queued, true), (Queued, false), (Queued, true)], true), [0]);
     }
 
-    /// A run of safe calls is one batch however long; the pool, not the
-    /// partition, keeps ten running at once.
+    /// After the reply: consecutive safe calls run together, anything else
+    /// runs alone, and order is kept.
     #[test]
-    fn a_run_of_safe_calls_is_one_batch() {
-        let calls: Vec<(usize, bool)> = (0..23).map(|i| (i, true)).collect();
-        assert_eq!(partition_tool_calls(&calls), vec![(0..23).collect::<Vec<_>>()]);
+    fn after_the_reply_unsafe_calls_run_alone_and_in_order() {
+        assert!(startable(&[(Running, true), (Queued, false), (Queued, true)], false).is_empty());
+        assert_eq!(startable(&[(Done, true), (Queued, false), (Queued, true)], false), [1]);
+        assert!(startable(&[(Done, true), (Running, false), (Queued, true)], false).is_empty());
+        assert_eq!(startable(&[(Done, false), (Done, false), (Queued, true), (Queued, true), (Queued, false)], false), [2, 3]);
+    }
+
+    /// A run of safe calls starts at once however long; the pool, not the
+    /// queue, keeps ten running.
+    #[test]
+    fn a_run_of_safe_calls_starts_at_once() {
+        let calls: Vec<(Status, bool)> = (0..23).map(|_| (Queued, true)).collect();
+        assert_eq!(startable(&calls, false), (0..23).collect::<Vec<_>>());
     }
 
     #[test]
