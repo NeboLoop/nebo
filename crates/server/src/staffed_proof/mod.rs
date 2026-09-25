@@ -348,6 +348,7 @@ impl Nebo {
             operation: Some(op.to_string()),
             capability,
             field: None,
+            subject: None,
             read_only: false,
             effects,
         };

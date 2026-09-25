@@ -414,6 +414,13 @@ impl DynTool for ReadPluginEventsTool {
         true
     }
 
+    /// The plugin whose events it reads: what a restricted run's
+    /// `read_plugin_events:<plugin>` grant admits.
+    fn subject(&self, input: &serde_json::Value) -> Option<String> {
+        let raw = input.get("plugin").and_then(|p| p.as_str())?;
+        Some(plugin_slug(raw).unwrap_or(raw).to_string())
+    }
+
     fn execute_dyn<'a>(
         &'a self,
         _ctx: &'a ToolContext,

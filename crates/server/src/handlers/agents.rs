@@ -4728,6 +4728,7 @@ pub async fn get_agent_operations(
                 operation: Some(op.clone()),
                 capability: None,
                 field: None,
+                subject: None,
                 read_only: false,
                 effects: types::permissions::CallEffects::unknown(),
             };

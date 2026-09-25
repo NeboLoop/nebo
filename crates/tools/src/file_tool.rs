@@ -93,11 +93,9 @@ struct FileInput {
 /// different tool, not a wider walk: look the name up in the index, grep the
 /// contents, or ask the owner where the file lives.
 fn nothing_matched(pattern: &str, base_path: &str, cwd: Option<&str>) -> String {
-    let recursive = if pattern.starts_with("**/") {
-        pattern.to_string()
-    } else {
-        format!("**/{pattern}")
-    };
+    // `find` matches a name with -name and a path with -path.
+    let name = pattern.trim_start_matches("**/");
+    let by_name = if name.contains('/') { format!("-path '*/{name}'") } else { format!("-name '{name}'") };
     let head = format!(
         "No files found matching \"{pattern}\" in {base_path}. This is not an error; nothing here matches."
     );
@@ -105,8 +103,8 @@ fn nothing_matched(pattern: &str, base_path: &str, cwd: Option<&str>) -> String 
 
     match walk_bounds::widen_within_own_area(Path::new(base_path), cwd) {
         Some(wider) => format!(
-            "{head} Next: widen the search one folder with os(resource: \"file\", action: \"glob\", \
-             pattern: \"{recursive}\", path: \"{}\"), or search file contents with action: \"grep\". {tail}",
+            "{head} Next: widen the search one folder with run_command(command: \"find {} {by_name}\"), \
+             or search file contents with run_command(command: \"grep -rn '<text>' {0}\"). {tail}",
             wider.display()
         ),
         None => format!(
@@ -114,7 +112,7 @@ fn nothing_matched(pattern: &str, base_path: &str, cwd: Option<&str>) -> String 
              glob: a walk above it covers the whole machine and is stopped before it finds anything. \
              Next: look the file up by name with os(resource: \"search\", action: \"search\", \
              query: \"<name>\", dir: \"{base_path}\"), or search file contents with \
-             os(resource: \"file\", action: \"grep\", pattern: \"<text>\", path: \"{base_path}\"). \
+             run_command(command: \"grep -rn '<text>' {base_path}\"). \
              If the file is not under this bot's area, ask the owner where it lives. {tail}"
         ),
     }
@@ -197,9 +195,8 @@ impl FileTool {
             // advertised in the schema; glob stays the single documented way.
             "list" | "ls" => self.handle_glob(ctx, &fi),
             "screenshot" | "capture" => ToolResult::error(format!(
-                "screenshot is not a file action. To take one: os(resource: \"desktop\", action: \"screenshot\"). \
-                 To find existing screenshots: os(resource: \"file\", action: \"glob\", \
-                 pattern: \"*.png\", path: \"{}\").",
+                "screenshot is not a file action. To take one: os(resource: \"capture\", action: \"screenshot\"). \
+                 To find existing screenshots: run_command(command: \"find {} -name '*.png'\").",
                 if fi.path.is_empty() { "~/Desktop" } else { fi.path.as_str() }
             )),
             other => ToolResult::error(format!(
@@ -1030,7 +1027,7 @@ impl FileTool {
                 // the caller needs: the same call succeeds on a directory.
                 let what = if Path::new(&expanded).is_file() { "a file, not a directory" } else { "not a path that exists" };
                 return ToolResult::error(format!(
-                    "glob on {} did nothing: it is {}. A path alone lists a directory; to search by name give pattern (os(resource: \"file\", action: \"glob\", pattern: \"*.json\", path: \"<dir>\")); to read a file use action: \"read\".",
+                    "glob on {} did nothing: it is {}. A path alone lists a directory; to search by name use run_command(command: \"find <dir> -name '*.json'\"); to read a file use read_file.",
                     expanded, what
                 ));
             }
@@ -1120,7 +1117,7 @@ impl FileTool {
     fn handle_grep(&self, input: &FileInput) -> ToolResult {
         let pattern = &input.pattern;
         if pattern.is_empty() {
-            return ToolResult::error(errors::missing_param("grep", "pattern", "os(resource: \"file\", action: \"grep\", pattern: \"TODO\", path: \".\")"));
+            return ToolResult::error(errors::missing_param("grep", "pattern", "run_command(command: \"grep -rn 'TODO' .\")"));
         }
 
         let path = if input.path.is_empty() {
@@ -1840,10 +1837,9 @@ mod tests {
 
     /// The path a hint offers to glob next, if it offers one at all.
     fn widening_offered(hint: &str) -> Option<String> {
-        let rest = &hint[hint.find("action: \"glob\"")?..];
-        let start = rest.find("path: \"")? + "path: \"".len();
-        let end = rest[start..].find('"')?;
-        Some(rest[start..start + end].to_string())
+        let start = hint.find("command: \"find ")? + "command: \"find ".len();
+        let end = hint[start..].find(" -")?;
+        Some(hint[start..start + end].to_string())
     }
 
     /// The widening an empty glob offers must never leave the bot's own area.
@@ -1891,7 +1887,7 @@ mod tests {
 
         for hint in &hints {
             assert!(
-                !hint.contains("path: \"/\""),
+                !hint.contains("find / "),
                 "a hint offered the whole machine: {hint}"
             );
         }
@@ -1918,7 +1914,7 @@ mod tests {
             "the last hint must say why it stops: {edge}"
         );
         assert!(
-            edge.contains("action: \"search\"") && edge.contains("action: \"grep\""),
+            edge.contains("action: \"search\"") && edge.contains("grep -rn"),
             "the edge must offer a lookup by name and a content search: {edge}"
         );
         assert!(

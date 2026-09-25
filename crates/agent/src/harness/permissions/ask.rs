@@ -345,6 +345,7 @@ impl Asks {
                 operation: None,
                 capability: None,
                 field: None,
+                subject: None,
                 read_only: false,
                 effects: types::permissions::CallEffects { widens: true, ..Default::default() },
             },
@@ -961,6 +962,7 @@ mod tests {
             operation: None,
             capability: Some("sms".into()),
             field: None,
+            subject: None,
             read_only: false,
             effects: types::permissions::CallEffects { recipients: vec![to.into()], ..Default::default() },
         };
@@ -1010,6 +1012,7 @@ mod tests {
                 operation: None,
                 capability: Some("shell".into()),
                 field: Some(RuleField::CommandPrefix(cmd.into())),
+                subject: None,
                 read_only: false,
                 effects: types::permissions::CallEffects::unknown(),
             },

@@ -1,0 +1,17 @@
+post_tool:
+  - name: fmt
+    tool: os
+    resource: file
+    action: [write, edit]
+    command: cargo fmt
+  - name: calendar-log
+    tool: os
+    resource: [file, calendar]
+    command: echo changed
+  - name: untouched
+    tool: [write_file]
+    command: echo ok
+pre_tool:
+  - name: no-force-push
+    tool: shell
+    command: echo checked

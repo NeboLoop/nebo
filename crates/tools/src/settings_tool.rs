@@ -30,11 +30,11 @@ impl DynTool for SettingsTool {
          - info: get\n\
          - mute: value true|false\n\n\
          Examples:\n  \
-         settings(resource: \"volume\", action: \"set\", value: 50)\n  \
-         settings(resource: \"brightness\", action: \"get\")\n  \
-         settings(resource: \"battery\", action: \"status\")\n  \
-         settings(resource: \"darkmode\", action: \"toggle\")\n  \
-         settings(resource: \"sleep\", action: \"trigger\")"
+         os(resource: \"settings\", action: \"volume\", value: 50)\n  \
+         os(resource: \"settings\", action: \"brightness\")\n  \
+         os(resource: \"settings\", action: \"battery\")\n  \
+         os(resource: \"settings\", action: \"darkmode\")\n  \
+         os(resource: \"settings\", action: \"sleep\")"
             .to_string()
     }
 

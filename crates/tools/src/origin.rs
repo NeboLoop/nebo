@@ -338,28 +338,27 @@ impl ToolContext {
 
     /// Whether the run's tool allowlist admits this call. `None` =
     /// unrestricted (every normal run). Entries are either a bare tool name
-    /// ("use_skill" — the whole tool) or a `tool:resource` compound
-    /// ("agent:memory") admitting only calls whose `resource` input matches —
-    /// bare `os` in an allowlist would otherwise hand a restricted run the
-    /// shell. Matching lives HERE so the runner's gate and the registry's
-    /// choke point can never drift apart.
-    pub fn whitelist_allows(&self, tool: &str, input: &serde_json::Value) -> bool {
+    /// ("use_skill" — the whole tool), a `tool:subject` compound admitting
+    /// only calls on that subject (`os:calendar`, `run_workflow:weekly`; see
+    /// `DynTool::subject`) — bare `os` in an allowlist would otherwise hand
+    /// a restricted run the whole desktop — or a `prefix*` family.
+    pub fn whitelist_allows(&self, t: &types::permissions::Target) -> bool {
         let Some(wl) = &self.tool_whitelist else {
             return true;
         };
-        if wl.contains(tool) {
+        if wl.contains(&t.tool) {
             return true;
         }
-        if let Some(res) = input.get("resource").and_then(|v| v.as_str()) {
-            if wl.contains(&format!("{tool}:{res}")) {
-                return true;
-            }
+        if let Some(subject) = &t.subject
+            && wl.contains(&format!("{}:{subject}", t.tool))
+        {
+            return true;
         }
         // Prefix entries ("mcp__monument__*") admit a tool family — how a
         // call-tree intent grants one MCP server's tools without naming each.
         wl.iter().any(|e| {
             e.strip_suffix('*')
-                .is_some_and(|prefix| !prefix.is_empty() && tool.starts_with(prefix))
+                .is_some_and(|prefix| !prefix.is_empty() && t.tool.starts_with(prefix))
         })
     }
 

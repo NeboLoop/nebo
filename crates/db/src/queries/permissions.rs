@@ -767,30 +767,6 @@ impl Store {
         }
         tx.commit().map_err(db_err)
     }
-
-    /// Whether the named one-time conversion has run on this install.
-    pub fn permission_migration_done(&self, name: &str) -> Result<bool, NeboError> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT 1 FROM permission_migrations WHERE name = ?1",
-            params![name],
-            |_| Ok(()),
-        )
-        .optional()
-        .map(|r| r.is_some())
-        .map_err(db_err)
-    }
-
-    pub fn record_permission_migration(&self, name: &str, report: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO permission_migrations (name, report, applied_at)
-             VALUES (?1, ?2, unixepoch())",
-            params![name, report],
-        )
-        .map_err(db_err)?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]

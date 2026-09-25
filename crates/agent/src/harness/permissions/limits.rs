@@ -223,7 +223,7 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
         ));
     }
     // The restricted run's allowlist (the review fork, phone callers).
-    if !cx.ctx.whitelist_allows(&t.tool, cx.input) {
+    if !cx.ctx.whitelist_allows(t) {
         return Some(deny(
             "allowlist",
             match &cx.ctx.whitelist_denial_hint {
@@ -354,6 +354,7 @@ mod tests {
                 operation: Some(operation.to_string()),
                 capability: None,
                 field: None,
+                subject: None,
                 read_only: false,
                 effects: types::permissions::CallEffects::unknown(),
             }

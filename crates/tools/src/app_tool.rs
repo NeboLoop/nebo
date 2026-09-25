@@ -28,12 +28,12 @@ impl DynTool for AppTool {
          - info: get detailed info about an application\n\
          - frontmost: get the name of the frontmost application\n\n\
          Examples:\n  \
-         app(action: \"list\")\n  \
-         app(action: \"launch\", app: \"Safari\")\n  \
-         app(action: \"quit\", app: \"Slack\")\n  \
-         app(action: \"activate\", app: \"Terminal\")\n  \
-         app(action: \"info\", app: \"Xcode\")\n  \
-         app(action: \"frontmost\")"
+         os(resource: \"app\", action: \"list\")\n  \
+         os(resource: \"app\", action: \"launch\", app: \"Safari\")\n  \
+         os(resource: \"app\", action: \"quit\", app: \"Slack\")\n  \
+         os(resource: \"app\", action: \"activate\", app: \"Terminal\")\n  \
+         os(resource: \"app\", action: \"info\", app: \"Xcode\")\n  \
+         os(resource: \"app\", action: \"frontmost\")"
             .to_string()
     }
 
@@ -72,7 +72,7 @@ impl DynTool for AppTool {
                         return ToolResult::error(crate::errors::missing_param(
                             "launch",
                             "app",
-                            "app(action: \"launch\", app: \"Safari\")",
+                            "os(resource: \"app\", action: \"launch\", app: \"Safari\")",
                         ));
                     }
                     handle_launch(app).await
@@ -82,7 +82,7 @@ impl DynTool for AppTool {
                         return ToolResult::error(crate::errors::missing_param(
                             "quit",
                             "app",
-                            "app(action: \"quit\", app: \"Safari\")",
+                            "os(resource: \"app\", action: \"quit\", app: \"Safari\")",
                         ));
                     }
                     if is_protected_process(app) {
@@ -98,7 +98,7 @@ impl DynTool for AppTool {
                         return ToolResult::error(crate::errors::missing_param(
                             "activate",
                             "app",
-                            "app(action: \"activate\", app: \"Safari\")",
+                            "os(resource: \"app\", action: \"activate\", app: \"Safari\")",
                         ));
                     }
                     handle_activate(app).await
@@ -108,7 +108,7 @@ impl DynTool for AppTool {
                         return ToolResult::error(crate::errors::missing_param(
                             "hide",
                             "app",
-                            "app(action: \"hide\", app: \"Safari\")",
+                            "os(resource: \"app\", action: \"hide\", app: \"Safari\")",
                         ));
                     }
                     handle_hide(app).await
@@ -118,7 +118,7 @@ impl DynTool for AppTool {
                         return ToolResult::error(crate::errors::missing_param(
                             "info",
                             "app",
-                            "app(action: \"info\", app: \"Safari\")",
+                            "os(resource: \"app\", action: \"info\", app: \"Safari\")",
                         ));
                     }
                     handle_info(app).await
@@ -154,7 +154,7 @@ async fn handle_launch(app: &str) -> ToolResult {
          on error\n\
          \tdo shell script \"open -a '{app}'\"\n\
          end try\n\
-         return \"Launch request sent to {app}; confirm with app(action: \\\"list\\\")\"",
+         return \"Launch request sent to {app}; confirm with os(resource: \"app\", action: \\\"list\\\")\"",
         app = escape_applescript(app),
     );
     run_osascript(&script).await
@@ -173,7 +173,7 @@ pub(crate) fn is_protected_process(app: &str) -> bool {
 #[cfg(target_os = "macos")]
 async fn handle_quit(app: &str) -> ToolResult {
     let script = format!(
-        "tell application \"{app}\" to quit\nreturn \"Quit request sent to {app}; confirm with app(action: \\\"list\\\")\"",
+        "tell application \"{app}\" to quit\nreturn \"Quit request sent to {app}; confirm with os(resource: \"app\", action: \\\"list\\\")\"",
         app = escape_applescript(app)
     );
     run_osascript(&script).await
@@ -200,7 +200,7 @@ return "All visible applications have been asked to quit"
 #[cfg(target_os = "macos")]
 async fn handle_activate(app: &str) -> ToolResult {
     let script = format!(
-        "tell application \"{app}\" to activate\nreturn \"Activate request sent to {app}; confirm with app(action: \\\"frontmost\\\")\"",
+        "tell application \"{app}\" to activate\nreturn \"Activate request sent to {app}; confirm with os(resource: \"app\", action: \\\"frontmost\\\")\"",
         app = escape_applescript(app)
     );
     run_osascript(&script).await
@@ -217,7 +217,7 @@ async fn handle_hide(app: &str) -> ToolResult {
     // the app is not running, which is the fact worth reporting.
     if result.is_error && result.content.contains("-1728") {
         return ToolResult::error(format!(
-            "{} is not running (System Events has no process named '{}'); nothing to hide. Running apps: app(action: \"list\")",
+            "{} is not running (System Events has no process named '{}'); nothing to hide. Running apps: os(resource: \"app\", action: \"list\")",
             app, app
         ));
     }
@@ -276,7 +276,7 @@ async fn handle_info(app: &str) -> ToolResult {
         .join(", ");
     let Some(bundle) = bundle else {
         return ToolResult::error(format!(
-            "No '{}.app' in {}. Confirm the exact name with app(action: \"list\") (running apps only).",
+            "No '{}.app' in {}. Confirm the exact name with os(resource: \"app\", action: \"list\") (running apps only).",
             app, searched
         ));
     };
@@ -403,7 +403,7 @@ async fn handle_launch(app: &str) -> ToolResult {
         let result = run_command("gtk-launch", &[app]).await;
         if !result.is_error {
             return ToolResult::ok(format!(
-                "Launch request sent to '{}' via gtk-launch; confirm with app(action: \"list\")",
+                "Launch request sent to '{}' via gtk-launch; confirm with os(resource: \"app\", action: \"list\")",
                 app
             ));
         }
@@ -414,7 +414,7 @@ async fn handle_launch(app: &str) -> ToolResult {
             return result;
         }
         ToolResult::ok(format!(
-            "Launch request sent to '{}' via xdg-open; confirm with app(action: \"list\")",
+            "Launch request sent to '{}' via xdg-open; confirm with os(resource: \"app\", action: \"list\")",
             app
         ))
     } else {
@@ -445,7 +445,7 @@ async fn handle_quit(app: &str) -> ToolResult {
                 return result;
             }
             ToolResult::ok(format!(
-                "SIGTERM sent to pid {} ({}); confirm with app(action: \"list\")",
+                "SIGTERM sent to pid {} ({}); confirm with os(resource: \"app\", action: \"list\")",
                 first_pid, app
             ))
         }
@@ -479,7 +479,7 @@ async fn handle_quit_all() -> ToolResult {
                     }
                 }
                 ToolResult::ok(format!(
-                    "Close request sent to {} windows ({} wmctrl calls failed); whether each app actually closed is not checked, confirm with app(action: \"list\")",
+                    "Close request sent to {} windows ({} wmctrl calls failed); whether each app actually closed is not checked, confirm with os(resource: \"app\", action: \"list\")",
                     sent, failed
                 ))
             }
@@ -500,7 +500,7 @@ async fn handle_activate(app: &str) -> ToolResult {
             return result;
         }
         ToolResult::ok(format!(
-            "Activate request sent for '{}' via wmctrl; confirm with app(action: \"frontmost\")",
+            "Activate request sent for '{}' via wmctrl; confirm with os(resource: \"app\", action: \"frontmost\")",
             app
         ))
     } else if which("xdotool") {
@@ -520,7 +520,7 @@ async fn handle_activate(app: &str) -> ToolResult {
                     return result;
                 }
                 ToolResult::ok(format!(
-                    "Activate request sent to window {} ('{}') via xdotool; confirm with app(action: \"frontmost\")",
+                    "Activate request sent to window {} ('{}') via xdotool; confirm with os(resource: \"app\", action: \"frontmost\")",
                     first, app
                 ))
             }
@@ -628,7 +628,7 @@ async fn handle_list() -> ToolResult {
 #[cfg(target_os = "windows")]
 async fn handle_launch(app: &str) -> ToolResult {
     let script = format!(
-        "Start-Process '{app}' -ErrorAction Stop; 'Launch request sent to {app}; confirm with app(action: \"list\")'",
+        "Start-Process '{app}' -ErrorAction Stop; 'Launch request sent to {app}; confirm with os(resource: \"app\", action: \"list\")'",
         app = escape_powershell(app)
     );
     run_powershell(&script).await
@@ -640,7 +640,7 @@ async fn handle_quit(app: &str) -> ToolResult {
     let script = format!(
         "$procs = Get-Process -Name '{}' -ErrorAction SilentlyContinue; \
          if ($procs) {{ $n = 0; $refused = 0; $procs | ForEach-Object {{ if ($_.CloseMainWindow()) {{ $n++ }} else {{ $refused++ }} }}; \
-         \"Close request sent to $n window(s) of {}; $refused had no main window to close; confirm with app(action: 'list')\" }} \
+         \"Close request sent to $n window(s) of {}; $refused had no main window to close; confirm with os(resource: \"app\", action: 'list')\" }} \
          else {{ 'Nothing done: no running process named {} (Get-Process -Name matched nothing)'; exit 1 }}",
         escape_powershell(app),
         escape_powershell(app),
@@ -705,7 +705,7 @@ async fn handle_info(app: &str) -> ToolResult {
         "$proc = Get-Process -Name '{}' -ErrorAction SilentlyContinue | Select-Object -First 1;\n\
          if ($proc) {{ $proc | Select-Object Name, Id, CPU, WorkingSet64, \
          MainWindowTitle, Path, StartTime | Format-List }}\n\
-         else {{ 'No running process named {} (Get-Process -Name matched nothing); confirm the name with app(action: \"list\")'; exit 1 }}",
+         else {{ 'No running process named {} (Get-Process -Name matched nothing); confirm the name with os(resource: \"app\", action: \"list\")'; exit 1 }}",
         escape_powershell(app),
         escape_powershell(app)
     );

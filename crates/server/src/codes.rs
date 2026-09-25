@@ -2097,19 +2097,20 @@ pub(crate) fn push_inbox(state: &AppState, item: serde_json::Value) {
 
 /// Store-level variant for callers without an AppState (workflow manager).
 pub(crate) fn push_inbox_via(store: &db::Store, api_url: &str, item: serde_json::Value) {
-    let Some(bot_id) = config::read_bot_id() else {
+    let Some(api) = inbox_api(store, api_url) else {
         return;
     };
-    let Some(token) = neboai_token_from(store) else {
-        return;
-    };
-    let api_server = api_url.to_string();
     tokio::spawn(async move {
-        let api = NeboAIApi::new(api_server, bot_id, token);
         if let Err(e) = api.push_inbox_item(&item).await {
             debug!(error = %e, "owner inbox push failed (best-effort)");
         }
     });
+}
+
+/// The hub API that reaches the owner's Inbox; `None` when this bot has no
+/// NeboAI account, so there is no Inbox.
+pub(crate) fn inbox_api(store: &db::Store, api_url: &str) -> Option<NeboAIApi> {
+    Some(NeboAIApi::new(api_url.to_string(), config::read_bot_id()?, neboai_token_from(store)?))
 }
 
 /// Fire-and-forget registration of a produced thing (document version, app)

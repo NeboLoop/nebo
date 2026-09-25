@@ -78,6 +78,12 @@ pub struct Target {
     /// The job capability the call belongs to; `None` is basic work.
     pub capability: Option<String>,
     pub field: Option<RuleField>,
+    /// The one thing the call acts on, when its tool names one: the
+    /// `resource` of a tool that still dispatches on it, the workflow of a
+    /// workflow tool. A restricted run's `tool:subject` allowlist entry
+    /// admits only calls on that subject.
+    #[serde(default)]
+    pub subject: Option<String>,
     pub read_only: bool,
     pub effects: CallEffects,
 }

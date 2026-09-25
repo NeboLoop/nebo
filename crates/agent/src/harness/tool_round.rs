@@ -131,8 +131,8 @@ impl RunToolScope<'_> {
                 .or_else(|| tool_allowlist.cloned()),
             whitelist_denial_hint: match review_fork {
                 Some(_) => Some(
-                    "Only the skill tool is available in this review pass: save the learning \
-                     with it or reply 'Nothing to save.'"
+                    "Only the skill tools are available in this review pass: save the learning \
+                     with save_skill or reply 'Nothing to save.'"
                         .to_string(),
                 ),
                 None => tool_denial_hint.clone(),
@@ -1018,6 +1018,7 @@ mod tests {
             operation: None,
             capability: None,
             field,
+            subject: None,
             read_only: false,
             effects: CallEffects::unknown(),
         }
