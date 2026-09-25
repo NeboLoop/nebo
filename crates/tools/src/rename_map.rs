@@ -18,7 +18,13 @@ pub struct Rename {
 }
 
 pub const RENAMES: &[Rename] = &[
-    Rename { tool: "tool_search", resource: None, action: None, to: crate::find_tools::FIND_TOOLS, params: &[] },
+    Rename {
+        tool: "tool_search",
+        resource: None,
+        action: None,
+        to: crate::find_tools::FIND_TOOLS,
+        params: &[],
+    },
     // os: files and shell (Tools WP1).
     Rename { tool: "os", resource: Some("file"), action: Some("read"), to: "read_file", params: &[] },
     Rename { tool: "os", resource: Some("file"), action: Some("write"), to: "write_file", params: &[] },
@@ -64,7 +70,55 @@ pub const RENAMES: &[Rename] = &[
     Rename { tool: "bash_tool", resource: None, action: None, to: "run_command", params: &[] },
     Rename { tool: "bashtool", resource: None, action: None, to: "run_command", params: &[] },
     Rename { tool: "exec", resource: None, action: None, to: "run_command", params: &[] },
+    // The `web` tool (tools WP5): one tool per resource and action.
+    web("search", "search", "search_web", &[]),
+    web("http", "fetch", "fetch_url", &[]),
+    web("http", "get", "fetch_url", &[]),
+    web("http", "sanitize", "fetch_url", &[]),
+    web("http", "head", "http_request", &[]),
+    web("http", "post", "http_request", &[]),
+    web("http", "put", "http_request", &[]),
+    web("http", "patch", "http_request", &[]),
+    web("http", "delete", "http_request", &[]),
+    web("browser", "navigate", "browser_open", &[]),
+    web("browser", "read_page", "browser_read", &[("maxChars", "max_chars"), ("refId", "ref_id")]),
+    web("browser", "find", "browser_find", &[]),
+    web("browser", "click", "browser_act", &[]),
+    web("browser", "hover", "browser_act", &[]),
+    web("browser", "type", "browser_act", &[]),
+    web("browser", "press", "browser_act", &[]),
+    web("browser", "scroll", "browser_act", &[]),
+    web("browser", "drag", "browser_act", &[]),
+    web("browser", "select", "browser_act", &[]),
+    web("browser", "wait", "browser_act", &[]),
+    web("browser", "screenshot", "browser_act", &[]),
+    web("browser", "fill", "browser_fill_form", &[]),
+    web("browser", "fill_form", "browser_fill_form", &[]),
+    web("browser", "evaluate", "browser_run_js", &[]),
+    web("browser", "list_tabs", "browser_list_tabs", &[]),
+    web("browser", "new_tab", "browser_new_tab", &[]),
+    web("browser", "close_tab", "browser_close_tab", &[("tabId", "tab_id")]),
+    web("browser", "read_console_messages", "browser_console", &[("onlyErrors", "only_errors")]),
+    web("devtools", "console", "browser_console", &[("filter", "pattern"), ("onlyErrors", "only_errors")]),
+    web("browser", "read_network_requests", "browser_network", &[("urlPattern", "url_pattern")]),
+    web("browser", "file_upload", "browser_upload", &[]),
+    web("browser", "resize_window", "browser_resize", &[]),
+    web("browser", "history", "browser_history", &[]),
+    web("browser", "status", "browser_status", &[]),
+    web("browser", "browser_batch", "browser_batch", &[("actions", "steps")]),
+    web("browser", "webmcp_list", "browser_page_tools", &[]),
+    web("browser", "webmcp_call", "browser_call_page_tool", &[]),
 ];
+
+/// A retired `web(resource, action)` shape.
+const fn web(
+    resource: &'static str,
+    action: &'static str,
+    to: &'static str,
+    params: &'static [(&'static str, &'static str)],
+) -> Rename {
+    Rename { tool: "web", resource: Some(resource), action: Some(action), to, params }
+}
 
 #[cfg(test)]
 mod tests {

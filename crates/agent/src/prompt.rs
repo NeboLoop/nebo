@@ -172,14 +172,12 @@ tool(resource: "...", action: "...", param: "value")
 Examples:
 - os(resource: "app", action: "launch", app: "Safari")
 - event(action: "create", name: "call-back", at: "in 3 hours", task_type: "agent", prompt: "Remind the user to call back")
-- web(resource: "browser", action: "navigate", url: "https://...")
 - agent(resource: "task", action: "spawn", prompt: "...")
 
 **Core tools** (always available):
 - **agent** — spawn sub-agents, manage your task list, memory, sessions, context, advisors, and list installed agents (resource: "registry")
 - **read_file**, **edit_file**, **write_file** — files; **run_command** — shell commands, including finding files (find) and searching contents (grep)
 - **os** — desktop, apps, settings, search, mail, calendar, contacts and reminders
-- **web** — fetch URLs, web search, and browse pages (when web access is enabled)
 - **event** — scheduling, reminders, alarms
 - **message** — user communication, notifications, and coworkers: work for a named AI employee is message(resource: "coworker"), never a spawn
 - **skill** — discover and inspect skills (specialized knowledge)
@@ -190,8 +188,8 @@ Examples:
 **Tool discipline:**
 - Use read_file, edit_file and write_file for files and run_command for the shell (moving, copying, renaming, find, grep); prefer both over GUI automation.
 - A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls.
-- Call independent tools in parallel — batch them into ONE response and Nebo runs read-only tools (read_file, web, search) concurrently. Reading several files, running several searches, or fetching several URLs? Do it in a single message, not one call per turn. Only sequence when a call genuinely depends on a previous result.
-- For several searches at once use web(action: "search", queries: [...]); spawn sub-agents only for independent multi-step investigations. For open-ended searching where you're unsure of the match, a read-only explore sub-agent (agent(resource: "task", action: "spawn", agent_type: "explore")) keeps bulky output out of your context; when you already know the exact path, read it directly.
+- Call independent tools in parallel — batch them into ONE response and Nebo runs read-only tools (read_file, search_web, fetch_url) concurrently. Reading several files, running several searches, or fetching several URLs? Do it in a single message, not one call per turn. Only sequence when a call genuinely depends on a previous result.
+- For several searches at once use search_web(queries: [...]); spawn sub-agents only for independent multi-step investigations. For open-ended searching where you're unsure of the match, a read-only explore sub-agent (agent(resource: "task", action: "spawn", agent_type: "explore")) keeps bulky output out of your context; when you already know the exact path, read it directly.
 - **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Load a deferred tool with find_tools(query: "select:<name>"), or search them by keywords (1–6 words); skill(action: "discover", query) for skills, then skill(action: "load", name) to follow one inline; plugin(action: "list") for installed plugins and plugin(action: "discover", query) for marketplace plugins; agent(resource: "registry", action: "list") for installed agents and apps; mcp(action: "list") for connected MCP servers.
 - **Capability questions ("can X do …?", "give X access to …"):** go straight to plugin(action: "list") + plugin(action: "discover", query) — not the registry or filesystem. One short line before the batch; no per-call narration. In chat, discover shows an install card and pauses — the card IS the question: never paste install codes or ask "shall I proceed?" in prose. After install, the connect card appears on first use.
 - **Discover before you act on an unconfirmed capability.** Before invoking a named external service through a plugin or skill (posting, sending, querying a system you haven't used this session), confirm it exists first — skill(action: "discover", query: "...") then skill(action: "load", name: "...") — not a trial execution. And discovery's verdict is final: if it says a capability is unavailable, report that to the user and stop; don't keep hunting through sub-agents, other plugins, or the browser.
@@ -368,7 +366,7 @@ NEVER answer these from memory or mental computation — ALWAYS use a tool:
 - System state: OS, CPU, memory, disk, ports, processes → run_command
 - File contents, sizes, line counts → read_file
 - Git history, branches, diffs → run_command
-- Current facts (weather, news, versions) → web(action: "search")
+- Current facts (weather, news, versions) → search_web
 </mandatory_tool_use>"#;
 
 const GEMINI_OPERATIONAL_GUIDANCE: &str = r#"
@@ -532,7 +530,6 @@ fn build_model_specific_guidance(provider_name: &str, model_name: &str) -> Strin
 
 // Core tool docs (injected when the tool is active)
 const STRAP_AGENT: &str = include_str!("strap/agent.txt");
-const STRAP_WEB: &str = include_str!("strap/web.txt");
 const STRAP_CODE: &str = include_str!("strap/code.txt");
 const STRAP_EVENT: &str = include_str!("strap/event.txt");
 const STRAP_LOOP: &str = include_str!("strap/loop.txt");
@@ -565,7 +562,6 @@ const STRAP_ORGANIZER: &str = include_str!("strap/organizer.txt");
 pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         "agent" => Some(STRAP_AGENT),
-        "web" => Some(STRAP_WEB),
         "code" => Some(STRAP_CODE),
         "event" => Some(STRAP_EVENT),
         "loop" => Some(STRAP_LOOP),

@@ -387,7 +387,9 @@
 		"researchWriting": "보고서를 쓰는 중",
 		"researchOtherDomains": "+ 다른 사이트 {n}곳",
 		"researchVerified": "출처와 대조해 확인한 주장 {n}건",
-		"historyLoadFailed": "이 대화를 불러오지 못했습니다. 연결을 확인하고 다시 시도하세요."
+		"historyLoadFailed": "이 대화를 불러오지 못했습니다. 연결을 확인하고 다시 시도하세요.",
+		"consentCreates": "예라고 답하면 정확히 이 업무로 만들어집니다.",
+		"consentAdds": "예라고 답하면 이 업무가 추가됩니다."
 	},
 	"chatInput": {
 		"placeholder": "답장...",
@@ -3016,7 +3018,13 @@
 		"placeholder": "예: Dispatch, Piper, Sam…",
 		"create": "채용하기",
 		"failed": "직원을 만들지 못했습니다. 다시 시도하세요.",
-		"marketplaceHint": "바로 쓸 수 있는 전문가를 원하시나요? 마켓플레이스를 둘러보세요."
+		"marketplaceHint": "바로 쓸 수 있는 전문가를 원하시나요? 마켓플레이스를 둘러보세요.",
+		"jobLabel": "업무 (선택)",
+		"jobPlaceholder": "어떤 일을 하나요? (선택)",
+		"working": "필요한 것을 확인하는 중…",
+		"willDo": "{name}이(가) 할 일:",
+		"thisEmployee": "이 직원",
+		"removeItem": "{item} 빼기"
 	},
 	"runLimit": {
 		"title": "실행당 지출 한도",

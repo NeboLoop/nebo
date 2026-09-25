@@ -152,6 +152,9 @@ pub struct PersonaTool {
     agent_loader: Arc<napp::AgentLoader>,
     /// Shared cell holding the canonical code installer (filled late by the server).
     code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+    /// Shared cell holding the permission system's side of making and
+    /// changing jobs (filled late by the server, like `code_installer`).
+    job_consent: crate::needs::JobConsentCell,
 }
 
 /// A listing NeboAI published: its qualified name lives under the @neboai
@@ -180,7 +183,19 @@ impl PersonaTool {
             agent_registry,
             agent_loader,
             code_installer: Arc::new(std::sync::RwLock::new(None)),
+            job_consent: Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Inject the shared job-consent cell (from the `Registry`): create and
+    /// update draft a job, and grant it on the owner's yes, through it.
+    pub fn with_job_consent(mut self, cell: crate::needs::JobConsentCell) -> Self {
+        self.job_consent = cell;
+        self
+    }
+
+    fn job_consent(&self) -> Option<Arc<dyn crate::needs::JobConsent>> {
+        self.job_consent.read().ok().and_then(|c| c.clone())
     }
 
     /// Inject the shared canonical-installer cell (from the `Registry`). When set, the
@@ -194,7 +209,7 @@ impl PersonaTool {
         self
     }
 
-    pub async fn handle_action(&self, input: &serde_json::Value) -> ToolResult {
+    pub async fn handle_action(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("");
 
         match action {
@@ -202,8 +217,8 @@ impl PersonaTool {
             "activate" => self.handle_activate(input).await,
             "deactivate" => self.handle_deactivate(input).await,
             "info" => self.handle_info(input).await,
-            "create" => self.handle_create(input).await,
-            "update" => self.handle_update(input).await,
+            "create" => self.create_with_consent(input, ctx).await,
+            "update" => self.update_with_consent(input, ctx).await,
             "delete" => self.handle_delete(input).await,
             "install" => self.handle_install(input).await,
             "reload" => self.handle_reload(input).await,
@@ -987,7 +1002,256 @@ impl PersonaTool {
             .join(" ")
     }
 
-    async fn handle_create(&self, input: &serde_json::Value) -> ToolResult {
+    /// The employee an update names: by name (any case) or id.
+    fn find_agent_row(&self, name: &str) -> Result<Option<db::models::Agent>, String> {
+        let agents = self.store.list_agents(500, 0).map_err(|e| format!("Failed to query agents: {}", e))?;
+        let lower = name.to_lowercase();
+        Ok(agents.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name))
+    }
+
+    /// Fields of an update that change what the job is.
+    const JOB_FIELDS: &[&str] =
+        &["description", "prompt", "instructions", "agent_md", "automations", "add_automations", "update_automation"];
+
+    /// What a job is made from, read off a create or update call: its
+    /// words, the capability terms and plugins it declares, its workflows.
+    fn job_parts(input: &serde_json::Value) -> (String, Vec<String>, Vec<String>, Vec<napp::agent::WorkflowBinding>) {
+        let text: Vec<&str> = ["description", "prompt", "instructions", "agent_md"]
+            .iter()
+            .filter_map(|k| input[*k].as_str())
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        let strings = |v: &serde_json::Value| -> Vec<String> {
+            v.as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default()
+        };
+        let terms = strings(&input["requires"]["interfaces"]);
+        let plugins = strings(&input["requires"]["plugins"]);
+        let mut configs = Vec::new();
+        for key in ["automations", "add_automations"] {
+            if let Some(autos) = input[key].as_array().filter(|a| !a.is_empty())
+                && let Ok(json) = Self::build_agent_json_from_automations(autos)
+            {
+                configs.push(json.to_string());
+            }
+        }
+        match &input["agent_json"] {
+            serde_json::Value::String(raw) => configs.push(raw.clone()),
+            raw if raw.is_object() => configs.push(raw.to_string()),
+            _ => {}
+        }
+        let workflows = configs
+            .iter()
+            .filter_map(|c| napp::agent::parse_agent_config(c).ok())
+            .flat_map(|c| c.workflows.into_values())
+            .collect();
+        (text.join("\n\n"), terms, plugins, workflows)
+    }
+
+    /// The one needs step, for a create or update call.
+    async fn work_out(consent: &dyn crate::needs::JobConsent, name: &str, input: &serde_json::Value) -> crate::needs::Needs {
+        let (description, terms, plugins, workflows) = Self::job_parts(input);
+        let src = crate::needs::JobSource {
+            name,
+            description: &description,
+            skills: &terms,
+            plugins: &plugins,
+            workflows: &workflows,
+            declared: None,
+            installed: &[],
+        };
+        crate::needs::work_out_needs(&src, consent).await
+    }
+
+    /// Keep a draft of `input`, shown in this call's chat; its id and line.
+    fn draft(
+        &self,
+        ctx: &ToolContext,
+        kind: &str,
+        agent_id: &str,
+        name: &str,
+        input: &serde_json::Value,
+        needs: &crate::needs::Needs,
+    ) -> Result<(String, String), String> {
+        let creator_id = match &ctx.grant {
+            Some(g) => g.agent_id.clone(),
+            None => types::keyparser::extract_agent_id(&ctx.session_key),
+        };
+        let chat_id =
+            if ctx.session_id.is_empty() { String::new() } else { self.store.resolve_session_chat_id(&ctx.session_id) };
+        crate::needs::save_draft(
+            &self.store,
+            &crate::needs::Draft { kind, agent_id, creator_id: &creator_id, chat_id: &chat_id, name, input, needs },
+        )
+    }
+
+    /// The consent line as the chat shows it: an inline chip.
+    fn consent_payload(draft_id: &str, employee: &str, line: &str, needs: &crate::needs::Needs, adds: bool) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "employee_consent",
+            "draftId": draft_id,
+            "employee": employee,
+            "line": line,
+            "adds": adds,
+            "items": needs.items().into_iter().map(|t| t.words).collect::<Vec<_>>(),
+        })
+    }
+
+    /// What the grant came to, for the model to tell the owner plainly.
+    fn granted_text(name: &str, g: &crate::needs::Granted, consented: bool) -> String {
+        use crate::needs::consent_line;
+        if consented {
+            return format!("\nThe owner agreed to this job: {}", consent_line(name, &g.granted));
+        }
+        let mut text = String::from("\nThe owner has not said yes in this chat, so this grants no more than you hold yourself.");
+        if !g.granted.is_empty() {
+            text.push_str(&format!(" Granted now: {}", consent_line(name, &g.granted)));
+        }
+        if !g.extras.is_empty() {
+            text.push_str(&format!(
+                " Waiting on one card to the owner: \"{}\" Until they answer, {name} can't do that; tell the owner \
+                 plainly what is waiting and never say it can yet.",
+                consent_line(name, &g.extras)
+            ));
+        }
+        text
+    }
+
+    /// Create, in two steps: without `draft_id` the call drafts the
+    /// employee, works out its needs and answers with the one line to put to
+    /// the owner; with it, the drafted employee is created and its job
+    /// granted: in full when the owner said yes in this chat after the line
+    /// was shown, else no more than the run's own employee holds, with the
+    /// rest on one card to the owner.
+    async fn create_with_consent(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let Some(consent) = self.job_consent() else {
+            return ToolResult::error("Employees can't be created right now: permissions aren't ready yet. Try again shortly.");
+        };
+        if let Some(draft_id) = input["draft_id"].as_str().filter(|d| !d.is_empty()) {
+            let (draft, drafted, needs) = match crate::needs::open_draft(&self.store, draft_id, "create") {
+                Ok(d) => d,
+                Err(e) => return ToolResult::error(e),
+            };
+            let consented = consent.owner_consented(draft_id);
+            let id = uuid::Uuid::new_v4().to_string();
+            let created = self.handle_create(&drafted, &id).await;
+            if created.is_error {
+                return created;
+            }
+            let _ = self.store.use_employee_draft(draft_id);
+            let job = crate::needs::JobGrant {
+                agent_id: &id,
+                name: &draft.name,
+                needs: &needs,
+                draft_id,
+                consented,
+                created: true,
+            };
+            let said = match consent.grant(ctx, &job) {
+                Ok(g) => Self::granted_text(&draft.name, &g, consented),
+                Err(e) => format!("\nIts job was not granted ({e}); it asks before using anything beyond its own notes and tasks."),
+            };
+            return ToolResult { content: format!("{}{said}", created.content), ..created };
+        }
+        let name = input["name"].as_str().unwrap_or("");
+        if name.is_empty() {
+            return ToolResult::error(crate::errors::missing_param(
+                "create",
+                "name",
+                "agent(resource: \"registry\", action: \"create\", name: \"my-agent\", description: \"An agent that...\")",
+            ));
+        }
+        if input["description"].as_str().unwrap_or("").is_empty() && input["agent_md"].as_str().unwrap_or("").is_empty() {
+            return ToolResult::error("either 'agent_md' or 'description' is required to create an agent");
+        }
+        if self.agent_loader.user_dir().join(name).exists() {
+            return ToolResult::error(format!(
+                "Agent '{}' already exists. Use action: \"update\" to change it, or choose another name.",
+                name
+            ));
+        }
+        let display = Self::display_name(name);
+        let needs = Self::work_out(consent.as_ref(), &display, input).await;
+        let (draft_id, line) = match self.draft(ctx, "create", "", &display, input, &needs) {
+            Ok(d) => d,
+            Err(e) => return ToolResult::error(e),
+        };
+        ToolResult::ok(format!(
+            "Drafted {display}; nothing is created yet. What it will be able to do, in one line:\n\"{line}\"\n\
+             Tell the owner that line in plain words and ask them to confirm. When they say yes, call \
+             agent(resource: \"registry\", action: \"create\", draft_id: \"{draft_id}\") and nothing else: it creates \
+             exactly this job. If they want it different, draft again."
+        ))
+        .with_payload(Self::consent_payload(&draft_id, &display, &line, &needs, false))
+    }
+
+    /// Update. An edit that adds to the job works out its needs again and
+    /// drafts first, putting only what is new to the owner; the update with
+    /// `draft_id` applies the drafted edit and grants the addition on the
+    /// owner's yes (an employee never widens another: without it, the
+    /// addition is one card to the owner). An edit that adds nothing runs
+    /// at once.
+    async fn update_with_consent(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let consent = self.job_consent();
+        if let Some(draft_id) = input["draft_id"].as_str().filter(|d| !d.is_empty()) {
+            let Some(consent) = consent else {
+                return ToolResult::error("Jobs can't be changed right now: permissions aren't ready yet. Try again shortly.");
+            };
+            let (draft, drafted, needs) = match crate::needs::open_draft(&self.store, draft_id, "edit") {
+                Ok(d) => d,
+                Err(e) => return ToolResult::error(e),
+            };
+            let consented = consent.owner_consented(draft_id);
+            let updated = self.handle_update(&drafted).await;
+            if updated.is_error {
+                return updated;
+            }
+            let _ = self.store.use_employee_draft(draft_id);
+            let job = crate::needs::JobGrant {
+                agent_id: &draft.agent_id,
+                name: &draft.name,
+                needs: &needs,
+                draft_id,
+                consented,
+                created: false,
+            };
+            let said = match consent.grant(ctx, &job) {
+                Ok(g) => Self::granted_text(&draft.name, &g, consented),
+                Err(e) => format!("\nThe addition to its job was not granted ({e})."),
+            };
+            return ToolResult { content: format!("{}{said}", updated.content), ..updated };
+        }
+        let shapes_the_job = Self::JOB_FIELDS.iter().any(|k| !input[*k].is_null());
+        let name = input["name"].as_str().unwrap_or("");
+        let (Some(consent), true, false) = (consent, shapes_the_job, name.is_empty()) else {
+            return self.handle_update(input).await;
+        };
+        let Ok(Some(agent)) = self.find_agent_row(name) else {
+            return self.handle_update(input).await;
+        };
+        let before = consent.job_of(&agent.id);
+        let after = Self::work_out(consent.as_ref(), &agent.name, input).await;
+        let new = crate::needs::added(&before, &after);
+        if new.is_empty() {
+            return self.handle_update(input).await;
+        }
+        let (draft_id, line) = match self.draft(ctx, "edit", &agent.id, &agent.name, input, &new) {
+            Ok(d) => d,
+            Err(e) => return ToolResult::error(e),
+        };
+        ToolResult::ok(format!(
+            "Nothing is changed yet: this edit adds to {}'s job. Only what is new, in one line:\n\"{line}\"\n\
+             Tell the owner just that (not what the job already has) and ask them to confirm. When they say yes, \
+             call agent(resource: \"registry\", action: \"update\", draft_id: \"{draft_id}\") and nothing else.",
+            agent.name
+        ))
+        .with_payload(Self::consent_payload(&draft_id, &agent.name, &line, &new, true))
+    }
+
+    /// Create the employee `input` describes under `id`. Reached only
+    /// through [`Self::create_with_consent`], with the drafted input.
+    async fn handle_create(&self, input: &serde_json::Value, id: &str) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
             return ToolResult::error(crate::errors::missing_param(
@@ -1104,7 +1368,7 @@ impl PersonaTool {
 
         // The DB row's UUID, written into the manifest too: the loader keys
         // the directory by manifest id and would otherwise mint a second one.
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = id.to_string();
 
         // The package through the ONE writer (`napp::write_user_agent`): the
         // manifest (with the row's id, the app fields when it is an app),
@@ -1260,6 +1524,7 @@ impl PersonaTool {
         "ui",
         "ui_jsx",
         "agent",
+        "draft_id",
     ];
 
     fn unknown_update_fields(input: &serde_json::Value) -> Vec<String> {
@@ -1334,14 +1599,9 @@ impl PersonaTool {
             ));
         }
         // Find the agent in DB
-        let db_agent = match self.store.list_agents(500, 0) {
-            Ok(agents) => {
-                let lower = name.to_lowercase();
-                agents
-                    .into_iter()
-                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
-            }
-            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
+        let db_agent = match self.find_agent_row(name) {
+            Ok(found) => found,
+            Err(e) => return ToolResult::error(e),
         };
         let db_agent = match db_agent {
             Some(r) => r,
@@ -3545,12 +3805,12 @@ impl DynTool for PersonaTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         // One dispatch: the agent tool's registry resource and a direct call
         // land in the same match with the same texts.
-        Box::pin(async move { self.handle_action(&input).await })
+        Box::pin(async move { self.handle_action(&input, ctx).await })
     }
 }
 

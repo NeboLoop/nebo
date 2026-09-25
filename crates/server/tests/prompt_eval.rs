@@ -393,7 +393,7 @@ fn eval_scenarios() -> Vec<Scenario> {
             prompt: "Search for flights from Denver to Tokyo in June.",
             checks: vec![
                 Check::HasToolCall,
-                Check::ToolCallNamed("web".into()),
+                Check::ToolCallNamed("search_web".into()),
                 Check::MaxTextLength(50),
             ],
             timeout_secs: 30,
@@ -423,7 +423,7 @@ fn eval_scenarios() -> Vec<Scenario> {
         Scenario {
             name: "no_orphan_windows",
             prompt: "Open Google in Chrome and search for 'best pizza Denver'.",
-            checks: vec![Check::HasToolCall, Check::ToolCallNamed("web".into())],
+            checks: vec![Check::HasToolCall, Check::ToolCallNamed("browser_open".into())],
             timeout_secs: 30,
             tags: &["etiquette"],
         },

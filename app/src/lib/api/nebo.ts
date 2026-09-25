@@ -244,6 +244,13 @@ export function revertLearning(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Work out agent needs"
+ */
+export function workOutAgentNeeds(req: Record<string, unknown> = {}) {
+	return webapi.post<components.WorkOutAgentNeedsResponse>(`/api/v1/agents/needs`, req)
+}
+
+/**
  * @description "Get workflow approval status"
  */
 export function getWorkflowApprovalStatus(runId: string) {

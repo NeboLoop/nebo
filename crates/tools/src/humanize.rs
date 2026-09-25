@@ -89,7 +89,6 @@ mod tests {
     use super::{call_labels, service_name as humanize_slug, strap_verb};
     use crate::os_tool::OsTool;
     use crate::plugin_tool::plugin_labels;
-    use crate::web_tool::web_labels;
     use serde_json::json;
 
     #[test]
@@ -146,23 +145,6 @@ mod tests {
             OsTool::labels(&json!({"resource": "reminders", "action": "frobnicate"}));
         assert_eq!(act, "running frobnicate on reminders");
         assert_eq!(out, "Ran frobnicate on reminders");
-    }
-
-    /// Web fetches/navigations label by host (www. stripped) so a run that
-    /// read four pages doesn't collapse into "Searched the web" for all of it.
-    #[test]
-    fn web_actions_label_by_host_not_generic_search() {
-        let (act, out) = web_labels(&json!({"action": "fetch", "url": "https://www.example.com/page"}),
-        );
-        assert_eq!(act, "reading example.com");
-        assert_eq!(out, "Read example.com");
-        let (act, _) = web_labels(&json!({"action": "navigate", "url": "https://docs.rs/x"}),
-        );
-        assert_eq!(act, "opening docs.rs");
-        // No action = search — the default label.
-        let (act, out) = web_labels(&json!({}));
-        assert_eq!(act, "searching the web");
-        assert_eq!(out, "Searched the web");
     }
 
     /// Plugin calls must say the SERVICE ("using Gmail"), never the word

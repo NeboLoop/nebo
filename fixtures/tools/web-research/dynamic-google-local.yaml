@@ -7,20 +7,22 @@ description: |
   sites. The model should use search to get initial results, then
   optionally navigate to 1-2 pages for details — not spiral through
   dozens of pages.
-target_component: web
+target_component: search_web
 
 conversation:
   - role: user
     content: "Find me the top 3 rated Mexican restaurants near downtown Salt Lake City, Utah. Include their ratings, address, and hours if available."
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  fetch_url:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: starts-with-search
-      text: "Model starts with web(action: 'search') for Mexican restaurants in Salt Lake City"
+      text: "Model starts with search_web for Mexican restaurants in Salt Lake City"
       severity: critical
   recovery:
     - id: extracts-from-search
@@ -47,7 +49,7 @@ ideal_behavior:
   tool_calls: 5
   total_tokens: 8000
   narrative: |
-    1. search "top rated Mexican restaurants downtown Salt Lake City Utah"
+    1. search_web "top rated Mexican restaurants downtown Salt Lake City Utah"
     2. Extract restaurant names, ratings from search results
     3. Optionally navigate to 1 business listing page for hours
     4. Report top 3 with ratings, addresses, hours

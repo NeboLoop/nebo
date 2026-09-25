@@ -53,6 +53,7 @@ pub mod mcp_tool;
 pub mod memory_guard;
 pub mod message_tool;
 pub mod music_tool;
+pub mod needs;
 pub mod notebook_tool;
 pub mod orchestrator;
 mod organizer;

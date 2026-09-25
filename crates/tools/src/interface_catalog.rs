@@ -51,16 +51,21 @@ struct Catalog {
     entries: HashMap<&'static str, Entry>,
     /// Gated operation suffixes, in catalogue order.
     gated: &'static [&'static str],
+    /// The capability terms, in catalogue order: the vocabulary a job's
+    /// needs are named in.
+    capabilities: &'static [&'static str],
 }
 
 fn parse(yaml: &str) -> Result<Catalog, String> {
     let capabilities: serde_yaml::Mapping = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
     let mut entries = HashMap::new();
     let mut gated = Vec::new();
+    let mut terms: Vec<&'static str> = Vec::new();
     for (capability, operations) in capabilities {
         let capability = capability
             .as_str()
             .ok_or_else(|| format!("capability key {capability:?} is not a string"))?;
+        terms.push(Box::leak(capability.to_owned().into_boxed_str()));
         let operations: serde_yaml::Mapping =
             serde_yaml::from_value(operations).map_err(|e| format!("{capability}: {e}"))?;
         for (operation, spec) in operations {
@@ -91,7 +96,11 @@ fn parse(yaml: &str) -> Result<Catalog, String> {
     if gated.is_empty() {
         return Err("no operation is gated".to_string());
     }
-    Ok(Catalog { entries, gated: Box::leak(gated.into_boxed_slice()) })
+    Ok(Catalog {
+        entries,
+        gated: Box::leak(gated.into_boxed_slice()),
+        capabilities: Box::leak(terms.into_boxed_slice()),
+    })
 }
 
 fn catalog() -> &'static Catalog {
@@ -118,6 +127,11 @@ pub fn is_critical(operation: &str) -> bool {
 /// All gated operation suffixes (for building the per-employee policy UI list).
 pub fn gated_operations() -> &'static [&'static str] {
     catalog().gated
+}
+
+/// Every capability term the catalogue names, in catalogue order.
+pub fn capabilities() -> &'static [&'static str] {
+    catalog().capabilities
 }
 
 /// Capabilities the runtime performs itself: no plugin binding, no seat

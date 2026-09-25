@@ -735,8 +735,8 @@ async fn run_wait<'a>(
     route(ctx, scope, &activity.id, |_| true).await
 }
 
-/// Deterministic HTTP: the ENGINE issues one call through the web tool's
-/// SSRF-checked `http` resource — the same pathway an LLM tool call takes.
+/// Deterministic HTTP: the ENGINE issues one call through the SSRF-checked
+/// `http_request` tool — the same pathway an LLM tool call takes.
 /// No model turn, no tokens.
 async fn run_http<'a>(
     ctx: &GraphCtx<'a>,
@@ -765,8 +765,8 @@ async fn run_http<'a>(
         Err(WorkflowError::ActivityFailed(activity.id.clone(), err_msg))
     };
 
-    let Some(web_tool) = ctx.resolved_tools.iter().find(|t| t.name() == "web") else {
-        return fail("http activity requires the web tool, which is not available".into());
+    let Some(http_tool) = ctx.resolved_tools.iter().find(|t| t.name() == "http_request") else {
+        return fail("http activity requires the http_request tool, which is not available".into());
     };
 
     // headers may arrive as a JSON object or a JSON string (textarea input).
@@ -788,8 +788,6 @@ async fn run_http<'a>(
         if m.is_empty() { "GET".to_string() } else { m }
     };
     let input = serde_json::json!({
-        "resource": "http",
-        "action": "fetch",
         "url": param_str(activity, "url"),
         "method": method,
         "headers": headers,
@@ -805,7 +803,7 @@ async fn run_http<'a>(
     let tool_ctx = tool_ctx;
     let result = {
         let _permit = ctx.loop_impl.acquire_tool_permit().await;
-        web_tool.execute_dyn(&tool_ctx, input).await
+        http_tool.execute_dyn(&tool_ctx, input).await
     };
     if result.is_error {
         return fail(result.content);

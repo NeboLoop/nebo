@@ -125,7 +125,7 @@
     if (resource === 'file' && (action === 'write' || action === 'edit')) {
       return { actionType: 'file_write', actionDetail: str(input?.path) ?? '' };
     }
-    if (tool === 'web') {
+    if (tool === 'http_request' || tool === 'fetch_url') {
       return { actionType: 'http_request', actionDetail: str(input?.url) ?? JSON.stringify(input ?? {}) };
     }
     return {

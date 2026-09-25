@@ -1156,14 +1156,17 @@ fn resolve_fixtures(
     Ok(fixtures)
 }
 
-/// Run one deterministic proof — a named test in `nebo-server` — from the
-/// workspace root, in the check target directory so it never contends with
-/// a running `make dev`. The proof passes when the test does.
+/// Run one deterministic proof — a named test in the crate that owns it:
+/// `harness::…` proofs live in `nebo-agent` (the harness), every other in
+/// `nebo-server` — from the workspace root, in the check target directory so
+/// it never contends with a running `make dev`. The proof passes when the
+/// test does.
 fn run_proof(proof: &str) -> anyhow::Result<()> {
     let root = workspace_root().ok_or_else(|| anyhow::anyhow!("not inside the Nebo workspace; proofs run from a checkout"))?;
     let target = std::env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| root.join("target-check").into());
+    let package = if proof.starts_with("harness::") { "nebo-agent" } else { "nebo-server" };
     let status = std::process::Command::new("cargo")
-        .args(["test", "-p", "nebo-server", "--lib", "--quiet", "--", proof, "--exact"])
+        .args(["test", "-p", package, "--lib", "--quiet", "--", proof, "--exact"])
         .env("CARGO_TARGET_DIR", target)
         .current_dir(&root)
         .status()
