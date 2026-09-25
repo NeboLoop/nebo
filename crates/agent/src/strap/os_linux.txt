@@ -1,2 +1,0 @@
-
-Linux notes: bash shell, GNU coreutils. Package managers: apt (Debian/Ubuntu), dnf (Fedora/RHEL), pacman (Arch). Services: systemctl + journalctl. Paths: /home/<user>, ~/.config/. Use xdg-open for files/URLs.

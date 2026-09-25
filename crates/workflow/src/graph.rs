@@ -614,18 +614,16 @@ async fn run_command<'a>(
         Err(WorkflowError::ActivityFailed(activity.id.clone(), err_msg))
     };
 
-    let Some(os_tool) = ctx.resolved_tools.iter().find(|t| t.name() == "os") else {
-        return fail("command activity requires the os tool, which is not available".into());
+    let Some(run_command) = ctx.resolved_tools.iter().find(|t| t.name() == "run_command") else {
+        return fail("command activity requires the run_command tool, which is not available".into());
     };
 
     let data = data_context(ctx, scope);
     let command = interpolate_context(param_str(activity, "command"), &data);
 
     let input = serde_json::json!({
-        "resource": "shell",
-        "action": "exec",
         "command": command,
-        "raw": true,
+        "description": format!("Workflow step {}", activity.id),
     });
     let mut tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
         tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
@@ -639,7 +637,7 @@ async fn run_command<'a>(
     let tool_ctx = tool_ctx;
     let result = {
         let _permit = ctx.loop_impl.acquire_tool_permit().await;
-        os_tool.execute_dyn(&tool_ctx, input).await
+        run_command.execute_dyn(&tool_ctx, input).await
     };
     if result.is_error {
         return fail(result.content);
@@ -2810,13 +2808,13 @@ mod walk_tests {
     async fn test_loop_command_nodes_take_the_tool_permit() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        struct CountingOs {
+        struct CountingShell {
             live: Arc<AtomicUsize>,
             peak: Arc<AtomicUsize>,
         }
-        impl DynTool for CountingOs {
+        impl DynTool for CountingShell {
             fn name(&self) -> &str {
-                "os"
+                "run_command"
             }
             fn description(&self) -> String {
                 String::new()
@@ -2861,7 +2859,7 @@ mod walk_tests {
             .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
             .expect("run row");
         let peak = Arc::new(AtomicUsize::new(0));
-        let tools: Vec<Box<dyn DynTool>> = vec![Box::new(CountingOs {
+        let tools: Vec<Box<dyn DynTool>> = vec![Box::new(CountingShell {
             live: Arc::new(AtomicUsize::new(0)),
             peak: peak.clone(),
         })];
@@ -2904,7 +2902,7 @@ mod walk_tests {
     #[tokio::test]
     async fn test_failure_skips_dependents_but_sibling_branch_completes() {
         // "bad" is a command node executed with an EMPTY tool roster, so it
-        // fails deterministically (no os tool) without any provider error.
+        // fails deterministically (no run_command tool) without any provider error.
         let provider = MockProvider::new(&[]);
         let def = r#"{
             "version":"1.0","id":"t","name":"T",

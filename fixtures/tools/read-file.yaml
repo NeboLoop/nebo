@@ -1,10 +1,10 @@
-id: os-file-read
-name: "OS file read — correct tool routing"
+id: read-file
+name: "Read file — correct tool routing"
 description: |
   The user asks the agent to read a file. The model must use
-  os(resource: "file", action: "read") — NOT hallucinate "read", "file",
-  "bash", or "shell cat". This is the highest-volume tool call in the system.
-target_component: os
+  read_file(path) — NOT hallucinate "read", "file", "bash", or fall back to
+  run_command with cat. This is the highest-volume tool call in the system.
+target_component: read_file
 
 setup:
   - "echo 'hello from nebo config' > {{scratch}}/nebo-config.txt"
@@ -16,7 +16,7 @@ conversation:
     content: "Read the file at {{scratch}}/nebo-config.txt and tell me what it says."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
     response_budget:
       max_chars: 500
@@ -25,20 +25,16 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: correct-tool-name
-      text: "Model calls 'os', not 'read', 'file', 'bash', 'shell', or 'system'"
+      text: "Model calls 'read_file', not 'read', 'file', 'bash', 'run_command', or 'os'"
       severity: critical
-    - id: correct-resource
-      text: "Resource routes to file: the model passes resource: 'file' OR omits resource (action: 'read' infers 'file' — one precise convention, both correct). FAIL only on a wrong resource like 'shell'."
-      severity: critical
-    - id: correct-action
-      text: "Model uses action: 'read'"
-      severity: critical
+      check: { first_call: true, tool: read_file }
     - id: correct-path
       text: "Model passes path: '{{scratch}}/nebo-config.txt' exactly"
       severity: critical
+      check: { first_call: true, tool: read_file, arg: path, equals: "{{scratch}}/nebo-config.txt" }
   recovery:
     - id: no-shell-fallback
-      text: "Model does NOT fall back to os(resource: 'shell', action: 'exec', command: 'cat {{scratch}}/nebo-config.txt') after a successful file read"
+      text: "Model does NOT fall back to run_command(command: 'cat {{scratch}}/nebo-config.txt', description: ...) after a successful read_file"
       severity: important
   cost:
     - id: single-call
@@ -49,5 +45,5 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    Single os(resource: "file", action: "read", path: "{{scratch}}/nebo-config.txt") call.
+    Single read_file(path: "{{scratch}}/nebo-config.txt") call.
     Model reads the response and reports the contents to the user.

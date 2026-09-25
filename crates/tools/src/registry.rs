@@ -505,7 +505,7 @@ impl Registry {
     }
 
     /// Files `session_key` has seen that someone else changed since, one
-    /// reminder each, each reported once. Empty until the os tool is registered.
+    /// reminder each, each reported once. Empty until the file tools are registered.
     pub fn external_edit_notes(&self, session_key: &str) -> Vec<String> {
         let state = match self.read_state.read() {
             Ok(guard) => guard.clone(),
@@ -956,16 +956,52 @@ impl Registry {
         &self.process_registry
     }
 
-    /// Register the default set of tools (os tool only — no DB access).
+    /// Register the tools that need no database: the file and command
+    /// tools and the os tool.
     pub async fn register_defaults(&self) {
-        let mut os_tool = crate::os_tool::OsTool::new(self.process_registry.clone());
+        let helpers = crate::command_tools::Helpers {
+            orchestrator: crate::orchestrator::new_handle(),
+            store: None,
+            runs: None,
+        };
+        self.register_files_and_commands(helpers).await;
+        let mut os_tool = crate::os_tool::OsTool::new();
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
         }
-        // Startup: a poisoned lock here is a bug to surface, not a state to handle.
-        *self.read_state.write().unwrap() = Some(os_tool.file_tool().read_state());
         self.register(Box::new(os_tool)).await;
+    }
+
+    /// The file and command tools, on one [`crate::file_tools::Machine`]
+    /// so they share the read ledger the runner sweeps for outside edits.
+    async fn register_files_and_commands(&self, helpers: crate::command_tools::Helpers) {
+        use crate::command_tools::*;
+        use crate::file_tools::*;
+        let plugins = self.plugin_store.read().unwrap().clone();
+        let machine = Arc::new(Machine::new(self.process_registry.clone(), plugins));
+        // Startup: a poisoned lock here is a bug to surface, not a state to handle.
+        *self.read_state.write().unwrap() = Some(machine.file.read_state());
+        let tools: Vec<Box<dyn DynTool>> = vec![
+            Box::new(ReadFileTool(machine.clone())),
+            Box::new(EditFileTool(machine.clone())),
+            Box::new(WriteFileTool(machine.clone())),
+            Box::new(ShareFileTool(machine.clone())),
+            Box::new(ConvertFileTool),
+            Box::new(CheckpointFilesTool(machine.clone())),
+            Box::new(ListCheckpointsTool(machine.clone())),
+            Box::new(RestoreCheckpointTool(machine.clone())),
+            Box::new(WritePlanTool(machine.clone())),
+            Box::new(CheckPlanTool(machine.clone())),
+            Box::new(RunCommandTool(machine.clone())),
+            Box::new(ReadOutputTool { machine: machine.clone(), helpers: helpers.clone() }),
+            Box::new(StopTaskTool { machine: machine.clone(), helpers }),
+            Box::new(ListProcessesTool(machine.clone())),
+            Box::new(SendInputTool(machine)),
+        ];
+        for tool in tools {
+            self.register(tool).await;
+        }
     }
 
     /// Register all domain tools including those that need DB access.
@@ -1042,24 +1078,21 @@ impl Registry {
         // their tab/page via `close_browser_session` (the web tool takes ownership below).
         *self.browser_manager.write().unwrap() = browser_manager.clone();
 
-        // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — CORE.
-        // The file/shell meta-tool is the agent's primary way to act; it must always be
-        // visible. It previously was deferred to save ~8-10K schema tokens, but that left
-        // the model blind to its own core capability — it had to find_tools to discover
-        // os, and the tool unloaded when that discovery message was evicted from the sliding
-        // window, causing mid-task thrashing. The system-prompt prefix is cached
-        // (Anthropic cache_control / Janus prefix caching), so the schema costs ~10% on
-        // cache reads — far cheaper than the discovery round-trips and context pollution
-        // that deferral caused. Reserve deferral for genuinely optional surface
-        // (per-skill, MCP, niche platform tools).
-        let mut os_tool = crate::os_tool::OsTool::new(self.process_registry.clone())
-            .with_store(store.clone());
+        // Files and commands: read_file, edit_file, write_file and
+        // run_command are core; the rest of the family is deferred.
+        self.register_files_and_commands(crate::command_tools::Helpers {
+            orchestrator: orchestrator.clone(),
+            store: Some(store.clone()),
+            runs: run_querier.clone(),
+        })
+        .await;
+
+        // OS tool (desktop, apps, settings, music, keychain, search, PIM).
+        let mut os_tool = crate::os_tool::OsTool::new().with_store(store.clone());
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
         }
-        // Startup: a poisoned lock here is a bug to surface, not a state to handle.
-        *self.read_state.write().unwrap() = Some(os_tool.file_tool().read_state());
         self.register(Box::new(os_tool)).await;
 
         // Code tool (tree-sitter outline/symbols/parse_check/query/context) — deferred.
@@ -1460,26 +1493,6 @@ pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json
         "gws" | "google-workspace" | "gmail" | "gcalendar" | "gdrive" | "gsheets" | "gdocs" => {
             ("plugin", vec![("resource", "gws")])
         }
-        // File operations → os
-        "file_read" | "read_file" | "fileread" | "read" => {
-            ("os", vec![("resource", "file"), ("action", "read")])
-        }
-        "file_write" | "write_file" | "filewrite" => {
-            ("os", vec![("resource", "file"), ("action", "write")])
-        }
-        "file_edit" | "edit_file" | "fileedit" | "edit" => {
-            ("os", vec![("resource", "file"), ("action", "edit")])
-        }
-        "grep" | "grep_tool" | "greptool" | "file_grep" => {
-            ("os", vec![("resource", "file"), ("action", "grep")])
-        }
-        "glob" | "glob_tool" | "globtool" | "file_glob" => {
-            ("os", vec![("resource", "file"), ("action", "glob")])
-        }
-        // Shell → os
-        "bash" | "shell" | "bash_tool" | "bashtool" | "run_command" | "exec" => {
-            ("os", vec![("resource", "shell"), ("action", "exec")])
-        }
         _ => return None,
     };
     let params = params
@@ -1665,8 +1678,8 @@ mod tests {
         assert!(emit.read_only(&json!({"source": "inventory.low"})));
         assert!(!emit.concurrency_safe(&json!({"source": "inventory.low"})));
         let (registry, _dir) = os_registry().await;
-        assert!(!registry.has_side_effects("os", &json!({"action": "read", "path": "/tmp/a"})).await);
-        assert!(registry.has_side_effects("os", &json!({"action": "write", "path": "/tmp/a"})).await);
+        assert!(!registry.has_side_effects("read_file", &json!({"path": "/tmp/a"})).await);
+        assert!(registry.has_side_effects("write_file", &json!({"path": "/tmp/a", "content": "x"})).await);
         assert!(registry.has_side_effects("unknown", &json!({})).await, "unknown means acting");
     }
 
@@ -1728,7 +1741,8 @@ mod tests {
         assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
-    /// A registry holding the real `os` tool, and a scratch directory.
+    /// A registry holding the real file, command and os tools, and a
+    /// scratch directory.
     async fn os_registry() -> (Registry, tempfile::TempDir) {
         let registry = Registry::new(crate::gate::test_gate());
         registry.register_defaults().await;
@@ -1743,23 +1757,23 @@ mod tests {
     }
 
     /// The runner's gates read the call through the same door: the settled
-    /// call names its action and resource, is gated on its own capability,
-    /// and settling it twice changes nothing.
+    /// call is gated on its own key and capability, and settling it twice
+    /// changes nothing.
     #[tokio::test]
     async fn the_runner_gates_read_the_settled_call() {
         let (registry, _dir) = os_registry().await;
-        let settled = registry
-            .normalize_input("os", serde_json::json!({ "command": "ls" }))
-            .await;
-        assert_eq!(settled["action"], "exec");
-        assert_eq!(settled["resource"], "shell");
-        let target = registry.target("os", &settled).await.unwrap();
+        let target = registry
+            .target("run_command", &serde_json::json!({ "command": "ls", "description": "List files" }))
+            .await
+            .unwrap();
         assert_eq!((target.key.as_str(), target.capability.as_deref()), ("run_command", Some("shell")));
-        assert_eq!(registry.normalize_input("os", settled.clone()).await, settled);
-        // A file-management verb stays unresolved: the tool answers it with a
-        // shell correction, and the capability gate leaves it alone.
-        let mv = serde_json::json!({ "action": "move", "path": "/tmp/a", "destination": "/tmp/b" });
-        assert_eq!(registry.normalize_input("os", mv.clone()).await, mv);
+        let settled = registry
+            .normalize_input("read_file", serde_json::json!({ "file_path": "/tmp/a" }))
+            .await;
+        assert_eq!(settled, serde_json::json!({ "path": "/tmp/a" }));
+        assert_eq!(registry.normalize_input("read_file", settled.clone()).await, settled);
+        let target = registry.target("read_file", &settled).await.unwrap();
+        assert_eq!((target.key.as_str(), target.capability.as_deref()), ("read_file", Some("file")));
     }
 
     /// An `mcp__<server>__<tool>` name is an MCP proxy or nothing: it never
@@ -1771,18 +1785,17 @@ mod tests {
         let result = registry
             .execute(
                 &ToolContext::default(),
-                "mcp__anything__os",
+                "mcp__anything__run_command",
                 serde_json::json!({
-                    "resource": "shell",
-                    "action": "exec",
                     "command": format!("touch {}; test -d '{}'", marker.display(), db_dir()),
+                    "description": "Touch a marker",
                 }),
             )
             .await;
         assert!(result.is_error, "{}", result.content);
         assert!(!marker.exists(), "a built-in ran under an MCP name");
         assert!(
-            !registry.concurrency_safe("mcp__anything__os", &serde_json::json!({"action": "read", "path": "/tmp/x"})).await,
+            !registry.concurrency_safe("mcp__anything__read_file", &serde_json::json!({"path": "/tmp/x"})).await,
             "an MCP name answered with a built-in's concurrency"
         );
     }
@@ -2117,21 +2130,22 @@ mod tests {
         assert!(ENUM_SURFACES.iter().all(|(t, _)| is_tool_name(t)));
     }
 
-    /// Characters of every always-loaded definition (description + schema),
-    /// measured at WP0: the pre-interface core tools plus find_tools. The os
-    /// tool describes the desktop surfaces its platform has, so the number is
-    /// per platform: 52,728 on macOS (agent 17,451 · os 14,219 · web 8,361 ·
-    /// message 3,270 · skill 3,102 · team 2,747 · event 2,229 · find_tools
-    /// 704 · mcp 645) and 53,032 on Linux (os 14,524 · web 8,362 · mcp 643).
-    /// The plugin tool (core too, and sized by the installed plugins) needs a
-    /// plugin store and is not in this roster. Each package that lands lowers
-    /// the numbers; they never rise. WP5 deferred the web family: −8,361 on
-    /// macOS, −8,362 on Linux. WP9 deferred the schedule and team families
-    /// (team 2,747 · event 2,229): 39,389 on macOS, 39,694 on Linux.
+    /// Characters of every always-loaded definition (description + schema).
+    /// The os tool describes the desktop surfaces its platform has, so the
+    /// number is per platform. Measured at WP0: 52,728 on macOS (agent
+    /// 17,451 · os 14,219 · web 8,361 · message 3,270 · skill 3,102 · team
+    /// 2,747 · event 2,229 · find_tools 704 · mcp 645) and 53,032 on Linux
+    /// (os 14,524 · web 8,362 · mcp 643). WP5 deferred the web family
+    /// (−8,361); WP9 the schedule and team families (−4,976). WP1 moved
+    /// files and commands off os: 37,495 on macOS (os 9,304 · run_command
+    /// 1,087 · read_file 782 · edit_file 705 · write_file 448) and 37,798
+    /// on Linux (os 9,609). The plugin tool (core too, and sized by the
+    /// installed plugins) needs a plugin store and is not in this roster.
+    /// Each package that lands lowers the numbers; they never rise.
     #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 39_389;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 37_495;
     #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 39_694;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 37_798;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2158,7 +2172,13 @@ mod tests {
         let deferred = registry.get_deferred_names().await;
         let mut core: Vec<String> = registry.get_tool_names().await.into_iter().filter(|n| !deferred.contains(n)).collect();
         core.sort();
-        assert_eq!(core, ["agent", "find_tools", "mcp", "message", "os", "skill"]);
+        assert_eq!(
+            core,
+            ["agent", "edit_file", "find_tools", "mcp", "message", "os", "read_file", "run_command", "skill", "write_file"]
+        );
+        for name in ["read_output", "stop_task", "list_processes", "send_input", "share_file", "convert_file", "checkpoint_files", "list_checkpoints", "restore_checkpoint", "write_plan", "check_plan"] {
+            assert!(deferred.contains(name), "{name} is deferred");
+        }
         for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules", "create_schedule", "list_teams"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
@@ -2169,8 +2189,10 @@ mod tests {
     async fn rule_keys_are_tool_names() {
         let (registry, _dir) = full_registry().await;
         let calls = [
-            ("os", serde_json::json!({"action": "exec", "command": "ls"})),
-            ("os", serde_json::json!({"action": "read", "path": "/tmp/x"})),
+            ("run_command", serde_json::json!({"command": "ls", "description": "List files"})),
+            ("read_file", serde_json::json!({"path": "/tmp/x"})),
+            ("read_output", serde_json::json!({"task_id": "bg-1a2b3c4d"})),
+            ("stop_task", serde_json::json!({"task_id": "sa-1"})),
             ("agent", serde_json::json!({"resource": "memory", "action": "store"})),
             ("agent", serde_json::json!({"resource": "task", "action": "spawn"})),
             ("skill", serde_json::json!({"action": "load", "name": "x"})),
@@ -2200,9 +2222,10 @@ mod tests {
             let registry = registry.clone();
             async move { registry.get(name).await.unwrap().cleared_when_stale(&input) }
         };
-        assert!(cleared("os", json!({"action": "read", "path": "/tmp/x"})).await);
-        assert!(cleared("os", json!({"resource": "file", "action": "write", "path": "/tmp/x"})).await);
-        assert!(cleared("os", json!({"action": "exec", "command": "ls"})).await);
+        assert!(cleared("read_file", json!({"path": "/tmp/x"})).await);
+        assert!(cleared("write_file", json!({"path": "/tmp/x", "content": "x"})).await);
+        assert!(cleared("edit_file", json!({"path": "/tmp/x", "old_string": "a", "new_string": "b"})).await);
+        assert!(cleared("run_command", json!({"command": "ls", "description": "List files"})).await);
         assert!(cleared("search_web", json!({"queries": ["x"]})).await);
         assert!(cleared("fetch_url", json!({"url": "https://example.com"})).await);
         assert!(!cleared("browser_act", json!({"action": "click", "ref": "e1"})).await);
@@ -2218,7 +2241,7 @@ mod tests {
         assert_eq!(taint("os", json!({"resource": "mail", "action": "unread"})).await, Some(ProvenanceClass::ExternalEmail));
         assert_eq!(taint("os", json!({"resource": "mail", "action": "send", "to": "a@example.com"})).await, None);
         assert_eq!(taint("message", json!({"resource": "sms", "action": "read"})).await, Some(ProvenanceClass::Channel));
-        assert_eq!(taint("os", json!({"action": "read", "path": "/tmp/x"})).await, None, "the owner's own files carry no taint");
+        assert_eq!(taint("read_file", json!({"path": "/tmp/x"})).await, None, "the owner's own files carry no taint");
     }
 
 

@@ -18,7 +18,7 @@ description: |
   poll returns ~3.5KB, so the window crosses auto_compact within a few dozen
   iterations and every subsequent iteration evicts, which spawns one background
   LLM compaction PER ITERATION.
-target_component: os
+target_component: run_command
 
 conversation:
   - role: user
@@ -29,7 +29,7 @@ conversation:
       just keep polling until you see READY.
 
 tool_config:
-  os:
+  run_command:
     enabled: true
 
 prompt_assertions:

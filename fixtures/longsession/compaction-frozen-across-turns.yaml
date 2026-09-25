@@ -45,15 +45,15 @@ conversation:
     content: "Back to the logs: what exactly was the BATCH-ID line in part03.txt? Reply with the exact id. If you genuinely no longer have it, re-read that one file rather than guessing."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: reads-happened
-      text: "The trace contains an os file read of part01.txt and of part14.txt"
+      text: "The trace contains a read_file of part01.txt and of part14.txt"
       severity: critical
-      check: { tool: [os, system], arg: path, contains: "part14.txt" }
+      check: { tool: read_file, arg: path, contains: "part14.txt" }
   recovery:
     - id: turn2-answered
       text: "Turn 2 is answered directly (51) with no file reads"

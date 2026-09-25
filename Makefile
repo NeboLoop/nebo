@@ -540,7 +540,7 @@ stage-ripgrep:
 #
 #   make test-live                        # smoke suite, LLM-judged
 #   make test-live SUITE=error-handling   # any suite in suites/
-#   make test-live FIXTURE=fixtures/tools/os-file-read.yaml
+#   make test-live FIXTURE=fixtures/tools/read-file.yaml
 #   make test-live-fast                   # program checks only, no claude CLI
 #
 # Prose assertions are graded by Claude Code (`claude -p`), so the CLI must be
@@ -616,7 +616,7 @@ test-engine-live:
 # Deterministic tool cases over /agent/mcp — no model, seconds, free. The
 # fastest loop for any tool-shaped change (checkpoint/plan/git refusals).
 #   make test-tools                 # all
-#   make test-tools CASE=os-plan    # id prefix
+#   make test-tools CASE=plan       # id prefix
 .PHONY: test-tools
 test-tools:
 	@TEST_SERVER=$(TEST_SERVER) CASE=$(CASE) bash scripts/test-tools.sh
