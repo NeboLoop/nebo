@@ -1102,12 +1102,6 @@ impl DynTool for SkillTool {
         }
     }
 
-    /// A search, a file read or the reviews can be run again; loaded
-    /// instructions stay.
-    fn cleared_when_stale(&self, _input: &serde_json::Value) -> bool {
-        matches!(self.kind, Kind::FindSkills | Kind::ReadSkillFile | Kind::ReadSkillReviews)
-    }
-
     fn activity(&self, input: &serde_json::Value) -> String {
         self.kind.labels(input).0
     }

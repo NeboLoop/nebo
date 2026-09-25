@@ -138,7 +138,7 @@ impl DynTool for RunCommandTool {
         }
     }
 
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
+    fn clearable(&self, _input: &Value) -> bool {
         true
     }
 
@@ -327,10 +327,6 @@ impl DynTool for ReadOutputTool {
 
     fn outcome(&self, input: &Value) -> String {
         format!("Checked {}", task_id(input))
-    }
-
-    fn cleared_when_stale(&self, input: &Value) -> bool {
-        is_command_id(task_id(input))
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {

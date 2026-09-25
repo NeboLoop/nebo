@@ -2497,7 +2497,7 @@ impl DynTool for WebTool {
     }
 
     /// Searches and fetches can be run again; the browser's steps can't.
-    fn cleared_when_stale(&self, _input: &serde_json::Value) -> bool {
+    fn clearable(&self, _input: &serde_json::Value) -> bool {
         matches!(self.kind, Kind::SearchWeb | Kind::FetchUrl)
     }
 

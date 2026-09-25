@@ -175,6 +175,7 @@ pub enum Transition {
     MidTurnInput,
     CutoffResume { attempt: u8 },
     OutputEscalated,
+    OverflowCleared,
     OverflowCheckpointed,
     TransientRetry { attempt: u8 },
     EndCheckContinue { check: &'static str, reason: String },
@@ -827,10 +828,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             .unwrap_or_else(|p| p.into_inner())
             .extend(conversation::received_taint(&conversation));
 
-        // 3. Trim, and checkpoint past the threshold.
+        // 3. Trim; past the threshold, clear old results, else checkpoint.
         let context_window = context_window(cx);
         st.usage.system_overhead_tokens = overhead_tokens(&surface.declared);
-        let window = trim(cx, st, &conversation).await;
+        let window = trim(st, &conversation);
         st.usage.last_request_estimate = pruning::estimate_total_tokens(&window);
         let window = conversation::sanitize_message_order(window);
 
@@ -842,6 +843,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             st.usage.last_request_estimate + st.usage.system_overhead_tokens + st.usage.estimate_correction;
         let max_output = usize::try_from(request.max_tokens).unwrap_or_default();
         if st.trigger.due(request_tokens, context_window, max_output) {
+            if clear_old_results(cx, st, &conversation).await {
+                st.step -= 1;
+                continue;
+            }
             match checkpoint(cx, st, &window, &request, compact::checkpoint::CheckpointReason::Threshold).await {
                 Ok(()) => continue,
                 Err(e) => warn!(session_id = sid, error = %e, "checkpoint failed; sending the conversation as it is"),
@@ -936,16 +941,22 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let reply = match outcome {
             CallOutcome::Reply(reply) => reply,
             CallOutcome::Retry(RetryWhy::Overflow) => {
-                // The provider refused the window: checkpoint, unless the
-                // breaker has tripped; the model call gives up after its own
+                // The provider refused the window: clear old results when
+                // that saves enough, as Claude Code does when the API asks
+                // it to cut the context; else checkpoint, unless the breaker
+                // has tripped. The model call gives up after its own
                 // overflow retries.
-                let outcome = if st.trigger.tripped() {
+                let outcome = if clear_old_results(cx, st, &conversation).await {
+                    Ok(Transition::OverflowCleared)
+                } else if st.trigger.tripped() {
                     Err("the checkpoint breaker has tripped".to_string())
                 } else {
-                    checkpoint(cx, st, &window, &fork_of, compact::checkpoint::CheckpointReason::Overflow).await
+                    checkpoint(cx, st, &window, &fork_of, compact::checkpoint::CheckpointReason::Overflow)
+                        .await
+                        .map(|()| Transition::OverflowCheckpointed)
                 };
                 match outcome {
-                    Ok(()) => st.transition = Transition::OverflowCheckpointed,
+                    Ok(transition) => st.transition = transition,
                     Err(e) => {
                         warn!(session_id = sid, error = %e, "overflow checkpoint failed; retrying as it is");
                         st.transition = Transition::TransientRetry { attempt: st.call.overflow_retries as u8 };
@@ -1198,14 +1209,27 @@ fn overhead_tokens(declared: &[ai::ToolDefinition]) -> usize {
     (prompt::system_prompt().len() + schema_chars) / crate::CHARS_PER_TOKEN
 }
 
-/// The per-step trim: stale results the tool lets be cleared are cleared,
-/// each rendering frozen the first time it is chosen and persisted for the
-/// chat.
-async fn trim(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage]) -> Vec<ChatMessage> {
+/// The per-step trim: every frozen rendering applied, all but the newest
+/// screenshots dropped.
+fn trim(st: &TurnState, conversation: &[ChatMessage]) -> Vec<ChatMessage> {
+    compact::trim::trim(conversation, &st.frozen_renderings).0
+}
+
+/// Under context pressure, clear old results their tools let be cleared,
+/// each saved through the one spill path, when that saves at least 20k
+/// tokens (Claude Code 2.1.280). Each rendering is frozen and persisted for
+/// the chat. Returns whether anything was cleared.
+async fn clear_old_results(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage]) -> bool {
     let h = &cx.harness;
     extend_clearable(&h.tools, conversation, &mut st.trim_checked, &mut st.clearable).await;
-    let now = chrono::Utc::now().timestamp();
-    let (working, _) = compact::trim::trim(conversation, now, &st.clearable, &mut st.frozen_renderings);
+    let dir = tools::result_shape::results_dir(&cx.session_id);
+    let saved = compact::trim::clear_old_results(conversation, &st.clearable, &mut st.frozen_renderings, |text| {
+        tools::result_shape::persist_cleared(&dir, text)
+    });
+    if saved == 0 {
+        return false;
+    }
+    info!(session_id = %cx.session_id, tokens = saved, "cleared old tool results under context pressure");
     let fresh: Vec<(String, String)> = st
         .frozen_renderings
         .iter()
@@ -1219,7 +1243,7 @@ async fn trim(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage]
             Err(e) => warn!(error = %e, "could not persist frozen renderings"),
         }
     }
-    working
+    true
 }
 
 /// The provider, model name and full model id for this step.
@@ -1572,7 +1596,7 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
 }
 
 /// Add every stored tool call not yet `checked` whose tool says its result
-/// may be cleared once stale (`DynTool::cleared_when_stale`) to `clearable`.
+/// may be cleared under pressure (`DynTool::clearable`) to `clearable`.
 /// A call to a tool no longer registered is never cleared.
 async fn extend_clearable(tools: &tools::Registry, messages: &[ChatMessage], checked: &mut HashSet<String>, clearable: &mut compact::trim::Clearable) {
     for msg in messages.iter().filter(|m| m.role == "assistant") {
@@ -1588,7 +1612,7 @@ async fn extend_clearable(tools: &tools::Registry, messages: &[ChatMessage], che
                 continue;
             }
             if let Some(tool) = tools.get(&call.name).await
-                && tool.cleared_when_stale(&call.input)
+                && tool.clearable(&call.input)
             {
                 clearable.insert(call.id);
             }
@@ -2424,6 +2448,66 @@ mod tests {
         let rows = stored(&h);
         assert_eq!(rows.iter().filter(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)).count(), 1);
         assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
+    }
+
+    /// A tool whose 5,000-character result can be got again.
+    struct Reader;
+
+    impl tools::registry::DynTool for Reader {
+        fn name(&self) -> &str {
+            "reader"
+        }
+        fn description(&self) -> String {
+            "reads things".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn clearable(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::ok("r".repeat(5_000)) })
+        }
+    }
+
+    /// Context pressure clears old results before anything is summarised,
+    /// as Claude Code 2.1.280 does: the provider refuses the window, every
+    /// clearable result but the five newest is saved to a file and replaced
+    /// by where it was saved, and the step is taken again with no
+    /// checkpoint.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pressure_clears_old_results_before_a_checkpoint() {
+        let mut script: Vec<Step> = (0..30).map(|_| Step::Call("reader", serde_json::json!({}))).collect();
+        script.extend([Step::Overflow, Step::Say("Carried on.")]);
+        let model = Scripted::new(script);
+        let h = harness_with(&model, vec![Box::new(Reader)]).await;
+        let events = run_turn(&h, owner("Read everything")).await;
+        let sid = h.sessions.resolve_session_id_by_key(KEY).expect("session");
+        let _ = std::fs::remove_dir_all(tools::checkpoint::session_dir(&sid));
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 32, "the refused call and its retry");
+        let results: Vec<String> = calls[31]
+            .messages
+            .iter()
+            .filter_map(|m| m.tool_results.as_ref().map(|r| r.to_string()))
+            .collect();
+        assert_eq!(results.len(), 30);
+        for r in &results[..25] {
+            assert!(r.contains("Tool result saved to:") && !r.contains("rrrrr"), "{r}");
+        }
+        for r in &results[25..] {
+            assert!(r.contains(&"r".repeat(5_000)), "the five newest stay whole");
+        }
+        assert!(!texts(&calls[31]).iter().any(|t| t.starts_with(compact::checkpoint::BOUNDARY_LEAD)), "no checkpoint");
     }
 
     struct Watch(Mutex<Vec<String>>);
