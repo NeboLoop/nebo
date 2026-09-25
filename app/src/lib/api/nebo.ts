@@ -251,20 +251,6 @@ export function workOutAgentNeeds(req: Record<string, unknown> = {}) {
 }
 
 /**
- * @description "Get workflow approval status"
- */
-export function getWorkflowApprovalStatus(runId: string) {
-	return webapi.get<components.GetWorkflowApprovalStatusResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`)
-}
-
-/**
- * @description "Resolve workflow approval"
- */
-export function resolveWorkflowApproval(runId: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.ResolveWorkflowApprovalResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`, req)
-}
-
-/**
  * @description "Get agent"
  */
 export function getAgent(id: string) {
@@ -1466,6 +1452,27 @@ export function installOrg(req: Record<string, unknown> = {}) {
  */
 export function listPermissionActivity(agentId?: string, door?: string, decision?: string, limit?: number, offset?: number) {
 	return webapi.get<components.ActivityPage>(`/api/v1/permissions/activity`, { agentId, door, decision, limit, offset })
+}
+
+/**
+ * @description "List permission asks"
+ */
+export function listPermissionAsks(session?: string) {
+	return webapi.get<components.PermissionAsksResponse>(`/api/v1/permissions/asks`, { session })
+}
+
+/**
+ * @description "Get permission ask"
+ */
+export function getPermissionAsk(id: string) {
+	return webapi.get<components.PermissionAskCard>(`/api/v1/permissions/asks/${id}`)
+}
+
+/**
+ * @description "Answer permission ask"
+ */
+export function answerPermissionAsk(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.PermissionAskCard>(`/api/v1/permissions/asks/${id}/answer`, req)
 }
 
 /**

@@ -3085,6 +3085,17 @@
 		"dropHere": "שחרר כאן כדי לדווח לעובד הזה",
 		"cycleRefused": "זה יגרום לעובד לדווח לעצמו."
 	},
+	"permissionAsk": {
+		"title": "{name} מבקש את האישור שלך",
+		"allowAlways": "אפשר תמיד",
+		"thisOnce": "רק הפעם",
+		"no": "לא",
+		"allowedAlways": "מאושר מעכשיו",
+		"allowedOnce": "מאושר הפעם",
+		"declined": "נדחה",
+		"expired": "פג תוקף, נחשב כלא",
+		"failed": "לא ניתן לשלוח את התשובה. נסה שוב."
+	},
 	"permissions": {
 		"title": "הרשאות",
 		"companyDescription": "מה כל עובד רשאי לעשות, אלא אם דף ההרשאות שלו קובע אחרת.",

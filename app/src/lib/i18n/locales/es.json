@@ -3085,6 +3085,17 @@
 		"dropHere": "Suelta aquí para que responda ante este empleado",
 		"cycleRefused": "Eso haría que un empleado respondiera ante sí mismo."
 	},
+	"permissionAsk": {
+		"title": "{name} necesita tu visto bueno",
+		"allowAlways": "Permitir siempre",
+		"thisOnce": "Solo esta vez",
+		"no": "No",
+		"allowedAlways": "Permitido a partir de ahora",
+		"allowedOnce": "Permitido esta vez",
+		"declined": "Rechazado",
+		"expired": "Caducado, contó como No",
+		"failed": "No se pudo enviar tu respuesta. Inténtalo de nuevo."
+	},
 	"permissions": {
 		"title": "Permisos",
 		"companyDescription": "Lo que cualquier empleado puede hacer, salvo que su propia página de Permisos diga otra cosa.",

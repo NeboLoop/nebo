@@ -3085,6 +3085,17 @@
 		"dropHere": "Solte aqui para se reportar a este funcionário",
 		"cycleRefused": "Assim um funcionário se reportaria a si mesmo."
 	},
+	"permissionAsk": {
+		"title": "{name} precisa do seu OK",
+		"allowAlways": "Permitir sempre",
+		"thisOnce": "Só desta vez",
+		"no": "Não",
+		"allowedAlways": "Permitido daqui em diante",
+		"allowedOnce": "Permitido desta vez",
+		"declined": "Recusado",
+		"expired": "Expirado, contou como Não",
+		"failed": "Não foi possível enviar sua resposta. Tente de novo."
+	},
 	"permissions": {
 		"title": "Permissões",
 		"companyDescription": "O que qualquer funcionário pode fazer, a menos que a própria página de Permissões dele diga o contrário.",

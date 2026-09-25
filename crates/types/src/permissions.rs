@@ -340,6 +340,8 @@ pub enum Why {
     Mode { mode: Mode },
     BasicWork,
     AnsweredOnce { ask_id: String },
+    /// The owner already said no to this same call in this session.
+    Declined { ask_id: String },
     Judged { by: String, reason: String },
     Unreviewed { reason: String },
 }

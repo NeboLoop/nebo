@@ -30,7 +30,7 @@ conversation:
 tool_config:
   agent:
     enabled: true
-  work:
+  delete_workflow:
     enabled: true
 
 prompt_assertions:

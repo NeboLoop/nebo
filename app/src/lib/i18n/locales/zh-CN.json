@@ -3085,6 +3085,17 @@
 		"dropHere": "放到这里即可向这名员工汇报",
 		"cycleRefused": "那样会让一名员工向自己汇报。"
 	},
+	"permissionAsk": {
+		"title": "{name} 需要你的同意",
+		"allowAlways": "始终允许",
+		"thisOnce": "仅此一次",
+		"no": "不",
+		"allowedAlways": "从现在起允许",
+		"allowedOnce": "本次已允许",
+		"declined": "已拒绝",
+		"expired": "已过期，视为拒绝",
+		"failed": "无法发送你的回答。请重试。"
+	},
 	"permissions": {
 		"title": "权限",
 		"companyDescription": "每位员工可以做的事，除非该员工自己的权限页面另有说明。",

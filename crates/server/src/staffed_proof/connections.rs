@@ -71,7 +71,7 @@ async fn a_hand_off_connects() {
 
     // The producer announces, from its own run, the name its package declares.
     let ctx = tools::ToolContext::new(Origin::Workflow).with_session(format!("agent:{inventory}:workflow:run-1"), "s1");
-    let emitted = nebo.tool(&ctx, "emit", json!({ "source": ANNOUNCEMENT, "payload": { "poId": "PO-1" } })).await;
+    let emitted = nebo.tool(&ctx, "emit_event", json!({ "source": ANNOUNCEMENT, "payload": { "poId": "PO-1" } })).await;
     assert!(!emitted.is_error, "{}", emitted.content);
 
     nebo.wait_until(15, "the waiting seat to start", || !event_runs(&nebo, &procurement).is_empty()).await;
@@ -90,7 +90,7 @@ async fn a_hand_off_connects() {
     let bk = nebo.hire("Bookkeeper", json!({ "workflows": {} })).await;
     nebo.activate(&bk).await;
     let bk_ctx = tools::ToolContext::new(Origin::Workflow).with_session(format!("agent:{bk}:workflow:run-2"), "s2");
-    let emitted = nebo.tool(&bk_ctx, "emit", json!({ "source": "assignment.done", "payload": { "assignment_id": "a1" } })).await;
+    let emitted = nebo.tool(&bk_ctx, "emit_event", json!({ "source": "assignment.done", "payload": { "assignment_id": "a1" } })).await;
     assert!(!emitted.is_error, "{}", emitted.content);
     nebo.wait_until(15, "the manager to hear the company event", || !event_runs(&nebo, &gm).is_empty()).await;
     let heard = &event_runs(&nebo, &gm)[0];

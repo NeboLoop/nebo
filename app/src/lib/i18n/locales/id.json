@@ -3085,6 +3085,17 @@
 		"dropHere": "Lepaskan agar melapor ke karyawan ini",
 		"cycleRefused": "Itu akan membuat seorang karyawan melapor kepada dirinya sendiri."
 	},
+	"permissionAsk": {
+		"title": "{name} butuh persetujuanmu",
+		"allowAlways": "Selalu izinkan",
+		"thisOnce": "Kali ini saja",
+		"no": "Tidak",
+		"allowedAlways": "Diizinkan mulai sekarang",
+		"allowedOnce": "Diizinkan kali ini",
+		"declined": "Ditolak",
+		"expired": "Kedaluwarsa, dihitung sebagai Tidak",
+		"failed": "Jawabanmu tidak terkirim. Coba lagi."
+	},
 	"permissions": {
 		"title": "Izin",
 		"companyDescription": "Yang boleh dilakukan setiap karyawan kecuali halaman Izinnya sendiri menyatakan lain.",

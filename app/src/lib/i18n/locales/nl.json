@@ -3085,6 +3085,17 @@
 		"dropHere": "Hierheen slepen om aan deze medewerker te rapporteren",
 		"cycleRefused": "Daarmee zou een medewerker aan zichzelf rapporteren."
 	},
+	"permissionAsk": {
+		"title": "{name} wacht op je akkoord",
+		"allowAlways": "Altijd toestaan",
+		"thisOnce": "Alleen deze keer",
+		"no": "Nee",
+		"allowedAlways": "Vanaf nu toegestaan",
+		"allowedOnce": "Deze keer toegestaan",
+		"declined": "Geweigerd",
+		"expired": "Verlopen, geteld als Nee",
+		"failed": "Je antwoord kon niet worden verzonden. Probeer het opnieuw."
+	},
 	"permissions": {
 		"title": "Machtigingen",
 		"companyDescription": "Wat elke medewerker mag doen, tenzij zijn eigen machtigingenpagina iets anders zegt.",

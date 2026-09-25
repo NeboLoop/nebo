@@ -914,6 +914,25 @@ export interface PendingWrite {
 	resolvedAt?: number
 }
 
+export interface PermissionAskCard {
+	id: string
+	agentId: string
+	employee: string
+	sessionKey: string
+	sentence: string
+	reason: string
+	allowAlways: boolean
+	thisOnce: boolean
+	status: string
+	answer?: string
+	createdAt: number
+	expiresAt: number
+}
+
+export interface PermissionAsksResponse {
+	asks: PermissionAskCard[]
+}
+
 export interface PermissionItem {
 	id: string
 	sentence: string
@@ -1735,10 +1754,6 @@ export interface GetToolOutputResponse {
 	isError: boolean
 }
 
-export interface GetWorkflowApprovalStatusResponse {
-	status: string
-}
-
 export interface GetWorkflowResponse {
 	workflow: Workflow
 }
@@ -2109,11 +2124,6 @@ export interface RemoveTeamResponse {
 
 export interface ResolveLearningResponse {
 	status: string
-}
-
-export interface ResolveWorkflowApprovalResponse {
-	status: string
-	runId: string
 }
 
 export interface RevertLearningResponse {
