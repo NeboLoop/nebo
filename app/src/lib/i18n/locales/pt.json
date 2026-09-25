@@ -387,7 +387,9 @@
 		"researchWriting": "escreve o relatório",
 		"researchOtherDomains": "+ outros {n} sites",
 		"researchVerified": "{n} afirmações verificadas face às fontes",
-		"historyLoadFailed": "Não foi possível carregar esta conversa. Verifique a ligação e tente de novo."
+		"historyLoadFailed": "Não foi possível carregar esta conversa. Verifique a ligação e tente de novo.",
+		"consentCreates": "Diga que sim e é criado com exatamente este trabalho.",
+		"consentAdds": "Diga que sim e isto é acrescentado ao trabalho."
 	},
 	"chatInput": {
 		"placeholder": "Responder...",
@@ -3016,7 +3018,13 @@
 		"placeholder": "por ex. Dispatch, Piper, Sam…",
 		"create": "Contratá-lo",
 		"failed": "Não foi possível criar o funcionário. Tente de novo.",
-		"marketplaceHint": "Prefere um especialista já pronto? Veja a Loja."
+		"marketplaceHint": "Prefere um especialista já pronto? Veja a Loja.",
+		"jobLabel": "O trabalho (opcional)",
+		"jobPlaceholder": "O que vai fazer? (opcional)",
+		"working": "A perceber do que vai precisar…",
+		"willDo": "{name} vai:",
+		"thisEmployee": "Este colaborador",
+		"removeItem": "Remover {item}"
 	},
 	"runLimit": {
 		"title": "Limite de gasto por execução",
@@ -3139,5 +3147,16 @@
 		"moveTo": "Mover para",
 		"dropHere": "Largue aqui para responder a este funcionário",
 		"cycleRefused": "Assim um funcionário responderia a si próprio."
+	},
+	"permissionAsk": {
+		"title": "{name} precisa do seu OK",
+		"allowAlways": "Permitir sempre",
+		"thisOnce": "Só desta vez",
+		"no": "Não",
+		"allowedAlways": "Permitido a partir de agora",
+		"allowedOnce": "Permitido desta vez",
+		"declined": "Recusado",
+		"expired": "Expirado, contou como Não",
+		"failed": "Não foi possível enviar a sua resposta. Tente novamente."
 	}
 }

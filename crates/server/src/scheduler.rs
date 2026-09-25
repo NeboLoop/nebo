@@ -52,6 +52,12 @@ pub fn spawn(
                 continue;
             }
             sweep(&store, &workflow_manager);
+            // Asks unanswered past their time expire as a No. The first tick
+            // is at boot, so asks that expired while Nebo was down go then.
+            let expired = state.permission_asks.expire_due(now_secs());
+            if expired > 0 {
+                tracing::info!(expired, "asks expired as No");
+            }
             // Cleanup expired snapshots
             snapshot_store.cleanup();
             nightly_backup(&store, &state).await;
@@ -232,7 +238,7 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
 }
 
 /// Fire a cron job whose originating channel context was captured at
-/// `event(create)` time. Runs the agent with the same `ChannelContext` the
+/// `create_schedule` time. Runs the agent with the same `ChannelContext` the
 /// inbound message would have carried, then writes the response to the
 /// channel-plugin bridge as an `op: "post"` so it lands in the originating
 /// thread.

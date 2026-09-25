@@ -9,6 +9,8 @@
   import { teachStart, teachStop, getToolOutput } from '$lib/api/nebo';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
+  import ConsentChip from './ConsentChip.svelte';
+  import type { EmployeeConsentPayload } from './ConsentChip.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { renderMentionChips } from '$lib/mentions';
   import { downloadArtifact } from '$lib/chat/download';
@@ -29,6 +31,8 @@
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
+  import { openAsks } from '$lib/stores/permissionAsks';
+  import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
 
   interface Artifact {
@@ -619,6 +623,12 @@
     return (tools ?? [])
       .flatMap((t) => (t.payload?.kind === 'coworker_message' ? [t.payload as CoworkerEventPayload] : []));
   }
+  // A drafted employee's consent line is the owner's to answer, never
+  // plumbing inside the collapsed tool group.
+  function consentLines(tools: ToolMsg[] | undefined): EmployeeConsentPayload[] {
+    return (tools ?? [])
+      .flatMap((t) => (t.payload?.kind === 'employee_consent' ? [t.payload as EmployeeConsentPayload] : []));
+  }
   function nonCoworkerTools(tools: ToolMsg[] | undefined): ToolMsg[] {
     return (tools ?? []).filter((t) => t.payload?.kind !== 'coworker_message');
   }
@@ -1105,6 +1115,8 @@
   // readable page; the whole thing arrives when someone opens the row.
   let fullOutputs = $state<Record<string, string>>({});
   const outputChatId = $derived(threadId || sessionId);
+  const chatSessionKey = $derived(sessionId || (threadId ? threadKey(agentId, threadId) : ''));
+  const chatAsks = $derived(chatSessionKey ? $openAsks.filter((a) => a.sessionKey === chatSessionKey) : []);
   async function toggleResult(key: string, tool?: ToolMsg) {
     const opening = !expandedResults[key];
     expandedResults[key] = opening;
@@ -1794,6 +1806,9 @@
                 <span class="font-medium text-base-content/80">{ev.to}</span>
               </a>
             {/each}
+            {#each segs.flatMap((sg) => consentLines(sg.tools)) as consent, cIdx (cIdx)}
+              <ConsentChip {consent} />
+            {/each}
           {#if turnAttachments.length}
             <div class="flex flex-wrap gap-2 mt-2">
               {#each turnAttachments as att}
@@ -1979,6 +1994,16 @@
           <button type="button" class="btn btn-ghost btn-xs ml-auto" onclick={() => (teachError = '')}>✕</button>
         {/if}
       </div>
+    </div>
+  {/if}
+
+  <!-- The asks this chat's work is waiting on: the same card as the Inbox;
+       answered anywhere, it leaves everywhere. -->
+  {#if chatAsks.length > 0}
+    <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2 flex flex-col gap-2">
+      {#each chatAsks as ask (ask.id)}
+        <PermissionAskCard {ask} via="chat" />
+      {/each}
     </div>
   {/if}
 

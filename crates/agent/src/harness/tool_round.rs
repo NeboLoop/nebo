@@ -944,7 +944,7 @@ pub(crate) async fn run_tool_round(
 
     // The parked call's result is not saved: the resumed run executes the
     // call itself once the owner answers.
-    let parked = parked_call.and_then(|idx| results[idx].take().map(|(tc, _)| (idx, tc)));
+    let parked = parked_call.and_then(|idx| results[idx].take().map(|(tc, r)| (idx, tc, r.parked_ask.unwrap_or_default())));
 
     // Save all tool results to session in deterministic order
     // and track whether ALL results in this iteration were errors.
@@ -1232,14 +1232,14 @@ pub(crate) async fn run_tool_round(
 
     // A workflow step parked on the owner: the run suspends with the
     // conversation as it stands and the call that waits.
-    if let (Some(park), Some((idx, tc))) = (workflow_park, parked) {
+    if let (Some(park), Some((idx, tc, ask_id))) = (workflow_park, parked) {
         let snapshot = convert_messages(&sessions.get_messages(session_id).unwrap_or_default());
         let operation = targets[idx]
             .as_ref()
             .map(|t| t.operation.as_deref().map(tools::plugin_tool::port_suffix).unwrap_or_else(|| t.key.clone()))
             .unwrap_or_else(|| tc.name.clone());
         let display = tools.labels(&tc.name, &tc.input).await.0;
-        let reason = match park(WorkflowPark { messages: snapshot, call: &tc, operation, display }) {
+        let reason = match park(WorkflowPark { messages: snapshot, call: &tc, ask_id: &ask_id, operation, display }) {
             Ok(()) => "awaiting_approval".to_string(),
             // Can't persist the suspension: fail loud, never run the call.
             Err(e) => format!("suspension_failed:{e}"),

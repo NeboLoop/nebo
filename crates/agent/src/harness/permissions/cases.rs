@@ -105,7 +105,7 @@ pub fn surfaced(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> CaseVerdict {
     if let Some(case) = outside_job(t, rules, f.input) {
         return CaseVerdict::Ask(case);
     }
-    if let Some(case) = untrusted_input(t, f) {
+    if let Some(case) = untrusted_input(t, rules, f) {
         return CaseVerdict::Ask(case);
     }
     match undecided {
@@ -134,6 +134,7 @@ pub fn new_counterparty(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> Result<Op
         return Ok(Some(AskCase::NewCounterparty { who: who.clone() }));
     }
     match t.effects.publishes {
+        Knowable::Yes if published_before(t, rules) => Ok(None),
         Knowable::Yes => Ok(Some(AskCase::NewCounterparty { who: PUBLIC.to_string() })),
         Knowable::No => Ok(None),
         // A read changes nothing outside; its effects are never unknown in
@@ -146,6 +147,14 @@ pub fn new_counterparty(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> Result<Op
             untrusted: untrusted_source(f),
         }),
     }
+}
+
+/// Whether the owner answered "Allow always" to a publish by this call's
+/// key: the answer's rule names the public as the recipient.
+fn published_before(t: &Target, rules: &RuleSet) -> bool {
+    let mut public = t.clone();
+    public.field = Some(RuleField::Recipient(PUBLIC.to_string()));
+    rules.answered_always(&public)
 }
 
 /// Whether a recipient is someone the employee already works with: in the
@@ -172,6 +181,10 @@ fn known(recipient: &str, rules: &RuleSet, f: &Facts<'_>) -> bool {
 /// Case 3: deleting what the employee didn't create, or replacing it
 /// outside the folders its job works in.
 pub fn irreversible(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> Option<AskCase> {
+    // "Allow always" on an earlier ask for this key and field.
+    if rules.answered_always(t) {
+        return None;
+    }
     if let Some(what) = t.effects.deletes.iter().find(|d| !f.created.0.contains(*d)) {
         return Some(AskCase::Irreversible { what: plain(what) });
     }
@@ -207,8 +220,12 @@ pub fn outside_job(t: &Target, rules: &RuleSet, input: &serde_json::Value) -> Op
 /// Case 5: the run read outside words and now wants to send, pay, publish
 /// or delete. A reply inside the thread the words came from is not this
 /// case.
-pub fn untrusted_input(t: &Target, f: &Facts<'_>) -> Option<AskCase> {
+pub fn untrusted_input(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> Option<AskCase> {
     let source = untrusted_source(f)?;
+    // "Allow always" on an earlier ask for this key and recipient.
+    if rules.answered_always(t) {
+        return None;
+    }
     let e = &t.effects;
     let in_thread = |r: &String| {
         f.thread.is_some_and(|th| types::permissions::address_key(r).is_some_and(|k| th.people.contains(&k)))

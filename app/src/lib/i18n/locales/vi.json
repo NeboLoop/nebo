@@ -387,7 +387,9 @@
 		"researchWriting": "đang viết báo cáo",
 		"researchOtherDomains": "+ {n} trang khác",
 		"researchVerified": "{n} luận điểm đã đối chiếu với nguồn",
-		"historyLoadFailed": "Không tải được cuộc trò chuyện này. Hãy kiểm tra kết nối và thử lại."
+		"historyLoadFailed": "Không tải được cuộc trò chuyện này. Hãy kiểm tra kết nối và thử lại.",
+		"consentCreates": "Nói đồng ý và nhân viên sẽ được tạo với đúng công việc này.",
+		"consentAdds": "Nói đồng ý và điều này được thêm vào công việc."
 	},
 	"chatInput": {
 		"placeholder": "Trả lời...",
@@ -3016,7 +3018,13 @@
 		"placeholder": "vd. Dispatch, Piper, Sam…",
 		"create": "Tuyển họ",
 		"failed": "Không tạo được nhân viên. Hãy thử lại.",
-		"marketplaceHint": "Muốn một chuyên gia dựng sẵn? Hãy xem Cửa hàng."
+		"marketplaceHint": "Muốn một chuyên gia dựng sẵn? Hãy xem Cửa hàng.",
+		"jobLabel": "Công việc (không bắt buộc)",
+		"jobPlaceholder": "Họ sẽ làm gì? (không bắt buộc)",
+		"working": "Đang xác định họ sẽ cần gì…",
+		"willDo": "{name} sẽ:",
+		"thisEmployee": "Nhân viên này",
+		"removeItem": "Bỏ {item}"
 	},
 	"runLimit": {
 		"title": "Hạn mức chi mỗi lượt chạy",
@@ -3139,5 +3147,16 @@
 		"moveTo": "Chuyển tới",
 		"dropHere": "Thả vào để báo cáo cho nhân viên này",
 		"cycleRefused": "Như vậy sẽ khiến một nhân viên báo cáo cho chính mình."
+	},
+	"permissionAsk": {
+		"title": "{name} cần bạn đồng ý",
+		"allowAlways": "Luôn cho phép",
+		"thisOnce": "Chỉ lần này",
+		"no": "Không",
+		"allowedAlways": "Được phép từ giờ",
+		"allowedOnce": "Được phép lần này",
+		"declined": "Đã từ chối",
+		"expired": "Hết hạn, tính là Không",
+		"failed": "Không gửi được câu trả lời. Hãy thử lại."
 	}
 }

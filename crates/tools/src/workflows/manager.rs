@@ -65,7 +65,7 @@ pub trait WorkflowManager: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
     /// Resolve an agent reference (id, exact name, or slug) to the agent's id.
-    /// Backs the work tool's `agent` input: the session key only identifies the
+    /// Backs the workflow tools' `employee` input: the session key only identifies the
     /// CALLER, so without this an assistant asked to change another employee's
     /// duties could only self-scope — which is how weekend workflows silently
     /// landed on the assistant instead of the Content Creator (2026-08-01).

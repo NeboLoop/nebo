@@ -369,6 +369,13 @@ export interface ChatMessagesResponse {
 	pendingAsk?: PendingAsk
 }
 
+export interface ChatRecap {
+	chatId: string
+	turnId: string
+	text: string
+	createdAt: number
+}
+
 export interface ChatStreamResponse {
 	type: string
 	content?: string
@@ -882,6 +889,25 @@ export interface PendingWrite {
 	status: string
 	createdAt: number
 	resolvedAt?: number
+}
+
+export interface PermissionAskCard {
+	id: string
+	agentId: string
+	employee: string
+	sessionKey: string
+	sentence: string
+	reason: string
+	allowAlways: boolean
+	thisOnce: boolean
+	status: string
+	answer?: string
+	createdAt: number
+	expiresAt: number
+}
+
+export interface PermissionAsksResponse {
+	asks: PermissionAskCard[]
 }
 
 export interface PluginRegistry {
@@ -1519,7 +1545,7 @@ export interface EnableAgentChannelResponse {
 }
 
 export interface GetAgentOperationsResponse {
-	default: unknown
+	default: string
 	configured: unknown
 	interfaces: unknown
 	available: unknown[]
@@ -1681,10 +1707,6 @@ export interface GetTeamMessagesResponse {
 export interface GetToolOutputResponse {
 	output: string
 	isError: boolean
-}
-
-export interface GetWorkflowApprovalStatusResponse {
-	status: string
 }
 
 export interface GetWorkflowResponse {
@@ -2051,11 +2073,6 @@ export interface ResolveLearningResponse {
 	status: string
 }
 
-export interface ResolveWorkflowApprovalResponse {
-	status: string
-	runId: string
-}
-
 export interface RevertLearningResponse {
 	status: string
 }
@@ -2323,6 +2340,13 @@ export interface UserUpdateProfileResponse {
 	profile: unknown
 }
 
+export interface WorkOutAgentNeedsResponse {
+	line: string
+	items: string[]
+	accounts: string[]
+	draftId: string | null
+}
+
 // ── Common Types ───────────────────────────────────────────────────
 
 export interface ErrorResponse {
@@ -2548,11 +2572,11 @@ export type WSServerEventType =
 	| "chat_cancelled"
 	| "chat_message"
 	| "session_reset"
-	| "session_compact"
 	| "chat_complete"
 	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
+	| "session_compact"
 
 export interface AppActionEvent {
 	agentId: string
@@ -2577,12 +2601,6 @@ export interface ChatMessageEvent {
 	artifacts: unknown
 }
 
-export interface SessionCompactEvent {
-	session_id: string
-	success: boolean
-	error: string
-}
-
 export interface ChatCompleteEvent {
 	session_id: string
 	skipped: boolean
@@ -2601,6 +2619,11 @@ export interface ChatStreamEvent {
 export interface ChatErrorEvent {
 	error: string
 	session_id: string
+}
+
+export interface SessionCompactEvent {
+	success: boolean
+	error: string
 }
 
 /** Client → Server WebSocket message types */

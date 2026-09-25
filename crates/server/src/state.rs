@@ -75,6 +75,8 @@ pub struct AppState {
     pub hub: Arc<ClientHub>,
     pub runner: Arc<Runner>,
     pub tools: Arc<Registry>,
+    /// Asks parked on the owner: the one card, its answers and expiry.
+    pub permission_asks: Arc<agent::harness::permissions::Asks>,
     pub bridge: Arc<mcp::Bridge>,
     /// Tool package registry for managing installable tools (.napp packages)
     pub napp_registry: Arc<napp::Registry>,

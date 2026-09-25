@@ -12,6 +12,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::agents::create_agent),
         )
         .route(
+            "/agents/needs",
+            axum::routing::post(handlers::agents::work_out_agent_needs),
+        )
+        .route(
             "/agents/{id}",
             axum::routing::get(handlers::agents::get_agent),
         )
@@ -42,14 +46,6 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/agents/{id}/operations",
             axum::routing::get(handlers::agents::get_agent_operations),
-        )
-        .route(
-            "/agents/workflow-runs/{run_id}/approval",
-            axum::routing::post(handlers::agents::resolve_workflow_approval),
-        )
-        .route(
-            "/agents/workflow-runs/{run_id}/approval",
-            axum::routing::get(handlers::agents::get_workflow_approval_status),
         )
         .route(
             "/agents/learnings/{id}",

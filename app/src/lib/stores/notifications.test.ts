@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { get } from 'svelte/store';
-import { notifications, approvalStatuses, setApprovalStatus, unreadCount, approvalRef, type Notification } from './notifications';
+import { notifications, approvalStatuses, setApprovalStatus, unreadCount, approvalRef, askBandStatus, askNotificationId, type Notification } from './notifications';
 
 const row = (id: string, read: boolean, type: Notification['type'] = 'system'): Notification => ({
 	id, type, title: id, message: '', time: 'now', createdAt: 1, read,
@@ -22,9 +22,18 @@ describe('unreadCount', () => {
 	});
 
 	it('recognizes the three approval id shapes and nothing else', () => {
-		expect(approvalRef('wf-approval:run-1')).toEqual({ kind: 'workflow', id: 'run-1' });
+		expect(approvalRef('permission-ask:ask-1')).toEqual({ kind: 'ask', id: 'ask-1' });
 		expect(approvalRef('learn:p-1')).toEqual({ kind: 'learning', id: 'p-1' });
 		expect(approvalRef('artifact-update:skill:art-1:1.2.0')).toEqual({ kind: 'update', id: 'art-1', version: '1.2.0' });
 		expect(approvalRef('wf-fail:run-1')).toBeNull();
+		expect(approvalRef('wf-approval:run-1')).toBeNull();
+	});
+
+	it('reads an ask as pending until it is settled anywhere', () => {
+		expect(askBandStatus('open')).toBe('pending');
+		expect(askBandStatus('allowed')).toBe('approved');
+		expect(askBandStatus('declined')).toBe('denied');
+		expect(askBandStatus('expired')).toBe('expired');
+		expect(askNotificationId('ask-1')).toBe('permission-ask:ask-1');
 	});
 });

@@ -244,17 +244,10 @@ export function revertLearning(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
- * @description "Get workflow approval status"
+ * @description "Work out agent needs"
  */
-export function getWorkflowApprovalStatus(runId: string) {
-	return webapi.get<components.GetWorkflowApprovalStatusResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`)
-}
-
-/**
- * @description "Resolve workflow approval"
- */
-export function resolveWorkflowApproval(runId: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.ResolveWorkflowApprovalResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`, req)
+export function workOutAgentNeeds(req: Record<string, unknown> = {}) {
+	return webapi.post<components.WorkOutAgentNeedsResponse>(`/api/v1/agents/needs`, req)
 }
 
 /**
@@ -1431,6 +1424,27 @@ export function markRead(id: string, req: Record<string, unknown> = {}) {
  */
 export function installOrg(req: Record<string, unknown> = {}) {
 	return webapi.post<components.InstallOrgResponse>(`/api/v1/org/install`, req)
+}
+
+/**
+ * @description "List permission asks"
+ */
+export function listPermissionAsks(session?: string) {
+	return webapi.get<components.PermissionAsksResponse>(`/api/v1/permissions/asks`, { session })
+}
+
+/**
+ * @description "Get permission ask"
+ */
+export function getPermissionAsk(id: string) {
+	return webapi.get<components.PermissionAskCard>(`/api/v1/permissions/asks/${id}`)
+}
+
+/**
+ * @description "Answer permission ask"
+ */
+export function answerPermissionAsk(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.PermissionAskCard>(`/api/v1/permissions/asks/${id}/answer`, req)
 }
 
 /**

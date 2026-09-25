@@ -235,6 +235,8 @@ pub struct WorkflowPark<'a> {
     /// The in-loop conversation at park time (session messages, converted).
     pub messages: Vec<Message>,
     pub call: &'a ai::ToolCall,
+    /// The ask the call parked on: the owner's answer to it releases the run.
+    pub ask_id: &'a str,
     /// Port-suffixed operation name + the owner-facing display sentence.
     pub operation: String,
     pub display: String,

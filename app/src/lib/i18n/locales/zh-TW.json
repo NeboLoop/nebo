@@ -387,7 +387,9 @@
 		"researchWriting": "正在撰寫報告",
 		"researchOtherDomains": "+ 另外 {n} 個網站",
 		"researchVerified": "已對照來源查證 {n} 項論點",
-		"historyLoadFailed": "無法載入這段對話。請檢查網路連線後再試一次。"
+		"historyLoadFailed": "無法載入這段對話。請檢查網路連線後再試一次。",
+		"consentCreates": "回答「是」，就會按這份工作內容建立。",
+		"consentAdds": "回答「是」，就會把這項加入工作內容。"
 	},
 	"chatInput": {
 		"placeholder": "回覆...",
@@ -3016,7 +3018,13 @@
 		"placeholder": "例如 Dispatch、Piper、Sam…",
 		"create": "僱用他",
 		"failed": "無法建立這位員工。請再試一次。",
-		"marketplaceHint": "想要一位現成的專家嗎？到市集看看。"
+		"marketplaceHint": "想要一位現成的專家嗎？到市集看看。",
+		"jobLabel": "工作內容（選填）",
+		"jobPlaceholder": "要做什麼？（選填）",
+		"working": "正在確認需要哪些權限…",
+		"willDo": "{name}將會：",
+		"thisEmployee": "這位員工",
+		"removeItem": "移除{item}"
 	},
 	"runLimit": {
 		"title": "每次執行的花費上限",
@@ -3139,5 +3147,16 @@
 		"moveTo": "移動到",
 		"dropHere": "放到這裡即可向這位員工呈報",
 		"cycleRefused": "那樣會讓一位員工向自己呈報。"
+	},
+	"permissionAsk": {
+		"title": "{name} 需要你的同意",
+		"allowAlways": "一律允許",
+		"thisOnce": "僅此一次",
+		"no": "不",
+		"allowedAlways": "從現在起允許",
+		"allowedOnce": "本次已允許",
+		"declined": "已拒絕",
+		"expired": "已過期，視為拒絕",
+		"failed": "無法送出你的回答。請再試一次。"
 	}
 }

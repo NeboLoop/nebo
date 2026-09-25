@@ -90,6 +90,7 @@ impl DynTool for Act {
             deletes: list("deletes"),
             overwrites: list("overwrites"),
             creates: list("creates"),
+            widens: false,
         }
     }
     fn execute_dyn<'a>(

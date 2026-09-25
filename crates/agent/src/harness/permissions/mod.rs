@@ -9,6 +9,7 @@
 pub mod activity;
 pub mod ask;
 pub mod cases;
+pub mod consent;
 pub mod judgement;
 pub mod limits;
 pub mod migrate;
@@ -20,16 +21,25 @@ use std::sync::Arc;
 use tools::{GateVerdict, PermissionGate, ResolvedCall, ToolContext, ToolResult};
 use types::permissions::{AskCase, Decision, Effect, Grant, JudgementMode, Mode, Target, Verdict, Why};
 
+pub use ask::{Answer, AnsweredVia, Ask, AskError, AskStatus, AskSurfaces, Asks, Settled};
 pub use rules::RuleSet;
 
 /// The permission check: the registry's gate.
 pub struct Check {
     store: Arc<db::Store>,
+    asks: Arc<Asks>,
 }
 
 impl Check {
     pub fn new(store: Arc<db::Store>) -> Self {
-        Self { store }
+        let asks = Arc::new(Asks::new(store.clone()));
+        Self { store, asks }
+    }
+
+    /// The asks this check parks: the server attaches the card's surfaces
+    /// and answers them.
+    pub fn asks(&self) -> Arc<Asks> {
+        self.asks.clone()
     }
 }
 
@@ -51,6 +61,9 @@ pub fn resolve_grant(store: &db::Store, agent_id: &str, mode: Option<Mode>) -> G
         Ok(r) => grant.rules = r,
         Err(e) => tracing::warn!(agent = %agent_id, error = %e, "permission rules unreadable; the run holds none"),
     }
+    // An employee made by an employee works under its creator's grant until
+    // the owner answers its card.
+    grant.ceiling = consent::creator_ceiling(store, agent_id);
     grant
 }
 
@@ -68,9 +81,19 @@ impl PermissionGate for Check {
         };
         let cx = CheckCx { ctx, input: call.input, grant, store: &self.store };
         let t = &call.target;
-        let (decision, judged) = decide_judged(&cx, t);
+        let (mut decision, judged) = decide_judged(&cx, t);
+        // The owner already said no to this same call in this session: it
+        // is refused without a card.
+        if matches!(decision, Decision::Ask { .. })
+            && let Some(ask_id) = self.asks.declined_before(&ctx.session_key, t, call.input)
+        {
+            decision = Decision::Deny {
+                reason: ask::declined_text(&call.tool.activity(call.input)),
+                why: Why::Declined { ask_id },
+            };
+        }
         let ask_id = match &decision {
-            Decision::Ask { case } => Some(ask::park(&cx, call, case)),
+            Decision::Ask { case } => Some(self.asks.park(&cx, call, case)),
             _ => None,
         };
         let entry = activity::Entry {
@@ -227,6 +250,10 @@ fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
     if let Some(ask_id) = &cx.ctx.answered_ask {
         return Ok(Decision::Allow { why: Why::AnsweredOnce { ask_id: ask_id.clone() } });
     }
+    // Only the owner gives an employee more room, in every mode.
+    if t.effects.widens {
+        return Ok(Decision::Ask { case: AskCase::Widens });
+    }
     let full = cx.grant.mode == Mode::FullAccess;
     if let Some((rule, Effect::Ask)) = decided
         && !full
@@ -308,7 +335,7 @@ fn refusal(t: &Target, rule: &types::permissions::Rule) -> String {
     )
 }
 
-pub(crate) fn today() -> String {
+pub(super) fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
@@ -332,5 +359,7 @@ fn spend(cx: &CheckCx<'_>, t: &Target) {
     }
 }
 
+#[cfg(test)]
+mod proof;
 #[cfg(test)]
 mod tests;
