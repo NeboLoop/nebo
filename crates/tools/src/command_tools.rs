@@ -4,7 +4,6 @@
 //! also reach helpers and runs, by the kind of id they are given.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::{Value, json};
 use types::permissions::RuleField;
@@ -15,12 +14,10 @@ use crate::registry::{DynTool, ToolResult};
 
 type Fut<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>>;
 
-/// A command's own timeout when it names none, and the most it may name.
+/// How long a call waits on its command when it names no timeout, and the
+/// most it may name. Past it the command moves to the background.
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
-/// How much longer than the command's own timeout the call may take, so the
-/// command's timeout message (with its output so far) is what comes back.
-const TIMEOUT_MARGIN: Duration = Duration::from_secs(30);
 
 fn str_arg<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
     input.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
@@ -79,7 +76,7 @@ impl DynTool for RunCommandTool {
          - Use read_file, edit_file and write_file instead of cat, head, tail, sed, awk or echo.\n\
          {SEARCH_NOTE}\n\
          - The owner sees `description`, not the command.\n\
-         - For long jobs set `background: true` and continue; don't sleep-poll."
+         - Long jobs: set `background: true` and continue; you're notified when they end."
         )
     }
 
@@ -89,8 +86,8 @@ impl DynTool for RunCommandTool {
             "properties": {
                 "command": { "type": "string", "description": "The command to run." },
                 "description": { "type": "string", "description": "What this command does, in plain words the owner will read (5–10 words). Don't repeat the command." },
-                "timeout": { "type": "integer", "description": "Milliseconds before the command is stopped (default 120000, max 600000)." },
-                "background": { "type": "boolean", "description": "Run detached; it keeps running and you're told when it ends. Read its output with read_output." },
+                "timeout": { "type": "integer", "description": "Milliseconds to wait before it moves to the background (default 120000, max 600000)." },
+                "background": { "type": "boolean", "description": "Run detached; you're told when it ends. Read output with read_output." },
                 "cwd": { "type": "string", "description": "Folder to run in. Default: the conversation's working folder." }
             },
             "required": ["command", "description"]
@@ -115,13 +112,6 @@ impl DynTool for RunCommandTool {
 
     fn max_result_chars(&self, _input: &Value) -> Option<usize> {
         Some(crate::MAX_SUBPROCESS_OUTPUT)
-    }
-
-    fn execution_timeout(&self, input: &Value) -> Option<Duration> {
-        if input.get("background").and_then(Value::as_bool).unwrap_or(false) {
-            return None;
-        }
-        Some(Duration::from_secs(timeout_secs(input)) + TIMEOUT_MARGIN)
     }
 
     fn activity(&self, input: &Value) -> String {
@@ -155,6 +145,7 @@ impl DynTool for RunCommandTool {
                 "command": command,
                 "timeout": timeout_secs(&input),
                 "background": input.get("background").and_then(Value::as_bool).unwrap_or(false),
+                "description": str_arg(&input, "description").unwrap_or(""),
             });
             if let Some(cwd) = str_arg(&input, "cwd") {
                 call["cwd"] = json!(cwd);
@@ -593,16 +584,16 @@ mod tests {
         assert!(r.is_error && r.content.contains("list_runs"), "{}", r.content);
     }
 
-    /// `timeout` is milliseconds, capped at ten minutes; the call's budget
-    /// is the command's own timeout plus a margin, so the command's timeout
-    /// message is what comes back.
+    /// `timeout` is milliseconds, capped at ten minutes. It is how long the
+    /// call waits, not a budget that stops the call: a command still running
+    /// then moves to the background, so the tool has no timeout of its own.
     #[test]
-    fn timeout_is_milliseconds_and_the_call_outlives_it() {
+    fn timeout_is_milliseconds_and_the_call_has_no_budget_of_its_own() {
         assert_eq!(timeout_secs(&json!({})), 120);
         assert_eq!(timeout_secs(&json!({"timeout": 1500})), 2);
         assert_eq!(timeout_secs(&json!({"timeout": 9_000_000})), 600);
         let run = RunCommandTool(machine());
-        assert_eq!(run.execution_timeout(&json!({"command": "x", "timeout": 400_000})), Some(Duration::from_secs(430)));
+        assert_eq!(run.execution_timeout(&json!({"command": "x", "timeout": 400_000})), None);
         assert_eq!(run.execution_timeout(&json!({"command": "x", "background": true})), None);
     }
 
