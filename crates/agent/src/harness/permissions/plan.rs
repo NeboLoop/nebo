@@ -1,47 +1,35 @@
-//! Plan mode: read and plan only. A call that changes something doesn't
-//! run; the plan approval card ends the mode.
+//! Plan mode: read and plan only (Claude Code's plan mode). A call that
+//! changes something doesn't run; the plan document does (Claude Code
+//! allows its plan file). `exit_plan_mode` is the way out: it always asks
+//! the owner, on the one ask card, and approving it switches the employee
+//! out of Plan mode (Claude Code's ExitPlanMode asks "Exit plan mode?").
 
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-
-use ai::StreamEvent;
+use types::permissions::{AskCase, Decision, Mode, Target, Why};
 
 /// What a change hears in Plan mode.
 pub const REFUSAL: &str =
     "Plan mode: this changes something, so it didn't run. Include this step in the plan instead.";
 
-/// How the owner answered the plan card.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlanAnswer {
-    Approved,
-    Rejected,
-    /// The run was cancelled while the card was up.
-    Cancelled,
+/// What `exit_plan_mode` hears outside Plan mode (Claude Code's words).
+pub const NOT_IN_PLAN_MODE: &str = "You are not in plan mode. This tool only leaves plan mode once a plan is \
+written. If your plan was already approved, carry it out.";
+
+/// The tool that writes the plan document.
+const PLAN_DOCUMENT: &str = "write_plan";
+
+/// Whether Plan mode lets `t` run: a read, or the plan document.
+pub fn allows(t: &Target) -> bool {
+    t.read_only || t.key == PLAN_DOCUMENT
 }
 
-/// Show the plan card and wait for the owner's answer. `plan` is the
-/// model's own words for what it will do; `tools` the calls it proposes.
-pub async fn approve_plan(
-    ask_channels: &tools::AskChannels,
-    tx: &mpsc::Sender<StreamEvent>,
-    cancel: &CancellationToken,
-    session_id: &str,
-    plan: &str,
-    tools: Vec<String>,
-) -> PlanAnswer {
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    ask_channels.lock().await.insert(request_id.clone(), resp_tx);
-    let _ = tx.send(StreamEvent::plan_approval_request(&request_id, plan, tools)).await;
-    tracing::info!(session_id, request_id = %request_id, "plan mode: waiting for the owner");
-    tokio::select! {
-        _ = cancel.cancelled() => {
-            ask_channels.lock().await.remove(&request_id);
-            PlanAnswer::Cancelled
-        }
-        answer = resp_rx => match answer {
-            Ok(v) if matches!(v.to_lowercase().as_str(), "approve" | "approved" | "yes" | "true") => PlanAnswer::Approved,
-            _ => PlanAnswer::Rejected,
-        }
+/// The way out of Plan mode: refused outside it, and in it always the
+/// owner's to answer. `None` for every other call.
+pub fn exit(mode: Mode, t: &Target) -> Option<Decision> {
+    if t.key != tools::file_tools::ExitPlanModeTool::NAME {
+        return None;
     }
+    Some(match mode {
+        Mode::Plan => Decision::Ask { case: AskCase::Widens },
+        mode => Decision::Deny { reason: NOT_IN_PLAN_MODE.to_string(), why: Why::Mode { mode } },
+    })
 }

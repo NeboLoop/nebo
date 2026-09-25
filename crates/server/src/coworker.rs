@@ -337,7 +337,6 @@ pub(crate) async fn run_in_thread(
         origin_agent_id: None,
         mention_context,
         tool_scope: None,
-        plan_mode: false,
         channel_ctx: None,
         handoff_depth: route.sender_depth.saturating_add(1),
         seed_taint,

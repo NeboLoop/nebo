@@ -158,7 +158,6 @@ pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -
         origin_agent_id: None,
         mention_context: None,
         tool_scope: None,
-        plan_mode: false,
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],

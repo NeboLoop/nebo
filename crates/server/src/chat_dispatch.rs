@@ -211,8 +211,6 @@ pub struct ChatConfig {
     /// Tool scope name from agent.json. Restricts sidecar tools/skills/plugins
     /// to those declared in the named scope.
     pub tool_scope: Option<String>,
-    /// When true, agent presents a plan before executing tool calls (Plan Mode).
-    pub plan_mode: bool,
     /// Channel context (Slack/Discord/etc.) when this run was triggered by an
     /// inbound channel message. Propagated to `ToolContext.channel` so plugin
     /// uploads target the right destination. None for web UI / scheduled runs.
@@ -419,7 +417,7 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
             user_id: config.user_id.clone(),
             origin: config.origin,
             door: config.door.clone(),
-            mode: config.plan_mode.then_some(types::permissions::Mode::Plan),
+            mode: None,
             ceiling: None,
             cwd: run_cwd(config.cwd.as_deref()),
             seed_taint: config.seed_taint.clone(),
@@ -1161,17 +1159,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     let _ = cm.send_typing(&cfg.conversation_id, false, None).await;
                                 }
                             }
-                        }
-                        StreamEventType::PlanApproval => {
-                            let request_id = event.error.as_deref().unwrap_or("");
-                            let mut payload = ws_payload!(
-                                "request_id": request_id,
-                                "plan": event.text,
-                            );
-                            if let Some(tools) = &event.widgets {
-                                payload["tools"] = tools.clone();
-                            }
-                            hub.broadcast("plan_approval", payload);
                         }
                         StreamEventType::RateLimit => {
                             if let Some(ref rl) = event.rate_limit {

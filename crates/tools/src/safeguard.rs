@@ -13,6 +13,7 @@ const FILE_KEYS: &[&str] = &[
     "restore_checkpoint",
     "write_plan",
     "check_plan",
+    "exit_plan_mode",
 ];
 
 /// Validate a tool call against hard safety limits, keyed on the call's

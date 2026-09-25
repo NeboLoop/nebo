@@ -1062,7 +1062,7 @@ impl Registry {
             Box::new(ListCheckpointsTool(machine.clone())),
             Box::new(RestoreCheckpointTool(machine.clone())),
             Box::new(WritePlanTool(machine.clone())),
-            Box::new(CheckPlanTool(machine.clone())),
+            Box::new(CheckPlanTool::new(machine.clone(), self.gate.clone())),
             Box::new(RunCommandTool(machine.clone())),
             Box::new(ReadOutputTool { machine: machine.clone(), helpers: helpers.clone() }),
             Box::new(StopTaskTool { machine: machine.clone(), helpers }),
@@ -1225,6 +1225,7 @@ impl Registry {
             vec![
                 Box::new(crate::ask_owner_tool::AskOwnerTool::new(store.clone(), self.coworker_rail.clone())) as Box<dyn DynTool>,
                 Box::new(crate::goal_tool::SuggestGoalTool::new(self.goals.clone())),
+                Box::new(crate::file_tools::ExitPlanModeTool::new(store.clone())),
             ],
         ];
         for tool in families.into_iter().flatten() {

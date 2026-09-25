@@ -119,7 +119,6 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 origin_agent_id: None,
                 mention_context: None,
                 tool_scope: None,
-                plan_mode: false,
                 channel_ctx: Some(channel_ctx),
                 handoff_depth: 0,
                 // Remote channel interlocutors (Slack/Discord) are untrusted

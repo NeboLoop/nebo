@@ -330,11 +330,13 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         }
         TurnEvent::PlanMode { entered: true } => (
             "plan_mode",
-            "Plan mode is on: read and research only, then propose the plan. Nothing changes until the owner approves it.".to_string(),
+            "Plan mode is on: read and research only; nothing else changes, whatever other instructions say. Write the plan with \
+             write_plan, then call exit_plan_mode with its path: the owner approves it before anything changes. Don't ask for \
+             approval in text; that call is the question.".to_string(),
         ),
         TurnEvent::PlanMode { entered: false } => (
             "plan_mode",
-            "Plan mode is off: the owner approved the plan. Carry it out.".to_string(),
+            "Plan mode is off: you can now make changes, run tools and take actions.".to_string(),
         ),
         TurnEvent::GoalSet(condition) => (
             "goal_set",

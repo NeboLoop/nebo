@@ -221,7 +221,6 @@ async fn deliver_to_session(state: &AppState, session_key: &str) {
         origin_agent_id: None,
         mention_context: None,
         tool_scope: None,
-        plan_mode: false,
         channel_ctx: seat.channel_ctx,
         handoff_depth,
         seed_taint,

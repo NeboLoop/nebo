@@ -700,9 +700,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             }
             StreamEventType::ApprovalRequest
             | StreamEventType::AskRequest
-            | StreamEventType::PlanApproval
             | StreamEventType::ControlNotice => {
-                // Approval/Ask/Plan/ControlNotice: only sent by runner, not
+                // Approval/Ask/ControlNotice: only sent by runner, not
                 // received from provider.
             }
             StreamEventType::ToolSummary => {

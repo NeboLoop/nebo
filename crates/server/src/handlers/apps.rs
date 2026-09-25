@@ -794,7 +794,7 @@ async fn start_app_agent_run(
             entity_name: agent_name.to_string(),
             origin_agent_id: None,
             mention_context,
-            tool_scope: None, plan_mode: false,
+            tool_scope: None,
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
