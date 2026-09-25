@@ -3421,6 +3421,26 @@ mod budget_and_install_tests {
         std::fs::write(version_dir.join(slug), b"#!/bin/sh\necho ok\n").unwrap();
     }
 
+    /// A typed send names who it goes to; a typed delete names the record
+    /// it removes the way the record's create is recorded.
+    #[test]
+    fn typed_operations_name_their_recipients_and_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let tool = PluginTool::new(plugin_store, db_store);
+        let send = tool.effects(&serde_json::json!({
+            "operation": "sms.message.send", "input": {"to": "+1-555-0142", "text": "shipped"}
+        }));
+        assert_eq!(send.recipients, vec!["+1-555-0142"]);
+        assert_eq!(send.publishes, types::permissions::Knowable::No);
+        let delete = tool.effects(&serde_json::json!({
+            "operation": "accounting.ap.ledger.bill.delete", "input": {"id": 42}
+        }));
+        assert_eq!(delete.deletes, vec!["ledger.bill:42"]);
+        let other = tool.effects(&serde_json::json!({"operation": "ledger.bill.create", "input": {"id": 1}}));
+        assert!(other.deletes.is_empty() && other.recipients.is_empty());
+    }
+
     /// With nothing installed the resource property carries no enum at all
     /// (an empty enum makes every slug invalid), and the description says
     /// where a slug comes from.

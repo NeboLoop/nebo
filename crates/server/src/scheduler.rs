@@ -639,3 +639,51 @@ fn now_secs() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(agent_id: &str, door: &str, activity: &str, unreviewed: bool, at: i64) -> db::PermissionActivityRow {
+        db::PermissionActivityRow {
+            agent_id: agent_id.into(),
+            door: door.into(),
+            tool: "browser".into(),
+            rule_key: "browser_click".into(),
+            activity: activity.into(),
+            decision: "allow".into(),
+            why: "{}".into(),
+            unreviewed,
+            created_at: at,
+            ..Default::default()
+        }
+    }
+
+    /// Yesterday's unreviewed actions from unattended runs, in one item;
+    /// none when there are none. Chat actions and reviewed ones stay out.
+    #[test]
+    fn unreviewed_appears_in_the_daily_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&dir.path().join("d.db").to_string_lossy()).unwrap();
+        let day = 20_000;
+        let at = day * 86_400 + 3_600;
+        assert!(permission_digest_item(&store, day).is_none(), "nothing to list: no item");
+        for r in [
+            row("", "heartbeat", "submitting the signup form", true, at),
+            row("", "workflow", "posting the weekly update", true, at + 1),
+            row("", "chat", "sending a reply", true, at + 2),
+            row("", "heartbeat", "reading a page", false, at + 3),
+            row("", "schedule", "the next day", true, at + 86_400),
+        ] {
+            store.record_permission_activity(&r).unwrap();
+        }
+        let item = permission_digest_item(&store, day).unwrap();
+        assert_eq!(item["id"], format!("permission-digest:{day}"));
+        assert_eq!(item["type"], "permission_digest");
+        assert_eq!(item["title"], "2 actions ran without a permission check");
+        let body = item["body"].as_str().unwrap();
+        assert!(body.contains(types::permissions::UNREVIEWED_REASON), "{body}");
+        assert!(body.contains("submitting the signup form (heartbeat)") && body.contains("posting the weekly update"));
+        assert!(!body.contains("sending a reply") && !body.contains("reading a page") && !body.contains("the next day"));
+    }
+}

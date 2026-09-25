@@ -2120,8 +2120,17 @@ mod tests {
         assert!(tool.read_only(&serde_json::json!({"action": "grep", "path": "/tmp", "pattern": "x"})));
         assert!(!tool.read_only(&serde_json::json!({"action": "write", "path": "/tmp/x"})));
         assert!(!tool.read_only(&serde_json::json!({"action": "exec", "command": "ls"})));
-        let fx = tool.effects(&serde_json::json!({"action": "write", "path": "/tmp/x"}));
-        assert_eq!(fx.overwrites, vec!["/tmp/x".to_string()]);
+        // A write to a new path creates it; to an existing one replaces it;
+        // an append takes nothing away.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.txt").to_string_lossy().into_owned();
+        let fx = tool.effects(&serde_json::json!({"action": "write", "path": path}));
+        assert_eq!((fx.creates, fx.overwrites), (vec![format!("file:{path}")], vec![]));
+        std::fs::write(&path, "x").unwrap();
+        let fx = tool.effects(&serde_json::json!({"action": "write", "path": path}));
+        assert_eq!((fx.creates, fx.overwrites), (vec![], vec![format!("file:{path}")]));
+        let fx = tool.effects(&serde_json::json!({"action": "append", "path": path}));
+        assert!(fx.creates.is_empty() && fx.overwrites.is_empty());
         let fx = tool.effects(&serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com, b@example.com"}));
         assert_eq!(fx.recipients, vec!["a@example.com", "b@example.com"]);
         assert_eq!(tool.max_result_chars(&serde_json::json!({"action": "read", "path": "/x"})), None);

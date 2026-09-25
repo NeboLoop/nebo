@@ -135,14 +135,14 @@ fn asked(store: &db::Store, r: &ToolResult) -> AskCase {
 async fn spend_over_grant_asks() {
     let (_d, store) = store();
     allow(&store, "clerk", RuleKey::Operation("ledger.bill.create".into()), Some(MoneyLimit {
-        per_action_cents: Some(100_00),
+        per_action_cents: Some(10_000),
         ..Default::default()
     }));
     let (mut pay, ran) = Act::new("plugin", None);
     pay.operation = Some("ledger.bill.create");
     let reg = registry(&store, vec![pay]).await;
-    let r = reg.execute(&ctx(&store, "clerk"), "plugin", json!({ "amount_cents": 450_00 })).await;
-    assert_eq!(asked(&store, &r), AskCase::Money { cents: 450_00, limit_cents: Some(100_00) });
+    let r = reg.execute(&ctx(&store, "clerk"), "plugin", json!({ "amount_cents": 45_000 })).await;
+    assert_eq!(asked(&store, &r), AskCase::Money { cents: 45_000, limit_cents: Some(10_000) });
     assert!(r.content.contains("money limit"), "{}", r.content);
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 }
@@ -151,22 +151,22 @@ async fn spend_over_grant_asks() {
 async fn spend_inside_grant_runs_and_counts() {
     let (_d, store) = store();
     let rule = allow(&store, "clerk", RuleKey::Operation("ledger.bill.create".into()), Some(MoneyLimit {
-        per_action_cents: Some(100_00),
-        per_day_cents: Some(150_00),
+        per_action_cents: Some(10_000),
+        per_day_cents: Some(15_000),
         ..Default::default()
     }));
     let (mut pay, ran) = Act::new("plugin", None);
     pay.operation = Some("ledger.bill.create");
     let reg = registry(&store, vec![pay]).await;
     let c = ctx(&store, "clerk");
-    assert_eq!(reg.execute(&c, "plugin", json!({ "amount_cents": 80_00 })).await.content, "RAN");
+    assert_eq!(reg.execute(&c, "plugin", json!({ "amount_cents": 8_000 })).await.content, "RAN");
     // The day's total now stands at $80: another $80 is inside the per-bill
     // limit but past the day's $150.
-    let over_day = reg.execute(&c, "plugin", json!({ "amount_cents": 80_00 })).await;
+    let over_day = reg.execute(&c, "plugin", json!({ "amount_cents": 8_000 })).await;
     assert!(over_day.parked_ask.is_some(), "{}", over_day.content);
     assert_eq!(ran.load(Ordering::SeqCst), 1);
     let spent = store.permission_spend("clerk", &super::super::today(), rule.key.value(), "").unwrap();
-    assert_eq!((spent.count, spent.cents), (1, 80_00));
+    assert_eq!((spent.count, spent.cents), (1, 8_000));
 }
 
 // ── Case 2: speaking for the owner somewhere new ───────────────────────

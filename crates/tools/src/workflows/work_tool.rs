@@ -68,6 +68,29 @@ fn workflow_ref(parsed: &WorkInput) -> String {
     }
 }
 
+/// Creating a workflow brings it into being; updating replaces one;
+/// deleting removes one. Each names the workflow the same way, so a delete
+/// of a workflow the employee created is its own work.
+fn workflow_effects(input: &serde_json::Value) -> types::permissions::CallEffects {
+    use types::permissions::{CallEffects, Knowable};
+    let named = serde_json::from_value::<WorkInput>(input.clone())
+        .ok()
+        .filter(|p| p.resource.is_empty())
+        .map(|p| (p.action.clone(), workflow_ref(&p)))
+        .filter(|(_, r)| !r.is_empty());
+    let Some((action, workflow)) = named else {
+        return CallEffects::unknown();
+    };
+    let mut effects = CallEffects { publishes: Knowable::No, ..CallEffects::default() };
+    match action.as_str() {
+        "create" => effects.creates.push(workflow),
+        "update" | "edit" => effects.overwrites.push(workflow),
+        "delete" => effects.deletes.push(workflow),
+        _ => return CallEffects::unknown(),
+    }
+    effects
+}
+
 /// Said only when the name is in neither place.
 const MISSING_NAME: &str = "name is required: pass it as the top-level `name` argument \
     (work(action: \"create\", name: \"...\", definition: \"...\")). The definition you \
@@ -419,30 +442,11 @@ impl DynTool for WorkTool {
         false
     }
 
-    /// Creating a workflow brings it into being; updating replaces one;
-    /// deleting removes one. Each names the workflow the same way, so a
-    /// delete of a workflow the employee created is its own work.
     fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
-        use types::permissions::{CallEffects, Knowable};
         if self.read_only(input) {
-            return CallEffects::none();
+            return types::permissions::CallEffects::none();
         }
-        let named = serde_json::from_value::<WorkInput>(input.clone())
-            .ok()
-            .filter(|p| p.resource.is_empty())
-            .map(|p| (p.action.clone(), workflow_ref(&p)))
-            .filter(|(_, r)| !r.is_empty());
-        let Some((action, workflow)) = named else {
-            return CallEffects::unknown();
-        };
-        let mut effects = CallEffects { publishes: Knowable::No, ..CallEffects::default() };
-        match action.as_str() {
-            "create" => effects.creates.push(workflow),
-            "update" | "edit" => effects.overwrites.push(workflow),
-            "delete" => effects.deletes.push(workflow),
-            _ => return CallEffects::unknown(),
-        }
-        effects
+        workflow_effects(input)
     }
 
     fn rule_key(&self, input: &serde_json::Value) -> String {
@@ -497,6 +501,23 @@ mod tests {
         assert_eq!(workflow_name(&input("", r#"{"name":"Inner","activities":[]}"#)), "Inner");
         assert_eq!(workflow_name(&input("", r#"{"activities":[]}"#)), "");
         assert_eq!(workflow_name(&input("", "not json")), "");
+    }
+
+    /// A create, an update and a delete name the workflow the same way, so
+    /// the permission check can tell a delete of the employee's own work.
+    #[test]
+    fn a_workflow_is_named_the_same_by_create_update_and_delete() {
+        let fx = |v: serde_json::Value| workflow_effects(&v);
+        let def = r#"{"name":"Weekly Report"}"#;
+        assert_eq!(fx(serde_json::json!({"action": "create", "definition": def})).creates, vec!["workflow:weekly report"]);
+        assert_eq!(fx(serde_json::json!({"action": "update", "name": "Weekly Report", "definition": def})).overwrites, vec!["workflow:weekly report"]);
+        assert_eq!(fx(serde_json::json!({"action": "delete", "name": "weekly report"})).deletes, vec!["workflow:weekly report"]);
+        assert_eq!(
+            fx(serde_json::json!({"action": "delete", "name": "Weekly Report", "agent": "Ava"})).deletes,
+            vec!["workflow:ava/weekly report"],
+            "another employee's workflow is named apart"
+        );
+        assert_eq!(fx(serde_json::json!({"action": "run", "id": "x"})).publishes, types::permissions::Knowable::Unknown);
     }
 
     #[test]
