@@ -297,89 +297,11 @@ pub(crate) fn mark_owner(metadata: &mut serde_json::Value) {
     metadata[db::OWNER_MARK] = serde_json::json!(true);
 }
 
-/// Store a turn's input as its user row. A large input is saved to a file
-/// and stored as a summary, so the whole document never enters the
-/// conversation; pictures no attachment covers are stored as bytes.
-pub(crate) async fn persist_input(
-    sessions: &SessionManager,
-    providers: &tokio::sync::RwLock<Vec<std::sync::Arc<dyn ai::Provider>>>,
-    selector: &crate::selector::ModelSelector,
-    agent_id: &str,
-    session_id: &str,
-    input: InputRow<'_>,
-) -> Result<(), String> {
-    let (effective_content, metadata) = if crate::large_input::is_large(input.text) {
-        info!(
-            session_id,
-            prompt_len = input.text.len(),
-            "large input detected — saving to file and summarising"
-        );
-
-        let msg_id = uuid::Uuid::new_v4().to_string();
-
-        // 1. Save full content to disk
-        let file_path = crate::large_input::save_to_file(input.text, &msg_id)
-            .map_err(|e| format!("large input save: {e}"))?;
-        let file_path_str = file_path.to_string_lossy().to_string();
-
-        // 2. Detect content type for prompt tuning
-        let content_type = crate::large_input::detect_content_type(input.text);
-
-        // 3. Summarise in an ISOLATED context (sidecar pattern).
-        //    Acquire provider, drop lock, then call — the full text
-        //    never touches the session or DB.
-        let cheap_model = selector.get_cheapest_model();
-        let summary = {
-            let prov = crate::harness::model_call::prefer_non_gateway(&providers.read().await);
-            match prov {
-                Some(p) => crate::large_input::summarize(
-                    ai::RequestTrace {
-                        agent_id: agent_id.to_string(),
-                        ..ai::RequestTrace::new("large_input_summary")
-                    },
-                    p.as_ref(),
-                    input.text,
-                    content_type,
-                    &cheap_model,
-                )
-                .await
-                .unwrap_or_else(|e| {
-                    warn!(error = %e, "large input summarisation failed, using fallback");
-                    crate::large_input::fallback_summary(input.text)
-                }),
-                None => crate::large_input::fallback_summary(input.text),
-            }
-        };
-
-        // 4. Build replacement content + metadata
-        let result = crate::large_input::build_replacement(
-            input.text,
-            &summary,
-            &file_path_str,
-            content_type,
-        );
-
-        // Merge with image metadata when both are present
-        let mut meta_value: serde_json::Value =
-            serde_json::from_str(&result.metadata_json).unwrap_or_default();
-        if let Some(images) = images_to_store(input.images, input.attachments) {
-            meta_value["images"] = serde_json::json!(images);
-        }
-
-        info!(
-            session_id,
-            summary_len = result.content.len(),
-            file = %file_path_str,
-            "large input replaced with summary"
-        );
-
-        (result.content, Some(meta_value.to_string()))
-    } else {
-        // Normal-sized prompt — pass through as-is
-        let metadata = images_to_store(input.images, input.attachments)
-            .map(|images| serde_json::json!({ "images": images }).to_string());
-        (input.text.to_string(), metadata)
-    };
+/// Store a turn's input as its user row, the owner's words whole; pictures
+/// no attachment covers are stored as bytes.
+pub(crate) fn persist_input(sessions: &SessionManager, session_id: &str, input: InputRow<'_>) -> Result<(), String> {
+    let metadata = images_to_store(input.images, input.attachments)
+        .map(|images| serde_json::json!({ "images": images }).to_string());
 
     let metadata = if input.attachments.is_empty() {
         metadata
@@ -431,12 +353,12 @@ pub(crate) async fn persist_input(
     };
 
     let t_msg_save = std::time::Instant::now();
-    info!(session_id, prompt_len = effective_content.len(), "appending user message");
+    info!(session_id, prompt_len = input.text.len(), "appending user message");
     sessions
         .append_message(
             session_id,
             "user",
-            &effective_content,
+            input.text,
             None,
             None,
             metadata.as_deref(),
@@ -690,6 +612,27 @@ mod tests {
             token_estimate: None,
             html: None,
         }
+    }
+
+    /// The owner's words are stored whole, however long: no summary stands
+    /// in for them (Claude Code expands pasted text back whole).
+    #[test]
+    fn a_long_owner_message_is_stored_verbatim() {
+        let path = std::env::temp_dir().join(format!("nebo-conv-{}.db", uuid::Uuid::new_v4()));
+        let store = std::sync::Arc::new(db::Store::new(path.to_str().unwrap()).expect("store"));
+        let sessions = SessionManager::new(store);
+        let sid = sessions.get_or_create("agent:a1:web", "").expect("session").id;
+        let text = "The quarterly figures, line by line. ".repeat(1_000);
+        assert!(text.len() > 24_000);
+        persist_input(
+            &sessions,
+            &sid,
+            InputRow { text: &text, images: &[], attachments: &[], hidden: false, by_owner: true, coworker: None },
+        )
+        .expect("stored");
+        let rows = sessions.get_messages(&sid).expect("rows");
+        let stored: Vec<&str> = rows.iter().filter(|m| m.role == "user").map(|m| m.content.as_str()).collect();
+        assert_eq!(stored, vec![text.as_str()]);
     }
 
     #[test]
