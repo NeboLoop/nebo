@@ -107,23 +107,14 @@ pub(crate) async fn release_install_cards(state: &AppState, slug: &str) {
     }
 }
 
-/// A control notice that is status in passing, not how the run ended: a
-/// mid-stream reconnect. Surfaced, never recorded as the run's stop reason.
-pub(crate) fn is_transient_notice(event: &ai::StreamEvent) -> bool {
-    event.stop_reason.as_deref() == Some("stream_reconnecting")
-}
-
 /// The stop reason a control notice records for the run's end: the typed
 /// reason it carries, else the generic `control_stop`.
-pub(crate) fn control_stop_of(event: &ai::StreamEvent) -> Option<(String, String)> {
-    if is_transient_notice(event) {
-        return None;
-    }
+pub(crate) fn control_stop_of(event: &ai::StreamEvent) -> (String, String) {
     let reason = event
         .stop_reason
         .clone()
         .unwrap_or_else(|| "control_stop".to_string());
-    Some((reason, event.text.clone()))
+    (reason, event.text.clone())
 }
 
 /// How a drained run ended, for [`finish_turn`].
@@ -669,16 +660,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // status channel + recorded as the typed stop
                             // reason for chat_complete, never reply prose.
                             if reply_fragment(&event).is_none() {
-                                let reason = event
-                                    .stop_reason
-                                    .clone()
-                                    .unwrap_or_else(|| "control_stop".to_string());
-                                // A mid-stream reconnect is transient status —
-                                // surface it, but never record it as the run's
-                                // stop reason: the run continues and completes.
-                                if !is_transient_notice(&event) {
-                                    control_stop = Some((reason.clone(), event.text.clone()));
-                                }
+                                let (reason, notice) = control_stop_of(&event);
+                                control_stop = Some((reason.clone(), notice));
                                 hub.broadcast(
                                     "chat_error",
                                     ws_payload!(

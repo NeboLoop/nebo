@@ -73,8 +73,8 @@ pub(crate) fn spawn_chat_title_generation(
             Ok(m) => m,
             _ => return,
         };
-        if messages.len() < 2 {
-            return; // need a user+assistant exchange to name from
+        if !messages.iter().any(|m| m.role == "user") {
+            return; // the owner's words name it, answered or not
         }
         // Use more of the conversation on the count-3 refinement.
         let take_n = if user_turns >= 3 { 8 } else { 4 };

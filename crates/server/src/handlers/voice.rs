@@ -714,9 +714,7 @@ async fn drain_voice_run(
         match event.event_type {
             ai::StreamEventType::Text => out.push_str(&event.text),
             ai::StreamEventType::ControlNotice => {
-                if let Some(stop) = control_stop_of(&event) {
-                    control_stop = Some(stop);
-                }
+                control_stop = Some(control_stop_of(&event));
                 last_notice = event.text;
             }
             ai::StreamEventType::AskRequest => {

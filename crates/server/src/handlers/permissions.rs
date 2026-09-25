@@ -780,6 +780,7 @@ fn why_sentence(store: &db::Store, decision: &str, why: &str) -> (String, bool) 
         Why::HardLimit { limit } => match limit.as_str() {
             "safeguard" => "A safety limit blocks this kind of action".into(),
             "origin" => "Someone outside your company started this, so it can only reply".into(),
+            "coworker" => "Another employee asked for this, and a coworker's request can only reply".into(),
             "credentials" => "It would have shared a password or key".into(),
             _ => "A safety limit".into(),
         },
@@ -1317,9 +1318,10 @@ mod tests {
         record("allow", why(Why::Unreviewed { reason: "both judges down".into() }), "posting a form");
         record("ask", serde_json::to_string(&AskCase::OutsideJob { capability: "shell".into() }).unwrap(), "running ls");
         record("deny", why(Why::HardLimit { limit: "origin".into() }), "running rm");
+        record("deny", why(Why::HardLimit { limit: "coworker".into() }), "writing rates.txt");
 
         let page = activity(&store, &ActivityQuery { agent_id: Some("a".into()), ..Default::default() }).unwrap();
-        assert_eq!(page.total, 6);
+        assert_eq!(page.total, 7);
         let whys: Vec<&str> = page.rows.iter().rev().map(|r| r.why.as_str()).collect();
         assert_eq!(whys[0], "Part of the job you agreed to when you hired it: Read and send email");
         assert_eq!(whys[1], "You answered \u{201c}Allow always\u{201d}: Run commands that start with \u{201c}git\u{201d}");
@@ -1327,6 +1329,7 @@ mod tests {
         assert!(page.rows.iter().rev().nth(3).unwrap().unreviewed);
         assert_eq!(whys[4], "Not part of its job: run commands on this computer");
         assert_eq!(whys[5], "Someone outside your company started this, so it can only reply");
+        assert_eq!(whys[6], "Another employee asked for this, and a coworker's request can only reply");
         assert_eq!(page.rows.last().unwrap().action, "Sending an email");
         assert_eq!(page.rows.iter().rev().nth(2).unwrap().action, "Run commands", "no label: the key in words");
         let only_asks = activity(&store, &ActivityQuery { decision: Some("ask".into()), ..Default::default() }).unwrap();
