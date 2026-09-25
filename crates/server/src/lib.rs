@@ -245,19 +245,6 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
     let Some(token) = crate::codes::neboai_token_from(store) else {
         return Ok(0);
     };
-    #[derive(serde::Deserialize)]
-    struct Entry {
-        id: String,
-        owned_by: String,
-        #[serde(default)]
-        name: String,
-        #[serde(default)]
-        description: String,
-    }
-    #[derive(serde::Deserialize)]
-    struct Listing {
-        data: Vec<Entry>,
-    }
     let url = format!("{}/v1/models", cfg.neboai.janus_url);
     let resp = reqwest::Client::new()
         .get(&url)
@@ -270,7 +257,32 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
     if !resp.status().is_success() {
         return Err(format!("{} from {}", resp.status(), url));
     }
-    let listing: Listing = resp.json().await.map_err(|e| e.to_string())?;
+    let listing: JanusListing = resp.json().await.map_err(|e| e.to_string())?;
+    store_janus_listing(store, listing)
+}
+
+#[derive(serde::Deserialize)]
+struct JanusEntry {
+    id: String,
+    owned_by: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    /// The tokens of context a request to this id may carry, as Janus reports
+    /// it (a pool's smallest member, capped at 200k).
+    #[serde(default)]
+    context_window: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct JanusListing {
+    data: Vec<JanusEntry>,
+}
+
+/// Store the sellable entries of a Janus listing, each with the window Janus
+/// reported for it, and remove the synced rows it no longer lists.
+fn store_janus_listing(store: &db::Store, listing: JanusListing) -> Result<usize, String> {
     let mut listed: Vec<String> = Vec::new();
     for m in listing.data.into_iter().filter(|m| m.owned_by == "neboai") {
         let name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
@@ -281,7 +293,7 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
                 &m.id,
                 &name,
                 (!m.description.is_empty()).then_some(m.description.as_str()),
-                Some(200_000),
+                m.context_window.filter(|&w| w > 0),
                 None,
                 None,
                 Some(r#"["vision","tools","streaming","code","reasoning"]"#),
@@ -313,7 +325,8 @@ pub fn inject_db_models(store: &db::Store, selector: &agent::ModelSelector, prov
                 .map(|m| agent::selector::ModelInfo {
                     id: m.model_id.clone(),
                     display_name: m.display_name.clone(),
-                    context_window: m.context_window.unwrap_or(128_000) as i32,
+                    // Unknown = 0: the selector assumes its one default.
+                    context_window: m.context_window.unwrap_or(0) as i32,
                     input_price: 0.0,
                     output_price: 0.0,
                     cached_input_price: 0.0,
@@ -3535,6 +3548,40 @@ fn heal_agent_install_debris(nebo_dir: &std::path::Path) {
             Ok(()) => warn!(dir = %staging.display(), "removed leftover install staging directory (install was interrupted mid-flight)"),
             Err(e) => warn!(dir = %staging.display(), error = %e, "failed to remove leftover install staging directory"),
         }
+    }
+}
+
+#[cfg(test)]
+mod janus_sync_tests {
+    use super::{JanusListing, seed_models_from_catalog, store_janus_listing};
+
+    /// Each synced Janus id carries the window Janus reported, and the
+    /// catalog seed, which has no Janus numbers, never erases it.
+    #[test]
+    fn the_sync_stores_each_ids_reported_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = db::Store::new(tmp.path().join("nebo.db").to_str().unwrap()).unwrap();
+        let listing: JanusListing = serde_json::from_value(serde_json::json!({"data": [
+            {"id": "nebo-1", "owned_by": "neboai", "name": "Default", "context_window": 200000},
+            {"id": "nebo-1-flash", "owned_by": "neboai", "name": "Fast", "context_window": 131072},
+            {"id": "qwen3.7-flash", "owned_by": "dashscope", "context_window": 1000000}
+        ]}))
+        .unwrap();
+        assert_eq!(store_janus_listing(&store, listing).unwrap(), 2);
+        let window = |id: &str| {
+            store
+                .list_provider_models("janus")
+                .unwrap()
+                .into_iter()
+                .find(|m| m.model_id == id)
+                .and_then(|m| m.context_window)
+        };
+        assert_eq!(window("nebo-1-flash"), Some(131_072));
+        assert_eq!(window("nebo-1"), Some(200_000));
+        // The embedded catalog, not the one in the data directory.
+        let catalog: config::ModelsConfig = serde_yaml::from_str(include_str!("../../config/src/models.yaml")).unwrap();
+        seed_models_from_catalog(&store, &catalog);
+        assert_eq!(window("nebo-1"), Some(200_000), "the seed keeps the synced window");
     }
 }
 

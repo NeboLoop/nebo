@@ -56,8 +56,6 @@ pub const GOAL_CHECK: &str = "goal_check";
 /// a retry after an overflow uses.
 const TRANSCRIPT_SHARE: f64 = 0.5;
 const OVERFLOW_RETRY_SHARE: f64 = 0.25;
-/// The window assumed when the check model's is not known.
-const DEFAULT_WINDOW_TOKENS: usize = 80_000;
 const MAX_VERDICT_TOKENS: i32 = 400;
 
 /// A session's agreed goal.
@@ -340,19 +338,13 @@ pub struct DoneJudge {
 }
 
 impl DoneJudge {
-    pub fn for_providers(providers: &[Arc<dyn Provider>]) -> Option<Self> {
+    pub fn for_providers(providers: &[Arc<dyn Provider>], selector: &crate::selector::ModelSelector) -> Option<Self> {
         let cfg = config::ModelsConfig::load();
         let (provider, model) = match super::model_call::resolve_aux(&cfg, providers) {
             Some(routed) => routed,
             None => (crate::summarizer::pick_cheapest(providers)?, String::new()),
         };
-        let window_tokens = cfg
-            .providers
-            .get(provider.id())
-            .and_then(|models| models.iter().find(|m| m.id == model))
-            .map(|m| m.context_window.max(0) as usize)
-            .filter(|&w| w > 0)
-            .unwrap_or(DEFAULT_WINDOW_TOKENS);
+        let window_tokens = selector.context_window(&format!("{}/{}", provider.id(), model));
         Some(Self {
             provider,
             model,
@@ -992,7 +984,7 @@ mod tests {
             GoalCheck {
                 sessions: sessions.clone(),
                 session_id: id.to_string(),
-                judge: Some(judged_by(judge, DEFAULT_WINDOW_TOKENS)),
+                judge: Some(judged_by(judge, crate::selector::DEFAULT_CONTEXT_WINDOW)),
                 trace: RequestTrace::new("goal_check"),
                 observer: seen.clone(),
                 check_ins: CheckIns::default(),
@@ -1327,7 +1319,7 @@ mod tests {
         seen.running.lock().unwrap().clear();
         let judge = Judge::new(vec![UNMET]);
         let mut check = check;
-        check.judge = Some(judged_by(&judge, DEFAULT_WINDOW_TOKENS));
+        check.judge = Some(judged_by(&judge, crate::selector::DEFAULT_CONTEXT_WINDOW));
         assert!(matches!(
             check.check(&end(&[], 0)).await,
             EndVerdict::Continue(_)
