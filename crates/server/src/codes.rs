@@ -843,6 +843,34 @@ pub(crate) fn apply_seat_declaration(
     }
 }
 
+/// The Hire tap is the owner's consent to a package's declared needs
+/// (`requires.interfaces`, its plugins, its watches): read off its manifest
+/// with no model call and granted as standing allow rules for that employee.
+/// An account a capability needs and no plugin binds yet reaches the owner
+/// through the Inbox needs flow (the binding's pre-flight), never as an ask.
+pub(crate) async fn grant_hire(state: &AppState, agent_id: &str) {
+    let Ok(Some(agent)) = state.store.get_agent(agent_id) else { return };
+    let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) else { return };
+    let declared = tools::needs::DeclaredNeeds::of(&config);
+    let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
+    let src = tools::needs::JobSource {
+        name: &agent.name,
+        description: "",
+        skills: &[],
+        plugins: &[],
+        workflows: &[],
+        declared: Some(&declared),
+        installed: &installed,
+    };
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.runner.providers());
+    let needs = tools::needs::work_out_needs(&src, &reader).await;
+    let source = types::permissions::RuleSource::Hire { package: agent_id.to_string() };
+    match agent::harness::permissions::consent::grant_job(&state.store, agent_id, &needs, source) {
+        Ok(rules) => tracing::info!(agent = agent_id, granted = rules.len(), "the hire granted the package's declared needs"),
+        Err(e) => tracing::warn!(agent = agent_id, error = %e, "the hire's needs were not granted"),
+    }
+}
+
 /// workflows, and update-tracking bugs. Call only after a successful persist.
 pub(crate) async fn finalize_agent_install(state: &AppState, artifact_id: &str, name: &str) {
     // Reload the in-memory AgentLoader so list_agents() enumerates the new agent
