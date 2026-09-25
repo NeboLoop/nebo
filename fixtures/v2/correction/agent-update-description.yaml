@@ -1,0 +1,55 @@
+id: correction-agent-update-description
+name: "Correction: updating an employee's description is one registry call"
+description: |
+  From the routing audit of 2026-09-05 (class C): agent(action: update,
+  name, description) with no resource was routed to tasks, because
+  `description` is a task field too, and answered "Missing required
+  parameter 'task_id'". Now an update that names an employee and carries no
+  task_id is a registry update whatever else it carries. This fixture pins
+  it: the description changes in one accepted call, no task detour, no
+  tool error of any kind. On the rewrite update_employee changes an employee
+  and nothing else (tools WP3); it is deferred, so loading it with find_tools
+  first is the expected path.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: update_employee
+
+setup:
+  - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"front-desk-{{tag}}\"}' > /dev/null"
+teardown:
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='front-desk-{{tag}}']; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
+
+conversation:
+  - role: user
+    content: "Update the front-desk-{{tag}} employee's description to exactly this: Answers inbound calls for NeboAI and takes messages for the team."
+
+tool_config:
+  get_employee:
+    enabled: true
+  update_employee:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: updates-the-employee
+      text: "The first call is find_tools loading the employee tools, or an employee call about front-desk-{{tag}}: update_employee itself, or a get_employee read followed by update_employee. No task call."
+      severity: critical
+      check: { first_call: true, tool: [find_tools, update_employee, get_employee] }
+  recovery:
+    - id: no-tool-errors
+      text: "Every call is accepted: no missing-parameter, unknown-action, or not-found error in any tool result, and nothing says task_id is required"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: bounded
+      text: "At most 3 tool calls (find_tools to load update_employee counts as one)"
+      severity: critical
+      check: { max_tool_calls: 3 }
+    - id: description-lands
+      text: "A tool result says the employee's description was updated"
+      severity: critical
+    - id: honest-summary
+      text: "The final response says the description was updated only because a tool result said so"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  narrative: "find_tools(query: \"select:update_employee\") then one update_employee naming the employee with the new description, then a one-line confirmation."

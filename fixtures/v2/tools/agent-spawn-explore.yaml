@@ -1,0 +1,49 @@
+id: agent-spawn-explore
+name: "Helper delegate — explore helper for a search task"
+description: |
+  The user asks a codebase-wide search question where the answer location is
+  unknown. The model should delegate to a READ-ONLY explore helper
+  (delegate with helper_type: "explore") instead of grepping through its own
+  context, and must brief the helper with everything it needs (born-blind
+  rule: helpers get the full tool surface, so the brief is the prompt).
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: delegate
+
+conversation:
+  - role: user
+    content: "Somewhere in this project the retry backoff is configured — find every place that sets or overrides it. The project is large, search broadly."
+
+tool_config:
+  delegate:
+    enabled: true
+  run_command:
+    enabled: true
+  read_file:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-spawn
+      text: "Model starts a helper with delegate (one call, or several delegate calls in one response)"
+      severity: critical
+    - id: explore-type
+      text: "Model passes helper_type: 'explore' for the search"
+      severity: important
+    - id: born-blind
+      text: "Model gives the helper what it needs: the delegate prompt states the whole job (find every place the retry backoff is set or overridden, and report the locations)"
+      severity: critical
+  recovery:
+    - id: uses-result
+      text: "Final answer reports what the helper found rather than claiming the model searched itself without any search happening"
+      severity: critical
+    - id: no-self-grep-flood
+      text: "Model does not run more than 3 direct run_command grep/find or read_file calls itself before or instead of delegating"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 6000
+  narrative: |
+    One delegate(description: "find retry backoff config", helper_type: "explore",
+    prompt: "find retry backoff configuration...") call, then a final answer
+    built from the helper's report.

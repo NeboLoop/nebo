@@ -1,0 +1,39 @@
+id: proactive-multistep-action
+name: "Proactive multi-step file action — acts, doesn't just announce"
+description: |
+  The user gives a concrete multi-step execution directive. A proactive agent
+  CALLS the tool(s) to actually do the work. The regression under investigation:
+  the agent narrates ("On it — moving …") and then stops with ZERO tool calls.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: run_command
+
+setup:
+  - "rm -rf {{scratch}} && mkdir -p {{scratch}}/Screenshots && touch {{scratch}}/shot1.png {{scratch}}/shot2.png {{scratch}}/notes.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "In {{scratch}} there are two .png screenshots and a Screenshots folder. Move both .png files into the Screenshots folder."
+
+tool_config:
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: acts-not-announces
+      text: "Model CALLS run_command (mv) to move/manage the files — it does NOT just reply 'On it' with zero tool calls"
+      severity: critical
+      check: { tool: run_command }
+  cost:
+    - id: completes
+      text: "The .png files are actually moved (at least one run_command call is made)"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 2000
+  narrative: |
+    The agent calls run_command (mv) to move the two
+    PNGs into Screenshots. It does the work rather than announcing intent and stopping.

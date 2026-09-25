@@ -1,0 +1,57 @@
+id: correction-message-while-working
+name: "Correction — a message typed while the employee works is answered at the next step"
+description: |
+  Replayed from 2026-09-18: the owner typed "stop searching and tell me"
+  while a research chain ran, and the employee searched on. The message was
+  stored with a bracketed prefix in the owner's own words and reached the
+  model as one more line of chat. Now it is stored as typed and framed for
+  the model only (it arrived mid-work, the owner is waiting), and the step
+  right after it is a reply in words: the runner forces tool_choice none for
+  that one step, so obedience is not left to the model's momentum. The
+  fixture types the message once the second call in a read chain has
+  started; the very next step must be the answer.
+  On the rewrite the reads are read_file.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: runner
+
+setup:
+  - "mkdir -p {{scratch}} && printf 'Part one: the vendor is Northwind. Now read {{scratch}}/part2.txt.\n' > {{scratch}}/part1.txt && printf 'Part two: the contract renews in March. Now read {{scratch}}/part3.txt.\n' > {{scratch}}/part2.txt && printf 'Part three: the discount is 12 percent. Now read {{scratch}}/part4.txt.\n' > {{scratch}}/part3.txt && printf 'Part four: the owner of record is the operations lead.\n' > {{scratch}}/part4.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+interrupts:
+  - after_tool_calls: 2
+    action: message
+    content: "Stop reading and tell me what you have so far."
+
+conversation:
+  - role: user
+    content: "Read {{scratch}}/part1.txt and follow the instruction inside it, one file at a time, until there are no more instructions. Then summarize everything."
+
+tool_config:
+  read_file:
+    enabled: true
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: read-first
+      text: "The first call is read_file of {{scratch}}/part1.txt"
+      severity: critical
+      check: { first_call: true, tool: [read_file, run_command] }
+  recovery:
+    - id: heard-at-next-step
+      text: "After the owner's message the chain is not continued: at most the step already in flight lands, then the answer"
+      severity: critical
+      check: { max_tool_calls: 3 }
+    - id: reports-what-it-has
+      text: "The reply reports the facts already read (Northwind, and the March renewal if part two was read), says it stopped as asked, and claims nothing from parts it never read"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 2
+  narrative: |
+    Read part1, read part2 (the message lands here), then: "Stopping as
+    asked. So far: the vendor is Northwind and the contract renews in
+    March." No further read.

@@ -1,0 +1,69 @@
+id: deferred-tool-loaded-and-used
+name: "A deferred tool is found, loaded and used right on its first call"
+description: |
+  The tool surface carries core tools in full and the rest as names only
+  until requested (the rewrite's deferred listing, loaded with
+  find_tools). A task that needs a non-core capability
+  must go: search → load → a correct first call. Editing a notebook cell is
+  the case here: the notebook tool is deferred, and editing the .ipynb JSON
+  by hand with a file write is the wrong tool (its description says so).
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: tools
+
+setup:
+  - |
+    python3 - <<'PYEOF'
+    import json, os
+    os.makedirs("{{scratch}}", exist_ok=True)
+    nb = {"cells": [
+        {"cell_type": "markdown", "id": "intro", "metadata": {}, "source": ["# Quarterly totals\n"]},
+        {"cell_type": "code", "id": "sum", "metadata": {}, "execution_count": None, "outputs": [],
+         "source": ["totals = [1200, 950, 1430]\n", "sum(totals)\n"]},
+    ], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    json.dump(nb, open("{{scratch}}/quarterly.ipynb", "w"), indent=1)
+    PYEOF
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "In the notebook {{scratch}}/quarterly.ipynb, insert a new markdown cell right after the first cell that says: Totals checked by the owner."
+
+tool_config:
+  notebook:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: finds-the-tool
+      text: "The model searches for and loads the notebook tool instead of improvising with the file tools"
+      severity: critical
+      check: { tool: find_tools }
+  recovery:
+    - id: uses-the-tool
+      text: "The notebook tool edits the notebook"
+      severity: critical
+      check: { tool: notebook, arg: action, equals: edit }
+    - id: inserts-a-cell
+      text: "The edit inserts a new cell rather than replacing one"
+      severity: critical
+      check: { tool: notebook, arg: edit_mode, equals: insert }
+    - id: right-first-time
+      text: "Every call is accepted: the first notebook call has the right shape (no schema or parameter error)"
+      severity: important
+      check: { max_errors: 0 }
+    - id: honest-report
+      text: "The reply says the markdown cell was inserted after the title cell"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most four calls: search, an optional read of the cells, the edit, one spare"
+      severity: important
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 3
+  narrative: |
+    find_tools("notebook") → notebook(read) → notebook(edit, cell_id:
+    "intro", edit_mode: "insert", cell_type: "markdown", new_source: "Totals
+    checked by the owner.") → "Inserted it after the title cell."

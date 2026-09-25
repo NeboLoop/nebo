@@ -1,0 +1,29 @@
+# v2: the new harness's twin of suites/smoke.yaml. Same scenarios (same fixture
+# ids, messages, setup and files); checks written for the rewrite's tools.
+# Arm A runs suites/smoke.yaml, arm P runs this file; both from one instrument
+# tag, compared per fixture. What changed per check: fixtures/v2/MAPPING.md.
+name: smoke
+fixtures:
+  # Priority 1: OS file operations (highest volume)
+  - ../../fixtures/v2/tools/os-file-read.yaml
+  - ../../fixtures/v2/tools/os-file-write.yaml
+  - ../../fixtures/v2/tools/os-file-edit.yaml
+  - ../../fixtures/v2/tools/os-file-grep.yaml
+  - ../../fixtures/v2/tools/os-file-glob.yaml
+  # Priority 2: OS shell failure recovery
+  - ../../fixtures/v2/tools/os-shell-path-not-found.yaml
+  - ../../fixtures/v2/tools/os-shell-permission-denied.yaml
+  - ../../fixtures/v2/tools/os-shell-command-fails.yaml
+  # Priority 3: Web resource routing
+  - ../../fixtures/v2/tools/web-search-vs-fetch.yaml
+  - ../../fixtures/v2/tools/web-fetch-api.yaml
+  - ../../fixtures/v2/tools/web-browser-interaction.yaml
+  # Priority 4: Agent resource routing
+  - ../../fixtures/v2/tools/agent-vs-agents.yaml
+  - ../../fixtures/v2/tools/agents-delegate.yaml
+  # Priority 5: Skill-plugin choreography
+  - ../../fixtures/v2/tools/skill-plugin-choreography.yaml
+  # Priority 6: Recovery and spiral prevention
+  - ../../fixtures/v2/tools/os-file-discovery-spiral.yaml
+  - ../../fixtures/v2/tools/os-shell-retry-spiral.yaml
+  - ../../fixtures/v2/tools/os-file-search-loop.yaml

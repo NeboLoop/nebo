@@ -1,0 +1,41 @@
+id: web-fetch-api
+name: "Web — fetch for known URL"
+description: |
+  The user provides a specific URL and wants the content. The model must use
+  fetch_url (or http_request with GET) — NOT open a browser. This tests the
+  model's ability to pick HTTP fetch over browser automation when the URL is
+  known and no interaction is needed. fetch_url is deferred: loading it with
+  find_tools first is the expected path.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: fetch_url
+
+conversation:
+  - role: user
+    content: "Fetch https://httpbin.org/json and show me the response."
+
+tool_config:
+  fetch_url:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-fetch-or-get
+      text: "Model uses fetch_url (or http_request with GET), not browser_open (loading it with find_tools first is fine)"
+      severity: critical
+    - id: correct-url
+      text: "Model passes the exact URL https://httpbin.org/json"
+      severity: critical
+    - id: no-browser
+      text: "Model does NOT open a browser tab for a simple API fetch"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 2 tool calls or fewer: one fetch, plus one find_tools call to load fetch_url"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 2000
+  narrative: |
+    find_tools(query: "select:fetch_url") → fetch_url(url: "https://httpbin.org/json").
+    Model displays the JSON response.

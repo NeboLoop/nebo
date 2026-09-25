@@ -1,0 +1,55 @@
+id: os-file-grep
+name: "OS file grep — correct tool routing"
+description: |
+  The user asks the agent to search for a pattern in files. There is no grep
+  tool: searching contents goes through run_command with grep or rg. The model
+  must call run_command with a grep/rg command — NOT hallucinate "grep" as a
+  standalone tool.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: run_command
+
+setup:
+  - "mkdir -p {{scratch}} && printf 'line one\nTODO: fix this\nline three\n' > {{scratch}}/sample.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Search for the word 'TODO' in all files under {{scratch}}/"
+
+tool_config:
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'run_command', not 'grep', 'bash' or 'os'"
+      severity: critical
+    - id: correct-resource
+      text: "The call searches the files' contents (a grep/rg over the folder), not a read of one file or a file listing"
+      severity: critical
+    - id: correct-action
+      text: "The command is a content search: grep or rg (find piped to grep is fine)"
+      severity: critical
+    - id: has-regex
+      text: "The command searches for a pattern containing 'TODO'"
+      severity: critical
+    - id: has-path
+      text: "The command searches under '{{scratch}}/' or similar"
+      severity: critical
+  recovery:
+    - id: no-shell-grep
+      text: "Model does NOT follow the successful search with a redundant second search (another grep/rg of the same folder) or per-file reads to re-find the match"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single run_command(command: "grep -rn TODO {{scratch}}/") call. Model
+    reports the matches.

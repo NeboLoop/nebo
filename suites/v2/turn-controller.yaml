@@ -1,0 +1,37 @@
+# v2: the new harness's twin of suites/turn-controller.yaml. Same scenarios (same fixture
+# ids, messages, setup and files); checks written for the rewrite's tools.
+# Arm A runs suites/turn-controller.yaml, arm P runs this file; both from one instrument
+# tag, compared per fixture. What changed per check: fixtures/v2/MAPPING.md.
+name: turn-controller
+description: |
+  What "correct" means for the turn controller (PRD-Turn-Controller
+  2026-09-24 §6; technical design WP0.5). These pass on the new harness;
+  on today's main many fail, and that is the baseline (arm A) the A/B
+  measures against. Program checks decide what is mechanical; the judge
+  reads the rest.
+fixtures:
+  # The conversation is the state
+  - ../../fixtures/v2/turn/naming-thread-keeps-referent.yaml
+  - ../../fixtures/v2/tools/goal-persistence-across-segue.yaml
+  # One continuation decision
+  - ../../fixtures/v2/turn/no-continue-after-question.yaml
+  - ../../fixtures/v2/turn/announced-step-not-done.yaml
+  - ../../fixtures/v2/tools/proactive-multistep-action.yaml
+  # Agreed goal and done check
+  - ../../fixtures/v2/turn/long-multistage-no-drift.yaml
+  - ../../fixtures/v2/turn/goal-proposed-approved-and-checked.yaml
+  # Mid-turn owner messages
+  - ../../fixtures/v2/turn/mid-turn-owner-message.yaml
+  # Helpers and the owner's free thread
+  - ../../fixtures/v2/turn/helper-finishes-while-owner-chats.yaml
+  - ../../fixtures/v2/turn/helper-told-to-change-course.yaml
+  - ../../fixtures/v2/turn/helper-cannot-exceed-parent.yaml
+  - ../../fixtures/v2/tools/agent-spawn-background.yaml
+  - ../../fixtures/v2/tools/agent-spawn-explore.yaml
+  - ../../fixtures/v2/tools/agent-spawn-parallel.yaml
+  # Checkpoint, recap, one reminder path
+  - ../../fixtures/v2/turn/checkpoint-keeps-every-owner-message.yaml
+  - ../../fixtures/v2/turn/recap-never-in-context.yaml
+  - ../../fixtures/v2/turn/no-steering-in-stored-thread.yaml
+  # Tool surface
+  - ../../fixtures/v2/turn/deferred-tool-loaded-and-used.yaml

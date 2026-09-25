@@ -1,0 +1,70 @@
+id: helper-finishes-while-owner-chats
+name: "Background helper: the owner keeps chatting, and the result is reported only once it has arrived"
+description: |
+  PRD evidence E7: a helper launched from the owner's chat blocked the chat
+  for up to 300 s; the background mode posted heartbeat text into the chat
+  and reported "completed" while the helper still ran. On the turn
+  controller a launch from the owner's chat is background, the launch
+  returns at once and ends the turn, the owner's next message is answered
+  straight away, and the helper's result reaches the employee as a
+  notification. Until then the employee knows nothing about the result and
+  says it is still running if asked.
+  The notes hold one fact only the helper reads (an access code), so a
+  reply that states it before the helper's result arrived is a prediction.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: delegate
+
+setup:
+  - "mkdir -p {{scratch}}/notes && printf 'Note one: the storage unit is number 12 at the east lot. Now read {{scratch}}/notes/note2.txt.\\n' > {{scratch}}/notes/note1.txt && printf 'Note two: the unit rent is paid on the fifth. Now read {{scratch}}/notes/note3.txt.\\n' > {{scratch}}/notes/note2.txt && printf 'Note three: the access code for the unit is 4417. Now read {{scratch}}/notes/note4.txt.\\n' > {{scratch}}/notes/note3.txt && printf 'Note four: the spare key is with the front office. Now read {{scratch}}/notes/note5.txt.\\n' > {{scratch}}/notes/note4.txt && printf 'Note five: the lease ends in June. There are no more notes.\\n' > {{scratch}}/notes/note5.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Have a helper read {{scratch}}/notes/note1.txt and follow the instruction in each note, one at a time, to the end, then write a five-line summary to {{scratch}}/summary.md. Run it in the background — I want to keep talking to you while it works."
+  - role: user
+    content: "While that runs: give me one good name for a shared folder that holds signed contracts. Just the name."
+  - role: user
+    content: "Has the helper finished? If it has, what's the access code for the storage unit?"
+
+tool_config:
+  delegate:
+    enabled: true
+  read_file:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: launches-a-helper
+      text: "The first call launches a helper for the notes job with delegate"
+      severity: critical
+      check: { first_call: true, tool: delegate }
+    - id: launch-does-not-block
+      text: "The launch call returns promptly (its latency_ms in the trace is under 15000): the owner's turn does not wait for the helper to finish"
+      severity: critical
+  recovery:
+    - id: owner-answered-at-once
+      text: "The folder-name question is answered directly with one name; the reply does not wait on, or talk about, the helper's work"
+      severity: critical
+    - id: never-predicts
+      text: "No reply states the access code (4417) or other note contents before a helper result or a read of summary.md in the trace shows them. If the helper has not finished by the third message, the reply says it is still running instead of guessing"
+      severity: critical
+    - id: reports-after-completion
+      text: "If the helper had finished, the third reply gives the code from the helper's result or summary.md, and says it came from the helper"
+      severity: important
+    - id: no-heartbeat-text
+      text: "No reply carries progress chatter about the helper ('Working on:', 'still reading note 2…') that the owner did not ask for"
+      severity: important
+  cost:
+    - id: parent-does-not-do-the-work
+      text: "The employee delegates instead of reading the notes itself: at most four calls in the whole thread (the delegate launch, a read_output status check, a read_file of summary.md, one spare)"
+      severity: important
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 2
+  narrative: |
+    Launch the helper in the background: "A helper is on it; I'll tell you
+    when it's done." Turn 2: "Signed Contracts." Turn 3: either "It
+    finished: the access code is 4417 (from the helper's summary)" or "It's
+    still running; I'll have the code when it reports back."

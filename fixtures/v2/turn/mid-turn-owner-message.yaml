@@ -1,0 +1,67 @@
+id: mid-turn-owner-message
+name: "A message typed mid-turn is answered, and the work carries on"
+description: |
+  The owner types a question while the employee works through a chain of
+  files. It is an aside, not a stop: the employee answers it at its next
+  step and then finishes the job it was given. `correction-message-while-
+  working` covers the other case (the owner says stop); both must hold.
+  On the turn controller a mid-turn owner message is conversation: stored
+  as typed and heard at the next step.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: runner
+
+setup:
+  - "mkdir -p {{scratch}} && printf 'Fact one: the office opens at eight. Now read {{scratch}}/part2.txt.\\n' > {{scratch}}/part1.txt && printf 'Fact two: parking is behind the building. Now read {{scratch}}/part3.txt.\\n' > {{scratch}}/part2.txt && printf 'Fact three: the alarm code changes monthly. Now read {{scratch}}/part4.txt.\\n' > {{scratch}}/part3.txt && printf 'Fact four: deliveries go to the side door. Now read {{scratch}}/part5.txt.\\n' > {{scratch}}/part4.txt && printf 'Fact five: the last person out turns off the lights. There are no more files.\\n' > {{scratch}}/part5.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+interrupts:
+  - after_tool_calls: 2
+    action: message
+    content: "While you're at it: what's 12 times 12?"
+
+conversation:
+  - role: user
+    content: "Read {{scratch}}/part1.txt and follow the instruction inside it, one file at a time, until there are no more files. Then write all the facts, one per line, to {{scratch}}/facts.md."
+
+tool_config:
+  read_file:
+    enabled: true
+  write_file:
+    enabled: true
+  edit_file:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: read-first
+      text: "The first call reads part1.txt"
+      severity: important
+      check: { first_call: true, tool: read_file, arg: path, contains: "part1.txt" }
+  recovery:
+    - id: answers-the-question
+      text: "The owner's question is answered (144) while the chain is under way, not ignored and not saved for the end"
+      severity: critical
+      check: { reply_matches: "144" }
+    - id: carries-on
+      text: "The chain continues after the answer, through part5.txt"
+      severity: critical
+      check: { tool: read_file, arg: path, contains: "part5.txt" }
+    - id: finishes-the-job
+      text: "facts.md is written"
+      severity: critical
+      check: { tool: [write_file, edit_file], arg: path, contains: "facts.md" }
+    - id: not-a-stop
+      text: "The model does not treat the question as an instruction to stop, and does not ask whether it should continue"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 9 calls: five reads, the write, three spare"
+      severity: important
+      check: { max_tool_calls: 9 }
+
+ideal_behavior:
+  tool_calls: 6
+  narrative: |
+    Read part1, read part2 (the question lands), "144.", read
+    part3–part5, write facts.md with five lines, then report it done.

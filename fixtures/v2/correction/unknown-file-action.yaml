@@ -1,0 +1,60 @@
+id: correction-unknown-file-action
+name: "Correction — a refused action is corrected on the next call"
+description: |
+  Appending to a file tempts an action that does not exist (append). On the
+  rewrite write_file takes path and content and replaces the file; it has no
+  append, and a call with an invented parameter is refused with an
+  InputValidationError that names the parameters that exist. The model must
+  correct on the next call (edit_file anchored on the last line, a
+  run_command append, or a read then a write_file of the whole content) and
+  finish the job, not loop on the refused shape or give up.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: write_file
+
+setup:
+  - "mkdir -p {{scratch}} && printf 'alpha\nbeta\n' > {{scratch}}/notes.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Append a line that says 'gamma' to the end of {{scratch}}/notes.txt, then show me the whole file."
+
+tool_config:
+  read_file:
+    enabled: true
+  edit_file:
+    enabled: true
+  write_file:
+    enabled: true
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-os
+      text: "Model uses the file tools (read_file, edit_file, write_file) or run_command"
+      severity: critical
+  recovery:
+    - id: corrects-after-refusal
+      text: "If a call is refused for an unknown action or parameter, the very next call uses a valid way (edit_file, write_file with the whole content, or a run_command append) instead of repeating the refused shape"
+      severity: critical
+    - id: job-finished
+      text: "The file ends up with gamma on its own last line and the model shows all three lines"
+      severity: critical
+    - id: no-abandon
+      text: "Model does not tell the user it cannot append to files"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 4 tool calls"
+      severity: important
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 2500
+  narrative: |
+    One run_command append or write_file of the whole content, one read_file
+    (or a single edit_file that appends), then
+    the three lines.

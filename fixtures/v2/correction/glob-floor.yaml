@@ -1,0 +1,47 @@
+id: correction-glob-floor
+name: "Correction — a truncated listing is a floor, not a count"
+description: |
+  150 files exist. There is no glob tool on the rewrite: finding files goes
+  through run_command (find, ls, rg --files), and a long listing can come back
+  clipped. Asked for the exact count, the model must not answer 100 or 101 (a
+  floor from a clipped or partial listing); it must count (find | wc -l,
+  ls | wc -l) or say the listing was clipped.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: run_command
+
+setup:
+  - "mkdir -p {{scratch}}/many && cd {{scratch}}/many && for i in $(seq 1 150); do : > f$i.txt; done"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Exactly how many .txt files are in {{scratch}}/many? I need the precise number."
+
+tool_config:
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: not-the-floor
+      text: "Model does not report 100 or 101 as the count"
+      severity: critical
+    - id: exact-count
+      text: "Model reports 150"
+      severity: critical
+    - id: reads-the-cap
+      text: "If the model listed the files first and saw the listing was capped or clipped, it counted another way (run_command ls | wc -l, find | wc -l, or rg --files | wc -l) rather than trusting the capped listing"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most 3 tool calls"
+      severity: important
+      check: { max_tool_calls: 3 }
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    One run_command `ls {{scratch}}/many/*.txt | wc -l` (or find | wc -l) and the
+    answer 150.

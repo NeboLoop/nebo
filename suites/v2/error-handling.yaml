@@ -1,0 +1,23 @@
+# v2: the new harness's twin of suites/error-handling.yaml. Same scenarios (same fixture
+# ids, messages, setup and files); checks written for the rewrite's tools.
+# Arm A runs suites/error-handling.yaml, arm P runs this file; both from one instrument
+# tag, compared per fixture. What changed per check: fixtures/v2/MAPPING.md.
+name: error-handling
+fixtures:
+  # File operations — all error paths upgraded
+  - ../../fixtures/v2/tools/os-file-read.yaml
+  - ../../fixtures/v2/tools/os-file-write.yaml
+  - ../../fixtures/v2/tools/os-file-edit.yaml
+  - ../../fixtures/v2/tools/os-file-grep.yaml
+  - ../../fixtures/v2/tools/os-file-glob.yaml
+  # Shell — command semantics (grep exit 1, timeout, cwd, command-not-found)
+  - ../../fixtures/v2/tools/os-shell-path-not-found.yaml
+  - ../../fixtures/v2/tools/os-shell-permission-denied.yaml
+  - ../../fixtures/v2/tools/os-shell-command-fails.yaml
+  # Spiral prevention — should improve with better error signals
+  - ../../fixtures/v2/tools/os-file-discovery-spiral.yaml
+  - ../../fixtures/v2/tools/os-shell-retry-spiral.yaml
+  - ../../fixtures/v2/tools/os-file-search-loop.yaml
+  - ../../fixtures/v2/tools/os-redundant-read-loop.yaml
+  # FRAMES Phase 1 — terminal-error classification (auth self-reauth deny + no spiral)
+  - ../../fixtures/v2/tools/plugin-auth-no-self-reauth.yaml

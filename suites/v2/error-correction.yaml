@@ -1,0 +1,36 @@
+# v2: the new harness's twin of suites/error-correction.yaml. Same scenarios (same fixture
+# ids, messages, setup and files); checks written for the rewrite's tools.
+# Arm A runs suites/error-correction.yaml, arm P runs this file; both from one instrument
+# tag, compared per fixture. What changed per check: fixtures/v2/MAPPING.md.
+name: error-correction
+# Correction rate: how often the model reads a tool result that reports a
+# problem and does the right next thing, instead of retrying, inventing a
+# theory, or giving up. Every fixture induces its error through the real
+# environment; the assertions that matter are under `recovery`. Score the
+# suite by the pass rate of critical recovery assertions across runs.
+fixtures:
+  - ../../fixtures/v2/correction/unchanged-poll.yaml
+  - ../../fixtures/v2/correction/missing-pipeline-command.yaml
+  - ../../fixtures/v2/correction/unknown-file-action.yaml
+  - ../../fixtures/v2/correction/glob-floor.yaml
+  - ../../fixtures/v2/correction/grep-no-files.yaml
+  - ../../fixtures/v2/correction/read-past-end.yaml
+  - ../../fixtures/v2/correction/empty-output.yaml
+  - ../../fixtures/v2/correction/skill-miss-proceeds.yaml
+  - ../../fixtures/v2/correction/work-name-in-definition.yaml
+  - ../../fixtures/v2/correction/agent-update-instructions.yaml
+  - ../../fixtures/v2/correction/agent-edit-user-created.yaml
+  - ../../fixtures/v2/correction/os-shell-session.yaml
+  - ../../fixtures/v2/correction/agent-update-description.yaml
+  - ../../fixtures/v2/correction/plugin-discover-installed.yaml
+  - ../../fixtures/v2/correction/event-reminder-shape.yaml
+  - ../../fixtures/v2/correction/team-no-hub.yaml
+  - ../../fixtures/v2/correction/plugin-args-command.yaml
+  - ../../fixtures/v2/correction/spawn-prompt-with-path.yaml
+  - ../../fixtures/v2/correction/quickbooks-payment-dry-run.yaml
+  - ../../fixtures/v2/correction/pasted-document-read-whole.yaml
+  - ../../fixtures/v2/correction/large-document-read-whole.yaml
+  - ../../fixtures/v2/correction/read-over-budget-ranged.yaml
+  - ../../fixtures/v2/correction/stop-means-stop.yaml
+  - ../../fixtures/v2/correction/message-while-working.yaml
+  - ../../fixtures/v2/correction/os-glob-no-action.yaml
