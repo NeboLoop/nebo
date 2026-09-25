@@ -221,6 +221,102 @@ pub fn environment_fields(cwd: Option<&str>, channel: &str, watching: Watching) 
     fields
 }
 
+/// The time it is for the owner: the clock, their zone and its UTC offset,
+/// and the date. Told at the start of every turn, so "in two hours" and
+/// "this afternoon" are read against when the message came.
+pub fn owner_now(timezone: Option<&str>) -> String {
+    fn told<Tz: chrono::TimeZone>(now: chrono::DateTime<Tz>, zone: &str) -> String
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        format!(
+            "It is {} ({zone}, UTC{}) on {}.",
+            now.format("%-I:%M %p"),
+            now.format("%:z"),
+            now.format("%A, %B %-d, %Y")
+        )
+    }
+    match timezone.and_then(|tz| tz.parse::<chrono_tz::Tz>().ok()) {
+        Some(tz) => told(chrono::Utc::now().with_timezone(&tz), tz.name()),
+        None => told(chrono::Local::now(), "this computer's time zone"),
+    }
+}
+
+/// Where a channel's replies are read, and how to write for it. Empty for
+/// any other channel (a workflow, a schedule, a coworker's thread).
+/// `channel_plugin` is set when the channel is an installed
+/// plugin's (Slack, Discord, Teams, …); `files_dir` is where work documents
+/// are written.
+pub fn channel_rules(channel: &str, channel_plugin: bool, files_dir: &str) -> String {
+    let rules = match channel {
+        "dm" => "This is a direct message: keep replies short, in plain text with no markdown.".to_string(),
+        "cli" => "Replies are shown in a terminal: write plain text with no markdown.".to_string(),
+        "voice" => "This is a voice call and your replies are spoken aloud: answer in one or two sentences, with no \
+formatting, lists or special characters."
+            .to_string(),
+        "" | "web" | "app" | "neboai" => {
+            let mut rules = work_documents(files_dir);
+            if channel == "neboai" {
+                rules.push_str(&format!(
+                    "\n- The person may be reading on another computer. Files you write under {files_dir} reach their \
+chat as cards on their own: name the file, and never point them at a path, an app or anything else on this computer."
+                ));
+            }
+            rules
+        }
+        _ if channel_plugin => {
+            let tool = format!("{}{channel}", tools::plugin_tools::PLUGIN_PREFIX);
+            format!(
+                "Replies here are posted to {channel} for you: write the answer and it is sent. When the person asks \
+for a file on this computer (to send, share, grab or upload it), upload it into this conversation with {tool} (load \
+it with find_tools first if it isn't loaded), command `upload --path <absolute path>`; the channel and thread are \
+filled in for you. Don't offer to copy the file, paste its contents or send a link instead unless they ask for that."
+            )
+        }
+        _ => return String::new(),
+    };
+    format!("# Channel rules\n{rules}")
+}
+
+/// Work documents on the app's own surfaces, where a Work panel beside the
+/// chat shows what is written.
+fn work_documents(files_dir: &str) -> String {
+    format!(
+        "Documents you write show in a Work panel beside the chat.
+- When the substance of a reply is something the owner will keep, reuse or print (a report, a table, a plan, a \
+one-pager, a code file), write it as a file under {files_dir} with write_file (.md for documents, .html for rich \
+layouts, .csv for tables with one record per line) and reply in a sentence or two naming the file. Answers to \
+questions and quick facts stay in the chat. Writing under {files_dir} needs no permission and shows at once.
+- For a PDF or Word file, write the .md and convert it with convert_file; for a spreadsheet, write the .csv and \
+convert it. For an interactive dashboard or chart, write one React component as a .jsx file (it must `export \
+default`; npm packages such as recharts, d3 and lucide-react work, and so does Tailwind; shadcn/ui and `@/` imports \
+don't) and convert it to html. Finished HTML is written directly as .html.
+- The panel can be 400px wide: layouts must be responsive, with no fixed or minimum width over 250px, charts sized \
+in percentages, grids that fall to one column, and a page that scrolls vertically (never `overflow: hidden` or a \
+`100vh` height on the root).
+- To hand over a file you didn't write this turn, such as a deck a skill made, use share_file: it shows as a download \
+card. Never send the owner to a path on this computer, and never say you can't share a file.
+- Build documents and dashboards from real data: this conversation, files you read and tool results. Read a file \
+before you cite it. With no real data, ask for it, or say in the document that it is sample data; never present \
+made-up numbers as real.
+- Formulas render when written as `$…$` inline or `$$…$$` on their own lines, and only in those two forms (not \
+`\\(…\\)`, `\\[…\\]` or bare TeX). A price like `$5` is not a formula."
+    )
+}
+
+/// What a coworker asking may be told, when the owner hasn't shared this
+/// employee's memory with them (`memory.share_with`). Empty for every other
+/// turn.
+pub fn coworker_access(restricted: bool) -> String {
+    if !restricted {
+        return String::new();
+    }
+    "You're replying to a coworker who hasn't been given this employee's shared memory. Matter and project facts \
+weren't looked up for them and must not be passed on, even ones already in this conversation: answer from general \
+know-how, or tell them that information isn't shared with their role."
+        .to_string()
+}
+
 /// Notes from the workspace's `.nebo.md`.
 pub fn workspace_notes(notes: &str) -> String {
     format!("# Workspace notes\n\n{notes}")

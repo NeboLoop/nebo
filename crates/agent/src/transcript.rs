@@ -10,40 +10,33 @@ use crate::chunking;
 /// Number of messages to group into a single indexing block.
 const BLOCK_SIZE: usize = 5;
 
-/// Index compacted messages from a session for later semantic search.
-/// Loads messages after the last embedded message, groups them into blocks,
-/// chunks each block, embeds, and stores in memory_chunks.
+/// Index a session's conversation for later semantic search, called when
+/// the conversation is checkpointed: every owner message and reply not yet
+/// indexed (the session's high-water mark is the last row's rowid) is
+/// grouped into blocks, chunked, embedded, and stored in memory_chunks
+/// under `user_id`, so recall finds what the checkpoint summarized away.
+/// Nebo's own rows (attachments, checkpoint boundaries, hidden prompts)
+/// are not the conversation and are skipped.
 pub async fn index_compacted_messages(
     store: &Arc<Store>,
     embedding_provider: &dyn EmbeddingProvider,
     session_id: &str,
     user_id: &str,
 ) {
-    // Get the high-water mark
     let last_embedded_id = match store.get_session(session_id) {
         Ok(Some(session)) => session.last_embedded_message_id.unwrap_or(0),
         _ => 0,
     };
-
-    // Load messages after the high-water mark
-    let all_messages = match store.get_chat_messages(session_id) {
-        Ok(msgs) => msgs,
+    let rows = match store.get_chat_messages_after_rowid(&store.resolve_session_chat_id(session_id), last_embedded_id) {
+        Ok(rows) => rows,
         Err(e) => {
             debug!(error = %e, "failed to load messages for transcript indexing");
             return;
         }
     };
-
-    // Filter to messages after last_embedded_id
-    // Messages are sorted by created_at; use numeric id comparison
-    let new_messages: Vec<&ChatMessage> = all_messages
+    let new_messages: Vec<&(i64, ChatMessage)> = rows
         .iter()
-        .filter(|m| {
-            // Parse ID as i64 for comparison (IDs are numeric strings)
-            m.id.parse::<i64>().unwrap_or(0) > last_embedded_id
-        })
-        .filter(|m| m.role == "user" || m.role == "assistant")
-        .filter(|m| !m.content.is_empty())
+        .filter(|(_, m)| (m.role == "user" || m.role == "assistant") && !m.content.trim().is_empty() && !nebos_own(m))
         .collect();
 
     if new_messages.is_empty() {
@@ -59,20 +52,9 @@ pub async fn index_compacted_messages(
         // Concatenate block messages
         let block_text: String = block
             .iter()
-            .map(|m| format!("{}: {}", m.role, &m.content[..m.content.len().min(500)]))
+            .map(|(_, m)| format!("{}: {}", m.role, head(&m.content, 500)))
             .collect::<Vec<_>>()
             .join("\n");
-
-        if block_text.is_empty() {
-            continue;
-        }
-
-        // Track highest message ID in this block
-        for msg in block {
-            if let Ok(id) = msg.id.parse::<i64>() {
-                highest_id = highest_id.max(id);
-            }
-        }
 
         // Chunk the block text
         let chunks = chunking::chunk_text_default(&block_text);
@@ -82,8 +64,10 @@ pub async fn index_compacted_messages(
         let embeddings = match embedding_provider.embed(&chunk_texts).await {
             Ok(e) => e,
             Err(e) => {
+                // The mark stays before this block: the next checkpoint
+                // tries it again.
                 warn!(error = %e, "transcript embedding failed");
-                continue;
+                break;
             }
         };
 
@@ -112,6 +96,9 @@ pub async fn index_compacted_messages(
                 debug!(error = %e, "failed to insert session embedding");
             }
         }
+        for (rowid, _) in block {
+            highest_id = highest_id.max(*rowid);
+        }
     }
 
     // Update high-water mark
@@ -125,6 +112,26 @@ pub async fn index_compacted_messages(
             );
         }
     }
+}
+
+/// A row Nebo wrote for itself rather than a message of the conversation:
+/// an attachment, a checkpoint boundary, a hidden prompt.
+fn nebos_own(msg: &ChatMessage) -> bool {
+    let Some(meta) = msg.metadata.as_deref().and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok()) else {
+        return false;
+    };
+    ["isMeta", "checkpoint", "hiddenPrompt"]
+        .iter()
+        .any(|k| meta.get(*k).and_then(|v| v.as_bool()) == Some(true))
+}
+
+/// At most `max` bytes of `text`, cut on a character boundary.
+fn head(text: &str, max: usize) -> &str {
+    let mut end = text.len().min(max);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 #[cfg(test)]

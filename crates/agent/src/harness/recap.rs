@@ -2,11 +2,11 @@
 //! for the owner coming back to the thread — never read back into a model
 //! request. Turn-Controller Technical Design §2.7 / WP2.5.
 //!
-//! Not wired into the loop: `TurnContext` does not yet carry a finished
-//! turn's provider, model or transcript (WP2.3 builds `drive_turn`), so
-//! `write_recap` takes them explicitly in `RecapRequest`. WP2.3 calls it at
-//! `Finish` for `TurnMode::Chat`, skipped when the turn was cancelled, and
-//! spawns it as a background task so it never delays the turn's own reply.
+//! The turn's `Finish` spawns `write_recap` for chat turns that weren't
+//! cancelled, so it never delays the turn's own reply. The recap shows
+//! under the turn and as the employee's status line (the stored recap and
+//! the `turn_recap` event); it is never an owner notification, so it adds
+//! no Inbox row and no unread badge.
 
 use std::sync::Arc;
 
@@ -78,25 +78,6 @@ pub async fn write_recap(
                 "text": capped,
             }),
         );
-    }
-
-    // The mobile push: the one persist+broadcast pathway every owner
-    // notification goes through (crates/tools/src/owner_notify.rs), quiet
-    // (bell, no native banner) — the recap is a convenience for reopening
-    // the thread, not an alert.
-    let notif_id = format!("recap:{}", req.turn_id);
-    let n = tools::owner_notify::OwnerNotification {
-        id: &notif_id,
-        kind: "info",
-        title: "Recap",
-        body: Some(&capped),
-        action_url: None,
-        agent_id: req.agent_id.as_deref(),
-        loud: false,
-    };
-    match &broadcast {
-        Some(f) => tools::owner_notify::emit(&store, Some(&|ev, payload| f(ev, payload)), &n),
-        None => tools::owner_notify::emit(&store, None, &n),
     }
 
     Some(capped)
@@ -262,11 +243,14 @@ mod tests {
                 && payload["text"] == text),
             "turn_recap was broadcast with the stored text: {events:?}"
         );
-        // The existing notify path (owner_notify) also fires, quiet.
+        // Never an owner notification: no Inbox row, no unread badge.
         assert!(
-            events.iter().any(|(ev, _)| ev == "notification_created"),
-            "the mobile notify path fires quietly: {events:?}"
+            !events.iter().any(|(ev, _)| ev == "notification_created"),
+            "a recap is not a notification: {events:?}"
         );
+        let owner = store.ensure_local_user_id().unwrap_or_default();
+        assert!(store.get_notification("recap:turn-1", &owner).unwrap().is_none(), "no Inbox row");
+        assert_eq!(store.count_unread_notifications(&owner).unwrap(), 0, "the badge doesn't climb");
     }
 
     #[tokio::test]

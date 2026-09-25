@@ -16,6 +16,14 @@ pub enum TurnEvent {
     /// The session's facts, whole: the first step of a session, and the
     /// first step after a checkpoint. One row per fact.
     SessionSnapshot(SessionFacts),
+    /// The time a turn starts, for the owner (`sections::owner_now`).
+    TurnTime(String),
+    /// The channel's rules changed, or were never told: the replacement,
+    /// whole (`told` says whether there was an earlier version).
+    ChannelRulesChanged { rules: String, told: bool },
+    /// What the coworker being answered may be told changed: the new limit,
+    /// or empty when the limit is lifted.
+    CoworkerAccessChanged(String),
     /// Who the turn is for changed (the owner edited the employee): the
     /// replacement, whole.
     IdentityChanged(String),
@@ -113,6 +121,12 @@ pub struct SessionFacts {
     pub employee_memory: String,
     /// The workspace notes and the employee's own setup.
     pub session_context: String,
+    /// How to write for the channel (`sections::channel_rules`); empty for
+    /// a channel with none.
+    pub channel_rules: String,
+    /// The limit on a coworker without shared memory
+    /// (`sections::coworker_access`); empty on every other turn.
+    pub coworker_access: String,
 }
 
 /// The model a session runs on and its permission mode.
@@ -145,6 +159,9 @@ pub const NAMES: &[&str] = &[
     "mode",
     "employee_memory",
     "session_context",
+    "channel_rules",
+    "coworker_access",
+    "time",
     "agents_listing",
     "date_changed",
     "run_briefing",
@@ -187,6 +204,8 @@ pub fn attachments_for(e: &TurnEvent) -> Vec<Attachment> {
             mode_row(&f.mode),
             replacement_row("employee_memory", &f.employee_memory, None),
             replacement_row("session_context", &f.session_context, None),
+            replacement_row("channel_rules", &f.channel_rules, None),
+            replacement_row("coworker_access", &f.coworker_access, None),
         ]
         .into_iter()
         .flatten()
@@ -200,6 +219,25 @@ pub fn attachments_for(e: &TurnEvent) -> Vec<Attachment> {
 pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
     let (kind, text) = match e {
         TurnEvent::SessionSnapshot(_) => return None,
+        TurnEvent::TurnTime(now) => ("time", non_empty(now)?),
+        TurnEvent::ChannelRulesChanged { rules, told } => {
+            let lead = told.then_some("The channel's rules have changed; these replace the earlier ones:");
+            return replacement_row("channel_rules", rules, lead);
+        }
+        TurnEvent::CoworkerAccessChanged(limit) => {
+            if limit.trim().is_empty() {
+                return Some(Attachment {
+                    kind: "coworker_access",
+                    text: COWORKER_ACCESS_LIFTED.to_string(),
+                    data: serde_json::Map::from_iter([("digest".to_string(), serde_json::json!(digest("")))]),
+                });
+            }
+            return replacement_row(
+                "coworker_access",
+                limit,
+                Some("What this coworker may be told has changed; this replaces the earlier note:"),
+            );
+        }
         TurnEvent::EnvironmentChanged(fields) => {
             if fields.is_empty() {
                 return None;
@@ -337,6 +375,10 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
 
 // ── Session facts ───────────────────────────────────────────────────────
 
+/// A coworker's limit on shared memory, lifted mid-conversation.
+const COWORKER_ACCESS_LIFTED: &str =
+    "The coworker you're replying to has now been given this employee's shared memory; the earlier limit no longer applies.";
+
 fn fields_json(fields: &[(String, String)]) -> serde_json::Value {
     serde_json::Value::Object(fields.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect())
 }
@@ -399,6 +441,8 @@ struct Told {
     mode: Option<(String, String)>,
     employee_memory: Option<String>,
     session_context: Option<String>,
+    channel_rules: Option<String>,
+    coworker_access: Option<String>,
 }
 
 fn told(history: &[ChatMessage]) -> Told {
@@ -423,6 +467,8 @@ fn told(history: &[ChatMessage]) -> Told {
             Some("activity") => t.activity = text(&f, "digest"),
             Some("employee_memory") => t.employee_memory = text(&f, "digest"),
             Some("session_context") => t.session_context = text(&f, "digest"),
+            Some("channel_rules") => t.channel_rules = text(&f, "digest"),
+            Some("coworker_access") => t.coworker_access = text(&f, "digest"),
             _ => {}
         }
     }
@@ -441,6 +487,8 @@ pub fn session_fact_events(now: &SessionFacts, history: &[ChatMessage]) -> Vec<T
         && t.mode.is_none()
         && t.employee_memory.is_none()
         && t.session_context.is_none()
+        && t.channel_rules.is_none()
+        && t.coworker_access.is_none()
     {
         return vec![TurnEvent::SessionSnapshot(now.clone())];
     }
@@ -469,6 +517,17 @@ pub fn session_fact_events(now: &SessionFacts, history: &[ChatMessage]) -> Vec<T
     }
     if differs(&t.session_context, &now.session_context) {
         out.push(TurnEvent::SessionContextChanged(now.session_context.clone()));
+    }
+    if differs(&t.channel_rules, &now.channel_rules) {
+        out.push(TurnEvent::ChannelRulesChanged {
+            rules: now.channel_rules.clone(),
+            told: t.channel_rules.is_some(),
+        });
+    }
+    if differs(&t.coworker_access, &now.coworker_access) {
+        out.push(TurnEvent::CoworkerAccessChanged(now.coworker_access.clone()));
+    } else if now.coworker_access.trim().is_empty() && t.coworker_access.as_ref().is_some_and(|d| *d != digest("")) {
+        out.push(TurnEvent::CoworkerAccessChanged(String::new()));
     }
     out
 }
@@ -701,6 +760,8 @@ mod tests {
             mode: ModeFacts { model: "janus/nebo-1".into(), permission_mode: "Automatic".into() },
             employee_memory: "# User Information\nName: Sam".into(),
             session_context: "# Workspace notes\n\nFiles live in ~/Clients.".into(),
+            channel_rules: crate::harness::prompt::sections::channel_rules("web", false, "/data/files"),
+            coworker_access: String::new(),
         }
     }
 
@@ -714,7 +775,10 @@ mod tests {
     #[test]
     fn session_snapshot_on_first_step_then_deltas_only() {
         let mut history = vec![row("user", "hello", None, None)];
-        assert_eq!(fact_step(&mut history, &facts()), ["identity", "environment", "mode", "employee_memory", "session_context"]);
+        assert_eq!(
+            fact_step(&mut history, &facts()),
+            ["identity", "environment", "mode", "employee_memory", "session_context", "channel_rules"]
+        );
         assert!(history[2].content.contains("- Date: Thursday, September 24, 2026 (America/Denver)"));
         assert!(fact_step(&mut history, &facts()).is_empty(), "nothing changed, nothing written");
         let mut moved = facts();
@@ -725,7 +789,62 @@ mod tests {
         assert!(fact_step(&mut history, &moved).is_empty());
         // After a checkpoint the conversation was told nothing: the snapshot again.
         let mut after = vec![row("user", "summary", None, Some(serde_json::json!({"checkpoint": true})))];
-        assert_eq!(fact_step(&mut after, &moved).len(), 5);
+        assert_eq!(fact_step(&mut after, &moved).len(), 6);
+    }
+
+    /// How to write for the channel is a session fact: told with the
+    /// snapshot, replaced whole when the channel's rules change, and never
+    /// system-prompt text.
+    #[test]
+    fn channel_rules_are_a_session_fact() {
+        use crate::harness::prompt::sections::channel_rules;
+        let web = channel_rules("web", false, "/data/files");
+        for rule in ["Work panel", "write_file", "/data/files", "convert_file", "share_file", "`$$…$$`", "real data"] {
+            assert!(web.contains(rule), "the web rules say {rule}: {web}");
+        }
+        let neboai = channel_rules("neboai", false, "/data/files");
+        assert!(neboai.contains("Work panel") && neboai.contains("another computer"), "{neboai}");
+        for (channel, rule) in [("dm", "no markdown"), ("cli", "no markdown"), ("voice", "one or two sentences")] {
+            let rules = channel_rules(channel, false, "/data/files");
+            assert!(rules.contains(rule) && !rules.contains("Work panel"), "{channel}: {rules}");
+        }
+        let slack = channel_rules("slack", true, "/data/files");
+        assert!(slack.contains("plugin__slack") && slack.contains("upload --path"), "{slack}");
+        assert!(channel_rules("slack", false, "/data/files").is_empty(), "no channel plugin, no plugin rule");
+        assert!(channel_rules("workflow", false, "/data/files").is_empty());
+        let prompt = crate::harness::prompt::system_prompt();
+        assert!(!prompt.contains("Work panel") && !prompt.contains("upload --path"), "never in the system prompt");
+
+        let mut history = vec![row("user", "hello", None, None)];
+        fact_step(&mut history, &facts());
+        assert!(history.iter().any(|m| m.content.contains("# Channel rules") && m.content.contains("Work panel")));
+        let mut voice = facts();
+        voice.channel_rules = channel_rules("voice", false, "/data/files");
+        assert_eq!(fact_step(&mut history, &voice), ["channel_rules"]);
+        let replaced = &history.last().unwrap().content;
+        assert!(replaced.contains("have changed") && replaced.contains("spoken aloud"), "{replaced}");
+        assert!(fact_step(&mut history, &voice).is_empty());
+    }
+
+    /// A coworker without shared memory hears its limit once; a lifted
+    /// limit is said once; an unrestricted asker hears nothing.
+    #[test]
+    fn a_coworker_without_shared_memory_is_told_the_limit() {
+        use crate::harness::prompt::sections::coworker_access;
+        let mut history = vec![row("user", "hello", None, None)];
+        let mut asking = facts();
+        asking.coworker_access = coworker_access(true);
+        assert!(fact_step(&mut history, &asking).contains(&"coworker_access"));
+        assert!(history.last().unwrap().content.contains("must not be passed on"), "{}", history.last().unwrap().content);
+        assert!(fact_step(&mut history, &asking).is_empty(), "told once");
+        let granted = facts();
+        assert_eq!(fact_step(&mut history, &granted), ["coworker_access"]);
+        assert!(history.last().unwrap().content.contains("no longer applies"));
+        assert!(fact_step(&mut history, &granted).is_empty(), "lifted once");
+
+        let mut owner = vec![row("user", "hello", None, None)];
+        assert!(!fact_step(&mut owner, &facts()).contains(&"coworker_access"), "no limit, no row");
+        assert!(coworker_access(false).is_empty());
     }
 
     /// Who the turn is for is a row: told first, told again after a
@@ -835,6 +954,12 @@ mod tests {
                 description: "research".into(),
                 status: "running".into(),
             },
+            TurnEvent::TurnTime("It is 2:05 PM (America/Denver, UTC-06:00) on Thursday, September 24, 2026.".into()),
+            TurnEvent::ChannelRulesChanged {
+                rules: "# Channel rules\nNo markdown.".into(),
+                told: true,
+            },
+            TurnEvent::CoworkerAccessChanged(String::new()),
         ]
     }
 

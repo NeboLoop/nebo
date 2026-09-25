@@ -213,6 +213,24 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The chat's rows stored after the row whose rowid is `after_rowid`,
+    /// each with its rowid, in the order they were written.
+    pub fn get_chat_messages_after_rowid(
+        &self,
+        chat_id: &str,
+        after_rowid: i64,
+    ) -> Result<Vec<(i64, ChatMessage)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT rowid AS r, * FROM chat_messages WHERE chat_id = ?1 AND rowid > ?2 ORDER BY rowid ASC")
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![chat_id, after_rowid], |row| Ok((row.get("r")?, row_to_chat_message(row)?)))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// The conversation the model sees: the chat's rows from its latest
     /// checkpoint boundary (a row whose metadata carries `"checkpoint": true`)
     /// on, the boundary included; every row when there is none. Rows before
