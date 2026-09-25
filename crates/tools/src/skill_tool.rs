@@ -745,19 +745,18 @@ impl SkillCore {
         ToolResult::ok(format!("Secrets for skill '{}':\n{}", name, lines.join("\n")))
     }
 
-    fn neboai_api(&self) -> Result<comm::api::NeboAIApi, ToolResult> {
+    /// The marketplace API, or the model-facing reason there is none.
+    fn neboai_api(&self) -> Result<comm::api::NeboAIApi, String> {
         let Some(store) = &self.store else {
-            return Err(ToolResult::error(
-                "Skill reviews are not available — store not configured. The user needs to restart Nebo so the database initializes.",
-            ));
+            return Err("Skill reviews are not available — store not configured. The user needs to restart Nebo so the database initializes.".to_string());
         };
-        crate::build_neboai_api(store).map_err(|e| ToolResult::error(format!("NeboAI connection required: {}", e)))
+        crate::build_neboai_api(store).map_err(|e| format!("NeboAI connection required: {}", e))
     }
 
     async fn reviews(&self, name: &str) -> ToolResult {
         let api = match self.neboai_api() {
             Ok(a) => a,
-            Err(r) => return r,
+            Err(e) => return ToolResult::error(e),
         };
         match api.get_skill_reviews(name, None, None).await {
             Ok(resp) => {
@@ -791,7 +790,7 @@ impl SkillCore {
     async fn rate(&self, name: &str, rating: i64, review: &str) -> ToolResult {
         let api = match self.neboai_api() {
             Ok(a) => a,
-            Err(r) => return r,
+            Err(e) => return ToolResult::error(e),
         };
         let body = serde_json::json!({ "rating": rating, "review": review });
         match api.submit_skill_review(name, &body).await {
