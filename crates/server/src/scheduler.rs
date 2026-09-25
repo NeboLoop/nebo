@@ -376,47 +376,15 @@ async fn execute_agent_channel_bound(
     // Route the response back through the channel bridge as op:"post"
     // (not "reply" — there's no inbound placeholder to update; the agent is
     // posting on its own initiative).
-    let key = tools::channel_bridge_key(agent_id, &saved.kind);
-    let handle = match state.channel_bridges.read().await.get(&key).cloned() {
-        Some(h) => h,
-        None => {
-            warn!(
-                job = job.name.as_str(),
-                agent = agent_id,
-                plugin = saved.kind.as_str(),
-                "scheduler: response generated but channel bridge `{key}` is not running; dropping"
-            );
-            return (
-                false,
-                full_text,
-                Some(format!(
-                    "channel bridge `{key}` not running — enable {} for agent {} in Settings → Channels",
-                    saved.kind, agent_id
-                )),
-            );
-        }
-    };
-
-    let mut op = serde_json::Map::new();
-    op.insert("op".into(), serde_json::Value::String("post".into()));
-    op.insert(
-        "channel".into(),
-        serde_json::Value::String(saved.channel_id.clone()),
-    );
-    if let Some(ts) = &saved.thread_ts {
-        op.insert("thread_ts".into(), serde_json::Value::String(ts.clone()));
-    }
-    op.insert("text".into(), serde_json::Value::String(response));
-
-    if let Err(e) = handle.stdin_tx.send(serde_json::Value::Object(op)).await {
+    if let Err(e) = crate::channel_dispatch::post_to_channel(state, agent_id, &channel_ctx, response).await {
         warn!(
             job = job.name.as_str(),
             agent = agent_id,
             plugin = saved.kind.as_str(),
             error = %e,
-            "scheduler: failed to forward post to channel bridge"
+            "scheduler: channel-bound cron response not posted"
         );
-        return (false, full_text, Some(format!("bridge send: {e}")));
+        return (false, full_text, Some(e));
     }
 
     info!(

@@ -232,6 +232,11 @@ async fn deliver_to_session(state: &AppState, session_key: &str) {
         cwd: None,
         model_override: None,
     };
+    // A chat channel's conversation hears the reply where it was asked.
+    if let Some(ReplyRoute::Channel { channel_ctx }) = route {
+        crate::channel_dispatch::answer_in_channel(state, config, channel_ctx).await;
+        return;
+    }
     run_chat(state, config).await;
 }
 

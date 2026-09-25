@@ -72,7 +72,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
         session_key: &'a str,
         channel_ctx: tools::ChannelContext,
         prompt: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send + 'a>> {
         Box::pin(async move {
             // Intercept install codes before they reach the agent
             if let Some((code_type, code)) = crate::codes::detect_code(prompt) {
@@ -84,7 +84,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                     tools::InstalledBy::Other,
                 )
                 .await;
-                return Ok(response);
+                return Ok(Some(response));
             }
 
             let entity_config =
@@ -138,10 +138,65 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 .await
                 .map_err(|e| format!("channel dispatch error: {}", e))?;
 
-            Ok(collect_channel_reply(rx, &cancel_token, agent_id, channel, None)
-                .await
-                .text)
+            // A message the running turn took is answered by that turn's
+            // reply: nothing is posted for it, as in the app (A34).
+            let reply = collect_channel_reply(rx, &cancel_token, agent_id, channel, None).await;
+            Ok((!reply.queued).then_some(reply.text))
         })
+    }
+}
+
+/// Post `text` into a chat-channel conversation (a Slack channel or thread)
+/// through the employee's running bridge, as `op: "post"`: the employee
+/// speaks on its own, with no inbound message to answer. The one way a
+/// reply reaches a channel outside the inbound dispatch: a scheduled job
+/// bound to a channel, and a turn woken there by a notification.
+pub(crate) async fn post_to_channel(
+    state: &AppState,
+    agent_id: &str,
+    ctx: &tools::ChannelContext,
+    text: String,
+) -> Result<(), String> {
+    let key = tools::channel_bridge_key(agent_id, &ctx.kind);
+    let Some(handle) = state.channel_bridges.read().await.get(&key).cloned() else {
+        return Err(format!(
+            "channel bridge `{key}` not running — enable {} for agent {} in Settings → Channels",
+            ctx.kind, agent_id
+        ));
+    };
+    let mut op = serde_json::Map::new();
+    op.insert("op".into(), serde_json::Value::String("post".into()));
+    op.insert("channel".into(), serde_json::Value::String(ctx.channel_id.clone()));
+    if let Some(ts) = &ctx.thread_ts {
+        op.insert("thread_ts".into(), serde_json::Value::String(ts.clone()));
+    }
+    op.insert("text".into(), serde_json::Value::String(text));
+    handle
+        .stdin_tx
+        .send(serde_json::Value::Object(op))
+        .await
+        .map_err(|e| format!("bridge send: {e}"))
+}
+
+/// A turn in a chat-channel conversation that no inbound message started
+/// (a notification woke it): run it as the channel's inbound turns run and
+/// post its reply into the conversation (B14).
+pub(crate) async fn answer_in_channel(state: &AppState, config: crate::chat_dispatch::ChatConfig, ctx: tools::ChannelContext) {
+    let (agent_id, cancel_token, session_key) =
+        (config.agent_id.clone(), config.cancel_token.clone(), config.session_key.clone());
+    let rx = match crate::chat_dispatch::run_chat_events(state, config).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            warn!(session = %session_key, error = %e, "channel turn not started");
+            return;
+        }
+    };
+    let reply = collect_channel_reply(rx, &cancel_token, &agent_id, &ctx.kind, None).await;
+    if reply.queued || reply.text.is_empty() {
+        return;
+    }
+    if let Err(e) = post_to_channel(state, &agent_id, &ctx, reply.text).await {
+        warn!(session = %session_key, error = %e, "channel reply not posted");
     }
 }
 
