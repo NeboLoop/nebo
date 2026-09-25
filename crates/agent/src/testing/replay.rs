@@ -321,9 +321,9 @@ mod tests {
                 "",
                 calls(
                     r#"[
-                      {"id":"1","name":"os","input":{"resource":"file","action":"read","path":"/proj/src/a.rs"}},
-                      {"id":"2","name":"os","input":{"resource":"shell","action":"run","command":"cat /proj/README.md; ls '/proj/src'"}},
-                      {"id":"3","name":"os","input":{"resource":"file","action":"checkpoint","paths":["/proj/src/b.rs","/proj/src/a.rs"]}}
+                      {"id":"1","name":"read_file","input":{"path":"/proj/src/a.rs"}},
+                      {"id":"2","name":"run_command","input":{"command":"cat /proj/README.md; ls '/proj/src'"}},
+                      {"id":"3","name":"checkpoint_files","input":{"paths":["/proj/src/b.rs","/proj/src/a.rs"]}}
                     ]"#,
                 ),
                 None,
@@ -345,7 +345,7 @@ mod tests {
             msg(
                 "assistant",
                 "",
-                calls(r#"[{"id":"1","name":"os","input":{"resource":"shell","action":"run","command":"make","cwd":"/work/app"}}]"#),
+                calls(r#"[{"id":"1","name":"run_command","input":{"command":"make","cwd":"/work/app"}}]"#),
                 None,
             ),
         ];
@@ -362,7 +362,7 @@ mod tests {
             msg(
                 "assistant",
                 "",
-                calls(r#"[{"id":"1","name":"os","input":{"path":"/a/x.rs"}},{"id":"2","name":"os","input":{"path":"/b/y.rs"}}]"#),
+                calls(r#"[{"id":"1","name":"read_file","input":{"path":"/a/x.rs"}},{"id":"2","name":"read_file","input":{"path":"/b/y.rs"}}]"#),
                 None,
             ),
         ];
@@ -370,7 +370,7 @@ mod tests {
 
         let relative = vec![
             msg("user", "go", None, None),
-            msg("assistant", "", calls(r#"[{"id":"1","name":"os","input":{"path":"src/x.rs"}}]"#), None),
+            msg("assistant", "", calls(r#"[{"id":"1","name":"read_file","input":{"path":"src/x.rs"}}]"#), None),
         ];
         let export = fixture_from_run(SESSION, "r", &relative).unwrap();
         assert_eq!(export.fixture.cwd, None);
@@ -389,7 +389,7 @@ mod tests {
             msg(
                 "assistant",
                 "",
-                calls(r#"[{"id":"1","name":"os","input":{"resource":"file","action":"read","path":"/p/f"}},{"id":"2","name":"web","input":{"action":"search"}}]"#),
+                calls(r#"[{"id":"1","name":"web","input":{"action":"search","query":"q"}},{"id":"2","name":"read_file","input":{"path":"/p/f"}}]"#),
                 None,
             ),
         ];
@@ -398,18 +398,18 @@ mod tests {
         assert_eq!(first.len(), 1);
         let check = first[0].check.as_ref().expect("program check");
         assert!(check.first_call);
-        assert_eq!(check.tool, vec!["os".to_string()]);
+        assert_eq!(check.tool, vec!["web".to_string()]);
         assert_eq!(check.arg.as_deref(), Some("action"));
-        assert_eq!(check.equals, Some(serde_yaml::Value::String("read".into())));
-        assert_eq!(first[0].text, "First tool call is os read");
+        assert_eq!(check.equals, Some(serde_yaml::Value::String("search".into())));
+        assert_eq!(first[0].text, "First tool call is web search");
 
         let no_action = vec![
             msg("user", "go", None, None),
-            msg("assistant", "", calls(r#"[{"id":"1","name":"agent","input":{"resource":"memory"}}]"#), None),
+            msg("assistant", "", calls(r#"[{"id":"1","name":"read_file","input":{"path":"/p/f"}}]"#), None),
         ];
         let export = fixture_from_run(SESSION, "r", &no_action).unwrap();
         let check = export.fixture.prompt_assertions.first_call[0].check.as_ref().unwrap();
-        assert_eq!(check.tool, vec!["agent".to_string()]);
+        assert_eq!(check.tool, vec!["read_file".to_string()]);
         assert_eq!(check.arg, None);
         assert_eq!(check.equals, None);
 
@@ -459,7 +459,7 @@ mod tests {
             msg(
                 "assistant",
                 "",
-                calls(r#"[{"id":"1","name":"os","input":{"resource":"file","action":"read","path":"/proj/a.txt"}}]"#),
+                calls(r#"[{"id":"1","name":"read_file","input":{"path":"/proj/a.txt"}}]"#),
                 None,
             ),
         ];
@@ -475,7 +475,7 @@ mod tests {
         assert_eq!(loaded.conversation.len(), 1);
         let check = loaded.prompt_assertions.first_call[0].check.as_ref().unwrap();
         assert!(check.first_call);
-        assert_eq!(check.tool, vec!["os".to_string()]);
+        assert_eq!(check.tool, vec!["read_file".to_string()]);
         assert_eq!(loaded.prompt_assertions.recovery[0].severity, Severity::Critical);
         // Empty sections are not written (the header comment mentions
         // `setup:` in prose; the key itself would start a line).

@@ -32,9 +32,12 @@ pub mod wake;
 pub mod layers_update;
 #[cfg(test)]
 mod staffed_proof;
+#[cfg(test)]
+mod harness;
 mod spa;
 mod state;
 pub mod workflow_manager;
+mod permission_asks;
 
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
 /// UTF-8 character.
@@ -1085,7 +1088,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     }
 
     // Every tool call passes the one permission check.
-    let tool_registry = Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone()))));
+    let check = Arc::new(agent::Check::new(store.clone()));
+    let permission_asks = check.asks();
+    let tool_registry = Arc::new(tools::Registry::new(check));
 
     // Create empty orchestrator handle (filled after Runner is built)
     let orch_handle = tools::new_handle();
@@ -2159,6 +2164,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         runner,
         goal_tracker: Arc::new(agent::goals::GoalTracker::new()),
         tools: tool_registry,
+        permission_asks: permission_asks.clone(),
         bridge,
         napp_registry,
         workflow_manager: workflow_manager.clone(),
@@ -2202,6 +2208,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         codes_in_flight: Arc::new(codes::InFlightCodes::default()),
     };
+
+    // An ask's card and its answers reach the owner through the hub, the
+    // Inbox and the wake rail.
+    permission_asks.attach(Arc::new(permission_asks::OwnerSurfaces { state: state.clone() }));
 
     // The proof suite (`staffed_proof`) boots this real server in-process and
     // reaches the same registry, loader and bus the handlers use. Test-only:
@@ -2356,7 +2366,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // (late, like the installer above): a create drafts, works out the needs
     // and grants them on the owner's yes, through the ONE permission store.
     state.tools.set_job_consent(Arc::new(agent::harness::permissions::consent::Consent::new(
-        state.store.clone(),
+        state.permission_asks.clone(),
         Arc::new(agent::harness::permissions::consent::AuxReader::new(state.runner.providers())),
     )));
 

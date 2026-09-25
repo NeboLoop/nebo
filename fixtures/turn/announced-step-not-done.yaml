@@ -18,7 +18,7 @@ conversation:
     content: "Create the file {{scratch}}/approval.md containing the single line: Approved by the owner on Thursday."
 
 tool_config:
-  os:
+  write_file:
     enabled: true
 
 prompt_assertions:
@@ -31,7 +31,7 @@ prompt_assertions:
     - id: writes-the-line
       text: "A file write carries the requested line"
       severity: critical
-      check: { tool: os, arg: content, contains: "Approved by the owner on Thursday" }
+      check: { tool: write_file, arg: content, contains: "Approved by the owner on Thursday" }
     - id: reports-done
       text: "The reply says the file was created (past tense, from the tool result), not that it will be"
       severity: critical
@@ -45,5 +45,5 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    One os write of approval.md with the line, then: "Created approval.md
+    One write_file of approval.md with the line, then: "Created approval.md
     with 'Approved by the owner on Thursday.'"

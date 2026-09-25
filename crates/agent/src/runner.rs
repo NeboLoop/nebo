@@ -235,6 +235,8 @@ pub struct WorkflowPark<'a> {
     /// The in-loop conversation at park time (session messages, converted).
     pub messages: Vec<Message>,
     pub call: &'a ai::ToolCall,
+    /// The ask the call parked on: the owner's answer to it releases the run.
+    pub ask_id: &'a str,
     /// Port-suffixed operation name + the owner-facing display sentence.
     pub operation: String,
     pub display: String,
@@ -3392,9 +3394,9 @@ async fn run_loop(
             if let Some((at, path)) = plan_touch.as_mut() {
                 if plan_reminder_due(iteration, *at) {
                     pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
-                        "Plan {path}: {} iterations since its last check. Run os(resource: \"file\", \
-                         action: \"plan_check\", path: \"{path}\") before reporting the task done; \
-                         only a passing verify command ticks a step.",
+                        "Plan {path}: {} iterations since its last check. Run check_plan(path: \
+                         \"{path}\") before reporting the task done; only a passing verify command \
+                         ticks a step.",
                         iteration.saturating_sub(*at)
                     )));
                     *at = iteration;

@@ -451,9 +451,9 @@ pub(crate) async fn run_tool_round(
                      Calling it the same way again, or the same way through a \
                      different command, returns the same thing. If you are waiting \
                      for a file or a process to change, wait in ONE bounded shell \
-                     command instead of re-reading: os(action: \"exec\", command: \
+                     command instead of re-reading: run_command(command: \
                      \"for i in $(seq 1 12); do wc -l < FILE; test $(wc -l < FILE) -ge N && break; \
-                     sleep 5; done; cat FILE\", timeout: 90), then report what you \
+                     sleep 5; done; cat FILE\", timeout: 90000), then report what you \
                      saw, changed or not, with the count and the time. Keep the loop \
                      shorter than the timeout you pass, or the command is killed and \
                      its output is discarded. If you need \
@@ -1003,7 +1003,7 @@ pub(crate) async fn run_tool_round(
 
     // The parked call's result is not saved: the resumed run executes the
     // call itself once the owner answers.
-    let parked = parked_call.and_then(|idx| results[idx].take().map(|(tc, _)| (idx, tc)));
+    let parked = parked_call.and_then(|idx| results[idx].take().map(|(tc, r)| (idx, tc, r.parked_ask.unwrap_or_default())));
 
     // Save all tool results to session in deterministic order
     // and track whether ALL results in this iteration were errors.
@@ -1291,14 +1291,14 @@ pub(crate) async fn run_tool_round(
 
     // A workflow step parked on the owner: the run suspends with the
     // conversation as it stands and the call that waits.
-    if let (Some(park), Some((idx, tc))) = (workflow_park, parked) {
+    if let (Some(park), Some((idx, tc, ask_id))) = (workflow_park, parked) {
         let snapshot = convert_messages(&sessions.get_messages(session_id).unwrap_or_default());
         let operation = targets[idx]
             .as_ref()
             .map(|t| t.operation.as_deref().map(tools::plugin_tool::port_suffix).unwrap_or_else(|| t.key.clone()))
             .unwrap_or_else(|| tc.name.clone());
         let display = tools.labels(&tc.name, &tc.input).await.0;
-        let reason = match park(WorkflowPark { messages: snapshot, call: &tc, operation, display }) {
+        let reason = match park(WorkflowPark { messages: snapshot, call: &tc, ask_id: &ask_id, operation, display }) {
             Ok(()) => "awaiting_approval".to_string(),
             // Can't persist the suspension: fail loud, never run the call.
             Err(e) => format!("suspension_failed:{e}"),
@@ -1726,11 +1726,11 @@ mod tests {
     }
 
     fn read(path: &str) -> Target {
-        target("os", "read_file", Some(RuleField::Folder(path.into())))
+        target("read_file", "read_file", Some(RuleField::Folder(path.into())))
     }
 
     fn command(cmd: &str) -> Target {
-        target("os", "run_command", Some(RuleField::CommandPrefix(cmd.into())))
+        target("run_command", "run_command", Some(RuleField::CommandPrefix(cmd.into())))
     }
 
     /// Claude Code's partitioning: consecutive concurrency-safe calls batch,
@@ -1757,20 +1757,20 @@ mod tests {
         let mut counts = std::collections::HashMap::new();
         for i in 0..(SAME_ACTION_LIMIT + 4) {
             let path = format!("/tmp/miss-{i}.rs");
-            let c = call("os", serde_json::json!({"action": "read", "path": path}));
+            let c = call("read_file", serde_json::json!({"path": path}));
             record_action_spiral(&mut counts, &c, Some(&read(&path)), true, false);
         }
-        assert_eq!(counts.get("os:read").copied().unwrap_or(0), 0);
+        assert_eq!(counts.get("read_file:").copied().unwrap_or(0), 0);
     }
 
     #[test]
     fn spiral_redundant_reads_still_trip_limit() {
         let mut counts = std::collections::HashMap::new();
-        let c = call("os", serde_json::json!({"action": "read", "path": "/tmp/same.rs"}));
+        let c = call("read_file", serde_json::json!({"path": "/tmp/same.rs"}));
         for _ in 0..SAME_ACTION_LIMIT {
             record_action_spiral(&mut counts, &c, Some(&read("/tmp/same.rs")), false, true);
         }
-        assert_eq!(counts["os:read"], SAME_ACTION_LIMIT);
+        assert_eq!(counts["read_file:"], SAME_ACTION_LIMIT);
     }
 
     #[test]
@@ -1791,9 +1791,9 @@ mod tests {
         assert_eq!(read_path(&read("/tmp/a.rs")).as_deref(), Some("/tmp/a.rs"));
         assert_eq!(read_path(&command("cat /tmp/a.rs")).as_deref(), Some("/tmp/a.rs"));
         assert_eq!(read_path(&command("ls /tmp")), None);
-        assert_eq!(read_path(&target("os", "write_file", Some(RuleField::Folder("/tmp/a".into())))), None);
+        assert_eq!(read_path(&target("write_file", "write_file", Some(RuleField::Folder("/tmp/a".into())))), None);
         // A read with no path is not a tracked target.
-        assert_eq!(read_path(&target("os", "read_file", None)), None);
+        assert_eq!(read_path(&target("read_file", "read_file", None)), None);
     }
 
     #[test]
@@ -1806,12 +1806,12 @@ mod tests {
 
     #[test]
     fn the_done_gate_reads_the_job_not_the_tool() {
-        assert!(is_file_change(&target("os", "edit_file", None)));
-        assert!(is_file_change(&target("os", "write_file", None)));
+        assert!(is_file_change(&target("edit_file", "edit_file", None)));
+        assert!(is_file_change(&target("write_file", "write_file", None)));
         assert!(!is_file_change(&read("/a.rs")));
         assert!(is_check_run(&command("cargo test")));
         assert!(!is_check_run(&command("cargo build")));
-        assert!(!is_check_run(&target("os", "edit_file", Some(RuleField::Folder("cargo test".into())))));
+        assert!(!is_check_run(&target("edit_file", "edit_file", Some(RuleField::Folder("cargo test".into())))));
         assert!(is_desktop_act(&target("os", "desktop_click", None)));
         assert!(!is_desktop_act(&target("os", "desktop_see", None)));
         assert!(!is_desktop_act(&command("ls")));
@@ -1825,9 +1825,9 @@ mod tests {
         let big = "x".repeat(150_000);
         let mid = "y".repeat(80_000);
         let mut results = vec![
-            Some((call("os", serde_json::json!({})), ToolResult::ok(mid.clone()))),
+            Some((call("read_file", serde_json::json!({})), ToolResult::ok(mid.clone()))),
             Some((call("web", serde_json::json!({})), ToolResult::ok(big))),
-            Some((call("os", serde_json::json!({})), ToolResult::error("e".repeat(1_000)))),
+            Some((call("run_command", serde_json::json!({})), ToolResult::error("e".repeat(1_000)))),
             None,
         ];
         apply_message_budget(&mut results, dir.path());
@@ -1877,8 +1877,9 @@ mod tests {
         // An explicit action keys on the tool and action.
         let with_action = call("plugin", serde_json::json!({"resource": "quickbooks", "action": "exec", "command": "q"}));
         assert_eq!(action_key(&with_action, Some(&ta)), "plugin:exec");
-        let glob = call("os", serde_json::json!({"action": "glob", "path": "/tmp"}));
-        assert_eq!(action_key(&glob, Some(&command("x"))), "os:glob");
+        // A command keys on the tool and its first words.
+        let ls = call("run_command", serde_json::json!({"command": "ls -la /tmp"}));
+        assert_eq!(action_key(&ls, Some(&command("ls -la /tmp"))), "run_command:ls -la");
     }
 }
 
@@ -1890,7 +1891,7 @@ mod runaway_backstop_tests {
         ai::ToolCall {
             id: "t".into(),
             name: name.into(),
-            input: serde_json::json!({"action": "exec", "command": cmd}),
+            input: serde_json::json!({"command": cmd}),
         }
     }
 
@@ -1903,7 +1904,7 @@ mod runaway_backstop_tests {
     #[test]
     fn identical_call_aborts_even_when_every_result_differs() {
         let mut budget = ai::call_budget::CallBudget::new();
-        let c = call("os", "tail -30 /var/log/app.log");
+        let c = call("run_command", "tail -30 /var/log/app.log");
         for i in 0..IDENTICAL_CALL_ABORT {
             assert!(
                 budget.abort_due(&c.name, &c.input, IDENTICAL_CALL_ABORT).is_none(),
@@ -1924,11 +1925,11 @@ mod runaway_backstop_tests {
     fn different_arguments_do_not_share_a_budget() {
         let mut budget = ai::call_budget::CallBudget::new();
         for i in 0..40 {
-            let c = call("os", &format!("echo {i}"));
+            let c = call("run_command", &format!("echo {i}"));
             budget.record(&c.name, &c.input);
         }
         for i in 0..40 {
-            let c = call("os", &format!("echo {i}"));
+            let c = call("run_command", &format!("echo {i}"));
             assert!(
                 budget.abort_due(&c.name, &c.input, IDENTICAL_CALL_ABORT).is_none(),
                 "40 distinct commands must never trip the backstop"
@@ -1940,7 +1941,7 @@ mod runaway_backstop_tests {
     #[test]
     fn tool_name_is_part_of_the_key() {
         let mut budget = ai::call_budget::CallBudget::new();
-        let a = call("os", "ls");
+        let a = call("run_command", "ls");
         for _ in 0..IDENTICAL_CALL_ABORT {
             budget.record(&a.name, &a.input);
         }

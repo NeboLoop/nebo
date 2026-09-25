@@ -16,7 +16,9 @@ conversation:
     content: "Start one helper (wait for it) and tell it to write exactly the line 'hello' to /tmp/nebo-test/send/note.txt. When it is done, do NOT start another helper: use send_message to that same helper's id with this exact message: 'Change the file you just wrote so its entire content is exactly the two words: hello again' Then read the file yourself and tell me its final content."
 
 tool_config:
-  os:
+  write_file:
+    enabled: true
+  read_file:
     enabled: true
   delegate:
     enabled: true

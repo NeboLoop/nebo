@@ -3147,5 +3147,16 @@
 		"moveTo": "Pindah ke",
 		"dropHere": "Lepaskan untuk melapor kepada pekerja ini",
 		"cycleRefused": "Itu akan menjadikan seorang pekerja melapor kepada dirinya sendiri."
+	},
+	"permissionAsk": {
+		"title": "{name} perlukan kelulusan anda",
+		"allowAlways": "Sentiasa benarkan",
+		"thisOnce": "Kali ini sahaja",
+		"no": "Tidak",
+		"allowedAlways": "Dibenarkan mulai sekarang",
+		"allowedOnce": "Dibenarkan kali ini",
+		"declined": "Ditolak",
+		"expired": "Tamat tempoh, dikira sebagai Tidak",
+		"failed": "Jawapan anda tidak dapat dihantar. Cuba lagi."
 	}
 }

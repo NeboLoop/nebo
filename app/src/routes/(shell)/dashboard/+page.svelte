@@ -26,6 +26,8 @@
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { formatTime, formatRelative } from '$lib/time';
   import { storage } from '$lib/storage';
+  import { openAsks } from '$lib/stores/permissionAsks';
+  import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
 
   // The phone has no sidebar on screen: the header's back chevron opens the
   // employee list the way every thread page does. The bell opens the Inbox.
@@ -118,7 +120,7 @@
     // employee paused or resumed. Never the per-token stream or the per-tool
     // event: while a chat runs those arrive every second, and each reload is
     // dozens of queries the server does not need while it is running the chat.
-    for (const ev of ['chat_created', 'subagent_start', 'subagent_complete', 'chat_complete', 'chat_error', 'chat_cancelled', 'ask_request', 'approval_request', 'agent_activated', 'agent_deactivated', 'workflow_run_started', 'workflow_activity_update', 'workflow_run_completed', 'workflow_run_failed', 'workflow_run_exited']) {
+    for (const ev of ['chat_created', 'subagent_start', 'subagent_complete', 'chat_complete', 'chat_error', 'chat_cancelled', 'ask_request', 'approval_request', 'permission_ask', 'permission_ask_resolved', 'agent_activated', 'agent_deactivated', 'workflow_run_started', 'workflow_activity_update', 'workflow_run_completed', 'workflow_run_failed', 'workflow_run_exited']) {
       unsubs.push(ws.on(ev, scheduleLoad));
     }
     // The five-second progress snapshot lists every live run. It only earns a
@@ -158,16 +160,8 @@
     if (e.runId) return goto(`/dashboard?runs=1&agent=${e.id}&run=${e.runId}`);
     openChat(e);
   }
-  async function answer(a: components.DashboardApproval, approved: boolean) {
-    if (a.kind === 'tool') {
-      getWebSocketClient().send('approval_response', { request_id: a.id, approved, always: false });
-    } else {
-      try {
-        await api.resolveWorkflowApproval(a.id, { approved });
-      } catch (e) {
-        error = String(e);
-      }
-    }
+  function answer(a: components.DashboardApproval, approved: boolean) {
+    getWebSocketClient().send('approval_response', { request_id: a.id, approved, always: false });
     load();
   }
 
@@ -396,6 +390,10 @@
 
         <!-- Needs your okay: the interrupt. Cards stay in place; this is what moves. -->
         {#each data.approvals as a (a.id)}
+          {@const ask = a.kind === 'permission_ask' ? $openAsks.find((x) => x.id === a.id) : undefined}
+          {#if a.kind === 'permission_ask'}
+            {#if ask}<PermissionAskCard {ask} via="inbox" />{/if}
+          {:else}
           <section class="rounded-2xl border border-warning/60 bg-warning/10 px-4 py-3 flex flex-wrap items-center gap-3">
             <div class="flex items-center gap-2.5 min-w-0">
               <AgentAvatar name={a.agentName} color={colors[a.agentId]} size="sm" />
@@ -407,6 +405,7 @@
               {#if a.chatId}<button class="btn btn-ghost btn-sm rounded-full" onclick={() => goto(`/${a.agentId}/threads/${a.chatId}`)}>{$t('dashboard.openChat')}</button>{/if}
             </div>
           </section>
+          {/if}
         {/each}
 
         <!-- Employees -->

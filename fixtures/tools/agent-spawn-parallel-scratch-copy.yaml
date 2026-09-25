@@ -16,7 +16,11 @@ conversation:
     content: "In the folder /tmp/nebo-test/plain (it is not a git repo, leave it that way), run two helpers in parallel with worktree isolation: one changes a.txt to say ONE, the other changes b.txt to say TWO. Then tell me what the merge section said."
 
 tool_config:
-  os:
+  edit_file:
+    enabled: true
+  write_file:
+    enabled: true
+  run_command:
     enabled: true
   delegate:
     enabled: true

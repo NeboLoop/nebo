@@ -891,6 +891,25 @@ export interface PendingWrite {
 	resolvedAt?: number
 }
 
+export interface PermissionAskCard {
+	id: string
+	agentId: string
+	employee: string
+	sessionKey: string
+	sentence: string
+	reason: string
+	allowAlways: boolean
+	thisOnce: boolean
+	status: string
+	answer?: string
+	createdAt: number
+	expiresAt: number
+}
+
+export interface PermissionAsksResponse {
+	asks: PermissionAskCard[]
+}
+
 export interface PluginRegistry {
 	id: string
 	name: string
@@ -1690,10 +1709,6 @@ export interface GetToolOutputResponse {
 	isError: boolean
 }
 
-export interface GetWorkflowApprovalStatusResponse {
-	status: string
-}
-
 export interface GetWorkflowResponse {
 	workflow: Workflow
 }
@@ -2056,11 +2071,6 @@ export interface RemoveTeamResponse {
 
 export interface ResolveLearningResponse {
 	status: string
-}
-
-export interface ResolveWorkflowApprovalResponse {
-	status: string
-	runId: string
 }
 
 export interface RevertLearningResponse {
@@ -2562,11 +2572,11 @@ export type WSServerEventType =
 	| "chat_cancelled"
 	| "chat_message"
 	| "session_reset"
-	| "session_compact"
 	| "chat_complete"
 	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
+	| "session_compact"
 
 export interface AppActionEvent {
 	agentId: string
@@ -2591,12 +2601,6 @@ export interface ChatMessageEvent {
 	artifacts: unknown
 }
 
-export interface SessionCompactEvent {
-	session_id: string
-	success: boolean
-	error: string
-}
-
 export interface ChatCompleteEvent {
 	session_id: string
 	skipped: boolean
@@ -2615,6 +2619,11 @@ export interface ChatStreamEvent {
 export interface ChatErrorEvent {
 	error: string
 	session_id: string
+}
+
+export interface SessionCompactEvent {
+	success: boolean
+	error: string
 }
 
 /** Client → Server WebSocket message types */

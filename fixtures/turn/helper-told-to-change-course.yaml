@@ -27,7 +27,7 @@ tool_config:
     enabled: true
   send_message:
     enabled: true
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:

@@ -21,17 +21,30 @@ export const notifications = writable<Notification[]>([]);
 
 // ── Approvals ───────────────────────────────────────────────────────────
 // A pending decision is a task, not mail: reading it does not settle it.
-// The inbox pins `wf-approval:<run>`, `learn:<pending>` and
+// The inbox pins `permission-ask:<ask>`, `learn:<pending>` and
 // `artifact-update:<type>:<artifact>:<version>` rows in an approval band
 // while they are pending, but the sidebar badge counted only unread rows,
 // so five open approvals the owner had looked at showed as a badge of 1
 // (Danny, 2026-09-09). The statuses live here so the badge and the band
 // read the same map, and a decision made in the band updates both.
-export type ApprovalRef = { kind: 'workflow' | 'learning' | 'update'; id: string; version?: string };
+export type ApprovalRef = { kind: 'ask' | 'learning' | 'update'; id: string; version?: string };
+
+/** The Inbox row of a permission ask. */
+export const askNotificationId = (askId: string) => `permission-ask:${askId}`;
+
+/** A permission ask's status in the band's words. */
+export function askBandStatus(status: string): string {
+  switch (status) {
+    case 'open': return 'pending';
+    case 'allowed': return 'approved';
+    case 'declined': return 'denied';
+    default: return status;
+  }
+}
 
 export const approvalRef = (id: string): ApprovalRef | null =>
-  id.startsWith('wf-approval:')
-    ? { kind: 'workflow', id: id.slice('wf-approval:'.length) }
+  id.startsWith('permission-ask:')
+    ? { kind: 'ask', id: id.slice('permission-ask:'.length) }
     : id.startsWith('learn:')
       ? { kind: 'learning', id: id.slice('learn:'.length) }
       : id.startsWith('artifact-update:')
@@ -73,8 +86,8 @@ export async function ensureApprovalStatuses(): Promise<void> {
     statusFetched.add(n.id);
     try {
       let status: string;
-      if (ref.kind === 'workflow') {
-        status = ((await api.getWorkflowApprovalStatus(ref.id)) as { status?: string }).status ?? 'unknown';
+      if (ref.kind === 'ask') {
+        status = askBandStatus((await api.getPermissionAsk(ref.id)).status);
       } else if (ref.kind === 'learning') {
         status = ((await api.getLearning(ref.id)) as { status?: string }).status ?? 'unknown';
       } else {

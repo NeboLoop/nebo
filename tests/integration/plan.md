@@ -102,20 +102,20 @@ nebo chat "say hello"
 
 Functional tests for each of the 10 built-in agent tools. Every test must verify **actual behavior**, not just "tool didn't crash." Write data, read it back, verify content. Create things, verify they exist, clean them up.
 
-### AT-01: os (file) — Write + Read Round-Trip
+### AT-01: write_file + read_file — Write + Read Round-Trip
 
 Write a test file, read it back, verify contents match, then delete it.
 
 ```
-nebo chat "use os(resource: \"file\", action: \"write\", path: \"/tmp/nebo-at01-test.txt\", content: \"AT01_ROUND_TRIP_PASS\")"
+nebo chat "use write_file(path: \"/tmp/nebo-at01-test.txt\", content: \"AT01_ROUND_TRIP_PASS\")"
 ```
 
 ```
-nebo chat "use os(resource: \"file\", action: \"read\", path: \"/tmp/nebo-at01-test.txt\")"
+nebo chat "use read_file(path: \"/tmp/nebo-at01-test.txt\")"
 ```
 
 ```
-nebo chat "use os(resource: \"shell\", action: \"exec\", command: \"rm /tmp/nebo-at01-test.txt\")"
+nebo chat "use run_command(command: \"rm /tmp/nebo-at01-test.txt\", description: \"Delete the test file\")"
 ```
 
 | Check | Expected | Result |
@@ -124,12 +124,12 @@ nebo chat "use os(resource: \"shell\", action: \"exec\", command: \"rm /tmp/nebo
 | Read returns exact content | Output contains `AT01_ROUND_TRIP_PASS` | |
 | Cleanup | File deleted | |
 
-### AT-02: os (shell) — Piped Command + Exit Code
+### AT-02: run_command — Piped Command + Exit Code
 
 Execute a multi-step shell command and verify structured output.
 
 ```
-nebo chat "use os(resource: \"shell\", action: \"exec\", command: \"echo '{\"test\": \"AT02_PASS\", \"pid\": '$$'}' | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d[\"test\"])'\")"
+nebo chat "use run_command(command: \"echo '{\"test\": \"AT02_PASS\", \"pid\": '$$'}' | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d[\"test\"])'\", description: \"Parse a test JSON line\")"
 ```
 
 | Check | Expected | Result |
@@ -763,7 +763,7 @@ POST http://localhost:27895/api/v1/skills
 
 **Setup:** Create a resource file inside the skill directory:
 ```
-os(resource: "file", action: "write", path: "{data_dir}/user/skills/test-integration/scripts/helper.py", content: "print('hello from bundled script')")
+write_file(path: "{data_dir}/user/skills/test-integration/scripts/helper.py", content: "print('hello from bundled script')")
 ```
 
 **Agent tool — Browse:**
@@ -1691,10 +1691,10 @@ nebo chat "use os(resource: \"settings\", action: \"volume\")"
 
 ### X-09: Desktop Round-Trip — Clipboard + Windows
 
-Write to clipboard via shell, read via clipboard tool, verify match. Then verify terminal window appears in window list.
+Write to clipboard via run_command, read via clipboard tool, verify match. Then verify terminal window appears in window list.
 
 ```
-nebo chat "use os(resource: \"shell\", action: \"exec\", command: \"echo -n X09_DESKTOP_PASS | pbcopy\")"
+nebo chat "use run_command(command: \"echo -n X09_DESKTOP_PASS | pbcopy\", description: \"Copy the test text to the clipboard\")"
 nebo chat "use os(resource: \"clipboard\", action: \"read\")"
 nebo chat "use os(resource: \"window\", action: \"list\")"
 ```

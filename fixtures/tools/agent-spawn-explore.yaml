@@ -14,7 +14,9 @@ conversation:
 tool_config:
   delegate:
     enabled: true
-  os:
+  run_command:
+    enabled: true
+  read_file:
     enabled: true
 
 prompt_assertions:
@@ -35,7 +37,7 @@ prompt_assertions:
       text: "Final answer reports what the helper found rather than claiming the model searched itself without any search happening"
       severity: critical
     - id: no-self-grep-flood
-      text: "Model does not run more than 3 direct os grep/read calls itself before or instead of delegating"
+      text: "Model does not run more than 3 direct run_command grep/find or read_file calls itself before or instead of delegating"
       severity: important
 
 ideal_behavior:

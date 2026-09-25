@@ -17,6 +17,7 @@ pub mod humanize;
 pub mod installed;
 pub mod channel_bridge;
 pub mod code_tool;
+pub mod command_tools;
 pub mod coworker;
 
 /// A subprocess result (shell exec, plugin exec) longer than this, in
@@ -41,6 +42,7 @@ pub mod events;
 pub mod execute_tool;
 pub mod exit_tool;
 pub mod file_tool;
+pub mod file_tools;
 pub mod find_tools;
 pub mod gate;
 pub mod goal_tool;

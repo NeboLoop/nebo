@@ -18,7 +18,9 @@ conversation:
     content: "In the project at /tmp/nebo-test/sveltestrap (a git repo), restyle seven components in parallel with worktree isolation, one helper per component: Alert, Badge, Button, Card, Col, Container, Dropdown. Each helper edits only src/<Name>/<Name>.svelte and adds the CSS class nb-restyled to that component's root element class list, changing nothing else. When they are done, tell me what the merge section said."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  edit_file:
     enabled: true
   delegate:
     enabled: true
