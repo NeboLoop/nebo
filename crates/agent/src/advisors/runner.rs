@@ -146,7 +146,6 @@ async fn run_single_advisor(
         max_tokens: 1024,
         temperature: 0.7,
         system: system_prompt,
-        static_system: String::new(),
         model: String::new(),
         enable_thinking: false,
         metadata: None,

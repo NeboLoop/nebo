@@ -1,11 +1,14 @@
 //! The loop side of tools: the set declared on each step, the deferred
 //! tools `find_tools` loaded, and the names-only listing of the rest.
 //!
-//! Declared set = core ∪ always_load (the employee's `requires.tools`, its
-//! own app tools) ∪ loaded. Every other registered tool is deferred and
-//! listed by name; `find_tools` returns a deferred tool's definition and its
-//! schema joins the request from the next step. There is no keyword
-//! filter, context group or per-turn show question.
+//! Declared set = core ∪ loaded. The core set is the same for every
+//! employee, so the tools array (the head of the cached prefix) is too;
+//! what an employee's job uses (its `requires.tools`, plugins, interfaces
+//! and app tools) is deferred like every other tool, named in its session
+//! context (`prompt::inputs::job_tools`) and loaded with `find_tools`. Every
+//! deferred tool is listed by name; `find_tools` returns a deferred tool's
+//! definition and its schema joins the request from the next step. There is
+//! no keyword filter, context group or per-turn show question.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -90,20 +93,11 @@ pub fn loaded_names(messages: &[ChatMessage]) -> BTreeSet<String> {
 }
 
 /// The definitions sent this step: every non-deferred tool, plus the
-/// deferred ones that are always loaded for this employee or were loaded,
-/// in name order (the tools array is part of the cached prefix).
-pub fn declared(
-    all: Vec<ToolDefinition>,
-    deferred: &HashSet<String>,
-    always_load: &HashSet<String>,
-    loaded: &BTreeSet<String>,
-) -> Vec<ToolDefinition> {
-    let mut out: Vec<ToolDefinition> = all
-        .into_iter()
-        .filter(|d| {
-            !deferred.contains(&d.name) || always_load.contains(&d.name) || loaded.contains(&d.name)
-        })
-        .collect();
+/// deferred ones the conversation loaded, in name order (the tools array is
+/// part of the cached prefix).
+pub fn declared(all: Vec<ToolDefinition>, deferred: &HashSet<String>, loaded: &BTreeSet<String>) -> Vec<ToolDefinition> {
+    let mut out: Vec<ToolDefinition> =
+        all.into_iter().filter(|d| !deferred.contains(&d.name) || loaded.contains(&d.name)).collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
@@ -201,10 +195,6 @@ fn family_prefix(name: &str) -> Option<String> {
 /// What a step's surface is built from: the seat's side of it.
 pub struct SurfaceInputs<'a> {
     pub agent_id: &'a str,
-    /// Declared on every step for this employee: its `requires.tools`, its
-    /// required plugins' tools and the operation tools of the interfaces it
-    /// binds. Its own app tools join them from the registry.
-    pub always_load: &'a HashSet<String>,
     /// A restricted run's allowlist: only what it admits is declared or
     /// listed.
     pub allowlist: Option<&'a HashSet<String>>,
@@ -228,7 +218,7 @@ pub struct Surface {
     pub listing: Option<ListingDelta>,
 }
 
-/// The surface of the next call: core ∪ always_load ∪ loaded, narrowed by
+/// The surface of the next call: core ∪ loaded, narrowed by
 /// the seat, plus the listing delta the step writes before its call.
 /// `conversation` is the conversation as stored since the last checkpoint.
 pub async fn surface(
@@ -255,12 +245,10 @@ pub async fn surface(
     let deferred = tools.get_deferred_names().await;
     let loaded = loaded_tools(conversation, &deferred);
     let mut all = tools.list().await;
-    let mut own = tools.agent_tool_names(seat.agent_id).await;
     if seat.company_memory_sealed {
-        crate::harness::seat::seal_company_memory(store, tools, seat.agent_id, &mut all, &mut own).await;
+        crate::harness::seat::seal_company_memory(store, tools, seat.agent_id, &mut all).await;
     }
-    let always: HashSet<String> = seat.always_load.iter().cloned().chain(own).collect();
-    let mut declared = declared(all, &deferred, &always, &loaded);
+    let mut declared = declared(all, &deferred, &loaded);
     declared.retain(|d| crate::harness::delegation::on_surface(seat.mode, &d.name));
     let mut listed = listed(&deferred, &declared);
     listed.retain(|n| crate::harness::delegation::on_surface(seat.mode, n));
@@ -278,29 +266,14 @@ pub async fn surface(
 /// ethical wall). `memory_tool_names` is resolved by the caller from the MCP
 /// proxy → integration mapping, so this stays pure and testable.
 ///
-/// Returns the surviving definitions and how many were withheld; also prunes
-/// `agent_tool_names`, or a withheld tool would still be callable by name.
+/// Returns the surviving definitions and how many were withheld.
 pub fn withhold_memory_tools(
     all_tools: Vec<ToolDefinition>,
-    agent_tool_names: &mut HashSet<String>,
     memory_tool_names: &HashSet<String>,
 ) -> (Vec<ToolDefinition>, usize) {
-    if memory_tool_names.is_empty() {
-        return (all_tools, 0);
-    }
-    let mut withheld = 0usize;
-    let kept: Vec<ToolDefinition> = all_tools
-        .into_iter()
-        .filter(|d| {
-            if memory_tool_names.contains(&d.name) {
-                agent_tool_names.remove(&d.name);
-                withheld += 1;
-                false
-            } else {
-                true
-            }
-        })
-        .collect();
+    let before = all_tools.len();
+    let kept: Vec<ToolDefinition> = all_tools.into_iter().filter(|d| !memory_tool_names.contains(&d.name)).collect();
+    let withheld = before - kept.len();
     (kept, withheld)
 }
 
@@ -382,13 +355,12 @@ mod tests {
     }
 
     #[test]
-    fn the_declared_set_is_core_always_load_and_loaded_in_name_order() {
+    fn the_declared_set_is_core_and_loaded_in_name_order() {
         let all = vec![def("web"), def("vm"), def("os"), def("authority"), def("code")];
         let deferred = set(&["vm", "authority", "code"]);
-        let always = set(&["authority"]);
         let loaded: BTreeSet<String> = ["code".to_string()].into();
-        let names: Vec<String> = declared(all, &deferred, &always, &loaded).into_iter().map(|d| d.name).collect();
-        assert_eq!(names, ["authority", "code", "os", "web"]);
+        let names: Vec<String> = declared(all, &deferred, &loaded).into_iter().map(|d| d.name).collect();
+        assert_eq!(names, ["code", "os", "web"]);
     }
 
     #[test]
@@ -430,16 +402,14 @@ mod tests {
     #[test]
     fn isolated_employee_loses_memory_tools_only() {
         let all = vec![def("os"), def("mcp__nebo_kb__memory_search"), def("mcp__other__x")];
-        let mut agent_tools = set(&["mcp__nebo_kb__memory_search"]);
-        let (kept, withheld) = withhold_memory_tools(all, &mut agent_tools, &set(&["mcp__nebo_kb__memory_search"]));
+        let (kept, withheld) = withhold_memory_tools(all, &set(&["mcp__nebo_kb__memory_search"]));
         assert_eq!(withheld, 1);
         assert_eq!(kept.into_iter().map(|d| d.name).collect::<Vec<_>>(), ["os", "mcp__other__x"]);
-        assert!(agent_tools.is_empty());
     }
 
     #[test]
     fn non_isolated_employee_keeps_everything() {
-        let (kept, withheld) = withhold_memory_tools(vec![def("os")], &mut HashSet::new(), &HashSet::new());
+        let (kept, withheld) = withhold_memory_tools(vec![def("os")], &HashSet::new());
         assert_eq!((kept.len(), withheld), (1, 0));
     }
 }

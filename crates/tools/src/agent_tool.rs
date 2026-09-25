@@ -27,7 +27,7 @@ pub struct ActiveAgent {
     pub agent_id: String,
     /// Human-readable display name.
     pub name: String,
-    /// Full AGENT.md body — becomes the system prompt identity.
+    /// Full AGENT.md body — told in the turn's identity row.
     pub agent_md: String,
     /// Parsed agent.json config (workflows, skills, triggers).
     pub config: Option<napp::agent::AgentConfig>,

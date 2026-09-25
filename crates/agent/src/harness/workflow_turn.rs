@@ -1,6 +1,7 @@
 //! Workflow activities on the one loop: the `workflow::ActivityLoop`
 //! implementation. Every activity turn is a `TurnMode::Workflow` turn of
-//! `drive_turn`: the activity's own system prompt, its scoped tools, the
+//! `drive_turn`: the activity's instructions (a row in its conversation;
+//! the system prompt is every turn's one prompt), its scoped tools, the
 //! approval park, the `exit` primitive and its contract (`min_iterations`
 //! and `requires_tools`, checked at turn end by `WorkflowContractCheck`).
 //!
@@ -28,9 +29,10 @@ pub type ParkFn = Arc<dyn Fn(WorkflowPark<'_>) -> Result<(), String> + Send + Sy
 pub struct WorkflowMode {
     /// Janus attribution: workflow, action and step ids ride the request trace.
     pub trace: RequestTrace,
-    /// The activity's system prompt, built by the engine (context, inputs,
-    /// skills, the employee's identity) and used as it is.
-    pub system: String,
+    /// The activity's instructions, built by the engine (rules, skills,
+    /// type, parameters, task, inputs, prior results, controls): told as the
+    /// turn's `activity` row, never in the system prompt.
+    pub instructions: String,
     /// What this step is for, in words: workflow name, activity and step
     /// instruction.
     pub objective: String,
@@ -72,7 +74,7 @@ impl Default for WorkflowMode {
     fn default() -> Self {
         Self {
             trace: RequestTrace::new("workflow"),
-            system: String::new(),
+            instructions: String::new(),
             objective: String::new(),
             instruction: String::new(),
             advertised_tools: HashSet::new(),
@@ -360,7 +362,7 @@ impl ActivityLoop for WorkflowTurns {
             },
             mode: TurnMode::Workflow(Box::new(WorkflowMode {
                 trace: turn.trace.clone(),
-                system: turn.system.clone(),
+                instructions: turn.instructions.clone(),
                 objective,
                 instruction,
                 advertised_tools: turn.advertised_tools.iter().cloned().collect(),

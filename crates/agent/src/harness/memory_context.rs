@@ -30,7 +30,7 @@ const RELEVANT_MEMORIES: &str = "relevant_memories";
 /// its memory (profile, owner, preferences, learned personality, the
 /// always-on memories) plus the owner's configured inputs.
 pub struct EmployeeMemory {
-    /// The `employee_memory` section, placed after the cache boundary.
+    /// The `employee_memory` row's text.
     pub section: String,
     /// The owner's IANA timezone, when set: the environment's date is
     /// computed in it.

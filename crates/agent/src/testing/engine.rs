@@ -9,26 +9,20 @@ use tracing::{info, warn};
 use super::fixture::{Fixture, Interrupt};
 use super::trace::*;
 
-/// Print the system prompt a turn sends: the fixed part, the cache boundary
-/// and the employee's section, each with its size.
+/// Print what a turn opens with: the system prompt every turn sends, then
+/// the identity row the fixture's employee is told, each with its size.
 pub fn inspect_prompt(fixture: Option<&Fixture>) {
-    use crate::harness::prompt::{PromptInputs, Role, SystemPrompt};
+    use crate::harness::prompt::{Identity, Role, system_prompt};
 
     let name = fixture.map(|f| f.target_component.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Nebo".to_string());
-    let prompt = SystemPrompt::build(&PromptInputs {
-        name,
-        role: Role::Employee,
-        personality_snippet: None,
-        soul: None,
-        rules: None,
-        persona: None,
-    });
-    let sizes = prompt.sizes();
-    println!("=== FIXED (chars: {}) ===", sizes.fixed);
-    println!("{}", prompt.fixed);
-    println!("\n=== EMPLOYEE (chars: {}) ===", sizes.employee);
-    println!("{}", prompt.employee);
-    println!("\n--- Total: {} chars (~{} tokens) ---", sizes.total, sizes.total / crate::CHARS_PER_TOKEN);
+    let identity = Identity { name, role: Role::Employee, personality_snippet: None, soul: None, rules: None, persona: None }.text();
+    let system = system_prompt();
+    println!("=== SYSTEM PROMPT (chars: {}) ===", system.chars().count());
+    println!("{system}");
+    println!("\n=== IDENTITY ROW (chars: {}) ===", identity.chars().count());
+    println!("{identity}");
+    let total = system.chars().count() + identity.chars().count();
+    println!("\n--- Total: {} chars (~{} tokens) ---", total, total / crate::CHARS_PER_TOKEN);
 }
 
 /// Run a fixture live against a running Nebo server.

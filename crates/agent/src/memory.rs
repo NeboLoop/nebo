@@ -189,7 +189,6 @@ pub async fn extract_facts(
         max_tokens: 4096,
         temperature: 0.0,
         system: "You are a precise fact extractor. Return only valid JSON.".to_string(),
-        static_system: String::new(),
         model: model.to_string(),
         enable_thinking: false,
         metadata: None,

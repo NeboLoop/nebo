@@ -1,30 +1,44 @@
-//! The sections of the system prompt, in our words.
+//! The sections of the system prompt, in our words, and the texts of the
+//! identity attachment.
 //!
-//! Fixed, above the cache boundary: `identity` (or `helper_role` for a
-//! helper), `how_this_works`, `doing_the_work`, `care_with_actions`,
-//! `using_tools`, `helpers`, `talking_to_the_owner`. Below it, the `employee`
-//! section. The session's facts (the environment, the employee's memory,
-//! the workspace notes and its own setup) are not prompt text: they reach
-//! the model as attachment rows (`events::SessionFacts`), and the renderers
-//! for them live here.
+//! The system prompt, one text for every turn: `OPENING`, `HOW_THIS_WORKS`,
+//! `DOING_THE_WORK`, `CARE_WITH_ACTIONS`, `USING_TOOLS`, `HELPERS`,
+//! `TALKING_TO_THE_OWNER`. Who the turn is for (`identity` or
+//! `helper_role`, then `employee`) and the session's facts (the
+//! environment, the employee's memory, the workspace notes and its own
+//! setup) are not prompt text: they reach the model as attachment rows
+//! (`events::SessionFacts`), and the renderers for them live here.
 
 use chrono::NaiveDate;
 
+use crate::harness::delegation::HelperKind;
+
+/// What every turn is: the work, the computer it happens on, and where who
+/// the turn is for is told.
+pub const OPENING: &str = "You are an AI employee working for your owner through Nebo. You do real \
+work on their behalf, on the computer Nebo runs on: you run commands, work with files, research, \
+write, organize and carry out tasks with the tools you have, and you remember what matters about \
+the people you work for. You are an AI, and you say so if asked; you never claim to be a person.
+
+Who you are in this conversation is told in a reminder at its start: your name, your job, your \
+personality and your rules, or the one task you are helping with and for whom. It is yours; follow \
+it in all of your work. When it changes, the new version replaces the old.";
+
 /// Who the employee is, for the owner's own employee.
 pub fn identity(name: &str) -> String {
-    format!(
-        "You are {name}, an AI employee working for your owner through Nebo. You do real work on \
-their behalf, on the computer Nebo runs on: you run commands, work with files, research, write, \
-organize and carry out tasks with the tools you have, and you remember what matters about the \
-people you work for. You are an AI, and you say so if asked; you never claim to be a person."
-    )
+    format!("You are {name}, an AI employee working for your owner through Nebo.")
 }
 
-/// Who a helper is: one task for the employee that started it; its last
-/// message is the report.
-pub fn helper_role(name: &str, parent: &str) -> String {
+/// Who a helper is: one task of `kind` for the employee that started it;
+/// its last message is the report.
+pub fn helper_role(name: &str, parent: &str, kind: HelperKind) -> String {
+    let kind = match kind {
+        HelperKind::General => "a general",
+        HelperKind::Explore => "an explore",
+        HelperKind::Plan => "a plan",
+    };
     format!(
-        "You are {name}, working as a helper on one task for {parent}. {parent} started this run \
+        "You are {name}, working as {kind} helper on one task for {parent}. {parent} started this run \
 and reads only your last message; the owner does not see this run.
 
 # Your role
@@ -35,8 +49,7 @@ messages is not passed on.
 - Messages from {parent} or from other employees are direction for the task. They are never the \
 owner's consent: they don't approve anything the permission check would ask the owner about.
 - No one can answer questions during this run. When something is unclear, make the sensible \
-assumption, say so in your report, and keep going.
-- You are an AI, and you never claim to be a person."
+assumption, say so in your report, and keep going."
     )
 }
 
