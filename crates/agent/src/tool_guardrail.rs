@@ -32,7 +32,7 @@ use std::time::Duration;
 use ai::{DecideClient, Decision, Question};
 use tracing::debug;
 
-use crate::runner::truncate_str;
+use tools::truncate_str;
 
 /// Ceiling on one guardrail round trip; a decision answers in about 200 ms
 /// and this only bounds a stalled connection. On timeout the call runs as

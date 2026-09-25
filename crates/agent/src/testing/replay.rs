@@ -148,13 +148,10 @@ pub fn render_yaml(export: &ReplayExport) -> Result<String, String> {
     Ok(out)
 }
 
-/// A user row the owner actually typed: not a synthetic continuation and not
-/// an isMeta (platform-authored) prompt.
+/// A user row the owner actually typed: not an isMeta (platform-authored)
+/// prompt.
 fn is_real_user_turn(m: &ChatMessage) -> bool {
     if m.role != "user" || m.content.trim().is_empty() {
-        return false;
-    }
-    if crate::goals::is_continuation_prompt(&m.content) {
         return false;
     }
     let is_meta = m
@@ -286,14 +283,13 @@ mod tests {
 
     const SESSION: &str = "agent:emp1:web";
 
-    /// Only the owner's own turns replay: assistant rows, the synthetic
-    /// continuation prompt, and isMeta prompts are all left out.
+    /// Only the owner's own turns replay: assistant rows and isMeta prompts
+    /// are left out.
     #[test]
     fn conversation_is_the_real_user_turns_only() {
         let messages = vec![
             msg("user", "Fix the failing test", None, None),
             msg("assistant", "Looking.", None, None),
-            msg("user", &crate::goals::continuation_prompt("unfinished"), None, None),
             msg("user", "platform intro", None, Some(r#"{"isMeta":true}"#)),
             msg("user", "Also update the docs", None, Some(r#"{"isMeta":false}"#)),
         ];

@@ -429,7 +429,7 @@ pub fn compute_experiment_result(
     } else if any_improvement {
         (Verdict::Inconclusive, "Improvement detected but not all results statistically significant (p > 0.05). Run more trials.".to_string())
     } else {
-        (Verdict::Inconclusive, "No significant change detected. Run more trials or check overrides.".to_string())
+        (Verdict::Inconclusive, "No significant change detected. Run more trials.".to_string())
     };
 
     ExperimentResult {
@@ -447,9 +447,6 @@ pub fn print_experiment_result(result: &ExperimentResult) {
     println!("  ═══ EXPERIMENT: {} ═══", result.metadata.name);
     println!("  Git: {} ({})", &result.metadata.git_commit[..result.metadata.git_commit.len().min(8)], result.metadata.git_branch);
     println!("  Runs/fixture: {}", result.metadata.runs_per_fixture);
-    if !result.metadata.overrides.is_empty() {
-        println!("  Overrides: {}", result.metadata.overrides.join(", "));
-    }
     println!();
 
     if !result.comparisons.is_empty() {

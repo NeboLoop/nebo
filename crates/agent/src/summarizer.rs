@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 use tools::ToolResult;
 use tracing::{debug, warn};
 
-use crate::runner::truncate_str;
+use tools::truncate_str;
 
 /// Total prompt cap to keep the summarizer call cheap.
 const PROMPT_CAP: usize = 2_000;

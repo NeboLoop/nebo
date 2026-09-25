@@ -47,7 +47,7 @@ use std::time::Duration;
 use ai::{DecideClient, Decision, Question};
 use tracing::{debug, info};
 
-use crate::runner::truncate_str;
+use tools::truncate_str;
 pub use crate::tool_guardrail::Mode;
 
 // ── Thresholds: UNTUNED ──────────────────────────────────────────────────

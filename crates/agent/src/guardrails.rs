@@ -1,7 +1,7 @@
 //! Loop-guardrail thresholds, configurable from Settings → Developer.
 //!
 //! Stored as a JSON object in the `settings.guardrails` column ('{}' =
-//! defaults). Parsed once per run by the runner; unknown fields are ignored
+//! defaults). Parsed once per turn; unknown fields are ignored
 //! and missing fields fall back to the built-in defaults, so a stale or
 //! partial blob can never disable the guards entirely.
 
@@ -12,8 +12,6 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_SAME_ACTION_LIMIT: usize = 8;
 /// Default: unproductive identical-args repeats before the call is blocked.
 pub const DEFAULT_IDENTICAL_ARGS_BLOCK_AFTER: usize = 2;
-/// Default: auto-continuations per real user message (goals.rs judge).
-pub const DEFAULT_MAX_AUTO_CONTINUATIONS: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -24,8 +22,6 @@ pub struct GuardrailConfig {
     /// Unproductive repeats of one exact (tool, args) call before it is
     /// hard-blocked.
     pub identical_args_block_after: usize,
-    /// Auto-continuations the goals judge may chain per real user message.
-    pub max_auto_continuations: u32,
     /// When true, a spiral-backstop trip ENDS the turn (ControlNotice) instead
     /// of nudging the model off the action. Off by default: interactive
     /// sessions get the gentle correction unless the developer opts in.
@@ -37,7 +33,6 @@ impl Default for GuardrailConfig {
         Self {
             same_action_limit: DEFAULT_SAME_ACTION_LIMIT,
             identical_args_block_after: DEFAULT_IDENTICAL_ARGS_BLOCK_AFTER,
-            max_auto_continuations: DEFAULT_MAX_AUTO_CONTINUATIONS,
             hard_stop: false,
         }
     }
@@ -76,28 +71,18 @@ impl GuardrailConfig {
 // same tool error 49 times with varied arguments, never stopped).
 // ---------------------------------------------------------------------------
 
-/// Why the agentic loop ended. `label()` is the string contract read by
-/// `workflow_loop.rs` and the logs; the variants are the closed set.
+/// Why a tool round ended its turn, or why the dispatcher ended a run.
+/// `label()` is the string the logs and the notices carry; the variants are
+/// the closed set.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Exit {
-    Unknown,
-    AdaptiveLimitNoProgress,
-    UserRequestedStop,
-    /// The owner's per-run spending limit: the model had its wrap-up turn.
-    SpendCapReached,
     /// The same exact call repeated past `IDENTICAL_CALL_ABORT`.
     RunawayToolLoop,
     /// The spiral backstop fired twice for one action (or hard-stop is on).
     RepeatedToolCalls,
     /// The same tool error came back `SAME_ERROR_NUDGE_AFTER` times after a nudge.
     SameErrorLoop,
-    /// The reviewer (reviewer.rs) judged that continuing could not help.
-    ReviewerStop,
     TerminalToolError,
-    EmptyResponseExhausted,
-    /// Normal end: the model answered with text. Carries the provider's stop reason.
-    TextResponse(String),
-    MaxIterations { done: usize, max: usize },
     /// A workflow primitive ended the turn (`workflow_exit:…`, `suspension_failed:…`).
     Workflow(String),
     /// Nothing moved for [`RUN_IDLE_LIMIT`]: no event reached the dispatcher.
@@ -108,7 +93,7 @@ pub enum Exit {
 
 /// How long a run may go without a single stream event before the dispatcher
 /// ends it as [`Exit::Stalled`]. Must outlast the longest thing that is
-/// silent while it works: a blocking child (`SUBAGENT_INACTIVITY_TIMEOUT`)
+/// silent while it works: a foreground helper (`delegation::INACTIVITY_LIMIT`)
 /// and a shell command at its own timeout. Live 2026-09-02: a run whose turn
 /// had ended sat "active" for 38 minutes with nothing bounding it.
 pub const RUN_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -165,24 +150,13 @@ mod next_event_tests {
 impl Exit {
     pub fn label(&self) -> String {
         match self {
-            Exit::Unknown => "unknown".into(),
-            Exit::AdaptiveLimitNoProgress => "adaptive_limit_no_progress".into(),
-            Exit::UserRequestedStop => "user_requested_stop".into(),
-            Exit::SpendCapReached => "spend_cap_reached".into(),
             Exit::RunawayToolLoop => "runaway_tool_loop".into(),
             Exit::RepeatedToolCalls => "repeated_tool_calls".into(),
             Exit::SameErrorLoop => "same_error_loop".into(),
-            Exit::ReviewerStop => "reviewer_stop".into(),
             Exit::TerminalToolError => "terminal_tool_error".into(),
-            Exit::EmptyResponseExhausted => "empty_response_exhausted".into(),
-            Exit::TextResponse(stop) => format!("text_response(stop_reason={stop})"),
-            Exit::MaxIterations { done, max } => format!("max_iterations_reached({done}/{max})"),
             Exit::Workflow(reason) => reason.clone(),
             Exit::Stalled => "stalled".into(),
         }
-    }
-    pub fn is_text_response(&self) -> bool {
-        matches!(self, Exit::TextResponse(_))
     }
 }
 
@@ -303,31 +277,19 @@ mod escalation_tests {
         assert_eq!(s.count("os", err), 2 * SAME_ERROR_NUDGE_AFTER);
     }
 
-    /// The exit set is closed: no site in the runner may invent a reason
-    /// string, and every label a consumer matches on is produced by a variant.
+    /// Every label a consumer matches on is produced by a variant.
     #[test]
     fn terminal_reasons_are_a_closed_enum() {
-        let runner = include_str!("runner.rs");
-        let offenders: Vec<&str> = runner
-            .lines()
-            .filter(|l| l.contains("turn_exit_reason = \"") || l.contains("turn_exit_reason = format!("))
-            .collect();
-        assert!(offenders.is_empty(), "free-form exit reasons: {offenders:?}");
-        // The strings workflow_loop.rs matches on.
         for (exit, expected) in [
             (Exit::TerminalToolError, "terminal_tool_error"),
             (Exit::RunawayToolLoop, "runaway_tool_loop"),
-            (Exit::SpendCapReached, "spend_cap_reached"),
-            (Exit::UserRequestedStop, "user_requested_stop"),
+            (Exit::RepeatedToolCalls, "repeated_tool_calls"),
+            (Exit::SameErrorLoop, "same_error_loop"),
+            (Exit::Stalled, "stalled"),
         ] {
             assert_eq!(exit.label(), expected);
         }
-        assert!(Exit::MaxIterations { done: 50, max: 50 }.label().starts_with("max_iterations"));
         assert!(Exit::Workflow("workflow_exit:done".into()).label().starts_with("workflow_exit:"));
-        assert_eq!(Exit::Stalled.label(), "stalled");
-        assert_eq!(Exit::ReviewerStop.label(), "reviewer_stop");
-        assert!(Exit::TextResponse("stop".into()).is_text_response());
-        assert_eq!(Exit::TextResponse("stop".into()).label(), "text_response(stop_reason=stop)");
     }
 }
 
@@ -335,11 +297,11 @@ mod escalation_tests {
 mod tests {
     use super::*;
 
-    /// A blocking child's stall must fire before its parent's: otherwise the
-    /// parent is ended as stalled while the child is about to report.
+    /// A helper's stall must fire before its parent's: otherwise the parent
+    /// is ended as stalled while the helper is about to report.
     #[test]
     fn run_idle_limit_outlasts_a_child_stall_and_the_notice_states_the_window() {
-        assert!(RUN_IDLE_LIMIT > crate::orchestrator::SUBAGENT_INACTIVITY_TIMEOUT);
+        assert!(RUN_IDLE_LIMIT > crate::harness::delegation::INACTIVITY_LIMIT);
         let n = stall_notice();
         assert!(n.contains("15 minutes"), "{n}");
         assert!(!n.contains('\u{2014}'), "no em dash in owner copy");
@@ -351,7 +313,6 @@ mod tests {
         for raw in ["{}", "", "not json", "[1,2]"] {
             let c = GuardrailConfig::from_json(raw);
             assert_eq!(c.same_action_limit, d.same_action_limit, "raw={raw}");
-            assert_eq!(c.max_auto_continuations, d.max_auto_continuations);
             assert!(!c.hard_stop);
         }
     }
