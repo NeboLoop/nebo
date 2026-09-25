@@ -118,6 +118,7 @@ fn parent_turn(req: &SpawnRequest) -> TurnRequest {
                 parent_session_key: String::new(),
                 kind: HelperKind::General,
                 depth,
+                answer: None,
             }
         } else {
             TurnMode::Chat

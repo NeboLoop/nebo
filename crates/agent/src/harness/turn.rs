@@ -3093,6 +3093,7 @@ mod tests {
             parent_session_key: KEY.into(),
             kind: crate::harness::delegation::HelperKind::Explore,
             depth: 1,
+            answer: None,
         };
         let mut handle = h.start_turn(req).await.expect("start");
         while handle.events.recv().await.is_some() {}
@@ -3320,6 +3321,7 @@ mod tests {
             parent_session_key: KEY.into(),
             kind: crate::harness::delegation::HelperKind::General,
             depth: 1,
+            answer: None,
         };
         let mut helper_events = h.start_turn(helper).await.expect("helper starts").events;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -3668,6 +3670,7 @@ mod tests {
             parent_session_key: "agent:iso:web".into(),
             kind: crate::harness::delegation::HelperKind::General,
             depth: 1,
+            answer: None,
         };
         let mut handle = h.start_turn(req).await.expect("start");
         while handle.events.recv().await.is_some() {}
@@ -3718,7 +3721,7 @@ mod tests {
         run_turn(&h, seat_of(owner("Hi"), "bo", "agent:bo:web")).await;
         for (i, kind) in [HelperKind::General, HelperKind::Explore, HelperKind::Plan].into_iter().enumerate() {
             let mut req = seat_of(owner("Look into it"), "ava", &format!("subagent:agent:ava:web:h-{i}"));
-            req.mode = TurnMode::Helper { parent_session_key: "agent:ava:web".into(), kind, depth: 1 };
+            req.mode = TurnMode::Helper { parent_session_key: "agent:ava:web".into(), kind, depth: 1, answer: None };
             run_turn(&h, req).await;
         }
         let mut activity = seat_of(owner("Reconcile"), "bo", "workflow:run-1:reconcile");

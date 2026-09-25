@@ -721,6 +721,75 @@ impl Helpers {
         Ok((task_id, receipt))
     }
 
+    /// One helper of background work (the research pipeline) whose final
+    /// answer is read as data: a turn on the one loop, under the work's own
+    /// seat (the caller's, as its helpers run), stopped with it. `schema` is
+    /// the answer's shape (the turn can't end on another,
+    /// `turn_end::AnswerShapeCheck`), `tools` the only tools it may call.
+    /// `node` names it under the work's session (`sa-<node>`, its browser
+    /// tab too). Every event of its turn bumps `activity`. Returns the
+    /// answer's JSON object.
+    pub async fn answer_as_data(
+        self: &Arc<Self>,
+        work_key: &str,
+        node: &str,
+        prompt: String,
+        schema: serde_json::Value,
+        tools: Vec<String>,
+        activity: Option<Arc<std::sync::atomic::AtomicU64>>,
+    ) -> Result<serde_json::Value, String> {
+        let (seat, grant, cancel) = {
+            let state = self.state();
+            let work = state
+                .helpers
+                .values()
+                .find(|h| h.session_key == work_key)
+                .ok_or_else(|| format!("{work_key} is not running work"))?;
+            (work.parent_seat.clone(), work.parent_grant.clone(), work.cancel.child_token())
+        };
+        let spec = HelperSpec {
+            description: node.to_string(),
+            prompt: prompt.clone(),
+            kind: HelperKind::General,
+            background: false,
+            isolation: None,
+            skills: Vec::new(),
+            speed: None,
+        };
+        let parent = Parent { session_key: work_key, seat: &seat, grant: grant.as_ref(), run_taint: &[], cancel: cancel.clone() };
+        let mut req = child::child_request(&parent, &format!("sa-{node}"), &spec, None, TurnInput::Platform { text: prompt });
+        let allowed: std::collections::HashSet<String> = tools.into_iter().collect();
+        req.seat.tool_allowlist = Some(match req.seat.tool_allowlist.take() {
+            Some(inherited) => inherited.intersection(&allowed).cloned().collect(),
+            None => allowed,
+        });
+        if let TurnMode::Helper { answer, .. } = &mut req.mode {
+            *answer = Some(Arc::new(schema.clone()));
+        }
+        let collected = match self.starter.start_turn(req).await {
+            Ok(handle) => {
+                collect::collect(handle.events, &cancel, INACTIVITY_LIMIT, |_| {
+                    if let Some(a) = &activity {
+                        a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                })
+                .await
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        if let Some(error) = collected.error {
+            return Err(error);
+        }
+        if collected.cancelled {
+            return Err("stopped".into());
+        }
+        let issues = super::turn_end::answer_issues(&schema, &collected.final_message);
+        if !issues.is_empty() {
+            return Err(format!("its answer didn't match the schema: {}", issues.join("; ")));
+        }
+        super::turn_end::answer_object(&collected.final_message).ok_or_else(|| "it gave no answer".to_string())
+    }
+
     /// Run background work to its end: its progress goes to the owner's
     /// screen as the helper's activity, and a stop ends it as stopped.
     async fn run_work(
@@ -750,7 +819,7 @@ impl Helpers {
             })
         };
         let outcome = tokio::select! {
-            r = work(cancel.clone(), progress_tx) => Some(r),
+            r = work(cancel.clone(), progress_tx, helper_key(parent_key, task_id)) => Some(r),
             _ = cancel.cancelled() => None,
         };
         let _ = forward.await;
@@ -1734,7 +1803,7 @@ mod tests {
         let (go, wait) = oneshot::channel::<()>();
         let (stopped_tx, stopped) = oneshot::channel::<bool>();
         let report = report.to_string();
-        let work: tools::orchestrator::Work = Box::new(move |cancel, progress| {
+        let work: tools::orchestrator::Work = Box::new(move |cancel, progress, _session| {
             Box::pin(async move {
                 let _ = progress.send(StreamEvent::text("Searching 4 angles")).await;
                 tokio::select! {
@@ -1750,6 +1819,60 @@ mod tests {
             })
         });
         (work, go, stopped)
+    }
+
+    /// D13: the research pipeline's sub-agent (the fact-check) is a helper of
+    /// the research run on the one loop: a turn started through the harness
+    /// under the run's seat, its session a child of the run's (so Stop
+    /// reaches it), limited to the tools it was given, its answer's shape
+    /// held by the turn's end check; the answer comes back as data. Before:
+    /// `StructuredRunner` drove the provider in a loop of its own.
+    #[tokio::test]
+    async fn a_research_sub_agent_is_a_helper_of_the_run_on_the_one_loop() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:analyst:web";
+        let owner = rig.owner_turn(key);
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "refuted": { "type": "boolean" } },
+            "required": ["refuted"]
+        });
+        let (answers_tx, mut answers) = mpsc::unbounded_channel::<Result<serde_json::Value, String>>();
+        let helpers = rig.helpers.clone();
+        let work: tools::orchestrator::Work = Box::new(move |_cancel, _progress, session| {
+            Box::pin(async move {
+                for node in ["verify-1", "verify-2"] {
+                    let answer = helpers
+                        .answer_as_data(&session, node, format!("Refute claim {node}."), schema.clone(), vec!["search_web".into()], None)
+                        .await;
+                    let _ = answers_tx.send(answer);
+                }
+                Ok("done".to_string())
+            })
+        });
+        let (id, _) = rig.helpers.start_work(&owner, "research: rents", work).unwrap();
+        let run_session = helper_key(key, &id);
+
+        let first = tokio::time::timeout(Duration::from_secs(5), rig.started.recv()).await.unwrap().unwrap();
+        assert_eq!(first.request.session_key, format!("subagent:{run_session}:sa-verify-1"));
+        match &first.request.mode {
+            TurnMode::Helper { parent_session_key, answer, .. } => {
+                assert_eq!(parent_session_key, &run_session);
+                assert!(answer.as_deref().is_some_and(|s| s["required"][0] == "refuted"), "the answer's shape rides the turn");
+            }
+            _ => panic!("a helper turn"),
+        }
+        assert_eq!(first.request.seat.agent_id, "bookkeeper", "the run's seat");
+        assert_eq!(first.request.seat.tool_allowlist, Some(["search_web".to_string()].into_iter().collect()));
+        assert!(matches!(&first.request.input, TurnInput::Platform { text } if text == "Refute claim verify-1."));
+        first.answer(r#"Checked. {"refuted": true}"#).await;
+        let got = tokio::time::timeout(Duration::from_secs(5), answers.recv()).await.unwrap().unwrap();
+        assert_eq!(got.unwrap(), serde_json::json!({"refuted": true}), "the answer comes back as data");
+
+        let second = tokio::time::timeout(Duration::from_secs(5), rig.started.recv()).await.unwrap().unwrap();
+        second.answer("I couldn't decide.").await;
+        let got = tokio::time::timeout(Duration::from_secs(5), answers.recv()).await.unwrap().unwrap();
+        assert!(got.unwrap_err().contains("didn't match the schema"), "a shapeless answer is an error, not data");
     }
 
     /// Deep research is one of the caller's background helpers: the launch
@@ -1922,7 +2045,7 @@ mod tests {
     }
 
     fn helper_mode(kind: HelperKind, depth: u8) -> TurnMode {
-        TurnMode::Helper { parent_session_key: "agent:x:web".into(), kind, depth }
+        TurnMode::Helper { parent_session_key: "agent:x:web".into(), kind, depth, answer: None }
     }
 
     #[test]

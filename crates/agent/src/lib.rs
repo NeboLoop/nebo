@@ -36,7 +36,6 @@ pub mod uploads;
 #[cfg(test)]
 mod test_home;
 pub mod sidecar;
-pub mod structured;
 pub mod structured_agent;
 pub mod summarizer;
 pub mod tool_credentials;

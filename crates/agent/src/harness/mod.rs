@@ -322,6 +322,11 @@ pub enum TurnMode {
         parent_session_key: String,
         kind: delegation::HelperKind,
         depth: u8,
+        /// The JSON schema the helper's final answer must match, when its
+        /// caller reads the answer as data (a research pipeline's
+        /// sub-agent): the turn can't end on an answer that doesn't
+        /// (`turn_end::AnswerShapeCheck`).
+        answer: Option<Arc<serde_json::Value>>,
     },
     /// A workflow activity. Boxed: the config is far larger than the other
     /// modes.

@@ -128,13 +128,15 @@ pub struct SpawnResult {
 }
 
 /// Background work that is not a model turn (the deep-research pipeline),
-/// run as one of the caller's helpers: it gets the helper's stop token and a
+/// run as one of the caller's helpers: it gets the helper's stop token, a
 /// progress channel whose events become the helper's activity on the
-/// owner's screen, and returns its report.
+/// owner's screen, and the helper's own session key (the parent of any
+/// helper the work starts), and returns its report.
 pub type Work = Box<
     dyn FnOnce(
             tokio_util::sync::CancellationToken,
             tokio::sync::mpsc::Sender<ai::StreamEvent>,
+            String,
         ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
         + Send,
 >;

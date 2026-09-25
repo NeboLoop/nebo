@@ -88,6 +88,9 @@ pub enum TurnEvent {
     EmptyReply,
     /// The unmet workflow contract term (workflow mode only).
     WorkflowContract(String),
+    /// A helper whose answer is read as data answered in the wrong shape:
+    /// what's wrong with it.
+    AnswerShape(String),
     /// The `steering.generate` app hook's text.
     AppHook {
         label: String,
@@ -189,6 +192,7 @@ pub const NAMES: &[&str] = &[
     "stream_cut",
     "empty_reply",
     "workflow_contract",
+    "answer_shape",
     "app_hook",
     "restored_file",
     "invoked_skills",
@@ -369,6 +373,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             "Your last reply had no visible output. Continue.".to_string(),
         ),
         TurnEvent::WorkflowContract(text) => ("workflow_contract", non_empty(text)?),
+        TurnEvent::AnswerShape(text) => ("answer_shape", non_empty(text)?),
         TurnEvent::AppHook { text, .. } => ("app_hook", non_empty(text)?),
         TurnEvent::RestoredFile { path, content } => (
             "restored_file",
@@ -1009,6 +1014,7 @@ mod tests {
             TurnEvent::BackgroundUpdate("the export finished".into()),
             TurnEvent::CutoffResume,
             TurnEvent::WorkflowContract("call publish once".into()),
+            TurnEvent::AnswerShape("no JSON object".into()),
             TurnEvent::AppHook {
                 label: "app".into(),
                 text: "the invoice is due".into(),
