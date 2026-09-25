@@ -956,18 +956,31 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             }
         });
         let fork_of = request.clone();
-        let no_objective = String::new();
+        // What the permission judge reads beside a call it is asked about
+        // (PRD-Permissions §4.7): the owner's latest message and the goal.
+        let owner_words = h
+            .store
+            .latest_owner_message(&sessions.active_chat_id(sid))
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let goal = goal::GoalStore::new(sessions, sid)
+            .active()
+            .ok()
+            .flatten()
+            .map(|g| g.condition)
+            .unwrap_or_default();
         let round_cx = RoundContext {
             scope: &tool_scope,
             tools: &h.tools,
             providers: &h.providers,
             concurrency: &h.concurrency,
             hooks: &h.hooks,
-            user_prompt: "",
+            user_prompt: &owner_words,
             iteration: st.step as usize,
             workflow_mode: cx.workflow(),
-            decide: None,
-            active_task: &no_objective,
+            decide: h.decide.as_ref(),
+            active_task: &goal,
             turn_mode: Some(&cx.request.mode),
             side_trace: &side_trace,
         };
@@ -2225,6 +2238,83 @@ mod tests {
         assert_eq!(exit_of(&events), "text_response");
         assert_eq!(*probe.seen.lock().unwrap(), [("change", false), ("look", false)]);
         assert_eq!(result_ids(&h), ["call-change", "call-look"]);
+    }
+
+    /// A Jev served on a local port that answers every decision "stays
+    /// inside" and keeps each request's `state`.
+    async fn capturing_jev() -> (ai::DecideClient, Arc<Mutex<Vec<serde_json::Value>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let kept = kept.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    let start = loop {
+                        let Ok(n) = sock.read(&mut chunk).await else { return };
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        let text = String::from_utf8_lossy(&buf).into_owned();
+                        if let Some(end) = text.find("\r\n\r\n") {
+                            let len = text[..end]
+                                .lines()
+                                .find_map(|l| {
+                                    let (k, v) = l.split_once(':')?;
+                                    k.eq_ignore_ascii_case("content-length").then(|| v.trim().parse::<usize>().ok())?
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= end + 4 + len {
+                                break end + 4;
+                            }
+                        }
+                    };
+                    let req: serde_json::Value = serde_json::from_slice(&buf[start..]).unwrap_or_default();
+                    kept.lock().unwrap().push(req["state"].clone());
+                    let answers: serde_json::Map<String, serde_json::Value> = req["questions"]
+                        .as_object()
+                        .map(|q| q.keys().map(|k| (k.clone(), serde_json::json!({"type": "noul", "noul": 0.02}))).collect())
+                        .unwrap_or_default();
+                    let body = serde_json::json!({"model": "jev-test", "answers": answers, "usage": {}}).to_string();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        let client = ai::DecideClient::new(&format!("http://{addr}"), || Some(ai::Bearer { token: "t".into(), bot_id: None }));
+        (client, seen)
+    }
+
+    /// D12 (PRD-Permissions §4.7): a call whose outward effect the code
+    /// can't decide is judged by Jev first, reading the owner's message
+    /// and the session's goal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_permission_judge_asks_jev_with_the_owners_words_and_the_goal() {
+        let model = Scripted::new(vec![Step::Call("writer", serde_json::json!({})), Step::Say("Done.")]);
+        let (jev, seen) = capturing_jev().await;
+        let h = harness(&model).await.with_decide(Arc::new(jev));
+        let sid = h.sessions.get_or_create(KEY, "").unwrap().id;
+        goal::GoalStore::new(&h.sessions, &sid)
+            .set("the Rivera listing is updated", goal::GoalSource::OwnerCommand)
+            .unwrap();
+        let mut req = owner("OWNER-D12 update the Rivera listing");
+        req.seat.mode = Some(Mode::Automatic);
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "Jev was asked once, about the writer call: {seen:?}");
+        assert_eq!(seen[0]["last_user_message"], "OWNER-D12 update the Rivera listing");
+        assert_eq!(seen[0]["objective"], "the Rivera listing is updated");
+        assert_eq!(seen[0]["calls"][0]["tool"], "writer");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
