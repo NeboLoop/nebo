@@ -435,6 +435,13 @@ fn helper_event_to_hub(hub: &handlers::ws::ClientHub, ev: agent::harness::delega
     for (k, v) in ev.event.widgets.iter().flat_map(|w| w.as_object()).flatten() {
         payload[k] = v.clone();
     }
+    // A research run's panel snapshot: the app's research card, found by
+    // the run's task id.
+    if let Some(snapshot) = ev.event.payload.as_ref().filter(|p| p["kind"] == "research_progress") {
+        payload["data"] = snapshot.clone();
+        hub.broadcast("research_progress", payload);
+        return;
+    }
     hub.broadcast(name, payload);
 }
 

@@ -271,6 +271,10 @@ struct Helper {
     earlier_reports: Vec<String>,
 }
 
+/// The `helper_kind` a background work run is stored under: it runs code,
+/// not a model turn, so it takes no messages.
+const WORK_KIND: &str = "research";
+
 #[derive(Default)]
 struct State {
     helpers: HashMap<String, Helper>,
@@ -516,6 +520,122 @@ impl Helpers {
         Ok((task_id, rx))
     }
 
+    /// Start `work` as a background helper of the running turn `turn`: code
+    /// that is not a model turn (the deep-research pipeline). It is one of
+    /// the caller's helpers like any other: its row, its progress on the
+    /// owner's screen, the session's stop token (the owner's Stop and
+    /// stop_task reach it), and one notification when it ends. It takes no
+    /// messages. Returns the launch receipt.
+    pub fn start_work(self: &Arc<Self>, turn: &TurnRequest, description: &str, work: tools::orchestrator::Work) -> Result<(String, String), String> {
+        let parent_key = turn.session_key.clone();
+        let task_id = format!("h-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+        let session_key = helper_key(&parent_key, &task_id);
+        let inputs = serde_json::json!({ "description": description, "helper_kind": WORK_KIND }).to_string();
+        self.store
+            .engine_create_run(&db::NewRun {
+                id: &task_id,
+                kind: ROW_KIND,
+                session_key: &session_key,
+                agent_id: &turn.seat.agent_id,
+                lane: "subagent",
+                inputs: Some(&inputs),
+                ..Default::default()
+            })
+            .map_err(|e| format!("Could not start {description}: {e}"))?;
+        let _ = self.store.update_task_running(&task_id);
+        let cancel = {
+            let mut state = self.state();
+            let cancel = state.session_token(&parent_key).child_token();
+            state.stops.insert(session_key.clone(), cancel.clone());
+            state.helpers.insert(
+                task_id.clone(),
+                Helper {
+                    parent_key: parent_key.clone(),
+                    session_key,
+                    description: description.to_string(),
+                    kind: HelperKind::General,
+                    parent_seat: turn.seat.clone(),
+                    parent_grant: None,
+                    running: true,
+                    cancel: cancel.clone(),
+                    waiter: None,
+                    held: None,
+                    earlier_reports: Vec::new(),
+                },
+            );
+            cancel
+        };
+        info!(task_id = %task_id, parent = %parent_key, "background work launched");
+        let this = Arc::clone(self);
+        let (id, description) = (task_id.clone(), description.to_string());
+        tokio::spawn(async move {
+            let completion = this.run_work(&id, &parent_key, &description, cancel, work).await;
+            this.finish(&id, completion);
+        });
+        let receipt = launch_result(&task_id);
+        Ok((task_id, receipt))
+    }
+
+    /// Run background work to its end: its progress goes to the owner's
+    /// screen as the helper's activity, and a stop ends it as stopped.
+    async fn run_work(
+        self: &Arc<Self>,
+        task_id: &str,
+        parent_key: &str,
+        description: &str,
+        cancel: CancellationToken,
+        work: tools::orchestrator::Work,
+    ) -> Completion {
+        self.emit(parent_key, ai::StreamEvent::subagent_start(task_id, description));
+        let (progress_tx, mut progress_rx) = mpsc::channel::<ai::StreamEvent>(64);
+        let forward = {
+            let this = Arc::clone(self);
+            let (parent_key, task_id) = (parent_key.to_string(), task_id.to_string());
+            tokio::spawn(async move {
+                while let Some(mut ev) = progress_rx.recv().await {
+                    let mut widgets = ev.widgets.take().unwrap_or_else(|| serde_json::json!({}));
+                    widgets["task_id"] = serde_json::json!(task_id);
+                    if !ev.text.is_empty() {
+                        widgets["current_operation"] = serde_json::json!(ev.text);
+                    }
+                    ev.widgets = Some(widgets);
+                    ev.event_type = ai::StreamEventType::SubagentProgress;
+                    this.emit(&parent_key, ev);
+                }
+            })
+        };
+        let outcome = tokio::select! {
+            r = work(cancel.clone(), progress_tx) => Some(r),
+            _ = cancel.cancelled() => None,
+        };
+        let _ = forward.await;
+        let (status, result) = match outcome {
+            None => (CompletionStatus::Stopped, String::new()),
+            Some(_) if cancel.is_cancelled() => (CompletionStatus::Stopped, String::new()),
+            Some(Ok(report)) => (CompletionStatus::Done, report),
+            Some(Err(error)) => (CompletionStatus::Failed { error }, String::new()),
+        };
+        match &status {
+            CompletionStatus::Done | CompletionStatus::Partial { .. } => {
+                let _ = self.store.update_task_completed(task_id, Some(&result));
+            }
+            CompletionStatus::Failed { error } => {
+                let _ = self.store.update_task_failed(task_id, error);
+            }
+            CompletionStatus::Stopped => {
+                let _ = self.store.cancel_task(task_id);
+            }
+        }
+        self.emit(parent_key, ai::StreamEvent::subagent_complete(task_id, description, status == CompletionStatus::Done));
+        Completion {
+            task_id: task_id.to_string(),
+            description: description.to_string(),
+            status,
+            result,
+            usage: ai::UsageInfo::default(),
+        }
+    }
+
     /// Write the skills the parent loaded into the helper's thread, before
     /// its first step: the row a checkpoint restores skills with.
     fn preload_skills(&self, session_key: &str, user_id: &str, skills: Vec<(String, String)>) {
@@ -542,6 +662,12 @@ impl Helpers {
     ) -> Result<String, String> {
         let caller = turn.session_key.as_str();
         let row = self.own_row(caller, task_id)?;
+        if spec_kind_of_row(&self.store, &row).as_deref() == Some(WORK_KIND) {
+            return Err(format!(
+                "{task_id} is a research run, not a helper you can talk to: it takes no messages. \
+                 Its report comes as a notification; for a follow-up, start a new one."
+            ));
+        }
         let from = crate::harness::conversation::MidTurnFrom::Parent {
             session_key: caller.to_string(),
             task_id: task_id.to_string(),
@@ -1053,20 +1179,23 @@ async fn isolate(
 }
 
 /// The spec a helper was started with, read back from its row.
-fn spec_of_row(store: &db::Store, row: &db::models::PendingTask) -> HelperSpec {
-    let inputs = store
+/// The `helper_kind` a helper's row was stored with.
+fn spec_kind_of_row(store: &db::Store, row: &db::models::PendingTask) -> Option<String> {
+    store
         .engine_get_run(&row.id)
         .ok()
         .flatten()
         .and_then(|run| run.inputs)
         .and_then(|i| serde_json::from_str::<serde_json::Value>(&i).ok())
-        .unwrap_or_default();
+        .and_then(|v| v.get("helper_kind")?.as_str().map(str::to_string))
+}
+
+fn spec_of_row(store: &db::Store, row: &db::models::PendingTask) -> HelperSpec {
     HelperSpec {
         description: row.description.clone().unwrap_or_default(),
         prompt: row.prompt.clone(),
-        kind: inputs
-            .get("helper_kind")
-            .and_then(|v| v.as_str())
+        kind: spec_kind_of_row(store, row)
+            .as_deref()
             .and_then(HelperKind::parse)
             .unwrap_or(HelperKind::General),
         background: true,
@@ -1378,6 +1507,85 @@ mod tests {
 
         // The session's next turn is not born stopped.
         assert!(!rig.helpers.session_token(key).is_cancelled());
+    }
+
+    /// Work handed a oneshot to finish on and a slot to report its stop.
+    fn gated_work(report: &str) -> (tools::orchestrator::Work, oneshot::Sender<()>, oneshot::Receiver<bool>) {
+        let (go, wait) = oneshot::channel::<()>();
+        let (stopped_tx, stopped) = oneshot::channel::<bool>();
+        let report = report.to_string();
+        let work: tools::orchestrator::Work = Box::new(move |cancel, progress| {
+            Box::pin(async move {
+                let _ = progress.send(StreamEvent::text("Searching 4 angles")).await;
+                tokio::select! {
+                    _ = wait => {
+                        let _ = stopped_tx.send(false);
+                        Ok(report)
+                    }
+                    _ = cancel.cancelled() => {
+                        let _ = stopped_tx.send(true);
+                        Err("cancelled".into())
+                    }
+                }
+            })
+        });
+        (work, go, stopped)
+    }
+
+    /// Deep research is one of the caller's background helpers: the launch
+    /// returns at once, its progress is the helper's activity, and its report
+    /// comes back as the one notification. Before: it ran inside the call for
+    /// up to an hour.
+    #[tokio::test]
+    async fn background_work_returns_at_once_and_reports_by_notification() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:analyst:web";
+        let owner = rig.owner_turn(key);
+        let (work, go, _stopped) = gated_work("# Research: rents\nRents rose 4%.");
+        let (id, receipt) = rig.helpers.start_work(&owner, "research: rents", work).unwrap();
+        assert_eq!(receipt, launch_result(&id), "the receipt, while the work still runs");
+        assert!(rig.helpers.list(key).iter().any(|h| h.task_id == id && h.running));
+
+        let mut activity = None;
+        for _ in 0..3 {
+            let ev = tokio::time::timeout(Duration::from_secs(5), rig.ui.recv()).await.unwrap().unwrap();
+            if let Some(op) = ev.event.widgets.as_ref().and_then(|w| w["current_operation"].as_str()) {
+                activity = Some((ev.parent_session_key.clone(), op.to_string()));
+                break;
+            }
+        }
+        assert_eq!(activity, Some((key.to_string(), "Searching 4 angles".to_string())), "progress is the helper's activity");
+
+        let _ = go.send(());
+        assert_eq!(rig.next_wake().await, key);
+        let pending = rig.pending_notifications(key);
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].contains(&format!("helper {id} \"research: rents\": done\n# Research: rents\nRents rose 4%.")), "{}", pending[0]);
+
+        let refused = rig.helpers.send(&owner, None, &[], &id, "also cover Tucson").await.unwrap_err();
+        assert!(refused.contains("takes no messages"), "{refused}");
+    }
+
+    /// The owner's Stop reaches background work like any helper of the
+    /// session. Before: the research ran on its own loop Stop could not reach.
+    #[tokio::test]
+    async fn stop_reaches_background_work() {
+        let rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:analyst:web";
+        let owner = rig.owner_turn(key);
+        let (work, _go, stopped) = gated_work("never");
+        let (id, _) = rig.helpers.start_work(&owner, "research: rents", work).unwrap();
+        rig.helpers.stop_session(Some(key));
+        let ended = tokio::time::timeout(Duration::from_secs(5), stopped).await.expect("the stop ended the work");
+        assert_ne!(ended, Ok(false), "it ended by the stop, not by finishing");
+        for _ in 0..50 {
+            if !rig.notification_rows(key).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let rows = rig.notification_rows(key);
+        assert!(rows.len() == 1 && rows[0].contains(&format!("helper {id} \"research: rents\": stopped")), "{rows:?}");
     }
 
     #[tokio::test]

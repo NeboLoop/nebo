@@ -157,6 +157,14 @@ impl SubAgentOrchestrator for HelperDoor {
         })
     }
 
+    fn start_work(&self, req: SpawnRequest, work: tools::orchestrator::Work) -> Fut<'_, Result<SpawnResult, String>> {
+        let started = self.helpers.start_work(&parent_turn(&req), &req.description, work);
+        Box::pin(async move {
+            let (task_id, output) = started?;
+            Ok(SpawnResult { task_id, success: true, output, error: None })
+        })
+    }
+
     fn cancel(&self, task_id: &str, caller: &str) -> Fut<'_, Result<(), String>> {
         let stopped = self.helpers.stop(caller, task_id).map(|_| ());
         Box::pin(async move { stopped })
@@ -243,6 +251,10 @@ mod tests {
 
     impl SubAgentOrchestrator for Recording {
         fn spawn(&self, req: SpawnRequest) -> Fut<'_, Result<SpawnResult, String>> {
+            self.0.0.lock().unwrap().push(req);
+            Box::pin(async { Ok(done()) })
+        }
+        fn start_work(&self, req: SpawnRequest, _: tools::orchestrator::Work) -> Fut<'_, Result<SpawnResult, String>> {
             self.0.0.lock().unwrap().push(req);
             Box::pin(async { Ok(done()) })
         }
