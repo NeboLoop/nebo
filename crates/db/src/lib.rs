@@ -20,6 +20,7 @@ pub use queries::{
 };
 pub use queries::cost_microcents;
 pub use queries::LicenseKeyRow;
+pub use queries::SessionGoal;
 pub use queries::PluginAccountProfile;
 pub use queries::WorkDocumentListing;
 pub use queries::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};

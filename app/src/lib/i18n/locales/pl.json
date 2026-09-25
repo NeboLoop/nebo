@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Kontekst w tej turze: plików odczytanych ponownie: {files}, razy: {times}, przebiegów kompaktowania: {passes}.",
+		"goalLine": "Cel: {condition} ({turns} tur)",
+		"goalLastCheck": "ostatnie sprawdzenie: {reason}",
+		"goalPaused": "Wstrzymano. Twoja następna wiadomość to wznowi.",
 		"resumedActivity": "Wciąż pracuje: {tool}",
 		"waitingForYou": "Czeka na Ciebie",
 		"subagentStep": "{op} · krok {n}",
@@ -2414,6 +2417,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "Działań w jednym kroku wymagających Twojej zgody: {n}",
+			"goalHeadline": "Uzgodnić ten cel? Praca trwa, dopóki sprawdzenie nie potwierdzi, że został osiągnięty.",
 			"yourAgent": "Twój agent"
 		},
 		"approvalModal": {

@@ -10,6 +10,7 @@ pub mod chat;
 pub mod commander;
 pub mod entity_config;
 pub mod files;
+pub mod goal;
 pub mod import;
 pub mod integrations;
 pub mod mcp_server;

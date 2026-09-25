@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "السياق في هذه الجولة: أُعيدت قراءة {files} ملف {times} مرة، {passes} عملية ضغط.",
+		"goalLine": "الهدف: {condition} ({turns} جولات)",
+		"goalLastCheck": "آخر تحقق: {reason}",
+		"goalPaused": "متوقف مؤقتًا. رسالتك التالية تستأنفه.",
 		"resumedActivity": "ما زال يعمل: {tool}",
 		"waitingForYou": "بانتظارك",
 		"subagentStep": "{op} · خطوة {n}",
@@ -2414,6 +2417,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} إجراء في خطوة واحدة تحتاج موافقتك",
+			"goalHeadline": "هل نتفق على هذا الهدف؟ يستمر العمل حتى يؤكد التحقق تحقيقه.",
 			"yourAgent": "موظفك"
 		},
 		"approvalModal": {

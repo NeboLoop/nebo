@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "이번 턴의 컨텍스트: 파일 {files}개를 {times}회 다시 읽었고, 압축 {passes}회.",
+		"goalLine": "목표: {condition} ({turns}턴)",
+		"goalLastCheck": "마지막 확인: {reason}",
+		"goalPaused": "일시 중지됨. 다음 메시지를 보내면 다시 시작합니다.",
 		"resumedActivity": "아직 작업 중: {tool}",
 		"waitingForYou": "당신을 기다리는 중",
 		"subagentStep": "{op} · {n}단계",
@@ -2414,6 +2417,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "한 단계에 든 동작 {n}건에 승인이 필요합니다",
+			"goalHeadline": "이 목표에 동의하시겠어요? 달성이 확인될 때까지 작업이 계속됩니다.",
 			"yourAgent": "당신의 직원"
 		},
 		"approvalModal": {

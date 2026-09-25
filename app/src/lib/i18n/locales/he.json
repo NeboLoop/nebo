@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "הקשר בתור הזה: {files} קבצים נקראו מחדש {times} פעמים, {passes} מעברי דחיסה.",
+		"goalLine": "יעד: {condition} ({turns} סבבים)",
+		"goalLastCheck": "בדיקה אחרונה: {reason}",
+		"goalPaused": "מושהה. ההודעה הבאה שלך תחדש אותו.",
 		"resumedActivity": "עדיין עובד: {tool}",
 		"waitingForYou": "ממתין לך",
 		"subagentStep": "{op} · שלב {n}",
@@ -2414,6 +2417,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} פעולות בשלב אחד דורשות את אישורך",
+			"goalHeadline": "להסכים על היעד הזה? העבודה נמשכת עד שבדיקה מאשרת שהוא הושג.",
 			"yourAgent": "העובד שלך"
 		},
 		"approvalModal": {

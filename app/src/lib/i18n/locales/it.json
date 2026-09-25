@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Contesto di questo turno: {files} file riletti {times} volte, {passes} passaggi di compattazione.",
+		"goalLine": "Obiettivo: {condition} ({turns} turni)",
+		"goalLastCheck": "ultimo controllo: {reason}",
+		"goalPaused": "In pausa. Il tuo prossimo messaggio lo riprende.",
 		"resumedActivity": "Ancora al lavoro: {tool}",
 		"waitingForYou": "In attesa di te",
 		"subagentStep": "{op} · passaggio {n}",
@@ -2414,6 +2417,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} azioni in un solo passaggio chiedono il tuo via libera",
+			"goalHeadline": "Concordare questo obiettivo? Il lavoro continua finché un controllo conferma che è raggiunto.",
 			"yourAgent": "Il tuo dipendente"
 		},
 		"approvalModal": {

@@ -15,7 +15,8 @@ fixtures:
   - ../fixtures/tools/proactive-multistep-action.yaml
   # Agreed goal and done check
   - ../fixtures/turn/long-multistage-no-drift.yaml
-  - ../fixtures/turn/goal-proposed-approved-and-checked.yaml
+  - ../fixtures/turn/goal-suggested-approved-and-checked.yaml
+  - ../fixtures/turn/goal-direct-set-only-with-owners-words.yaml
   # Mid-turn owner messages
   - ../fixtures/turn/mid-turn-owner-message.yaml
   # Helpers and the owner's free thread
