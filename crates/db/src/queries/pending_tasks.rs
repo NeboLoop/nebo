@@ -127,13 +127,6 @@ impl Store {
     /// What the orchestrator looks at after a restart: tasks queued, still
     /// marked running by the dead process, or interrupted by the engine's
     /// boot sweep.
-    pub fn get_recoverable_tasks(&self) -> Result<Vec<PendingTask>, NeboError> {
-        self.query_tasks(
-            &format!("{TASK_SELECT} WHERE kind IN {TASK_KINDS} AND state IN ('queued', 'running', 'interrupted') ORDER BY priority DESC, created_at ASC"),
-            [],
-        )
-    }
-
     pub fn update_task_running(&self, id: &str) -> Result<(), NeboError> {
         self.engine_set_run_state(id, "running", now(), None)?;
         Ok(())
@@ -407,21 +400,21 @@ mod tests {
         Store::new(&path.to_string_lossy()).expect("store")
     }
 
-    /// The orchestrator's whole lifecycle on engine runs: create, run,
-    /// fail-and-requeue until attempts are spent, recover, cancel children.
+    /// A helper's whole lifecycle on engine runs: create, run,
+    /// fail-and-requeue until attempts are spent, live listing, cancel children.
     #[test]
-    fn subagent_tasks_are_engine_runs_with_retry_and_recovery() {
+    fn helper_tasks_are_engine_runs_with_retry_and_recovery() {
         let s = store();
         let parent = s
-            .create_pending_task("dag-1", "dag", "agent:a:web", Some("u1"), "plan", None, Some("DAG"), Some("subagent"), 0, None)
+            .create_pending_task("dag-1", "helper", "agent:a:web", Some("u1"), "plan", None, Some("DAG"), Some("subagent"), 0, None)
             .unwrap();
-        assert_eq!((parent.status.as_str(), parent.task_type.as_str(), parent.max_attempts), ("pending", "dag", Some(3)));
+        assert_eq!((parent.status.as_str(), parent.task_type.as_str(), parent.max_attempts), ("pending", "helper", Some(3)));
         let child = s
-            .create_pending_task("dag-1-a", "subagent", "subagent:agent:a:web:dag-1-a", Some("u1"), "do a", Some("sys"), Some("A"), Some("subagent"), 5, Some("dag-1"))
+            .create_pending_task("dag-1-a", "helper", "subagent:agent:a:web:dag-1-a", Some("u1"), "do a", Some("sys"), Some("A"), Some("subagent"), 5, Some("dag-1"))
             .unwrap();
         assert_eq!(child.parent_task_id.as_deref(), Some("dag-1"));
         assert_eq!(child.priority, Some(5));
-        assert_eq!(s.get_recoverable_tasks().unwrap().len(), 2);
+        assert_eq!(s.engine_live_runs_of_kind("helper").unwrap().len(), 2);
 
         // Two failures re-queue, the third fails for good.
         for _ in 0..2 {
@@ -443,10 +436,10 @@ mod tests {
         s.update_task_completed("dag-1", Some("all done")).unwrap();
         assert_eq!(s.get_pending_task("dag-1").unwrap().unwrap().output.as_deref(), Some("all done"));
         assert_eq!(s.get_pending_tasks_by_status("completed").unwrap().len(), 1);
-        let _ = s.create_pending_task("dag-1-b", "subagent", "k", None, "do b", None, None, None, 0, Some("dag-1")).unwrap();
+        let _ = s.create_pending_task("dag-1-b", "helper", "k", None, "do b", None, None, None, 0, Some("dag-1")).unwrap();
         s.cancel_child_tasks("dag-1").unwrap();
         assert_eq!(s.get_pending_task("dag-1-b").unwrap().unwrap().status, "cancelled");
-        assert!(s.get_recoverable_tasks().unwrap().is_empty());
+        assert!(s.engine_live_runs_of_kind("helper").unwrap().is_empty());
 
         // Checklist items are still found by id through the same door.
         let item = s.create_task_item("list-1", "Draft", None).unwrap();

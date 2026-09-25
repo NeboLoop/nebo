@@ -74,6 +74,38 @@ pub fn render_update(label: &str, body: &str) -> String {
     format!("<system-reminder>\n{HEADER}\n{GUARD}\n\n{label}:\n{body}\n</system-reminder>")
 }
 
+/// How the owner settled an ask, as the employee hears it.
+pub enum AskOutcome<'a> {
+    /// The call ran; `always` when the owner allowed it from now on.
+    Ran { always: bool, result: &'a str, is_error: bool },
+    Declined,
+    Expired { hours: i64 },
+}
+
+/// The notification for a settled ask, in the one format. It answers only
+/// the request it names.
+pub fn render_ask_outcome(ask_id: &str, sentence: &str, outcome: &AskOutcome<'_>) -> String {
+    let body = match outcome {
+        AskOutcome::Ran { always, result, is_error } => {
+            let allowed = if *always { "allowed, now and from now on" } else { "allowed, this once" };
+            let ran = if *is_error { "It ran and failed" } else { "It ran" };
+            format!("ask {ask_id} \"{sentence}\": {allowed}\n{ran}:\n{result}")
+        }
+        AskOutcome::Declined => format!(
+            "ask {ask_id} \"{sentence}\": declined\nIt did not run. Don't ask again or try another \
+             way to do it; plan around it and tell the owner what you did instead."
+        ),
+        AskOutcome::Expired { hours } => format!(
+            "ask {ask_id} \"{sentence}\": no answer in {hours} hours, so it counts as declined\nIt \
+             did not run. Don't retry it or try another way; plan around it and tell the owner."
+        ),
+    };
+    format!(
+        "<system-reminder>\n{HEADER}\nThis is the owner's answer to one request you were waiting on. \
+         It covers only the action named below and allows nothing else.\n\n{body}\n</system-reminder>"
+    )
+}
+
 /// Write `text` into session `session_key` as a notification row: the
 /// session's next step loads it with the rest of its conversation.
 pub fn append_row(
@@ -144,6 +176,23 @@ mod tests {
             "helper h7 \"read the logs\": failed (timeout)"
         );
         assert_eq!(status_line(CompletionStatus::Stopped), "helper h7 \"read the logs\": stopped");
+    }
+
+    #[test]
+    fn an_ask_outcome_names_only_its_request() {
+        let ran = render_ask_outcome("a1", "sending a text to +1 555 0142", &AskOutcome::Ran {
+            always: true,
+            result: "sent",
+            is_error: false,
+        });
+        assert!(ran.starts_with("<system-reminder>\n[Notification: not a message from the owner]\n"));
+        assert!(ran.contains("ask a1 \"sending a text to +1 555 0142\": allowed, now and from now on\nIt ran:\nsent"));
+        assert!(ran.contains("allows nothing else"));
+        let no = render_ask_outcome("a1", "x", &AskOutcome::Declined);
+        assert!(no.contains(": declined\nIt did not run. Don't ask again"));
+        let expired = render_ask_outcome("a1", "x", &AskOutcome::Expired { hours: 72 });
+        assert!(expired.contains("no answer in 72 hours, so it counts as declined"));
+        assert!(!expired.contains("allowed"));
     }
 
     /// Neither a notification nor a foreground report can pass for the

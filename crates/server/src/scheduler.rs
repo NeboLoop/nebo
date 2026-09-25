@@ -51,6 +51,12 @@ pub fn spawn(
                 continue;
             }
             sweep(&store, &workflow_manager);
+            // Asks unanswered past their time expire as a No. The first tick
+            // is at boot, so asks that expired while Nebo was down go then.
+            let expired = state.permission_asks.expire_due(now_secs());
+            if expired > 0 {
+                tracing::info!(expired, "asks expired as No");
+            }
             // Cleanup expired snapshots
             snapshot_store.cleanup();
             nightly_backup(&store, &state).await;

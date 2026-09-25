@@ -3145,5 +3145,16 @@
 		"moveTo": "Chuyển tới",
 		"dropHere": "Thả vào để báo cáo cho nhân viên này",
 		"cycleRefused": "Như vậy sẽ khiến một nhân viên báo cáo cho chính mình."
+	},
+	"permissionAsk": {
+		"title": "{name} cần bạn đồng ý",
+		"allowAlways": "Luôn cho phép",
+		"thisOnce": "Chỉ lần này",
+		"no": "Không",
+		"allowedAlways": "Được phép từ giờ",
+		"allowedOnce": "Được phép lần này",
+		"declined": "Đã từ chối",
+		"expired": "Hết hạn, tính là Không",
+		"failed": "Không gửi được câu trả lời. Hãy thử lại."
 	}
 }

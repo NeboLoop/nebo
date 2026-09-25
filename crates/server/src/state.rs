@@ -83,6 +83,8 @@ pub struct AppState {
     /// heartbeat triage.
     pub decide: Option<Arc<ai::DecideClient>>,
     pub tools: Arc<Registry>,
+    /// Asks parked on the owner: the one card, its answers and expiry.
+    pub permission_asks: Arc<agent::harness::permissions::Asks>,
     pub bridge: Arc<mcp::Bridge>,
     /// Tool package registry for managing installable tools (.napp packages)
     pub napp_registry: Arc<napp::Registry>,

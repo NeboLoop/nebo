@@ -91,6 +91,8 @@ pub struct WorkflowPark<'a> {
     /// The in-loop conversation at park time.
     pub messages: Vec<ai::Message>,
     pub call: &'a ai::ToolCall,
+    /// The ask the call parked on: the owner's answer to it releases the run.
+    pub ask_id: &'a str,
     /// Port-suffixed operation name and the owner-facing sentence.
     pub operation: String,
     pub display: String,
@@ -323,6 +325,8 @@ impl ActivityLoop for WorkflowTurns {
                         &p.display,
                     )
                     .map_err(|e| e.to_string())?;
+                // The run waits on the ask's one card: its answer releases it.
+                store.link_permission_ask_run(p.ask_id, &run_id).map_err(|e| e.to_string())?;
                 let _ = store.update_workflow_run(&run_id, Some("awaiting_approval"), Some(&activity_id), None, None, None);
                 *parked.lock().unwrap_or_else(|p| p.into_inner()) = Some((p.operation.clone(), p.display.clone()));
                 Ok(())

@@ -3145,5 +3145,16 @@
 		"moveTo": "移動到",
 		"dropHere": "放到這裡即可向這位員工呈報",
 		"cycleRefused": "那樣會讓一位員工向自己呈報。"
+	},
+	"permissionAsk": {
+		"title": "{name} 需要你的同意",
+		"allowAlways": "一律允許",
+		"thisOnce": "僅此一次",
+		"no": "不",
+		"allowedAlways": "從現在起允許",
+		"allowedOnce": "本次已允許",
+		"declined": "已拒絕",
+		"expired": "已過期，視為拒絕",
+		"failed": "無法送出你的回答。請再試一次。"
 	}
 }

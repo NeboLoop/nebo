@@ -3145,5 +3145,16 @@
 		"moveTo": "移動先",
 		"dropHere": "ドロップするとこの社員の部下になります",
 		"cycleRefused": "それでは社員が自分自身に報告することになってしまいます。"
+	},
+	"permissionAsk": {
+		"title": "{name} があなたの許可を求めています",
+		"allowAlways": "常に許可",
+		"thisOnce": "今回のみ",
+		"no": "いいえ",
+		"allowedAlways": "今後は許可",
+		"allowedOnce": "今回は許可",
+		"declined": "拒否しました",
+		"expired": "期限切れ（いいえ扱い）",
+		"failed": "回答を送信できませんでした。もう一度お試しください。"
 	}
 }
