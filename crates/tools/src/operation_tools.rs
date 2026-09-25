@@ -278,11 +278,15 @@ impl DynTool for OperationTool {
         self.operation.clone()
     }
 
-    // No job capability: an operation is decided by the rules written for
-    // it (and the catalog's gating), as plugin operations always were. A
-    // catalog term as its capability waits for the consent that grants an
-    // employee its bound interfaces; until then every operation would sit
-    // outside every job.
+    /// The catalog term the operation belongs to is its job capability. The
+    /// owner's consent grants an employee the terms its `requires.interfaces`
+    /// and its plugins' bindings name (`needs::work_out_needs`), so an
+    /// operation of a bound interface is inside the job and any other is
+    /// outside it. A term the catalog doesn't name is nothing a consent
+    /// could grant: the operation's own rules decide it.
+    fn capability(&self, _input: &Value) -> Option<&'static str> {
+        crate::interface_catalog::capabilities().iter().copied().find(|c| *c == self.interface)
+    }
 
     fn operation_performed(&self, _input: &Value) -> Option<String> {
         Some(self.operation.clone())
@@ -622,11 +626,7 @@ mod tests {
         assert_eq!(bill.rule_key(&json()), "ledger.bill.create");
         assert_eq!(bill.operation_performed(&json()).as_deref(), Some("ledger.bill.create"));
         assert_eq!(bill.interface(), "ledger");
-        assert_eq!(
-            bill.capability(&json()),
-            None,
-            "the operation's own rules and gating decide it"
-        );
+        assert_eq!(bill.capability(&json()), Some("ledger"), "the bound interface is the job capability");
         assert!(
             bill.schema()["properties"].get("display").is_some()
                 && bill.schema()["properties"].get("clientKey").is_some()

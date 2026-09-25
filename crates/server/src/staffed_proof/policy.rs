@@ -161,8 +161,10 @@ async fn a_seats_published_ceiling_lands_and_gates() {
 /// declared operation shows on the Approvals view and asks in an unattended
 /// run — the owner rules on it one operation at a time. A seat nobody
 /// configured calling a critical operation from a workflow, or a schedule,
-/// asks — never "installation is the grant" — while a non-critical gated
-/// one runs from a trusted origin and asks from an untrusted one.
+/// asks — never "installation is the grant" — and so does any operation of
+/// an interface it was never hired for (outside its job). A seat hired for
+/// that interface runs a non-critical gated one from a trusted origin and
+/// asks from an untrusted one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unknown_declared_operation_fails_closed_and_a_critical_one_asks() {
     let nebo = session().await;
@@ -190,8 +192,17 @@ async fn an_unknown_declared_operation_fails_closed_and_a_critical_one_asks() {
         let d = nebo.decide(&bare, "ledger.billpayment.create", origin, None);
         assert_eq!(access(&d), "approval", "{origin:?}: a critical operation asks: {d:?}");
     }
-    assert_eq!(access(&nebo.decide(&bare, "ledger.invoice.update", Origin::Workflow, None)), "always", "inside the job");
-    let d = nebo.decide(&bare, "ledger.invoice.update", Origin::Comm, None);
+    let d = nebo.decide(&bare, "ledger.invoice.update", Origin::Workflow, None);
+    assert!(
+        matches!(&d, Decision::Ask { case: AskCase::OutsideJob { capability } } if capability == "ledger"),
+        "no hire bound the ledger: {d:?}"
+    );
+    // The owner binding the interface on the seat's page is the consent to it.
+    nebo.put_ok(&format!("/agents/{bare}"), &json!({ "interfaces": ["ledger"] })).await;
+    assert_eq!(access(&nebo.decide(&bare, "ledger.invoice.update", Origin::Workflow, None)), "always", "bound by the owner");
+    let books = nebo.hire("Books Seat", json!({ "requires": { "interfaces": ["ledger"] }, "workflows": {} })).await;
+    assert_eq!(access(&nebo.decide(&books, "ledger.invoice.update", Origin::Workflow, None)), "always", "inside the job");
+    let d = nebo.decide(&books, "ledger.invoice.update", Origin::Comm, None);
     assert!(matches!(d, Decision::Ask { case: AskCase::UntrustedInput { .. } }), "an untrusted origin asks: {d:?}");
 }
 

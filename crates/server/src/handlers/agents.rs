@@ -802,6 +802,9 @@ pub async fn create_agent(
     // agent_installed broadcast, and the agent.installed lifecycle. Same call
     // the install code path, the deps cascade, and the fs watcher make.
     crate::codes::finalize_agent_install(&state, &id, &agent.name).await;
+    // The owner's create from a package is the hire: its declared needs
+    // become the job.
+    crate::codes::grant_declared(&state, &id, None).await;
 
     // Cascade: resolve skill dependencies. Only marketplace-referenced skills are
     // separate installs — bare names are plugin-provided tool bindings (see
@@ -1320,6 +1323,14 @@ pub async fn update_agent(
     // grant, or a row the owner set on the Approvals page.
     if let Ok(config) = napp::agent::parse_agent_config(&frontmatter_json.to_string()) {
         crate::codes::apply_seat_declaration(&state.store, &id, &config);
+    }
+    // The owner binding an interface here is the consent to it: what the
+    // edit adds to the declaration joins the job.
+    if authored.interfaces.is_some() {
+        let was = if existing.frontmatter.trim().is_empty() { "{}" } else { existing.frontmatter.as_str() };
+        if let Ok(before) = napp::agent::parse_agent_config(was) {
+            crate::codes::grant_declared(&state, &id, Some(&before)).await;
+        }
     }
 
     state.hub.broadcast(
