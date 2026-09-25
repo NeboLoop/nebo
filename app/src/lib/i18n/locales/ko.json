@@ -1083,8 +1083,6 @@
 		"sameActionLimitDesc": "한 턴에서 같은 도구 동작을 성과 없이 반복할 수 있는 횟수. 이를 넘으면 모델에 다른 방법을 유도합니다",
 		"identicalArgsBlockAfter": "동일 호출 차단",
 		"identicalArgsBlockAfterDesc": "완전히 같은 호출(같은 도구, 같은 인자)을 성과 없이 반복할 수 있는 횟수. 이를 넘으면 차단됩니다",
-		"maxAutoContinuations": "자동 이어가기 한도",
-		"maxAutoContinuationsDesc": "사용자 메시지 하나당 직원이 끝내지 못한 작업을 자동으로 이어갈 수 있는 횟수(0이면 사용 안 함)",
 		"hardStop": "반복 시 강제 중지",
 		"hardStopDesc": "반복 한도에 걸리면 모델에 방향 전환을 유도하는 대신 턴을 종료합니다",
 		"guardrailsSaved": "가드레일을 저장했습니다",

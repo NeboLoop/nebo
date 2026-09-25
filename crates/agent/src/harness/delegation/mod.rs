@@ -12,6 +12,7 @@
 
 pub mod child;
 pub mod collect;
+pub mod door;
 pub mod notify;
 
 pub use notify::render_notification;
@@ -58,6 +59,9 @@ pub struct HelperSpec {
     pub background: bool,
     pub isolation: Option<Isolation>,
     pub model: Option<String>,
+    /// Skills the parent loaded, `(name, content)`: their instructions go
+    /// with the work, written into the helper's thread before its first step.
+    pub skills: Vec<(String, String)>,
 }
 
 impl HelperSpec {
@@ -82,7 +86,7 @@ impl HelperSpec {
             })?,
         };
         let background = input.get("background").and_then(|v| v.as_bool()).unwrap_or(true);
-        Ok(Self { description, prompt, kind, background, isolation: None, model: None })
+        Ok(Self { description, prompt, kind, background, isolation: None, model: None, skills: Vec::new() })
     }
 
     /// A node of a decomposed job, with what the nodes it depends on found.
@@ -104,6 +108,7 @@ impl HelperSpec {
             background: false,
             isolation: None,
             model: (!node.model_override.is_empty()).then(|| node.model_override.clone()),
+            skills: Vec::new(),
         }
     }
 }
@@ -190,6 +195,11 @@ pub fn launch_result(task_id: &str) -> String {
 /// continuation alike), so this one count covers every path.
 pub fn depth_of(key: &str) -> u8 {
     key.matches("subagent:").count().min(u8::MAX as usize) as u8
+}
+
+/// The parent session key of helper `task_id`, from its own key.
+fn parent_of<'a>(helper_key: &'a str, task_id: &str) -> Option<&'a str> {
+    helper_key.strip_prefix("subagent:")?.strip_suffix(task_id)?.strip_suffix(':')
 }
 
 /// The session key of helper `task_id` of `parent_key`.
@@ -369,10 +379,17 @@ impl Helpers {
         self.state().session_token(key)
     }
 
-    /// The owner's Stop on `key`: every helper under it stops, whichever
-    /// turn started it. The session's next turn gets a fresh token.
-    pub fn stop_session(&self, key: &str) {
-        if let Some(token) = self.state().stops.remove(key) {
+    /// The owner's Stop on session `key` (`None`: on every session): every
+    /// helper under it stops, whichever turn started it. The session's next
+    /// turn gets a fresh token.
+    pub fn stop_session(&self, key: Option<&str>) {
+        let mut state = self.state();
+        let stopped: Vec<CancellationToken> = match key {
+            Some(key) => state.stops.remove(key).into_iter().collect(),
+            None => state.stops.drain().map(|(_, token)| token).collect(),
+        };
+        drop(state);
+        for token in stopped {
             token.cancel();
         }
     }
@@ -403,6 +420,84 @@ impl Helpers {
         run_taint: &[ProvenanceClass],
         spec: HelperSpec,
     ) -> Result<Launch, String> {
+        let background = spec.background;
+        let (task_id, mut rx) = self.start(turn, grant, run_taint, spec).await?;
+        if background {
+            return Ok(Launch::Background { task_id });
+        }
+        match tokio::time::timeout(self.foreground_budget, &mut rx).await {
+            Ok(Ok(c)) => Ok(Launch::Finished(c)),
+            Ok(Err(_)) => Ok(Launch::Background { task_id }),
+            Err(_) => {
+                // Past the budget: take the waiter back so the helper reports
+                // by notification. If it finished in the same instant, its
+                // completion is already on the way to us.
+                let reclaimed = self
+                    .state()
+                    .helpers
+                    .get_mut(&task_id)
+                    .and_then(|h| h.waiter.take())
+                    .is_some();
+                if reclaimed {
+                    info!(task_id = %task_id, "foreground helper moved to the background");
+                    return Ok(Launch::Background { task_id });
+                }
+                match rx.await {
+                    Ok(c) => Ok(Launch::Finished(c)),
+                    Err(_) => Ok(Launch::Background { task_id }),
+                }
+            }
+        }
+    }
+
+    /// Run an orchestrated job: its nodes start as their dependencies finish,
+    /// each through [`child::child_request`], and each node's report goes to
+    /// the nodes that depend on it and into the job's result, never to the
+    /// parent as a notification. Returns the combined result and whether
+    /// every node finished.
+    pub async fn orchestrate(
+        self: &Arc<Self>,
+        turn: &TurnRequest,
+        grant: Option<&Grant>,
+        run_taint: &[ProvenanceClass],
+        nodes: Vec<crate::task_graph::TaskNode>,
+    ) -> Result<(String, bool), String> {
+        use futures::stream::{FuturesUnordered, StreamExt};
+
+        let mut graph = crate::task_graph::TaskGraph::new(nodes);
+        graph.validate()?;
+        let mut running = FuturesUnordered::new();
+        loop {
+            for node_id in graph.get_ready_tasks() {
+                let Some(node) = graph.nodes.get(&node_id) else { continue };
+                let spec = HelperSpec::from_node(node, &format_dep_context(&graph.collect_dependency_results(&node_id)));
+                graph.mark_running(&node_id);
+                let (_, rx) = self.start(turn, grant, run_taint, spec).await?;
+                running.push(async move { (node_id, rx.await) });
+            }
+            let Some((node_id, completion)) = running.next().await else {
+                break;
+            };
+            match completion {
+                Ok(c) if matches!(c.status, CompletionStatus::Done | CompletionStatus::Partial { .. }) => {
+                    graph.mark_completed(&node_id, c.result)
+                }
+                Ok(c) => graph.mark_failed(&node_id, notify::render_result(&c)),
+                Err(_) => graph.mark_failed(&node_id, "the helper ended without a report".to_string()),
+            }
+        }
+        Ok((graph.synthesize_results(), !graph.has_failures()))
+    }
+
+    /// Admit and spawn a helper; its completion comes back on the receiver
+    /// unless it runs in the background.
+    async fn start(
+        self: &Arc<Self>,
+        turn: &TurnRequest,
+        grant: Option<&Grant>,
+        run_taint: &[ProvenanceClass],
+        spec: HelperSpec,
+    ) -> Result<(String, oneshot::Receiver<Completion>), String> {
         let parent_key = turn.session_key.as_str();
         if !on_surface(&turn.mode, "delegate") || depth_of(parent_key) >= MAX_DEPTH {
             return Err(format!(
@@ -478,35 +573,24 @@ impl Helpers {
             );
             req
         };
+        if !spec.skills.is_empty() {
+            self.preload_skills(&helper_key(parent_key, &task_id), &parent_seat.user_id, spec.skills);
+        }
         info!(task_id = %task_id, parent = %parent_key, background = spec.background, "helper launched");
         self.spawn_turn(task_id.clone(), req, isolation);
+        Ok((task_id, rx))
+    }
 
-        if spec.background {
-            return Ok(Launch::Background { task_id });
-        }
-        let mut rx = rx;
-        match tokio::time::timeout(self.foreground_budget, &mut rx).await {
-            Ok(Ok(c)) => Ok(Launch::Finished(c)),
-            Ok(Err(_)) => Ok(Launch::Background { task_id }),
-            Err(_) => {
-                // Past the budget: take the waiter back so the helper reports
-                // by notification. If it finished in the same instant, its
-                // completion is already on the way to us.
-                let reclaimed = self
-                    .state()
-                    .helpers
-                    .get_mut(&task_id)
-                    .and_then(|h| h.waiter.take())
-                    .is_some();
-                if reclaimed {
-                    info!(task_id = %task_id, "foreground helper moved to the background");
-                    return Ok(Launch::Background { task_id });
-                }
-                match rx.await {
-                    Ok(c) => Ok(Launch::Finished(c)),
-                    Err(_) => Ok(Launch::Background { task_id }),
-                }
-            }
+    /// Write the skills the parent loaded into the helper's thread, before
+    /// its first step: the row a checkpoint restores skills with.
+    fn preload_skills(&self, session_key: &str, user_id: &str, skills: Vec<(String, String)>) {
+        let written = self.sessions.get_or_create(session_key, user_id).map_err(|e| e.to_string()).and_then(|s| {
+            let mut reminders = super::reminders::Reminders::default();
+            reminders.add(&super::events::TurnEvent::InvokedSkills(skills));
+            reminders.write(&self.sessions, &s.id).map_err(|e| e.to_string())
+        });
+        if let Err(e) = written {
+            warn!(session = %session_key, error = %e, "the parent's skills could not be written for the helper");
         }
     }
 
@@ -611,6 +695,53 @@ impl Helpers {
                 Ok(format!("Stopping helper {task_id}."))
             }
             _ => Ok(format!("Helper {task_id} is not running.")),
+        }
+    }
+
+    /// Helpers a restart interrupted: each one fails, and an owner session
+    /// that started one is told as it is of any failed helper. A nested
+    /// helper's parent was interrupted too and reports for its own work.
+    pub fn recover(self: &Arc<Self>) {
+        let runs = match self.store.engine_live_runs_of_kind(ROW_KIND) {
+            Ok(runs) => runs,
+            Err(e) => {
+                warn!(error = %e, "helpers interrupted by a restart could not be read");
+                return;
+            }
+        };
+        for run in runs {
+            if self.state().helpers.contains_key(&run.id) {
+                continue;
+            }
+            let error = "interrupted by a restart; send_message continues it from where it stopped";
+            if let Err(e) = self.store.engine_set_run_state(&run.id, "failed", chrono::Utc::now().timestamp(), Some(error)) {
+                warn!(task_id = %run.id, error = %e, "an interrupted helper could not be marked failed");
+                continue;
+            }
+            let Some(parent_key) = parent_of(&run.session_key, &run.id) else {
+                continue;
+            };
+            if depth_of(parent_key) > 0 {
+                continue;
+            }
+            let description = self
+                .store
+                .get_pending_task(&run.id)
+                .ok()
+                .flatten()
+                .and_then(|t| t.description)
+                .unwrap_or_default();
+            info!(task_id = %run.id, parent = %parent_key, "a helper was interrupted by a restart");
+            self.deliver(
+                parent_key,
+                Completion {
+                    task_id: run.id.clone(),
+                    description,
+                    status: CompletionStatus::Failed { error: error.to_string() },
+                    result: String::new(),
+                    usage: ai::UsageInfo::default(),
+                },
+            );
         }
     }
 
@@ -773,6 +904,7 @@ impl Helpers {
                     background: true,
                     isolation: None,
                     model: h.model.clone(),
+                    skills: Vec::new(),
                 };
                 let parent = Parent {
                     session_key: &h.parent_key,
@@ -858,6 +990,7 @@ impl Helpers {
                             background: true,
                             isolation: None,
                             model: p.model.clone(),
+                            skills: Vec::new(),
                         };
                         let parent = Parent {
                             session_key: &p.parent_key,
@@ -900,7 +1033,7 @@ impl Helpers {
     }
 
     fn append_notification(&self, session_key: &str, text: &str) {
-        if let Err(e) = notify::append_row(&self.sessions, session_key, text) {
+        if let Err(e) = notify::append_row(&self.sessions, session_key, text, &[]) {
             warn!(error = %e, session = %session_key, "helper notification row could not be written");
         }
     }
@@ -946,6 +1079,27 @@ async fn isolate(
         .map_err(|e| format!("Could not isolate {}: {e}", workspace.display()))
 }
 
+/// Most characters of one dependency's result carried into a node's brief.
+const MAX_DEP_CONTEXT_CHARS: usize = 4000;
+
+/// What the nodes a node depends on found, for its brief. Each result is
+/// clipped on a character boundary.
+pub fn format_dep_context(deps: &[(String, String)]) -> String {
+    if deps.is_empty() {
+        return String::new();
+    }
+    let mut parts = vec!["[Results from prerequisite tasks]\n".to_string()];
+    for (desc, result) in deps {
+        let truncated = match collect::clip_chars(result, MAX_DEP_CONTEXT_CHARS) {
+            Some(head) => format!("{head}...(truncated)"),
+            None => result.clone(),
+        };
+        parts.push(format!("--- Task \"{desc}\" (completed) ---\n{truncated}\n"));
+    }
+    parts.push("---\n\nYour task:".to_string());
+    parts.join("\n")
+}
+
 /// The spec a helper was started with, read back from its row.
 fn spec_of_row(store: &db::Store, row: &db::models::PendingTask) -> HelperSpec {
     let inputs = store
@@ -966,6 +1120,7 @@ fn spec_of_row(store: &db::Store, row: &db::models::PendingTask) -> HelperSpec {
         background: true,
         isolation: None,
         model: inputs.get("model").and_then(|v| v.as_str()).map(str::to_string),
+        skills: Vec::new(),
     }
 }
 
@@ -1255,7 +1410,7 @@ mod tests {
         drop(first_turn); // that turn is over
 
         let _second_turn = rig.owner_turn(key);
-        rig.helpers.stop_session(key);
+        rig.helpers.stop_session(Some(key));
         assert!(child.request.cancel.is_cancelled(), "the owner's Stop reaches it");
 
         // A stopped helper leaves a row, and starts nothing.
@@ -1409,5 +1564,41 @@ mod tests {
         assert_eq!((spec.kind, spec.background), (HelperKind::Plan, false));
         assert!(HelperSpec::from_input(&serde_json::json!({"description": "d"})).is_err());
         assert!(HelperSpec::from_input(&serde_json::json!({"description": "d", "prompt": "p", "helper_type": "coder"})).is_err());
+    }
+
+    #[test]
+    fn test_format_dep_context_empty() {
+        assert_eq!(format_dep_context(&[]), "");
+    }
+
+    #[test]
+    fn test_format_dep_context_with_results() {
+        let deps = vec![
+            ("Research X".to_string(), "X is great".to_string()),
+            ("Research Y".to_string(), "Y is good".to_string()),
+        ];
+        let ctx = format_dep_context(&deps);
+        assert!(ctx.contains("Research X"));
+        assert!(ctx.contains("X is great"));
+        assert!(ctx.contains("Research Y"));
+        assert!(ctx.contains("Your task:"));
+    }
+
+    #[test]
+    fn test_format_dep_context_truncation() {
+        let long_result = "x".repeat(5000);
+        let deps = vec![("Task".to_string(), long_result)];
+        let ctx = format_dep_context(&deps);
+        assert!(ctx.contains("truncated"));
+        assert!(ctx.len() < 5500);
+    }
+
+    /// Multi-byte text past the clip point must not split a character (it
+    /// used to byte-slice at 4000 and panic).
+    #[test]
+    fn dep_context_clip_is_char_safe() {
+        let long_result = format!("a{}", "é".repeat(MAX_DEP_CONTEXT_CHARS));
+        let ctx = format_dep_context(&[("Task".to_string(), long_result)]);
+        assert!(ctx.contains(&format!("a{}...(truncated)", "é".repeat(MAX_DEP_CONTEXT_CHARS - 1))));
     }
 }

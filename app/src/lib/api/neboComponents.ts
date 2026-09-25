@@ -1053,7 +1053,6 @@ export interface Session {
 	name?: string
 	scope?: string
 	scopeId?: string
-	summary?: string
 	tokenCount?: number
 	messageCount?: number
 	lastCompactedAt?: number
@@ -1071,9 +1070,6 @@ export interface Session {
 	verboseLevel?: string
 	customLabel?: string
 	lastEmbeddedMessageId?: number
-	activeTask?: string
-	lastSummarizedCount?: number
-	workTasks?: string
 	activeChatId?: string
 }
 

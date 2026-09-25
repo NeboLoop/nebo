@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
@@ -10,41 +9,26 @@ use tracing::{info, warn};
 use super::fixture::{Fixture, Interrupt};
 use super::trace::*;
 
-/// Inspect the assembled prompt with optional overrides. Prints to stdout.
-pub fn inspect_prompt(
-    fixture: Option<&Fixture>,
-    overrides: &HashMap<String, String>,
-) {
-    use crate::prompt;
+/// Print the system prompt a turn sends: the fixed part, the cache boundary
+/// and the employee's section, each with its size.
+pub fn inspect_prompt(fixture: Option<&Fixture>) {
+    use crate::harness::prompt::{PromptInputs, Role, SystemPrompt};
 
-    let mut pctx = prompt::PromptContext::default();
-    if let Some(f) = fixture {
-        pctx.agent_name = f.target_component.clone();
-    }
-
-    let static_system = prompt::build_static(&pctx);
-
-    // Apply overrides to STRAP sections
-    let final_prompt = if overrides.is_empty() {
-        static_system.clone()
-    } else {
-        apply_overrides(&static_system, overrides)
-    };
-
-    // Print with section markers and sizes
-    print_annotated_prompt(&final_prompt, overrides);
-
-    let dctx = prompt::DynamicContext::default();
-    let dynamic = prompt::build_dynamic_suffix(&dctx);
-
-    if !dynamic.trim().is_empty() {
-        println!("\n=== DYNAMIC SUFFIX (chars: {}) ===", dynamic.len());
-        println!("{}", dynamic);
-    }
-
-    let total = final_prompt.len() + dynamic.len();
-    // ~4 chars per token is a rough estimate
-    println!("\n--- Total: {} chars (~{} tokens) ---", total, total / 4);
+    let name = fixture.map(|f| f.target_component.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Nebo".to_string());
+    let prompt = SystemPrompt::build(&PromptInputs {
+        name,
+        role: Role::Employee,
+        personality_snippet: None,
+        soul: None,
+        rules: None,
+        persona: None,
+    });
+    let sizes = prompt.sizes();
+    println!("=== FIXED (chars: {}) ===", sizes.fixed);
+    println!("{}", prompt.fixed);
+    println!("\n=== EMPLOYEE (chars: {}) ===", sizes.employee);
+    println!("{}", prompt.employee);
+    println!("\n--- Total: {} chars (~{} tokens) ---", sizes.total, sizes.total / crate::CHARS_PER_TOKEN);
 }
 
 /// Run a fixture live against a running Nebo server.
@@ -52,7 +36,6 @@ pub async fn run_live(
     fixture: &Fixture,
     server: &str,
     model: Option<&str>,
-    overrides: &HashMap<String, String>,
     runs: usize,
 ) -> Result<Vec<Trace>, String> {
     let ws_url = format!("ws://{}/ws", server);
@@ -67,30 +50,6 @@ pub async fn run_live(
             ));
         }
     }
-
-    // Build system override if overrides were provided.
-    // STRAP docs are NOT in build_static() — they're built separately by
-    // build_strap_section() and appended by the runner. To override a STRAP doc,
-    // we must build the full prompt (static + strap), apply replacements, then send
-    // it as a complete system prompt.
-    let system_override = if overrides.is_empty() {
-        None
-    } else if let Some(full_system) = overrides.get("system") {
-        // Full system prompt replacement — used for naming convention A/B tests
-        Some(full_system.clone())
-    } else {
-        let pctx = crate::prompt::PromptContext::default();
-        let static_system = crate::prompt::build_static(&pctx);
-        let all_tool_names: Vec<String> = vec![
-            "os".into(),
-            "agent".into(),
-            "message".into(),
-        ];
-        let strap_section =
-            crate::prompt::build_strap_section(&all_tool_names);
-        let full = format!("{}\n\n{}", static_system, strap_section);
-        Some(apply_overrides(&full, overrides))
-    };
 
     let mut traces = Vec::new();
     for run_idx in 0..runs {
@@ -117,7 +76,7 @@ pub async fn run_live(
         info!(fixture = %fixture.id, run = %run_id, "starting live test run");
 
         let result = match with_agent_id(fixture, server).await {
-            Ok(bound) => run_single(&ws_url, &bound, &run_id, model, system_override.as_deref()).await,
+            Ok(bound) => run_single(&ws_url, &bound, &run_id, model).await,
             Err(e) => Err(e),
         };
 
@@ -153,7 +112,6 @@ async fn run_single(
     fixture: &Fixture,
     run_id: &str,
     model: Option<&str>,
-    system_override: Option<&str>,
 ) -> Result<Trace, String> {
     let start = Instant::now();
 
@@ -224,9 +182,6 @@ async fn run_single(
 
         if let Some(model) = model {
             msg_data["model_override"] = json!(model);
-        }
-        if let Some(sys) = system_override {
-            msg_data["system"] = json!(sys);
         }
         if let Some(cwd) = fixture.cwd.as_deref() {
             msg_data["cwd"] = json!(cwd);
@@ -540,39 +495,8 @@ fn agent_id_in(list: &Value, agent: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Apply prompt overrides by replacing STRAP tool doc sections.
-fn apply_overrides(prompt: &str, overrides: &HashMap<String, String>) -> String {
-    let mut result = prompt.to_string();
-    for (component, replacement) in overrides {
-        if let Some(tool_name) = component.strip_prefix("tool.") {
-            if let Some(original_doc) = crate::prompt::strap_tool_doc(tool_name) {
-                result = result.replace(original_doc, replacement);
-            }
-        }
-    }
-    result
-}
-
-/// Parse override args like "tool.shell:./overrides/shell-v2.md" into a map.
-pub fn parse_overrides(args: &[String]) -> Result<HashMap<String, String>, String> {
-    let mut map = HashMap::new();
-    for arg in args {
-        let (component, path) = arg
-            .split_once(':')
-            .ok_or_else(|| format!("invalid override format '{}', expected 'component:path'", arg))?;
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("read override {}: {}", path, e))?;
-        map.insert(component.to_string(), content);
-    }
-    Ok(map)
-}
-
-/// Build experiment metadata from current git state and overrides.
-pub fn build_experiment_metadata(
-    name: &str,
-    overrides: &HashMap<String, String>,
-    runs: usize,
-) -> ExperimentMetadata {
+/// Build experiment metadata from current git state.
+pub fn build_experiment_metadata(name: &str, runs: usize) -> ExperimentMetadata {
     let git_commit = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .output()
@@ -595,7 +519,6 @@ pub fn build_experiment_metadata(
         git_commit,
         git_branch,
         strap_doc_hashes: compute_strap_hashes(),
-        overrides: overrides.keys().cloned().collect(),
         runs_per_fixture: runs,
     }
 }
@@ -626,35 +549,6 @@ pub fn save_experiment(
         .map_err(|e| format!("write {}: {}", result_path.display(), e))?;
 
     Ok(())
-}
-
-fn print_annotated_prompt(prompt: &str, overrides: &HashMap<String, String>) {
-    // Split by known section markers and annotate
-    let sections = vec![
-        ("STRAP", "## Tool Guide"),
-        ("IDENTITY", "You are"),
-        ("BEHAVIOR", "## Behavior"),
-        ("MEMORY", "## Memory"),
-        ("ETIQUETTE", "## Etiquette"),
-    ];
-
-    let mut printed_header = false;
-    for line in prompt.lines() {
-        // Check if this line starts a known section
-        for (label, marker) in &sections {
-            if line.contains(marker) && !printed_header {
-                let overridden = overrides.keys().any(|k| {
-                    k.starts_with(&format!("tool.")) && line.contains("Tool Guide")
-                        || k == &label.to_lowercase()
-                });
-                let suffix = if overridden { " [OVERRIDDEN]" } else { "" };
-                println!("\n=== {} (starts here){} ===", label, suffix);
-                printed_header = true;
-            }
-        }
-        println!("{}", line);
-        printed_header = false;
-    }
 }
 
 /// Does this event move the run on? Reply text or tool activity — the two

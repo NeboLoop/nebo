@@ -1,12 +1,5 @@
-//! Proactive behavior infrastructure — in-memory inbox for background agent results
-//! and presence tracking for user focus state.
-//!
-//! The [`ProactiveInbox`] collects notifications from background tasks (heartbeats,
-//! cron jobs, etc.) and drains them into the steering pipeline when the user's
-//! session becomes active.
-//!
-//! The [`PresenceTracker`] records per-session user presence (focused, unfocused,
-//! away) so steering generators can adapt behavior accordingly.
+//! Presence tracking for the owner's focus state: the [`PresenceTracker`]
+//! records per-session presence (focused, unfocused, away).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -100,72 +93,6 @@ impl PresenceTracker {
     }
 }
 
-// ── Proactive Inbox ──────────────────────────────────────────────────
-
-/// Priority level for proactive items.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Priority {
-    Low,
-    Normal,
-    Urgent,
-}
-
-impl std::fmt::Display for Priority {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Priority::Low => write!(f, "low"),
-            Priority::Normal => write!(f, "normal"),
-            Priority::Urgent => write!(f, "urgent"),
-        }
-    }
-}
-
-/// A single proactive notification from a background task.
-#[derive(Debug, Clone)]
-pub struct ProactiveItem {
-    /// Source identifier, e.g. "heartbeat:gws-email", "cron:daily-brief".
-    pub source: String,
-    /// Human-readable summary, e.g. "3 urgent emails from your boss".
-    pub summary: String,
-    /// Priority level.
-    pub priority: Priority,
-    /// Unix timestamp when the item was created.
-    pub created_at: i64,
-}
-
-/// Thread-safe in-memory inbox for background agent results.
-///
-/// Background tasks push items here. The steering pipeline drains them
-/// at the start of each iteration, injecting summaries into the conversation.
-#[derive(Debug, Clone, Default)]
-pub struct ProactiveInbox {
-    items: Arc<RwLock<HashMap<String, Vec<ProactiveItem>>>>,
-}
-
-impl ProactiveInbox {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Add an item to a session's inbox.
-    pub async fn push(&self, session_id: &str, item: ProactiveItem) {
-        let mut map = self.items.write().await;
-        map.entry(session_id.to_string()).or_default().push(item);
-    }
-
-    /// Take all pending items for a session (empties the inbox for that session).
-    pub async fn drain(&self, session_id: &str) -> Vec<ProactiveItem> {
-        let mut map = self.items.write().await;
-        map.remove(session_id).unwrap_or_default()
-    }
-
-    /// Check if there are pending items for a session.
-    pub async fn has_pending(&self, session_id: &str) -> bool {
-        let map = self.items.read().await;
-        map.get(session_id).is_some_and(|v| !v.is_empty())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,54 +121,5 @@ mod tests {
         // Remove
         tracker.remove("sess1").await;
         assert!(tracker.get("sess1").await.is_none());
-    }
-
-    /// Draining one session must not touch another's items — background wake
-    /// summaries are per-conversation, and a cross-session drain would hand
-    /// one chat another chat's results.
-    #[tokio::test]
-    async fn drain_is_session_scoped() {
-        let inbox = ProactiveInbox::new();
-        let item = |s: &str| ProactiveItem {
-            source: s.to_string(),
-            summary: "done".to_string(),
-            priority: Priority::Normal,
-            created_at: 0,
-        };
-        inbox.push("sess-a", item("task:a")).await;
-        inbox.push("sess-b", item("task:b")).await;
-        let drained = inbox.drain("sess-a").await;
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].source, "task:a");
-        assert!(!inbox.has_pending("sess-a").await);
-        assert!(inbox.has_pending("sess-b").await, "sess-b must be untouched");
-    }
-
-    #[tokio::test]
-    async fn test_proactive_inbox() {
-        let inbox = ProactiveInbox::new();
-
-        assert!(!inbox.has_pending("sess1").await);
-
-        inbox
-            .push(
-                "sess1",
-                ProactiveItem {
-                    source: "test".to_string(),
-                    summary: "test item".to_string(),
-                    priority: Priority::Normal,
-                    created_at: 1000,
-                },
-            )
-            .await;
-
-        assert!(inbox.has_pending("sess1").await);
-
-        let items = inbox.drain("sess1").await;
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].summary, "test item");
-
-        // After drain, inbox should be empty
-        assert!(!inbox.has_pending("sess1").await);
     }
 }

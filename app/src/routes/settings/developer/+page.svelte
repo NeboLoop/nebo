@@ -11,7 +11,6 @@
   const GUARDRAIL_DEFAULTS = {
     sameActionLimit: 8,
     identicalArgsBlockAfter: 3,
-    maxAutoContinuations: 5,
     hardStop: false,
   };
   let guardrails = $state({ ...GUARDRAIL_DEFAULTS });
@@ -84,13 +83,6 @@
           <div class="text-xs text-base-content/50">{$t('settingsDeveloper.identicalArgsBlockAfterDesc')}</div>
         </div>
         <input type="number" min="1" max="50" class="input input-sm input-bordered w-24 text-right" bind:value={guardrails.identicalArgsBlockAfter} />
-      </div>
-      <div class="flex items-center justify-between gap-4">
-        <div>
-          <div class="text-sm font-semibold">{$t('settingsDeveloper.maxAutoContinuations')}</div>
-          <div class="text-xs text-base-content/50">{$t('settingsDeveloper.maxAutoContinuationsDesc')}</div>
-        </div>
-        <input type="number" min="0" max="50" class="input input-sm input-bordered w-24 text-right" bind:value={guardrails.maxAutoContinuations} />
       </div>
       <div class="flex items-center justify-between gap-4">
         <div>

@@ -2,7 +2,7 @@
 //! actions over REST, one implementation for both. Every change is
 //! broadcast as `goal_status` so the thread's goal line follows it.
 
-use agent::harness::goal::{AgreedGoal, CLEAR_WORDS, GoalSource, GoalStore};
+use agent::harness::goal::{AgreedGoal, CLEAR_WORDS, GoalObserver, GoalSource, GoalStore};
 use axum::extract::{Path, State};
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,7 @@ fn session_for(
         let key = s.name.unwrap_or_else(|| key_or_id.to_string());
         return Ok(Some((s.id, key)));
     }
-    let sessions = state.runner.sessions();
+    let sessions = state.harness.sessions();
     match sessions.resolve_session_id_by_key(key_or_id) {
         Ok(id) => Ok(Some((id, key_or_id.to_string()))),
         Err(NeboError::NotFound) if create => {
@@ -76,12 +76,61 @@ fn session_for(
     }
 }
 
+/// Where the harness tells the app about a session's agreed goal: its
+/// status goes to every open thread, a kickoff starts (or joins) a turn on
+/// the session, and the helpers the session started are its running work.
+pub(crate) struct GoalOutlet {
+    state: AppState,
+}
+
+impl GoalOutlet {
+    pub(crate) fn new(state: AppState) -> Self {
+        Self { state }
+    }
+
+    /// The session key of the session row `session_id`.
+    fn key_of(&self, session_id: &str) -> Option<String> {
+        self.state.store.get_session(session_id).ok().flatten().and_then(|s| s.name)
+    }
+}
+
+impl GoalObserver for GoalOutlet {
+    fn status(&self, goal: &AgreedGoal) {
+        if let Some(key) = self.key_of(&goal.session_id) {
+            broadcast(&self.state, &key, goal);
+        }
+    }
+
+    fn kickoff(&self, goal: &AgreedGoal, prompt: String) {
+        let Some(key) = self.key_of(&goal.session_id) else {
+            return;
+        };
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            super::ws::dispatch_hidden_prompt(&state, &key, prompt).await;
+        });
+    }
+
+    fn background(&self, session_id: &str) -> Vec<String> {
+        let Some(key) = self.key_of(session_id) else {
+            return Vec::new();
+        };
+        self.state
+            .helpers
+            .list(&key)
+            .into_iter()
+            .filter(|h| h.running)
+            .map(|h| format!("helper {} \"{}\"", h.task_id, h.description))
+            .collect()
+    }
+}
+
 /// The session's goal, if it ever had one.
 fn current(state: &AppState, key_or_id: &str) -> Result<Option<SessionGoalStatus>, NeboError> {
     let Some((id, key)) = session_for(state, key_or_id, false)? else {
         return Ok(None);
     };
-    Ok(GoalStore::new(state.runner.sessions(), &id)
+    Ok(GoalStore::new(state.harness.sessions(), &id)
         .get()?
         .map(|g| status_of(&key, &g)))
 }
@@ -96,7 +145,7 @@ fn set(
     let (id, key) = session_for(state, key_or_id, true)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "That conversation was not found.".to_string())?;
-    let goal = GoalStore::new(state.runner.sessions(), &id)
+    let goal = GoalStore::new(state.harness.sessions(), &id)
         .set(condition, GoalSource::OwnerCommand)
         .map_err(|e| e.to_string())?;
     broadcast(state, &key, &goal);
@@ -108,7 +157,7 @@ fn clear(state: &AppState, key_or_id: &str) -> Result<Option<SessionGoalStatus>,
     let Some((id, key)) = session_for(state, key_or_id, false)? else {
         return Ok(None);
     };
-    let cleared = GoalStore::new(state.runner.sessions(), &id).clear()?;
+    let cleared = GoalStore::new(state.harness.sessions(), &id).clear()?;
     if let Some(goal) = &cleared {
         broadcast(state, &key, goal);
     }

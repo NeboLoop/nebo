@@ -125,9 +125,6 @@ enum TestCommands {
         /// Fixture YAML file (populates agent name from fixture)
         #[arg(long)]
         fixture: Option<String>,
-        /// Component overrides: "tool.shell:./overrides/shell-v2.md"
-        #[arg(long = "override")]
-        overrides: Option<Vec<String>>,
     },
     /// Run fixture(s) live against a running Nebo server
     Run {
@@ -137,9 +134,6 @@ enum TestCommands {
         /// Suite YAML (list of fixture paths)
         #[arg(long)]
         suite: Option<String>,
-        /// Component overrides
-        #[arg(long = "override")]
-        overrides: Option<Vec<String>>,
         /// Model to use (overrides server default)
         #[arg(long)]
         model: Option<String>,
@@ -775,16 +769,14 @@ async fn run_chat(
 
 /// Rows `nebo-cli test runs` prints when `--limit` is not given.
 const DEFAULT_RUNS_LIMIT: usize = 20;
-/// The exit reasons `test runs` lists by default: every guard and reviewer
-/// stop (`Exit::label()` names). `text_response` is how a good run ends and
-/// is deliberately absent. Parameterized labels match by bare name.
+/// The exit reasons `test runs` lists by default: a turn a loop guard
+/// stopped, one that ran out of steps and one that reached its spending
+/// limit (`TurnExit::label()` names). `text_response` is how a good run ends
+/// and is deliberately absent.
 const DEFAULT_FAILURE_EXIT_REASONS: &[&str] = &[
-    "reviewer_stop",
-    "repeated_tool_calls",
-    "runaway_tool_loop",
-    "same_error_loop",
-    "adaptive_limit_no_progress",
-    "max_iterations_reached",
+    agent::harness::turn::LOOPING,
+    agent::harness::delegation::collect::STOP_MAX_STEPS,
+    agent::harness::delegation::collect::STOP_SPEND_CAP,
 ];
 /// Where `test export` writes when `--out` is not given.
 const REPLAY_FIXTURE_DIR: &str = "fixtures/replay";
@@ -869,20 +861,17 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
                 export.touched.len()
             );
         }
-        TestCommands::Prompt { fixture, overrides } => {
-            let overrides = engine::parse_overrides(&overrides.unwrap_or_default())
-                .map_err(|e| anyhow::anyhow!(e))?;
+        TestCommands::Prompt { fixture } => {
             let fix = fixture
                 .as_deref()
                 .map(|p| fixture::load_fixture(Path::new(p)))
                 .transpose()
                 .map_err(|e| anyhow::anyhow!(e))?;
-            engine::inspect_prompt(fix.as_ref(), &overrides);
+            engine::inspect_prompt(fix.as_ref());
         }
         TestCommands::Run {
             fixture: fixture_path,
             suite,
-            overrides,
             model,
             grader: grader_model,
             no_judge,
@@ -893,9 +882,6 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
             json,
             experiment,
         } => {
-            let overrides = engine::parse_overrides(&overrides.unwrap_or_default())
-                .map_err(|e| anyhow::anyhow!(e))?;
-
             let fixtures = resolve_fixtures(fixture_path.as_deref(), suite.as_deref())?;
             if fixtures.is_empty() {
                 anyhow::bail!("No fixtures specified. Use --fixture or --suite.");
@@ -926,7 +912,7 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
                 }
                 println!("Running fixture: {} ({}x)", fix.id, runs);
 
-                let mut traces = match scratch::run_bound(fix, &server, model.as_deref(), &overrides, runs).await {
+                let mut traces = match scratch::run_bound(fix, &server, model.as_deref(), runs).await {
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!("  FAILED: {}", e);
@@ -1057,7 +1043,7 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
             }
 
             if let Some(ref exp_name) = experiment {
-                let metadata = engine::build_experiment_metadata(exp_name, &overrides, runs);
+                let metadata = engine::build_experiment_metadata(exp_name, runs);
 
                 // Load baseline scores if provided
                 let baseline_scores = if let Some(ref baseline_dir) = baseline {
@@ -1303,10 +1289,9 @@ mod tests {
     }
 
     /// INVARIANT: `nebo test run` defaults — 1 run, server localhost:27895,
-    /// judge enabled (no_judge off), plain-table output — and repeated
-    /// --override flags accumulate in order.
+    /// judge enabled (no_judge off), plain-table output.
     #[test]
-    fn test_run_defaults_and_overrides() {
+    fn test_run_defaults() {
         let cli = Cli::try_parse_from(["nebo", "test", "run", "--fixture", "f.yaml"]).unwrap();
         match cli.command {
             Some(Commands::Test {
@@ -1319,20 +1304,6 @@ mod tests {
                 assert!(!json);
             }
             _ => panic!("expected Test Run"),
-        }
-
-        let cli = Cli::try_parse_from([
-            "nebo", "test", "prompt", "--override", "a:b", "--override", "c:d",
-        ])
-        .unwrap();
-        match cli.command {
-            Some(Commands::Test { command: TestCommands::Prompt { overrides, .. } }) => {
-                assert_eq!(
-                    overrides.unwrap(),
-                    vec!["a:b".to_string(), "c:d".to_string()]
-                );
-            }
-            _ => panic!("expected Test Prompt"),
         }
     }
 
@@ -1376,13 +1347,12 @@ mod tests {
         }
     }
 
-    /// INVARIANT: the default failure list is the guard and reviewer stops
-    /// only; a text response is how a good run ends and must never be listed
-    /// as a failure by default.
+    /// INVARIANT: the default failure list is the loop's stops only; a text
+    /// response is how a good run ends and must never be listed as a failure
+    /// by default.
     #[test]
     fn default_failure_reasons_exclude_text_response() {
-        assert!(DEFAULT_FAILURE_EXIT_REASONS.contains(&"reviewer_stop"));
-        assert!(DEFAULT_FAILURE_EXIT_REASONS.contains(&"same_error_loop"));
+        assert_eq!(DEFAULT_FAILURE_EXIT_REASONS, ["looping", "max_steps", "spend_cap"]);
         assert!(!DEFAULT_FAILURE_EXIT_REASONS.iter().any(|r| r.starts_with("text_response")));
     }
 

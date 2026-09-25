@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use agent::{LaneManager, Runner};
+use agent::{Harness, LaneManager};
 use auth::AuthService;
 use config::Config;
 use db::Store;
@@ -73,7 +73,15 @@ pub struct AppState {
     pub embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
     pub auth: Arc<AuthService>,
     pub hub: Arc<ClientHub>,
-    pub runner: Arc<Runner>,
+    /// The one loop: every turn starts here.
+    pub harness: Harness,
+    /// The helper registry: every helper a turn starts, its notifications and
+    /// the owner's Stop.
+    pub helpers: Arc<agent::harness::delegation::Helpers>,
+    /// The typed-decision door (Jev through Janus), when the Janus provider is
+    /// present. Outside the turn: memory consolidation, the workflow engine,
+    /// heartbeat triage.
+    pub decide: Option<Arc<ai::DecideClient>>,
     pub tools: Arc<Registry>,
     /// Asks parked on the owner: the one card, its answers and expiry.
     pub permission_asks: Arc<agent::harness::permissions::Asks>,
@@ -159,10 +167,6 @@ pub struct AppState {
     /// True while the management tunnel to the hub is up — the switchboard
     /// can reach this Nebo. Set by the tunnel itself, nothing else.
     pub tunnel_online: Arc<std::sync::atomic::AtomicBool>,
-    /// Proactive inbox — in-memory queue for background task results
-    pub proactive_inbox: Arc<agent::ProactiveInbox>,
-    /// Auto-continuation budget/state tracker for judge-gated persistent goals
-    pub goal_tracker: Arc<agent::goals::GoalTracker>,
     /// Global registry of all active agent runs — single source of truth
     pub run_registry: RunRegistry,
     /// Owner's personal loop ID — used to unify agent sessions across local + NeboAI

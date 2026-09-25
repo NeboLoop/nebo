@@ -131,12 +131,8 @@ impl Helpers {
         };
         if isolated {
             // An isolated helper runs in its own copy of the project, merged
-            // back when it finishes: the batch path does the copy and merge.
-            let progress = match ctx.stream_tx.clone() {
-                Some(tx) => tx,
-                None => tokio::sync::mpsc::channel(16).0,
-            };
-            return match orch.spawn_parallel(vec![req], progress).await {
+            // back when it finishes.
+            return match orch.spawn(req).await {
                 Ok(r) if r.success => ToolResult::ok(format!(
                     "Helper [{}] finished in its own copy of the project; its changes are merged back.\n\n{}",
                     r.task_id, r.output
@@ -211,14 +207,7 @@ impl Helpers {
             Err(e) => return ToolResult::error(e),
         };
         match orch
-            .send(
-                to,
-                message,
-                &ctx.session_key,
-                ctx.run_taint.clone(),
-                Some(ctx.cancel_token.clone()),
-                ctx.stream_tx.clone(),
-            )
+            .send(to, message, SpawnRequest::child_of(ctx))
             .await
         {
             Ok(FollowUp::Delivered { task_id }) => ToolResult::ok(format!(
@@ -489,7 +478,6 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Mutex;
-    use tokio::sync::mpsc;
 
     type Fut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -531,10 +519,10 @@ mod tests {
             self.dags.lock().unwrap().push((prompt.to_string(), parent));
             Box::pin(async { Ok(done("all steps")) })
         }
-        fn cancel(&self, _task_id: &str) -> Fut<'_, Result<(), String>> {
+        fn cancel(&self, _task_id: &str, _caller: &str) -> Fut<'_, Result<(), String>> {
             Box::pin(async { Ok(()) })
         }
-        fn status(&self, task_id: &str) -> Fut<'_, Result<String, String>> {
+        fn status(&self, task_id: &str, _caller: &str) -> Fut<'_, Result<String, String>> {
             let known = task_id == "h1";
             Box::pin(async move {
                 if known {
@@ -548,27 +536,20 @@ mod tests {
             &self,
             task_id: &str,
             message: &str,
-            from_session_key: &str,
-            _taint: Vec<types::provenance::ProvenanceClass>,
-            _parent_cancel: Option<tokio_util::sync::CancellationToken>,
-            _parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
+            parent: SpawnRequest,
         ) -> Fut<'_, Result<FollowUp, String>> {
             self.sent.lock().unwrap().push((
                 task_id.into(),
                 message.into(),
-                from_session_key.into(),
+                parent.parent_session_key,
             ));
             let task_id = task_id.to_string();
             Box::pin(async move { Ok(FollowUp::Delivered { task_id }) })
         }
-        fn list_active(&self) -> Fut<'_, Vec<(String, String, String)>> {
+        fn list_active(&self, _caller: &str) -> Fut<'_, Vec<(String, String, String)>> {
             Box::pin(async { Vec::new() })
         }
-        fn spawn_parallel(
-            &self,
-            requests: Vec<SpawnRequest>,
-            _progress_tx: mpsc::Sender<ai::StreamEvent>,
-        ) -> Fut<'_, Result<SpawnResult, String>> {
+        fn spawn_parallel(&self, requests: Vec<SpawnRequest>) -> Fut<'_, Result<SpawnResult, String>> {
             self.batches.lock().unwrap().push(requests);
             Box::pin(async { Ok(done("merged")) })
         }
@@ -705,7 +686,8 @@ mod tests {
         assert_eq!(spawned[0].agent_type, "explore");
     }
 
-    /// An isolated helper gets its own copy through the batch path.
+    /// An isolated helper gets its own copy: the helper registry makes it
+    /// and merges it back.
     #[tokio::test]
     async fn an_isolated_helper_works_in_its_own_copy() {
         let rig = Rig::new();
@@ -715,9 +697,10 @@ mod tests {
             "{}",
             r.content
         );
-        let batches = rig.rec.batches.lock().unwrap();
-        assert_eq!(batches[0].len(), 1);
-        assert_eq!(batches[0][0].isolate, "worktree");
+        let spawned = rig.rec.spawned.lock().unwrap();
+        assert_eq!(spawned.len(), 1);
+        assert_eq!(spawned[0].isolate, "worktree");
+        assert!(spawned[0].wait, "it reports when its copy is merged back");
     }
 
     #[tokio::test]

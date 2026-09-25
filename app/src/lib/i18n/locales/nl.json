@@ -1083,8 +1083,6 @@
 		"sameActionLimitDesc": "Onproductieve herhalingen van één gereedschapsactie per beurt voordat het model ervan weg wordt geduwd",
 		"identicalArgsBlockAfter": "Blokkade bij identieke aanroep",
 		"identicalArgsBlockAfterDesc": "Onproductieve herhalingen van precies dezelfde aanroep (zelfde gereedschap, zelfde argumenten) voordat die wordt geblokkeerd",
-		"maxAutoContinuations": "Budget voor automatisch doorgaan",
-		"maxAutoContinuationsDesc": "Hoe vaak een medewerker onafgemaakt werk automatisch mag voortzetten per gebruikersbericht (0 schakelt het uit)",
 		"hardStop": "Harde stop bij spiraal",
 		"hardStopDesc": "De beurt beëindigen zodra de spiraallimiet aanslaat, in plaats van het model naar een andere aanpak te duwen",
 		"guardrailsSaved": "Beveiligingen opgeslagen",

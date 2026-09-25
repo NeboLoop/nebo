@@ -20,7 +20,6 @@
 //! Both are derived from the fixture id and the run id, so the same run always
 //! renders the same text and the same run can be found again.
 
-use std::collections::HashMap;
 
 use sha2::{Digest, Sha256};
 
@@ -121,7 +120,6 @@ pub async fn run_bound(
     fixture: &Fixture,
     server: &str,
     model: Option<&str>,
-    overrides: &HashMap<String, String>,
     runs: usize,
 ) -> Result<Vec<Trace>, RunBoundError> {
     let mut traces = Vec::new();
@@ -135,7 +133,7 @@ pub async fn run_bound(
                 return Err(RunBoundError { message, traces });
             }
         };
-        match engine::run_live(&bound, server, model, overrides, 1).await {
+        match engine::run_live(&bound, server, model, 1).await {
             Ok(run_traces) => {
                 for mut trace in run_traces {
                     // The engine numbers the runs it was asked for, and it is
@@ -215,12 +213,11 @@ conversation:
     #[tokio::test]
     async fn a_failing_run_leaves_a_trace_file_naming_why() {
         let fix = fixture("trace-keep-test");
-        let overrides = HashMap::new();
 
         // Port 1 is reserved for tcpmux and nothing binds it in test
         // environments: the connection is refused immediately rather than
         // timing out, so this stays fast without a real server.
-        let err = run_bound(&fix, "127.0.0.1:1", None, &overrides, 2)
+        let err = run_bound(&fix, "127.0.0.1:1", None, 2)
             .await
             .expect_err("an unreachable server must fail the run");
 

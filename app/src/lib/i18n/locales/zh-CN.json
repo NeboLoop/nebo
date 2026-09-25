@@ -1083,8 +1083,6 @@
 		"sameActionLimitDesc": "每轮中同一个工具动作可以无效重复的次数，超过后会引导模型换个方式",
 		"identicalArgsBlockAfter": "相同调用拦截",
 		"identicalArgsBlockAfterDesc": "完全相同的调用（同一工具、同样参数）可以无效重复的次数，超过后将被拦截",
-		"maxAutoContinuations": "自动继续额度",
-		"maxAutoContinuationsDesc": "每条用户消息中，员工可以自动继续未完成工作的次数（0 表示关闭）",
 		"hardStop": "触发重复上限时直接停止",
 		"hardStopDesc": "达到重复上限时结束本轮，而不是引导模型换一种方式",
 		"guardrailsSaved": "护栏已保存",

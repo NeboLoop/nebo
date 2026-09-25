@@ -9,7 +9,6 @@ use std::time::Duration;
 use tokio::process::Command;
 use tracing::{error, info, warn};
 
-use agent::RunRequest;
 use db::Store;
 use db::models::CronJob;
 use tools::Origin;
@@ -146,6 +145,57 @@ async fn execute_shell(command: &str) -> (bool, String, Option<String>) {
     }
 }
 
+/// The turn a scheduled job runs: the job's message, with its standing
+/// instructions after it, written into the thread as the owner scheduled
+/// it, run by its employee under the employee's own grant (scheduling grants
+/// nothing new).
+fn scheduled_turn(
+    job: &CronJob,
+    prompt: &str,
+    session_key: &str,
+    agent_id: &str,
+    channel: &str,
+    channel_ctx: Option<tools::ChannelContext>,
+    cancel: tokio_util::sync::CancellationToken,
+) -> agent::TurnRequest {
+    use agent::harness::{Delivery, SeatRequest, TurnInput, TurnMode};
+
+    let text = match job.instructions.as_deref().map(str::trim).filter(|i| !i.is_empty()) {
+        Some(instructions) => format!("{prompt}\n\n{instructions}"),
+        None => prompt.to_string(),
+    };
+    agent::TurnRequest {
+        session_key: session_key.to_string(),
+        input: TurnInput::Owner { text, images: Vec::new(), attachments: Vec::new() },
+        seat: SeatRequest {
+            agent_id: agent_id.to_string(),
+            user_id: String::new(),
+            origin: Origin::System,
+            door: types::permissions::Door::Schedule,
+            mode: None,
+            ceiling: None,
+            cwd: None,
+            seed_taint: Vec::new(),
+            audience: None,
+            tool_allowlist: None,
+            tool_denial_hint: None,
+            handoff_depth: 0,
+            model_override: String::new(),
+            model_preference: None,
+            personality_snippet: None,
+            tool_scope: None,
+        },
+        mode: TurnMode::Chat,
+        delivery: Delivery {
+            channel: channel.to_string(),
+            channel_ctx,
+            mention_briefing: None,
+        },
+        cancel,
+        progress: None,
+    }
+}
+
 async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option<String>) {
     let prompt = job.message.as_deref().unwrap_or(&job.command);
 
@@ -161,7 +211,6 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
         }
     }
 
-    let system = job.instructions.as_deref().unwrap_or("").to_string();
     // A job an employee scheduled runs AS that employee: its session key
     // carries the employee (tools scope to it — its workflows, its runs),
     // and its operation policy governs. Run as the owner's front desk, an
@@ -188,22 +237,11 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
         })
         .await;
 
-    // A scheduled run holds its employee's own grant: scheduling grants
-    // nothing new.
-    let req = RunRequest {
-        session_key: session_key.clone(),
-        prompt: prompt.to_string(),
-        system,
-        origin: Origin::System,
-        channel: "cron".to_string(),
-        agent_id: agent_id.unwrap_or_default().to_string(),
-        door: types::permissions::Door::Schedule,
-        cancel_token,
-        ..Default::default()
-    };
+    let req = scheduled_turn(job, prompt, &session_key, agent_id.unwrap_or_default(), "cron", None, cancel_token);
 
-    match state.runner.run(req).await {
-        Ok(mut rx) => {
+    match state.harness.start_turn(req).await {
+        Ok(handle) => {
+            let mut rx = handle.events;
             let mut full_text = String::new();
             while let Some(event) = rx.recv().await {
                 run_handle.touch();
@@ -296,25 +334,12 @@ async fn execute_agent_channel_bound(
         })
         .await;
 
-    let system = job.instructions.as_deref().unwrap_or("").to_string();
-    // The employee's own grant governs its scheduled runs exactly as it
-    // governs its chat turns.
-    let req = RunRequest {
-        session_key: session_key.clone(),
-        prompt: prompt.to_string(),
-        system,
-        origin: Origin::System,
-        channel: saved.kind.clone(),
-        agent_id: agent_id.to_string(),
-        cancel_token,
-        channel_ctx: Some(channel_ctx.clone()),
-        door: types::permissions::Door::Schedule,
-        ..Default::default()
-    };
+    let req = scheduled_turn(job, prompt, &session_key, agent_id, &saved.kind, Some(channel_ctx.clone()), cancel_token);
 
     let mut full_text = String::new();
-    match state.runner.run(req).await {
-        Ok(mut rx) => {
+    match state.harness.start_turn(req).await {
+        Ok(handle) => {
+            let mut rx = handle.events;
             while let Some(event) = rx.recv().await {
                 run_handle.touch();
                 match event.event_type {

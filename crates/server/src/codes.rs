@@ -875,7 +875,7 @@ pub(crate) async fn grant_declared(state: &AppState, agent_id: &str, before: Opt
     let Ok(Some(agent)) = state.store.get_agent(agent_id) else { return };
     let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) else { return };
     let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
-    let reader = agent::harness::permissions::consent::AuxReader::new(state.runner.providers());
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
     let declared = declared_needs(&agent.name, &config, &installed, &reader).await;
     let (needs, source) = match before {
         None => (declared, types::permissions::RuleSource::Hire { package: agent_id.to_string() }),

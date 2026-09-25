@@ -156,7 +156,6 @@ pub struct ExperimentMetadata {
     pub git_commit: String,
     pub git_branch: String,
     pub strap_doc_hashes: HashMap<String, String>,
-    pub overrides: Vec<String>,
     pub runs_per_fixture: usize,
 }
 

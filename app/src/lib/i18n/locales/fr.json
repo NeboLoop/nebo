@@ -1083,8 +1083,6 @@
 		"sameActionLimitDesc": "Répétitions improductives d'une action d'outil par tour avant que le modèle en soit détourné",
 		"identicalArgsBlockAfter": "Blocage d'appel identique",
 		"identicalArgsBlockAfterDesc": "Répétitions improductives d'un appel exact (même outil, mêmes arguments) avant qu'il soit bloqué",
-		"maxAutoContinuations": "Budget de reprise automatique",
-		"maxAutoContinuationsDesc": "Nombre de fois qu'un employé peut reprendre seul un travail inachevé par message (0 désactive)",
 		"hardStop": "Arrêt net en cas de spirale",
 		"hardStopDesc": "Terminer le tour quand la limite de spirale se déclenche, au lieu d'inciter le modèle à changer d'approche",
 		"guardrailsSaved": "Protections enregistrées",

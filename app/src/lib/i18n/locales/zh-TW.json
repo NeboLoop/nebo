@@ -1083,8 +1083,6 @@
 		"sameActionLimitDesc": "每回合中同一個工具動作可以無效重複的次數，超過後會引導模型換個做法",
 		"identicalArgsBlockAfter": "相同呼叫封鎖",
 		"identicalArgsBlockAfterDesc": "完全相同的呼叫（同一工具、同樣參數）可以無效重複的次數，超過後會被封鎖",
-		"maxAutoContinuations": "自動接續額度",
-		"maxAutoContinuationsDesc": "每則使用者訊息中，員工可以自動接續未完成工作的次數（0 表示關閉）",
 		"hardStop": "觸發重複上限時直接停止",
 		"hardStopDesc": "達到重複上限時結束本回合，而不是引導模型換個做法",
 		"guardrailsSaved": "防護設定已儲存",

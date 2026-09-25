@@ -42,8 +42,11 @@ use super::tool_surface::{self, SurfaceInputs};
 use super::turn_end::{self, EndVerdict};
 use super::{Harness, HarnessError, TurnHandle, TurnInput, TurnMode, TurnRequest, compact, goal, reminders, usage};
 use crate::pruning;
-use crate::runner::RunState;
+use super::usage::RunState;
 use crate::selector;
+
+/// The label of a turn a loop guard stopped.
+pub const LOOPING: &str = "looping";
 
 /// Steps one turn takes before it ends with `MaxSteps` (Claude Code's
 /// max-turns option).
@@ -92,8 +95,12 @@ pub struct TurnContext {
     /// The run's provenance: seeded by the input, grown by its tool calls,
     /// stamped on its last event.
     pub taint: Mutex<BTreeSet<types::provenance::ProvenanceClass>>,
-    /// After the turn: memory extraction, personality and the chat title.
+    /// After the turn: memory extraction, personality, the chat title and
+    /// the self-improvement review.
     pub after_turn: bool,
+    /// A review fork's limits: it can only save skills, into its employee's
+    /// learned tree.
+    pub review_fork: Option<crate::review_fork::ReviewForkCtx>,
 }
 
 impl TurnContext {
@@ -101,7 +108,7 @@ impl TurnContext {
         self.grant.mode == Mode::Plan
     }
 
-    fn workflow(&self) -> Option<&crate::runner::WorkflowMode> {
+    fn workflow(&self) -> Option<&super::WorkflowMode> {
         match &self.request.mode {
             TurnMode::Workflow(m) => Some(m),
             _ => None,
@@ -172,7 +179,6 @@ struct RoundCarry {
     error_streak: crate::guardrails::ErrorStreak,
     files_read_this_session: HashSet<String>,
     recent_result_content_hashes: Vec<u64>,
-    readonly_result_hash_by_call: HashMap<(u64, u64), u64>,
     plan_touch: Option<(usize, String)>,
     edits_since_check: usize,
     last_desktop_act: Option<String>,
@@ -211,6 +217,9 @@ pub enum TurnExit {
     /// A workflow primitive ended the turn (`workflow_exit:…`,
     /// `suspension_failed:…`); the engine reads the reason.
     WorkflowEnded(String),
+    /// A loop guard stopped repeated calls that made no progress; the
+    /// owner was told why.
+    Looping,
     ProviderFailed(String),
     Refused(String),
     AwaitingApproval,
@@ -236,6 +245,7 @@ impl TurnExit {
             TurnExit::BudgetReached => super::delegation::collect::STOP_SPEND_CAP.into(),
             TurnExit::TerminalTool { .. } => "terminal_tool_error".into(),
             TurnExit::WorkflowEnded(reason) => reason.clone(),
+            TurnExit::Looping => LOOPING.into(),
             TurnExit::ProviderFailed(_) => "provider_failed".into(),
             TurnExit::Refused(_) => "refused".into(),
             TurnExit::AwaitingApproval => "awaiting_approval".into(),
@@ -272,6 +282,9 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
         current_tool: Default::default(),
     });
     let turn_id = progress.run_id.clone();
+    if owner_speaks(&req) {
+        resume_goal(&h, &session.id);
+    }
 
     let queue = || queue_input(&h, &session.id, &req);
     let admission =
@@ -292,6 +305,28 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
         }
     }
     Ok(TurnHandle { events: rx, turn_id })
+}
+
+/// Whether the owner wrote this turn's input in their own chat.
+fn owner_speaks(req: &TurnRequest) -> bool {
+    matches!(req.mode, TurnMode::Chat)
+        && matches!(req.input, TurnInput::Owner { .. })
+        && req.seat.origin == tools::Origin::User
+        && req.seat.audience.is_none()
+}
+
+/// The owner's message resumes a paused goal, and the owner sees it resume.
+fn resume_goal(h: &Harness, session_id: &str) {
+    match goal::GoalStore::new(&h.sessions, session_id).resume() {
+        Ok(Some(goal)) => {
+            info!(session_id, "the owner's message resumed the paused goal");
+            if let Some(observer) = h.goal_observer() {
+                observer.status(&goal);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => warn!(session_id, error = %e, "a paused goal could not be resumed"),
+    }
 }
 
 /// Write a busy session's input where its running turn hears it at the
@@ -315,7 +350,7 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
                 &super::delegation::render_notification(c),
                 None,
                 None,
-                Some(super::delegation::notify::ROW_METADATA),
+                Some(&super::delegation::notify::row_metadata(&[])),
             )
             .map(|_| ()),
         TurnInput::None => Ok(()),
@@ -435,7 +470,6 @@ pub(crate) async fn prepare(
             origin: req.seat.origin,
             mode: req.seat.mode,
             ceiling: req.seat.ceiling.as_ref(),
-            fence: None,
             cwd: req.seat.cwd.as_deref(),
         },
     ));
@@ -511,14 +545,17 @@ pub(crate) async fn prepare(
         permission_mode: permission_mode_name(grant.mode).to_string(),
     };
     let environment = sections::environment_fields(req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
-    let prompt = SystemPrompt::build(&PromptInputs {
-        name: name.clone(),
-        role,
-        personality_snippet: req.seat.personality_snippet.clone(),
-        soul: agent.as_ref().and_then(|a| a.soul.clone()),
-        rules: agent.as_ref().and_then(|a| a.rules.clone()),
-        persona: agent.as_ref().map(|a| prompt::inputs::persona_body(&a.agent_md)),
-    });
+    let prompt = match &req.mode {
+        TurnMode::Workflow(m) => SystemPrompt::activity(&m.system),
+        _ => SystemPrompt::build(&PromptInputs {
+            name: name.clone(),
+            role,
+            personality_snippet: req.seat.personality_snippet.clone(),
+            soul: agent.as_ref().and_then(|a| a.soul.clone()),
+            rules: agent.as_ref().and_then(|a| a.rules.clone()),
+            persona: agent.as_ref().map(|a| prompt::inputs::persona_body(&a.agent_md)),
+        }),
+    };
 
     // The relevant-memories search runs while the steps go on; a step lands
     // it once it has finished.
@@ -562,7 +599,7 @@ pub(crate) async fn prepare(
         .unwrap_or_default();
 
     let (max_steps, spend_cap_microcents) = match &req.mode {
-        TurnMode::Workflow(m) => (DEFAULT_MAX_STEPS, m.spend_cap_microcents),
+        TurnMode::Workflow(m) => (if m.max_steps > 0 { m.max_steps } else { DEFAULT_MAX_STEPS }, m.spend_cap_microcents),
         TurnMode::Fork(_) => (crate::review_fork::REVIEW_MAX_ITERATIONS as u32, 0),
         _ => (DEFAULT_MAX_STEPS, 0),
     };
@@ -574,7 +611,7 @@ pub(crate) async fn prepare(
         transition: Transition::First,
         reminders: reminders::Reminders::default(),
         call: model_call::CallState::default(),
-        usage: RunState::new(),
+        usage: RunState::default(),
         loaded_tools: BTreeSet::new(),
         surfaced_memories: surfaced,
         recall,
@@ -608,6 +645,12 @@ pub(crate) async fn prepare(
         st.reminders.add(&TurnEvent::RestrictedRun(notice));
     }
 
+    let review_fork = match &req.mode {
+        TurnMode::Fork(super::ForkKind::Review { staged }) => {
+            Some(crate::review_fork::ReviewForkCtx::new(req.seat.agent_id.clone(), *staged))
+        }
+        _ => None,
+    };
     let cx = TurnContext {
         harness: h.clone(),
         request: req,
@@ -631,6 +674,7 @@ pub(crate) async fn prepare(
         interfaces,
         taint,
         after_turn,
+        review_fork,
     };
     if cx.plan_mode() && !plan_mode_announced(&h.sessions, session_id) {
         st.reminders.add(&TurnEvent::PlanMode { entered: true });
@@ -653,7 +697,7 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
                         &super::delegation::render_notification(c),
                         None,
                         None,
-                        Some(super::delegation::notify::ROW_METADATA),
+                        Some(&super::delegation::notify::row_metadata(&[])),
                     )
                     .map(|_| ())
                     .map_err(|e| format!("failed to store the notification: {e}"));
@@ -776,7 +820,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         cx.taint
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .extend(conversation::parent_taint(&conversation));
+            .extend(conversation::received_taint(&conversation));
 
         // 3. Trim, and checkpoint past the threshold.
         let context_window = context_window(cx);
@@ -824,7 +868,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             audience_restricted: cx.seat.audience_restricted,
             memory_matter: &cx.seat.memory_matter,
             run_taint: &cx.taint,
-            review_fork: None,
+            review_fork: cx.review_fork.as_ref(),
             tool_allowlist: cx.request.seat.tool_allowlist.as_ref(),
             tool_denial_hint: &cx.request.seat.tool_denial_hint,
             declared_tools: &declared_names,
@@ -839,9 +883,6 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             }
         });
         let fork_of = request.clone();
-        // A call never carries a stream reminder: what a retry needs to say
-        // is an attachment row (`StreamCut`, `CutoffResume`).
-        let mut no_stream_reminders = Vec::new();
         let outcome = model_call::call_model(
             model_call::ModelCall {
                 request,
@@ -864,7 +905,6 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             },
             &mut st.call,
             &mut st.usage,
-            &mut no_stream_reminders,
         )
         .await;
         let reply = match outcome {
@@ -958,7 +998,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         }
         // The provider said tools were called and none arrived: the
         // transport lost them; take the step again.
-        if model_call::lost_tool_calls(&mut st.call, stop.as_deref(), &tool_calls, st.step as usize, sid).is_some() {
+        if model_call::lost_tool_calls(&mut st.call, stop.as_deref(), &tool_calls, st.step as usize, sid) {
             st.transition = Transition::TransientRetry {
                 attempt: st.call.lost_toolcall_retries as u8,
             };
@@ -1135,7 +1175,7 @@ fn overhead_tokens(cx: &TurnContext, declared: &[ai::ToolDefinition]) -> usize {
 /// chat.
 async fn trim(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage]) -> Vec<ChatMessage> {
     let h = &cx.harness;
-    crate::runner::extend_clearable(&h.tools, conversation, &mut st.trim_checked, &mut st.clearable).await;
+    extend_clearable(&h.tools, conversation, &mut st.trim_checked, &mut st.clearable).await;
     let now = chrono::Utc::now().timestamp();
     let (working, _) = compact::trim::trim(conversation, now, &st.clearable, &mut st.frozen_renderings);
     let fresh: Vec<(String, String)> = st
@@ -1349,7 +1389,6 @@ async fn tool_round(
             error_streak: &mut carry.error_streak,
             files_read_this_session: &mut carry.files_read_this_session,
             recent_result_content_hashes: &mut carry.recent_result_content_hashes,
-            readonly_result_hash_by_call: &mut carry.readonly_result_hash_by_call,
             read_ledger: &mut st.read_ledger,
             plan_touch: &mut carry.plan_touch,
             edits_since_check: &mut carry.edits_since_check,
@@ -1367,12 +1406,13 @@ async fn tool_round(
         }
         RoundOutcome::Ended(crate::guardrails::Exit::Workflow(reason)) => return Some(TurnExit::WorkflowEnded(reason)),
         // The round sent the owner its notice (with the need a tool named).
-        RoundOutcome::Ended(exit) => {
+        RoundOutcome::Ended(exit @ crate::guardrails::Exit::TerminalToolError) => {
             return Some(TurnExit::TerminalTool {
                 notice: exit.label(),
                 need: None,
             });
         }
+        RoundOutcome::Ended(_) => return Some(TurnExit::Looping),
     };
     for tc in tool_calls.iter() {
         if let Some(class) = h.tools.get(&tc.name).await.and_then(|t| t.taint(&tc.input)) {
@@ -1410,18 +1450,24 @@ async fn tool_round(
 /// another step, `Err` to end it with that exit.
 async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), TurnExit>> {
     let h = &cx.harness;
-    let goal = match (&cx.request.mode, &h.goal_observer) {
+    let goal = match (&cx.request.mode, h.goal_observer()) {
         (TurnMode::Chat, Some(observer)) => Some(goal::GoalCheck {
             sessions: h.sessions.clone(),
             session_id: cx.session_id.clone(),
             judge: goal::DoneJudge::for_providers(&h.providers.read().await),
             trace: cx.trace("done_check"),
-            observer: observer.clone(),
+            observer,
             check_ins: h.goal_check_ins.clone(),
         }),
         _ => None,
     };
-    let checks = turn_end::registry(&cx.request.mode, turn_end::EndChecks { goal, workflow_contract: None });
+    let workflow_contract = cx.workflow().map(|m| m.contract.clone());
+    let app_hook = h.hooks.has_subscribers("agent.should_continue").then(|| turn_end::AppHookCheck {
+        hooks: h.hooks.clone(),
+        session_id: cx.session_id.clone(),
+        called_tools: st.round.called_tools.clone(),
+    });
+    let checks = turn_end::registry(&cx.request.mode, turn_end::EndChecks { goal, workflow_contract, app_hook });
     if checks.is_empty() {
         return None;
     }
@@ -1490,7 +1536,7 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
             provider,
             agent_id: (!cx.agent_id().is_empty()).then(|| cx.agent_id().to_string()),
         };
-        tokio::spawn(super::recap::write_recap(h.store.clone(), h.concurrency.clone(), h.broadcast.clone(), recap));
+        tokio::spawn(super::recap::write_recap(h.store.clone(), h.concurrency.clone(), h.broadcast(), recap));
     }
     if !cx.after_turn {
         return;
@@ -1520,8 +1566,36 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         h.sessions.active_chat_id(&cx.session_id),
         cx.session_id.clone(),
         h.selector.get_cheapest_model(),
-        h.title_sink.clone(),
+        h.title_sink(),
     );
+    if !matches!(exit, TurnExit::ProviderFailed(_)) {
+        super::after_turn::start_review(h, &cx.request, &cx.session_id);
+    }
+}
+
+/// Add every stored tool call not yet `checked` whose tool says its result
+/// may be cleared once stale (`DynTool::cleared_when_stale`) to `clearable`.
+/// A call to a tool no longer registered is never cleared.
+async fn extend_clearable(tools: &tools::Registry, messages: &[ChatMessage], checked: &mut HashSet<String>, clearable: &mut compact::trim::Clearable) {
+    for msg in messages.iter().filter(|m| m.role == "assistant") {
+        let Some(calls) = msg
+            .tool_calls
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<Vec<ai::ToolCall>>(j).ok())
+        else {
+            continue;
+        };
+        for call in calls {
+            if !checked.insert(call.id.clone()) {
+                continue;
+            }
+            if let Some(tool) = tools.get(&call.name).await
+                && tool.cleared_when_stale(&call.input)
+            {
+                clearable.insert(call.id);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1919,14 +1993,11 @@ mod tests {
         let model = Scripted::new(vec![Step::Paid(Box::new(Step::Call("echo", serde_json::json!({}))), 50_000)]);
         let h = harness(&model).await;
         let mut req = owner("Do the thing");
-        req.mode = TurnMode::Workflow(Box::new(crate::runner::WorkflowMode {
+        req.mode = TurnMode::Workflow(Box::new(crate::harness::WorkflowMode {
             trace: RequestTrace::new("agent_turn"),
-            objective: String::new(),
-            instruction: String::new(),
             advertised_tools: ["echo".to_string()].into(),
-            tainted: false,
             spend_cap_microcents: 1_000_000,
-            park: None,
+            ..Default::default()
         }));
         let events = run_turn(&h, req).await;
         assert_eq!(exit_of(&events), super::super::delegation::collect::STOP_SPEND_CAP);
@@ -2033,7 +2104,7 @@ mod tests {
             self.0.lock().unwrap().push(goal.status.as_str().to_string());
         }
         fn kickoff(&self, _goal: &goal::AgreedGoal, _prompt: String) {}
-        fn background(&self) -> Vec<String> {
+        fn background(&self, _session_id: &str) -> Vec<String> {
             Vec::new()
         }
     }
@@ -2047,9 +2118,9 @@ mod tests {
             r#"{"met": false, "reason": "the transcript shows \"2 failing\""}"#,
             r#"{"met": true, "reason": "\"All tests pass now.\""}"#,
         ]);
-        let mut h = harness(&model).await;
+        let h = harness(&model).await;
         let watch = Arc::new(Watch(Mutex::new(Vec::new())));
-        h.goal_observer = Some(watch.clone());
+        h.bind(crate::harness::Outlets { goal_observer: Some(watch.clone()), ..Default::default() });
         let sid = h.sessions.get_or_create(KEY, "").unwrap().id;
         goal::GoalStore::new(&h.sessions, &sid).set("all tests pass", goal::GoalSource::OwnerCommand).unwrap();
 

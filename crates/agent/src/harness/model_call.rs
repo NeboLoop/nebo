@@ -15,10 +15,9 @@ use ai::{ChatRequest, Provider, ProviderError, StreamEvent, StreamEventType};
 
 use crate::concurrency::ConcurrencyController;
 use crate::dedupe::{self, DedupeCache};
-use crate::runner::RunState;
+use super::usage::RunState;
 use crate::selector::ModelSelector;
 use crate::session::SessionManager;
-use crate::steering;
 
 /// Max transient error retries before giving up.
 const MAX_TRANSIENT_RETRIES: usize = 10;
@@ -28,6 +27,9 @@ const MAX_RETRYABLE_RETRIES: usize = 5;
 /// overflow despite the local estimate saying we fit (single-shot reactive
 /// compact + give-up, a guard against an auto-compaction death-spiral).
 const MAX_OVERFLOW_RETRIES: usize = 2;
+/// Tokens added to the local estimate when the provider refuses a request
+/// as over the window.
+const OVERFLOW_ESTIMATE_BUMP: usize = 20_000;
 /// Max gap between stream events before the stream is declared wedged
 /// (connection open, no tokens). A 90s idle watchdog, classified transient so
 /// the normal retry/failover path re-issues the request.
@@ -228,14 +230,8 @@ pub(crate) struct ModelReply {
 }
 
 /// Make one call, streaming its events on `call.tx`. `state` takes the
-/// usage, the overflow correction and the quota warning; `pending_stream_reminders`
-/// takes a cutoff continuation and is emptied once the call lands.
-pub(crate) async fn call_model(
-    call: ModelCall<'_>,
-    st: &mut CallState,
-    state: &mut RunState,
-    pending_stream_reminders: &mut Vec<String>,
-) -> CallOutcome {
+/// usage, the overflow correction and the quota warning.
+pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &mut RunState) -> CallOutcome {
     let ModelCall {
         request: chat_req,
         providers,
@@ -380,15 +376,10 @@ pub(crate) async fn call_model(
                     ));
                 }
                 // The provider disagreed with our local estimate. Make the
-                // retry state-changing: tighten thresholds by 20% of the
-                // compaction budget so next iteration's stages actually
-                // evict, instead of re-sending the identical request.
-                let bump = state
-                    .thresholds
-                    .as_ref()
-                    .map(|t| t.auto_compact / 5)
-                    .unwrap_or(20_000);
-                state.estimate_correction += bump;
+                // retry state-changing: raise the estimate so the next step's
+                // checkpoint trigger fires instead of re-sending the
+                // identical request.
+                state.estimate_correction += OVERFLOW_ESTIMATE_BUMP;
                 warn!(
                     overflow_retries = st.overflow_retries,
                     correction = state.estimate_correction,
@@ -620,7 +611,6 @@ pub(crate) async fn call_model(
             }
             StreamEventType::Usage => {
                 if let Some(ref mut usage) = event.usage {
-                    state.last_input_tokens = usage.input_tokens as usize;
                     state.total_input_tokens += usage.input_tokens;
                     state.total_output_tokens += usage.output_tokens;
                     state.total_cache_read_tokens += usage.cache_read_input_tokens;
@@ -899,8 +889,6 @@ pub(crate) async fn call_model(
             }))
             .await;
     }
-    // The call landed: its stream reminders are spent.
-    pending_stream_reminders.clear();
 
     let stream_total_ms = t_stream_start.elapsed().as_millis() as u64;
     let iter_total_ms = t_iter_start.elapsed().as_millis() as u64;
@@ -999,14 +987,14 @@ pub(crate) fn retry_empty_reply(st: &mut CallState, iteration: usize, session_id
 /// but no tool calls were parsed from the stream — the payload was lost
 /// in transit (observed live with Janus: stop_reason="tool_calls",
 /// tool_call_count=0). Ending the turn there strands the user with only
-/// the preamble text; the step is retried with this reminder instead.
+/// the preamble text; the step is taken again instead.
 pub(crate) fn lost_tool_calls(
     st: &mut CallState,
     stop_reason: Option<&str>,
     tool_calls: &[ai::ToolCall],
     iteration: usize,
     session_id: &str,
-) -> Option<String> {
+) -> bool {
     let stop_says_tools = matches!(stop_reason, Some("tool_calls" | "tool_use"));
     if stop_says_tools && tool_calls.is_empty() && st.lost_toolcall_retries < 2 {
         st.lost_toolcall_retries += 1;
@@ -1016,13 +1004,9 @@ pub(crate) fn lost_tool_calls(
             attempt = st.lost_toolcall_retries,
             "stop_reason says tool_calls but none were parsed — retrying iteration"
         );
-        return Some(steering::wrap_system_reminder(
-            "Your previous response ended as if calling tools, but no tool \
-             calls arrived. Make the tool calls now — do not re-introduce \
-             the task.",
-        ));
+        return true;
     }
-    None
+    false
 }
 
 #[cfg(test)]

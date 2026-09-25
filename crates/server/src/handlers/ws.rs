@@ -277,7 +277,6 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                 let config = ChatConfig {
                     session_key,
                     prompt,
-                    system: String::new(),
                     user_id: String::new(),
                     channel: "app".to_string(),
                     origin: Origin::User,
@@ -472,13 +471,21 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                     dispatch_chat(&state, &parsed).await;
                                 }
                                 "cancel" => {
-                                    let (_outcome, session_id) =
+                                    let (outcome, session_id) =
                                         apply_cancel(&parsed["data"], &state.run_registry).await;
+                                    // Stop means stop: the helpers the session
+                                    // started stop with it, whichever turn
+                                    // started them.
+                                    state.helpers.stop_session(match outcome {
+                                        CancelOutcome::AllFallback { .. } => None,
+                                        _ => Some(session_id.as_str()),
+                                    });
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
                                         "session_id": session_id,
                                     }));
                                 }
                                 "cancel_all" => {
+                                    state.helpers.stop_session(None);
                                     let count = state.run_registry.cancel_all().await;
                                     info!(count, "emergency cancel_all");
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
@@ -580,9 +587,9 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         .unwrap_or("default")
                                         .to_string();
                                     // Resolve frontend session key to internal session ID
-                                    let result = state.runner.sessions()
+                                    let result = state.harness.sessions()
                                         .resolve_session_id_by_key(&session_key)
-                                        .and_then(|sid| state.runner.sessions().reset(&sid));
+                                        .and_then(|sid| state.harness.sessions().reset(&sid));
                                     let reply = match result {
                                         Ok(new_chat_id) => serde_json::json!({
                                             "type": "session_reset",
@@ -814,7 +821,6 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         let config = ChatConfig {
                                             session_key,
                                             prompt,
-                                            system: String::new(),
                                             user_id: String::new(),
                                             channel: "web".to_string(),
                                             origin: Origin::User,
@@ -1008,10 +1014,10 @@ async fn handle_builtin_slash(
                 session_id.to_string()
             };
             match state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(&session_key)
-                .and_then(|sid| state.runner.sessions().reset(&sid))
+                .and_then(|sid| state.harness.sessions().reset(&sid))
             {
                 Ok(new_chat_id) => {
                     state.hub.broadcast(
@@ -1040,12 +1046,11 @@ async fn handle_builtin_slash(
                 return Some(match state.store.delete_chat_messages_by_chat_id(chat_id) {
                     Ok(()) => {
                         if let Ok(sid) = state
-                            .runner
+                            .harness
                             .sessions()
                             .resolve_session_id_by_key(session_id)
                         {
                             let _ = state.store.reset_session_counters(&sid);
-                            let _ = state.store.update_session_summary(&sid, "");
                         }
                         state.hub.broadcast(
                             "session_reset",
@@ -1067,13 +1072,13 @@ async fn handle_builtin_slash(
                 session_id.to_string()
             };
             match state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(&session_key)
             {
                 Ok(sid) => {
                     // Rotate, don't delete — see the comm dispatch /clear arm.
-                    match state.runner.sessions().reset(&sid) {
+                    match state.harness.sessions().reset(&sid) {
                         Ok(new_chat_id) => {
                             state.hub.broadcast(
                                 "session_reset",
@@ -1122,12 +1127,12 @@ async fn handle_builtin_slash(
                 session_id.to_string()
             };
             let msg_count = state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(&session_key)
                 .ok()
                 .and_then(|sid| {
-                    state.runner.sessions().get_messages(&sid).ok()
+                    state.harness.sessions().get_messages(&sid).ok()
                 })
                 .map(|m| m.len())
                 .unwrap_or(0);
@@ -1264,7 +1269,6 @@ async fn apply_cancel(
 struct ChatPayload {
     session_id: String,
     prompt: String,
-    system: String,
     user_id: String,
     channel: String,
     agent_id: String,
@@ -1292,7 +1296,6 @@ impl ChatPayload {
         Self {
             session_id: data["session_id"].as_str().unwrap_or("default").to_string(),
             prompt: data["prompt"].as_str().unwrap_or("").to_string(),
-            system: data["system"].as_str().unwrap_or("").to_string(),
             user_id: data["user_id"].as_str().unwrap_or("").to_string(),
             channel: data["channel"].as_str().unwrap_or("web").to_string(),
             agent_id: data["agent_id"].as_str().unwrap_or("").to_string(),
@@ -1345,7 +1348,6 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
     let ChatPayload {
         session_id,
         prompt,
-        system,
         user_id,
         channel,
         agent_id,
@@ -1543,11 +1545,11 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
             chat_id.to_string()
         } else {
             state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(&session_key)
                 .ok()
-                .map(|sid| state.runner.sessions().active_chat_id(&sid))
+                .map(|sid| state.harness.sessions().active_chat_id(&sid))
                 .unwrap_or_default()
         };
         let slug = if !agent_id.is_empty() {
@@ -1644,7 +1646,6 @@ async fn dispatch_payload(state: &AppState, payload: ChatPayload, hidden: bool) 
         let config = ChatConfig {
             session_key,
             prompt: prompt.clone(),
-            system,
             user_id: user_id.clone(),
             channel: channel.clone(),
             origin: Origin::User,
@@ -1746,7 +1747,6 @@ async fn fork_mention_chat(
     let chat_config = ChatConfig {
         session_key,
         prompt: contextualized,
-        system: String::new(),
         user_id: user_id.to_string(),
         channel: channel.to_string(),
         origin: Origin::User,
@@ -1794,7 +1794,7 @@ fn inject_delegate_response(
     origin_agent_id: &str,
     channel: &str,
 ) {
-    let sessions = state.runner.sessions();
+    let sessions = state.harness.sessions();
 
     // Read the delegate's last assistant message
     let delegate_response = match sessions.resolve_session_id_by_key(delegate_session_key) {
@@ -2256,7 +2256,6 @@ mod chat_payload_tests {
             assert_eq!(p.session_id, "default");
             assert_eq!(p.channel, "web");
             assert_eq!(p.prompt, "");
-            assert_eq!(p.system, "");
             assert_eq!(p.user_id, "");
             assert_eq!(p.agent_id, "");
             assert_eq!(p.scope, "");
@@ -2271,7 +2270,6 @@ mod chat_payload_tests {
         let data = serde_json::json!({
             "session_id": "agent:a1:web",
             "prompt": "hello",
-            "system": "be terse",
             "user_id": "u1",
             "channel": "app",
             "agent_id": "a1",
@@ -2281,7 +2279,6 @@ mod chat_payload_tests {
         let p = ChatPayload::parse(&data);
         assert_eq!(p.session_id, "agent:a1:web");
         assert_eq!(p.prompt, "hello");
-        assert_eq!(p.system, "be terse");
         assert_eq!(p.user_id, "u1");
         assert_eq!(p.channel, "app");
         assert_eq!(p.agent_id, "a1");
@@ -2508,13 +2505,13 @@ async fn compact_session(state: AppState, session_key: String, agent_id: String)
         }
         state.hub.broadcast("session_compact", data);
     };
-    let Ok(session_id) = state.runner.sessions().resolve_session_id_by_key(&session_key) else {
+    let Ok(session_id) = state.harness.sessions().resolve_session_id_by_key(&session_key) else {
         return reply(serde_json::json!({ "success": false, "error": "session not found" }));
     };
-    let Some(provider) = state.runner.providers().read().await.first().cloned() else {
+    let Some(provider) = state.harness.providers().read().await.first().cloned() else {
         return reply(serde_json::json!({ "success": false, "error": "no AI provider available" }));
     };
-    match agent::harness::compact::checkpoint::owner_compact(state.runner.sessions(), provider.as_ref(), &session_id, &agent_id)
+    match agent::harness::compact::checkpoint::owner_compact(state.harness.sessions(), provider.as_ref(), &session_id, &agent_id)
         .await
     {
         Ok(c) => reply(serde_json::json!({ "success": true, "summary_length": c.summary.len() })),

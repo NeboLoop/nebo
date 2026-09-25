@@ -1083,8 +1083,6 @@
 		"sameActionLimitDesc": "Ripetizioni improduttive di un'azione di uno strumento per turno prima che il modello venga dirottato",
 		"identicalArgsBlockAfter": "Blocco di chiamata identica",
 		"identicalArgsBlockAfterDesc": "Ripetizioni improduttive di una chiamata identica (stesso strumento, stessi argomenti) prima che venga bloccata",
-		"maxAutoContinuations": "Budget di ripresa automatica",
-		"maxAutoContinuationsDesc": "Quante volte un dipendente può riprendere da solo un lavoro incompiuto per messaggio (0 disattiva)",
 		"hardStop": "Stop netto all'avvitamento",
 		"hardStopDesc": "Chiudere il turno quando scatta il limite di avvitamento, invece di spingere il modello a cambiare approccio",
 		"guardrailsSaved": "Protezioni salvate",

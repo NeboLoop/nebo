@@ -132,7 +132,6 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
     let config = ChatConfig {
         session_key: session_key.clone(),
         prompt: update_prompt(seat, change),
-        system: String::new(),
         user_id: String::new(),
         channel: "layers".to_string(),
         origin: tools::Origin::System,

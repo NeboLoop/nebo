@@ -76,7 +76,8 @@ pub enum TurnEvent {
         path: String,
         content: String,
     },
-    /// After a checkpoint: the skills loaded before it, (name, content).
+    /// Skills whose instructions apply, (name, content): after a checkpoint,
+    /// the ones loaded before it; for a helper, the ones its parent loaded.
     InvokedSkills(Vec<(String, String)>),
     /// After a checkpoint: work started before it that is still running.
     RunningWork {
@@ -299,7 +300,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             let sections: Vec<String> = skills.iter().map(|(name, content)| format!("### {name}\n{content}")).collect();
             (
                 "invoked_skills",
-                format!("Skills loaded earlier in this conversation. Their instructions still apply:\n\n{}", sections.join("\n\n")),
+                format!("Skills loaded for this work. Their instructions apply:\n\n{}", sections.join("\n\n")),
             )
         }
         TurnEvent::RunningWork { id, description, status } => (
@@ -364,7 +365,7 @@ fn replacement_row(kind: &'static str, text: &str, lead: Option<&str>) -> Option
 }
 
 fn digest(text: &str) -> String {
-    format!("{:016x}", crate::runner::simple_hash(text.trim().as_bytes()))
+    format!("{:016x}", super::simple_hash(text.trim().as_bytes()))
 }
 
 /// What the conversation was last told about the session, folded from its

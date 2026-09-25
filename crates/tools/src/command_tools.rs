@@ -199,9 +199,9 @@ pub struct Helpers {
 
 impl Helpers {
     /// A helper's status from the orchestrator, else its row in the task table.
-    async fn status(&self, id: &str) -> ToolResult {
+    async fn status(&self, ctx: &ToolContext, id: &str) -> ToolResult {
         if let Some(orch) = self.orchestrator.get()
-            && let Ok(status) = orch.status(id).await
+            && let Ok(status) = orch.status(id, &ctx.session_key).await
         {
             return ToolResult::ok(status);
         }
@@ -233,7 +233,7 @@ impl Helpers {
     /// Stop a helper, else a run the caller may stop.
     async fn stop(&self, ctx: &ToolContext, id: &str) -> ToolResult {
         let helper = match self.orchestrator.get() {
-            Some(orch) => orch.cancel(id).await.map(|()| format!("Stopped helper {id}")),
+            Some(orch) => orch.cancel(id, &ctx.session_key).await.map(|()| format!("Stopped helper {id}")),
             None => match self.store.as_deref().map(|s| s.cancel_task(id)) {
                 Some(Ok(())) => Ok(format!(
                     "Marked helper {id} stopped; no helper was running to stop."
@@ -339,7 +339,7 @@ impl DynTool for ReadOutputTool {
             if is_command_id(id) {
                 return self.machine.shell.execute(ctx, json!({"action": "poll", "session_id": id})).await;
             }
-            self.helpers.status(id).await
+            self.helpers.status(ctx, id).await
         })
     }
 }

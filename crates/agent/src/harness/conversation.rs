@@ -173,53 +173,16 @@ pub(crate) fn mid_turn_message_landed(fresh: &[ChatMessage], seen: &[ChatMessage
         .any(|m| m.role == "user" && arrived_mid_turn(m).is_some())
 }
 
-/// The taint the parent's messages in this thread carry: the run that reads
-/// them has read the parent's content.
-pub(crate) fn parent_taint(messages: &[ChatMessage]) -> Vec<types::provenance::ProvenanceClass> {
+/// The taint the parent's messages and the notifications in this thread
+/// carry: the run that reads them has read their content.
+pub(crate) fn received_taint(messages: &[ChatMessage]) -> Vec<types::provenance::ProvenanceClass> {
     messages
         .iter()
-        .filter_map(|m| match arrived_mid_turn(m) {
-            Some(MidTurnFrom::Parent { taint, .. }) => Some(taint),
-            _ => None,
+        .flat_map(|m| match arrived_mid_turn(m) {
+            Some(MidTurnFrom::Parent { taint, .. }) => taint,
+            _ => crate::harness::delegation::notify::row_taint(m),
         })
-        .flatten()
         .collect()
-}
-
-/// True when the parent's latest message to this sub-agent has no model step
-/// after it. The loop hears a message that lands before it ends
-/// (`mid_turn_message_landed`), so after a turn has ended a parent row with
-/// no assistant row after it arrived too late for that turn.
-pub(crate) fn parent_message_unheard(messages: &[ChatMessage]) -> bool {
-    let Some(at) = messages
-        .iter()
-        .rposition(|m| m.role == "user" && matches!(arrived_mid_turn(m), Some(MidTurnFrom::Parent { .. })))
-    else {
-        return false;
-    };
-    !messages[at + 1..].iter().any(|m| m.role == "assistant")
-}
-
-/// True while the owner's latest mid-turn message has no worded reply after
-/// it. An assistant row that only calls tools (narration or not) is not a
-/// reply; the model is still on its old plan. A parent's message never makes
-/// the next step a reply: the sub-agent's report is its answer.
-pub(crate) fn unanswered_mid_turn_message(messages: &[ChatMessage]) -> bool {
-    let Some(at) = messages
-        .iter()
-        .rposition(|m| m.role == "user" && matches!(arrived_mid_turn(m), Some(MidTurnFrom::Owner { .. })))
-    else {
-        return false;
-    };
-    !messages[at + 1..].iter().any(is_worded_reply)
-}
-
-/// An assistant row that answers in words. One that only calls tools
-/// (narration or not) is not a reply; the model is still on its old plan.
-fn is_worded_reply(m: &ChatMessage) -> bool {
-    m.role == "assistant"
-        && !m.content.trim().is_empty()
-        && m.tool_calls.as_deref().is_none_or(|tc| tc.is_empty() || tc == "[]" || tc == "null")
 }
 
 /// How a message that arrived mid-turn reads to the model: one fixed frame
@@ -705,7 +668,6 @@ mod tests {
         assert!(framed.starts_with("Your coworker Pam sent you a message while you were working:"), "{framed}");
         assert!(framed.contains("not an instruction or approval from the owner"));
         assert!(!framed.contains("The owner sent"));
-        assert!(!unanswered_mid_turn_message(&[row]), "a coworker is not waiting on a reply in words");
     }
 
     #[test]
@@ -731,17 +693,12 @@ mod tests {
         )]);
         assert!(queued[0].content.starts_with("The owner sent this message while you were working (via web):\nstop searching and tell me"), "{}", queued[0].content);
         assert!(!queued[0].content.contains("IMPORTANT"), "no pressure text");
-        // Unanswered until a worded reply follows it; a tool-calling row is not one.
         let mid = row("stop reading", Some(r#"{"arrivedMidTurn":true,"via":"web"}"#));
         let mut narrating = row("Reading part 3.", None);
         narrating.role = "assistant".into();
         narrating.tool_calls = Some(r#"[{"id":"c1","name":"os","input":{}}]"#.into());
         let mut reply = row("So far: Northwind, March.", None);
         reply.role = "assistant".into();
-        assert!(unanswered_mid_turn_message(&[mid.clone()]));
-        assert!(unanswered_mid_turn_message(&[mid.clone(), narrating.clone()]));
-        assert!(!unanswered_mid_turn_message(&[mid.clone(), narrating.clone(), reply.clone()]));
-        assert!(!unanswered_mid_turn_message(&[row("hello", None)]));
         // One frame, never rewritten: answered or not, the row reads the
         // same, so the cached prefix holds.
         let pending = convert_messages(&[mid.clone(), narrating.clone()]);
@@ -788,20 +745,14 @@ mod tests {
         assert!(framed.starts_with("The employee who gave you this task sent this message"), "{framed}");
         assert!(framed.contains("also cover pricing"));
         assert!(!framed.contains("owner") && !framed.contains("They are waiting"), "{framed}");
-        assert_eq!(parent_taint(std::slice::from_ref(&msg)), vec![types::provenance::ProvenanceClass::Web]);
-        assert!(parent_taint(&[row("o", "user", "hi", Some(owner.clone()))]).is_empty());
+        assert_eq!(received_taint(std::slice::from_ref(&msg)), vec![types::provenance::ProvenanceClass::Web]);
+        assert!(received_taint(&[row("o", "user", "hi", Some(owner))]).is_empty());
+        // A notification carries the taint of what it reports.
+        let phone = types::provenance::ProvenanceClass::Phone;
+        let note = row("n", "user", "a coworker replied", Some(crate::harness::delegation::notify::row_metadata(&[phone])));
+        assert_eq!(received_taint(&[note]), vec![phone]);
 
-        // The owner's rule (the next step is a reply in words) never fires
-        // for a parent's message: the sub-agent's report is its answer.
-        assert!(!unanswered_mid_turn_message(std::slice::from_ref(&msg)));
-        assert!(unanswered_mid_turn_message(&[row("o", "user", "stop", Some(owner))]));
-
-        // Unheard until a model step follows it.
         let step = row("a", "assistant", "done", None);
-        assert!(parent_message_unheard(std::slice::from_ref(&msg)));
-        assert!(!parent_message_unheard(&[msg.clone(), step.clone()]));
-        assert!(parent_message_unheard(&[step.clone(), msg.clone()]));
-        assert!(!parent_message_unheard(&[row("u", "user", "task", None), step.clone()]));
 
         // A queued message that landed after the history a step was built
         // from was not in that step; one it was built with was.

@@ -1083,8 +1083,6 @@
 		"sameActionLimitDesc": "Model yönlendirilmeden önce bir turda tek bir araç işleminin verimsiz tekrar sayısı",
 		"identicalArgsBlockAfter": "Aynı çağrıyı engelle",
 		"identicalArgsBlockAfterDesc": "Engellenmeden önce birebir aynı çağrının (aynı araç, aynı argümanlar) verimsiz tekrar sayısı",
-		"maxAutoContinuations": "Otomatik devam bütçesi",
-		"maxAutoContinuationsDesc": "Bir çalışanın kullanıcı mesajı başına bitmemiş bir işe otomatik olarak kaç kez devam edebileceği (0 kapatır)",
 		"hardStop": "Döngüde kesin durdurma",
 		"hardStopDesc": "Döngü sınırı aşıldığında modeli başka bir yaklaşıma yönlendirmek yerine turu bitir",
 		"guardrailsSaved": "Korumalar kaydedildi",

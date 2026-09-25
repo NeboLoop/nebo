@@ -1,12 +1,7 @@
 //! The harness: the one loop every turn runs through — owner chat, helpers,
 //! coworker runs, scheduled runs, voice and MCP runs, workflow activities.
-//!
-//! This tree replaces `Runner` (`runner.rs`), `steering.rs`, `turn_decide.rs`
-//! and `goals.rs` at cutover; until then nothing on main calls it. The work
-//! packages of the harness build plan fill it: Phase 1 moves code here from
-//! `runner.rs` without changing behaviour, Phase 2 builds the new turn on
-//! the moved parts. A function whose body is `unimplemented!("WPx.y")` is
-//! filled by that package and has no caller before it.
+//! Every caller starts a turn with [`Harness::start_turn`]; `turn::drive_turn`
+//! is the loop.
 
 pub mod after_turn;
 pub mod compact;
@@ -31,20 +26,34 @@ pub mod usage;
 pub mod workflow_turn;
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 use crate::concurrency::ConcurrencyController;
-use crate::runner::WorkflowMode;
 use crate::selector::ModelSelector;
 use crate::session::SessionManager;
 use session_gate::{ActiveTurns, RunProgress};
+pub use workflow_turn::{WorkflowMode, WorkflowPark};
+
+/// Where the harness tells the app what happens outside a turn's stream.
+/// The server binds them once its state exists ([`Harness::bind`]); every
+/// clone of the harness sees them.
+#[derive(Default)]
+pub struct Outlets {
+    /// Chat titles, broadcast and pushed to the loop.
+    pub title_sink: Option<Arc<dyn after_turn::ChatTitleSink>>,
+    /// Owner-facing events outside a turn's stream (`turn_recap`).
+    pub broadcast: Option<crate::agent_worker::NotifyFn>,
+    /// Where the agreed goal's status, kickoffs and running work are told;
+    /// without it no goal is checked.
+    pub goal_observer: Option<Arc<dyn goal::GoalObserver>>,
+}
 
 /// The facade every caller starts a turn through: the services a turn runs
-/// against. Cheap to clone; a running turn owns a clone. WP2.9 points the
-/// callers here and deletes `Runner`.
+/// against. Cheap to clone; a running turn owns a clone.
 #[derive(Clone)]
 pub struct Harness {
     pub(crate) sessions: SessionManager,
@@ -63,12 +72,7 @@ pub struct Harness {
     pub(crate) embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
     /// The hybrid search the memory tool uses: the turn's recall runs on it.
     pub(crate) hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
-    pub(crate) title_sink: Option<Arc<dyn after_turn::ChatTitleSink>>,
-    /// Owner-facing events outside a turn's stream (`turn_recap`).
-    pub(crate) broadcast: Option<crate::agent_worker::NotifyFn>,
-    /// Where the agreed goal's status, kickoffs and running work are told;
-    /// without it no goal is checked.
-    pub(crate) goal_observer: Option<Arc<dyn goal::GoalObserver>>,
+    pub(crate) outlets: Arc<OnceLock<Outlets>>,
     /// The goal check-ins waiting on background work, one per session.
     pub(crate) goal_check_ins: goal::CheckIns,
     pub(crate) active_turns: ActiveTurns,
@@ -101,12 +105,100 @@ impl Harness {
             ask_channels: None,
             embedding_provider: None,
             hybrid_searcher: None,
-            title_sink: None,
-            broadcast: None,
-            goal_observer: None,
+            outlets: Default::default(),
             goal_check_ins: Default::default(),
             active_turns: Default::default(),
         }
+    }
+
+    /// The owner's answers to a tool's question reach it here.
+    pub fn with_ask_channels(mut self, channels: tools::AskChannels) -> Self {
+        self.ask_channels = Some(channels);
+        self
+    }
+
+    /// Embeds memories written after a turn and at a checkpoint.
+    pub fn with_embedding_provider(mut self, provider: Arc<dyn ai::EmbeddingProvider>) -> Self {
+        self.embedding_provider = Some(provider);
+        self
+    }
+
+    /// The memory tool's own search: the turn's recall shares its index.
+    pub fn with_hybrid_searcher(mut self, searcher: Arc<dyn tools::HybridSearcher>) -> Self {
+        self.hybrid_searcher = Some(searcher);
+        self
+    }
+
+    /// Bind the app's outlets. Once: a second bind is ignored.
+    pub fn bind(&self, outlets: Outlets) {
+        if self.outlets.set(outlets).is_err() {
+            tracing::warn!("harness outlets bound twice; the first binding stays");
+        }
+    }
+
+    pub(crate) fn title_sink(&self) -> Option<Arc<dyn after_turn::ChatTitleSink>> {
+        self.outlets.get().and_then(|o| o.title_sink.clone())
+    }
+
+    pub(crate) fn broadcast(&self) -> Option<crate::agent_worker::NotifyFn> {
+        self.outlets.get().and_then(|o| o.broadcast.clone())
+    }
+
+    pub(crate) fn goal_observer(&self) -> Option<Arc<dyn goal::GoalObserver>> {
+        self.outlets.get().and_then(|o| o.goal_observer.clone())
+    }
+
+    pub fn sessions(&self) -> &SessionManager {
+        &self.sessions
+    }
+
+    pub fn store(&self) -> &Arc<db::Store> {
+        &self.store
+    }
+
+    pub fn tools(&self) -> &Arc<tools::Registry> {
+        &self.tools
+    }
+
+    pub fn selector(&self) -> &ModelSelector {
+        &self.selector
+    }
+
+    pub fn concurrency(&self) -> &Arc<ConcurrencyController> {
+        &self.concurrency
+    }
+
+    /// The providers every turn and side call shares.
+    pub fn providers(&self) -> Arc<RwLock<Vec<Arc<dyn ai::Provider>>>> {
+        self.providers.clone()
+    }
+
+    /// How many providers are loaded; 0 while they are being replaced.
+    pub fn provider_count(&self) -> usize {
+        self.providers.try_read().map(|p| p.len()).unwrap_or(0)
+    }
+
+    /// Replace the providers (the owner changed their keys or plan).
+    pub async fn reload_providers(&self, providers: Vec<Arc<dyn ai::Provider>>) {
+        let loaded: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
+        let count = providers.len();
+        *self.providers.write().await = providers;
+        self.selector.set_loaded_providers(loaded);
+        self.selector.rebuild_fuzzy(&std::collections::HashMap::new());
+        info!(count, "reloaded AI providers");
+    }
+
+    /// Title a chat whose turns were stored outside a turn (the voice loop
+    /// writes its own rows): the same generator and sink a turn uses.
+    pub fn spawn_title_generation(&self, session_id: &str, chat_id: &str) {
+        after_turn::spawn_chat_title_generation(
+            self.providers.clone(),
+            self.store.clone(),
+            chat_id.to_string(),
+            session_id.to_string(),
+            self.selector.get_cheapest_model(),
+            self.title_sink(),
+        );
     }
 
     /// Admit the turn and drive it on its own task; its events stream on the
@@ -125,6 +217,23 @@ impl Harness {
     pub fn active_turn_status(&self, key: &str) -> Option<types::api::ActiveTurnStatus> {
         session_gate::active_turn_status(&self.active_turns, key)
     }
+
+    /// The session a turn is live on under `key` (a workflow turn runs in an
+    /// activity session under its run's key), if any.
+    pub fn live_session_under(&self, key: &str) -> Option<String> {
+        session_gate::live_session_under(&self.active_turns, key)
+    }
+}
+
+/// FNV-1a over `data`: a cheap fingerprint for spotting a repeated result or
+/// text. Not cryptographic.
+pub(crate) fn simple_hash(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 /// Why a turn could not start.
@@ -186,12 +295,12 @@ pub enum TurnMode {
 /// A forked turn over a finished conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForkKind {
-    /// The self-improvement review.
-    Review,
+    /// The self-improvement review. `staged`: learned skills wait in the
+    /// Inbox for the owner instead of landing at once.
+    Review { staged: bool },
 }
 
-/// Where the turn's words go. WP2.9 adds the comm reply facts when it moves
-/// the callers onto `start_turn`.
+/// Where the turn's words go.
 pub struct Delivery {
     pub channel: String,
     pub channel_ctx: Option<tools::ChannelContext>,

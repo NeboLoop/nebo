@@ -10,9 +10,9 @@
 //!
 //! This module owns the trigger counters (turns since the last VOLUNTARY
 //! skill save — a review fires only when organic learning stalled) and the
-//! per-session single-flight guard. The spawn itself
-//! lives in `runner::run_loop`'s post-turn tail beside memory extraction,
-//! where the full run context is in scope.
+//! per-session single-flight guard. The fork itself is a
+//! `TurnMode::Fork(Review)` turn started after a chat turn
+//! (`harness::after_turn::start_review`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -25,7 +25,7 @@ pub const REVIEW_TURN_INTERVAL: u32 = 10;
 /// skills, far below a runaway loop.
 pub const REVIEW_MAX_ITERATIONS: usize = 12;
 
-/// Restrictions a review-fork run carries into `run_loop` → `ToolContext`:
+/// Restrictions a review fork carries into its tool calls' `ToolContext`:
 /// the owning employee (learned-write target + read scope), the dispatch
 /// whitelist, and the shared read-marks set for read-before-write.
 #[derive(Clone)]

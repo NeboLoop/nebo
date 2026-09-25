@@ -1083,8 +1083,6 @@
 		"sameActionLimitDesc": "Số lần lặp vô ích của một hành động công cụ trong mỗi lượt trước khi mô hình bị lái sang hướng khác",
 		"identicalArgsBlockAfter": "Chặn lời gọi giống hệt",
 		"identicalArgsBlockAfterDesc": "Số lần lặp vô ích của một lời gọi y hệt (cùng công cụ, cùng tham số) trước khi bị chặn",
-		"maxAutoContinuations": "Hạn mức tự động tiếp tục",
-		"maxAutoContinuationsDesc": "Số lần nhân viên được tự động làm tiếp công việc còn dở cho mỗi tin nhắn của người dùng (0 là tắt)",
 		"hardStop": "Dừng hẳn khi lặp lại",
 		"hardStopDesc": "Kết thúc lượt khi chạm giới hạn lặp lại, thay vì lái mô hình sang cách làm khác",
 		"guardrailsSaved": "Đã lưu chặn an toàn",

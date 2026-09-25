@@ -1083,8 +1083,6 @@
 		"sameActionLimitDesc": "Improduktiva upprepningar av en verktygsåtgärd per omgång innan modellen styrs bort från den",
 		"identicalArgsBlockAfter": "Blockering vid identiskt anrop",
 		"identicalArgsBlockAfterDesc": "Improduktiva upprepningar av exakt samma anrop (samma verktyg, samma argument) innan det blockeras",
-		"maxAutoContinuations": "Budget för att fortsätta automatiskt",
-		"maxAutoContinuationsDesc": "Hur många gånger en medarbetare får fortsätta oavslutat arbete automatiskt per användarmeddelande (0 stänger av)",
 		"hardStop": "Hårt stopp vid spiral",
 		"hardStopDesc": "Avsluta omgången när spiralgränsen slår till, i stället för att knuffa modellen mot ett annat angreppssätt",
 		"guardrailsSaved": "Skyddsräcken sparade",

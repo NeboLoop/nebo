@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use agent::RunRequest;
 use ai::StreamEventType;
 use tools::Origin;
 
@@ -294,25 +293,41 @@ async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (Strin
         ct.cancel();
     });
 
-    let req = RunRequest {
+    let req = agent::TurnRequest {
         session_key,
-        prompt: message,
-        channel: "mcp".into(),
-        // External MCP clients (Claude Desktop, Cursor) are Origin::Mcp:
-        // Autonomous-class (HITL asks blocked — nobody sees our modal from
-        // another app) and subject to the Mcp origin deny list. Tagging them
-        // User gave an external client the same trust as our own UI (TD: this
-        // was the gap flagged in the 2026-07-23 execution-path audit).
-        origin: Origin::Mcp,
-        cancel_token: cancel_token.clone(),
-        ..Default::default()
+        input: agent::harness::TurnInput::Owner { text: message, images: Vec::new(), attachments: Vec::new() },
+        seat: agent::harness::SeatRequest {
+            agent_id: String::new(),
+            user_id: String::new(),
+            // External MCP clients (Claude Desktop, Cursor) are Origin::Mcp:
+            // Autonomous-class (nobody sees our asks from another app) and
+            // subject to the Mcp origin deny list — never our own UI's trust.
+            origin: Origin::Mcp,
+            door: types::permissions::Door::Mcp,
+            mode: None,
+            ceiling: None,
+            cwd: None,
+            seed_taint: Vec::new(),
+            audience: None,
+            tool_allowlist: None,
+            tool_denial_hint: None,
+            handoff_depth: 0,
+            model_override: String::new(),
+            model_preference: None,
+            personality_snippet: None,
+            tool_scope: None,
+        },
+        mode: agent::harness::TurnMode::Chat,
+        delivery: agent::harness::Delivery { channel: "mcp".into(), channel_ctx: None, mention_briefing: None },
+        cancel: cancel_token.clone(),
+        progress: None,
     };
 
-    let mut rx = match state.runner.run(req).await {
-        Ok(rx) => rx,
+    let mut rx = match state.harness.start_turn(req).await {
+        Ok(handle) => handle.events,
         Err(e) => {
             watchdog.abort();
-            return (format!("Runner error: {}", e), true);
+            return (format!("The turn could not start: {}", e), true);
         }
     };
 
@@ -407,7 +422,7 @@ async fn handle_emit(state: &AppState, input: &serde_json::Value) -> (String, bo
 
 /// List all agent sessions.
 async fn handle_sessions_list(state: &AppState) -> (String, bool) {
-    match state.runner.sessions().list_sessions("agent") {
+    match state.harness.sessions().list_sessions("agent") {
         Ok(sessions) => {
             let json = serde_json::to_string_pretty(&sessions).unwrap_or_default();
             (json, false)
@@ -424,7 +439,7 @@ async fn handle_session_history(state: &AppState, session_id: &str) -> (String, 
         format!("mcp-{}", session_id)
     };
 
-    match state.runner.sessions().get_messages(&key) {
+    match state.harness.sessions().get_messages(&key) {
         Ok(messages) => {
             let json = serde_json::to_string_pretty(&messages).unwrap_or_default();
             (json, false)
@@ -441,7 +456,7 @@ async fn handle_session_reset(state: &AppState, session_id: &str) -> (String, bo
         format!("mcp-{}", session_id)
     };
 
-    match state.runner.sessions().reset(&key) {
+    match state.harness.sessions().reset(&key) {
         Ok(_) => (format!("Session '{}' reset", session_id), false),
         Err(e) => (format!("Failed to reset session: {}", e), true),
     }

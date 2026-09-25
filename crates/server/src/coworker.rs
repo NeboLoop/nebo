@@ -145,7 +145,7 @@ pub(crate) async fn send_coworker_message(
         let record = team_envelope(&t.name, &t.mission, &from_name, &msg.text);
         let meta = team_post_metadata(&t.id).to_string();
         if let Err(e) = state
-            .runner
+            .harness
             .sessions()
             .append_message(&target_sid, "user", &record, None, None, Some(&meta))
         {
@@ -171,7 +171,7 @@ pub(crate) async fn send_coworker_message(
         // The sender authored this — assistant role renders it as the agent
         // speaking in its own thread.
         if let Err(e) = state
-            .runner
+            .harness
             .sessions()
             .append_message(mirror_sid, "assistant", &msg.text, None, None, None)
         {
@@ -247,7 +247,6 @@ pub(crate) async fn send_coworker_message(
     let config = ChatConfig {
         session_key: thread_key.clone(),
         prompt,
-        system: String::new(),
         user_id: String::new(),
         channel: COWORKER_CHANNEL.to_string(),
         // Another employee's words, which is exactly what `Origin::Comm`
@@ -629,7 +628,7 @@ fn record_reply(state: &AppState, mirror_sid: Option<&str>, to_name: &str, reply
     }
     let content = format!("[Reply from {}]\n{}", to_name, reply);
     if let Err(e) = state
-        .runner
+        .harness
         .sessions()
         .append_message(sid, "system", &content, None, None, None)
     {
@@ -645,7 +644,7 @@ pub(crate) fn ensure_conversation_thread(
     session_key: &str,
     title: &str,
 ) -> Result<String, String> {
-    let sessions = state.runner.sessions();
+    let sessions = state.harness.sessions();
     let session = sessions
         .get_or_create(session_key, "")
         .map_err(|e| format!("failed to open thread {}: {}", session_key, e))?;
@@ -760,7 +759,7 @@ pub(crate) fn origin_matter_context(
         return Some(ctx);
     }
     let session_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(origin_session_key)
         .ok()?;

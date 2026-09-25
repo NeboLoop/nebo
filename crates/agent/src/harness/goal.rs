@@ -219,8 +219,8 @@ pub trait GoalObserver: Send + Sync {
     /// Start a turn on the session with this hidden prompt, or queue it into
     /// the turn that is running.
     fn kickoff(&self, goal: &AgreedGoal, prompt: String);
-    /// The helpers and background work the session has running.
-    fn background(&self) -> Vec<String>;
+    /// The helpers and background work the session `session_id` has running.
+    fn background(&self, session_id: &str) -> Vec<String>;
 }
 
 /// One session's goal over the `session_goals` table. Storage only: the
@@ -559,7 +559,7 @@ impl CheckIns {
             let Ok(Some(goal)) = GoalStore::new(&sessions, &session_id).active() else {
                 return;
             };
-            let prompt = check_in_prompt(&goal.condition, delay, &observer.background(), last);
+            let prompt = check_in_prompt(&goal.condition, delay, &observer.background(&session_id), last);
             observer.kickoff(&goal, prompt);
         });
         state.timer = Some(handle.abort_handle());
@@ -648,7 +648,7 @@ impl EndCheck for GoalCheck {
         // Helpers or background work still running: nothing is judged on a
         // transcript still waiting on them. Their completion wakes the
         // session; until then the goal checks in at backed-off intervals.
-        if !self.observer.background().is_empty() {
+        if !self.observer.background(&self.session_id).is_empty() {
             info!(session_id = %self.session_id, "goal: check deferred, background work is running");
             self.check_ins
                 .defer(&self.sessions, &self.session_id, self.observer.clone());
@@ -817,6 +817,64 @@ impl Suggestions {
     }
 }
 
+/// The `suggest_goal` tool's door onto [`Suggestions`]: the call's own
+/// conversation, its approval card on the channels the owner's answer
+/// comes back on, the goal told and kicked off through the harness's goal
+/// outlet.
+pub struct GoalSuggestions {
+    harness: super::Harness,
+    approvals: tools::ApprovalChannels,
+    suggestions: Suggestions,
+}
+
+impl GoalSuggestions {
+    pub fn new(harness: super::Harness, approvals: tools::ApprovalChannels) -> Self {
+        Self { harness, approvals, suggestions: Suggestions::default() }
+    }
+}
+
+impl tools::GoalSuggester for GoalSuggestions {
+    fn suggest<'a>(
+        &'a self,
+        ctx: &'a tools::ToolContext,
+        condition: &'a str,
+        ask_owner: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let unavailable = || "Goals can't be set in this conversation. Keep working toward what the owner asked.".to_string();
+            let observer = self.harness.goal_observer().ok_or_else(unavailable)?;
+            let approvals = &self.approvals;
+            // A card needs someone watching this conversation; without a
+            // stream only the owner's own words can set a goal.
+            let events = match (&ctx.stream_tx, ask_owner) {
+                (Some(tx), _) => tx.clone(),
+                (None, false) => mpsc::channel(1).0,
+                (None, true) => {
+                    return Err("Nobody can approve a goal in this run. Keep working toward what was asked.".to_string());
+                }
+            };
+            let call = ai::ToolCall {
+                id: ctx.tool_call_id.clone(),
+                name: "suggest_goal".to_string(),
+                input: serde_json::json!({ "condition": condition }),
+            };
+            self.suggestions
+                .suggest(
+                    SuggestContext {
+                        sessions: &self.harness.sessions,
+                        session_id: &ctx.session_id,
+                        call: &call,
+                        approvals,
+                        events: &events,
+                        observer,
+                    },
+                    SuggestInput { condition: condition.to_string(), ask_owner },
+                )
+                .await
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,7 +952,7 @@ mod tests {
         fn kickoff(&self, _goal: &AgreedGoal, prompt: String) {
             self.kickoffs.lock().unwrap().push(prompt);
         }
-        fn background(&self) -> Vec<String> {
+        fn background(&self, _session_id: &str) -> Vec<String> {
             self.running.lock().unwrap().clone()
         }
     }

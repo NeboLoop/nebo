@@ -1083,8 +1083,6 @@
 		"sameActionLimitDesc": "1ターン内で同じツール操作を無駄に繰り返す回数。これを超えるとモデルに別の方法を促します",
 		"identicalArgsBlockAfter": "同一呼び出しのブロック",
 		"identicalArgsBlockAfterDesc": "まったく同じ呼び出し（同じツール、同じ引数）を無駄に繰り返す回数。これを超えるとブロックされます",
-		"maxAutoContinuations": "自動継続の上限",
-		"maxAutoContinuationsDesc": "ユーザーメッセージ1件あたり、社員が未完了の作業を自動継続できる回数（0で無効）",
 		"hardStop": "スパイラル時に強制停止",
 		"hardStopDesc": "スパイラル上限に達したとき、モデルに方針変更を促す代わりにターンを終了します",
 		"guardrailsSaved": "ガードレールを保存しました",

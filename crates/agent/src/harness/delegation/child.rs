@@ -147,6 +147,7 @@ pub(crate) mod tests {
             background: true,
             isolation: None,
             model: None,
+            skills: Vec::new(),
         }
     }
 

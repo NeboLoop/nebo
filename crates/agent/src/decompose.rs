@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
 use tracing::debug;
 
-use crate::runner::Runner;
 use crate::task_graph::{AgentType, TaskNode, TaskStatus};
 
 const DECOMPOSE_PROMPT: &str = r#"Break this task into independent sub-tasks. Minimize dependencies — maximize parallelism.
@@ -24,15 +21,38 @@ Rules:
 
 Task: "#;
 
-/// Decompose a complex task into a list of TaskNodes using the LLM.
-pub async fn decompose_task(runner: &Arc<Runner>, prompt: &str) -> Result<Vec<TaskNode>, String> {
-    let full_prompt = format!("{}{}", DECOMPOSE_PROMPT, prompt);
-
-    let response = runner
-        .chat(ai::RequestTrace::new("task_decompose"), &full_prompt)
+/// Decompose a complex task into a list of TaskNodes with one model call.
+pub async fn decompose_task(provider: &dyn ai::Provider, trace: ai::RequestTrace, prompt: &str) -> Result<Vec<TaskNode>, String> {
+    let request = ai::ChatRequest {
+        tool_credential: None,
+        tool_choice: Default::default(),
+        messages: vec![ai::Message {
+            role: "user".to_string(),
+            content: format!("{DECOMPOSE_PROMPT}{prompt}"),
+            ..Default::default()
+        }],
+        tools: vec![],
+        max_tokens: 4096,
+        temperature: 0.7,
+        system: String::new(),
+        static_system: String::new(),
+        model: String::new(),
+        enable_thinking: false,
+        metadata: None,
+        cache_breakpoints: vec![],
+        cancel_token: None,
+        trace,
+    };
+    let mut rx = provider
+        .stream(&request)
         .await
-        .map_err(|e| format!("Decomposition LLM call failed: {}", e))?;
-
+        .map_err(|e| format!("Decomposition LLM call failed: {e}"))?;
+    let mut response = String::new();
+    while let Some(event) = rx.recv().await {
+        if event.event_type == ai::StreamEventType::Text {
+            response.push_str(&event.text);
+        }
+    }
     parse_decomposition(&response)
 }
 
@@ -90,12 +110,6 @@ fn parse_decomposition(response: &str) -> Result<Vec<TaskNode>, String> {
 
     debug!(count = nodes.len(), "decomposed task into sub-tasks");
     Ok(nodes)
-}
-
-/// Whether this task is simple enough to skip DAG scheduling.
-/// A single-task decomposition runs directly as a sub-agent.
-pub fn is_single_task(nodes: &[TaskNode]) -> bool {
-    nodes.len() == 1
 }
 
 #[derive(serde::Deserialize)]
@@ -176,22 +190,6 @@ mod tests {
         let json = r#"[{"id": "1", "description": "Task", "prompt": "Do it", "depends_on": []}]"#;
         let nodes = parse_decomposition(json).unwrap();
         assert_eq!(nodes[0].agent_type, AgentType::General);
-    }
-
-    #[test]
-    fn test_single_task_detection() {
-        let nodes = vec![TaskNode {
-            id: "1".to_string(),
-            prompt: "Do it".to_string(),
-            description: "Task".to_string(),
-            agent_type: AgentType::General,
-            model_override: String::new(),
-            depends_on: vec![],
-            status: TaskStatus::Pending,
-            result: None,
-            error: None,
-        }];
-        assert!(is_single_task(&nodes));
     }
 
     #[test]

@@ -530,11 +530,11 @@ pub async fn get_companion_chat(
     // session_reset), the session's active_chat_id may point to a different chat than
     // what get_companion_chat_by_user() returns. Always load messages from the active chat.
     let active_chat_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(session_key)
         .ok()
-        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_else(|| chat.id.clone());
 
     let mut messages = state
@@ -569,7 +569,7 @@ pub async fn create_companion_chat(
             .unwrap_or(&existing_chat.id);
         if let Ok(Some(session)) = state.store.get_session_by_name(session_key) {
             let new_chat_id = state
-                .runner
+                .harness
                 .sessions()
                 .rotate_chat(&session.id, Some(COMPANION_USER_ID))
                 .map_err(to_error_response)?;
@@ -670,11 +670,11 @@ pub async fn list_chat_days(
     // Resolve active chat_id from session (same pattern as get_companion_chat)
     let session_key = chat.session_name.as_deref().unwrap_or(&chat.id);
     let active_chat_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(session_key)
         .ok()
-        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_else(|| chat.id.clone());
 
     let days = state
@@ -712,11 +712,11 @@ pub async fn get_chat_history_by_day(
     // Resolve active chat_id from session (same pattern as get_companion_chat)
     let session_key = chat.session_name.as_deref().unwrap_or(&chat.id);
     let active_chat_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(session_key)
         .ok()
-        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_else(|| chat.id.clone());
 
     let mut messages = state
@@ -773,11 +773,11 @@ pub async fn get_chat_messages(
     // chat_id.  Resolve via the session's active_chat_id when possible so we
     // always load from the correct (possibly rotated) conversation.
     let resolved_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(&id)
         .ok()
-        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_else(|| id.clone());
 
     tracing::info!(
@@ -812,7 +812,7 @@ pub async fn get_chat_messages(
         .and_then(|c| c.session_name);
     let active_run = session_key
         .as_deref()
-        .and_then(|key| state.runner.active_turn_status(key));
+        .and_then(|key| state.harness.active_turn_status(key));
     let pending_ask = match session_key.as_deref() {
         Some(key) => state.run_registry.pending_ask_for_session(key).await,
         None => None,
