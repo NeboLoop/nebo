@@ -963,8 +963,13 @@ async fn run_call(
             usage: None,
             rate_limit: None,
             // The call's wall-clock time rides in the widgets slot so the
-            // live timeline and the reloaded one show the same duration.
-            widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
+            // live timeline and the reloaded one show the same duration; a
+            // call parked on the owner names its ask, so the conversation
+            // the run came from can carry the card.
+            widgets: Some(match &result.parked_ask {
+                Some(ask) => serde_json::json!({ "duration_ms": duration_ms, "parked_ask": ask }),
+                None => serde_json::json!({ "duration_ms": duration_ms }),
+            }),
             provider_metadata: None,
             stop_reason: None,
             image_url: result.image_url.clone(),

@@ -529,3 +529,124 @@ async fn the_phones_default_is_the_employees_mode() {
 
     let _ = nebo.delete(&format!("/agents/{seat}")).await;
 }
+
+/// One ask, every surface: a call parked on the owner in a run that came
+/// from the owner's loop or phone conversation carries the ask's card into
+/// that conversation too, as main relayed its approvals, and the owner's
+/// next message there answers it through the ask's one answer path. A reply
+/// that isn't an answer is a No; an ask answered elsewhere first leaves the
+/// reply an ordinary message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ask_reaches_the_owners_conversation_and_their_reply_answers_it() {
+    use types::permissions::{Rule, RuleKey, Scope, Writer};
+    let nebo = session().await;
+    let seat = nebo.hire("Phone Relay", json!({ "workflows": {} })).await;
+    let rule = Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope: Scope::Employee(seat.clone()),
+        key: RuleKey::Tool("list_employees".into()),
+        field: None,
+        effect: Effect::Ask,
+        money: None,
+        source: RuleSource::Owner,
+        locked: false,
+        created_at: 0,
+    };
+    nebo.store()
+        .write_permission_rule(&rule, &Writer::Owner)
+        .unwrap();
+    let cfg = crate::chat_dispatch::CommReplyConfig {
+        provider: "neboai".into(),
+        topic: "owner".into(),
+        conversation_id: "conv-phone".into(),
+        handoff_depth: 0,
+        approval_relay: true,
+        from_agent_id: seat.clone(),
+    };
+    let none = std::collections::HashMap::new();
+    // Each round is its own conversation: a No in one is remembered there.
+    let (n, seat_id, cfg_ref) = (&*nebo, seat.as_str(), &cfg);
+    let park = move |round: &'static str| async move {
+        let (nebo, seat, cfg) = (n, seat_id, cfg_ref);
+        let session_key = format!("agent:{seat}:neboai-personal-{round}");
+        let ctx = tools::ToolContext::new(Origin::User).with_session(session_key.clone(), "s1");
+        let ctx = tools::ToolContext {
+            grant: Some(std::sync::Arc::new(agent::resolve_grant(
+                nebo.store(),
+                seat,
+                None,
+            ))),
+            ..ctx
+        };
+        let r = nebo.tool(&ctx, "list_employees", json!({})).await;
+        let ask = r
+            .parked_ask
+            .clone()
+            .unwrap_or_else(|| panic!("the call parked: {}", r.content));
+        let sent = crate::chat_dispatch::relay_ask(
+            &nebo.state,
+            cfg,
+            &session_key,
+            &ask,
+            &None,
+            &None,
+            "Phone Relay",
+        )
+        .await
+        .expect("the card went to the conversation");
+        (session_key, ask, sent)
+    };
+    let card = |id: &str| {
+        let ask = nebo.state.permission_asks.get(id).unwrap().unwrap();
+        crate::handlers::permissions::card(&nebo.state, &ask)
+    };
+
+    // The card, as a message in the owner's conversation.
+    let (session_key, ask, (text, meta)) = park("answered").await;
+    assert!(text.starts_with("Phone Relay wants your OK:"), "{text}");
+    assert!(
+        text.ends_with("Reply Allow always, This once, or No."),
+        "{text}"
+    );
+    assert_eq!(
+        (meta["kind"].as_str(), meta["ask_id"].as_str()),
+        ("ask", ask.as_str())
+    );
+    // The owner's reply there answers it.
+    assert!(crate::try_handle_comm_control(&nebo.state, &session_key, "This once", &none).await);
+    let settled = card(&ask);
+    assert_eq!(
+        (settled.status.as_str(), settled.answer.as_deref()),
+        ("allowed", Some("this_once"))
+    );
+
+    // A reply that isn't an answer is a No.
+    let (session_key, ask, _) = park("unclear").await;
+    assert!(
+        crate::try_handle_comm_control(&nebo.state, &session_key, "what is this for?", &none).await
+    );
+    assert_eq!(card(&ask).answer.as_deref(), Some("no"));
+
+    // Answered in the Inbox first: the reply is an ordinary message.
+    let (session_key, ask, _) = park("elsewhere").await;
+    nebo.post_ok(
+        &format!("/permissions/asks/{ask}/answer"),
+        &json!({ "answer": "no", "via": "inbox" }),
+    )
+    .await;
+    assert!(!crate::try_handle_comm_control(&nebo.state, &session_key, "yes", &none).await);
+    assert!(
+        nebo.state
+            .pending_comm_approvals
+            .lock()
+            .await
+            .get(&session_key)
+            .is_none(),
+        "nothing left waiting"
+    );
+
+    nebo.store()
+        .remove_permission_rule(&rule.id, &Writer::Owner)
+        .unwrap();
+    let _ = nebo.delete(&format!("/agents/{seat}")).await;
+}

@@ -2179,6 +2179,51 @@ mod tests {
         );
     }
 
+    /// A call parked on the owner names its ask on the tool-result event, so
+    /// the conversation the run came from can carry the card.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_parked_call_names_its_ask_on_the_result_event() {
+        let model = Scripted::new(vec![
+            Step::Call("echo", serde_json::json!({})),
+            Step::Say("Waiting on you."),
+        ]);
+        let h = harness(&model).await;
+        let rule = types::permissions::Rule {
+            id: "ask-echo".into(),
+            scope: types::permissions::Scope::Company,
+            key: types::permissions::RuleKey::Tool("echo".into()),
+            field: None,
+            effect: types::permissions::Effect::Ask,
+            money: None,
+            source: types::permissions::RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        };
+        h.store
+            .write_permission_rule(&rule, &types::permissions::Writer::Owner)
+            .unwrap();
+        let mut req = owner("Echo something");
+        req.seat.mode = Some(Mode::Automatic);
+        let events = run_turn(&h, req).await;
+        let result = events
+            .iter()
+            .find(|e| e.event_type == ai::StreamEventType::ToolResult)
+            .expect("the call's result event");
+        let ask = result
+            .widgets
+            .as_ref()
+            .and_then(|w| w["parked_ask"].as_str())
+            .expect("the parked ask is named");
+        assert_eq!(
+            h.store
+                .get_permission_ask(ask)
+                .unwrap()
+                .expect("the ask")
+                .status,
+            "open"
+        );
+    }
+
     /// An employee with its own tools `quote` and `refund`, and a tool scope
     /// `storefront` that lists only `quote`.
     async fn scoped_employee(h: &Harness) {

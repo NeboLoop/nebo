@@ -3676,13 +3676,45 @@ async fn try_handle_comm_control(
         // Asker already gone (timeout/cancel) — treat as a normal message.
     }
     // A pending relayed APPROVAL for this session: the message is the decision.
-    // Same decision strings the desktop ApprovalModal produces ("once"/
-    // "always"/"deny"); anything unrecognized denies — approvals fail closed.
     let pending_approval = {
         let approvals = state.pending_comm_approvals.lock().await;
         approvals.get(session_key).cloned()
     };
-    if let Some(request_id) = pending_approval {
+    // A permission ask: the reply is the owner's answer, through the ask's
+    // one answer path. An ask settled elsewhere first leaves this message an
+    // ordinary one.
+    if let Some(crate::state::CommApproval::Ask(ask_id)) = &pending_approval {
+        state.pending_comm_approvals.lock().await.remove(session_key);
+        let ask = match state.permission_asks.get(ask_id) {
+            Ok(Some(ask)) if ask.status == agent::harness::permissions::AskStatus::Open => ask,
+            _ => return false,
+        };
+        let card = crate::handlers::permissions::card(state, &ask);
+        let answer = crate::permission_asks::reply_answer(&card, answer);
+        return match state.permission_asks.answer(
+            &state.tools,
+            ask_id,
+            answer,
+            agent::harness::permissions::AnsweredVia::Chat,
+        ) {
+            Ok(_) => {
+                tracing::info!(
+                    session = %session_key,
+                    answer = answer.as_str(),
+                    "inbound comm message answered the ask"
+                );
+                true
+            }
+            Err(e) => {
+                tracing::info!(session = %session_key, error = ?e, "the relayed ask was not answered by this message");
+                false
+            }
+        };
+    }
+    // A card the run waits on: the same decision strings the desktop
+    // ApprovalModal produces ("once"/"always"/"deny"); anything unrecognized
+    // denies — approvals fail closed.
+    if let Some(crate::state::CommApproval::Waiting(request_id)) = pending_approval {
         let normalized = answer.trim().to_lowercase();
         let decision = if normalized == "approve always" || normalized == "always" {
             "always"
