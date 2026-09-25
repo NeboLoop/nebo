@@ -37,7 +37,7 @@ use super::prompt::{self, PromptInputs, SystemPrompt, sections};
 use super::seat::{self, GrantRequest, Seat};
 use types::permissions::{Grant, Mode};
 use super::session_gate::{self, Admission, RunProgress, TurnGuard};
-use super::tool_round::{self, RoundContext, RoundOutcome, RoundState, RunToolScope};
+use super::tool_round::{self, RoundContext, RoundOutcome, RoundState, RunToolScope, ToolExecutor};
 use super::tool_surface::{self, SurfaceInputs};
 use super::turn_end::{self, EndVerdict};
 use super::{Harness, HarnessError, TurnHandle, TurnInput, TurnMode, TurnRequest, compact, goal, reminders, usage};
@@ -862,7 +862,26 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             }
         });
         let fork_of = request.clone();
-        let outcome = model_call::call_model(
+        let no_objective = String::new();
+        let round_cx = RoundContext {
+            scope: &tool_scope,
+            tools: &h.tools,
+            providers: &h.providers,
+            concurrency: &h.concurrency,
+            hooks: &h.hooks,
+            user_prompt: "",
+            iteration: st.step as usize,
+            workflow_mode: cx.workflow(),
+            decide: None,
+            active_task: &no_objective,
+            turn_mode: Some(&cx.request.mode),
+            side_trace: &side_trace,
+        };
+        // Claude Code's streaming executor: safe calls start as their input
+        // completes in the stream, while the reply is still arriving.
+        let mut executor = ToolExecutor::new(&round_cx);
+        let (tool_calls_out, streamed_calls) = mpsc::unbounded_channel();
+        let call = model_call::call_model(
             model_call::ModelCall {
                 request,
                 providers: &h.providers,
@@ -881,11 +900,12 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 tool_credential: issue_credential
                     .as_ref()
                     .map(|issue| issue as &(dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)),
+                tool_calls_out,
             },
             &mut st.call,
             &mut st.usage,
-        )
-        .await;
+        );
+        let (outcome, ()) = tokio::join!(call, executor.stream(streamed_calls));
         let reply = match outcome {
             CallOutcome::Reply(reply) => reply,
             CallOutcome::Retry(RetryWhy::Overflow) => {
@@ -950,7 +970,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             if provider.handles_tools() {
                 return TurnExit::Answered;
             }
-            match tool_round(cx, st, &tool_scope, &side_trace, &text, &mut tool_calls).await {
+            match tool_round(cx, st, &round_cx, executor, &text, &mut tool_calls).await {
                 Some(exit) => return exit,
                 None => {
                     st.transition = Transition::AfterTools;
@@ -1331,35 +1351,22 @@ async fn save_reply(cx: &TurnContext, text: &str, tool_calls: &[ai::ToolCall], b
 async fn tool_round(
     cx: &TurnContext,
     st: &mut TurnState,
-    scope: &RunToolScope<'_>,
-    side_trace: &(dyn Fn(&'static str) -> RequestTrace + Sync),
+    round_cx: &RoundContext<'_>,
+    executor: ToolExecutor<'_>,
     text: &str,
     tool_calls: &mut [ai::ToolCall],
 ) -> Option<TurnExit> {
     let h = &cx.harness;
-    let no_objective = String::new();
     let carry = &mut st.round;
     let outcome = tool_round::run_tool_round(
-        &RoundContext {
-            scope,
-            tools: &h.tools,
-            providers: &h.providers,
-            concurrency: &h.concurrency,
-            hooks: &h.hooks,
-            user_prompt: "",
-            iteration: st.step as usize,
-            workflow_mode: cx.workflow(),
-            decide: None,
-            active_task: &no_objective,
-            turn_mode: Some(&cx.request.mode),
-            side_trace,
-        },
+        round_cx,
         RoundState {
             called_tools: &mut carry.called_tools,
             plan_touch: &mut carry.plan_touch,
             edits_since_check: &mut carry.edits_since_check,
             last_desktop_act: &mut carry.last_desktop_act,
         },
+        executor,
         tool_calls,
     )
     .await;
@@ -1588,6 +1595,51 @@ mod tests {
         Paid(Box<Step>, i64),
         /// Run the hook while the call is in flight, then answer.
         During(Box<Step>, Hook),
+        /// Stream these calls, then hold the reply open until a tool starts
+        /// (or half a second passes) before ending it.
+        Held(Vec<(&'static str, serde_json::Value)>, Arc<Probe>),
+    }
+
+    /// What the probe tools saw: each call's tool, and whether it started
+    /// while the reply was still streaming.
+    #[derive(Default)]
+    struct Probe {
+        reply_ended: std::sync::atomic::AtomicBool,
+        started: tokio::sync::Notify,
+        seen: Mutex<Vec<(&'static str, bool)>>,
+    }
+
+    struct Probed {
+        name: &'static str,
+        read_only: bool,
+        probe: Arc<Probe>,
+    }
+
+    impl tools::registry::DynTool for Probed {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> String {
+            format!("{} things", self.name)
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            self.read_only
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                let streaming = !self.probe.reply_ended.load(std::sync::atomic::Ordering::SeqCst);
+                self.probe.seen.lock().unwrap().push((self.name, streaming));
+                self.probe.started.notify_one();
+                tools::ToolResult::ok(format!("{} ran", self.name))
+            })
+        }
     }
 
     #[derive(Default)]
@@ -1634,6 +1686,19 @@ mod tests {
                 hook.await;
                 step = *inner;
             }
+            if let Step::Held(calls, probe) = step {
+                let (tx, rx) = mpsc::channel(calls.len() + 1);
+                tokio::spawn(async move {
+                    for (name, input) in calls {
+                        let call = ai::ToolCall { id: format!("call-{name}"), name: name.into(), input };
+                        let _ = tx.send(StreamEvent::tool_call(call)).await;
+                    }
+                    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), probe.started.notified()).await;
+                    probe.reply_ended.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = tx.send(StreamEvent::done()).await;
+                });
+                return Ok(rx);
+            }
             let (list, stop) = answer(step)?;
             Ok(events(list, stop))
         }
@@ -1663,7 +1728,7 @@ mod tests {
                 }));
                 (list, stop)
             }
-            Step::During(..) => unreachable!("hooks do not nest"),
+            Step::During(..) | Step::Held(..) => unreachable!("answered in stream"),
         })
     }
 
@@ -1712,6 +1777,10 @@ mod tests {
     }
 
     async fn harness(model: &Arc<Scripted>) -> Harness {
+        harness_with(model, Vec::new()).await
+    }
+
+    async fn harness_with(model: &Arc<Scripted>, extra: Vec<Box<dyn tools::registry::DynTool>>) -> Harness {
         let path = std::env::temp_dir().join(format!("nebo-turn-{}.db", uuid::Uuid::new_v4()));
         let store = Arc::new(db::Store::new(path.to_str().unwrap()).expect("store"));
         let registry = Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone()))));
@@ -1720,6 +1789,9 @@ mod tests {
         registry.register(Box::new(Echo { name: "writer", deferred: false, read_only: false })).await;
         registry.register(Box::new(Echo { name: "delegate", deferred: false, read_only: true })).await;
         registry.register(Box::new(tools::find_tools::FindToolsTool::new(registry.clone()))).await;
+        for tool in extra {
+            registry.register(tool).await;
+        }
         Harness::new(
             store,
             registry,
@@ -1826,6 +1898,53 @@ mod tests {
         let last_words = call.messages.iter().rev().find(|m| !m.content.starts_with("<system-reminder>")).unwrap();
         assert_eq!(last_words.content, "Hi", "the owner's words, then this step's attachments");
         assert!(call.system.contains(crate::prompt::CACHE_BOUNDARY));
+    }
+
+    fn probed(probe: &Arc<Probe>) -> Vec<Box<dyn tools::registry::DynTool>> {
+        vec![
+            Box::new(Probed { name: "look", read_only: true, probe: probe.clone() }),
+            Box::new(Probed { name: "change", read_only: false, probe: probe.clone() }),
+        ]
+    }
+
+    /// The ids of the stored tool results, in the order they were saved.
+    fn result_ids(h: &Harness) -> Vec<String> {
+        stored(h)
+            .iter()
+            .filter(|m| m.role == "tool")
+            .filter_map(|m| m.tool_results.as_deref())
+            .filter_map(|r| serde_json::from_str::<serde_json::Value>(r).ok())
+            .filter_map(|v| v[0]["tool_call_id"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// Claude Code's streaming executor: a concurrency-safe call starts as
+    /// soon as its input is complete, while the reply still streams; a call
+    /// that changes things waits for the reply. Results keep call order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_safe_call_starts_while_the_reply_streams() {
+        let probe = Arc::new(Probe::default());
+        let calls = vec![("look", serde_json::json!({})), ("change", serde_json::json!({}))];
+        let model = Scripted::new(vec![Step::Held(calls, probe.clone()), Step::Say("Done.")]);
+        let h = harness_with(&model, probed(&probe)).await;
+        let events = run_turn(&h, owner("Look, then change it")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(*probe.seen.lock().unwrap(), [("look", true), ("change", false)]);
+        assert_eq!(result_ids(&h), ["call-look", "call-change"], "results are saved in call order");
+    }
+
+    /// An unsafe call holds every call after it: nothing starts during the
+    /// reply, and the safe call runs after the change.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unsafe_call_holds_the_calls_after_it() {
+        let probe = Arc::new(Probe::default());
+        let calls = vec![("change", serde_json::json!({})), ("look", serde_json::json!({}))];
+        let model = Scripted::new(vec![Step::Held(calls, probe.clone()), Step::Say("Done.")]);
+        let h = harness_with(&model, probed(&probe)).await;
+        let events = run_turn(&h, owner("Change it, then look")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(*probe.seen.lock().unwrap(), [("change", false), ("look", false)]);
+        assert_eq!(result_ids(&h), ["call-change", "call-look"]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
