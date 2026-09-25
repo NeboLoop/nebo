@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Kontext in dieser Runde: {files} Dateien wurden {times} Mal neu gelesen, {passes} Verdichtungsdurchläufe.",
+		"goalLine": "Ziel: {condition} ({turns} Runden)",
+		"goalLastCheck": "letzte Prüfung: {reason}",
+		"goalPaused": "Pausiert. Ihre nächste Nachricht setzt es fort.",
 		"resumedActivity": "Arbeitet noch: {tool}",
 		"waitingForYou": "Wartet auf dich",
 		"subagentStep": "{op} · Schritt {n}",
@@ -2463,6 +2466,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} Aktionen in einem Schritt brauchen dein OK",
+			"goalHeadline": "Auf dieses Ziel einigen? Die Arbeit läuft weiter, bis eine Prüfung bestätigt, dass es erreicht ist.",
 			"yourAgent": "Dein Mitarbeiter"
 		},
 		"approvalModal": {

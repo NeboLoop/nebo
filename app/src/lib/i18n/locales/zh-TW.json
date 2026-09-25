@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "本回合的脈絡：{files} 個檔案被重讀了 {times} 次，壓縮 {passes} 輪。",
+		"goalLine": "目標：{condition}（{turns} 輪）",
+		"goalLastCheck": "上次檢查：{reason}",
+		"goalPaused": "已暫停。你的下一則訊息會恢復它。",
 		"resumedActivity": "仍在處理：{tool}",
 		"waitingForYou": "等你處理",
 		"subagentStep": "{op} · 第 {n} 步",
@@ -2463,6 +2466,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "同一個步驟中有 {n} 個動作需要你的核准",
+			"goalHeadline": "確認這個目標嗎？工作會持續進行，直到檢查確認目標已達成。",
 			"yourAgent": "你的員工"
 		},
 		"approvalModal": {

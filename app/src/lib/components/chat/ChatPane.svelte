@@ -22,6 +22,7 @@
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
+  import type { SessionGoalStatus } from '$lib/api/neboComponents';
   import { attSrc, stripAttachmentNotes } from '$lib/types/attachment';
   import { flushSync } from 'svelte';
   import type { Snippet } from 'svelte';
@@ -88,7 +89,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, contextStats = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, contextStats = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -126,6 +127,8 @@
     helpers?: HelperLine[];
     tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number; overhead?: number } | null;
     contextStats?: { files: number; filesReread: number; redundantReads: number; compactionPasses: number; evictions: number; spilledResults: number } | null;
+    /** The thread's agreed goal while it is worked toward; null hides the line. */
+    goal?: SessionGoalStatus | null;
     quotaWarning?: string;
     chatError?: string;
     /** The owner recap for the last finished turn (`turn_recap`, WP2.5):
@@ -1911,6 +1914,21 @@
   {/if}
   </div>
   </div>
+  {/if}
+
+  <!-- Agreed goal: what the work continues toward until a check confirms it -->
+  {#if goal}
+    <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2">
+      <div class="px-3 py-2 rounded-lg bg-base-200 text-xs text-base-content/80">
+        <span class="font-medium">{$t('chat.goalLine', { values: { condition: goal.condition, turns: goal.turns } })}</span>
+        {#if goal.last_reason}
+          <span> · {$t('chat.goalLastCheck', { values: { reason: goal.last_reason } })}</span>
+        {/if}
+        {#if goal.status.startsWith('paused')}
+          <span class="text-warning"> · {$t('chat.goalPaused')}</span>
+        {/if}
+      </div>
+    </div>
   {/if}
 
   <!-- Quota warning banner -->

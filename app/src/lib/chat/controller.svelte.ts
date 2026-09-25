@@ -16,7 +16,7 @@ import { untrack } from 'svelte';
 import { getWebSocketClient } from '$lib/websocket/client';
 import type { AskWidgetDef } from '$lib/components/chat/AskWidget.svelte';
 import type { UploadedAttachment } from '$lib/types/attachment';
-import type { ChatMessagesResponse } from '$lib/api/neboComponents';
+import type { ChatMessagesResponse, SessionGoalStatus } from '$lib/api/neboComponents';
 import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { parseMessages } from '$lib/chat/history';
@@ -221,6 +221,8 @@ export function createChatController(config: ChatControllerConfig) {
   let chatError = $state('');
   let allAgents = $state<AgentInfo[]>([]);
   let activityStatus = $state('');
+  /** The thread's agreed goal while it is being worked toward (active or paused). */
+  let goal = $state<SessionGoalStatus | null>(null);
   /** Helpers started from this conversation that are still working. */
   let helpers = $state<HelperLine[]>([]);
 
@@ -786,6 +788,28 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('subagent_complete', handleSubagentComplete));
   unsubs.push(onServer('session_reset', handleSessionReset));
 
+  // The agreed goal: loaded with the thread, then kept by `goal_status`.
+  function showGoal(g: SessionGoalStatus | null | undefined) {
+    goal = g && (g.status === 'active' || g.status.startsWith('paused')) ? g : null;
+  }
+  function handleGoalStatus(data: any) {
+    if (!activeSessionKey || data?.session_id !== activeSessionKey) return;
+    showGoal(data as SessionGoalStatus);
+  }
+  unsubs.push(ws.on('goal_status', handleGoalStatus));
+
+  async function loadGoal() {
+    const key = activeSessionKey;
+    if (!key) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.getSessionGoal(encodeURIComponent(key));
+      if (key === activeSessionKey) showGoal(resp.goal);
+    } catch (e) {
+      console.warn('[chat] Failed to load the goal for', key, e);
+    }
+  }
+
   // --- Actions ---
 
   function send(text: string, options?: SendOptions & { attachments?: UploadedAttachment[] }) {
@@ -936,6 +960,7 @@ export function createChatController(config: ChatControllerConfig) {
       }
       if (!resp) throw lastErr ?? new Error('no response');
       if (gen !== historyGen) return false;
+      void loadGoal();
       if (resp.messages?.length) {
         hasMore = !!resp.hasMore;
         oldestMessageId = resp.messages[0]?.id ?? null;
@@ -1120,6 +1145,7 @@ export function createChatController(config: ChatControllerConfig) {
     get quotaWarning() { return quotaWarning; },
     get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },
+    get goal() { return goal; },
     get helpers() { return helpers; },
     set activityStatus(v: string) { activityStatus = v; },
     get askQueueLength() { return askQueue.length; },
@@ -1144,6 +1170,7 @@ export function createChatController(config: ChatControllerConfig) {
     setSessionKey(key: string) {
       if (key !== activeSessionKey) {
         activeSessionKey = key;
+        goal = null;
         clearDeliveryTimer();
         isLoading = false;
         activityStatus = '';
