@@ -1396,7 +1396,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
             }
         }
         // Business identity: the live row wins over the token's mint-time
-        // claim ("Thank you for calling Alma Tuck" long after the owner
+        // claim ("Thank you for calling <the old name>" long after the owner
         // renamed the line — live 2026-09-01).
         let live_biz = live_str("businessName");
         let biz_for_call = live_biz.as_deref().or(q.business.as_deref());

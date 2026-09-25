@@ -223,7 +223,6 @@ pub enum TurnExit {
     ProviderFailed(String),
     Refused(String),
     AwaitingApproval,
-    PlanProposed,
     /// The owner's `/compact` wrote its checkpoint.
     Compacted,
     GoalMet {
@@ -251,7 +250,6 @@ impl TurnExit {
             TurnExit::ProviderFailed(_) => "provider_failed".into(),
             TurnExit::Refused(_) => "refused".into(),
             TurnExit::AwaitingApproval => "awaiting_approval".into(),
-            TurnExit::PlanProposed => "plan_proposed".into(),
             TurnExit::Compacted => "compacted".into(),
             TurnExit::GoalMet { .. } => "goal_met".into(),
             TurnExit::GoalImpossible { .. } => "goal_impossible".into(),

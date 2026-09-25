@@ -324,7 +324,6 @@
 		"stepFailed": "{name} 실패",
 		"workingWithTool": "{name} 작업 중",
 		"moreCount": "+{count}개 더",
-		"largeInputNote": "큰 문서 · {chars}자 · 전체 내용을 직원을 위해 보관",
 		"enterToSubmit": "Enter로 제출 · Esc로 취소",
 		"saveAndSubmit": "저장 후 제출",
 		"editResend": "편집 후 재전송",

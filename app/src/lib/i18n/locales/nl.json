@@ -324,7 +324,6 @@
 		"stepFailed": "{name} mislukt",
 		"workingWithTool": "bezig met {name}",
 		"moreCount": "+{count} meer",
-		"largeInputNote": "Groot document · {chars} tekens · volledige tekst bewaard voor de medewerker",
 		"enterToSubmit": "Enter om te verzenden · Esc om te annuleren",
 		"saveAndSubmit": "Opslaan en verzenden",
 		"editResend": "Bewerken en opnieuw verzenden",

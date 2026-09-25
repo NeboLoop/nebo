@@ -416,7 +416,7 @@ mod tests {
     /// not drift. Skipped, with a note, when the sibling checkout is absent.
     #[test]
     fn departments_copy_matches_bundled() {
-        let path = "/Users/almatuck/workspaces/nebo/repos/departments/interfaces/_catalog.yaml";
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../repos/departments/interfaces/_catalog.yaml");
         let Ok(theirs) = std::fs::read_to_string(path) else {
             eprintln!("skipped: {path} is not present on this machine");
             return;

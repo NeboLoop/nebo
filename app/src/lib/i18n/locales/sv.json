@@ -324,7 +324,6 @@
 		"stepFailed": "{name} misslyckades",
 		"workingWithTool": "arbetar med {name}",
 		"moreCount": "+{count} till",
-		"largeInputNote": "Stort dokument · {chars} tecken · hela texten sparad åt medarbetaren",
 		"enterToSubmit": "Enter för att skicka · Esc för att avbryta",
 		"saveAndSubmit": "Spara & skicka",
 		"editResend": "Redigera & skicka igen",

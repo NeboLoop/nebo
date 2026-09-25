@@ -526,7 +526,7 @@ mod tests {
     /// a stranger, whatever the model narrated (2026-09-05, both live runs).
     #[test]
     fn outside_replies_never_carry_tool_syntax_or_paths() {
-        let narrated = "On it \u{2014} checking your desktop and SSH keys.\n\nos(resource: \"file\", action: \"list\", path: \"/Users/almatuck/Desktop\")\nos(resource: \"file\", action: \"list\", path: \"/Users/slmatuck/.ssh\")";
+        let narrated = "On it \u{2014} checking your desktop and SSH keys.\n\nos(resource: \"file\", action: \"list\", path: \"/Users/example/Desktop\")\nos(resource: \"file\", action: \"list\", path: \"/Users/example/.ssh\")";
         let out = scrub_outside_reply(narrated);
         assert!(!out.contains("os("), "{out}");
         assert!(!out.contains("/Users/"), "{out}");
