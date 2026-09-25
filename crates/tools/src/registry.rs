@@ -366,6 +366,9 @@ pub struct Registry {
     /// SAME cell is shared with `PersonaTool` at registration and filled LATE by the
     /// server once `AppState` exists (registration runs before `AppState` is built).
     code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+    /// The permission system's side of making and changing jobs, shared
+    /// with `PersonaTool` and filled LATE like `code_installer`.
+    job_consent: crate::needs::JobConsentCell,
     /// Broadcast callback (wired to ClientHub by the server), shared with MessageTool
     /// so owner alerts reach the frontend bell + desktop HUD. Filled LATE like
     /// `code_installer` (registration runs before `AppState`/hub exist).
@@ -401,6 +404,7 @@ impl Registry {
             mcp_proxies: crate::mcp_tool::new_roster(),
             browser_manager: std::sync::RwLock::new(None),
             code_installer: Arc::new(std::sync::RwLock::new(None)),
+            job_consent: Arc::new(std::sync::RwLock::new(None)),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             coworker_rail: crate::coworker::new_rail_cell(),
             goals: crate::goal_tool::new_handle(),
@@ -470,6 +474,13 @@ impl Registry {
     /// action picks up the installer at runtime.
     pub fn set_code_installer(&self, installer: Arc<dyn crate::bot_tool::CodeInstaller>) {
         *self.code_installer.write().unwrap() = Some(installer);
+    }
+
+    /// Set the permission system's job consent. Called LATE by the server;
+    /// `PersonaTool` shares this cell, so create and update draft and grant
+    /// jobs through it from then on.
+    pub fn set_job_consent(&self, consent: Arc<dyn crate::needs::JobConsent>) {
+        *self.job_consent.write().unwrap() = Some(consent);
     }
 
     /// Set the broadcast callback (wired to ClientHub). Called LATE by the server
@@ -1137,7 +1148,8 @@ impl Registry {
                 });
             let persona =
                 crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader)
-                    .with_code_installer(self.code_installer.clone());
+                    .with_code_installer(self.code_installer.clone())
+                    .with_job_consent(self.job_consent.clone());
             self.register(Box::new(crate::bot_tool::AgentTool::new(persona))).await;
         }
 

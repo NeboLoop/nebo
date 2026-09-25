@@ -39,6 +39,10 @@ var typeOverrides = map[string]string{
 	// Blank-create (the Hire flow) returns the introduction thread so the
 	// UI can land the owner where the new employee is speaking.
 	"create_agent.threadId": "string | null",
+	// The one needs step: the plain line, and a draft only for an owner-made
+	// job (a package's line needs none).
+	"work_out_agent_needs.line": "string",
+	"work_out_agent_needs.draftId": "string | null",
 
 	// ── Run detail: human-readable projection derived server-side ──
 	"get_run.display": "RunDisplay",

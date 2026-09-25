@@ -2354,6 +2354,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             state.clone(),
         )));
 
+    // Wire consent to jobs into the agent's `registry` create and update
+    // (late, like the installer above): a create drafts, works out the needs
+    // and grants them on the owner's yes, through the ONE permission store.
+    state.tools.set_job_consent(Arc::new(agent::harness::permissions::consent::Consent::new(
+        state.store.clone(),
+        Arc::new(agent::harness::permissions::consent::AuxReader::new(state.runner.providers())),
+    )));
+
     // Wire the coworker message rail (late, like the installer above — it needs
     // `AppState`). With this set, message(resource: "coworker") delivers real
     // agent→agent messages through the ONE chat pipeline.
