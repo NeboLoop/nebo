@@ -11,7 +11,6 @@ pub const CACHE_BOUNDARY: &str =
 const STRAP_AGENT: &str = include_str!("strap/agent.txt");
 const STRAP_CODE: &str = include_str!("strap/code.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
-const STRAP_SKILL: &str = include_str!("strap/skill.txt");
 const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
 const STRAP_MCP: &str = include_str!("strap/mcp.txt");
 const STRAP_PLUGIN: &str = include_str!("strap/plugin.txt");
@@ -39,7 +38,6 @@ pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
         "agent" => Some(STRAP_AGENT),
         "code" => Some(STRAP_CODE),
         "message" => Some(STRAP_MESSAGE),
-        "skill" => Some(STRAP_SKILL),
         "execute" => Some(STRAP_EXECUTE),
         "mcp" => Some(STRAP_MCP),
         "plugin" => Some(STRAP_PLUGIN),

@@ -81,6 +81,18 @@ pub struct PermissionActivityRow {
     pub created_at: i64,
 }
 
+/// Which recorded decisions to read. `None` matches every value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PermissionActivityFilter {
+    pub agent_id: Option<String>,
+    /// A door label (`chat`, `workflow`, …).
+    pub door: Option<String>,
+    /// allow | ask | deny
+    pub decision: Option<String>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
 /// A parked call, as `permission_asks` keeps it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PermissionAskRow {
@@ -336,6 +348,19 @@ impl Store {
         Ok(())
     }
 
+    /// Remove the mode stored at one scope: an employee goes back to the
+    /// company default, the company back to Automatic.
+    pub fn clear_permission_mode(&self, scope: &Scope) -> Result<(), NeboError> {
+        let (scope_s, agent_id) = scope_parts(scope);
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM permission_modes WHERE scope = ?1 AND agent_id = ?2",
+            params![scope_s, agent_id],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
     pub fn record_permission_activity(&self, row: &PermissionActivityRow) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -359,32 +384,48 @@ impl Store {
         Ok(())
     }
 
-    /// An employee's recorded decisions, newest first.
-    pub fn permission_activity(&self, agent_id: &str, limit: i64) -> Result<Vec<PermissionActivityRow>, NeboError> {
+    /// Recorded decisions matching `filter`, newest first, and how many match
+    /// in all.
+    pub fn permission_activity(
+        &self,
+        filter: &PermissionActivityFilter,
+    ) -> Result<(Vec<PermissionActivityRow>, i64), NeboError> {
+        let conditions = "(?1 IS NULL OR agent_id = ?1) AND (?2 IS NULL OR door = ?2) AND (?3 IS NULL OR decision = ?3)";
         let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT agent_id, session_key, door, tool, rule_key, activity, decision, why, ask_id, created_at
-                 FROM permission_activity WHERE agent_id = ?1 ORDER BY id DESC LIMIT ?2",
+        let total: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM permission_activity WHERE {conditions}"),
+                params![filter.agent_id, filter.door, filter.decision],
+                |row| row.get(0),
             )
             .map_err(db_err)?;
-        let rows = stmt
-            .query_map(params![agent_id, limit], |row| {
-                Ok(PermissionActivityRow {
-                    agent_id: row.get(0)?,
-                    session_key: row.get(1)?,
-                    door: row.get(2)?,
-                    tool: row.get(3)?,
-                    rule_key: row.get(4)?,
-                    activity: row.get(5)?,
-                    decision: row.get(6)?,
-                    why: row.get(7)?,
-                    ask_id: row.get(8)?,
-                    created_at: row.get(9)?,
-                })
-            })
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT agent_id, session_key, door, tool, rule_key, activity, decision, why, ask_id, created_at
+                 FROM permission_activity WHERE {conditions} ORDER BY id DESC LIMIT ?4 OFFSET ?5"
+            ))
             .map_err(db_err)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+        let rows = stmt
+            .query_map(
+                params![filter.agent_id, filter.door, filter.decision, filter.limit, filter.offset],
+                |row| {
+                    Ok(PermissionActivityRow {
+                        agent_id: row.get(0)?,
+                        session_key: row.get(1)?,
+                        door: row.get(2)?,
+                        tool: row.get(3)?,
+                        rule_key: row.get(4)?,
+                        activity: row.get(5)?,
+                        decision: row.get(6)?,
+                        why: row.get(7)?,
+                        ask_id: row.get(8)?,
+                        created_at: row.get(9)?,
+                    })
+                },
+            )
+            .map_err(db_err)?;
+        let rows = rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok((rows, total))
     }
 
     pub fn insert_permission_ask(&self, row: &PermissionAskRow) -> Result<(), NeboError> {
@@ -705,5 +746,38 @@ mod tests {
         store.set_permission_mode(&Scope::Employee("a".into()), Mode::Plan).unwrap();
         assert_eq!(store.permission_mode(&Scope::Company).unwrap(), Some(Mode::FullAccess));
         assert_eq!(store.permission_mode(&Scope::Employee("a".into())).unwrap(), Some(Mode::Plan));
+        store.clear_permission_mode(&Scope::Employee("a".into())).unwrap();
+        assert_eq!(store.permission_mode(&Scope::Employee("a".into())).unwrap(), None);
+        assert_eq!(store.permission_mode(&Scope::Company).unwrap(), Some(Mode::FullAccess));
+    }
+
+    #[test]
+    fn activity_filters_by_employee_door_and_decision() {
+        let (_d, store) = store();
+        let row = |agent: &str, door: &str, decision: &str| PermissionActivityRow {
+            agent_id: agent.into(),
+            door: door.into(),
+            tool: "run_command".into(),
+            rule_key: "run_command".into(),
+            decision: decision.into(),
+            why: "{}".into(),
+            created_at: 1,
+            ..Default::default()
+        };
+        for r in [row("a", "chat", "allow"), row("a", "workflow", "ask"), row("b", "chat", "deny")] {
+            store.record_permission_activity(&r).unwrap();
+        }
+        let all = PermissionActivityFilter { limit: 10, ..Default::default() };
+        let (rows, total) = store.permission_activity(&all).unwrap();
+        assert_eq!((rows.len(), total), (3, 3));
+        assert_eq!(rows[0].agent_id, "b", "newest first");
+        let a = PermissionActivityFilter { agent_id: Some("a".into()), ..all.clone() };
+        assert_eq!(store.permission_activity(&a).unwrap().1, 2);
+        let chat_allows = PermissionActivityFilter { door: Some("chat".into()), decision: Some("allow".into()), ..all.clone() };
+        let (rows, total) = store.permission_activity(&chat_allows).unwrap();
+        assert_eq!((rows[0].agent_id.as_str(), total), ("a", 1));
+        let paged = PermissionActivityFilter { limit: 1, offset: 1, ..all };
+        let (rows, total) = store.permission_activity(&paged).unwrap();
+        assert_eq!((rows.len(), total), (1, 3));
     }
 }

@@ -1108,13 +1108,7 @@ async fn step_events(
     }
     if let (Some(loader), None) = (h.skill_loader.as_ref(), cx.workflow()) {
         let scope = (!cx.agent_id().is_empty()).then_some(cx.agent_id());
-        let now: events::Listing = loader
-            .list_summaries(scope)
-            .await
-            .into_iter()
-            .filter(|s| s.enabled)
-            .map(|s| (s.name, s.description))
-            .collect();
+        let now: events::Listing = loader.listing(scope).await;
         let announced = events::announced("skill_listing", conversation);
         if let Some(delta) = events::LinedDelta::between(&announced, &now) {
             st.reminders.add(&TurnEvent::SkillListing(delta));

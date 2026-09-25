@@ -196,7 +196,7 @@ fn out_of_time(text: String, original: &ToolResult) -> ToolResult {
 /// Plugins ship with their own skills (`skills/` directory inside the plugin).
 /// These skills are the plugin's documentation — they describe the CLI syntax,
 /// flags, and examples. The skill loader indexes them like any other skill, so
-/// the ONE way to read one is skill(action: "load", name: "<skill name>"); this
+/// the ONE way to read one is use_skill(name: "<skill name>"); this
 /// tool only names them.
 ///
 /// When a plugin command fails due to stale OAuth credentials, the tool
@@ -629,7 +629,7 @@ impl PluginTool {
             return ToolResult::ok(format!(
                 "{slug} v{version} was already installed; nothing to discover or install. \
                  Its skills are listed under Installed plugins in this tool's description — \
-                 skill(action: \"load\", name: \"<skill name>\") reads one, and \
+                 use_skill(name: \"<skill name>\") loads one, and \
                  plugin(resource: \"{slug}\", action: \"exec\", command: \"...\") runs a command. \
                  If a result says no account is connected, the user connects one in \
                  Settings, Plugins; there is no command for that."
@@ -1088,7 +1088,7 @@ impl DynTool for PluginTool {
             }
             if truncated {
                 section.push_str(&format!(
-                    "  - … and {} more — use skill(action: \"discover\", query: \"{}\") for full list\n",
+                    "  - … and {} more — find_skills(query: \"{}\") finds the rest\n",
                     total - included,
                     slug
                 ));
@@ -1105,12 +1105,12 @@ impl DynTool for PluginTool {
             out.push_str("Also installed: ");
             out.push_str(&overflow_slugs.join(", "));
             out.push_str("\nTheir skills are not listed here. Before the FIRST exec on any of them, \
-                          skill(action: \"discover\", query: \"<slug>\") names its skills and \
-                          skill(action: \"load\", name: \"<skill name>\") reads one — \
+                          find_skills(query: \"<slug>\") names its skills and \
+                          use_skill(name: \"<skill name>\") loads one — \
                           a guessed command is a wasted turn and a failed step.\n");
         }
 
-        out.push_str("\nEach line above is a skill name: skill(action: \"load\", name: \"<skill name>\") is its full usage — every command and flag. Read it BEFORE the first exec; do not guess a flag that is not in it.");
+        out.push_str("\nEach line above is a skill name: use_skill(name: \"<skill name>\") loads its full usage — every command and flag. Read it BEFORE the first exec; do not guess a flag that is not in it.");
 
         // Typed capability ports currently bound (provider-agnostic).
         let ops = self.bound_operations();
@@ -1131,7 +1131,7 @@ impl DynTool for PluginTool {
             "action".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "Action: 'list' (installed plugins), 'discover' (search the marketplace by query), 'exec' (default — run a plugin command), or 'events' (the plugin's declared NDJSON watch events). A plugin's usage is its skills: skill(action: \"load\", name: \"<skill name>\").",
+                "description": "Action: 'list' (installed plugins), 'discover' (search the marketplace by query), 'exec' (default — run a plugin command), or 'events' (the plugin's declared NDJSON watch events). A plugin's usage is its skills: use_skill(name: \"<skill name>\").",
                 "enum": ["list", "discover", "exec", "events"],
                 "default": "exec"
             }),
@@ -1428,11 +1428,11 @@ impl DynTool for PluginTool {
                     pi.action
                 )),
                 // A plugin's usage is its skills, and there is ONE reader:
-                // the skill tool. This tool no longer documents anything.
+                // use_skill. This tool no longer documents anything.
                 "help" | "docs" | "usage" => ToolResult::error(
                     "A plugin's usage lives in its skills, which this tool lists by name under \
-                     Installed plugins. Read one with skill(action: \"load\", name: \"<skill name>\"), \
-                     or skill(action: \"discover\", query: \"<what you need>\") to find it."
+                     Installed plugins. Load one with use_skill(name: \"<skill name>\"), \
+                     or find_skills(query: \"<what you need>\") to find it."
                         .to_string(),
                 ),
                 other => ToolResult::error(format!(

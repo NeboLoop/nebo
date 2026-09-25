@@ -2,7 +2,6 @@
   import { t } from 'svelte-i18n';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import Shield from 'lucide-svelte/icons/shield';
-  import { approveAlways } from '$lib/stores/permissions.js';
 
   interface Props {
     show: boolean;
@@ -57,7 +56,6 @@
   }
 
   function handleApproveAlways() {
-    if (actionKey) approveAlways(actionKey);
     show = false;
     // Distinct from "once": callers persist the grant (e.g. flip the capability ON).
     (onApproveAlways ?? onApprove)?.();

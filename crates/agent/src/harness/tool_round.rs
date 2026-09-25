@@ -1202,7 +1202,7 @@ pub(crate) async fn run_tool_round(
         }
 
         // Cache tool documentation results so they survive sliding window eviction.
-        // Detect help/schema actions on skill and plugin tools.
+        // Detect help/schema actions on plugin and MCP tools.
         if !result.is_error && result.content.len() > 100
             && let Some(cache_key) = detect_tool_doc_call(&tc.name, &tc.input) {
             let content = if result.content.len() > MAX_TOOL_DOC_CONTENT {
@@ -1578,23 +1578,12 @@ async fn apply_post_tool_hooks(
 }
 
 /// Detect if a tool call is requesting documentation (help/schema).
-/// Returns a cache key like "skill:gws-sheets" or "plugin:sheets:help" if so.
+/// Returns a cache key like "plugin:sheets:help" if so.
 fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<String> {
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
     let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
 
     match tool_name {
-        "skill" => {
-            if action == "help" || action == "list" || action == "docs" {
-                let skill_name = input
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                Some(format!("skill:{}", skill_name))
-            } else {
-                None
-            }
-        }
         "plugin" => {
             if action == "help" || action == "schema" || action == "services" {
                 let name = if !resource.is_empty() {

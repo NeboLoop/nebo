@@ -225,7 +225,7 @@ fn service_tools() -> Vec<serde_json::Value> {
     vec![serde_json::json!({
         "name": "nebo",
         "description": "Chat with nebo's agent and manage sessions. \
-            For skills, workflows and agents use the existing skill, workflow (list_workflows, run_workflow, …) and agent tools.\n\n\
+            For skills, workflows and agents use the existing skill (use_skill, find_skills, …), workflow (list_workflows, run_workflow, …) and agent tools.\n\n\
             Chat:\n  nebo(resource: \"chat\", action: \"send\", message: \"...\")\n  \
             nebo(resource: \"chat\", action: \"send\", message: \"...\", session_id: \"debug\")\n\n\
             Events:\n  nebo(action: \"emit\", source: \"my.event\")\n\n\
