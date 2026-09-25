@@ -424,14 +424,15 @@ fn section_of(rule: &Rule) -> Section {
 
 /// The rules a page shows: the scope's own, and on an employee's page the
 /// company defaults it doesn't override (a rule of its own on the same key
-/// and field, or any folder of its own for the company's folders).
+/// and field, or any folder of its own for the company's folders). A company
+/// deny is always shown: no rule of the employee's undoes it.
 fn shown_rules(store: &db::Store, agent_id: Option<&str>) -> Result<Vec<(Rule, bool)>, NeboError> {
     let own = store.permission_rules_in(&scope_of(agent_id))?;
     let mut shown: Vec<(Rule, bool)> = own.iter().cloned().map(|r| (r, false)).collect();
     if agent_id.is_some() {
         let own_folders = own.iter().any(|r| section_of(r) == Section::Folders);
         for r in store.permission_rules_in(&Scope::Company)? {
-            let overridden = own.iter().any(|o| o.key == r.key && o.field == r.field)
+            let overridden = r.effect != Effect::Deny && own.iter().any(|o| o.key == r.key && o.field == r.field)
                 || (own_folders && section_of(&r) == Section::Folders);
             if !overridden {
                 shown.push((r, true));
@@ -494,8 +495,18 @@ fn page(store: &db::Store, agent_id: Option<&str>, connected: &BTreeSet<String>)
     for list in [&mut p.job, &mut p.money, &mut p.folders, &mut p.always_allowed, &mut p.asks_first, &mut p.never, &mut p.fixed] {
         list.sort_by(|a, b| a.sentence.cmp(&b.sentence));
     }
+    // A capability the company defaults turn off can't join one employee's
+    // job: no rule of the employee's undoes a company deny.
+    let company_off: BTreeSet<String> = shown
+        .iter()
+        .filter(|(r, from_company)| *from_company && r.effect == Effect::Deny && r.field.is_none())
+        .filter_map(|(r, _)| match &r.key {
+            RuleKey::Capability(c) => Some(c.clone()),
+            _ => None,
+        })
+        .collect();
     for cap in builtin_capabilities().map(str::to_string).chain(connected.iter().cloned()) {
-        if !in_job.contains(&cap) && !p.can_add.iter().any(|i| i.id == cap) {
+        if !in_job.contains(&cap) && !company_off.contains(&cap) && !p.can_add.iter().any(|i| i.id == cap) {
             p.can_add.push(PermissionItem {
                 sentence: capability_phrase(&cap),
                 id: cap,
@@ -543,6 +554,9 @@ fn update(
         if !builtin_capabilities().any(|c| c == cap) && !connected.contains(cap) {
             return Err(NeboError::Validation("that can't be added to the job".into()));
         }
+        if agent_id.is_some() && company_denies(store, cap)? {
+            return Err(NeboError::Validation("the company defaults turn this off; change it in the company defaults".into()));
+        }
         let rule = owner_rule(scope.clone(), RuleKey::Capability(cap.to_string()), None, Effect::Allow, RuleSource::JobEdit);
         store.write_permission_rule(&rule, &Writer::Owner).map_err(rule_error)?;
     }
@@ -571,6 +585,13 @@ fn update(
             .map_err(rule_error)?;
     }
     Ok(())
+}
+
+/// Whether the company defaults turn capability `cap` off.
+fn company_denies(store: &db::Store, cap: &str) -> Result<bool, NeboError> {
+    Ok(store.permission_rules_in(&Scope::Company)?.iter().any(|r| {
+        r.effect == Effect::Deny && r.field.is_none() && r.key == RuleKey::Capability(cap.to_string())
+    }))
 }
 
 /// Remove one item, as the owner. On an employee's page a job item leaves
@@ -1109,6 +1130,25 @@ mod tests {
         assert_eq!(job, ["Read and send email", "Run commands on this computer"]);
         assert_eq!(p.folders[0].sentence, "Change files in /srv/work");
         assert!(!p.can_add.iter().any(|i| i.id == "mail" || i.id == "shell"), "what the job holds is not offered again");
+    }
+
+    /// No rule of the employee's undoes a company deny: the employee's page
+    /// keeps showing it, doesn't offer the capability, and refuses to add it.
+    #[test]
+    fn a_company_deny_stays_on_the_employees_page() {
+        let (_d, store) = store();
+        let deny = put(&store, Scope::Company, cap("shell"), None, Effect::Deny, RuleSource::Owner);
+        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
+        assert!(!p.can_add.iter().any(|i| i.id == "shell"));
+        let add = PermissionsUpdate { add_capability: Some("shell".into()), ..Default::default() };
+        assert!(matches!(update(&store, Some("a"), &add, &BTreeSet::new()), Err(NeboError::Validation(_))));
+        // An allow of the employee's own (written before the deny) never
+        // hides it.
+        put(&store, emp(), cap("shell"), None, Effect::Allow, RuleSource::Owner);
+        let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
+        assert!(p.never.iter().any(|i| i.id == deny.id && i.from_company), "{:?}", p.never);
+        // The company page itself can still turn it back on.
+        update(&store, None, &add, &BTreeSet::new()).unwrap();
     }
 
     #[test]

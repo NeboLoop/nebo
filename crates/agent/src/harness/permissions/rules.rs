@@ -2,17 +2,22 @@
 //! the employee's job, and the money a standing allow covers.
 //!
 //! Rules live at two scopes, company defaults and one employee's overrides.
-//! When any employee-scope rule matches a call, the employee scope decides;
-//! otherwise the company's does. Within the deciding scope deny beats ask
-//! and ask beats allow; a more specific field never outranks a broader deny.
+//! A deny from either scope decides, as a deny from any of Claude Code's
+//! rule sources does: an employee's rule never undoes a company deny.
+//! Otherwise, when any employee-scope rule matches a call, the employee
+//! scope decides; else the company's does. Within the deciding scope ask
+//! beats allow; a more specific field never outranks a broader deny.
 //!
 //! A shell command is judged by every command it runs (`ls && rm x` is `ls`
 //! and `rm x`): denied when any is denied, asked when any asks, allowed only
-//! when every one is allowed.
+//! when every one is allowed. A command that can't be read before it runs
+//! (`$CMD -rf x`, `git $SUB`) and that a deny or ask rule could name is
+//! asked about, as Claude Code asks about a command it can't analyse; a deny
+//! the known words already match still refuses it.
 
 use std::path::{Path, PathBuf};
 
-use tools::policy::Subcommand;
+use tools::policy::{Cover, Subcommand};
 use types::permissions::{
     Effect, Grant, MoneyLimit, Mode, Rule, RuleField, RuleKey, RuleSource, Scope, Target,
 };
@@ -64,30 +69,44 @@ impl RuleSet {
         }
     }
 
-    /// The rule that decides one piece of `t` (see [`pieces`]).
-    fn decide_piece(&self, t: &Target, piece: Option<&Subcommand>) -> Option<(&Rule, Effect)> {
+    /// The rule that decides one piece of `t` (see [`pieces`]) and its
+    /// effect: a deny from either scope; else an ask for a piece that can't
+    /// be read and that a deny rule of either scope could name; else the
+    /// deciding scope's strongest rule.
+    pub fn decide_piece(&self, t: &Target, piece: Option<&Subcommand>) -> Option<(&Rule, Effect)> {
+        if let Some(deny) = self.all().find(|r| effect_on(r, t, piece) == Some(Effect::Deny)) {
+            return Some((deny, Effect::Deny));
+        }
+        if let Some(unread) = self.all().find(|r| r.effect == Effect::Deny && effect_on(r, t, piece).is_some()) {
+            return Some((unread, Effect::Ask));
+        }
         self.deciding(t, piece)
             .iter()
-            .filter(|r| covers(r, t, piece))
-            .max_by_key(|r| r.effect)
-            .map(|r| (r, r.effect))
+            .filter_map(|r| effect_on(r, t, piece).map(|e| (r, e)))
+            .max_by_key(|(_, e)| *e)
     }
 
     /// The scope that decides one piece of `t`: the employee's when any of
     /// its rules matches, else the company's.
     fn deciding(&self, t: &Target, piece: Option<&Subcommand>) -> &[Rule] {
-        if self.employee.iter().any(|r| covers(r, t, piece)) { &self.employee } else { &self.company }
+        if self.employee.iter().any(|r| effect_on(r, t, piece).is_some()) { &self.employee } else { &self.company }
+    }
+
+    /// Whether one piece of `t` is allowed by an allow `pick` accepts among
+    /// the rules that decide it.
+    pub fn piece_allowed_by(&self, t: &Target, piece: Option<&Subcommand>, pick: impl Fn(&Rule) -> bool) -> bool {
+        matches!(self.decide_piece(t, piece), Some((_, Effect::Allow)))
+            && self
+                .deciding(t, piece)
+                .iter()
+                .any(|r| r.effect == Effect::Allow && pick(r) && effect_on(r, t, piece).is_some())
     }
 
     /// Whether `t` is allowed and, for every piece of it, an allow `pick`
     /// accepts is among the rules that decide it.
     fn allowed_by(&self, t: &Target, pick: impl Fn(&Rule) -> bool) -> bool {
         matches!(self.decide(t), Some((_, Effect::Allow)))
-            && pieces(t).iter().all(|piece| {
-                self.deciding(t, piece.as_ref())
-                    .iter()
-                    .any(|r| r.effect == Effect::Allow && pick(r) && covers(r, t, piece.as_ref()))
-            })
+            && pieces(t).iter().all(|piece| self.piece_allowed_by(t, piece.as_ref(), &pick))
     }
 
     /// Whether `t` is inside the job: basic work (no capability), or a
@@ -150,7 +169,7 @@ pub fn outside(folders: &[PathBuf], t: &Target, input: &serde_json::Value) -> Op
 
 /// What rules judge `t` by: each command a shell call runs, or the whole call
 /// (`None`) for anything else.
-fn pieces(t: &Target) -> Vec<Option<Subcommand>> {
+pub fn pieces(t: &Target) -> Vec<Option<Subcommand>> {
     match &t.field {
         Some(RuleField::CommandPrefix(cmd)) => tools::policy::subcommands(cmd).into_iter().map(Some).collect(),
         _ => vec![None],
@@ -161,11 +180,13 @@ fn pieces(t: &Target) -> Vec<Option<Subcommand>> {
 /// operation or capability, and its field (if any) covers the call's — for a
 /// shell call, any one of the commands it runs.
 pub fn matches(rule: &Rule, t: &Target) -> bool {
-    pieces(t).iter().any(|piece| covers(rule, t, piece.as_ref()))
+    pieces(t).iter().any(|piece| effect_on(rule, t, piece.as_ref()).is_some())
 }
 
-/// Whether `rule` applies to one piece of `t` (see [`pieces`]).
-fn covers(rule: &Rule, t: &Target, piece: Option<&Subcommand>) -> bool {
+/// What `rule` does to one piece of `t` (see [`pieces`]): its effect when it
+/// applies, an ask when it may apply to a command that can't be read, or
+/// `None`.
+fn effect_on(rule: &Rule, t: &Target, piece: Option<&Subcommand>) -> Option<Effect> {
     let key = match &rule.key {
         RuleKey::Tool(k) => match k.strip_suffix('*') {
             Some(prefix) => !prefix.is_empty() && (t.key.starts_with(prefix) || t.tool.starts_with(prefix)),
@@ -176,28 +197,36 @@ fn covers(rule: &Rule, t: &Target, piece: Option<&Subcommand>) -> bool {
         }),
         RuleKey::Capability(c) => t.capability.as_deref() == Some(c.as_str()),
     };
-    key && match &rule.field {
-        None => true,
+    if !key {
+        return None;
+    }
+    let cover = match &rule.field {
+        None => Cover::Yes,
         Some(field) => field_covers(field, rule.effect, t, piece),
+    };
+    match cover {
+        Cover::Yes => Some(rule.effect),
+        Cover::Unread => Some(Effect::Ask),
+        Cover::No => None,
     }
 }
 
-fn field_covers(field: &RuleField, effect: Effect, t: &Target, piece: Option<&Subcommand>) -> bool {
+fn field_covers(field: &RuleField, effect: Effect, t: &Target, piece: Option<&Subcommand>) -> Cover {
+    let yes = |b: bool| if b { Cover::Yes } else { Cover::No };
     match (field, &t.field) {
         (RuleField::CommandPrefix(prefix), Some(RuleField::CommandPrefix(_))) => {
-            piece.is_some_and(|command| command.covered_by(prefix, effect == Effect::Allow))
+            piece.map_or(Cover::No, |command| command.covered_by(prefix, effect == Effect::Allow))
         }
-        (RuleField::Folder(folder), Some(RuleField::Folder(path))) => within(path, folder),
+        (RuleField::Folder(folder), Some(RuleField::Folder(path))) => yes(within(path, folder)),
         (RuleField::Domain(domain), Some(RuleField::Domain(host))) => {
             let (d, h) = (domain.to_ascii_lowercase(), host.to_ascii_lowercase());
-            h == d || h.ends_with(&format!(".{d}"))
+            yes(h == d || h.ends_with(&format!(".{d}")))
         }
-        (RuleField::Recipient(who), Some(RuleField::Recipient(to))) => who.eq_ignore_ascii_case(to),
-        (RuleField::Recipient(who), _) => {
-            !t.effects.recipients.is_empty()
-                && t.effects.recipients.iter().all(|r| r.eq_ignore_ascii_case(who))
-        }
-        _ => false,
+        (RuleField::Recipient(who), Some(RuleField::Recipient(to))) => yes(who.eq_ignore_ascii_case(to)),
+        (RuleField::Recipient(who), _) => yes(
+            !t.effects.recipients.is_empty() && t.effects.recipients.iter().all(|r| r.eq_ignore_ascii_case(who)),
+        ),
+        _ => Cover::No,
     }
 }
 
@@ -319,9 +348,13 @@ mod tests {
             ("'r'm -rf x", Some(Effect::Deny)),
             ("\\rm -rf x", Some(Effect::Deny)),
             ("git push && rm -rf x", Some(Effect::Deny)),
-            // What can't be read may be the denied command.
-            ("$CMD -rf x", Some(Effect::Deny)),
-            ("ls &&", Some(Effect::Deny)),
+            // What can't be read may be the denied command: it is asked
+            // about, as Claude Code asks about a command it can't analyse.
+            // A deny its known words already match still refuses it.
+            ("$CMD -rf x", Some(Effect::Ask)),
+            ("ls &&", Some(Effect::Ask)),
+            ("rm -rf $DIR", Some(Effect::Deny)),
+            ("ls && $CMD", Some(Effect::Ask)),
             ("git push origin main", Some(Effect::Ask)),
             ("ls && git push origin main", Some(Effect::Ask)),
             ("ls; git push", Some(Effect::Ask)),
@@ -362,13 +395,49 @@ mod tests {
         assert!(!job.in_job(&run("ls && rm -rf x"), &serde_json::json!({})));
     }
 
+    /// A command that can't be read and that a deny of either scope could
+    /// name is asked about, even where the job's allow covers every command
+    /// (Claude Code asks about a command it can't analyse). A command the
+    /// deny doesn't name, with nothing unread, runs.
     #[test]
-    fn employee_rule_overrides_company_default() {
+    fn an_unreadable_command_a_deny_could_name_asks() {
+        let run = |c: &str| target("run_command", Some("shell"), Some(RuleField::CommandPrefix(c.into())));
+        let rules = set(vec![
+            rule(Scope::Employee("a".into()), RuleKey::Capability("shell".into()), None, Effect::Allow),
+            rule(Scope::Company, RuleKey::Tool("run_command".into()), Some(RuleField::CommandPrefix("rm".into())), Effect::Deny),
+        ]);
+        let decide = |c: &str| rules.decide(&run(c)).map(|(r, e)| (r.effect, e));
+        assert_eq!(decide("$CMD -rf x"), Some((Effect::Deny, Effect::Ask)), "the rule that could apply is named");
+        assert_eq!(decide("ls && eval \"$X\""), Some((Effect::Deny, Effect::Ask)));
+        assert_eq!(decide("rm -rf $DIR"), Some((Effect::Deny, Effect::Deny)));
+        assert_eq!(decide("ls $DIR"), Some((Effect::Allow, Effect::Allow)));
+        // With no deny or ask that could apply, an unreadable command is the
+        // job's, as before.
+        let job = set(vec![rule(Scope::Company, RuleKey::Capability("shell".into()), None, Effect::Allow)]);
+        assert_eq!(job.decide(&run("$CMD -rf x")).map(|d| d.1), Some(Effect::Allow));
+    }
+
+    /// A deny from either scope decides: an employee's allow never undoes
+    /// a company deny. An employee's own rule still narrows a company
+    /// allow, and its allow still covers a company ask.
+    #[test]
+    fn a_company_deny_beats_an_employee_allow() {
         let t = target("fetch_url", Some("web"), None);
-        let company_deny = rule(Scope::Company, RuleKey::Capability("web".into()), None, Effect::Deny);
-        let employee_allow = rule(Scope::Employee("a".into()), RuleKey::Capability("web".into()), None, Effect::Allow);
-        assert_eq!(set(vec![company_deny.clone()]).decide(&t).map(|d| d.1), Some(Effect::Deny));
-        assert_eq!(set(vec![company_deny, employee_allow]).decide(&t).map(|d| d.1), Some(Effect::Allow));
+        let web = || RuleKey::Capability("web".into());
+        let company = |e| rule(Scope::Company, web(), None, e);
+        let employee = |e| rule(Scope::Employee("a".into()), web(), None, e);
+        let decide = |rules: Vec<Rule>| set(rules).decide(&t).map(|(r, e)| (r.scope.clone(), e));
+        assert_eq!(decide(vec![company(Effect::Deny)]), Some((Scope::Company, Effect::Deny)));
+        assert_eq!(decide(vec![company(Effect::Deny), employee(Effect::Allow)]), Some((Scope::Company, Effect::Deny)));
+        assert_eq!(decide(vec![company(Effect::Deny), employee(Effect::Ask)]), Some((Scope::Company, Effect::Deny)));
+        let rules = set(vec![company(Effect::Deny), employee(Effect::Allow)]);
+        assert!(!rules.in_job(&t, &serde_json::json!({})), "a company deny keeps it outside the job");
+        assert!(!rules.owner_allowed(&t));
+        // The employee's own narrows a company allow, and covers its ask.
+        let own = Scope::Employee("a".into());
+        assert_eq!(decide(vec![company(Effect::Allow), employee(Effect::Deny)]), Some((own.clone(), Effect::Deny)));
+        assert_eq!(decide(vec![company(Effect::Allow), employee(Effect::Ask)]), Some((own.clone(), Effect::Ask)));
+        assert_eq!(decide(vec![company(Effect::Ask), employee(Effect::Allow)]), Some((own, Effect::Allow)));
     }
 
     #[test]

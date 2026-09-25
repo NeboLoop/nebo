@@ -160,16 +160,21 @@ impl Ask {
     }
 
     /// Whether "Allow always" can be offered: a locked must-ask can't be
-    /// loosened by an answer, and giving an employee more room is answered
-    /// each time.
+    /// loosened by an answer, a deny is never loosened by one, giving an
+    /// employee more room is answered each time, and a command that can't
+    /// be read has no rule to save (Claude Code offers none for a command it
+    /// can't analyse).
     pub fn allow_always_offered(&self, store: &db::Store) -> bool {
-        match &self.case {
-            AskCase::AskRule { rule_id } => {
-                !store.get_permission_rule(rule_id).ok().flatten().is_some_and(|r| r.locked)
-            }
+        let loosenable = match &self.case {
+            AskCase::AskRule { rule_id } => store
+                .get_permission_rule(rule_id)
+                .ok()
+                .flatten()
+                .is_some_and(|r| !r.locked && r.effect == Effect::Ask),
             AskCase::Widens => false,
             _ => true,
-        }
+        };
+        loosenable && allow_always_rules(store, self).is_some()
     }
 
     /// Whether "This once" can be offered: an employee's extra needs are
@@ -424,10 +429,13 @@ impl Asks {
         }
         let mut always = false;
         if answer == Answer::AllowAlways {
-            match self.store.write_permission_rule(&allow_always_rule(&self.store, &ask), &Writer::Owner) {
-                Ok(_) => always = true,
+            always = true;
+            for rule in allow_always_rules(&self.store, &ask).unwrap_or_default() {
                 // A locked must-ask can't be loosened: it runs this once.
-                Err(e) => tracing::warn!(ask = %id, error = %e, "allow-always rule not written; runs once"),
+                if let Err(e) = self.store.write_permission_rule(&rule, &Writer::Owner) {
+                    tracing::warn!(ask = %id, error = %e, "allow-always rule not written; runs once");
+                    always = false;
+                }
             }
         }
         if let Some(s) = self.surfaces() {
@@ -521,9 +529,70 @@ impl Asks {
     }
 }
 
-/// The standing allow "Allow always" writes: the rule the ask's case names
-/// (§2.12.4), for this employee.
-pub fn allow_always_rule(store: &db::Store, ask: &Ask) -> Rule {
+/// Most rules one "Allow always" on a compound command saves (Claude Code's
+/// `MAX_SUGGESTED_RULES_FOR_COMPOUND`).
+const MAX_COMMAND_RULES: usize = 5;
+
+/// The standing allows "Allow always" writes, for this employee: the rule
+/// the ask's case names (§2.12.4). A shell command gets one rule per command
+/// it runs that needed the answer, the way Claude Code saves one per
+/// subcommand; `None` when one of them can't be read (no rule could cover
+/// it).
+pub fn allow_always_rules(store: &db::Store, ask: &Ask) -> Option<Vec<Rule>> {
+    let t = &ask.target;
+    let per_command = !matches!(
+        ask.case,
+        AskCase::OutsideJob { .. } | AskCase::Money { .. } | AskCase::NewCounterparty { .. } | AskCase::Widens | AskCase::CreatedExtras { .. }
+    );
+    if per_command && matches!(t.field, Some(RuleField::CommandPrefix(_))) {
+        return command_rules(ask);
+    }
+    Some(vec![allow_always_rule(store, ask)])
+}
+
+/// One allow per command of a shell call that needed the answer: the ask
+/// rule it met, else the command's own prefix.
+fn command_rules(ask: &Ask) -> Option<Vec<Rule>> {
+    let t = &ask.target;
+    let rules = RuleSet::of(&ask.seat.grant);
+    let mut out: Vec<Rule> = Vec::new();
+    for piece in super::rules::pieces(t) {
+        let answered = match &ask.case {
+            AskCase::AskRule { .. } => !matches!(rules.decide_piece(t, piece.as_ref()), Some((_, Effect::Ask | Effect::Deny))),
+            AskCase::AskMode => rules.piece_allowed_by(t, piece.as_ref(), |r| !matches!(r.key, RuleKey::Capability(_))),
+            _ => rules.piece_allowed_by(t, piece.as_ref(), |r| matches!(r.source, RuleSource::AllowAlways { .. })),
+        };
+        if answered {
+            continue;
+        }
+        let (key, field) = match rules.decide_piece(t, piece.as_ref()) {
+            Some((rule, Effect::Ask)) if rule.effect == Effect::Ask => (rule.key.clone(), rule.field.clone()),
+            _ => (RuleKey::Tool(t.key.clone()), Some(RuleField::CommandPrefix(piece.as_ref()?.rule_prefix()?))),
+        };
+        if !out.iter().any(|r| r.key == key && r.field == field) {
+            out.push(standing_allow(ask, key, field, None));
+        }
+    }
+    out.truncate(MAX_COMMAND_RULES);
+    Some(out)
+}
+
+fn standing_allow(ask: &Ask, key: RuleKey, field: Option<RuleField>, money: Option<MoneyLimit>) -> Rule {
+    Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope: Scope::Employee(ask.agent_id.clone()),
+        key,
+        field,
+        effect: Effect::Allow,
+        money,
+        source: RuleSource::AllowAlways { ask_id: ask.id.clone() },
+        locked: false,
+        created_at: chrono::Utc::now().timestamp(),
+    }
+}
+
+/// The one standing allow for any call but a shell command's.
+fn allow_always_rule(store: &db::Store, ask: &Ask) -> Rule {
     let t = &ask.target;
     let call_key = || match &t.operation {
         Some(op) => RuleKey::Operation(op.clone()),
@@ -557,17 +626,7 @@ pub fn allow_always_rule(store: &db::Store, ask: &Ask) -> Rule {
             (call_key(), t.field.clone(), None)
         }
     };
-    Rule {
-        id: String::new(),
-        scope: Scope::Employee(ask.agent_id.clone()),
-        key,
-        field,
-        effect: Effect::Allow,
-        money,
-        source: RuleSource::AllowAlways { ask_id: ask.id.clone() },
-        locked: false,
-        created_at: chrono::Utc::now().timestamp(),
-    }
+    standing_allow(ask, key, field, money)
 }
 
 /// The money case: the standing allow that decided the call, with every
@@ -907,10 +966,123 @@ mod tests {
             created_at: 0,
             expires_at: 0,
         };
-        let rule = allow_always_rule(&store, &ask);
+        let rule = allow_always_rules(&store, &ask).unwrap().remove(0);
         assert_eq!(rule.field, Some(RuleField::Recipient("+15550142".into())));
         assert!(super::super::rules::matches(&rule, &target("+15550142")));
         assert!(!super::super::rules::matches(&rule, &target("+15550177")), "not texting in general");
+    }
+
+    /// An ask about `cmd` (a shell command) under `rules`, for `case`.
+    fn shell_ask(case: AskCase, cmd: &str, rules: Vec<Rule>) -> Ask {
+        let mut grant = Grant::new("emp", Mode::Ask);
+        grant.rules = rules;
+        Ask {
+            id: "a1".into(),
+            agent_id: "emp".into(),
+            session_key: KEY.into(),
+            door: Door::Chat,
+            case,
+            sentence: format!("running {cmd}"),
+            target: Target {
+                tool: "run_command".into(),
+                key: "run_command".into(),
+                operation: None,
+                capability: Some("shell".into()),
+                field: Some(RuleField::CommandPrefix(cmd.into())),
+                read_only: false,
+                effects: types::permissions::CallEffects::unknown(),
+            },
+            call: StoredCall { name: "run_command".into(), input: json!({ "command": cmd }) },
+            seat: SeatSnapshot {
+                grant,
+                origin: Origin::User,
+                user_id: String::new(),
+                session_id: String::new(),
+                untrusted_input: false,
+                cwd: None,
+                handoff_depth: 0,
+            },
+            status: AskStatus::Open,
+            run_id: None,
+            created_at: 0,
+            expires_at: 0,
+        }
+    }
+
+    fn command_rule(effect: Effect, prefix: &str) -> Rule {
+        Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: Scope::Employee("emp".into()),
+            key: RuleKey::Tool("run_command".into()),
+            field: Some(RuleField::CommandPrefix(prefix.into())),
+            effect,
+            money: None,
+            source: RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        }
+    }
+
+    fn prefixes(rules: &[Rule]) -> Vec<String> {
+        rules
+            .iter()
+            .map(|r| match &r.field {
+                Some(RuleField::CommandPrefix(p)) => p.clone(),
+                other => panic!("not a command rule: {other:?}"),
+            })
+            .collect()
+    }
+
+    /// "Allow always" on a compound command saves one rule per command that
+    /// needed the answer, as Claude Code saves one per subcommand, and the
+    /// same command never asks again. The whole compound text, saved as one
+    /// rule, never matched again.
+    #[test]
+    fn allow_always_on_a_compound_command_saves_one_rule_per_command() {
+        let (_d, store) = {
+            let dir = tempfile::tempdir().unwrap();
+            let store = db::Store::new(&dir.path().join("c.db").to_string_lossy()).unwrap();
+            (dir, store)
+        };
+        let cmd = "cd src && git push origin main | tee log.txt";
+        let owner_ls = command_rule(Effect::Allow, "tee log.txt");
+        let ask = shell_ask(AskCase::AskMode, cmd, vec![owner_ls.clone()]);
+        assert!(ask.allow_always_offered(&store));
+        let saved = allow_always_rules(&store, &ask).unwrap();
+        assert_eq!(prefixes(&saved), ["cd src", "git push"], "only the commands that needed the answer");
+        let mut grant = ask.seat.grant.clone();
+        grant.rules.extend(saved);
+        assert!(RuleSet::of(&grant).owner_allowed(&ask.target), "the same command runs without asking");
+
+        // An ask rule the command met is the rule the allow replaces.
+        let ask_rule = command_rule(Effect::Ask, "git push");
+        let ask = shell_ask(AskCase::AskRule { rule_id: ask_rule.id.clone() }, "ls && git push origin", vec![ask_rule.clone()]);
+        let saved = allow_always_rules(&store, &ask).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!((&saved[0].key, &saved[0].field), (&ask_rule.key, &ask_rule.field));
+
+        // At most five, the leftmost.
+        let many = "a1 x; a2 x; a3 x; a4 x; a5 x; a6 x; a7 x";
+        let saved = allow_always_rules(&store, &shell_ask(AskCase::AskMode, many, vec![])).unwrap();
+        assert_eq!(prefixes(&saved), ["a1 x", "a2 x", "a3 x", "a4 x", "a5 x"]);
+    }
+
+    /// A command that can't be read has no rule to save: the card offers
+    /// "This once" only, as Claude Code offers no rule for a command it
+    /// can't analyse.
+    #[test]
+    fn an_unreadable_command_offers_no_allow_always() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("u.db").to_string_lossy()).unwrap();
+        for cmd in ["ls && $CMD -rf x", "git $SUB origin", "ls &&", "FOO=1 make"] {
+            let ask = shell_ask(AskCase::AskMode, cmd, vec![]);
+            assert!(allow_always_rules(&store, &ask).is_none(), "{cmd:?}");
+            assert!(!ask.allow_always_offered(&store), "{cmd:?}");
+        }
+        // Asked because a deny could name it: the deny is never loosened.
+        let deny = command_rule(Effect::Deny, "rm");
+        let ask = shell_ask(AskCase::AskRule { rule_id: deny.id.clone() }, "$CMD -rf x", vec![deny]);
+        assert!(!ask.allow_always_offered(&store));
     }
 
     #[tokio::test]

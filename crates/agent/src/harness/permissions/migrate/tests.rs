@@ -58,11 +58,18 @@ fn effect_of(store: &db::Store, scope: Scope, key: RuleKey, field: Option<RuleFi
 #[test]
 fn toggles_become_capability_rules() {
     let (_d, store, conn) = legacy();
-    profile(&store, &conn, r#"{"shell": false, "web": true, "chat": true}"#, "[]");
+    profile(&store, &conn, r#"{"shell": false, "web": true, "media": false, "chat": true}"#, "[]");
     employee(&conn, "emp", "permissions", r#"{"shell": true, "desktop": false}"#);
+    employee(&conn, "other", "permissions", r#"{"web": false}"#);
     migrate_legacy(&store).unwrap().expect("ran");
     let cap = |c: &str| RuleKey::Capability(c.into());
-    assert_eq!(effect_of(&store, Scope::Company, cap("shell"), None), Some(Effect::Deny));
+    // Off company-wide and nobody turned it back on: a company deny.
+    assert_eq!(effect_of(&store, Scope::Company, cap("media"), None), Some(Effect::Deny));
+    // Off company-wide but one employee turned it on: a company deny would
+    // bind that employee too, so the "off" stays with each employee that
+    // didn't turn it on.
+    assert_eq!(effect_of(&store, Scope::Company, cap("shell"), None), None);
+    assert_eq!(effect_of(&store, Scope::Employee("other".into()), cap("shell"), None), Some(Effect::Deny));
     assert_eq!(effect_of(&store, Scope::Company, cap("web"), None), Some(Effect::Allow));
     // A capability the toggles never named was on.
     assert_eq!(effect_of(&store, Scope::Company, cap("file"), None), Some(Effect::Allow));
@@ -270,9 +277,13 @@ fn migrated_decisions_equal_todays() {
     // (seat, origin, call, what the old gates did unattended or in chat)
     let table: &[(&str, tools::Origin, Target, &str)] = &[
         // Shell off company-wide: refused (unattended, the old registry
-        // block); the employee who has it on runs it.
-        ("", Workflow, target("run_command", Some("shell"), None), "refuse"),
+        // block) for every employee that left it off; the employee who has
+        // it on runs it. A company deny would bind that employee too, so
+        // the company leaves shell out of the job: the main seat, which has
+        // no employee rules, is asked instead of refused.
+        ("ap", Workflow, target("run_command", Some("shell"), None), "refuse"),
         ("dev", Workflow, target("run_command", Some("shell"), None), "run"),
+        ("", Workflow, target("run_command", Some("shell"), None), "ask"),
         // Web on: runs.
         ("", User, target("fetch_url", Some("web"), None), "run"),
         // A capability no toggle named was on.
