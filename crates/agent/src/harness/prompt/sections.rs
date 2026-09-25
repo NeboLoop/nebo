@@ -2,12 +2,11 @@
 //!
 //! Fixed, above the cache boundary: `identity` (or `helper_role` for a
 //! helper), `how_this_works`, `doing_the_work`, `care_with_actions`,
-//! `using_tools`, `helpers`, `talking_to_the_owner`, then the `employee`
-//! section. Per session, below it: `environment`, then the employee's memory,
-//! the coworker index, workspace notes and the employee's own setup.
-//!
-//! Nothing here holds state. A fact that changes during a session reaches
-//! the model as a reminder row in the conversation, never as prompt text.
+//! `using_tools`, `helpers`, `talking_to_the_owner`. Below it, the `employee`
+//! section. The session's facts (the environment, the employee's memory,
+//! the workspace notes and its own setup) are not prompt text: they reach
+//! the model as attachment rows (`events::SessionFacts`), and the renderers
+//! for them live here.
 
 use chrono::NaiveDate;
 
@@ -163,26 +162,6 @@ impl From<tools::ExecutionMode> for Watching {
     }
 }
 
-/// The run's environment. Every field is fixed for the session except the
-/// date, which moves at most once a day; a mid-session rollover also arrives
-/// as a reminder row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Environment {
-    /// Today in the owner's timezone.
-    pub date: NaiveDate,
-    /// The owner's IANA timezone, when set.
-    pub timezone: Option<String>,
-    /// The resolved model id the run calls.
-    pub model: String,
-    /// The folder the run works in, when it has one.
-    pub cwd: Option<String>,
-    /// Where the owner's messages come from ("web", "slack", "voice", …).
-    pub channel: String,
-    pub watching: Watching,
-    /// The seat's permission mode, by the name the owner sees.
-    pub permission_mode: String,
-}
-
 /// Today's date in `timezone` (an IANA name), or on the computer's clock
 /// when it is unset or unknown.
 pub fn owner_today(timezone: Option<&str>) -> NaiveDate {
@@ -203,55 +182,21 @@ fn platform() -> String {
     format!("{os} ({})", std::env::consts::ARCH)
 }
 
-/// The environment section.
-pub fn environment(env: &Environment) -> String {
-    let date = env.date.format("%A, %B %-d, %Y");
-    let date = match &env.timezone {
-        Some(tz) => format!("{date} ({tz})"),
-        None => date.to_string(),
-    };
-    let watching = match env.watching {
+/// The environment's fields after the date, in the order they are told:
+/// the platform, the working folder when there is one, the channel and who
+/// is watching.
+pub fn environment_fields(cwd: Option<&str>, channel: &str, watching: Watching) -> Vec<(String, String)> {
+    let watching = match watching {
         Watching::Live => "the owner sees your messages as you write them",
         Watching::Unattended => "no one is watching this run; your final message is what gets read",
     };
-    let mut lines = vec![
-        "# Environment".to_string(),
-        format!("- Date: {date}"),
-        format!("- Platform: {}", platform()),
-        format!(
-            "- Model: {}. Answer questions about your model from this id alone; what it is built on is not shown to you, so don't guess.",
-            env.model
-        ),
-    ];
-    if let Some(cwd) = env.cwd.as_deref().filter(|c| !c.is_empty()) {
-        lines.push(format!("- Working folder: {cwd}"));
+    let mut fields = vec![("Platform".to_string(), platform())];
+    if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
+        fields.push(("Working folder".to_string(), cwd.to_string()));
     }
-    lines.push(format!("- Channel: {}", env.channel));
-    lines.push(format!("- Watching: {watching}"));
-    lines.push(format!("- Permission mode: {}", env.permission_mode));
-    lines.join("\n")
-}
-
-/// The other employees on this team, by name, sorted so the section is
-/// byte-stable. `me` is left out. Empty when there are none.
-pub fn coworkers(me: &str, team: &[(String, String)]) -> String {
-    let mut others: Vec<&(String, String)> = team.iter().filter(|(name, _)| name != me).collect();
-    if others.is_empty() {
-        return String::new();
-    }
-    others.sort();
-    let mut lines = vec![
-        "# Your coworkers".to_string(),
-        "Other employees on this team. Work that is one of theirs goes to them with send_message; a helper is for work you would do yourself.".to_string(),
-    ];
-    for (name, description) in others {
-        if description.is_empty() {
-            lines.push(format!("- {name}"));
-        } else {
-            lines.push(format!("- {name}: {description}"));
-        }
-    }
-    lines.join("\n")
+    fields.push(("Channel".to_string(), channel.to_string()));
+    fields.push(("Watching".to_string(), watching.to_string()));
+    fields
 }
 
 /// Notes from the workspace's `.nebo.md`.

@@ -439,15 +439,19 @@ pub fn scrub_outside_reply(text: &str) -> String {
 /// channel's policy when the owner enabled something, empty otherwise. An empty allowlist means the model is shown no tools at all and
 /// the runner gate and the registry choke point refuse anything it invents.
 /// This is the ONE place the rule is applied; every ingress benefits.
-pub(crate) fn restrict_outside_origin(req: &mut RunRequest) {
-    if !req.origin.is_outside() {
+pub(crate) fn restrict_outside_origin(
+    origin: tools::Origin,
+    tool_allowlist: &mut Option<HashSet<String>>,
+    tool_denial_hint: &mut Option<String>,
+) {
+    if !origin.is_outside() {
         return;
     }
-    if req.tool_allowlist.is_none() {
-        req.tool_allowlist = Some(std::collections::HashSet::new());
+    if tool_allowlist.is_none() {
+        *tool_allowlist = Some(HashSet::new());
     }
-    if req.tool_denial_hint.is_none() {
-        req.tool_denial_hint = Some(
+    if tool_denial_hint.is_none() {
+        *tool_denial_hint = Some(
             "That isn't part of this conversation. Don't mention a limit or refuse; answer kindly \
              from what you know, steer back to what this chat is for, and offer to pass a note \
              to the owner if it matters to them."
@@ -460,10 +464,10 @@ pub(crate) fn restrict_outside_origin(req: &mut RunRequest) {
 /// if it names one), the ceiling and fence it can only narrow, and the
 /// project folder it works in. A stranger's run never holds Full Access:
 /// that is an owner-surface concept.
-pub(crate) fn run_grant(store: &Store, req: &RunRequest) -> types::permissions::Grant {
+pub(crate) fn run_grant(store: &Store, req: GrantRequest<'_>) -> types::permissions::Grant {
     // A helper holds its parent's grant (mode, rules, money limits), under
     // that grant as its ceiling: it can only narrow.
-    let mut grant = match &req.ceiling {
+    let mut grant = match req.ceiling {
         Some(types::permissions::Ceiling::Parent { grant: parent }) => {
             let mut own = (**parent).clone();
             if let Some(mode) = req.mode {
@@ -471,15 +475,40 @@ pub(crate) fn run_grant(store: &Store, req: &RunRequest) -> types::permissions::
             }
             own
         }
-        _ => crate::harness::permissions::resolve_grant(store, &req.agent_id, req.mode),
+        _ => crate::harness::permissions::resolve_grant(store, req.agent_id, req.mode),
     };
     if req.origin.is_outside() && grant.mode == types::permissions::Mode::FullAccess {
         grant.mode = types::permissions::Mode::Automatic;
     }
-    grant.ceiling = req.ceiling.clone();
-    grant.fence = req.fence.clone();
+    grant.ceiling = req.ceiling.cloned();
+    grant.fence = req.fence.cloned();
     grant.run_folders = req.cwd.iter().map(std::path::PathBuf::from).collect();
     grant
+}
+
+/// What a run's grant is resolved from.
+pub(crate) struct GrantRequest<'a> {
+    pub agent_id: &'a str,
+    pub origin: tools::Origin,
+    /// A run override of the employee's mode.
+    pub mode: Option<types::permissions::Mode>,
+    pub ceiling: Option<&'a types::permissions::Ceiling>,
+    pub fence: Option<&'a Vec<std::path::PathBuf>>,
+    pub cwd: Option<&'a str>,
+}
+
+impl RunRequest {
+    /// The grant request of a `Runner` run.
+    pub(crate) fn grant_request(&self) -> GrantRequest<'_> {
+        GrantRequest {
+            agent_id: &self.agent_id,
+            origin: self.origin,
+            mode: self.mode,
+            ceiling: self.ceiling.as_ref(),
+            fence: self.fence.as_ref(),
+            cwd: self.cwd.as_deref(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -499,22 +528,22 @@ mod tests {
         store.set_permission_mode(&Scope::Company, Mode::FullAccess).unwrap();
 
         let mut req = RunRequest { origin: Origin::Visitor, ..Default::default() };
-        restrict_outside_origin(&mut req);
-        assert_eq!(run_grant(&store, &req).mode, Mode::Automatic, "Full Access is an owner-surface concept; a visitor never has it");
+        restrict_outside_origin(req.origin, &mut req.tool_allowlist, &mut req.tool_denial_hint);
+        assert_eq!(run_grant(&store, req.grant_request()).mode, Mode::Automatic, "Full Access is an owner-surface concept; a visitor never has it");
         assert_eq!(req.tool_allowlist.as_ref().map(|s| s.len()), Some(0), "no channel policy = zero tools");
         assert!(req.tool_denial_hint.as_deref().unwrap_or("").contains("conversation"));
 
         // A channel that enabled something keeps exactly that.
         let mut caller = RunRequest { origin: Origin::Caller, ..Default::default() };
         caller.tool_allowlist = Some(["agent:memory".to_string()].into_iter().collect());
-        restrict_outside_origin(&mut caller);
-        assert_eq!(run_grant(&store, &caller).mode, Mode::Automatic);
+        restrict_outside_origin(caller.origin, &mut caller.tool_allowlist, &mut caller.tool_denial_hint);
+        assert_eq!(run_grant(&store, caller.grant_request()).mode, Mode::Automatic);
         assert_eq!(caller.tool_allowlist.as_ref().map(|s| s.len()), Some(1));
 
         // The owner's own surfaces are untouched.
         let mut owner = RunRequest { origin: Origin::User, ..Default::default() };
-        restrict_outside_origin(&mut owner);
-        assert_eq!(run_grant(&store, &owner).mode, Mode::FullAccess);
+        restrict_outside_origin(owner.origin, &mut owner.tool_allowlist, &mut owner.tool_denial_hint);
+        assert_eq!(run_grant(&store, owner.grant_request()).mode, Mode::FullAccess);
         assert!(owner.tool_allowlist.is_none());
     }
 

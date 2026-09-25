@@ -28,9 +28,6 @@ const MAX_RETRYABLE_RETRIES: usize = 5;
 /// overflow despite the local estimate saying we fit (single-shot reactive
 /// compact + give-up, a guard against an auto-compaction death-spiral).
 const MAX_OVERFLOW_RETRIES: usize = 2;
-/// Consecutive overloaded (529) errors before falling back to a cheaper model.
-#[allow(dead_code)] // reserved for overload fallback logic
-const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
 /// Max gap between stream events before the stream is declared wedged
 /// (connection open, no tokens). A 90s idle watchdog, classified transient so
 /// the normal retry/failover path re-issues the request.
@@ -194,8 +191,8 @@ pub(crate) enum CallOutcome {
     /// The model's reply. A stream error the retries could not clear has
     /// already been shown to the owner and rides in `stream_error`.
     Reply(ModelReply),
-    /// Take the step again: reactive compaction, failover or a reconnect.
-    Retry,
+    /// Take the step again.
+    Retry(RetryWhy),
     /// Cancelled waiting for the permit or during the stream.
     Cancelled,
     /// Cancelled while backing off before a retry.
@@ -204,6 +201,18 @@ pub(crate) enum CallOutcome {
     Exhausted,
     /// The call failed for good; the turn ends with this error.
     Failed(String),
+}
+
+/// Why a call is taken again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryWhy {
+    /// The provider said the request is over the window: compact first.
+    Overflow,
+    /// A failover, a backoff or a reconnect: the same request again.
+    Transient,
+    /// The connection dropped mid-reply; the partial reply is stored and the
+    /// next call resumes it.
+    StreamCut,
 }
 
 /// The model's reply.
@@ -385,7 +394,7 @@ pub(crate) async fn call_model(
                     correction = state.estimate_correction,
                     "context overflow: forcing reactive compaction"
                 );
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(RetryWhy::Overflow);
             }
 
             if ai::is_transient_error(&e) {
@@ -428,7 +437,7 @@ pub(crate) async fn call_model(
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.transient_retries, None)) => {}
                 }
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(RetryWhy::Transient);
             }
 
             // A 429 slows the whole bot, not just this call: the pool
@@ -468,7 +477,7 @@ pub(crate) async fn call_model(
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.retryable_retries, retry_after)) => {}
                 }
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(RetryWhy::Transient);
             }
 
             return CallOutcome::Failed(format!("Provider error: {}", e));
@@ -791,9 +800,11 @@ pub(crate) async fn call_model(
                 "stream_reconnecting",
             ))
         };
-        let mut queue_cutoff_continuation = || {
+        // Returns whether the stream was cut mid-reply: the retry is then a
+        // resume, and the caller says so on the next call.
+        let save_partial = || {
             if assistant_content.is_empty() && tool_calls.is_empty() {
-                return;
+                return RetryWhy::Transient;
             }
             if !assistant_content.is_empty()
                 && let Err(e) = sessions.append_message(
@@ -807,37 +818,14 @@ pub(crate) async fn call_model(
             {
                 warn!(session_id = %session_id, error = %e, "failed to save partial assistant message before stream retry");
             }
-            // A stream that dies while a tool call is in flight is almost
-            // always killed by the call itself — one enormous streamed
-            // argument (a whole document inline). A generic "continue"
-            // makes the model re-emit the same giant call and die the same
-            // way; name the cause and steer it to chunk the work instead.
-            let reminder = if tool_calls.is_empty() {
-                "Your previous response was cut off mid-stream by a \
-                 connection error. Continue EXACTLY where you left off — \
-                 do not repeat or restart."
-                    .to_string()
-            } else {
-                let names: Vec<&str> = tool_calls.iter().map(|tc| tc.name.as_str()).collect();
-                format!(
-                    "Your previous response was cut off mid-stream while \
-                     emitting a tool call ({}) — the call was NOT delivered. \
-                     Oversized tool arguments are the usual cause. Do NOT \
-                     retry one giant call: break the work into several \
-                     smaller tool calls (write large files in pieces, edit \
-                     one section at a time), then continue from where you \
-                     stopped.",
-                    names.join(", ")
-                )
-            };
-            pending_stream_reminders.push(steering::wrap_system_reminder(&reminder));
+            RetryWhy::StreamCut
         };
 
         // Layer 1: Transient errors (connection reset, timeout, EOF)
         if !deterministic && ai::is_transient_error(&err) {
             st.transient_retries += 1;
             if st.transient_retries <= MAX_TRANSIENT_RETRIES {
-                queue_cutoff_continuation();
+                let why = save_partial();
                 if reconnect_notice(st.transient_retries).await.is_err() {
                     debug!(session_id, "retry notice: receiver gone");
                 }
@@ -849,7 +837,7 @@ pub(crate) async fn call_model(
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.transient_retries, None)) => {}
                 }
-                return CallOutcome::Retry;
+                return CallOutcome::Retry(why);
             }
         }
 
@@ -881,7 +869,7 @@ pub(crate) async fn call_model(
                 retryable_retries = st.retryable_retries,
                 "retryable stream error, trying next provider"
             );
-            queue_cutoff_continuation();
+            let why = save_partial();
             if reconnect_notice(st.retryable_retries).await.is_err() {
                 debug!(session_id, "retry notice: receiver gone");
             }
@@ -893,7 +881,7 @@ pub(crate) async fn call_model(
                 _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                 _ = tokio::time::sleep(retry_backoff(st.retryable_retries, last_retry_after)) => {}
             }
-            return CallOutcome::Retry;
+            return CallOutcome::Retry(why);
         }
 
         // Layer 3: Non-retryable — send error to user
@@ -941,8 +929,9 @@ pub(crate) async fn call_model(
 pub(crate) enum StepRetry {
     /// Take the step again as it is.
     Same,
-    /// Take the step again with this reminder on the call.
-    WithReminder(String),
+    /// Continue in place: the reply stands and the next call resumes it
+    /// (`TurnEvent::CutoffResume`).
+    Resume,
 }
 
 /// The output-cap ladder for a reply the output cap cut off: first a retry
@@ -980,13 +969,7 @@ pub(crate) fn output_cutoff(
             attempt = st.output_recovery_attempts,
             "max output tokens recovery"
         );
-        // Continuation rides the next call as an ephemeral reminder
-        // after the (already persisted) truncated turn.
-        return Some(StepRetry::WithReminder(steering::wrap_system_reminder(
-            "Your previous response was cut off by the output token limit. \
-             Resume directly from where you stopped — no recap, no apology. \
-             If you had pending tool calls, make them now.",
-        )));
+        return Some(StepRetry::Resume);
     }
     // Reset recovery counter and escalation flag on successful non-truncated completion
     if stop_reason != Some("length") && stop_reason != Some("max_tokens") {
