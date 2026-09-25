@@ -1297,7 +1297,7 @@ pub fn report_temporary_outcome(
         db::TemporaryKind::Workflow => format!("The {} workflow", work.name.replace('-', " ")),
         db::TemporaryKind::Team => {
             let team = store.get_team(&work.name)?.map(|t| t.name).unwrap_or_else(|| work.name.clone());
-            format!("The {team} team")
+            if team.to_lowercase().contains("team") { format!("The {team}") } else { format!("The {team} team") }
         }
     };
     let ended = match run.state.as_str() {
@@ -1306,7 +1306,13 @@ pub fn report_temporary_outcome(
         _ => "was stopped",
     };
     let title = format!("{what} {ended}");
-    let outcome: String = [run.result.as_deref(), run.error.as_deref(), Some(run.summary.as_str())]
+    // A case's result is its closing status; its summary is what happened.
+    let said = if run.kind == "case" {
+        [Some(run.summary.as_str()), run.result.as_deref(), run.error.as_deref()]
+    } else {
+        [run.result.as_deref(), run.error.as_deref(), Some(run.summary.as_str())]
+    };
+    let outcome: String = said
         .into_iter()
         .flatten()
         .map(str::trim)

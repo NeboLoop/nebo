@@ -38,6 +38,10 @@ pub struct CreateTeamRequest {
     /// The lead (local agent id or exact name). Empty or absent = the owner leads.
     #[serde(default)]
     pub organizer_agent_id: String,
+    /// "temporary": assembled for one piece of work, disbanded once its
+    /// outcome reaches the owner (it needs a lead). Absent or "saved": stays.
+    #[serde(default)]
+    pub lifetime: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +152,15 @@ pub async fn open_team(
     } else {
         resolve_label(&state, &body.organizer_agent_id)?
     };
+    let lifetime = match body.lifetime.as_deref() {
+        None | Some("saved") => tools::Lifetime::Saved,
+        Some("temporary") => tools::Lifetime::Temporary { report_to: String::new() },
+        Some(other) => {
+            return Err(to_error_response(types::NeboError::Validation(format!(
+                "lifetime is \"temporary\" or \"saved\", not {other:?}"
+            ))));
+        }
+    };
     let team = tools::team::create(
         comm.as_ref(),
         &state.store,
@@ -155,6 +168,7 @@ pub async fn open_team(
         &body.mission,
         &members,
         &organizer,
+        &lifetime,
     )
     .await
     .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;

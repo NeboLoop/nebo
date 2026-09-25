@@ -60,10 +60,16 @@ pub async fn create(
     mission: &str,
     member_list: &[TeamMember],
     organizer_agent_id: &str,
+    lifetime: &crate::workflows::Lifetime,
 ) -> Result<Team, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("team name required".to_string());
+    }
+    // A temporary team is assembled for one piece of work, with a lead who
+    // takes it and hands steps to the others.
+    if matches!(lifetime, crate::workflows::Lifetime::Temporary { .. }) && organizer_agent_id.is_empty() {
+        return Err("a temporary team needs a lead: name the employee who takes its work".to_string());
     }
     let mission = mission.trim();
 
@@ -106,6 +112,11 @@ pub async fn create(
     store
         .ensure_team_thread(&team.id, &team.name)
         .map_err(|e| format!("open team thread: {e}"))?;
+    if let crate::workflows::Lifetime::Temporary { report_to } = lifetime {
+        store
+            .mark_temporary(db::TemporaryKind::Team, "", &team.id, report_to)
+            .map_err(|e| format!("mark the team temporary: {e}"))?;
+    }
     Ok(team)
 }
 
@@ -383,12 +394,29 @@ mod tests {
         Store::new(&path.to_string_lossy()).expect("store")
     }
 
+    const SAVED: crate::workflows::Lifetime = crate::workflows::Lifetime::Saved;
+
+    /// A temporary team is marked as such, reporting to the session that
+    /// assembled it, and it needs a lead; a saved one is not temporary.
+    #[tokio::test]
+    async fn a_temporary_team_needs_a_lead_and_is_marked() {
+        let s = store();
+        let temp = crate::workflows::Lifetime::Temporary { report_to: "agent:assistant:web".into() };
+        let err = create(None, &s, "Budget", "", &[TeamMember::local("ea"), TeamMember::local("bk")], "", &temp).await.unwrap_err();
+        assert!(err.contains("needs a lead"), "{err}");
+        let team = create(None, &s, "Budget", "", &[TeamMember::local("ea")], "chief", &temp).await.unwrap();
+        let work = s.temporary_work(db::TemporaryKind::Team, "", &team.id).unwrap().expect("marked temporary");
+        assert_eq!((work.report_to.as_str(), work.run_id), ("agent:assistant:web", None));
+        let kept = create(None, &s, "Ops", "", &[TeamMember::local("ea")], "chief", &SAVED).await.unwrap();
+        assert!(s.temporary_work(db::TemporaryKind::Team, "", &kept.id).unwrap().is_none());
+    }
+
     /// A team is created with NO comm plugin at all: local row, local
     /// thread, no hub channel.
     #[tokio::test]
     async fn create_without_a_hub() {
         let s = store();
-        let team = create(None, &s, "Operations", "Run the office", &[TeamMember::local("ea")], "chief")
+        let team = create(None, &s, "Operations", "Run the office", &[TeamMember::local("ea")], "chief", &SAVED)
             .await
             .unwrap();
         assert_eq!(members_of(&team), vec!["chief", "ea"]);
@@ -406,7 +434,7 @@ mod tests {
         let comm: Arc<dyn CommPlugin> = Arc::new(comm::LoopbackPlugin::new());
         comm.connect(std::collections::HashMap::new()).await.unwrap();
         assert!(comm.is_connected());
-        let team = create(Some(&comm), &s, "Sales", "", &[TeamMember::local("ea")], "chief")
+        let team = create(Some(&comm), &s, "Sales", "", &[TeamMember::local("ea")], "chief", &SAVED)
             .await
             .unwrap();
         assert_eq!(team.hub_channel_id, None);
@@ -417,15 +445,15 @@ mod tests {
     #[tokio::test]
     async fn create_refuses_solo_and_repeated_names() {
         let s = store();
-        let err = create(None, &s, "Solo", "", &[], "chief").await.unwrap_err();
+        let err = create(None, &s, "Solo", "", &[], "chief", &SAVED).await.unwrap_err();
         assert!(err.contains("at least two employees"), "{err}");
-        let err = create(None, &s, "Solo", "", &[TeamMember::local("chief")], "chief")
+        let err = create(None, &s, "Solo", "", &[TeamMember::local("chief")], "chief", &SAVED)
             .await
             .unwrap_err();
         assert!(err.contains("at least two employees"), "{err}");
 
-        create(None, &s, "Ops", "", &[TeamMember::local("ea")], "chief").await.unwrap();
-        let err = create(None, &s, "ops", "", &[TeamMember::local("ea")], "chief")
+        create(None, &s, "Ops", "", &[TeamMember::local("ea")], "chief", &SAVED).await.unwrap();
+        let err = create(None, &s, "ops", "", &[TeamMember::local("ea")], "chief", &SAVED)
             .await
             .unwrap_err();
         assert!(err.contains("already exists"), "{err}");

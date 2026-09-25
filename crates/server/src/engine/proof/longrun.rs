@@ -197,3 +197,48 @@ fn e13_a_temporary_workflows_outcome_reaches_the_owner_once_before_it_goes() {
     assert!(told[0].payload.contains("(run run-b)") && told[0].payload.contains("from_run: \"run-b\""), "{}", told[0].payload);
     assert!(told[0].payload.contains("BUDGET-RESULT"), "{}", told[0].payload);
 }
+
+/// E16 — A temporary team's one piece of work is the assignment its lead
+/// takes. While the lead works it the team stands; when the lead closes it,
+/// the team is due to disband, and its outcome is the lead's summary, told
+/// once to the owner and to the session that assembled the team. A
+/// persistent team is never listed. Must never: a temporary team disbanded
+/// while its work is open, or a persistent team disbanded at all.
+#[test]
+fn e16_a_temporary_team_is_due_to_disband_when_its_lead_closes_its_work() {
+    let w = World::new();
+    let chat = "agent:assistant:web";
+    let lead_first = [db::TeamMember::local("bk"), db::TeamMember::local("mk")];
+    let team = w.s.create_team("t-budget", "Budget team", "", &lead_first, "bk", None).unwrap();
+    w.s.create_team("t-ops", "Ops", "", &lead_first, "bk", None).unwrap();
+    w.s.mark_temporary(db::TemporaryKind::Team, "", &team.id, chat).unwrap();
+
+    let req = workflow::cases::NewAssignmentRequest {
+        assigner_agent_id: "assistant",
+        assigner_name: "Nebo",
+        assigner_session_key: chat,
+        parent_run_id: None,
+        assignee_agent_id: "bk",
+        subject: "Find the marketing budget and what it buys",
+        done_means: "A number and a plan",
+        due: None,
+    };
+    let assignment = workflow::cases::open_assignment(&w.s, &req, w.t).unwrap();
+    let case = w.s.engine_run_for_key("case:assignment", &assignment).unwrap().expect("the lead's case");
+    assert_eq!(w.s.claim_temporary_run(db::TemporaryKind::Team, "", &team.id, &case.id).unwrap(), db::TemporaryClaim::Claimed);
+    assert!(w.s.ended_temporary_work().unwrap().is_empty(), "the lead is working it: the team stands");
+
+    w.turn(&case.id, &closes("done", "TEAM-RESULT: $900 for marketing, enough for two local ads"));
+    let ended = w.s.ended_temporary_work().unwrap();
+    assert_eq!(ended.len(), 1, "one temporary team is due to disband; the persistent one never is");
+    let (work, run) = &ended[0];
+    assert_eq!((work.name.as_str(), run.id.as_str()), (team.id.as_str(), case.id.as_str()));
+    crate::engine::report_temporary_outcome(&w.s, work, run, None).unwrap();
+    let user = w.s.ensure_local_user_id().unwrap();
+    let inbox = w.s.get_notification(&format!("temporary:{}", case.id), &user).unwrap().expect("the outcome is in the Inbox");
+    assert_eq!(inbox.title, "The Budget team finished");
+    assert!(inbox.body.unwrap_or_default().contains("TEAM-RESULT"), "the lead's summary is the outcome");
+    let told: Vec<_> = w.s.engine_claim_session_events(chat, w.t).unwrap().0.into_iter().filter(|e| e.kind == crate::engine::TEMPORARY_WORK_ENDED).collect();
+    assert_eq!(told.len(), 1);
+    assert!(told[0].payload.contains("It was a temporary team, so it has disbanded."), "{}", told[0].payload);
+}
