@@ -73,6 +73,7 @@ pub mod plan;
 pub mod plugin_tool;
 pub mod plugin_tools;
 pub mod policy;
+mod read_only_commands;
 pub mod process;
 pub mod profile_tools;
 pub mod publisher_tool;

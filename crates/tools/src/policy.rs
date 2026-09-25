@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct Subcommand {
     assigns: bool,
     words: Vec<Option<String>>,
+    /// An output redirect sends to a file.
+    writes: bool,
 }
 
 /// Shells whose `-c` argument is itself a script.
@@ -44,7 +46,7 @@ fn looks_like_subcommand(word: &str) -> bool {
 impl Subcommand {
     /// A command that can't be read: it may be anything.
     fn unknown() -> Self {
-        Subcommand { assigns: false, words: vec![None] }
+        Subcommand { assigns: false, words: vec![None], writes: false }
     }
 
     /// Whether every word of the command is known before it runs.
@@ -104,7 +106,7 @@ pub fn subcommands(cmd: &str) -> Vec<Subcommand> {
     let mut out = Vec::new();
     collect_subcommands(cmd, 0, &mut out);
     if out.is_empty() {
-        out.push(Subcommand { assigns: false, words: Vec::new() });
+        out.push(Subcommand { assigns: false, words: Vec::new(), writes: false });
     }
     out
 }
@@ -116,7 +118,7 @@ fn collect_subcommands(script: &str, depth: usize, out: &mut Vec<Subcommand>) {
         return;
     };
     for command in commands {
-        let mut sub = Subcommand { assigns: command.assigns, words: command.words };
+        let mut sub = Subcommand { assigns: command.assigns, words: command.words, writes: command.writes };
         unwrap_wrappers(&mut sub);
         match inline_script(&sub.words) {
             Some(Some(inner)) => collect_subcommands(&inner, depth + 1, out),
@@ -218,6 +220,27 @@ fn inline_script(words: &[Option<String>]) -> Option<Option<String>> {
         return None;
     }
     words.get(i).cloned()
+}
+
+/// Whether a shell call only reads, as Claude Code's `checkReadOnlyConstraints`
+/// judges it (`src/tools/BashTool/readOnlyValidation.ts:1876`): every command
+/// it runs is fully known, sets no variable, writes no file through a
+/// redirect and is read-only by [`crate::read_only_commands`]; and it doesn't
+/// pair `cd` with `git` (a changed directory can carry git hooks).
+pub fn is_read_only(cmd: &str) -> bool {
+    let subs = subcommands(cmd);
+    let name = |s: &Subcommand| s.words.first().cloned().flatten();
+    let has = |n: &str| subs.iter().any(|s| name(s).as_deref() == Some(n));
+    if has("cd") && has("git") {
+        return false;
+    }
+    subs.iter().all(|s| {
+        if s.assigns || s.writes || !s.readable() {
+            return false;
+        }
+        let words: Vec<&str> = s.words.iter().flatten().map(String::as_str).collect();
+        crate::read_only_commands::reads_only(&words)
+    })
 }
 
 /// Check if a command appears dangerous.
@@ -501,7 +524,7 @@ mod tests {
 
     #[test]
     fn an_allow_is_strict_and_a_deny_reads_the_unknown_as_unread() {
-        let sub = |ws: Vec<Option<String>>, assigns| Subcommand { assigns, words: ws };
+        let sub = |ws: Vec<Option<String>>, assigns| Subcommand { assigns, words: ws, writes: false };
         let git_push = sub(lit(&["git", "push", "origin"]), false);
         assert_eq!(git_push.covered_by("git", true), Cover::Yes);
         assert_eq!(git_push.covered_by("git push", true), Cover::Yes);
@@ -603,6 +626,84 @@ mod tests {
         assert!(!is_sed_in_place("sed 's/a/b/' f.txt > g.txt"));
         assert!(!is_sed_in_place("sed -n '1,5p' f.txt"));
         assert!(!is_sed_in_place("echo sed -i"));
+    }
+
+    /// D2: a shell call is read-only when every command it runs is, as
+    /// Claude Code's classifier judges each one, and none writes a file.
+    #[test]
+    fn read_only_shell_calls_are_recognised_per_command() {
+        let reads = [
+            "ls",
+            "ls -la /tmp",
+            "pwd && ls -la",
+            "git status",
+            "git log --oneline -5",
+            "git diff HEAD~1 --stat",
+            "git show HEAD:src/main.rs",
+            "git branch -a",
+            "git tag -l 'v*'",
+            "git remote -v",
+            "cat notes.md | grep -n todo | wc -l",
+            "rg -n 'fn main' src",
+            "grep -A20 -rn needle .",
+            "find . -name '*.rs' -type f",
+            "sed -n '1,40p' src/lib.rs",
+            "sed 's/a/b/g'",
+            "echo done 2>&1",
+            "ls missing 2>/dev/null",
+            "head -50 README.md && tail -n 5 CHANGELOG.md",
+            "jq '.name' package.json",
+            "date +%Y-%m-%d",
+            "wc -l src/lib.rs 2>/dev/null; true",
+            "ps aux",
+            "sort -u names.txt",
+            "xargs -n 1 echo",
+            "docker ps -a",
+            "timeout 5 cat /etc/hosts",
+        ];
+        let writes = [
+            "rm notes.md",
+            "ls > listing.txt",
+            "echo hi >> log.txt",
+            "cat a | tee b",
+            "git push",
+            "git branch topic",
+            "git tag v1.0",
+            "git reflog expire --all",
+            "git remote add origin git@example.com:x.git",
+            "git diff --output=patch.txt",
+            "git -c core.pager=less log",
+            "find . -delete",
+            "find . -name x -exec rm {} ;",
+            "sed -i 's/a/b/' f.txt",
+            "sed 's/a/b/' f.txt",
+            "sed 's/a/b/w out.txt'",
+            "sed -n '1p;w out' f",
+            "date 0101000026",
+            "FOO=1 ls",
+            "ls $HOME",
+            "ls *.rs",
+            "cd /tmp && git status",
+            "xargs rm",
+            "sort -o sorted.txt names.txt",
+            "rg --pre=bash x",
+            "hostname newname",
+            "ps auxe",
+            "tput reset",
+            "uniq in.txt out.txt",
+            "node script.js",
+            "curl https://example.com",
+            "bash -c 'ls; rm -rf x'",
+            "echo $(rm x)",
+            "jq -f prog.jq data.json",
+            "lsof +m/tmp/x",
+        ];
+        for cmd in reads {
+            assert!(is_read_only(cmd), "reads only: {cmd}");
+        }
+        for cmd in writes {
+            assert!(!is_read_only(cmd), "not read-only: {cmd}");
+        }
     }
 
     #[test]
