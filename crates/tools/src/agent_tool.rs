@@ -1064,8 +1064,7 @@ impl PersonaTool {
         crate::needs::work_out_needs(&src, consent).await
     }
 
-    /// Keep a draft of `input` with its needs and the line that asks for
-    /// them; the draft's id and the line.
+    /// Keep a draft of `input`, shown in this call's chat; its id and line.
     fn draft(
         &self,
         ctx: &ToolContext,
@@ -1075,36 +1074,16 @@ impl PersonaTool {
         input: &serde_json::Value,
         needs: &crate::needs::Needs,
     ) -> Result<(String, String), String> {
-        let line = crate::needs::consent_line(name, needs);
-        let id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now().timestamp();
-        let mut drafted = input.clone();
-        if let Some(obj) = drafted.as_object_mut() {
-            obj.remove("draft_id");
-        }
         let creator_id = match &ctx.grant {
             Some(g) => g.agent_id.clone(),
             None => types::keyparser::extract_agent_id(&ctx.session_key),
         };
         let chat_id =
             if ctx.session_id.is_empty() { String::new() } else { self.store.resolve_session_chat_id(&ctx.session_id) };
-        self.store
-            .insert_employee_draft(&db::EmployeeDraftRow {
-                id: id.clone(),
-                kind: kind.to_string(),
-                agent_id: agent_id.to_string(),
-                creator_id,
-                chat_id,
-                name: name.to_string(),
-                input: drafted.to_string(),
-                needs: serde_json::to_string(needs).unwrap_or_default(),
-                line: line.clone(),
-                shown_at: now,
-                status: "open".to_string(),
-                created_at: now,
-            })
-            .map_err(|e| format!("The draft could not be saved: {e}"))?;
-        Ok((id, line))
+        crate::needs::save_draft(
+            &self.store,
+            &crate::needs::Draft { kind, agent_id, creator_id: &creator_id, chat_id: &chat_id, name, input, needs },
+        )
     }
 
     /// The consent line as the chat shows it: an inline chip.
@@ -1115,27 +1094,8 @@ impl PersonaTool {
             "employee": employee,
             "line": line,
             "adds": adds,
-            "items": needs.items(),
+            "items": needs.items().into_iter().map(|t| t.words).collect::<Vec<_>>(),
         })
-    }
-
-    /// A drafted job, loaded to act on once.
-    fn open_draft(&self, draft_id: &str, kind: &str) -> Result<(db::EmployeeDraftRow, serde_json::Value, crate::needs::Needs), String> {
-        let draft = match self.store.get_employee_draft(draft_id) {
-            Ok(Some(d)) if d.kind == kind => d,
-            _ => {
-                return Err(format!(
-                    "No drafted {} has id '{draft_id}'. Draft it first: call {kind} without draft_id.",
-                    if kind == "create" { "employee" } else { "edit" }
-                ));
-            }
-        };
-        if draft.status != "open" {
-            return Err(format!("Draft '{draft_id}' was already used. Draft again to make another change."));
-        }
-        let input = serde_json::from_str(&draft.input).unwrap_or_default();
-        let needs = serde_json::from_str(&draft.needs).unwrap_or_default();
-        Ok((draft, input, needs))
     }
 
     /// What the grant came to, for the model to tell the owner plainly.
@@ -1169,7 +1129,7 @@ impl PersonaTool {
             return ToolResult::error("Employees can't be created right now: permissions aren't ready yet. Try again shortly.");
         };
         if let Some(draft_id) = input["draft_id"].as_str().filter(|d| !d.is_empty()) {
-            let (draft, drafted, needs) = match self.open_draft(draft_id, "create") {
+            let (draft, drafted, needs) = match crate::needs::open_draft(&self.store, draft_id, "create") {
                 Ok(d) => d,
                 Err(e) => return ToolResult::error(e),
             };
@@ -1238,7 +1198,7 @@ impl PersonaTool {
             let Some(consent) = consent else {
                 return ToolResult::error("Jobs can't be changed right now: permissions aren't ready yet. Try again shortly.");
             };
-            let (draft, drafted, needs) = match self.open_draft(draft_id, "edit") {
+            let (draft, drafted, needs) = match crate::needs::open_draft(&self.store, draft_id, "edit") {
                 Ok(d) => d,
                 Err(e) => return ToolResult::error(e),
             };

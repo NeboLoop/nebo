@@ -392,6 +392,75 @@ pub struct Granted {
     pub card: Option<String>,
 }
 
+/// A job drafted for the owner's yes: a new employee (`kind` create) or an
+/// edit to one (`edit`, `agent_id` set), shown in `chat_id` (empty for the
+/// owner's own pages).
+pub struct Draft<'a> {
+    pub kind: &'a str,
+    pub agent_id: &'a str,
+    pub creator_id: &'a str,
+    pub chat_id: &'a str,
+    pub name: &'a str,
+    /// The call as drafted: what runs on the yes is what the owner saw.
+    pub input: &'a serde_json::Value,
+    pub needs: &'a Needs,
+}
+
+/// Keep a draft and the one line that asks for its needs, shown now. The
+/// draft's id and the line.
+pub fn save_draft(store: &db::Store, draft: &Draft<'_>) -> Result<(String, String), String> {
+    let line = consent_line(draft.name, draft.needs);
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    let mut input = draft.input.clone();
+    if let Some(obj) = input.as_object_mut() {
+        obj.remove("draft_id");
+    }
+    store
+        .insert_employee_draft(&db::EmployeeDraftRow {
+            id: id.clone(),
+            kind: draft.kind.to_string(),
+            agent_id: draft.agent_id.to_string(),
+            creator_id: draft.creator_id.to_string(),
+            chat_id: draft.chat_id.to_string(),
+            name: draft.name.to_string(),
+            input: input.to_string(),
+            needs: serde_json::to_string(draft.needs).unwrap_or_default(),
+            line: line.clone(),
+            shown_at: now,
+            status: "open".to_string(),
+            created_at: now,
+        })
+        .map_err(|e| format!("The draft could not be saved: {e}"))?;
+    Ok((id, line))
+}
+
+/// An open draft of `kind`, to act on once: the row, the call as drafted
+/// and its needs.
+pub fn open_draft(store: &db::Store, draft_id: &str, kind: &str) -> Result<(db::EmployeeDraftRow, serde_json::Value, Needs), String> {
+    let draft = match store.get_employee_draft(draft_id) {
+        Ok(Some(d)) if d.kind == kind => d,
+        _ => {
+            return Err(format!(
+                "No drafted {} has id '{draft_id}'. Draft it first: call {kind} without draft_id.",
+                if kind == "create" { "employee" } else { "edit" }
+            ));
+        }
+    };
+    if draft.status != "open" {
+        return Err(format!("Draft '{draft_id}' was already used. Draft again to make another change."));
+    }
+    let input = serde_json::from_str(&draft.input).unwrap_or_default();
+    let needs = serde_json::from_str(&draft.needs).unwrap_or_default();
+    Ok((draft, input, needs))
+}
+
+/// The capability a plain-words item names, for a page that removes it by
+/// its words (no rule strings reach the client).
+pub fn capability_for_words(words: &str) -> Option<String> {
+    vocabulary().into_iter().find(|t| t.words == words).map(|t| t.key)
+}
+
 /// One job to grant: a new employee's, or the needs an edit adds.
 pub struct JobGrant<'a> {
     pub agent_id: &'a str,
@@ -474,6 +543,10 @@ mod tests {
         let v = vocabulary();
         let keys: BTreeSet<&str> = v.iter().map(|t| t.key.as_str()).collect();
         assert_eq!(keys.len(), v.len(), "each term once");
+        // Pages name an item by its words, so the words name one term.
+        let words: BTreeSet<&str> = v.iter().map(|t| t.words.as_str()).collect();
+        assert_eq!(words.len(), v.len(), "each term's words are its own");
+        assert_eq!(capability_for_words("read and send email").as_deref(), Some("mail"));
     }
 
     #[tokio::test]
