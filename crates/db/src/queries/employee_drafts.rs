@@ -129,6 +129,28 @@ impl Store {
         Ok(owner)
     }
 
+    /// The owner's latest own message in `chat_id` (a row carrying
+    /// [`OWNER_MARK`]), if they wrote one.
+    pub fn latest_owner_message(&self, chat_id: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT content, metadata FROM chat_messages WHERE chat_id = ?1 AND role = 'user' \
+                 ORDER BY created_at DESC, rowid DESC",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![chat_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))
+            .map_err(db_err)?;
+        for row in rows {
+            let (content, metadata) = row.map_err(db_err)?;
+            if is_owner_message(metadata.as_deref()) {
+                return Ok(Some(content));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn set_employee_ceiling(&self, row: &EmployeeCeilingRow) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
