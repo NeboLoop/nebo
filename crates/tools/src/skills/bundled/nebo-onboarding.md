@@ -48,19 +48,19 @@ Offer to set Nebo's name, vibe, or avatar if they want — but don't force it. M
 ### 4. Install the production capabilities
 These can't be embedded (a compiled binary, a reference-heavy design system, a publishing toolkit), so install them now — with the user's go-ahead (installs always need their OK):
 
-Installs go through ONE canonical action — `agent(resource: "registry", action: "install", code: "<CODE>")` — which handles every artifact type (plugin, skill, agent) and downloads + wires up everything correctly:
+Installs go through ONE canonical tool — `hire_employee(code: "<CODE>")` — which handles every artifact type (plugin, skill, employee) and downloads + wires up everything correctly:
 
 - **Nebo Office** — create and edit Word, Excel, PowerPoint, and PDF. The deliverables every professional makes.
   ```
-  agent(resource: "registry", action: "install", code: "PLUG-BHVY-A96N")
+  hire_employee(code: "PLUG-BHVY-A96N")
   ```
 - **Nebo Design** — a senior designer's eye for anything visual: decks, one-pagers, layouts, brand. So what you make doesn't look AI-generated.
   ```
-  agent(resource: "registry", action: "install", code: "SKIL-VQTF-WV8E")
+  hire_employee(code: "SKIL-VQTF-WV8E")
   ```
 - **NeboAI** — build, validate, and publish your own skills, plugins, agents, and apps to the marketplace. How you turn a repeatable task into something you (or others) can reuse.
   ```
-  agent(resource: "registry", action: "install", code: "SKIL-TV64-VHQ4")
+  hire_employee(code: "SKIL-TV64-VHQ4")
   ```
 
 Tell them in one line what each adds before installing. If they decline one, that's fine — they can add it later from the store.
@@ -70,9 +70,9 @@ This is the standout "it does things for me" moment — but it needs their inbox
 
 > "Want a Chief of Staff who briefs you each morning, triages your inbox, and turns meeting requests into calendar events? Connect Google or Microsoft and I'll set it up."
 
-- If **yes** → guide them to connect (Google Workspace / Microsoft 365), then install the agent:
+- If **yes** → guide them to connect (Google Workspace / Microsoft 365), then install the employee:
   ```
-  agent(resource: "registry", action: "install", code: "AGNT-SNTW-WY0B")
+  hire_employee(code: "AGNT-SNTW-WY0B")
   ```
 - If **no / not now** → leave it. Don't install a Chief of Staff that has no inbox to read — it would just sit idle. Mention they can turn it on anytime by connecting an account.
 

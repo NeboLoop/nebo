@@ -31,7 +31,7 @@ conversation:
     content: "Create a new employee called Lead Researcher whose job is to browse the web and compile a weekly list of new prospects."
 
 tool_config:
-  agent:
+  create_employee:
     enabled: true
   search_web:
     enabled: true

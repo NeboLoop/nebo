@@ -31,7 +31,7 @@ conversation:
     content: "Yes, add that."
 
 tool_config:
-  agent:
+  update_employee:
     enabled: true
   message:
     enabled: true

@@ -27,7 +27,7 @@ conversation:
     content: "Have a helper open https://example.com and tell me the page's title."
 
 tool_config:
-  agent:
+  delegate:
     enabled: true
   search_web:
     enabled: true

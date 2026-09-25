@@ -227,7 +227,7 @@ async fn grant_authority_raises_a_card_and_writes_nothing() {
 struct Chat {
     _dir: tempfile::TempDir,
     store: Arc<db::Store>,
-    persona: tools::agent_tool::PersonaTool,
+    employees: Vec<tools::employee_tools::EmployeeTool>,
     ctx: ToolContext,
 }
 
@@ -250,12 +250,15 @@ fn chat(reads: Vec<&'static str>) -> Chat {
         grant: Some(Arc::new(resolve_grant(&store, "", None))),
         ..Default::default()
     };
-    Chat { _dir: dir, store, persona, ctx }
+    Chat { _dir: dir, store, employees: tools::employee_tools::tools(persona), ctx }
 }
 
 impl Chat {
-    async fn call(&self, input: serde_json::Value) -> tools::ToolResult {
-        self.persona.handle_action(&input, &self.ctx).await
+    /// A call to one of the employee tools, as the registry runs it.
+    async fn call(&self, tool: &str, input: serde_json::Value) -> tools::ToolResult {
+        use tools::registry::DynTool;
+        let t = self.employees.iter().find(|t| t.name() == tool).expect("an employee tool");
+        t.execute_dyn(&self.ctx, input).await
     }
 
     /// The owner says something in the chat, after the line was shown.
@@ -279,11 +282,11 @@ impl Chat {
 async fn chat_create_grants_only_after_an_owner_message() {
     let c = chat(vec!["mail", "calendar"]);
     let create = json!({
-        "action": "create", "name": "invoice-chaser",
+        "name": "invoice-chaser",
         "description": "Reads the accounting inbox and puts follow-ups on the calendar."
     });
     // The first call drafts: nothing is created, the line is the chip.
-    let drafted = c.call(create.clone()).await;
+    let drafted = c.call("create_employee", create.clone()).await;
     assert!(!drafted.is_error, "{}", drafted.content);
     let line = "Invoice Chaser will manage your calendar and read and send email.";
     assert!(drafted.content.contains(line), "{}", drafted.content);
@@ -293,21 +296,21 @@ async fn chat_create_grants_only_after_an_owner_message() {
 
     // No owner message since the line: the create is the assistant's own,
     // capped at what it holds (mail), with the calendar on one card.
-    let unasked = c.call(json!({ "action": "create", "draft_id": Chat::draft_of(&drafted) })).await;
+    let unasked = c.call("create_employee", json!({ "draft_id": Chat::draft_of(&drafted) })).await;
     assert!(!unasked.is_error, "{}", unasked.content);
     let id = c.agent_id("Invoice Chaser");
     assert_eq!(employee_caps(&c.store, &id), vec!["mail"]);
     assert!(resolve_grant(&c.store, &id, None).ceiling.is_some());
     assert!(unasked.content.contains("Waiting on one card"), "{}", unasked.content);
     // A draft is acted on once.
-    let again = c.call(json!({ "action": "create", "draft_id": Chat::draft_of(&drafted) })).await;
+    let again = c.call("create_employee", json!({ "draft_id": Chat::draft_of(&drafted) })).await;
     assert!(again.is_error && again.content.contains("already used"), "{}", again.content);
 
     // The owner's "yes, create it" after the line is the consent: the whole
     // drafted job, as the owner's, with no ceiling.
-    let drafted = c.call(json!({ "action": "create", "name": "follow-upper", "description": "Same job." })).await;
+    let drafted = c.call("create_employee", json!({ "name": "follow-upper", "description": "Same job." })).await;
     c.owner_says("Yes, create it.");
-    let created = c.call(json!({ "action": "create", "draft_id": Chat::draft_of(&drafted) })).await;
+    let created = c.call("create_employee", json!({ "draft_id": Chat::draft_of(&drafted) })).await;
     assert!(!created.is_error, "{}", created.content);
     let id = c.agent_id("Follow Upper");
     assert_eq!(employee_caps(&c.store, &id), vec!["calendar", "mail"]);
@@ -320,9 +323,9 @@ async fn chat_create_grants_only_after_an_owner_message() {
 #[tokio::test]
 async fn job_edit_surfaces_only_added_needs() {
     let c = chat(vec!["mail", "calendar"]);
-    let drafted = c.call(json!({ "action": "create", "name": "order-support", "description": "x" })).await;
+    let drafted = c.call("create_employee", json!({ "name": "order-support", "description": "x" })).await;
     c.owner_says("Yes");
-    c.call(json!({ "action": "create", "draft_id": Chat::draft_of(&drafted) })).await;
+    c.call("create_employee", json!({ "draft_id": Chat::draft_of(&drafted) })).await;
     let id = c.agent_id("Order Support");
     // The job today: mail only (the owner removed the calendar on its page).
     let calendar = c
@@ -337,10 +340,10 @@ async fn job_edit_surfaces_only_added_needs() {
 
     // An edit that reads as mail + calendar asks only for the calendar.
     let edit = json!({
-        "action": "update", "name": "Order Support",
+        "name": "Order Support",
         "description": "Replies to customers by email and puts follow-up calls on the calendar."
     });
-    let drafted = c.call(edit).await;
+    let drafted = c.call("update_employee", edit).await;
     assert!(!drafted.is_error, "{}", drafted.content);
     assert!(drafted.content.contains("\"Order Support will manage your calendar.\""), "{}", drafted.content);
     assert!(!drafted.content.contains("email"), "only what is new: {}", drafted.content);
@@ -349,7 +352,7 @@ async fn job_edit_surfaces_only_added_needs() {
     assert_eq!(unchanged.description, "x", "nothing changes before the yes");
 
     c.owner_says("Yes, add that.");
-    let applied = c.call(json!({ "action": "update", "draft_id": Chat::draft_of(&drafted) })).await;
+    let applied = c.call("update_employee", json!({ "draft_id": Chat::draft_of(&drafted) })).await;
     assert!(!applied.is_error, "{}", applied.content);
     assert_eq!(employee_caps(&c.store, &id), vec!["calendar", "mail"]);
     let calendar = c
@@ -363,7 +366,7 @@ async fn job_edit_surfaces_only_added_needs() {
     assert!(c.store.get_agent(&id).unwrap().unwrap().description.starts_with("Replies"));
 
     // An edit that adds nothing runs at once.
-    let plain = c.call(json!({ "action": "update", "name": "Order Support", "description": "Replies by email." })).await;
+    let plain = c.call("update_employee", json!({ "name": "Order Support", "description": "Replies by email." })).await;
     assert!(!plain.is_error && plain.payload.is_none(), "{}", plain.content);
 }
 
