@@ -266,15 +266,24 @@ impl DynTool for HelperTool {
         }
     }
 
+    /// `delegate` follows Claude Code 2.1.280's Agent tool text (m0342):
+    /// its "When to use" (`DFr`) and "When not to use" sections, background
+    /// by default, never predicting a pending result, how to write the
+    /// brief, and its two worked examples (a survey launched in the
+    /// background with the report in a later turn, and "Still waiting on the
+    /// audit" when asked mid-wait), in our words.
     fn description(&self) -> String {
         match self.op {
-            HelperOp::Delegate => "Starts a helper on a self-contained piece of work. Helper types are listed in reminders: general (the default), explore and plan (these two only look).\n\
-                 - Helpers run in the background by default; you're notified when one finishes and only its final report comes back. Don't guess its results before then.\n\
-                 - Set `background: false` only when your very next step needs the result.\n\
-                 - Brief it fully: it hasn't seen this conversation. Say what to do, what you already know, and what to report back.\n\
-                 - Several independent pieces: several delegate calls in one response. Helpers that edit files in the same project: `isolation: \"worktree\"` gives each its own copy, merged back when it finishes.\n\
-                 - To continue a running or finished helper, use send_message with its id.\n\
-                 - If you already know the file or answer, use the direct tool instead. Work for a named employee is a message to them, not a helper."
+            HelperOp::Delegate => "Starts a helper on a piece of work, so the conversation stays open while it runs. Helper types, and when each fits, are listed in reminders; general is the default.\n\
+                 When to use: the work matches a helper type, independent pieces can run side by side, or answering means reading across many files or pages. You keep the conclusion, not the raw output. When the owner asks for a helper, start it first.\n\
+                 When not to use: the target is known (a path, a name, a value): use read_file or run_command. Once a search is delegated, don't also run it yourself.\n\
+                 - It runs in the background: only its final report comes back, as a notification. Set background: false only when your very next step needs the result.\n\
+                 - Until then you know nothing about the result. Never predict it; if the owner asks, say it's still running.\n\
+                 - It hasn't seen this conversation. Brief it: the goal, what you know or ruled out, what to report. For a lookup, the exact command; for an investigation, the question.\n\
+                 - Several pieces: several delegate calls in one response. Helpers editing one project: isolation: \"worktree\".\n\
+                 - To continue a helper, send_message with its id. Work for a named employee is a message to them.\n\
+                 Example: owner: \"Find every place the retry setting is used.\" → delegate(helper_type: \"explore\", ...), reply \"A helper is searching; I'll report when it's back.\", and the turn ends. The report comes in a later turn.\n\
+                 Example: owner, before it's back: \"Is billing one?\" → \"Still waiting on the search; that's one of the things it checks.\""
                 .to_string(),
             HelperOp::SendMessage => "Sends a message to a helper you started (by its id), a coworker (another employee on this Nebo, by name) or a team (by name).\n\
                  - A running helper sees it at its next step; a finished one continues with it, keeping its context.\n\
@@ -768,5 +777,26 @@ mod tests {
         let r = rig.call("send_message", json!({"to": "Bookkeeper", "message": "the invoice"})).await;
         assert!(r.content.contains("their reply comes to you as a notification"), "{}", r.content);
         assert!(r.payload.as_ref().is_some_and(|p| p.get("reply").is_none()), "{:?}", r.payload);
+    }
+
+    /// D16: delegate says when to hand off and when not to, that a pending
+    /// result is never predicted, and shows both worked examples (Claude
+    /// Code's Agent tool); the old text only warned against using it.
+    #[test]
+    fn delegate_says_when_to_hand_off() {
+        let rig = Rig::new();
+        let delegate = rig.tools.iter().find(|t| t.name() == "delegate").unwrap().description();
+        for part in [
+            "When to use: the work matches a helper type, independent pieces can run side by side, or answering means reading across many files or pages.",
+            "When not to use: the target is known (a path, a name, a value): use read_file or run_command.",
+            "Once a search is delegated, don't also run it yourself.",
+            "Never predict it; if the owner asks, say it's still running.",
+            "delegate(helper_type: \"explore\", ...)",
+            "Still waiting on the search",
+        ] {
+            assert!(delegate.contains(part), "{part:?} missing from:\n{delegate}");
+        }
+        assert!(!delegate.contains("If you already know the file or answer, use the direct tool instead."));
+        assert!(delegate.chars().count() <= 1_600, "a lean description: {}", delegate.chars().count());
     }
 }

@@ -2144,9 +2144,12 @@ pub(crate) mod tests {
     /// messages off message to send_message (message 1,450: −1,207). WP6
     /// deleted the mcp tool and deferred the plugin family (−657). Batch C
     /// gave delegate its `speed` (fix plan E8, +124: delegate 1,826) and took
-    /// the server note off os on server bots. Each package that lands lowers
-    /// the numbers; they never rise without an owner decision.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 19_412;
+    /// the server note off os on server bots. Fix plan D16 gave delegate
+    /// Claude Code's when-to-use guidance and worked examples (+630: delegate
+    /// 2,456) and D19 deferred os on every bot (−9,134): 10,908. Each package
+    /// that lands lowers the numbers; they never rise without an owner
+    /// decision.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 10_908;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2177,10 +2180,16 @@ pub(crate) mod tests {
         assert_eq!(
             core,
             [
-                "ask_owner", "delegate", "edit_file", "find_tools", "forget", "message", "os",
+                "ask_owner", "delegate", "edit_file", "find_tools", "forget", "message",
                 "read_file", "recall", "remember", "run_command", "use_skill", "write_file"
             ]
         );
+        // D19: the desktop tool is deferred on every bot; the listing names
+        // it where a desktop exists. suggest_goal is deferred as Claude
+        // Code's ProposeGoal is.
+        for name in ["os", "suggest_goal"] {
+            assert!(deferred.contains(name), "{name} is deferred");
+        }
         for name in ["read_output", "stop_task", "list_processes", "send_input", "share_file", "convert_file", "checkpoint_files", "list_checkpoints", "restore_checkpoint", "write_plan", "check_plan"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }

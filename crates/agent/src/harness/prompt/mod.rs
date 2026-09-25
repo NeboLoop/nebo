@@ -192,6 +192,33 @@ mod tests {
         }
     }
 
+    /// D16: searching yourself is for a known target; a wide search goes to
+    /// an explore helper (Claude Code's system prompt). The old line sent
+    /// every search to run_command.
+    #[test]
+    fn wide_searches_go_to_an_explore_helper() {
+        let text = system_prompt();
+        assert!(text.contains("- Search yourself with find or grep when the target is known"), "{text}");
+        assert!(text.contains("A wide search, across the project or likely to take more than three searches, goes to an explore helper with delegate."));
+        assert!(text.contains("When the owner asks for a helper, start it first. Once work is with a helper, don't also do it"));
+        assert!(!text.contains("including finding files (find) and searching contents (grep)"));
+    }
+
+    /// D17: a general helper is told the task is its own (Claude Code's
+    /// general-purpose agent: "do not re-delegate your entire assignment");
+    /// explore and plan helpers can't delegate, so they aren't.
+    #[test]
+    fn a_general_helper_does_its_own_task() {
+        let rule = "This task is yours: do the work directly. Never hand the whole of it to another helper.";
+        let general = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind: HelperKind::General }).text();
+        assert!(general.contains(rule), "{general}");
+        assert!(general.contains("it can't see or wait on helpers you didn't start"));
+        for kind in [HelperKind::Explore, HelperKind::Plan] {
+            let text = identity("Ava", Role::Helper { parent: "Nanna".to_string(), kind }).text();
+            assert!(!text.contains(rule), "{kind:?}");
+        }
+    }
+
     /// The size snapshot. Update the number when the text changes on
     /// purpose; the prompt must stay a small fraction of the 39k-char prompt
     /// it replaced.
@@ -202,5 +229,5 @@ mod tests {
         assert!(chars < 8_000);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 5_483;
+    const SYSTEM_PROMPT_CHARS: usize = 6_023;
 }

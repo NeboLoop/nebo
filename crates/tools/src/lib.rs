@@ -118,6 +118,17 @@ pub fn server_mode() -> bool {
         && std::env::var_os("WAYLAND_DISPLAY").is_none()
 }
 
+/// The tool that drives this computer's desktop, apps and settings
+/// (`os_tool::OsTool`).
+pub const DESKTOP_TOOL: &str = "os";
+
+/// Whether this computer has a desktop now: every Mac, Windows or Linux
+/// desktop, and a server while its on-demand desktop session is up
+/// (`desktop_session`). The desktop tool is listed only then.
+pub fn desktop_available() -> bool {
+    !server_mode() || desktop_session::active()
+}
+
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
 /// UTF-8 character.
 pub fn truncate_str(s: &str, max_bytes: usize) -> &str {

@@ -280,12 +280,16 @@ pub struct SurfaceInputs<'a> {
     /// tool scope leaves out ([`scope_withheld`]) and a sealed seat's company
     /// Memory (`seat::company_memory_tools`); never listed.
     pub withheld: &'a HashSet<String>,
+    /// Whether this computer has a desktop now (`tools::desktop_available`):
+    /// the desktop tool is listed only then.
+    pub desktop: bool,
 }
 
 impl SurfaceInputs<'_> {
     /// Whether the run is offered the deferred tool `name` in its listing.
     fn offers(&self, name: &str) -> bool {
-        crate::harness::delegation::on_surface(self.mode, name)
+        (self.desktop || name != tools::DESKTOP_TOOL)
+            && crate::harness::delegation::on_surface(self.mode, name)
             && self.workflow.is_none_or(|m| m.advertised_tools.contains(name))
             && self.allowlist.is_none_or(|a| allowlist_admits(a, name))
             && !self.withheld.contains(name)
@@ -399,6 +403,24 @@ mod tests {
 
     fn names(loaded: &[LoadedTool]) -> Vec<&str> {
         loaded.iter().map(|t| t.declared.name.as_str()).collect()
+    }
+
+    /// D19: the desktop tool is deferred everywhere and listed only where
+    /// a desktop exists; nothing else depends on it.
+    #[test]
+    fn the_desktop_tool_is_listed_only_with_a_desktop() {
+        let none = HashSet::new();
+        let seat = |desktop| SurfaceInputs {
+            agent_id: "",
+            allowlist: None,
+            workflow: None,
+            mode: &crate::harness::TurnMode::Chat,
+            withheld: &none,
+            desktop,
+        };
+        assert!(seat(true).offers(tools::DESKTOP_TOOL));
+        assert!(!seat(false).offers(tools::DESKTOP_TOOL));
+        assert!(seat(false).offers("vm"), "only the desktop tool waits on a desktop");
     }
 
     #[test]

@@ -688,8 +688,12 @@ pub fn team_line(mission: &str, lead: Option<&str>, members: &[String]) -> Strin
     format!("owns {owns}; {lead}; members: {}", members.join(", "))
 }
 
+/// Claude Code 2.1.280's agent listing: "Available agent types for the
+/// Agent tool:", then "When you launch multiple agents for independent
+/// work, send them in a single message with multiple tool uses so they run
+/// concurrently." (m0342, `agent_listing_delta`).
 const HELPER_WORDS: ListingWords = ListingWords {
-    available: "These helper types are available to delegate:",
+    available: "Helper types for delegate, and when each fits. Independent pieces of work are several delegate calls in one response, so they run side by side:",
     removed: "These helper types are no longer available:",
 };
 
