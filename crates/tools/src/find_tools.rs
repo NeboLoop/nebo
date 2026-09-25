@@ -101,9 +101,11 @@ impl DynTool for FindToolsTool {
                 .get("max_results")
                 .and_then(|v| v.as_u64())
                 .map_or(DEFAULT_MAX_RESULTS, |n| n.max(1) as usize);
-            // A tool the seat walls off is not there to find.
             let mut catalog = self.registry.deferred_entries().await;
-            catalog.retain(|e| !ctx.walled_tools.contains(&e.definition.name));
+            // A tool the run's tool scope leaves out can't be loaded.
+            if let Some(withheld) = &ctx.withheld_tools {
+                catalog.retain(|e| !withheld.contains(&e.definition.name));
+            }
             ToolResult::ok(answer(&catalog, query, max_results))
         })
     }

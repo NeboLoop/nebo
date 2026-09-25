@@ -205,9 +205,9 @@ fn deny(limit: &str, reason: String) -> Decision {
     Decision::Deny { reason, why: Why::HardLimit { limit: limit.to_string() } }
 }
 
-/// The hard limits, in order: the safeguard, the origin limits, the seat's
-/// wall, the run's allowlist, credentials in an outbound call. `None`: none
-/// applies.
+/// The hard limits, in order: the safeguard, the origin limits, the run's
+/// allowlist, the tool scope's narrowing, credentials in an outbound call.
+/// `None`: none applies.
 pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
     if let Some(err) = tools::safeguard::check_safeguard(&t.key, cx.input) {
         return Some(deny("safeguard", err));
@@ -219,19 +219,6 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
                 "'{}' is not permitted when called from {}. Tell the user what you needed it for; do not retry.",
                 t.key,
                 origin_label(cx.ctx.origin)
-            ),
-        ));
-    }
-    // The seat's wall: company Memory for an isolated employee with no
-    // matter, however the call was reached (a name from find_tools, a
-    // guess).
-    if cx.ctx.walled_tools.contains(&t.tool) {
-        return Some(deny(
-            "company_memory",
-            format!(
-                "'{}' is company Memory, which this employee can't use here: its memory is kept per matter, \
-                 and this conversation has no matter. Work from what you have, or tell the owner.",
-                t.tool
             ),
         ));
     }
@@ -247,6 +234,24 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
                     t.tool
                 ),
             },
+        ));
+    }
+    // What the run may not use: the tool scope's narrowing, and company
+    // Memory for an isolated seat with no matter, however the call was
+    // reached (a name from find_tools, a guess).
+    if cx
+        .ctx
+        .withheld_tools
+        .as_ref()
+        .is_some_and(|w| w.contains(&t.tool))
+    {
+        return Some(deny(
+            "scope",
+            format!(
+                "'{}' isn't one of the tools for this conversation. Use the tools you were given, or say \
+                 plainly that you can't do that here.",
+                t.tool
+            ),
         ));
     }
     if let Some(d) = credentials(cx, t) {

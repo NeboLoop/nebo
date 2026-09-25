@@ -803,7 +803,7 @@ pub async fn create_agent(
     crate::codes::finalize_agent_install(&state, &id, &agent.name).await;
     // The owner's create from a package is the hire: its declared needs
     // become the job.
-    crate::codes::grant_declared(&state, &id, None).await;
+    crate::codes::hire(&state, &id, tools::InstalledBy::Owner).await;
 
     // Cascade: resolve skill dependencies. Only marketplace-referenced skills are
     // separate installs — bare names are plugin-provided tool bindings (see
@@ -823,7 +823,10 @@ pub async fn create_agent(
 
     let cascade = if !deps.is_empty() {
         let mut visited = std::collections::HashSet::new();
-        Some(crate::deps::resolve_cascade(&state, deps, &mut visited).await)
+        Some(
+            crate::deps::resolve_cascade(&state, deps, &mut visited, tools::InstalledBy::Owner)
+                .await,
+        )
     } else {
         None
     };
@@ -4729,15 +4732,20 @@ pub async fn get_agent_operations(
                 read_only: false,
                 effects: types::permissions::CallEffects::unknown(),
             };
-            // What the owner's own chat would get: the rule that decides the
-            // operation, else it runs inside the job. Untrusted origins
-            // (inbound email/DM, apps, skills, MCP, callers) additionally
-            // ask for gated operations at run time (WS2).
+            // What the owner's own chat would get, in the permission
+            // check's order: a deny refuses and an ask rule asks in every
+            // mode; then Full Access runs it, Plan runs no change, and an
+            // allow runs it; else Ask mode asks and it runs inside the job.
+            // Untrusted origins (inbound email/DM, apps, skills, MCP,
+            // callers) additionally ask for gated operations at run time
+            // (WS2).
             let effective = match (rules.decide(&target), mode) {
                 (Some((_, types::permissions::Effect::Deny)), _) => "blocked",
+                (Some((_, types::permissions::Effect::Ask)), _) => "approval",
                 (_, types::permissions::Mode::FullAccess) => "always",
-                (Some((_, effect)), _) => access(effect),
-                (None, types::permissions::Mode::Ask | types::permissions::Mode::Plan) => "approval",
+                (_, types::permissions::Mode::Plan) => "blocked",
+                (Some((_, types::permissions::Effect::Allow)), _) => "always",
+                (None, types::permissions::Mode::Ask) => "approval",
                 (None, _) => "always",
             };
             serde_json::json!({
@@ -4758,7 +4766,7 @@ pub async fn get_agent_operations(
         .collect();
 
     Ok(Json(serde_json::json!({
-        "default": if mode == types::permissions::Mode::Ask { "approval" } else { "always" },
+        "default": crate::entity_config::default_access(mode),
         "configured": configured,
         "interfaces": interfaces,
         "available": available,

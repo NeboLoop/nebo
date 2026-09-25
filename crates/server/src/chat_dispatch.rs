@@ -465,6 +465,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let plugin_store = state.plugin_store.clone();
     let pending_comm_asks = state.pending_comm_asks.clone();
     let pending_comm_approvals = state.pending_comm_approvals.clone();
+    let ask_state = state.clone();
     let pending_tool_approvals = state.pending_tool_approvals.clone();
     let ask_channels = state.ask_channels.clone();
     let run_registry = state.run_registry.clone();
@@ -889,6 +890,29 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "duration_ms": event.widgets.as_ref().and_then(|w| w.get("duration_ms")).cloned(),
                                 ),
                             );
+                            // A call parked on the owner, in a run from the
+                            // owner's loop or phone conversation: the ask's
+                            // card goes there too, and the owner's next
+                            // message there answers it.
+                            if let (Some(cfg), Some(ask_id)) = (
+                                comm_reply.as_ref().filter(|c| c.approval_relay),
+                                event
+                                    .widgets
+                                    .as_ref()
+                                    .and_then(|w| w.get("parked_ask"))
+                                    .and_then(|v| v.as_str()),
+                            ) {
+                                relay_ask(
+                                    &ask_state,
+                                    cfg,
+                                    &sid,
+                                    ask_id,
+                                    &comm_manager,
+                                    &channel_providers,
+                                    &agent_display_name,
+                                )
+                                .await;
+                            }
                             // Mirror the tool result to the loop so the timeline
                             // can show Request/Response like the local app —
                             // bounded by the same preview the desktop transcript
@@ -1012,10 +1036,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     .as_ref()
                                     .filter(|c| c.approval_relay)
                                 {
-                                    pending_comm_approvals
-                                        .lock()
-                                        .await
-                                        .insert(sid.to_string(), tc.id.clone());
+                                    pending_comm_approvals.lock().await.insert(
+                                        sid.to_string(),
+                                        crate::state::CommApproval::Waiting(tc.id.clone()),
+                                    );
                                     let mut meta = HashMap::new();
                                     meta.insert("kind".to_string(), "approval".to_string());
                                     meta.insert("request_id".to_string(), tc.id.clone());
@@ -2123,6 +2147,54 @@ fn strip_local_image_markdown(text: &mut String) {
 /// channel. The single place outbound comm messages are assembled, so the loop
 /// receives the same kinds of events the local web hub does.
 #[allow(clippy::too_many_arguments)]
+/// Carry an ask a run parked a call on into the owner's loop or phone
+/// conversation the run came from, as a message offering the card's own
+/// answers (one ask, every surface: the Inbox, the phone's Inbox, the open
+/// chat, and this conversation). The owner's next message there answers it
+/// (`try_handle_comm_control`). Returns the message it sent.
+pub(crate) async fn relay_ask(
+    state: &AppState,
+    cfg: &CommReplyConfig,
+    session_key: &str,
+    ask_id: &str,
+    comm_manager: &Option<Arc<comm::PluginManager>>,
+    channel_providers: &Option<
+        Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn comm::ChannelProvider>>>>,
+    >,
+    sender_name: &str,
+) -> Option<(String, HashMap<String, String>)> {
+    let ask = match state.permission_asks.get(ask_id) {
+        Ok(Some(ask)) => ask,
+        Ok(None) => return None,
+        Err(e) => {
+            warn!(ask = ask_id, error = ?e, "the parked ask could not be read to relay it");
+            return None;
+        }
+    };
+    let card = crate::handlers::permissions::card(state, &ask);
+    state.pending_comm_approvals.lock().await.insert(
+        session_key.to_string(),
+        crate::state::CommApproval::Ask(ask_id.to_string()),
+    );
+    let (text, meta) = crate::permission_asks::conversation_card(&card);
+    send_comm_msg(
+        cfg,
+        comm_manager,
+        channel_providers,
+        comm::CommMessageType::Message,
+        uuid::Uuid::new_v4().to_string(),
+        text.clone(),
+        meta.clone(),
+        sender_name,
+    )
+    .await;
+    // The run waits on the owner now: no "thinking…" in the conversation.
+    if let Some(cm) = comm_manager {
+        let _ = cm.send_typing(&cfg.conversation_id, false, None).await;
+    }
+    Some((text, meta))
+}
+
 async fn send_comm_msg(
     cfg: &CommReplyConfig,
     comm_manager: &Option<Arc<comm::PluginManager>>,

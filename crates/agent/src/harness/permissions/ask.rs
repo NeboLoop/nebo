@@ -161,7 +161,8 @@ impl Ask {
 
     /// Whether "Allow always" can be offered: a locked must-ask can't be
     /// loosened by an answer, a deny is never loosened by one, giving an
-    /// employee more room is answered each time, and a command that can't
+    /// employee more room is answered each time, the company's day figures
+    /// change only in the company layer, and a command that can't
     /// be read has no rule to save (Claude Code offers none for a command it
     /// can't analyse).
     pub fn allow_always_offered(&self, store: &db::Store) -> bool {
@@ -171,7 +172,7 @@ impl Ask {
                 .ok()
                 .flatten()
                 .is_some_and(|r| !r.locked && r.effect == Effect::Ask),
-            AskCase::Widens => false,
+            AskCase::Widens | AskCase::CompanyMoney { .. } => false,
             _ => true,
         };
         loosenable && allow_always_rules(store, self).is_some()
@@ -187,6 +188,9 @@ impl Ask {
     pub fn reason(&self) -> &'static str {
         match &self.case {
             AskCase::Money { .. } => "It's over this employee's money limit.",
+            AskCase::CompanyMoney { .. } => {
+                "It's over what the company may spend unattended today."
+            }
             AskCase::NewCounterparty { .. } => "It's the first time it would contact them.",
             AskCase::Irreversible { .. } => "It can't be undone.",
             AskCase::OutsideJob { .. } => "It's outside this employee's job.",
@@ -378,6 +382,15 @@ impl Asks {
         Ok(row.and_then(Ask::from_row))
     }
 
+    /// The ask a workflow run is (or was last) parked on.
+    pub fn for_run(&self, run_id: &str) -> Result<Option<Ask>, AskError> {
+        let row = self
+            .store
+            .permission_ask_for_run(run_id)
+            .map_err(|e| AskError::Store(e.to_string()))?;
+        Ok(row.and_then(Ask::from_row))
+    }
+
     /// The asks waiting on the owner, oldest first; `session_key` narrows
     /// them to one session (the open chat).
     pub fn open(&self, session_key: Option<&str>) -> Result<Vec<Ask>, AskError> {
@@ -543,7 +556,12 @@ pub fn allow_always_rules(store: &db::Store, ask: &Ask) -> Option<Vec<Rule>> {
     let t = &ask.target;
     let per_command = !matches!(
         ask.case,
-        AskCase::OutsideJob { .. } | AskCase::Money { .. } | AskCase::NewCounterparty { .. } | AskCase::Widens | AskCase::CreatedExtras { .. }
+        AskCase::OutsideJob { .. }
+            | AskCase::Money { .. }
+            | AskCase::CompanyMoney { .. }
+            | AskCase::NewCounterparty { .. }
+            | AskCase::Widens
+            | AskCase::CreatedExtras { .. }
     );
     if per_command && matches!(t.field, Some(RuleField::CommandPrefix(_))) {
         return command_rules(ask);
@@ -623,9 +641,11 @@ fn allow_always_rule(store: &db::Store, ask: &Ask) -> Rule {
             Some(r) => (r.key, r.field, None),
             None => (call_key(), t.field.clone(), None),
         },
-        AskCase::Irreversible { .. } | AskCase::AskMode | AskCase::Widens | AskCase::CreatedExtras { .. } => {
-            (call_key(), t.field.clone(), None)
-        }
+        AskCase::Irreversible { .. }
+        | AskCase::AskMode
+        | AskCase::Widens
+        | AskCase::CreatedExtras { .. }
+        | AskCase::CompanyMoney { .. } => (call_key(), t.field.clone(), None),
     };
     standing_allow(ask, key, field, money)
 }
@@ -661,6 +681,7 @@ fn money_cover(store: &db::Store, ask: &Ask, cents: i64) -> (RuleKey, Option<Rul
 pub fn parked_text(sentence: &str, case: &AskCase) -> String {
     let why = match case {
         AskCase::Money { .. } => " It is over this employee's money limit.",
+        AskCase::CompanyMoney { .. } => " It is over what the company may spend unattended today.",
         AskCase::OutsideJob { .. } => " It is outside this employee's job.",
         AskCase::UntrustedInput { .. } => " It acts on words that came from outside.",
         _ => "",

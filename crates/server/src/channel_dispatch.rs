@@ -46,11 +46,15 @@ impl CodeInstallerImpl {
 }
 
 impl tools::CodeInstaller for CodeInstallerImpl {
-    fn install<'a>(&'a self, code: &'a str) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+    fn install<'a>(
+        &'a self,
+        code: &'a str,
+        by: tools::InstalledBy,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
         Box::pin(async move {
             match crate::codes::detect_code(code) {
                 Some((code_type, validated)) => {
-                    crate::codes::handle_code_text(&self.state, code_type, validated).await
+                    crate::codes::handle_code_text(&self.state, code_type, validated, by).await
                 }
                 None => format!(
                     "'{code}' is not a valid install code — expected PREFIX-XXXX-XXXX \
@@ -72,7 +76,14 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
         Box::pin(async move {
             // Intercept install codes before they reach the agent
             if let Some((code_type, code)) = crate::codes::detect_code(prompt) {
-                let response = crate::codes::handle_code_text(&self.state, code_type, code).await;
+                // A code posted in a channel is not the owner's own act.
+                let response = crate::codes::handle_code_text(
+                    &self.state,
+                    code_type,
+                    code,
+                    tools::InstalledBy::Other,
+                )
+                .await;
                 return Ok(response);
             }
 

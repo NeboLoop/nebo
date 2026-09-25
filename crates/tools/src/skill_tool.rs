@@ -662,14 +662,14 @@ impl SkillCore {
         ToolResult::ok(format!("Deleted skill '{}'", name))
     }
 
-    async fn install(&self, code: &str) -> ToolResult {
+    async fn install(&self, ctx: &ToolContext, code: &str) -> ToolResult {
         // Delegate to the ONE canonical install pathway (`codes::handle_code`):
         // redeem + persist + reload + cascade deps, identical to the WS code
         // flow. No direct API bypass.
         let installer = self.code_installer.read().unwrap().clone();
         match installer {
             Some(installer) => {
-                let msg = installer.install(code).await;
+                let msg = installer.install(code, crate::InstalledBy::of(ctx)).await;
                 // The installer trait returns one string for both outcomes; a
                 // failure must not arrive as success.
                 if install_failed(&msg) { ToolResult::error(msg) } else { ToolResult::ok(msg) }
@@ -1136,7 +1136,7 @@ impl DynTool for SkillTool {
                 Kind::ReadSkillFile => core.read_file(scope, name, str_field(&input, "path")).await,
                 Kind::SaveSkill => core.save(ctx, scope, name, str_field(&input, "content")).await,
                 Kind::DeleteSkill => core.delete(ctx, scope, name).await,
-                Kind::InstallSkill => core.install(str_field(&input, "code")).await,
+                Kind::InstallSkill => core.install(ctx, str_field(&input, "code")).await,
                 Kind::ConfigureSkill => {
                     core.configure(scope, name, str_field(&input, "key"), str_field(&input, "value")).await
                 }

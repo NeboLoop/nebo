@@ -61,6 +61,37 @@ fn scope_of(entity_type: &str, entity_id: &str) -> Option<types::permissions::Sc
     }
 }
 
+/// The per-employee default the phone's Approvals screen shows and sets
+/// ("Always" / "Ask me first" / "Blocked", as `always` / `approval` /
+/// `blocked`) is the employee's permission mode: Ask asks before every
+/// change, Plan runs none, Automatic and Full Access run what the job
+/// allows.
+pub fn default_access(mode: types::permissions::Mode) -> &'static str {
+    use types::permissions::Mode;
+    match mode {
+        Mode::Ask => "approval",
+        Mode::Plan => "blocked",
+        Mode::Automatic | Mode::FullAccess => "always",
+    }
+}
+
+/// The mode a default the owner picked sets, when it differs from what the
+/// mode in force already gives (so re-sending the default in force, as the
+/// screen does with every edit, never moves Full Access to Automatic).
+fn mode_for_default(
+    default: &str,
+    current: types::permissions::Mode,
+) -> Option<types::permissions::Mode> {
+    use types::permissions::Mode;
+    let wanted = match default {
+        "approval" => Mode::Ask,
+        "blocked" => Mode::Plan,
+        "always" => Mode::Automatic,
+        _ => return None,
+    };
+    (default_access(current) != default).then_some(wanted)
+}
+
 /// The screen keys a "screen: deny" setting denies, and the browser family.
 const SCREEN_KEY: &str = "desktop_click";
 const BROWSER_KEY: &str = "browser_*";
@@ -214,6 +245,23 @@ pub fn apply_permission_patch(
                 }
             }
             "operationPolicy" => {
+                if let Some(default) = value.get("default").and_then(|d| d.as_str()) {
+                    let store_err =
+                        |e: types::NeboError| types::permissions::RuleError::Store(e.to_string());
+                    let current = match &scope {
+                        types::permissions::Scope::Employee(id) => {
+                            agent::harness::permissions::rules::mode_of(store, id)
+                                .map_err(store_err)?
+                        }
+                        types::permissions::Scope::Company => store
+                            .permission_mode(&scope)
+                            .map_err(store_err)?
+                            .unwrap_or_default(),
+                    };
+                    if let Some(mode) = mode_for_default(default, current) {
+                        store.set_permission_mode(&scope, mode).map_err(store_err)?;
+                    }
+                }
                 let operations: HashMap<String, serde_json::Value> = value
                     .get("operations")
                     .cloned()

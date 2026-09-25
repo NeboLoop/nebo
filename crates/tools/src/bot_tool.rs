@@ -24,7 +24,32 @@ pub trait CodeInstaller: Send + Sync {
     fn install<'a>(
         &'a self,
         code: &'a str,
+        by: InstalledBy,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>>;
+}
+
+/// Whose act an install is. The owner consents to jobs: an employee hired
+/// by the owner's own act (a Hire tap, a code the owner pasted in their app,
+/// a hire on their account, a call in a run the owner started from their
+/// app) holds the job its package declares. Any other install (a code posted
+/// in a chat channel, a call in a run the owner didn't start) brings the
+/// employee in with no job, so it asks before it acts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstalledBy {
+    Owner,
+    Other,
+}
+
+impl InstalledBy {
+    /// Who is behind a tool call's install: the owner when the run is the
+    /// owner's own, from their app.
+    pub fn of(ctx: &ToolContext) -> Self {
+        if ctx.origin == crate::Origin::User && !ctx.audience_restricted {
+            InstalledBy::Owner
+        } else {
+            InstalledBy::Other
+        }
+    }
 }
 
 /// One structured sub-agent request for the deep-research harness. The agent does free

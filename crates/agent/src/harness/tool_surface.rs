@@ -198,13 +198,39 @@ pub struct SurfaceInputs<'a> {
     /// A restricted run's allowlist: only what it admits is declared or
     /// listed.
     pub allowlist: Option<&'a HashSet<String>>,
-    /// An isolated seat with no matter: company Memory is withheld.
-    pub company_memory_sealed: bool,
     /// A workflow activity's scoped set: its declaration, deferred tools
     /// included, with the `exit` primitive.
     pub workflow: Option<&'a crate::harness::WorkflowMode>,
     /// A helper's kind and depth take the helper tools off its surface.
     pub mode: &'a crate::harness::TurnMode,
+    /// The tools the run may not use: the employee's own tools the active
+    /// tool scope leaves out ([`scope_withheld`]) and a sealed seat's company
+    /// Memory (`seat::company_memory_tools`); neither declared nor listed.
+    pub withheld: &'a HashSet<String>,
+}
+
+/// The employee's own tools a tool scope leaves out. A scope that lists
+/// tools (`scopes.<name>.tools`) keeps only those of the employee's own
+/// tools for its conversations: the rest may not be loaded or called there.
+/// The runtime's tools are not the scope's to narrow. Empty when the run
+/// has no scope or the scope lists no tools.
+pub async fn scope_withheld(
+    agent: &tools::ActiveAgent,
+    tool_scope: Option<&str>,
+    registry: &tools::Registry,
+) -> HashSet<String> {
+    let Some(scope) = tool_scope.and_then(|s| agent.config.as_ref()?.scopes.get(s)) else {
+        return HashSet::new();
+    };
+    if scope.tools.is_empty() {
+        return HashSet::new();
+    }
+    registry
+        .agent_tool_names(&agent.agent_id)
+        .await
+        .into_iter()
+        .filter(|n| !scope.tools.contains(n))
+        .collect()
 }
 
 /// One step's tool surface.
@@ -216,9 +242,6 @@ pub struct Surface {
     /// The change in the deferred listing since the conversation was last
     /// told; `None` when it is current.
     pub listing: Option<ListingDelta>,
-    /// Tools the seat walls off: never declared, never listed, and refused
-    /// by name at the permission check.
-    pub walled: HashSet<String>,
 }
 
 /// The surface of the next call: core ∪ loaded, narrowed by
@@ -226,21 +249,15 @@ pub struct Surface {
 /// `conversation` is the conversation as stored since the last checkpoint.
 pub async fn surface(
     tools: &tools::Registry,
-    store: &db::Store,
     conversation: &[ChatMessage],
     seat: &SurfaceInputs<'_>,
 ) -> Surface {
-    let walled = if seat.company_memory_sealed {
-        crate::harness::seat::company_memory_tools(store, tools, seat.agent_id).await
-    } else {
-        HashSet::new()
-    };
     if let Some(m) = seat.workflow {
         let mut declared: Vec<ToolDefinition> = tools
             .list()
             .await
             .into_iter()
-            .filter(|d| m.advertised_tools.contains(&d.name) && !walled.contains(&d.name))
+            .filter(|d| m.advertised_tools.contains(&d.name))
             .collect();
         if m.advertised_tools.contains("exit") && !declared.iter().any(|d| d.name == "exit") {
             let exit = tools::ExitTool::new();
@@ -251,26 +268,26 @@ pub async fn surface(
             });
         }
         declared.sort_by(|a, b| a.name.cmp(&b.name));
-        return Surface { declared, loaded: BTreeSet::new(), listing: None, walled };
+        return Surface { declared, loaded: BTreeSet::new(), listing: None };
     }
 
     let deferred = tools.get_deferred_names().await;
     let loaded = loaded_tools(conversation, &deferred);
-    let mut all = tools.list().await;
-    all.retain(|d| !walled.contains(&d.name));
+    let all = tools.list().await;
     let mut declared = declared(all, &deferred, &loaded);
     declared.retain(|d| crate::harness::delegation::on_surface(seat.mode, &d.name));
     let mut listed = listed(&deferred, &declared);
-    listed.retain(|n| !walled.contains(n));
     listed.retain(|n| crate::harness::delegation::on_surface(seat.mode, n));
     if let Some(allowlist) = seat.allowlist {
         declared.retain(|d| allowlist_admits(allowlist, &d.name));
         listed.retain(|n| allowlist_admits(allowlist, n));
     }
+    declared.retain(|d| !seat.withheld.contains(&d.name));
+    listed.retain(|n| !seat.withheld.contains(n));
     let announced: BTreeSet<String> =
         crate::harness::events::announced("tools_available", conversation).into_keys().collect();
     let listing = ListingDelta::between(&announced, &listed);
-    Surface { declared, loaded, listing, walled }
+    Surface { declared, loaded, listing }
 }
 
 /// Whether a restricted run's allowlist names this tool: by name, as the

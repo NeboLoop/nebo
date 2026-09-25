@@ -27,3 +27,8 @@ fixtures:
   - ../fixtures/staffed-company/migrations/sc15-migrations-run-forward-on-a-real-database.yaml
   - ../fixtures/staffed-company/layers/sc16-an-uploaded-pack-keeps-its-own-slug.yaml
   - ../fixtures/staffed-company/connections/sc17-an-install-by-another-door-answers-the-install-card.yaml
+  - ../fixtures/staffed-company/seats/sc18-every-hiring-door-grants-the-declared-job.yaml
+  - ../fixtures/staffed-company/policy/sc19-the-shipped-phone-answers-a-parked-runs-ask.yaml
+  - ../fixtures/staffed-company/policy/sc20-the-phones-default-is-the-employees-mode.yaml
+  - ../fixtures/staffed-company/connections/sc21-a-plugin-required-by-its-code-is-its-own-tool.yaml
+  - ../fixtures/staffed-company/policy/sc22-an-ask-reaches-the-owners-conversation.yaml

@@ -108,8 +108,10 @@ impl Store {
     }
 
     /// How many of the owner's own messages arrived in `chat_id` after
-    /// `after` (unix seconds). A platform prompt, a notification, a
-    /// reminder, a coworker's or a parent's message is not the owner's.
+    /// `after` (unix seconds): rows carrying [`OWNER_MARK`]. A platform
+    /// prompt, a notification, a reminder, a coworker's, a parent's, or a
+    /// message from a chat channel (Slack, Discord, a loop) is not the
+    /// owner's.
     pub fn owner_messages_after(&self, chat_id: &str, after: i64) -> Result<usize, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -177,17 +179,21 @@ impl Store {
     }
 }
 
-/// Whether a stored user-role message is one the owner wrote: not hidden
-/// (`isMeta`: platform prompts, reminders, notifications) and not a
-/// coworker's or a parent run's message queued into the turn.
+/// The metadata key on a user-role row the owner wrote in their own app
+/// (desktop, web, phone, voice): `"owner": true`. The harness writes it when
+/// it stores the owner's own input; nothing else does, so a row without it
+/// (a coworker's, a parent run's, a chat channel's, the platform's) is never
+/// the owner's word.
+pub const OWNER_MARK: &str = "owner";
+
+/// Whether a stored user-role message is one the owner wrote: it carries
+/// [`OWNER_MARK`] and is not hidden (`isMeta`).
 fn is_owner_message(metadata: Option<&str>) -> bool {
     let Some(meta) = metadata.and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok()) else {
-        return true;
-    };
-    if meta.get("isMeta").and_then(|v| v.as_bool()) == Some(true) {
         return false;
-    }
-    !matches!(meta.get("from").and_then(|v| v.as_str()), Some("coworker" | "parent"))
+    };
+    meta.get(OWNER_MARK).and_then(|v| v.as_bool()) == Some(true)
+        && meta.get("isMeta").and_then(|v| v.as_bool()) != Some(true)
 }
 
 #[cfg(test)]
@@ -196,11 +202,27 @@ mod tests {
 
     #[test]
     fn only_the_owners_own_words_count() {
-        assert!(is_owner_message(None));
-        assert!(is_owner_message(Some(r#"{"arrivedMidTurn":true,"from":"owner","via":"chat"}"#)));
-        assert!(!is_owner_message(Some(r#"{"isMeta":true,"hiddenPrompt":true}"#)));
-        assert!(!is_owner_message(Some(r#"{"notification":true,"isMeta":true}"#)));
-        assert!(!is_owner_message(Some(r#"{"arrivedMidTurn":true,"from":"coworker","coworker":"Ops"}"#)));
-        assert!(!is_owner_message(Some(r#"{"arrivedMidTurn":true,"from":"parent"}"#)));
+        assert!(is_owner_message(Some(r#"{"owner":true}"#)));
+        assert!(is_owner_message(Some(
+            r#"{"arrivedMidTurn":true,"via":"chat","owner":true}"#
+        )));
+        // No mark: a chat channel's message, a coworker's, anything unmarked.
+        assert!(!is_owner_message(None));
+        assert!(!is_owner_message(Some(r#"{"images":[]}"#)));
+        assert!(!is_owner_message(Some(
+            r#"{"arrivedMidTurn":true,"via":"slack"}"#
+        )));
+        assert!(!is_owner_message(Some(
+            r#"{"isMeta":true,"hiddenPrompt":true,"owner":true}"#
+        )));
+        assert!(!is_owner_message(Some(
+            r#"{"notification":true,"isMeta":true}"#
+        )));
+        assert!(!is_owner_message(Some(
+            r#"{"arrivedMidTurn":true,"from":"coworker","coworker":"Ops"}"#
+        )));
+        assert!(!is_owner_message(Some(
+            r#"{"arrivedMidTurn":true,"from":"parent"}"#
+        )));
     }
 }

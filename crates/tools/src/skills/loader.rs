@@ -874,7 +874,8 @@ impl Loader {
         )
     }
 
-    /// Build a focused context section for an agent's required plugins.
+    /// Build a focused context section for an agent's required plugins, by
+    /// slug (`plugin_tools::plugin_slug_of` reads a job's references).
     /// Lists each required plugin with its description and top skills so the
     /// LLM knows what's available from turn 1 without needing to discover.
     pub fn agent_plugin_context(&self, required_plugins: &[String]) -> String {
@@ -887,26 +888,13 @@ impl Loader {
         };
 
         let mut lines = Vec::new();
-        for plugin_ref in required_plugins {
-            // Resolve the slug — may be an install code or slug directly
-            let slug = plugin_ref
-                .split('-')
-                .last()
-                .unwrap_or(plugin_ref.as_str());
-
-            // Try both the raw reference and the extracted slug
-            let manifest = ps.get_manifest(plugin_ref)
-                .or_else(|| ps.get_manifest(slug));
-            let binary = ps.resolve(plugin_ref, "*")
-                .or_else(|| ps.resolve(slug, "*"));
-
-            let resolved_slug = if ps.resolve(plugin_ref, "*").is_some() {
-                plugin_ref.as_str()
-            } else if ps.resolve(slug, "*").is_some() {
-                slug
-            } else {
+        for resolved_slug in required_plugins {
+            let resolved_slug = resolved_slug.as_str();
+            let binary = ps.resolve(resolved_slug, "*");
+            if binary.is_none() {
                 continue; // Not installed
-            };
+            }
+            let manifest = ps.get_manifest(resolved_slug);
 
             let desc = manifest
                 .as_ref()
