@@ -184,7 +184,16 @@
 		"showAll": "顯示全部 {n} 項",
 		"showFewer": "收合",
 		"noEmployeesMatch": "目前沒有處於該狀態的員工。",
-		"barHover": "完成 {done} 次，無事可做 {skipped} 次，等你 {waiting} 次，停止 {stopped} 次"
+		"barHover": "完成 {done} 次，無事可做 {skipped} 次，等你 {waiting} 次，停止 {stopped} 次",
+		"inProgress": "進行中的工作",
+		"inProgressSub": "為一件工作而建；結果送達後即消失",
+		"temporaryWorkflow": "臨時工作流程",
+		"temporaryTeam": "臨時團隊",
+		"temporaryStatus": {
+			"starting": "啟動中",
+			"working": "工作中",
+			"waiting": "等待中"
+		}
 	},
 	"nav": {
 		"home": "Nebo 首頁",

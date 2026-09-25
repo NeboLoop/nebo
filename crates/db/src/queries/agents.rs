@@ -797,6 +797,23 @@ impl Store {
             params![agent_id, binding_name],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        // A deleted workflow is no longer temporary work either.
+        conn.execute(
+            "DELETE FROM temporary_work WHERE kind = 'workflow' AND agent_id = ?1 AND name = ?2",
+            params![agent_id, binding_name],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Turn a binding on or off.
+    pub fn set_agent_workflow_active(&self, agent_id: &str, binding_name: &str, active: bool) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agent_workflows SET is_active = ?3 WHERE agent_id = ?1 AND binding_name = ?2",
+            params![agent_id, binding_name, active as i64],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -826,6 +843,11 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "DELETE FROM agent_workflows WHERE agent_id = ?1",
+            params![agent_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM temporary_work WHERE kind = 'workflow' AND agent_id = ?1",
             params![agent_id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;

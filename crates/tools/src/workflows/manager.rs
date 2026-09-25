@@ -14,6 +14,39 @@ pub struct WorkflowInfo {
     pub is_enabled: bool,
     pub trigger_count: usize,
     pub activity_count: usize,
+    /// Made for one piece of work: it runs once and is deleted after its
+    /// outcome reaches the owner.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub temporary: bool,
+    /// The run a save started (a temporary workflow run by hand starts as
+    /// it is made).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+}
+
+/// How long a workflow lives (owner, 09-25). One create path, with this as
+/// its option.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lifetime {
+    /// Kept until it is deleted.
+    Saved,
+    /// Made for one piece of work: it runs once, and when that run has
+    /// ended and its outcome has reached the owner it is deleted. Its run
+    /// history, receipts and cost stay. `report_to` is the session woken
+    /// with the outcome.
+    Temporary { report_to: String },
+}
+
+/// What a create or an update carries besides the definition.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SaveOptions {
+    /// `None` keeps an existing workflow's lifetime; a new one is saved.
+    pub lifetime: Option<Lifetime>,
+    /// Start from the definition a past run ran with: the same piece of
+    /// work, kept (a temporary workflow that already finished, saved to run
+    /// again). The definition given with it adds to or replaces its fields
+    /// (a schedule trigger, say).
+    pub from_run: Option<String>,
 }
 
 /// Info about a workflow run.
@@ -126,6 +159,7 @@ pub trait WorkflowManager: Send + Sync {
         agent_id: &'a str,
         name: &'a str,
         definition: &'a str,
+        options: SaveOptions,
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
     /// Full-replacement edit of an existing binding the calling agent owns.
@@ -137,6 +171,7 @@ pub trait WorkflowManager: Send + Sync {
         agent_id: &'a str,
         name: &'a str,
         definition: &'a str,
+        options: SaveOptions,
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
     /// Periodic workflow tuning sweep (self-optimization). Default no-op so

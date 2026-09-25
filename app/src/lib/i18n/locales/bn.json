@@ -184,7 +184,16 @@
 		"showAll": "সব {n}টি দেখান",
 		"showFewer": "কম দেখান",
 		"noEmployeesMatch": "এই মুহূর্তে এই অবস্থায় কোনো কর্মী নেই।",
-		"barHover": "{done}টি শেষ হয়েছে, {skipped}টিতে করার কিছু ছিল না, {waiting}টি আপনার অপেক্ষা করেছে, {stopped}টি থামানো হয়েছে"
+		"barHover": "{done}টি শেষ হয়েছে, {skipped}টিতে করার কিছু ছিল না, {waiting}টি আপনার অপেক্ষা করেছে, {stopped}টি থামানো হয়েছে",
+		"inProgress": "চলমান কাজ",
+		"inProgressSub": "একটি কাজের জন্য তৈরি, ফলাফল আপনার কাছে পৌঁছালে সরে যায়",
+		"temporaryWorkflow": "অস্থায়ী ওয়ার্কফ্লো",
+		"temporaryTeam": "অস্থায়ী দল",
+		"temporaryStatus": {
+			"starting": "শুরু হচ্ছে",
+			"working": "কাজ করছে",
+			"waiting": "অপেক্ষা করছে"
+		}
 	},
 	"nav": {
 		"home": "Nebo হোম",

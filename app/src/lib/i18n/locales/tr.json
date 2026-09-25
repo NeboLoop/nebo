@@ -184,7 +184,16 @@
 		"showAll": "{n} tanesinin tümünü göster",
 		"showFewer": "Daha az göster",
 		"noEmployeesMatch": "Şu anda bu durumda çalışan yok.",
-		"barHover": "{done} tamamlandı, {skipped} yapacak iş yoktu, {waiting} sizi bekledi, {stopped} durduruldu"
+		"barHover": "{done} tamamlandı, {skipped} yapacak iş yoktu, {waiting} sizi bekledi, {stopped} durduruldu",
+		"inProgress": "Süren iş",
+		"inProgressSub": "Tek bir iş için yapıldı; sonucu aldığınızda kaybolur",
+		"temporaryWorkflow": "Geçici iş akışı",
+		"temporaryTeam": "Geçici ekip",
+		"temporaryStatus": {
+			"starting": "Başlıyor",
+			"working": "Çalışıyor",
+			"waiting": "Bekliyor"
+		}
 	},
 	"nav": {
 		"home": "Nebo Ana Sayfa",

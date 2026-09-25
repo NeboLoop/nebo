@@ -184,7 +184,16 @@
 		"showAll": "عرض الكل ({n})",
 		"showFewer": "عرض أقل",
 		"noEmployeesMatch": "لا موظفين في هذه الحالة الآن.",
-		"barHover": "{done} منجزة، {skipped} لا شيء للقيام به، {waiting} انتظرتك، {stopped} متوقفة"
+		"barHover": "{done} منجزة، {skipped} لا شيء للقيام به، {waiting} انتظرتك، {stopped} متوقفة",
+		"inProgress": "عمل قيد التنفيذ",
+		"inProgressSub": "صُنع لمهمة واحدة، ويختفي بعد أن تصلك النتيجة",
+		"temporaryWorkflow": "سير عمل مؤقت",
+		"temporaryTeam": "فريق مؤقت",
+		"temporaryStatus": {
+			"starting": "يبدأ",
+			"working": "يعمل",
+			"waiting": "ينتظر"
+		}
 	},
 	"nav": {
 		"home": "الرئيسية Nebo",

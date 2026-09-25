@@ -184,7 +184,16 @@
 		"showAll": "Показать все ({n})",
 		"showFewer": "Показать меньше",
 		"noEmployeesMatch": "Сейчас нет сотрудников в этом состоянии.",
-		"barHover": "{done} выполнено, {skipped} без задач, {waiting} ждали вас, {stopped} остановлено"
+		"barHover": "{done} выполнено, {skipped} без задач, {waiting} ждали вас, {stopped} остановлено",
+		"inProgress": "Работа в процессе",
+		"inProgressSub": "Создано для одной задачи; исчезнет, когда вы получите результат",
+		"temporaryWorkflow": "Временный рабочий процесс",
+		"temporaryTeam": "Временная команда",
+		"temporaryStatus": {
+			"starting": "Запускается",
+			"working": "Работает",
+			"waiting": "Ждёт"
+		}
 	},
 	"nav": {
 		"home": "Nebo — Главная",

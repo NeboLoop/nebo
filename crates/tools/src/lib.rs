@@ -185,7 +185,7 @@ pub use shell_tool::ShellTool;
 pub use skill_tool::SkillTool;
 pub use find_tools::FindToolsTool;
 pub use web_tool::WebTool;
-pub use workflows::{WorkflowInfo, WorkflowManager, WorkflowRunInfo};
+pub use workflows::{Lifetime, SaveOptions, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 
 /// Build a NeboAI API client from a Store (for tool install actions).
 pub(crate) fn build_neboai_api(store: &db::Store) -> Result<comm::api::NeboAIApi, String> {

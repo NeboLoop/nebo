@@ -628,6 +628,14 @@
       if (!team?.id) return;
       teams = teams.map((w) => (w.id === team.id ? team : w));
     });
+    // Removed here or elsewhere (a temporary team disbands once its outcome
+    // reached the owner).
+    onWsEvent('nebo:team_removed', (data) => {
+      const id = data?.teamId;
+      if (!id) return;
+      teams = teams.filter((w) => w.id !== id);
+      if (teamParam === id) closeTeam();
+    });
     // Team traffic → bump that team's recency in the sidebar section.
     // The open team view holds its own subscription for the transcript.
     onWsEvent('nebo:team_message', (data) => {

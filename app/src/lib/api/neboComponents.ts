@@ -524,6 +524,7 @@ export interface DashboardResponse {
 	recentRuns: DashboardRun[]
 	runsByDay: DashboardDay[]
 	runsByEmployee: DashboardEmployeeRuns[]
+	temporaryWork: DashboardTemporaryWork[]
 }
 
 export interface DashboardRun {
@@ -535,6 +536,17 @@ export interface DashboardRun {
 	endedAt?: number
 	outcome: string
 	detail: string
+}
+
+export interface DashboardTemporaryWork {
+	kind: string
+	name: string
+	agentId: string
+	agentName: string
+	status: string
+	waitingOn: string
+	runId?: string
+	since: number
 }
 
 export interface DetectInstallsResponse {
@@ -1442,6 +1454,8 @@ export interface CreateAgentResponse {
 
 export interface CreateAgentWorkflowResponse {
 	workflow: unknown
+	temporary: unknown
+	runId: string
 }
 
 export interface CreateCompanionChatResponse {
@@ -2279,6 +2293,7 @@ export interface UpdateAgentResponse {
 
 export interface UpdateAgentWorkflowResponse {
 	workflow: unknown
+	temporary: unknown
 }
 
 export interface UpdateApplyResponse {

@@ -184,7 +184,16 @@
 		"showAll": "Показати всі ({n})",
 		"showFewer": "Показати менше",
 		"noEmployeesMatch": "Зараз немає співробітників у цьому стані.",
-		"barHover": "{done} виконано, {skipped} без завдань, {waiting} чекали на вас, {stopped} зупинено"
+		"barHover": "{done} виконано, {skipped} без завдань, {waiting} чекали на вас, {stopped} зупинено",
+		"inProgress": "Робота в процесі",
+		"inProgressSub": "Створено для однієї задачі; зникне, коли ви отримаєте результат",
+		"temporaryWorkflow": "Тимчасовий робочий процес",
+		"temporaryTeam": "Тимчасова команда",
+		"temporaryStatus": {
+			"starting": "Запускається",
+			"working": "Працює",
+			"waiting": "Чекає"
+		}
 	},
 	"nav": {
 		"home": "Nebo — Головна",

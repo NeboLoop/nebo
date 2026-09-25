@@ -40,6 +40,7 @@ mod users;
 pub(crate) mod work;
 mod workflows;
 mod teams;
+mod temporary_work;
 mod upgrade;
 
 pub use agents::agent_slug;
@@ -58,3 +59,4 @@ pub use plugin_account_profiles::PluginAccountProfile;
 pub use upgrade::{ToolNamingCell, tool_naming_places};
 pub use work::WorkDocumentListing;
 pub use teams::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};
+pub use temporary_work::{TemporaryClaim, TemporaryKind, TemporaryWork};

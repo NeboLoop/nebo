@@ -2074,10 +2074,15 @@ pub async fn list_agent_workflows(
     let mut wf_map = serde_json::Map::new();
     for wf in &workflows {
         let trigger = reconstruct_trigger(&wf.trigger_type, &wf.trigger_config);
+        let temporary = state
+            .store
+            .temporary_work(db::TemporaryKind::Workflow, &id, &wf.binding_name)
+            .map_err(to_error_response)?;
         let mut entry = serde_json::json!({
             "trigger": trigger,
             "description": wf.description,
             "isActive": wf.is_active != 0,
+            "temporary": temporary.is_some(),
             "lastFired": wf.last_fired,
             "emit": wf.emit,
             "activities": wf.activities,
@@ -3496,6 +3501,7 @@ pub async fn create_agent_workflow(
         .get("triggerConfig")
         .cloned()
         .unwrap_or(serde_json::json!({}));
+    let lifetime = body_lifetime(&body)?;
 
     // Parse existing frontmatter
     let mut fm: serde_json::Value =
@@ -3599,6 +3605,8 @@ pub async fn create_agent_workflow(
             true,
         )
         .map_err(to_error_response)?;
+    let temporary = crate::workflow_manager::apply_lifetime(&state.store, &id, binding_name, lifetime.as_ref())
+        .map_err(|e| to_error_response(types::NeboError::Database(e)))?;
 
     // The worker owns live trigger registration — restart it so the new
     // binding's trigger (heartbeat/watch/event/schedule) goes live now,
@@ -3608,6 +3616,20 @@ pub async fn create_agent_workflow(
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
 
+    // Temporary work with no trigger is for now: it starts as it is made.
+    let run_id = if temporary && trigger_type == "manual" {
+        let binding_id = format!("agent:{id}:{binding_name}");
+        Some(
+            state
+                .workflow_manager
+                .run(&binding_id, serde_json::json!({}), "manual")
+                .await
+                .map_err(|e| to_error_response(types::NeboError::Validation(format!("made, but it did not start: {e}"))))?,
+        )
+    } else {
+        None
+    };
+
     let workflows = state
         .store
         .list_agent_workflows(&id)
@@ -3616,7 +3638,26 @@ pub async fn create_agent_workflow(
 
     Ok(Json(serde_json::json!({
         "workflow": wf,
+        "temporary": temporary,
+        "runId": run_id,
     })))
+}
+
+/// The body's `lifetime`: "temporary" (for one piece of work: it runs once
+/// and is deleted after its outcome reaches the owner), "saved", or absent
+/// (a new workflow is saved; an existing one keeps its lifetime). Made in
+/// the app, a temporary workflow's outcome reaches the owner in the Inbox.
+fn body_lifetime(
+    body: &serde_json::Value,
+) -> Result<Option<tools::Lifetime>, (StatusCode, Json<types::api::ErrorResponse>)> {
+    match body.get("lifetime").and_then(|v| v.as_str()) {
+        None => Ok(None),
+        Some("temporary") => Ok(Some(tools::Lifetime::Temporary { report_to: String::new() })),
+        Some("saved") => Ok(Some(tools::Lifetime::Saved)),
+        Some(other) => Err(to_error_response(types::NeboError::Validation(format!(
+            "lifetime is \"temporary\" or \"saved\", not {other:?}"
+        )))),
+    }
 }
 
 /// PUT /agents/{id}/workflows/{binding_name} — update an existing workflow binding.
@@ -3640,6 +3681,8 @@ pub async fn update_agent_workflow(
         .and_then(|w| w.get(&binding_name))
         .cloned()
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let lifetime = body_lifetime(&body)?;
 
     // Determine old trigger type for cleanup
     let old_trigger_type = existing_binding
@@ -3758,6 +3801,8 @@ pub async fn update_agent_workflow(
             true,
         )
         .map_err(to_error_response)?;
+    let temporary = crate::workflow_manager::apply_lifetime(&state.store, &id, &binding_name, lifetime.as_ref())
+        .map_err(|e| to_error_response(types::NeboError::Database(e)))?;
 
     // If trigger type changed, clear the old cron row before re-sync.
     if body.get("triggerType").is_some() {
@@ -3779,6 +3824,7 @@ pub async fn update_agent_workflow(
 
     Ok(Json(serde_json::json!({
         "workflow": wf,
+        "temporary": temporary,
     })))
 }
 

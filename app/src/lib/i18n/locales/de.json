@@ -184,7 +184,16 @@
 		"showAll": "Alle {n} anzeigen",
 		"showFewer": "Weniger anzeigen",
 		"noEmployeesMatch": "Gerade keine Mitarbeiter in diesem Zustand.",
-		"barHover": "{done} erledigt, {skipped} nichts zu tun, {waiting} auf dich gewartet, {stopped} gestoppt"
+		"barHover": "{done} erledigt, {skipped} nichts zu tun, {waiting} auf dich gewartet, {stopped} gestoppt",
+		"inProgress": "Laufende Arbeit",
+		"inProgressSub": "Für eine Aufgabe gemacht; verschwindet, sobald Sie das Ergebnis haben",
+		"temporaryWorkflow": "Vorübergehender Workflow",
+		"temporaryTeam": "Vorübergehendes Team",
+		"temporaryStatus": {
+			"starting": "Startet",
+			"working": "Arbeitet",
+			"waiting": "Wartet"
+		}
 	},
 	"nav": {
 		"home": "Nebo Startseite",

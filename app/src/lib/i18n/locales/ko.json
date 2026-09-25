@@ -184,7 +184,16 @@
 		"showAll": "{n}개 모두 보기",
 		"showFewer": "간략히 보기",
 		"noEmployeesMatch": "지금 그 상태인 직원이 없습니다.",
-		"barHover": "완료 {done}건, 할 일 없음 {skipped}건, 당신을 기다림 {waiting}건, 중지 {stopped}건"
+		"barHover": "완료 {done}건, 할 일 없음 {skipped}건, 당신을 기다림 {waiting}건, 중지 {stopped}건",
+		"inProgress": "진행 중인 작업",
+		"inProgressSub": "한 가지 일을 위해 만들어졌으며, 결과를 받으면 사라집니다",
+		"temporaryWorkflow": "임시 워크플로",
+		"temporaryTeam": "임시 팀",
+		"temporaryStatus": {
+			"starting": "시작 중",
+			"working": "작업 중",
+			"waiting": "대기 중"
+		}
 	},
 	"nav": {
 		"home": "Nebo 홈",

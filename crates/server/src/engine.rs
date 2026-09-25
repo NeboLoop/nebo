@@ -20,6 +20,11 @@
 //! applied once, an open ask is brought back to the owner and waits again.
 //! Nothing expires an ask.
 //!
+//! Temporary work — a workflow or team made for one piece of work — runs
+//! once. When its run has ended, its outcome goes to the owner's Inbox and
+//! to the session that started it, and only then is it deleted
+//! (`finish_temporary_work`); its runs, receipts and cost stay.
+//!
 //! Schedules (cron jobs) are recurring timers: every enabled job holds ONE
 //! pending timer aimed at binding `cron:<id>`; a due timer becomes a run of
 //! kind `task` that `drive` executes; the next occurrence is armed from the
@@ -1217,6 +1222,7 @@ async fn drive(state: &AppState) {
     }
 
     resume_asks(store, &state.permission_asks, &state.tools, t);
+    finish_temporary_work(state).await;
 
     time_out_turns(state, t).await;
 
@@ -1246,6 +1252,110 @@ pub fn resume_asks(store: &Store, asks: &agent::harness::permissions::Asks, regi
     }
     running
 }
+
+/// Temporary work whose one run has ended (owner, 09-25): the outcome is
+/// delivered, then the workflow or team is deleted. An outcome that could
+/// not be written leaves the work for the next tick; a delete that fails
+/// is retried the same way.
+async fn finish_temporary_work(state: &AppState) {
+    let store = &state.store;
+    for (work, run) in store.ended_temporary_work().unwrap_or_default() {
+        let hub = state.hub.clone();
+        let broadcast = move |ev: &str, payload: serde_json::Value| hub.broadcast(ev, payload);
+        if let Err(e) = report_temporary_outcome(store, &work, &run, Some(&broadcast)) {
+            warn!(name = %work.name, run = %run.id, error = %e, "engine: temporary work's outcome not delivered; tried again next tick");
+            continue;
+        }
+        if !work.report_to.is_empty() {
+            crate::wake::deliver(state, &work.report_to).await;
+        }
+        let deleted = match work.kind {
+            db::TemporaryKind::Workflow => state.workflow_manager.delete(&work.agent_id, &work.name).await,
+            db::TemporaryKind::Team => crate::handlers::teams::disband(state, &work.name),
+        };
+        match deleted {
+            Ok(()) => info!(kind = work.kind.as_str(), name = %work.name, run = %run.id, "engine: temporary work reported and deleted"),
+            Err(e) => warn!(kind = work.kind.as_str(), name = %work.name, error = %e, "engine: temporary work reported; delete failed"),
+        }
+        // Reported either way: a thing already gone is not waited on again.
+        if let Err(e) = store.unmark_temporary(work.kind, &work.agent_id, &work.name) {
+            warn!(name = %work.name, error = %e, "engine: temporary work's row not cleared");
+        }
+    }
+}
+
+/// The outcome of a finished piece of temporary work, delivered: a row in
+/// the owner's Inbox, and a notification for the session that started it.
+/// Both are keyed by the run, so repeating this repeats nothing.
+pub fn report_temporary_outcome(
+    store: &Store,
+    work: &db::TemporaryWork,
+    run: &EngineRun,
+    broadcast: Option<&dyn Fn(&str, serde_json::Value)>,
+) -> Result<(), types::NeboError> {
+    let what = match work.kind {
+        db::TemporaryKind::Workflow => format!("The {} workflow", work.name.replace('-', " ")),
+        db::TemporaryKind::Team => {
+            let team = store.get_team(&work.name)?.map(|t| t.name).unwrap_or_else(|| work.name.clone());
+            format!("The {team} team")
+        }
+    };
+    let ended = match run.state.as_str() {
+        "done" => "finished",
+        "failed" => "failed",
+        _ => "was stopped",
+    };
+    let title = format!("{what} {ended}");
+    let outcome: String = [run.result.as_deref(), run.error.as_deref(), Some(run.summary.as_str())]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .unwrap_or("It left no outcome.")
+        .chars()
+        .take(1_500)
+        .collect();
+    let user_id = store.ensure_local_user_id()?;
+    let id = format!("temporary:{}", run.id);
+    let agent = (!work.agent_id.is_empty()).then_some(work.agent_id.as_str());
+    // Written before anything is deleted: the outcome must reach the owner.
+    store.create_notification_if_not_exists(&id, &user_id, "info", &title, Some(&outcome), None, None, agent)?;
+    tools::owner_notify::emit(
+        store,
+        broadcast,
+        &tools::owner_notify::OwnerNotification {
+            id: &id,
+            kind: "info",
+            title: &title,
+            body: Some(&outcome),
+            action_url: None,
+            agent_id: agent,
+            loud: true,
+        },
+    );
+    if !work.report_to.is_empty() {
+        let saved_again = match work.kind {
+            db::TemporaryKind::Workflow => format!(
+                " It is temporary, so it is now deleted; create_workflow(from_run: \"{}\") saves the same work to run again.",
+                run.id
+            ),
+            db::TemporaryKind::Team => " It was a temporary team, so it has disbanded.".to_string(),
+        };
+        let text = format!("{title} (run {}).{saved_again}\n\nOutcome:\n{outcome}", run.id);
+        store.engine_enqueue_event(&NewEvent {
+            kind: TEMPORARY_WORK_ENDED,
+            target_type: "session",
+            target_id: &work.report_to,
+            payload: &text,
+            idem_key: &format!("{id}:report"),
+            ..Default::default()
+        })?;
+    }
+    Ok(())
+}
+
+/// The wake kind a finished piece of temporary work reports with.
+pub const TEMPORARY_WORK_ENDED: &str = "temporary_work.ended";
 
 // ── pre-flight: a binding's declared needs, before anything else ─────────
 

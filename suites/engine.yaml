@@ -79,6 +79,7 @@ fixtures:
   - ../fixtures/engine/platform/uc56-a-case-moves-between-employees-with-its-history.yaml
   # Long-running work (Batch E)
   - ../fixtures/engine/longrun/e4-an-ask-waits-four-days-across-a-restart-and-the-answer-resumes-it.yaml
+  - ../fixtures/engine/longrun/e13-a-temporary-workflows-outcome-reaches-the-owner-once-before-it-goes.yaml
   # Parity with the seven replaced mechanisms
   - ../fixtures/engine/parity/parity-parity-scheduled-jobs.yaml
   - ../fixtures/engine/parity/parity-parity-heartbeats.yaml

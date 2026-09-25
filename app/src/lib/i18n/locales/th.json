@@ -184,7 +184,16 @@
 		"showAll": "แสดงทั้งหมด {n} รายการ",
 		"showFewer": "แสดงน้อยลง",
 		"noEmployeesMatch": "ตอนนี้ไม่มีพนักงานอยู่ในสถานะนั้น",
-		"barHover": "เสร็จ {done} ไม่มีงาน {skipped} รอคุณ {waiting} หยุด {stopped}"
+		"barHover": "เสร็จ {done} ไม่มีงาน {skipped} รอคุณ {waiting} หยุด {stopped}",
+		"inProgress": "งานที่กำลังทำ",
+		"inProgressSub": "สร้างขึ้นสำหรับงานเดียว หายไปเมื่อคุณได้รับผลลัพธ์",
+		"temporaryWorkflow": "เวิร์กโฟลว์ชั่วคราว",
+		"temporaryTeam": "ทีมชั่วคราว",
+		"temporaryStatus": {
+			"starting": "กำลังเริ่ม",
+			"working": "กำลังทำงาน",
+			"waiting": "กำลังรอ"
+		}
 	},
 	"nav": {
 		"home": "หน้าแรก Nebo",

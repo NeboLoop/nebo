@@ -38,7 +38,8 @@ fn binding_concurrency() -> usize {
 use ai::Provider;
 use tools::origin::ToolContext;
 use tools::registry::{DynTool, ToolResult};
-use tools::workflows::{WorkflowInfo, WorkflowManager, WorkflowRunInfo};
+use db::{TemporaryClaim, TemporaryKind};
+use tools::workflows::{Lifetime, SaveOptions, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 
 use crate::handlers::ws::ClientHub;
 
@@ -284,6 +285,8 @@ impl WorkflowManagerImpl {
             is_enabled: wf.is_enabled != 0,
             trigger_count: 0, // Triggers are now agent-owned
             activity_count,
+            temporary: false,
+            run_id: None,
         }
     }
 
@@ -479,7 +482,8 @@ fn split_binding_id(id: &str) -> Option<(&str, &str)> {
 }
 
 /// Map an agent-owned binding row to the tool-facing WorkflowInfo shape.
-fn agent_workflow_to_info(wf: &db::models::AgentWorkflow) -> WorkflowInfo {
+fn agent_workflow_to_info(store: &db::Store, wf: &db::models::AgentWorkflow) -> WorkflowInfo {
+    let temporary = store.temporary_work(TemporaryKind::Workflow, &wf.agent_id, &wf.binding_name).ok().flatten();
     let activity_count = wf
         .activities
         .as_ref()
@@ -494,6 +498,8 @@ fn agent_workflow_to_info(wf: &db::models::AgentWorkflow) -> WorkflowInfo {
         is_enabled: wf.is_active != 0,
         trigger_count: if wf.trigger_type == "manual" { 0 } else { 1 },
         activity_count,
+        temporary: temporary.is_some(),
+        run_id: temporary.and_then(|t| t.run_id),
     }
 }
 
@@ -530,7 +536,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             // The agent's own bindings — the canonical store the panel reads.
             if !agent_id.is_empty() {
                 match self.store.list_agent_workflows(agent_id) {
-                    Ok(bindings) => out.extend(bindings.iter().map(agent_workflow_to_info)),
+                    Ok(bindings) => out.extend(bindings.iter().map(|b| agent_workflow_to_info(&self.store, b))),
                     Err(e) => warn!(agent_id, error = %e, "failed to list agent workflows"),
                 }
             }
@@ -643,7 +649,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             .iter()
                             .find(|b| b.binding_name == name_or_id || b.binding_name == key)
                         {
-                            let mut info = agent_workflow_to_info(b);
+                            let mut info = agent_workflow_to_info(&self.store, b);
                             // Binding-scoped id so run()/list_runs()/toggle()
                             // route to the binding, not the workflows table.
                             info.id = format!("agent:{}:{}", agent_id, b.binding_name);
@@ -1094,10 +1100,11 @@ impl WorkflowManager for WorkflowManagerImpl {
         agent_id: &'a str,
         name: &'a str,
         definition: &'a str,
+        options: SaveOptions,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
     > {
-        Box::pin(save_binding(self, agent_id, name, definition, false))
+        Box::pin(save_binding(self, agent_id, name, definition, false, options))
     }
 
     fn update<'a>(
@@ -1105,10 +1112,11 @@ impl WorkflowManager for WorkflowManagerImpl {
         agent_id: &'a str,
         name: &'a str,
         definition: &'a str,
+        options: SaveOptions,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
     > {
-        Box::pin(save_binding(self, agent_id, name, definition, true))
+        Box::pin(save_binding(self, agent_id, name, definition, true, options))
     }
 
     fn tuning_sweep<'a>(
@@ -1351,6 +1359,31 @@ impl WorkflowManager for WorkflowManagerImpl {
             // to resolve per-agent plugin accounts and memory scope. The old
             // dash format resolved nothing (briefings ran with no account).
             let session_key = tools::workflow_session_key(agent_id, &run_id);
+            // Temporary work runs once (owner, 09-25): its first run claims
+            // it, a second never starts, and its trigger stops listening.
+            let fresh = resume_run_id.is_none() && relaunch_run_id.is_none();
+            let temporary_binding = trigger_detail
+                .as_deref()
+                .map(|d| d.split(':').next().unwrap_or(d).to_string())
+                .filter(|b| fresh && !b.is_empty());
+            if let Some(binding) = &temporary_binding {
+                match self.store.claim_temporary_run(TemporaryKind::Workflow, agent_id, binding, &run_id) {
+                    Ok(TemporaryClaim::NotTemporary) => {}
+                    Ok(TemporaryClaim::Claimed) => {
+                        if let Err(e) = self.store.set_agent_workflow_active(agent_id, binding, false) {
+                            warn!(agent_id, binding = %binding, error = %e, "temporary workflow's trigger not turned off");
+                        }
+                        workflow::triggers::unregister_single_agent_trigger(agent_id, binding, &self.store);
+                        info!(agent_id, binding = %binding, run_id = %run_id, "temporary workflow started its one run");
+                    }
+                    Ok(TemporaryClaim::AlreadyRan(first)) => {
+                        return Err(format!(
+                            "the temporary workflow '{binding}' already ran once (run {first}); save it to run it again"
+                        ));
+                    }
+                    Err(e) => return Err(format!("claim temporary run: {e}")),
+                }
+            }
             if resume_run_id.is_some() {
                 // Consume the suspension (the signal is being handled) and
                 // wake the parked run.
@@ -1377,7 +1410,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                         // against exactly what it launched with.
                         Some(&definition_json),
                     )
-                    .map_err(|e| format!("create_workflow_run: {}", e))?;
+                    .map_err(|e| {
+                        // Never started: temporary work may claim its run again.
+                        if let Some(binding) = &temporary_binding {
+                            let _ = self.store.release_temporary_run(TemporaryKind::Workflow, agent_id, binding, &run_id);
+                        }
+                        format!("create_workflow_run: {}", e)
+                    })?;
             }
 
             // Create cancellation token
@@ -2499,6 +2538,7 @@ async fn save_binding(
     name: &str,
     definition: &str,
     must_exist: bool,
+    options: SaveOptions,
 ) -> Result<WorkflowInfo, String> {
     use crate::handlers::agents::{build_trigger_json, flatten_trigger_config, write_agent_json_to_fs};
 
@@ -2511,6 +2551,18 @@ async fn save_binding(
             // unknown fields silently, which is how orphans were born.)
             let mut def: serde_json::Value = serde_json::from_str(definition)
                 .map_err(|e| format!("invalid workflow definition (not JSON): {}", e))?;
+            // The same piece of work a past run did: its definition, with
+            // what this save gives on top (a schedule, say).
+            if let Some(run_id) = &options.from_run {
+                def = definition_of_run(&mgr.store, run_id, def)?;
+            }
+            if matches!(options.lifetime, Some(Lifetime::Temporary { .. })) && def.get("case").is_some() {
+                return Err(
+                    "a temporary workflow runs once for one piece of work; a workflow with `case` works \
+                     many people over time. Save it, or leave out `case`."
+                        .to_string(),
+                );
+            }
 
             // Convenience: a top-level `steps` array becomes ONE activity that
             // executes them in order — same simple-form semantics as agent
@@ -2674,6 +2726,8 @@ async fn save_binding(
                 )
                 .map_err(|e| format!("upsert_agent_workflow: {}", e))?;
 
+            let temporary = apply_lifetime(&mgr.store, agent_id, &binding_name, options.lifetime.as_ref())?;
+
             // Register schedule cron rows now so the scheduler fires them within
             // a minute, even if the worker isn't restarted below.
             if let Ok(bindings) = mgr.store.list_agent_workflows(agent_id) {
@@ -2700,6 +2754,18 @@ async fn save_binding(
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
+            // Temporary work with no trigger is for now: it starts as it is
+            // made. One with a trigger starts on its first fire.
+            let run_id = if temporary && trigger_type == "manual" && !must_exist {
+                Some(mgr.run_binding(agent_id, &binding_name, serde_json::json!({}), "manual").await.map_err(|e| {
+                    format!(
+                        "the temporary workflow '{binding_name}' was made but did not start: {e}. Start it with \
+                         run_workflow once that is fixed, or delete it."
+                    )
+                })?)
+            } else {
+                None
+            };
             Ok(WorkflowInfo {
                 id: binding_name.clone(),
                 name: name.to_string(),
@@ -2708,8 +2774,72 @@ async fn save_binding(
                 is_enabled: true,
                 trigger_count: if trigger_type == "manual" { 0 } else { 1 },
                 activity_count,
+                temporary,
+                run_id,
             })
     }
+}
+
+/// A save's lifetime option, applied to a binding (owner, 09-25): temporary
+/// work is recorded as such, reporting to the session that made it; a
+/// workflow saved for good is no longer temporary, and is on (a temporary
+/// one that already ran had its trigger stopped). `None` leaves it as it
+/// is. Returns whether the binding is temporary now. The one rule for every
+/// door that saves a binding: the workflow tools and the app's API.
+pub(crate) fn apply_lifetime(store: &db::Store, agent_id: &str, binding: &str, lifetime: Option<&Lifetime>) -> Result<bool, String> {
+    match lifetime {
+        Some(Lifetime::Temporary { report_to }) => {
+            store.mark_temporary(TemporaryKind::Workflow, agent_id, binding, report_to).map_err(|e| format!("mark temporary: {e}"))?;
+            Ok(true)
+        }
+        Some(Lifetime::Saved) => {
+            let was = store.temporary_work(TemporaryKind::Workflow, agent_id, binding).map_err(|e| format!("read lifetime: {e}"))?;
+            if was.is_some() {
+                store.unmark_temporary(TemporaryKind::Workflow, agent_id, binding).map_err(|e| format!("save: {e}"))?;
+                store.set_agent_workflow_active(agent_id, binding, true).map_err(|e| format!("turn on: {e}"))?;
+            }
+            Ok(false)
+        }
+        None => Ok(store
+            .temporary_work(TemporaryKind::Workflow, agent_id, binding)
+            .map_err(|e| format!("read lifetime: {e}"))?
+            .is_some()),
+    }
+}
+
+/// The definition a past run ran with, as a binding definition, with
+/// `overlay`'s fields on top: the same piece of work, saved again (E14).
+fn definition_of_run(store: &db::Store, run_id: &str, overlay: serde_json::Value) -> Result<serde_json::Value, String> {
+    let run = store
+        .engine_get_run(run_id)
+        .map_err(|e| format!("read run {run_id}: {e}"))?
+        .ok_or_else(|| format!("no run {run_id}"))?;
+    let snapshot: serde_json::Value = run
+        .definition
+        .as_deref()
+        .and_then(|d| serde_json::from_str(d).ok())
+        .ok_or_else(|| format!("run {run_id} kept no definition to save"))?;
+    let mut def = serde_json::json!({});
+    for key in ["activities", "connections", "description"] {
+        if let Some(v) = snapshot.get(key).filter(|v| !v.is_null()) {
+            def[key] = v.clone();
+        }
+    }
+    // The snapshot's inputs are declarations ({"type", "default"}); a
+    // binding's are the default values.
+    if let Some(inputs) = snapshot.get("inputs").and_then(|v| v.as_object()).filter(|m| !m.is_empty()) {
+        def["inputs"] = inputs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.get("default").cloned().unwrap_or_else(|| v.clone())))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+    }
+    if let Some(extra) = overlay.as_object() {
+        for (k, v) in extra {
+            def[k.as_str()] = v.clone();
+        }
+    }
+    Ok(def)
 }
 
 /// Apply a full workflow binding definition to an agent: frontmatter merge,

@@ -184,7 +184,16 @@
 		"showAll": "Pokaż wszystkie ({n})",
 		"showFewer": "Pokaż mniej",
 		"noEmployeesMatch": "Nikt nie jest teraz w tym stanie.",
-		"barHover": "zakończonych: {done}, bez pracy: {skipped}, czekało na Ciebie: {waiting}, zatrzymanych: {stopped}"
+		"barHover": "zakończonych: {done}, bez pracy: {skipped}, czekało na Ciebie: {waiting}, zatrzymanych: {stopped}",
+		"inProgress": "Praca w toku",
+		"inProgressSub": "Utworzone do jednego zadania; znika, gdy otrzymasz wynik",
+		"temporaryWorkflow": "Tymczasowy przepływ pracy",
+		"temporaryTeam": "Tymczasowy zespół",
+		"temporaryStatus": {
+			"starting": "Rozpoczyna",
+			"working": "Pracuje",
+			"waiting": "Czeka"
+		}
 	},
 	"nav": {
 		"home": "Nebo — Strona główna",

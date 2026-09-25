@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::State;
 use types::api::{
     DashboardApproval, DashboardCounts, DashboardDay, DashboardEmployee, DashboardEmployeeRuns,
-    DashboardResponse, DashboardRun,
+    DashboardResponse, DashboardRun, DashboardTemporaryWork,
 };
 
 use super::{HandlerResult, to_error_response};
@@ -269,7 +269,72 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
         });
     }
 
-    Ok(Json(DashboardResponse { employees, counts, approvals, recent_runs, runs_by_day, runs_by_employee }))
+    let temporary_work = state
+        .store
+        .list_temporary_work()
+        .map_err(to_error_response)?
+        .into_iter()
+        .map(|w| temporary_card(&state.store, &w, &name))
+        .collect();
+
+    Ok(Json(DashboardResponse { employees, counts, approvals, recent_runs, runs_by_day, runs_by_employee, temporary_work }))
+}
+
+/// One piece of temporary work as the workforce view shows it: who has it,
+/// and what it waits on now.
+fn temporary_card(store: &db::Store, w: &db::TemporaryWork, name: &dyn Fn(&str) -> String) -> DashboardTemporaryWork {
+    let (title, agent_id) = match w.kind {
+        db::TemporaryKind::Workflow => (w.name.replace('-', " "), w.agent_id.clone()),
+        db::TemporaryKind::Team => match store.get_team(&w.name).ok().flatten() {
+            Some(team) => (team.name.clone(), tools::team::lead_of(&team).unwrap_or_default().to_string()),
+            None => (w.name.clone(), String::new()),
+        },
+    };
+    let run = w.run_id.as_deref().and_then(|r| store.engine_get_run(r).ok().flatten());
+    let (status, waiting_on) = match &run {
+        None => ("starting", not_started(store, w)),
+        Some(r) if r.state == "waiting" => ("waiting", waiting_for(store, r)),
+        Some(r) if matches!(r.state.as_str(), "done" | "failed" | "cancelled") => ("working", "Reporting its outcome".to_string()),
+        Some(_) => ("working", "Working".to_string()),
+    };
+    DashboardTemporaryWork {
+        kind: w.kind.as_str().to_string(),
+        name: title,
+        agent_name: if agent_id.is_empty() { String::new() } else { name(&agent_id) },
+        agent_id,
+        status: status.to_string(),
+        waiting_on,
+        run_id: w.run_id.clone(),
+        since: w.created_at,
+    }
+}
+
+/// What temporary work that has not started waits for: its trigger.
+fn not_started(store: &db::Store, w: &db::TemporaryWork) -> String {
+    if w.kind == db::TemporaryKind::Team {
+        return "Waiting for its work".to_string();
+    }
+    let row = store
+        .list_agent_workflows(&w.agent_id)
+        .ok()
+        .and_then(|rows| rows.into_iter().find(|b| b.binding_name == w.name));
+    match row.as_ref().map(|b| (b.trigger_type.as_str(), b.trigger_config.as_str())) {
+        Some(("event", sources)) => format!("Waiting for {}", sources.replace(',', ", ")),
+        Some(("schedule", _)) => "Waiting for its scheduled time".to_string(),
+        _ => "Starting".to_string(),
+    }
+}
+
+/// What a waiting run waits on: the owner's okay on an ask, or the reason
+/// its wait gives.
+fn waiting_for(store: &db::Store, run: &db::EngineRun) -> String {
+    if let Some(ask) = store.permission_ask_for_run(&run.id).ok().flatten().filter(|a| a.status == "open") {
+        return format!("Waiting for your okay: {}", ask.sentence);
+    }
+    match run.current_wait_id.and_then(|id| store.engine_get_wait(id).ok().flatten()) {
+        Some(wait) if !wait.reason.trim().is_empty() => format!("Waiting: {}", wait.reason.trim()),
+        _ => "Waiting".to_string(),
+    }
 }
 
 /// The sidebar's order: the primary employee first, then everyone by name,

@@ -298,6 +298,7 @@ fn label(kind: &str) -> &str {
         "coworker_reply" => "A coworker replied to your message",
         "team_reply" => "A teammate replied to your team post",
         "task_done" => "A background task you started finished",
+        crate::engine::TEMPORARY_WORK_ENDED => "Temporary work you started has ended",
         other => other,
     }
 }

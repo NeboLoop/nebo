@@ -26,6 +26,7 @@ pub use queries::{ToolNamingCell, tool_naming_places};
 pub use queries::PluginAccountProfile;
 pub use queries::WorkDocumentListing;
 pub use queries::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};
+pub use queries::{TemporaryClaim, TemporaryKind, TemporaryWork};
 pub use store::Store;
 
 /// Extension trait to convert `rusqlite::Error::QueryReturnedNoRows` into `Ok(None)`.

@@ -184,7 +184,16 @@
 		"showAll": "Show all {n}",
 		"showFewer": "Show fewer",
 		"noEmployeesMatch": "No employees in that state right now.",
-		"barHover": "{done} done, {skipped} nothing to do, {waiting} waited for you, {stopped} stopped"
+		"barHover": "{done} done, {skipped} nothing to do, {waiting} waited for you, {stopped} stopped",
+		"inProgress": "Work in progress",
+		"inProgressSub": "Made for one piece of work; gone once you have the outcome",
+		"temporaryWorkflow": "Temporary workflow",
+		"temporaryTeam": "Temporary team",
+		"temporaryStatus": {
+			"starting": "Starting",
+			"working": "Working",
+			"waiting": "Waiting"
+		}
 	},
 	"nav": {
 		"home": "Nebo Home",

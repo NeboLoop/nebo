@@ -184,7 +184,16 @@
 		"showAll": "Visa alla {n}",
 		"showFewer": "Visa färre",
 		"noEmployeesMatch": "Inga medarbetare i det läget just nu.",
-		"barHover": "{done} klara, {skipped} inget att göra, {waiting} väntade på dig, {stopped} stoppade"
+		"barHover": "{done} klara, {skipped} inget att göra, {waiting} väntade på dig, {stopped} stoppade",
+		"inProgress": "Pågående arbete",
+		"inProgressSub": "Gjort för ett enda jobb; försvinner när du har fått resultatet",
+		"temporaryWorkflow": "Tillfälligt arbetsflöde",
+		"temporaryTeam": "Tillfälligt team",
+		"temporaryStatus": {
+			"starting": "Startar",
+			"working": "Arbetar",
+			"waiting": "Väntar"
+		}
 	},
 	"nav": {
 		"home": "Nebo Hem",

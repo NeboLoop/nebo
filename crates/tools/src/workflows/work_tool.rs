@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use super::manager::WorkflowManager;
+use super::manager::{Lifetime, SaveOptions, WorkflowManager};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
@@ -80,10 +80,12 @@ impl Kind {
                 - `definition` is the workflow JSON: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}}, \"activities\": [{{\"id\": \"run\", \"intent\": \"what this accomplishes\", \"steps\": [\"concrete step\"]}}]}}. Leave out the trigger for a workflow run by hand.\n\
                 - Activities are the only executable unit; each runs its intent and steps on its own. A top-level `steps` array is one activity.\n\
                 - The name goes in `name`, or as \"name\" inside the definition.\n\
+                - `lifetime: \"temporary\"` makes it for one piece of work: it runs once (at once when it has no trigger; on its first fire otherwise), and after it ends and its outcome reaches the owner it is deleted. Its runs, receipts and cost stay, and you hear the outcome. Left out, it is saved and runs on its trigger until deleted.\n\
+                - `from_run` saves the work a past run did (a temporary workflow that already finished) under this name, with `definition` adding to it, e.g. a schedule trigger.\n\
                 - {EMPLOYEE_NOTE}"
             ),
             Kind::Update => format!(
-                "Replaces an existing workflow's definition (same shape as create_workflow; not a partial patch). Its run history stays attached. {EMPLOYEE_NOTE}"
+                "Replaces an existing workflow's definition (same shape as create_workflow; not a partial patch). Its run history stays attached. `lifetime: \"saved\"` keeps a temporary workflow for good. {EMPLOYEE_NOTE}"
             ),
             Kind::Delete => format!("Deletes a workflow by name, with its trigger. {EMPLOYEE_NOTE}"),
             Kind::Run => format!(
@@ -106,6 +108,11 @@ impl Kind {
         let employee = serde_json::json!({ "type": "string", "description": "The employee (name or id) whose workflows these are. Default: you." });
         let workflow = serde_json::json!({ "type": "string", "description": "The workflow's name or id." });
         let definition = serde_json::json!({ "type": "string", "description": "The workflow JSON." });
+        let lifetime = serde_json::json!({
+            "type": "string",
+            "enum": ["temporary", "saved"],
+            "description": "temporary: for one piece of work, deleted after its outcome reaches the owner. saved: kept until deleted."
+        });
         match self {
             Kind::List => serde_json::json!({
                 "type": "object",
@@ -121,11 +128,22 @@ impl Kind {
                 "properties": { "id": { "type": "string", "description": "The install id from list_workflows." } },
                 "required": ["id"]
             }),
-            Kind::Create | Kind::Update => serde_json::json!({
+            Kind::Create => serde_json::json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "The workflow's name." },
                     "definition": definition,
+                    "lifetime": lifetime,
+                    "from_run": { "type": "string", "description": "A past run's id: save the work it did." },
+                    "employee": employee
+                }
+            }),
+            Kind::Update => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "The workflow's name." },
+                    "definition": definition,
+                    "lifetime": lifetime,
                     "employee": employee
                 },
                 "required": ["definition"]
@@ -314,12 +332,28 @@ impl WorkflowTool {
                     );
                 }
                 let definition = str_field(&input, "definition");
+                let from_run = str_field(&input, "from_run");
+                if self.kind == Kind::Create && definition.is_empty() && from_run.is_empty() {
+                    return ToolResult::error("Give the workflow a `definition`, or `from_run` to save the work a past run did.");
+                }
+                let options = SaveOptions {
+                    lifetime: match str_field(&input, "lifetime") {
+                        "temporary" => Some(Lifetime::Temporary { report_to: ctx.session_key.clone() }),
+                        "saved" => Some(Lifetime::Saved),
+                        "" => None,
+                        other => {
+                            return ToolResult::error(format!("lifetime is \"temporary\" or \"saved\", not {other:?}."));
+                        }
+                    },
+                    from_run: (!from_run.is_empty()).then(|| from_run.to_string()),
+                };
+                let definition = if definition.is_empty() { "{}" } else { definition };
                 match self.kind {
-                    Kind::Create => match self.manager.create(employee, &name, definition).await {
+                    Kind::Create => match self.manager.create(employee, &name, definition, options).await {
                         Ok(info) => json_result(serde_json::json!({ "created": true, "workflow": info })),
                         Err(e) => ToolResult::error(format!("create failed: {e}")),
                     },
-                    Kind::Update => match self.manager.update(employee, &name, definition).await {
+                    Kind::Update => match self.manager.update(employee, &name, definition, options).await {
                         Ok(info) => json_result(serde_json::json!({ "updated": true, "workflow": info })),
                         Err(e) => ToolResult::error(format!("update failed: {e}")),
                     },
@@ -507,7 +541,22 @@ pub(crate) mod tests {
             is_enabled: enabled,
             trigger_count: 0,
             activity_count: 1,
+            temporary: false,
+            run_id: None,
         }
+    }
+
+    /// How a recorded save names its lifetime and source run.
+    fn lifetime_note(o: &SaveOptions) -> String {
+        let mut note = match &o.lifetime {
+            Some(Lifetime::Temporary { report_to }) => format!(" temporary→{report_to}"),
+            Some(Lifetime::Saved) => " saved".to_string(),
+            None => String::new(),
+        };
+        if let Some(run) = &o.from_run {
+            note.push_str(&format!(" from {run}"));
+        }
+        note
     }
 
     impl Recorder {
@@ -567,12 +616,12 @@ pub(crate) mod tests {
             let now = *on;
             Box::pin(async move { Ok(now) })
         }
-        fn create<'a>(&'a self, agent_id: &'a str, name: &'a str, _definition: &'a str) -> Fut<'a, Result<WorkflowInfo, String>> {
-            self.log(format!("create {agent_id} {name}"));
+        fn create<'a>(&'a self, agent_id: &'a str, name: &'a str, _definition: &'a str, options: SaveOptions) -> Fut<'a, Result<WorkflowInfo, String>> {
+            self.log(format!("create {agent_id} {name}{}", lifetime_note(&options)));
             Box::pin(async { Ok(info(true)) })
         }
-        fn update<'a>(&'a self, agent_id: &'a str, name: &'a str, _definition: &'a str) -> Fut<'a, Result<WorkflowInfo, String>> {
-            self.log(format!("update {agent_id} {name}"));
+        fn update<'a>(&'a self, agent_id: &'a str, name: &'a str, _definition: &'a str, options: SaveOptions) -> Fut<'a, Result<WorkflowInfo, String>> {
+            self.log(format!("update {agent_id} {name}{}", lifetime_note(&options)));
             Box::pin(async { Ok(info(true)) })
         }
         fn delete<'a>(&'a self, agent_id: &'a str, name: &'a str) -> Fut<'a, Result<(), String>> {
@@ -645,6 +694,26 @@ pub(crate) mod tests {
         let run = rig.call("run_workflow", json!({"workflow": "Weekly Report", "inputs": {"week": "2026-39"}})).await;
         assert!(run.content.contains("run-1") && !run.content.contains("workflow_status"), "{}", run.content);
         assert_eq!(rig.calls(), ["resolve ops Weekly Report", r#"run wf-1 {"week":"2026-39"}"#]);
+    }
+
+    /// The lifetime option rides the one create path: temporary reports to
+    /// the session that made it; saved keeps a temporary one; `from_run`
+    /// saves a past run's work. Anything else is refused before any call.
+    #[tokio::test]
+    async fn the_lifetime_option_rides_the_one_create_path() {
+        let rig = Rig::new();
+        let def = r#"{"name":"Budget check","activities":[{"id":"a","intent":"x"}]}"#;
+        rig.call("create_workflow", json!({"definition": def, "lifetime": "temporary"})).await;
+        assert_eq!(rig.calls(), ["create ops Budget check temporary→agent:ops:web"]);
+        rig.call("update_workflow", json!({"name": "Budget check", "definition": def, "lifetime": "saved"})).await;
+        assert_eq!(rig.calls(), ["update ops Budget check saved"]);
+        let weekly = r#"{"trigger":{"type":"schedule","cron":"0 8 * * MON"}}"#;
+        rig.call("create_workflow", json!({"name": "Weekly budget", "definition": weekly, "from_run": "run-7"})).await;
+        assert_eq!(rig.calls(), ["create ops Weekly budget from run-7"]);
+        let bad = rig.call("create_workflow", json!({"definition": def, "lifetime": "forever"})).await;
+        assert!(bad.is_error && rig.calls().is_empty(), "{}", bad.content);
+        let empty = rig.call("create_workflow", json!({"name": "Nothing"})).await;
+        assert!(empty.is_error && empty.content.contains("from_run") && rig.calls().is_empty(), "{}", empty.content);
     }
 
     /// A status answer for a run in flight says checking again is useless,
