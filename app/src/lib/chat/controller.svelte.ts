@@ -364,14 +364,7 @@ export function createChatController(config: ChatControllerConfig) {
     if (data.done) return;
     const aid = data.agentId || agentId;
     if (aid === agentId && !isLoading) { isLoading = true; phaseStartTime = Date.now(); }
-    let chunk = data.chunk || data.content || '';
-    // Extract "Working on:" status lines — show as activity indicator, not chat text
-    const STATUS_RE = /\n?_Working[^_]*_\n?/g;
-    const statusMatch = chunk.match(STATUS_RE);
-    if (statusMatch) {
-      activityStatus = statusMatch[statusMatch.length - 1].replace(/_/g, '').trim();
-      chunk = chunk.replace(STATUS_RE, '');
-    }
+    const chunk = data.chunk || data.content || '';
     if (!chunk) return;
     // Narration resuming after this reply already ran tools starts a FRESH bubble,
     // so each segment owns exactly the tools that followed it — the same grouping

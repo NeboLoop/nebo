@@ -1081,8 +1081,6 @@
 		"sameActionLimitDesc": "Ulangan tanpa hasil bagi satu tindakan alat setiap giliran sebelum model dipandu menjauh",
 		"identicalArgsBlockAfter": "Sekat panggilan serupa",
 		"identicalArgsBlockAfterDesc": "Ulangan tanpa hasil bagi panggilan yang sama persis (alat sama, hujah sama) sebelum disekat",
-		"maxAutoContinuations": "Bajet sambung automatik",
-		"maxAutoContinuationsDesc": "Berapa kali pekerja boleh menyambung kerja yang belum selesai secara automatik bagi setiap mesej pengguna (0 melumpuhkannya)",
 		"hardStop": "Henti terus apabila berulang",
 		"hardStopDesc": "Tamatkan giliran apabila had ulangan dicapai, bukannya memandu model untuk mengubah pendekatan",
 		"guardrailsSaved": "Pengadang disimpan",

@@ -257,6 +257,15 @@ export interface BillingSubscription {
 	currentPeriodEnd?: string
 }
 
+export interface CallEffects {
+	money_cents?: number
+	counterparty?: string
+	recipients: string[]
+	publishes: Knowable
+	deletes: string[]
+	overwrites: string[]
+}
+
 export interface CaseDetail {
 	case: CaseSummary
 	turns: CaseTurn[]
@@ -367,6 +376,13 @@ export interface ChatMessagesResponse {
 	hasMore: boolean
 	activeRun?: ActiveTurnStatus
 	pendingAsk?: PendingAsk
+}
+
+export interface ChatRecap {
+	chatId: string
+	turnId: string
+	text: string
+	createdAt: number
 }
 
 export interface ChatStreamResponse {
@@ -587,6 +603,15 @@ export interface ExtensionInfo {
 	needsConfiguration: boolean
 }
 
+export interface Grant {
+	agent_id: string
+	mode: Mode
+	rules: Rule[]
+	ceiling?: Ceiling
+	run_folders?: PathBuf[]
+	fence?: PathBuf[]
+}
+
 export interface HandleAvailableResponse {
 	available: boolean
 }
@@ -768,6 +793,13 @@ export interface MessageResponse {
 	message: string
 }
 
+export interface MoneyLimit {
+	per_action_cents?: number
+	per_day_cents?: number
+	per_day_count?: number
+	per_counterparty_day_cents?: number
+}
+
 export interface Notification {
 	id: string
 	userId: string
@@ -946,6 +978,18 @@ export interface RefreshToken {
 	createdAt: number
 }
 
+export interface Rule {
+	id: string
+	scope: Scope
+	key: RuleKey
+	field?: RuleField
+	effect: Effect
+	money?: MoneyLimit
+	source: RuleSource
+	locked: boolean
+	created_at: number
+}
+
 export interface RunExit {
 	sessionKey?: string
 	agentId: string
@@ -980,7 +1024,6 @@ export interface Session {
 	name?: string
 	scope?: string
 	scopeId?: string
-	summary?: string
 	tokenCount?: number
 	messageCount?: number
 	lastCompactedAt?: number
@@ -998,9 +1041,6 @@ export interface Session {
 	verboseLevel?: string
 	customLabel?: string
 	lastEmbeddedMessageId?: number
-	activeTask?: string
-	lastSummarizedCount?: number
-	workTasks?: string
 	activeChatId?: string
 }
 
@@ -1069,6 +1109,16 @@ export interface SkillSecretInfo {
 	hint: string
 	required: boolean
 	configured: boolean
+}
+
+export interface Target {
+	tool: string
+	key: string
+	operation?: string
+	capability?: string
+	field?: RuleField
+	read_only: boolean
+	effects: CallEffects
 }
 
 export interface Team {
@@ -1519,7 +1569,7 @@ export interface EnableAgentChannelResponse {
 }
 
 export interface GetAgentOperationsResponse {
-	default: unknown
+	default: string
 	configured: unknown
 	interfaces: unknown
 	available: unknown[]
@@ -2548,11 +2598,11 @@ export type WSServerEventType =
 	| "chat_cancelled"
 	| "chat_message"
 	| "session_reset"
-	| "session_compact"
 	| "chat_complete"
 	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
+	| "session_compact"
 
 export interface AppActionEvent {
 	agentId: string
@@ -2577,12 +2627,6 @@ export interface ChatMessageEvent {
 	artifacts: unknown
 }
 
-export interface SessionCompactEvent {
-	session_id: string
-	success: boolean
-	error: string
-}
-
 export interface ChatCompleteEvent {
 	session_id: string
 	skipped: boolean
@@ -2601,6 +2645,11 @@ export interface ChatStreamEvent {
 export interface ChatErrorEvent {
 	error: string
 	session_id: string
+}
+
+export interface SessionCompactEvent {
+	success: boolean
+	error: string
 }
 
 /** Client → Server WebSocket message types */

@@ -1081,8 +1081,6 @@
 		"sameActionLimitDesc": "Unproduktive Wiederholungen einer Werkzeugaktion pro Runde, bevor das Modell davon weggelenkt wird",
 		"identicalArgsBlockAfter": "Sperre bei identischem Aufruf",
 		"identicalArgsBlockAfterDesc": "Unproduktive Wiederholungen genau desselben Aufrufs (gleiches Werkzeug, gleiche Argumente), bevor er gesperrt wird",
-		"maxAutoContinuations": "Budget für automatisches Weitermachen",
-		"maxAutoContinuationsDesc": "Wie oft ein Mitarbeiter unerledigte Arbeit pro Nutzernachricht automatisch fortsetzen darf (0 deaktiviert)",
 		"hardStop": "Harter Stopp bei Spirale",
 		"hardStopDesc": "Die Runde beenden, wenn die Spiralgrenze greift, statt das Modell zu einem anderen Vorgehen zu bewegen",
 		"guardrailsSaved": "Schutzgrenzen gespeichert",

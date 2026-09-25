@@ -1081,8 +1081,6 @@
 		"sameActionLimitDesc": "Ile razy w jednej turze jedno działanie narzędzia może powtórzyć się bez efektu, zanim model zostanie od niego odciągnięty",
 		"identicalArgsBlockAfter": "Blokada identycznego wywołania",
 		"identicalArgsBlockAfterDesc": "Ile razy jedno dokładnie takie samo wywołanie (to samo narzędzie, te same argumenty) może powtórzyć się bez efektu, zanim zostanie zablokowane",
-		"maxAutoContinuations": "Budżet samodzielnego kontynuowania",
-		"maxAutoContinuationsDesc": "Ile razy pracownik może sam wrócić do niedokończonej pracy na jedną wiadomość użytkownika (0 wyłącza)",
 		"hardStop": "Twarde zatrzymanie przy zapętleniu",
 		"hardStopDesc": "Zakończ turę, gdy limit zapętlenia zostanie przekroczony, zamiast nakłaniać model do zmiany podejścia",
 		"guardrailsSaved": "Zapisano zabezpieczenia",

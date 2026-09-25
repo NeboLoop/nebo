@@ -1081,8 +1081,6 @@
 		"sameActionLimitDesc": "Repetições improdutivas de uma ação de ferramenta por rodada antes de o modelo ser desviado",
 		"identicalArgsBlockAfter": "Bloqueio de chamada idêntica",
 		"identicalArgsBlockAfterDesc": "Repetições improdutivas de uma chamada exata (mesma ferramenta, mesmos argumentos) antes de ser bloqueada",
-		"maxAutoContinuations": "Orçamento de retomada automática",
-		"maxAutoContinuationsDesc": "Quantas vezes um funcionário pode retomar sozinho um trabalho inacabado por mensagem (0 desliga)",
 		"hardStop": "Parada seca na espiral",
 		"hardStopDesc": "Encerrar a rodada quando o limite de espiral dispara, em vez de levar o modelo a mudar de abordagem",
 		"guardrailsSaved": "Proteções salvas",
