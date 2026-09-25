@@ -12,7 +12,11 @@ name: CI
 # merge ref — the better signal; direct pushes to main keep their own run.
 on:
   push:
-    branches: [main]
+    # harness/turn-controller is the rewrite's integration branch: its PRs are
+    # merged the moment they pass locally, which cancels their PR runs, so
+    # each merge is tested here at the branch tip. The cutover to main
+    # removes this entry along with the branch.
+    branches: [main, harness/turn-controller]
   pull_request:
 
 concurrency:
