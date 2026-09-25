@@ -932,6 +932,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             memory_writes_disabled: cx.seat.memory.writes_disabled,
             memory_write_bar: &cx.seat.write_bar,
             audience_restricted: cx.seat.audience_restricted,
+            audience: cx.request.seat.audience.as_deref(),
             memory_matter: &cx.seat.memory_matter,
             run_taint: &cx.taint,
             review_fork: cx.review_fork.as_ref(),

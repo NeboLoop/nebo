@@ -51,6 +51,8 @@ pub(crate) struct RunToolScope<'a> {
     pub memory_writes_disabled: bool,
     pub memory_write_bar: &'a Vec<types::provenance::ProvenanceClass>,
     pub audience_restricted: bool,
+    /// The coworker the run replies to, if any.
+    pub audience: Option<&'a str>,
     pub memory_matter: &'a Option<String>,
     pub run_taint: &'a std::sync::Mutex<std::collections::BTreeSet<types::provenance::ProvenanceClass>>,
     pub review_fork: Option<&'a crate::review_fork::ReviewForkCtx>,
@@ -86,6 +88,7 @@ impl RunToolScope<'_> {
             run_taint,
             memory_write_bar,
             audience_restricted,
+            audience,
             memory_matter,
             review_fork,
             tool_allowlist,
@@ -122,6 +125,7 @@ impl RunToolScope<'_> {
             run_taint: run_taint.lock().unwrap().iter().copied().collect(),
             memory_write_bar: memory_write_bar.clone(),
             audience_restricted,
+            audience: audience.map(str::to_string),
             memory_matter: memory_matter.clone(),
             // Restricted-run allowlist: the review fork's whitelist, or
             // the request's explicit allowlist (phone callers). None for

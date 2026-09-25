@@ -28,6 +28,9 @@ pub struct ChildSeat {
     pub cwd: Option<String>,
     /// Classes of untrusted content the parent had touched when it spawned.
     pub taint: Vec<types::provenance::ProvenanceClass>,
+    /// The coworker the parent run replies to: the child answers for the
+    /// same run, so the same memory restriction holds.
+    pub audience: Option<String>,
 }
 
 /// Request to spawn a single sub-agent or execute a DAG.
@@ -100,6 +103,7 @@ impl SpawnRequest {
                 tool_denial_hint: ctx.whitelist_denial_hint.clone(),
                 cwd: ctx.cwd.clone(),
                 taint: ctx.run_taint.clone(),
+                audience: ctx.audience.clone(),
             },
             ..Default::default()
         }
