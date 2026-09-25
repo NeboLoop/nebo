@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use types::permissions::{CallEffects, Knowable, RuleField};
 
 use crate::file_tool::FileTool;
+use crate::gate::{GateVerdict, PermissionGate, ResolvedCall};
 use crate::origin::ToolContext;
 use crate::process::ProcessRegistry;
 use crate::registry::{DynTool, ToolResult};
@@ -41,9 +42,13 @@ impl Machine {
 
     /// Run every step's verify command and rewrite the checkboxes from the
     /// exit codes. The model cannot tick a box; only a passing command can.
-    /// A check that verifies nothing new is reported as an error so a
+    /// Each command is a `run_command` call to the permission check first,
+    /// as every shell command is (Claude Code checks every command through
+    /// Bash's permissions): its rules, the shell limits and the safeguards
+    /// see it, and a step whose command the check refuses or parks did not
+    /// run. A check that verifies nothing new is reported as an error so a
     /// stalled plan never counts as progress.
-    async fn check_plan(&self, ctx: &ToolContext, path: &str) -> ToolResult {
+    async fn check_plan(self: &Arc<Self>, ctx: &ToolContext, gate: &dyn PermissionGate, path: &str) -> ToolResult {
         let path = match ctx.cwd.as_deref() {
             Some(cwd) if std::path::Path::new(path).is_relative() => {
                 std::path::Path::new(cwd).join(path).to_string_lossy().into_owned()
@@ -64,7 +69,23 @@ impl Machine {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".".into());
         let mut results = Vec::with_capacity(plan.steps.len());
+        let run_command = crate::command_tools::RunCommandTool(self.clone());
         for step in &plan.steps {
+            let call_input = json!({
+                "command": step.verify,
+                "description": format!("verify plan step {}: {}", step.n, step.title),
+                "cwd": dir,
+            });
+            let call = ResolvedCall {
+                tool: &run_command,
+                input: &call_input,
+                target: crate::registry::target_of(&run_command, &call_input),
+            };
+            if let GateVerdict::Refuse(out) | GateVerdict::Parked(out) = gate.check(ctx, &call).await {
+                let note = crate::plan::first_line(&out.content, Self::PLAN_NOTE_CHARS);
+                results.push(crate::plan::StepResult { n: step.n, ok: false, exit: None, note });
+                continue;
+            }
             // Same policy, same refusals as any command; raw mode returns
             // stdout only on success and an error carrying stderr otherwise.
             let out = self
@@ -897,7 +918,126 @@ impl DynTool for WritePlanTool {
     }
 }
 
-pub struct CheckPlanTool(pub Arc<Machine>);
+/// The way out of Plan mode (Claude Code's ExitPlanMode): the plan written
+/// with write_plan goes to the owner on the one ask card; their approval
+/// switches the employee out of Plan mode and hands the approved plan back
+/// as the answer. The permission check decides when it may be called and
+/// that it always asks (`permissions::plan`).
+pub struct ExitPlanModeTool {
+    store: Arc<db::Store>,
+}
+
+impl ExitPlanModeTool {
+    pub const NAME: &'static str = "exit_plan_mode";
+    /// Most of the plan the card's line carries.
+    const CARD_PLAN_CHARS: usize = 2_000;
+
+    pub fn new(store: Arc<db::Store>) -> Self {
+        Self { store }
+    }
+}
+
+impl DynTool for ExitPlanModeTool {
+    fn name(&self) -> &str {
+        Self::NAME
+    }
+
+    fn description(&self) -> String {
+        "In Plan mode, once the plan is written with write_plan: sends it to the owner to approve. Approval ends Plan mode and you carry out the plan.\n\
+         - Only for work that changes things. For research, looking something up or understanding a question, answer instead.\n\
+         - Settle open questions with the owner first; don't ask \"is this plan okay?\" in text: this call is that question.\n\
+         - If the owner declines, revise the plan and call it again."
+            .to_string()
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Absolute path of the plan written with write_plan." }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn search_hint(&self) -> &str {
+        "leave plan mode owner approves plan"
+    }
+
+    /// The owner approves the plan as it stands when they are asked: the
+    /// document is read into the call once, so the card, a declined repeat
+    /// and the approved answer all carry the same plan.
+    fn normalize_input(&self, mut input: Value) -> Value {
+        if input.get("plan").is_none()
+            && let Some(path) = str_arg(&input, "path")
+        {
+            let plan = std::fs::read_to_string(path).unwrap_or_default();
+            input["plan"] = json!(plan);
+        }
+        input
+    }
+
+    fn activity(&self, input: &Value) -> String {
+        let plan = str_arg(input, "plan").unwrap_or("").trim();
+        let plan = types::strutil::safe_prefix(plan, Self::CARD_PLAN_CHARS);
+        format!("leave plan mode and carry out the plan in {}:\n{plan}", file_name(input))
+    }
+
+    fn outcome(&self, input: &Value) -> String {
+        format!("The owner approved the plan in {}", file_name(input))
+    }
+
+    fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
+        Box::pin(async move {
+            let agent_id = ctx.grant.as_ref().map(|g| g.agent_id.clone()).unwrap_or_default();
+            if let Err(e) = leave_plan_mode(&self.store, &agent_id) {
+                return ToolResult::error(format!("Plan mode could not be switched off: {e}"));
+            }
+            let plan = str_arg(&input, "plan").unwrap_or("").trim();
+            if plan.is_empty() {
+                return ToolResult::ok("The owner approved leaving plan mode. You can now proceed.");
+            }
+            ToolResult::ok(format!(
+                "The owner approved your plan. Plan mode is off: you can now carry it out.\n\n\
+                 The plan is saved at {}; tick its steps with check_plan as you go.\n\n## Approved plan:\n{plan}",
+                str_arg(&input, "path").unwrap_or("")
+            ))
+        })
+    }
+}
+
+/// Switch employee `agent_id` out of Plan mode: to the company's mode, or
+/// Automatic when the company itself plans (Claude Code restores the mode
+/// from before plan mode, else its default). An employee with no scope of
+/// its own (the main one) is in the company's mode.
+fn leave_plan_mode(store: &db::Store, agent_id: &str) -> Result<(), types::NeboError> {
+    use types::permissions::{Mode, Scope};
+    let company = store.permission_mode(&Scope::Company)?.unwrap_or_default();
+    let after = if company == Mode::Plan { Mode::Automatic } else { company };
+    if agent_id.is_empty() {
+        if company == Mode::Plan {
+            store.set_permission_mode(&Scope::Company, after)?;
+        }
+        return Ok(());
+    }
+    let scope = Scope::Employee(agent_id.to_string());
+    if store.permission_mode(&scope)?.is_some() || company == Mode::Plan {
+        store.set_permission_mode(&scope, after)?;
+    }
+    Ok(())
+}
+
+pub struct CheckPlanTool {
+    machine: Arc<Machine>,
+    /// The registry's permission check: every verify command meets it.
+    gate: Arc<dyn PermissionGate>,
+}
+
+impl CheckPlanTool {
+    pub fn new(machine: Arc<Machine>, gate: Arc<dyn PermissionGate>) -> Self {
+        Self { machine, gate }
+    }
+}
 
 impl DynTool for CheckPlanTool {
     fn name(&self) -> &str {
@@ -946,7 +1086,9 @@ impl DynTool for CheckPlanTool {
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
-        Box::pin(async move { self.0.check_plan(ctx, str_arg(&input, "path").unwrap_or("")).await })
+        Box::pin(async move {
+            self.machine.check_plan(ctx, self.gate.as_ref(), str_arg(&input, "path").unwrap_or("")).await
+        })
     }
 }
 
@@ -1068,7 +1210,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("marker"), "x").unwrap();
         let plan = write_plan(dir.path(), &[("marker is here", "test -f ./marker"), ("and is not elsewhere", "test -f /nonexistent/marker")]);
-        let r = CheckPlanTool(machine()).execute_dyn(&ctx(), json!({"path": plan})).await;
+        let r = CheckPlanTool::new(machine(), crate::gate::test_gate()).execute_dyn(&ctx(), json!({"path": plan})).await;
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.contains("1 of 2 steps pass; 1 newly passed"), "{}", r.content);
         let doc = std::fs::read_to_string(&plan).unwrap();
@@ -1083,11 +1225,45 @@ mod tests {
     async fn check_plan_refuses_a_destructive_verify_command() {
         let dir = tempfile::tempdir().unwrap();
         let plan = write_plan(dir.path(), &[("bad", "git stash"), ("good", "true")]);
-        let r = CheckPlanTool(machine()).execute_dyn(&ctx(), json!({"path": plan})).await;
+        let r = CheckPlanTool::new(machine(), crate::gate::test_gate()).execute_dyn(&ctx(), json!({"path": plan})).await;
         assert!(!r.is_error, "{}", r.content);
         let doc = std::fs::read_to_string(&plan).unwrap();
         assert!(doc.contains("1. ✗ bad, did not run: This git command discards work"), "{doc}");
         assert!(doc.contains("- [x] 2."), "{doc}");
+    }
+
+    /// D11 (parity 7.1): every verify command meets the permission check as
+    /// a `run_command` call, so a command rule refuses it here too; the
+    /// step did not run, and the others do.
+    #[tokio::test]
+    async fn check_plan_sends_every_verify_command_through_the_permission_check() {
+        struct DenyTouch(std::sync::Mutex<Vec<(String, String)>>);
+        #[async_trait::async_trait]
+        impl PermissionGate for DenyTouch {
+            async fn check(&self, _ctx: &ToolContext, call: &ResolvedCall<'_>) -> GateVerdict {
+                let command = call.input["command"].as_str().unwrap_or("").to_string();
+                self.0.lock().unwrap().push((call.target.key.clone(), command.clone()));
+                if command.starts_with("touch") {
+                    return GateVerdict::Refuse(ToolResult::error("'run_command' is turned off for `touch`."));
+                }
+                GateVerdict::Run(types::permissions::Why::BasicWork)
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let plan = write_plan(dir.path(), &[("made", "touch ./made"), ("good", "true")]);
+        let gate = Arc::new(DenyTouch(Default::default()));
+        let r = CheckPlanTool::new(machine(), gate.clone()).execute_dyn(&ctx(), json!({"path": plan})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(!dir.path().join("made").exists(), "the refused command never ran");
+        let doc = std::fs::read_to_string(&plan).unwrap();
+        assert!(doc.contains("1. ✗ made, did not run: 'run_command' is turned off"), "{doc}");
+        assert!(doc.contains("- [x] 2."), "{doc}");
+        let seen = gate.0.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            [("run_command".to_string(), "touch ./made".to_string()), ("run_command".to_string(), "true".to_string())],
+            "each verify command is a run_command call to the check"
+        );
     }
 
     // A check that verifies nothing is an error, so a stalled plan never
@@ -1096,7 +1272,7 @@ mod tests {
     async fn check_plan_sets_is_error_when_nothing_is_verified() {
         let dir = tempfile::tempdir().unwrap();
         let plan = write_plan(dir.path(), &[("fails", "false")]);
-        let tool = CheckPlanTool(machine());
+        let tool = CheckPlanTool::new(machine(), crate::gate::test_gate());
         let r = tool.execute_dyn(&ctx(), json!({"path": plan})).await;
         assert!(r.is_error, "{}", r.content);
         assert!(r.content.contains("Nothing verified"), "{}", r.content);

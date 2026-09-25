@@ -319,7 +319,6 @@ impl<'a> Rig<'a> {
             origin_agent_id: None,
             mention_context: None,
             tool_scope: None,
-            plan_mode: false,
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
@@ -997,7 +996,6 @@ async fn a_woken_turn_keeps_the_seat_of_the_conversation_it_continues() {
         origin_agent_id: None,
         mention_context: None,
         tool_scope: None,
-        plan_mode: false,
         channel_ctx: Some(tools::ChannelContext {
             kind: "slack".into(),
             channel_id: "C52".into(),
@@ -1124,10 +1122,18 @@ async fn a_woken_turn_replies_in_the_chat_channel_it_came_from() {
         .expect("the dispatch");
     assert_eq!(reply.as_deref(), Some("Started."));
     rig.company.open("h14");
-    let op = tokio::time::timeout(Duration::from_secs(30), ops.recv())
-        .await
-        .expect("the woken turn posts into the channel")
-        .expect("an op");
+    // Other scenarios on the one server post into their own channels
+    // through the same bridge: this one's op is the one for C14.
+    let op = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let op = ops.recv().await.expect("an op");
+            if op["channel"] == "C14" {
+                return op;
+            }
+        }
+    })
+    .await
+    .expect("the woken turn posts into the channel");
     assert_eq!(op["op"], "post", "{op}");
     assert_eq!(op["channel"], "C14", "{op}");
     assert_eq!(op["thread_ts"], "14.1", "in the thread it came from: {op}");

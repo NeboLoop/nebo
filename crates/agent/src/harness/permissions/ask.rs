@@ -856,6 +856,44 @@ mod tests {
         }
     }
 
+    /// D11: the owner approves the plan on the one ask card: the employee
+    /// leaves plan mode (to the company's mode) and hears the approved plan
+    /// as the answer. A No keeps it in plan mode.
+    #[tokio::test]
+    async fn approving_the_plan_card_leaves_plan_mode() {
+        let r = rig().await;
+        r.reg.register(Box::new(tools::file_tools::ExitPlanModeTool::new(r.store.clone()))).await;
+        let emp = types::permissions::Scope::Employee("emp".into());
+        r.store.set_permission_mode(&emp, Mode::Plan).unwrap();
+        let doc = r._dir.path().join("rivera-plan.md");
+        std::fs::write(&doc, "# Rivera listing\n\n- [ ] 1. Update the price\n  verify: `true`\n").unwrap();
+        let mut c = ctx(KEY, Door::Chat);
+        c.grant = Some(Arc::new(crate::harness::permissions::resolve_grant(&r.store, "emp", None)));
+        let input = json!({ "path": doc.to_string_lossy() });
+
+        // A No: still planning.
+        let parked = r.reg.execute(&c, "exit_plan_mode", input.clone()).await;
+        let id = parked.parked_ask.clone().expect("parked on the owner");
+        assert_eq!(r.seen.cards(), 1, "one card");
+        r.answer(&id, Answer::No, AnsweredVia::Chat).await.unwrap();
+        assert_eq!(r.store.permission_mode(&emp).unwrap(), Some(Mode::Plan));
+
+        // The same plan again is refused without a card; a revised plan
+        // is a new card.
+        let same = r.reg.execute(&c, "exit_plan_mode", input.clone()).await;
+        assert!(same.parked_ask.is_none() && same.content.contains("already said no"), "{}", same.content);
+        std::fs::write(&doc, "# Rivera listing\n\n- [ ] 1. Update the price and the photos\n  verify: `true`\n").unwrap();
+
+        // Approved: out of plan mode, and the plan comes back as the answer.
+        let again = r.reg.execute(&c, "exit_plan_mode", input).await;
+        assert!(again.parked_ask.is_some(), "the revised plan goes to the owner: {}", again.content);
+        r.answer(again.parked_ask.as_deref().unwrap(), Answer::ThisOnce, AnsweredVia::Mobile).await.unwrap();
+        assert_eq!(r.store.permission_mode(&emp).unwrap(), Some(Mode::Automatic), "the company's mode");
+        let (_, note) = r.seen.notes().pop().unwrap();
+        assert!(note.contains("The owner approved your plan"), "{note}");
+        assert!(note.contains("Update the price and the photos"), "the approved plan comes back: {note}");
+    }
+
     /// Three steps of one unattended run: the one that asks waits, the
     /// others run, and one card goes out.
     #[tokio::test]

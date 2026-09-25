@@ -741,8 +741,13 @@ pub(crate) async fn prepare(
         review_fork,
         withheld_tools,
     };
-    if cx.plan_mode() && !plan_mode_announced(&h.sessions, session_id) {
+    // Entering and leaving Plan mode are rows, told once each (Claude Code's
+    // plan_mode and plan_mode_exit attachments).
+    let announced = plan_mode_announced(&h.sessions, session_id);
+    if cx.plan_mode() && !announced {
         st.reminders.add(&TurnEvent::PlanMode { entered: true });
+    } else if !cx.plan_mode() && announced {
+        st.reminders.add(&TurnEvent::PlanMode { entered: false });
     }
     Ok((cx, st))
 }
@@ -3693,6 +3698,31 @@ mod tests {
         // Told once: the next request doesn't list the types again.
         let again = texts(&calls[1]).join("\n");
         assert_eq!(again.matches("Helper types for delegate").count(), 1, "the listing is a row, written once");
+    }
+
+    /// D11: entering Plan mode is told once, and leaving it (the owner
+    /// approved the plan, or changed the mode) is told once too, as Claude
+    /// Code's plan_mode_exit row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leaving_plan_mode_is_told_once() {
+        let model = Scripted::new(vec![Step::Say("Planning."), Step::Say("Still planning."), Step::Say("Doing it."), Step::Say("Done.")]);
+        let h = harness(&model).await;
+        let turn = |mode: Mode, text: &'static str| {
+            let mut req = owner(text);
+            req.seat.mode = Some(mode);
+            req
+        };
+        for (mode, text) in [(Mode::Plan, "Plan the move"), (Mode::Plan, "And the photos"), (Mode::Automatic, "Go"), (Mode::Automatic, "Thanks")] {
+            run_turn(&h, turn(mode, text)).await;
+        }
+        let rows: Vec<String> = stored(&h)
+            .iter()
+            .filter(|m| reminders::attachment_kind(m).as_deref() == Some("plan_mode"))
+            .map(|m| m.content.clone())
+            .collect();
+        assert_eq!(rows.len(), 2, "on once, off once: {rows:?}");
+        assert!(rows[0].contains("Plan mode is on") && rows[0].contains("exit_plan_mode"), "{}", rows[0]);
+        assert!(rows[1].contains("Plan mode is off"), "{}", rows[1]);
     }
 
     /// D18: in plan mode a goal can't be proposed yet (Claude Code refuses a

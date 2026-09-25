@@ -374,7 +374,6 @@ async fn start_employee_run(
             origin_agent_id: None,
             mention_context: Some(mention),
             tool_scope: None,
-            plan_mode: false,
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![types::provenance::ProvenanceClass::Channel],
@@ -638,7 +637,7 @@ pub async fn openai_chat_completions(
                         ai::StreamEventType::Done => {
                             text = seg.done();
                         }
-                        ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest | ai::StreamEventType::PlanApproval => {
+                        ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest => {
                             park_for_owner(&state, &run, &key_label, &ev).await;
                             text = seg.done();
                             text.push_str(PARKED);
@@ -683,7 +682,7 @@ pub async fn openai_chat_completions(
                             }
                             serde_json::json!({ "reasoning_content": interim })
                         }
-                        ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest | ai::StreamEventType::PlanApproval => {
+                        ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest => {
                             park_for_owner(&state, &run, &key_label, &ev).await;
                             let mut text = seg.done();
                             text.push_str(PARKED);

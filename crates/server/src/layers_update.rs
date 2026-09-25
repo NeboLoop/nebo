@@ -147,7 +147,6 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
         origin_agent_id: None,
         mention_context: None,
         tool_scope: None,
-        plan_mode: false,
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],

@@ -250,6 +250,10 @@ fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
     if let Some(ask_id) = &cx.ctx.answered_ask {
         return Ok(Decision::Allow { why: Why::AnsweredOnce { ask_id: ask_id.clone() } });
     }
+    // The way out of Plan mode is the owner's to give.
+    if let Some(d) = plan::exit(cx.grant.mode, t) {
+        return Ok(d);
+    }
     // Only the owner gives an employee more room, in every mode.
     if t.effects.widens {
         return Ok(Decision::Ask { case: AskCase::Widens });
@@ -266,7 +270,7 @@ fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
     };
     match cx.grant.mode {
         Mode::FullAccess => return Ok(Decision::Allow { why: Why::Mode { mode: Mode::FullAccess } }),
-        Mode::Plan if !t.read_only => {
+        Mode::Plan if !plan::allows(t) => {
             return Ok(Decision::Deny { reason: plan::REFUSAL.to_string(), why: Why::Mode { mode: Mode::Plan } });
         }
         Mode::Plan => return Ok(Decision::Allow { why: Why::Mode { mode: Mode::Plan } }),
@@ -310,7 +314,7 @@ fn beyond(ceiling: &Grant, cx: &CheckCx<'_>, t: &Target) -> Option<String> {
     let rs = RuleSet::of(ceiling);
     match rs.decide(t) {
         Some((_, Effect::Deny)) => return refusal(),
-        _ if ceiling.mode == Mode::Plan && !t.read_only => return refusal(),
+        _ if ceiling.mode == Mode::Plan && !plan::allows(t) => return refusal(),
         _ if ceiling.mode != Mode::FullAccess && !rs.in_job(t, cx.input) => return refusal(),
         _ => {}
     }

@@ -44,7 +44,6 @@ pub enum StreamEventType {
     RateLimit,
     ApprovalRequest,
     AskRequest,
-    PlanApproval,
     SubagentStart,
     SubagentProgress,
     SubagentComplete,
@@ -404,27 +403,6 @@ impl StreamEvent {
             usage: None,
             rate_limit: None,
             widgets,
-            provider_metadata: None,
-            stop_reason: None,
-            image_url: None,
-        }
-    }
-
-    /// Plan approval request: sends plan text and proposed tool names to the frontend.
-    pub fn plan_approval_request(
-        request_id: impl Into<String>,
-        plan: impl Into<String>,
-        tools: Vec<String>,
-    ) -> Self {
-        Self { payload: None,
-            provenance: None,
-            event_type: StreamEventType::PlanApproval,
-            text: plan.into(),
-            tool_call: None,
-            error: Some(request_id.into()),
-            usage: None,
-            rate_limit: None,
-            widgets: Some(serde_json::json!(tools)),
             provider_metadata: None,
             stop_reason: None,
             image_url: None,

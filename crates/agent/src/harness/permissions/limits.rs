@@ -34,6 +34,7 @@ const FILE_KEYS: &[&str] = &[
     "restore_checkpoint",
     "write_plan",
     "check_plan",
+    "exit_plan_mode",
     "edit_notebook",
 ];
 /// Looking at the screen.

@@ -116,7 +116,6 @@ pub async fn teach_stop(
         origin_agent_id: None,
         mention_context: Some(briefing),
         tool_scope: None,
-        plan_mode: false,
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],

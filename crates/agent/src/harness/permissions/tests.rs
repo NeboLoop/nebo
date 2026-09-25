@@ -275,6 +275,27 @@ async fn plan_mode_is_read_only_until_approved() {
     assert_eq!(reg.execute(&approved, "writer", json!({})).await.content, "RAN");
 }
 
+/// D11 (parity 7.3, 7.4): Plan mode writes its plan and has a way out.
+/// The plan document goes through (Claude Code allows the plan file); the
+/// way out always asks the owner, and only in Plan mode (Claude Code's
+/// ExitPlanMode asks "Exit plan mode?" and refuses outside plan mode).
+#[tokio::test]
+async fn plan_mode_writes_its_plan_and_asks_the_owner_to_leave() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("file"), None, Effect::Allow));
+    let (plan_doc, plan_ran) = Probe::new("planner", "write_plan", Some("file"));
+    let (exit, exit_ran) = Probe::new("leaver", "exit_plan_mode", None);
+    let reg = registry(&store, vec![plan_doc, exit]).await;
+    let plan = with_mode(ctx(&store, "", Origin::User), Mode::Plan);
+    assert_eq!(reg.execute(&plan, "planner", json!({})).await.content, "RAN", "the plan document is written in Plan mode");
+    let asked = reg.execute(&plan, "leaver", json!({})).await;
+    assert!(asked.parked_ask.is_some(), "leaving plan mode asks the owner: {}", asked.content);
+    let full = with_mode(ctx(&store, "", Origin::User), Mode::FullAccess);
+    let outside = reg.execute(&full, "leaver", json!({})).await;
+    assert!(outside.is_error && outside.content.contains("not in plan mode"), "{}", outside.content);
+    assert_eq!((plan_ran.load(Ordering::SeqCst), exit_ran.load(Ordering::SeqCst)), (1, 0));
+}
+
 #[tokio::test]
 async fn ask_mode_asks_every_change_not_owner_allowed() {
     let (_d, store) = store();
