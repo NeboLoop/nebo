@@ -1,18 +1,124 @@
-//! `drive_turn`: the turn state machine. Each step loads the conversation
-//! since the last checkpoint, attaches the queued reminders, calls the
-//! model and runs its tool calls; the turn ends when the model answers and
-//! every end check lets it stop. WP2.3 builds it. Its items narrow to
-//! `pub(crate)` once the facade calls them (WP2.9).
+//! `drive_turn`: the turn state machine, the one loop.
+//!
+//! Admit (`session_gate`) → Prepare (seat, input row, system prompt, the
+//! first step's events) → Step, until the turn ends:
+//!
+//! 1. the step's events become attachment rows (`reminders`, the one writer);
+//! 2. the conversation loads since the last checkpoint, queued mid-turn rows
+//!    and notification rows with it;
+//! 3. old tool results are trimmed; past the window's threshold the
+//!    conversation is checkpointed;
+//! 4. the tool surface is built (core, always loaded, loaded deferred);
+//! 5. the model is called.
+//!
+//! A reply with tool calls runs its tool round and takes another step. A
+//! reply without tool calls passes the end checks (`turn_end`); one that
+//! continues takes another step with its reminder, and when none does the
+//! turn has answered. A transient failure, an overflow or an output cutoff
+//! takes the step again: its attachments are already stored and nothing is
+//! written twice. Finish records the usage, schedules the after-turn work
+//! and hands input that arrived after the last step to the next turn.
+//!
+//! There is no per-call state block and no stream reminder: everything the
+//! model reads is the system prompt or a stored row.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
-use super::seat::Seat;
-use super::{TurnRequest, compact, goal, model_call, reminders, usage};
+use ai::{ChatRequest, RequestTrace, StreamEvent};
+use db::models::ChatMessage;
+use tokio::sync::mpsc;
+use tracing::{info, warn};
 
-/// What one turn runs with.
+use super::conversation::{self, InputRow, MidTurnFrom};
+use super::events::{self, TurnEvent};
+use super::model_call::{self, CallOutcome, RetryWhy};
+use super::prompt::{self, PromptInputs, SystemPrompt, sections};
+use super::seat::{self, GrantRequest, Seat};
+use types::permissions::{Grant, Mode};
+use super::session_gate::{self, Admission, RunProgress, TurnGuard};
+use super::tool_round::{self, RoundContext, RoundGuards, RoundOutcome, RunToolScope};
+use super::tool_surface::{self, SurfaceInputs};
+use super::turn_end::{self, EndVerdict};
+use super::{Harness, HarnessError, TurnHandle, TurnInput, TurnMode, TurnRequest, compact, goal, reminders, usage};
+use crate::pruning;
+use crate::runner::RunState;
+use crate::selector;
+
+/// Steps one turn takes before it ends with `MaxSteps` (Claude Code's
+/// max-turns option).
+pub const DEFAULT_MAX_STEPS: u32 = 100;
+/// Context window assumed for a model that reports none.
+const DEFAULT_CONTEXT_WINDOW: usize = 80_000;
+
+/// What one turn runs with, fixed for the turn.
 pub struct TurnContext {
+    pub harness: Harness,
     pub request: TurnRequest,
     pub seat: Seat,
+    /// The run's permissions: every tool call is decided against them.
+    pub grant: Arc<Grant>,
+    /// The employee's registry entry, when the turn has one.
+    pub agent: Option<tools::ActiveAgent>,
+    /// The session row id (the request carries the key).
+    pub session_id: String,
+    pub channel: String,
+    /// The owner's IANA timezone, when set: the date is theirs.
+    pub timezone: Option<String>,
+    /// The model the owner or the employee chose (`provider/model`); empty
+    /// means the selector's.
+    pub model: String,
+    /// Built once per turn.
+    pub prompt: SystemPrompt,
+    /// The employee's name, for its memory's heading.
+    pub name: String,
+    /// The session's environment fields after the date.
+    pub environment: Vec<(String, String)>,
+    pub mode_facts: events::ModeFacts,
+    /// The workspace notes and the employee's own setup.
+    pub session_context: String,
+    pub tx: mpsc::Sender<StreamEvent>,
+    pub progress: RunProgress,
+    pub max_steps: u32,
+    /// The owner's spending limit for the run, microcents; 0 = none.
+    pub spend_cap_microcents: i64,
+    /// Declared on every step: the employee's `requires.tools`, and the
+    /// plugin tool when its job needs plugins.
+    pub always_load: HashSet<String>,
+    /// The run's provenance: seeded by the input, grown by its tool calls,
+    /// stamped on its last event.
+    pub taint: Mutex<BTreeSet<types::provenance::ProvenanceClass>>,
+    /// After the turn: memory extraction, personality and the chat title.
+    pub after_turn: bool,
+}
+
+impl TurnContext {
+    /// A helper's asks go up to whoever can answer them.
+    fn approval_relay(&self) -> bool {
+        matches!(self.request.mode, TurnMode::Helper { .. })
+    }
+
+    fn plan_mode(&self) -> bool {
+        self.grant.mode == Mode::Plan
+    }
+
+    fn workflow(&self) -> Option<&crate::runner::WorkflowMode> {
+        match &self.request.mode {
+            TurnMode::Workflow(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    fn agent_id(&self) -> &str {
+        &self.request.seat.agent_id
+    }
+
+    fn trace(&self, purpose: &'static str) -> RequestTrace {
+        RequestTrace {
+            agent_id: self.agent_id().to_string(),
+            ..RequestTrace::new(purpose)
+        }
+    }
 }
 
 /// A turn's state across its steps.
@@ -22,15 +128,57 @@ pub struct TurnState {
     pub reminders: reminders::Reminders,
     /// Failover position, retry counters and output-cap escalation.
     pub call: model_call::CallState,
-    /// Deferred tools loaded this session.
+    /// Tokens, cost and the context thresholds, as the calls report them.
+    pub(crate) usage: RunState,
+    /// Deferred tools loaded in the conversation, derived from it each step.
     pub loaded_tools: BTreeSet<String>,
     /// Memory ids this session was already shown; seeded at Prepare from
     /// `memory_context::surfaced_memories`.
     pub surfaced_memories: HashSet<i64>,
     pub end_checks_this_turn: u8,
-    pub tokens: usage::TokenLedger,
     pub frozen_renderings: compact::trim::Frozen,
     pub read_ledger: crate::read_ledger::ReadLedger,
+    /// The relevant-memories search started at Prepare.
+    pub recall: super::memory_context::RecallPrefetch,
+    /// The conversation the last step sent: input stored after it is heard
+    /// by the next turn.
+    pub seen: Vec<ChatMessage>,
+    /// The model the last call ran on (`provider/model` or the name).
+    pub model: String,
+    /// Checkpoints taken this turn.
+    pub checkpoints: usize,
+    /// The last call's request and the provider that answered it: the recap
+    /// forks them.
+    last_call: Option<(ChatRequest, Arc<dyn ai::Provider>)>,
+    persisted_renderings: HashSet<String>,
+    /// Stored calls whose tool was asked whether its result may be cleared,
+    /// and those it said may.
+    trim_checked: HashSet<String>,
+    clearable: compact::trim::Clearable,
+    /// When the turn checkpoints for itself, with its failure breaker.
+    trigger: compact::checkpoint::Trigger,
+    round: RoundCarry,
+}
+
+/// What the tool round keeps from one round to the next within a turn.
+#[derive(Default)]
+struct RoundCarry {
+    called_tools: Vec<String>,
+    identical_call_budget: ai::call_budget::CallBudget,
+    runaway_wrap_up: Option<String>,
+    runaway_wrap_up_issued: bool,
+    read_failures: HashMap<String, usize>,
+    action_call_counts: HashMap<String, usize>,
+    spiral_escalator: crate::guardrails::Escalator,
+    error_streak: crate::guardrails::ErrorStreak,
+    files_read_this_session: HashSet<String>,
+    recent_result_content_hashes: Vec<u64>,
+    readonly_result_hash_by_call: HashMap<(u64, u64), u64>,
+    tool_doc_cache: Vec<(String, String)>,
+    plan_touch: Option<(usize, String)>,
+    edits_since_check: usize,
+    last_desktop_act: Option<String>,
+    spilled_results: usize,
 }
 
 /// Why the loop is taking its next step.
@@ -54,13 +202,17 @@ pub enum TurnExit {
     MaxSteps {
         steps: u32,
     },
-    SpendCap,
+    /// The owner's spending limit was reached.
+    BudgetReached,
     /// A tool ended the turn, with what only the owner can supply when the
     /// tool named it.
     TerminalTool {
         notice: String,
         need: Option<types::OwnerNeed>,
     },
+    /// A workflow primitive ended the turn (`workflow_exit:…`,
+    /// `suspension_failed:…`); the engine reads the reason.
+    WorkflowEnded(String),
     ProviderFailed(String),
     Refused(String),
     AwaitingApproval,
@@ -74,7 +226,1841 @@ pub enum TurnExit {
     GoalPaused(goal::Pause),
 }
 
+impl TurnExit {
+    /// The word stored on the run's usage row and read by the workflow
+    /// engine and `test runs`.
+    pub fn label(&self) -> String {
+        match self {
+            TurnExit::Answered => "text_response".into(),
+            TurnExit::Cancelled => "cancelled".into(),
+            // What a helper's collector reads as a partial result.
+            TurnExit::MaxSteps { .. } => super::delegation::collect::STOP_MAX_STEPS.into(),
+            TurnExit::BudgetReached => super::delegation::collect::STOP_SPEND_CAP.into(),
+            TurnExit::TerminalTool { .. } => "terminal_tool_error".into(),
+            TurnExit::WorkflowEnded(reason) => reason.clone(),
+            TurnExit::ProviderFailed(_) => "provider_failed".into(),
+            TurnExit::Refused(_) => "refused".into(),
+            TurnExit::AwaitingApproval => "awaiting_approval".into(),
+            TurnExit::PlanProposed => "plan_proposed".into(),
+            TurnExit::GoalMet { .. } => "goal_met".into(),
+            TurnExit::GoalImpossible { .. } => "goal_impossible".into(),
+            TurnExit::GoalPaused(_) => "goal_paused".into(),
+        }
+    }
+}
+
+// ── Admit ────────────────────────────────────────────────────────────────
+
+/// Admit `req` on its session and drive it on its own task. A busy
+/// session takes the input as a mid-turn row and the handle carries the
+/// busy line.
+pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle, HarnessError> {
+    if h.providers.read().await.is_empty() {
+        return Err(HarnessError::Failed(
+            "No AI providers configured. Add API keys in Settings > Providers.".into(),
+        ));
+    }
+    if req.session_key.is_empty() {
+        req.session_key = "default".into();
+    }
+    let session = h
+        .sessions
+        .get_or_create(&req.session_key, &req.seat.user_id)
+        .map_err(|e| HarnessError::Failed(format!("session error: {e}")))?;
+    let progress = req.progress.clone().unwrap_or_else(|| RunProgress {
+        run_id: uuid::Uuid::new_v4().to_string(),
+        iteration_count: Default::default(),
+        tool_call_count: Default::default(),
+        current_tool: Default::default(),
+    });
+    let turn_id = progress.run_id.clone();
+
+    let queue = || queue_input(&h, &session.id, &req);
+    let admission =
+        session_gate::admit_or_queue(&h.active_turns, &req.session_key, progress.clone(), req.cancel.clone(), queue)
+            .await;
+    let (tx, rx) = mpsc::channel(100);
+    match admission {
+        Admission::Queued { status } => {
+            info!(session_id = %session.id, "input on a busy session queued into the running turn");
+            // A send fails only when the caller dropped the receiver.
+            let _ = tx
+                .send(StreamEvent::control_notice(status, session_gate::QUEUED_INTO_RUNNING_TURN))
+                .await;
+            let _ = tx.send(StreamEvent::done()).await;
+        }
+        Admission::Admitted(guard) => {
+            tokio::spawn(run(h, req, session.id, progress, guard, tx));
+        }
+    }
+    Ok(TurnHandle { events: rx, turn_id })
+}
+
+/// Write a busy session's input where its running turn hears it at the
+/// next step. Runs under the admission lock.
+fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
+    let written = match &req.input {
+        TurnInput::Owner { text, .. } => {
+            let via = if req.delivery.channel.is_empty() { "chat" } else { &req.delivery.channel };
+            let meta = MidTurnFrom::Owner { via: via.to_string() }.metadata();
+            h.sessions.append_message(session_id, "user", text, None, None, Some(&meta)).map(|_| ())
+        }
+        TurnInput::Platform { text } => h
+            .sessions
+            .append_message(session_id, "user", text, None, None, Some(r#"{"isMeta":true,"hiddenPrompt":true}"#))
+            .map(|_| ()),
+        TurnInput::Notification(c) => h
+            .sessions
+            .append_message(
+                session_id,
+                "user",
+                &super::delegation::render_notification(c),
+                None,
+                None,
+                Some(super::delegation::notify::ROW_METADATA),
+            )
+            .map(|_| ()),
+        TurnInput::None => Ok(()),
+    };
+    if let Err(e) = written {
+        warn!(session_id, error = %e, "could not queue input into the running turn");
+    }
+    if let Some(briefing) = req.delivery.mention_briefing.as_deref() {
+        let mut r = reminders::Reminders::default();
+        r.add(&TurnEvent::RunBriefing(briefing.to_string()));
+        if let Err(e) = r.write(&h.sessions, session_id) {
+            warn!(session_id, error = %e, "could not queue the briefing into the running turn");
+        }
+    }
+}
+
+/// The admitted turn's task: prepare, drive, finish; then, while input
+/// arrived after the last step, the next turn on the same slot.
+async fn run(
+    h: Harness,
+    req: TurnRequest,
+    session_id: String,
+    progress: RunProgress,
+    guard: TurnGuard,
+    tx: mpsc::Sender<StreamEvent>,
+) {
+    let mut req = Some(req);
+    let mut taint = BTreeSet::new();
+    let mut exit = TurnExit::Answered;
+    while let Some(next) = req.take() {
+        let (cx, mut st) = match prepare(&h, next, &session_id, progress.clone(), tx.clone()).await {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                let _ = tx.send(StreamEvent::error(format!("Agent error: {e}"))).await;
+                exit = TurnExit::ProviderFailed(e);
+                break;
+            }
+        };
+        exit = drive_turn(&cx, &mut st).await;
+        finish(&cx, &mut st, &exit).await;
+        taint.extend(cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied());
+
+        // Input stored after the last step was not in any call. The slot
+        // closes first: input arriving from here on waits for it and starts
+        // its own turn, so everything before is visible now.
+        guard.close();
+        if exit != TurnExit::Cancelled && heard_nothing_since(&h, &session_id, &st.seen) {
+            info!(session_id, "input arrived after the last step: the next turn hears it");
+            guard.reopen();
+            req = Some(follow_up(cx.request));
+        }
+    }
+    let _ = tx
+        .send(StreamEvent::done_with_reason(exit.label()).with_provenance(taint.into_iter().collect()))
+        .await;
+    drop(guard);
+}
+
+/// Whether a mid-turn or notification row landed after `seen`.
+fn heard_nothing_since(h: &Harness, session_id: &str, seen: &[ChatMessage]) -> bool {
+    let Ok(fresh) = h.sessions.get_messages_since_checkpoint(session_id) else {
+        return false;
+    };
+    let last_seen = seen.last().map(|m| m.id.as_str());
+    fresh
+        .iter()
+        .rev()
+        .take_while(|m| last_seen != Some(m.id.as_str()))
+        .any(|m| m.role == "user" && (conversation::arrived_mid_turn(m).is_some() || queued_row(m)))
+}
+
+
+/// A notification or a platform prompt (a goal kickoff) written into a
+/// running turn.
+fn queued_row(msg: &ChatMessage) -> bool {
+    super::delegation::notify::is_notification_row(msg)
+        || msg
+            .metadata
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .and_then(|v| v.get("hiddenPrompt").and_then(|b| b.as_bool()))
+            == Some(true)
+}
+
+/// The next turn on the same session and seat: its input is already in the
+/// conversation.
+fn follow_up(req: TurnRequest) -> TurnRequest {
+    TurnRequest {
+        input: TurnInput::None,
+        delivery: super::Delivery {
+            mention_briefing: None,
+            ..req.delivery
+        },
+        ..req
+    }
+}
+
+// ── Prepare ──────────────────────────────────────────────────────────────
+
+/// Resolve the seat, store the input, build the system prompt and queue the
+/// first step's events.
+pub(crate) async fn prepare(
+    h: &Harness,
+    mut req: TurnRequest,
+    session_id: &str,
+    progress: RunProgress,
+    tx: mpsc::Sender<StreamEvent>,
+) -> Result<(TurnContext, TurnState), String> {
+    {
+        let s = &mut req.seat;
+        seat::restrict_outside_origin(s.origin, &mut s.tool_allowlist, &mut s.tool_denial_hint);
+    }
+    let grant = Arc::new(seat::run_grant(
+        &h.store,
+        GrantRequest {
+            agent_id: &req.seat.agent_id,
+            origin: req.seat.origin,
+            mode: req.seat.mode,
+            ceiling: req.seat.ceiling.as_ref(),
+            fence: None,
+            cwd: req.seat.cwd.as_deref(),
+        },
+    ));
+    let agent = if req.seat.agent_id.is_empty() {
+        None
+    } else {
+        h.agent_registry.read().await.get(&req.seat.agent_id).cloned()
+    };
+    let channel = if !req.delivery.channel.is_empty() {
+        req.delivery.channel.clone()
+    } else {
+        let info = types::keyparser::parse_session_key(&req.session_key);
+        if info.channel.is_empty() { "web".to_string() } else { info.channel }
+    };
+    let seat = seat::resolve_seat(
+        &h.store,
+        &req.session_key,
+        seat::SeatInputs {
+            agent: agent.as_ref(),
+            agent_id: &req.seat.agent_id,
+            user_id: &req.seat.user_id,
+            session_id,
+            origin: req.seat.origin,
+            channel: &channel,
+            audience: req.seat.audience.as_deref(),
+        },
+    );
+    let raw_model = if !req.seat.model_override.is_empty() {
+        req.seat.model_override.clone()
+    } else {
+        req.seat.model_preference.clone().unwrap_or_default()
+    };
+    let model = if raw_model.is_empty() {
+        String::new()
+    } else {
+        h.selector.resolve_fuzzy(&raw_model).unwrap_or(raw_model)
+    };
+
+    store_input(h, session_id, &req).await?;
+
+    let name = agent
+        .as_ref()
+        .map(|a| a.name.clone())
+        .or_else(|| h.store.get_agent(&req.seat.agent_id).ok().flatten().map(|a| a.name))
+        .unwrap_or_else(|| "Nebo".to_string());
+    let memory = super::memory_context::load_employee_memory(
+        &h.store,
+        &seat.memory.user_id,
+        &req.seat.agent_id,
+        &seat.inherit_scopes,
+        &name,
+    );
+    super::memory_context::record_access(&h.store, memory.identity_ids.clone());
+    let memory_timezone = memory.timezone.clone();
+    let role = match &req.mode {
+        TurnMode::Helper { parent_session_key, .. } => prompt::Role::Helper { parent: parent_name(h, parent_session_key).await },
+        _ => prompt::Role::Employee,
+    };
+    let session_context = [
+        prompt::inputs::workspace_notes().map(|n| sections::workspace_notes(&n)).unwrap_or_default(),
+        agent.as_ref().map(prompt::inputs::self_context).unwrap_or_default(),
+        agent
+            .as_ref()
+            .map(|a| prompt::inputs::plugin_context(a, req.seat.tool_scope.as_deref(), h.skill_loader.as_deref()))
+            .unwrap_or_default(),
+    ]
+    .into_iter()
+    .filter(|p| !p.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    let mode_facts = events::ModeFacts {
+        model: if model.is_empty() { h.selector.select(&[]) } else { model.clone() },
+        permission_mode: permission_mode_name(grant.mode).to_string(),
+    };
+    let environment = sections::environment_fields(req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
+    let prompt = SystemPrompt::build(&PromptInputs {
+        name: name.clone(),
+        role,
+        personality_snippet: req.seat.personality_snippet.clone(),
+        soul: agent.as_ref().and_then(|a| a.soul.clone()),
+        rules: agent.as_ref().and_then(|a| a.rules.clone()),
+        persona: agent.as_ref().map(|a| prompt::inputs::persona_body(&a.agent_md)),
+    });
+
+    // The relevant-memories search runs while the steps go on; a step lands
+    // it once it has finished.
+    let history = h.sessions.get_messages_since_checkpoint(session_id).unwrap_or_default();
+    let mut surfaced = super::memory_context::surfaced_memories(&history);
+    // Only the owner's words are searched for; other input recalls nothing.
+    let recall_prompt = match &req.input {
+        TurnInput::Owner { text, .. } => text.as_str(),
+        _ => "",
+    };
+    let recall = super::memory_context::RecallPrefetch::start(
+        h.hybrid_searcher.as_ref(),
+        &h.store,
+        super::memory_context::RecallRequest {
+            prompt: recall_prompt,
+            user_id: &seat.memory.user_id,
+            tacit_only: seat.audience_restricted,
+            skip: surfaced.iter().copied().chain(memory.identity_ids.iter().copied()).collect(),
+        },
+    );
+    surfaced.extend(memory.identity_ids.iter().copied());
+
+    let always_load = agent.as_ref().and_then(|a| a.config.as_ref()).map(|cfg| {
+        let mut set: HashSet<String> = cfg.requires.tools.iter().cloned().collect();
+        let scope_plugins = req
+            .seat
+            .tool_scope
+            .as_deref()
+            .and_then(|s| cfg.scopes.get(s))
+            .is_some_and(|s| !s.plugins.is_empty());
+        if !cfg.requires.plugins.is_empty() || scope_plugins {
+            set.insert("plugin".to_string());
+        }
+        set
+    });
+
+    let (max_steps, spend_cap_microcents) = match &req.mode {
+        TurnMode::Workflow(m) => (DEFAULT_MAX_STEPS, m.spend_cap_microcents),
+        TurnMode::Fork(_) => (crate::review_fork::REVIEW_MAX_ITERATIONS as u32, 0),
+        _ => (DEFAULT_MAX_STEPS, 0),
+    };
+    let after_turn = matches!(req.mode, TurnMode::Chat) && !seat.memory.writes_disabled;
+    let taint = Mutex::new(req.seat.seed_taint.iter().copied().collect());
+
+    let mut st = TurnState {
+        step: 0,
+        transition: Transition::First,
+        reminders: reminders::Reminders::default(),
+        call: model_call::CallState::default(),
+        usage: RunState::new(),
+        loaded_tools: BTreeSet::new(),
+        surfaced_memories: surfaced,
+        recall,
+        end_checks_this_turn: 0,
+        frozen_renderings: h
+            .store
+            .get_chat_renderings(&h.store.resolve_session_chat_id(session_id))
+            .unwrap_or_default(),
+        read_ledger: Default::default(),
+        seen: Vec::new(),
+        model: model.clone(),
+        checkpoints: 0,
+        last_call: None,
+        persisted_renderings: HashSet::new(),
+        trim_checked: HashSet::new(),
+        clearable: compact::trim::Clearable::new(),
+        trigger: compact::checkpoint::Trigger::default(),
+        round: RoundCarry::default(),
+    };
+    st.persisted_renderings = st.frozen_renderings.keys().cloned().collect();
+
+    // The first step's events.
+    if let Some(briefing) = req.delivery.mention_briefing.as_deref() {
+        st.reminders.add(&TurnEvent::RunBriefing(briefing.to_string()));
+    }
+    if let Some(notice) = seat::restricted_run_notice(
+        req.seat.tool_allowlist.as_ref().is_some_and(|wl| wl.is_empty()),
+        req.seat.tool_allowlist.as_ref(),
+        req.seat.tool_denial_hint.as_deref(),
+    ) {
+        st.reminders.add(&TurnEvent::RestrictedRun(notice));
+    }
+
+    let cx = TurnContext {
+        harness: h.clone(),
+        request: req,
+        seat,
+        grant,
+        agent,
+        session_id: session_id.to_string(),
+        channel,
+        timezone: memory_timezone,
+        model,
+        prompt,
+        name,
+        environment,
+        mode_facts,
+        session_context,
+        tx,
+        progress,
+        max_steps,
+        spend_cap_microcents,
+        always_load: always_load.unwrap_or_default(),
+        taint,
+        after_turn,
+    };
+    if cx.plan_mode() && !plan_mode_announced(&h.sessions, session_id) {
+        st.reminders.add(&TurnEvent::PlanMode { entered: true });
+    }
+    Ok((cx, st))
+}
+
+/// Store the turn's input as its row.
+async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result<(), String> {
+    let (text, images, attachments, hidden): (&str, &[ai::ImageContent], &[comm::wire::Attachment], bool) =
+        match &req.input {
+            TurnInput::Owner { text, images, attachments } => (text, images, attachments, false),
+            TurnInput::Platform { text } => (text, &[], &[], true),
+            TurnInput::Notification(c) => {
+                return h
+                    .sessions
+                    .append_message(
+                        session_id,
+                        "user",
+                        &super::delegation::render_notification(c),
+                        None,
+                        None,
+                        Some(super::delegation::notify::ROW_METADATA),
+                    )
+                    .map(|_| ())
+                    .map_err(|e| format!("failed to store the notification: {e}"));
+            }
+            TurnInput::None => return Ok(()),
+        };
+    if text.is_empty() {
+        return Ok(());
+    }
+    conversation::persist_input(
+        &h.sessions,
+        &h.providers,
+        &h.selector,
+        &req.seat.agent_id,
+        session_id,
+        InputRow { text, images, attachments, hidden },
+    )
+    .await
+}
+
+/// The name of the employee a helper works for.
+async fn parent_name(h: &Harness, parent_key: &str) -> String {
+    let agent_id = types::keyparser::extract_agent_id(parent_key);
+    if !agent_id.is_empty()
+        && let Some(a) = h.agent_registry.read().await.get(&agent_id)
+    {
+        return a.name.clone();
+    }
+    "the employee".to_string()
+}
+
+/// The permission mode as the owner sees it.
+fn permission_mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Automatic => "Automatic",
+        Mode::Ask => "Ask",
+        Mode::Plan => "Plan",
+        Mode::FullAccess => "Full Access",
+    }
+}
+
+/// Whether the conversation's latest plan-mode row says plan mode is on.
+fn plan_mode_announced(sessions: &crate::session::SessionManager, session_id: &str) -> bool {
+    let entered = events::attachment_for(&TurnEvent::PlanMode { entered: true }).map(|a| reminders::wrap(&a.text));
+    sessions
+        .get_messages_since_checkpoint(session_id)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .find(|m| reminders::attachment_kind(m).as_deref() == Some("plan_mode"))
+        .is_some_and(|m| Some(&m.content) == entered.as_ref())
+}
+
+// ── Step ─────────────────────────────────────────────────────────────────
+
 /// Drive one turn to its exit.
-pub async fn drive_turn(_cx: &TurnContext, _st: &mut TurnState) -> TurnExit {
-    unimplemented!("WP2.3")
+pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
+    let h = &cx.harness;
+    let sessions = &h.sessions;
+    let sid = cx.session_id.as_str();
+    let guard_cfg = crate::guardrails::GuardrailConfig::from_json(&h.store.get_guardrails().unwrap_or_else(|_| "{}".into()))
+        .sanitized();
+    let side_trace = |purpose: &'static str| cx.trace(purpose);
+
+    loop {
+        if cx.request.cancel.is_cancelled() {
+            return TurnExit::Cancelled;
+        }
+        if cx.tx.is_closed() {
+            warn!(session_id = sid, "event receiver dropped: ending the turn");
+            return TurnExit::Cancelled;
+        }
+        if st.step >= cx.max_steps {
+            let _ = cx
+                .tx
+                .send(StreamEvent::control_notice(
+                    format!("Stopped after {} steps, the most one turn takes. Ask me to continue and I'll pick it up.", st.step),
+                    "max_steps",
+                ))
+                .await;
+            return TurnExit::MaxSteps { steps: st.step };
+        }
+        if let Some(exit) = budget_reached(cx, st).await {
+            return exit;
+        }
+        st.step += 1;
+        cx.progress.iteration_count.store(st.step, std::sync::atomic::Ordering::Relaxed);
+        info!(session_id = sid, step = st.step, transition = ?st.transition, "turn step");
+
+        // 1-2. The step's events, then the conversation with them.
+        let mut conversation = match sessions.get_messages_since_checkpoint(sid) {
+            Ok(c) => c,
+            Err(e) => return TurnExit::ProviderFailed(format!("failed to load the conversation: {e}")),
+        };
+        if conversation::mid_turn_message_landed(&conversation, &st.seen) && st.step > 1 {
+            st.transition = Transition::MidTurnInput;
+        }
+        let surface_seat = SurfaceInputs {
+            agent_id: cx.agent_id(),
+            always_load: &cx.always_load,
+            allowlist: cx.request.seat.tool_allowlist.as_ref(),
+            company_memory_sealed: cx.seat.company_memory_sealed,
+            workflow: cx.workflow(),
+            mode: &cx.request.mode,
+        };
+        let surface = tool_surface::surface(&h.tools, &h.store, &conversation, &surface_seat).await;
+        st.loaded_tools = surface.loaded.clone();
+        step_events(cx, st, &conversation, surface.listing.clone(), &surface.declared).await;
+        if st.reminders.has_queued() {
+            if let Err(e) = st.reminders.write(sessions, sid) {
+                warn!(session_id = sid, error = %e, "could not write this step's attachments");
+            }
+            conversation = match sessions.get_messages_since_checkpoint(sid) {
+                Ok(c) => c,
+                Err(e) => return TurnExit::ProviderFailed(format!("failed to load the conversation: {e}")),
+            };
+        }
+        cx.taint
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend(conversation::parent_taint(&conversation));
+
+        // 3. Trim, and checkpoint past the threshold.
+        let context_window = context_window(cx);
+        st.usage.system_overhead_tokens = overhead_tokens(cx, &surface.declared);
+        let window = trim(cx, st, &conversation).await;
+        st.usage.last_request_estimate = pruning::estimate_total_tokens(&window);
+        let window = conversation::sanitize_message_order(window);
+
+        // 4-5. The request and the call.
+        let (provider_id, model_name, selected) = select_model(cx, &window);
+        st.model = selected.clone();
+        let request = build_request(cx, st, &window, surface.declared, &model_name);
+        let request_tokens =
+            st.usage.last_request_estimate + st.usage.system_overhead_tokens + st.usage.estimate_correction;
+        let max_output = usize::try_from(request.max_tokens).unwrap_or_default();
+        if st.trigger.due(request_tokens, context_window, max_output) {
+            match checkpoint(cx, st, &window, &request, compact::checkpoint::CheckpointReason::Threshold).await {
+                Ok(()) => continue,
+                Err(e) => warn!(session_id = sid, error = %e, "checkpoint failed; sending the conversation as it is"),
+            }
+        }
+        st.seen = conversation.clone();
+
+        let declared_names: Arc<HashSet<String>> = Arc::new(request.tools.iter().map(|t| t.name.clone()).collect());
+        let memory_user_id = cx.seat.memory.user_id.clone();
+        let tool_scope = RunToolScope {
+            sessions,
+            tx: &cx.tx,
+            session_id: sid,
+            origin: cx.request.seat.origin,
+            cancel_token: &cx.request.cancel,
+            progress: Some(&cx.progress),
+            ask_channels: h.ask_channels.as_ref(),
+            handoff_depth: cx.request.seat.handoff_depth,
+            grant: &cx.grant,
+            door: &cx.request.seat.door,
+            untrusted_input: cx.workflow().is_some_and(|m| m.tainted),
+            run_cwd: cx.request.seat.cwd.as_deref(),
+            channel_ctx: cx.request.delivery.channel_ctx.as_ref(),
+            model_override: &cx.model,
+            memory_user_id: &memory_user_id,
+            memory_topics: &cx.seat.memory_topics,
+            memory_writes_disabled: cx.seat.memory.writes_disabled,
+            memory_write_bar: &cx.seat.write_bar,
+            audience_restricted: cx.seat.audience_restricted,
+            memory_matter: &cx.seat.memory_matter,
+            run_taint: &cx.taint,
+            review_fork: None,
+            tool_allowlist: cx.request.seat.tool_allowlist.as_ref(),
+            tool_denial_hint: &cx.request.seat.tool_denial_hint,
+            declared_tools: &declared_names,
+        };
+        let issue_credential = h.tool_credentials.as_ref().map(|credentials| {
+            let tool_scope = &tool_scope;
+            move || {
+                credentials.issue(crate::tool_credentials::RunGrant {
+                    ctx: tool_scope.tool_context(),
+                    agent_id: cx.agent_id().to_string(),
+                })
+            }
+        });
+        let fork_of = request.clone();
+        // A call never carries a stream reminder: what a retry needs to say
+        // is an attachment row (`StreamCut`, `CutoffResume`).
+        let mut no_stream_reminders = Vec::new();
+        let outcome = model_call::call_model(
+            model_call::ModelCall {
+                request,
+                providers: &h.providers,
+                selector: &h.selector,
+                concurrency: &h.concurrency,
+                sessions,
+                cancel: &cx.request.cancel,
+                tx: &cx.tx,
+                session_id: sid,
+                step: st.step as usize,
+                step_started: std::time::Instant::now(),
+                selected_provider_id: &provider_id,
+                selected_model: &selected,
+                model_override: &cx.model,
+                context_limit: compact::checkpoint::Trigger::threshold(context_window, max_output),
+                tool_credential: issue_credential
+                    .as_ref()
+                    .map(|issue| issue as &(dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)),
+            },
+            &mut st.call,
+            &mut st.usage,
+            &mut no_stream_reminders,
+        )
+        .await;
+        let reply = match outcome {
+            CallOutcome::Reply(reply) => reply,
+            CallOutcome::Retry(RetryWhy::Overflow) => {
+                // The provider refused the window: checkpoint, unless the
+                // breaker has tripped; the model call gives up after its own
+                // overflow retries.
+                let outcome = if st.trigger.tripped() {
+                    Err("the checkpoint breaker has tripped".to_string())
+                } else {
+                    checkpoint(cx, st, &window, &fork_of, compact::checkpoint::CheckpointReason::Overflow).await
+                };
+                match outcome {
+                    Ok(()) => st.transition = Transition::OverflowCheckpointed,
+                    Err(e) => {
+                        warn!(session_id = sid, error = %e, "overflow checkpoint failed; retrying as it is");
+                        st.transition = Transition::TransientRetry { attempt: st.call.overflow_retries as u8 };
+                    }
+                }
+                st.step -= 1;
+                continue;
+            }
+            CallOutcome::Retry(RetryWhy::StreamCut) => {
+                st.reminders.add(&TurnEvent::StreamCut);
+                st.transition = Transition::TransientRetry {
+                    attempt: (st.call.transient_retries + st.call.retryable_retries) as u8,
+                };
+                st.step -= 1;
+                continue;
+            }
+            CallOutcome::Retry(RetryWhy::Transient) => {
+                st.transition = Transition::TransientRetry {
+                    attempt: (st.call.transient_retries + st.call.retryable_retries) as u8,
+                };
+                st.step -= 1;
+                continue;
+            }
+            CallOutcome::Cancelled | CallOutcome::CancelledInBackoff => return TurnExit::Cancelled,
+            CallOutcome::Exhausted => return TurnExit::ProviderFailed("the provider's retries ran out".into()),
+            CallOutcome::Failed(e) => {
+                let _ = cx.tx.send(StreamEvent::error(format!("Agent error: {e}"))).await;
+                return TurnExit::ProviderFailed(e);
+            }
+        };
+        let model_call::ModelReply {
+            text,
+            mut tool_calls,
+            stop,
+            stream_error,
+            block_order,
+            provider,
+        } = reply;
+        st.last_call = Some((fork_of.clone(), provider.clone()));
+        let text = post_receive(cx, text, tool_calls.len()).await;
+        if stream_error.is_some() {
+            // Calls that arrived on a broken stream are not run or stored.
+            tool_calls.clear();
+        }
+        save_reply(cx, &text, &tool_calls, &block_order).await;
+
+        if !tool_calls.is_empty() {
+            // A CLI provider ran its tools itself over /agent/mcp.
+            if provider.handles_tools() {
+                return TurnExit::Answered;
+            }
+            match tool_round(cx, st, &tool_scope, &guard_cfg, &side_trace, &text, &mut tool_calls).await {
+                Some(exit) => return exit,
+                None => {
+                    st.transition = Transition::AfterTools;
+                    continue;
+                }
+            }
+        }
+
+        // No tool calls. The output cap cut the reply off: retry at the
+        // escalated cap, then continue in place.
+        match model_call::output_cutoff(&mut st.call, stop.as_deref(), st.step as usize, sid) {
+            Some(model_call::StepRetry::Same) => {
+                st.transition = Transition::OutputEscalated;
+                continue;
+            }
+            Some(model_call::StepRetry::Resume) => {
+                st.reminders.add(&TurnEvent::CutoffResume);
+                st.transition = Transition::CutoffResume {
+                    attempt: st.call.output_recovery_attempts as u8,
+                };
+                continue;
+            }
+            None => {}
+        }
+        // The provider said tools were called and none arrived: the
+        // transport lost them; take the step again.
+        if model_call::lost_tool_calls(&mut st.call, stop.as_deref(), &tool_calls, st.step as usize, sid).is_some() {
+            st.transition = Transition::TransientRetry {
+                attempt: st.call.lost_toolcall_retries as u8,
+            };
+            st.step -= 1;
+            continue;
+        }
+        if text.trim().is_empty() {
+            if model_call::retry_empty_reply(&mut st.call, st.step as usize, sid) {
+                st.reminders.add(&TurnEvent::EmptyReply);
+                st.transition = Transition::TransientRetry {
+                    attempt: st.call.empty_content_retries as u8,
+                };
+                st.step -= 1;
+                continue;
+            }
+            let _ = cx.tx.send(StreamEvent::error("The model returned an empty reply.")).await;
+            return TurnExit::ProviderFailed("empty reply".into());
+        }
+        st.call.empty_content_retries = 0;
+
+        // Turn end: every end check may continue the turn or end it.
+        if let Some(next) = end_checks(cx, st).await {
+            match next {
+                Ok(()) => continue,
+                Err(exit) => return exit,
+            }
+        }
+        return TurnExit::Answered;
+    }
+}
+
+/// The owner's spending limit, checked before each step.
+async fn budget_reached(cx: &TurnContext, st: &TurnState) -> Option<TurnExit> {
+    if cx.spend_cap_microcents <= 0 {
+        return None;
+    }
+    let h = &cx.harness;
+    let spent = usage::run_spend_so_far(&h.store, &h.selector, &cx.request.session_key, &st.model, &st.usage);
+    if spent < cx.spend_cap_microcents {
+        return None;
+    }
+    const PER_DOLLAR: f64 = 100_000_000.0;
+    warn!(session_id = %cx.session_id, spent, cap = cx.spend_cap_microcents, "spending limit reached");
+    let _ = cx
+        .tx
+        .send(StreamEvent::control_notice(
+            format!(
+                "Stopped: this run reached its spending limit (${:.2} of ${:.2}).",
+                spent as f64 / PER_DOLLAR,
+                cx.spend_cap_microcents as f64 / PER_DOLLAR
+            ),
+            "spend_cap_reached",
+        ))
+        .await;
+    Some(TurnExit::BudgetReached)
+}
+
+/// Queue what happened since the last step: files changed outside the
+/// turn, new diagnostics, the date rolling over, a changed tool or skill
+/// listing, the task reminder, the app hook's text.
+async fn step_events(
+    cx: &TurnContext,
+    st: &mut TurnState,
+    conversation: &[ChatMessage],
+    listing: Option<tool_surface::ListingDelta>,
+    declared: &[ai::ToolDefinition],
+) {
+    let h = &cx.harness;
+    let tools = h.tools.clone();
+    let key = cx.request.session_key.clone();
+    match tokio::task::spawn_blocking(move || (tools.external_edit_notes(&key), tools.new_diagnostics_note())).await {
+        Ok((changed, diagnostics)) => {
+            st.reminders.add(&TurnEvent::FilesChanged(changed));
+            st.reminders.add(&TurnEvent::Diagnostics(diagnostics.into_iter().collect()));
+        }
+        Err(e) => warn!(error = %e, "the outside-edit sweep panicked; skipped this step"),
+    }
+
+    // The session's facts: the whole snapshot when the conversation was told
+    // nothing since its boundary, then one row per fact that changed.
+    let memory = super::memory_context::load_employee_memory(
+        &h.store,
+        &cx.seat.memory.user_id,
+        cx.agent_id(),
+        &cx.seat.inherit_scopes,
+        &cx.name,
+    );
+    let facts = events::SessionFacts {
+        date: sections::owner_today(cx.timezone.as_deref()),
+        timezone: cx.timezone.clone(),
+        environment: cx.environment.clone(),
+        mode: cx.mode_facts.clone(),
+        employee_memory: memory.section,
+        session_context: cx.session_context.clone(),
+    };
+    for event in events::session_fact_events(&facts, conversation) {
+        st.reminders.add(&event);
+    }
+    let team: events::Listing = h
+        .store
+        .list_agents(100, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.is_enabled == 1 && a.name != cx.name)
+        .map(|a| (a.name, a.description))
+        .collect();
+    if let Some(delta) = events::LinedDelta::between(&events::announced("agents_listing", conversation), &team) {
+        st.reminders.add(&TurnEvent::AgentsListing(delta));
+    }
+    st.recall.land(&mut st.reminders, &mut st.surfaced_memories, &h.store);
+
+    if let Some(delta) = listing {
+        st.reminders.add(&TurnEvent::ToolsAvailable(delta));
+    }
+    if let (Some(loader), None) = (h.skill_loader.as_ref(), cx.workflow()) {
+        let scope = (!cx.agent_id().is_empty()).then_some(cx.agent_id());
+        let now: events::Listing = loader
+            .list_summaries(scope)
+            .await
+            .into_iter()
+            .filter(|s| s.enabled)
+            .map(|s| (s.name, s.description))
+            .collect();
+        let announced = events::announced("skill_listing", conversation);
+        if let Some(delta) = events::LinedDelta::between(&announced, &now) {
+            st.reminders.add(&TurnEvent::SkillListing(delta));
+        }
+    }
+
+    let task_tools_declared = declared.iter().any(|d| events::TASK_TOOLS.contains(&d.name.as_str()));
+    if task_tools_declared && events::task_reminder_due(conversation) {
+        let tasks = h
+            .store
+            .list_task_items(&format!("session:{}", cx.session_id))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| events::WorkTaskLine {
+                subject: t.description.unwrap_or(t.prompt),
+                status: t.status,
+            })
+            .collect();
+        st.reminders.add(&TurnEvent::TasksIdle(tasks));
+    }
+
+    if h.hooks.has_subscribers("steering.generate") {
+        let payload = serde_json::to_vec(&crate::hooks::SteeringGeneratePayload {
+            session_id: cx.session_id.clone(),
+            iteration: st.step as usize,
+        })
+        .unwrap_or_default();
+        let (result, _) = h.hooks.apply_filter("steering.generate", payload).await;
+        if let Ok(resp) = serde_json::from_slice::<crate::hooks::SteeringGenerateResponse>(&result) {
+            for d in resp.directives {
+                st.reminders.add(&TurnEvent::AppHook { label: d.label, text: d.content });
+            }
+        }
+    }
+}
+
+/// The context window of the turn's model.
+fn context_window(cx: &TurnContext) -> usize {
+    let h = &cx.harness;
+    let model = if cx.model.is_empty() { h.selector.select(&[]) } else { cx.model.clone() };
+    h.selector
+        .get_model_info(&model)
+        .map(|m| m.context_window as usize)
+        .filter(|&w| w > 0)
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW)
+}
+
+/// The system prompt and the tool schemas, in tokens: what every request
+/// carries besides the conversation.
+fn overhead_tokens(cx: &TurnContext, declared: &[ai::ToolDefinition]) -> usize {
+    let schema_chars: usize = declared.iter().map(|t| t.description.len() + t.input_schema.to_string().len()).sum();
+    (cx.prompt.text().len() + schema_chars) / crate::CHARS_PER_TOKEN
+}
+
+/// The per-step trim: stale results the tool lets be cleared are cleared,
+/// each rendering frozen the first time it is chosen and persisted for the
+/// chat.
+async fn trim(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage]) -> Vec<ChatMessage> {
+    let h = &cx.harness;
+    crate::runner::extend_clearable(&h.tools, conversation, &mut st.trim_checked, &mut st.clearable).await;
+    let now = chrono::Utc::now().timestamp();
+    let (working, _) = compact::trim::trim(conversation, now, &st.clearable, &mut st.frozen_renderings);
+    let fresh: Vec<(String, String)> = st
+        .frozen_renderings
+        .iter()
+        .filter(|(k, _)| !st.persisted_renderings.contains(*k))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if !fresh.is_empty() {
+        let chat_id = h.store.resolve_session_chat_id(&cx.session_id);
+        match h.store.insert_chat_renderings(&chat_id, &fresh) {
+            Ok(()) => st.persisted_renderings.extend(fresh.into_iter().map(|(k, _)| k)),
+            Err(e) => warn!(error = %e, "could not persist frozen renderings"),
+        }
+    }
+    working
+}
+
+/// The provider, model name and full model id for this step.
+fn select_model(cx: &TurnContext, window: &[ChatMessage]) -> (String, String, String) {
+    let selected = if cx.model.is_empty() { cx.harness.selector.select(window) } else { cx.model.clone() };
+    if selected.is_empty() {
+        return (String::new(), String::new(), selected);
+    }
+    let (provider, name) = selector::parse_model_id(&selected);
+    (provider.to_string(), name.to_string(), selected)
+}
+
+/// The step's request: the turn's system prompt, the conversation, the
+/// surface.
+fn build_request(
+    cx: &TurnContext,
+    st: &TurnState,
+    window: &[ChatMessage],
+    declared: Vec<ai::ToolDefinition>,
+    model_name: &str,
+) -> ChatRequest {
+    let h = &cx.harness;
+    let enable_thinking = cx.workflow().is_none()
+        && !model_name.is_empty()
+        && h.selector.classify_task(window) == selector::TaskType::Reasoning
+        && h.selector.supports_thinking(&st.model);
+    ChatRequest {
+        tool_credential: None,
+        tool_choice: Default::default(),
+        messages: conversation::convert_messages(window),
+        tools: declared,
+        max_tokens: st.call.max_output_tokens(),
+        temperature: if cx.workflow().is_some() { 0.0 } else { 0.7 },
+        system: cx.prompt.text(),
+        static_system: format!("{}\n\n{}", cx.prompt.fixed, cx.prompt.employee),
+        model: model_name.to_string(),
+        enable_thinking,
+        metadata: st.call.sticky_metadata.clone(),
+        cache_breakpoints: cx.prompt.cache_breakpoints(),
+        cancel_token: Some(cx.request.cancel.clone()),
+        trace: match cx.workflow() {
+            Some(m) => m.trace.clone(),
+            None => RequestTrace {
+                agent_id: cx.agent_id().to_string(),
+                run_id: cx.progress.run_id.clone(),
+                ..RequestTrace::new("agent_turn")
+            },
+        },
+    }
+}
+
+/// Checkpoint the conversation: the pre-checkpoint memory flush, the
+/// summary forked from the step's request, the boundary row and the restore
+/// rows. The next step loads from the boundary and is told the session's
+/// facts again.
+async fn checkpoint(
+    cx: &TurnContext,
+    st: &mut TurnState,
+    conversation: &[ChatMessage],
+    fork_of: &ChatRequest,
+    why: compact::checkpoint::CheckpointReason,
+) -> Result<(), String> {
+    let h = &cx.harness;
+    let provider = match &st.last_call {
+        Some((_, provider)) => provider.clone(),
+        None => h.providers.read().await.first().cloned().ok_or("no provider to checkpoint with")?,
+    };
+    let taint: Vec<types::provenance::ProvenanceClass> =
+        cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied().collect();
+    let hooks: Vec<Box<dyn compact::checkpoint::PreCheckpointHook>> = if cx.seat.memory.writes_disabled {
+        Vec::new()
+    } else {
+        vec![Box::new(compact::checkpoint::MemoryFlush {
+            provider: provider.clone(),
+            store: h.store.clone(),
+            user_id: cx.seat.memory.user_id.clone(),
+            topics: cx.seat.memory_topics.clone(),
+            embedding: h.embedding_provider.clone(),
+            barred: taint.iter().any(|c| cx.seat.write_bar.contains(c)),
+            taint,
+        })]
+    };
+    let goal = goal::GoalStore::new(&h.sessions, &cx.session_id).active().ok().flatten();
+    let outcome = compact::checkpoint::checkpoint(
+        &compact::checkpoint::CheckpointContext {
+            sessions: &h.sessions,
+            provider: provider.as_ref(),
+            session_id: &cx.session_id,
+            conversation,
+            fork_of,
+            hooks: &hooks,
+            restore: compact::restore::RestoreState {
+                goal: goal.as_ref(),
+                running: &[],
+                plan_mode: cx.plan_mode(),
+            },
+        },
+        why,
+    )
+    .await;
+    st.trigger.record(&outcome);
+    outcome?;
+    st.checkpoints += 1;
+    st.seen.clear();
+    Ok(())
+}
+
+/// The app hook that may rewrite the reply before it is stored.
+async fn post_receive(cx: &TurnContext, text: String, tool_calls: usize) -> String {
+    let hooks = &cx.harness.hooks;
+    if !hooks.has_subscribers("message.post_receive") {
+        return text;
+    }
+    let payload = serde_json::to_vec(&crate::hooks::PostReceivePayload {
+        response_text: text.clone(),
+        tool_calls_count: tool_calls,
+    })
+    .unwrap_or_default();
+    let (result, _) = hooks.apply_filter("message.post_receive", payload).await;
+    serde_json::from_slice::<crate::hooks::PostReceiveResponse>(&result)
+        .ok()
+        .and_then(|r| r.response_text)
+        .unwrap_or(text)
+}
+
+/// Store the reply with its tool calls and its block order.
+async fn save_reply(cx: &TurnContext, text: &str, tool_calls: &[ai::ToolCall], block_order: &[(&'static str, Option<usize>)]) {
+    if text.is_empty() && tool_calls.is_empty() {
+        return;
+    }
+    let calls = (!tool_calls.is_empty()).then(|| serde_json::to_string(tool_calls).ok()).flatten();
+    let metadata = (block_order.len() > 1 || block_order.first().is_some_and(|b| b.0 == "tool")).then(|| {
+        let blocks: Vec<serde_json::Value> = block_order
+            .iter()
+            .map(|(kind, idx)| match (*kind, idx) {
+                ("tool", Some(i)) => serde_json::json!({"type": "tool", "toolCallIndex": i}),
+                _ => serde_json::json!({"type": "text"}),
+            })
+            .collect();
+        serde_json::json!({ "contentBlocks": blocks }).to_string()
+    });
+    let h = &cx.harness;
+    if let Err(e) = h.sessions.append_message(&cx.session_id, "assistant", text, calls.as_deref(), None, metadata.as_deref()) {
+        warn!(session_id = %cx.session_id, error = %e, "failed to save the reply");
+    }
+    if h.hooks.has_subscribers("session.message_append") {
+        let payload = serde_json::to_vec(&crate::hooks::MessageAppendPayload {
+            session_id: cx.session_id.clone(),
+            role: "assistant".to_string(),
+            content: text.to_string(),
+        })
+        .unwrap_or_default();
+        h.hooks.do_action("session.message_append", payload).await;
+    }
+}
+
+/// Run the reply's tool calls. `Some` ends the turn.
+async fn tool_round(
+    cx: &TurnContext,
+    st: &mut TurnState,
+    scope: &RunToolScope<'_>,
+    guard_cfg: &crate::guardrails::GuardrailConfig,
+    side_trace: &(dyn Fn(&'static str) -> RequestTrace + Sync),
+    text: &str,
+    tool_calls: &mut [ai::ToolCall],
+) -> Option<TurnExit> {
+    let h = &cx.harness;
+    let no_objective = String::new();
+    let carry = &mut st.round;
+    let outcome = tool_round::run_tool_round(
+        &RoundContext {
+            scope,
+            tools: &h.tools,
+            providers: &h.providers,
+            concurrency: &h.concurrency,
+            hooks: &h.hooks,
+            user_prompt: "",
+            iteration: st.step as usize,
+            approval_channels: h.approval_channels.as_ref(),
+            approval_relay: cx.approval_relay(),
+            workflow_mode: cx.workflow(),
+            decide: None,
+            active_task: &no_objective,
+            turn_mode: Some(&cx.request.mode),
+            guard_cfg,
+            side_trace,
+        },
+        RoundGuards {
+            called_tools: &mut carry.called_tools,
+            recent_tool_result_hashes: &[],
+            identical_call_budget: &carry.identical_call_budget,
+            runaway_wrap_up: &mut carry.runaway_wrap_up,
+            runaway_wrap_up_issued: &mut carry.runaway_wrap_up_issued,
+            read_failures: &mut carry.read_failures,
+            action_call_counts: &mut carry.action_call_counts,
+            spiral_escalator: &mut carry.spiral_escalator,
+            error_streak: &mut carry.error_streak,
+            files_read_this_session: &mut carry.files_read_this_session,
+            recent_result_content_hashes: &mut carry.recent_result_content_hashes,
+            readonly_result_hash_by_call: &mut carry.readonly_result_hash_by_call,
+            read_ledger: &mut st.read_ledger,
+            tool_doc_cache: &mut carry.tool_doc_cache,
+            plan_touch: &mut carry.plan_touch,
+            edits_since_check: &mut carry.edits_since_check,
+            last_desktop_act: &mut carry.last_desktop_act,
+            ctx_spilled_results: &mut carry.spilled_results,
+        },
+        tool_calls,
+    )
+    .await;
+    let results = match outcome {
+        RoundOutcome::Ran(results) => results,
+        RoundOutcome::Cancelled => return Some(TurnExit::Cancelled),
+        RoundOutcome::Ended(crate::guardrails::Exit::Workflow(reason)) if reason == "awaiting_approval" => {
+            return Some(TurnExit::AwaitingApproval);
+        }
+        RoundOutcome::Ended(crate::guardrails::Exit::Workflow(reason)) => return Some(TurnExit::WorkflowEnded(reason)),
+        // The round sent the owner its notice (with the need a tool named).
+        RoundOutcome::Ended(exit) => {
+            return Some(TurnExit::TerminalTool {
+                notice: exit.label(),
+                need: None,
+            });
+        }
+    };
+    for tc in tool_calls.iter() {
+        if let Some(class) = h.tools.get(&tc.name).await.and_then(|t| t.taint(&tc.input)) {
+            cx.taint.lock().unwrap_or_else(|p| p.into_inner()).insert(class);
+        }
+    }
+    if let Ok(mut current) = cx.progress.current_tool.lock() {
+        current.clear();
+    }
+    if h.hooks.has_subscribers("agent.turn") {
+        let payload = serde_json::to_vec(&crate::hooks::TurnPayload {
+            session_id: cx.session_id.clone(),
+            turn: st.step as usize,
+            tool_calls: tool_calls.iter().map(|tc| tc.name.clone()).collect(),
+            total_tool_calls: st.round.called_tools.clone(),
+            has_active_task: false,
+        })
+        .unwrap_or_default();
+        h.hooks.do_action("agent.turn", payload).await;
+    }
+    super::after_turn::hand_off_tool_summary(
+        &cx.session_id,
+        &h.providers,
+        &cx.tx,
+        text,
+        results.summary_tool_calls,
+        results.summary_tool_results,
+        cx.trace("tool_summary"),
+    )
+    .await;
+    None
+}
+
+/// Turn end: `None` when every check lets the turn end, `Ok` to take
+/// another step, `Err` to end it with that exit.
+async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), TurnExit>> {
+    let h = &cx.harness;
+    let goal = match (&cx.request.mode, &h.goal_observer) {
+        (TurnMode::Chat, Some(observer)) => Some(goal::GoalCheck {
+            sessions: h.sessions.clone(),
+            session_id: cx.session_id.clone(),
+            judge: goal::DoneJudge::for_providers(&h.providers.read().await),
+            trace: cx.trace("done_check"),
+            observer: observer.clone(),
+            check_ins: h.goal_check_ins.clone(),
+        }),
+        _ => None,
+    };
+    let checks = turn_end::registry(&cx.request.mode, turn_end::EndChecks { goal, workflow_contract: None });
+    if checks.is_empty() {
+        return None;
+    }
+    // The conversation the model just answered, the answer included.
+    let transcript =
+        conversation::convert_messages(&h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default());
+    let end = turn_end::TurnEnd {
+        transcript: &transcript,
+        step: st.step,
+        checks_this_turn: st.end_checks_this_turn,
+    };
+    for check in checks {
+        match check.check(&end).await {
+            EndVerdict::Stop => {}
+            EndVerdict::Exit(exit) => return Some(Err(exit)),
+            EndVerdict::Continue(event) => {
+                st.end_checks_this_turn += 1;
+                let reason = events::attachment_for(&event).map(|a| a.text).unwrap_or_default();
+                st.reminders.add(&event);
+                st.transition = Transition::EndCheckContinue {
+                    check: check.name(),
+                    reason,
+                };
+                return Some(Ok(()));
+            }
+        }
+    }
+    None
+}
+
+// ── Finish ───────────────────────────────────────────────────────────────
+
+/// After the turn: the interrupt record, the usage row, the context line and
+/// the background work.
+pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit) {
+    let h = &cx.harness;
+    if *exit == TurnExit::Cancelled {
+        conversation::record_interrupt(&h.sessions, &cx.session_id);
+    }
+    info!(
+        session_id = %cx.session_id,
+        exit = %exit.label(),
+        steps = st.step,
+        checkpoints = st.checkpoints,
+        attachments = %st.reminders.tally(),
+        "turn ended"
+    );
+    usage::record_run_usage(&h.store, &h.selector, cx.agent_id(), &cx.request.session_key, &st.model, &st.usage, &exit.label());
+    usage::send_context_stats(&cx.tx, st.read_ledger.stats(), 0, st.checkpoints, st.round.spilled_results, &st.usage).await;
+    if *exit == TurnExit::Cancelled {
+        return;
+    }
+    if matches!(cx.request.mode, TurnMode::Chat)
+        && let Some((request, provider)) = st.last_call.take()
+    {
+        // The recap forks the turn's own conversation, ending with its
+        // answer; it is stored and emitted, never read back.
+        let messages = conversation::convert_messages(&h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default());
+        let recap = super::recap::RecapRequest {
+            chat_id: h.sessions.active_chat_id(&cx.session_id),
+            turn_id: cx.progress.run_id.clone(),
+            system: request.system,
+            cache_breakpoints: request.cache_breakpoints,
+            messages,
+            model: request.model,
+            provider,
+            agent_id: (!cx.agent_id().is_empty()).then(|| cx.agent_id().to_string()),
+        };
+        tokio::spawn(super::recap::write_recap(h.store.clone(), h.concurrency.clone(), h.broadcast.clone(), recap));
+    }
+    if !cx.after_turn {
+        return;
+    }
+    super::after_turn::MemoryExtraction {
+        sessions: &h.sessions,
+        session_id: &cx.session_id,
+        providers: &h.providers,
+        store: &h.store,
+        concurrency: &h.concurrency,
+        embedding_provider: h.embedding_provider.as_ref(),
+        tools: &h.tools,
+        memory_user_id: &cx.seat.memory.user_id,
+        memory_topics: &cx.seat.memory_topics,
+        memory_write_bar: &cx.seat.write_bar,
+        run_taint: &cx.taint,
+        goal: None,
+        skip_memory: false,
+        trace: cx.trace("memory_extract"),
+    }
+    .schedule()
+    .await;
+    super::after_turn::spawn_personality_synthesis(&h.store, &h.providers, &cx.seat.memory.user_id, &h.concurrency).await;
+    super::after_turn::spawn_chat_title_generation(
+        h.providers.clone(),
+        h.store.clone(),
+        h.sessions.active_chat_id(&cx.session_id),
+        cx.session_id.clone(),
+        h.selector.get_cheapest_model(),
+        h.title_sink.clone(),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    //! The turn end to end against a scripted model: every main-loop call is
+    //! recorded and answered from the script; side calls answer "ok".
+
+    use std::collections::VecDeque;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    use super::*;
+    use crate::harness::{Delivery, SeatRequest};
+
+    type Hook = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    enum Step {
+        Say(&'static str),
+        Call(&'static str, serde_json::Value),
+        /// Text the output cap cut off.
+        Cut(&'static str),
+        /// A dropped connection.
+        Transient,
+        /// The provider says the request is over the window.
+        Overflow,
+        /// The step, with what the call cost in microdollars.
+        Paid(Box<Step>, i64),
+        /// Run the hook while the call is in flight, then answer.
+        During(Box<Step>, Hook),
+    }
+
+    #[derive(Default)]
+    struct Scripted {
+        script: Mutex<VecDeque<Step>>,
+        calls: Mutex<Vec<ChatRequest>>,
+        /// The done check's answers, in order.
+        verdicts: Mutex<VecDeque<&'static str>>,
+    }
+
+    impl Scripted {
+        fn new(steps: Vec<Step>) -> Arc<Self> {
+            Arc::new(Self {
+                script: Mutex::new(steps.into()),
+                ..Default::default()
+            })
+        }
+
+        fn calls(&self) -> Vec<ChatRequest> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ai::Provider for Scripted {
+        fn id(&self) -> &str {
+            "scripted"
+        }
+
+        async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            if req.trace.purpose == "done_check" {
+                let verdict = self.verdicts.lock().unwrap().pop_front().unwrap_or(r#"{"met": true, "reason": "done"}"#);
+                return Ok(events(vec![StreamEvent::text(verdict)], None));
+            }
+            if req.trace.purpose == "owner_recap" {
+                return Ok(events(vec![StreamEvent::text(RECAP)], None));
+            }
+            if req.trace.purpose != "agent_turn" {
+                return Ok(events(vec![StreamEvent::text("ok")], None));
+            }
+            self.calls.lock().unwrap().push(req.clone());
+            let mut step = self.script.lock().unwrap().pop_front().expect("a call the script did not expect");
+            if let Step::During(inner, hook) = step {
+                hook.await;
+                step = *inner;
+            }
+            let (list, stop) = answer(step)?;
+            Ok(events(list, stop))
+        }
+    }
+
+    fn answer(step: Step) -> Result<(Vec<StreamEvent>, Option<&'static str>), ai::ProviderError> {
+        Ok(match step {
+            Step::Say(text) => (vec![StreamEvent::text(text)], None),
+            Step::Call(name, input) => (
+                vec![StreamEvent::tool_call(ai::ToolCall {
+                    id: format!("call-{}", uuid::Uuid::new_v4()),
+                    name: name.into(),
+                    input,
+                })],
+                None,
+            ),
+            Step::Cut(text) => (vec![StreamEvent::text(text)], Some("max_tokens")),
+            Step::Transient => return Err(ai::ProviderError::Request("connection reset".into())),
+            Step::Overflow => return Err(ai::ProviderError::ContextOverflow),
+            Step::Paid(inner, microdollars) => {
+                let (mut list, stop) = answer(*inner)?;
+                list.push(StreamEvent::usage(ai::UsageInfo {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cost_microdollars: Some(microdollars),
+                    ..Default::default()
+                }));
+                (list, stop)
+            }
+            Step::During(..) => unreachable!("hooks do not nest"),
+        })
+    }
+
+    fn events(mut list: Vec<StreamEvent>, stop: Option<&str>) -> ai::EventReceiver {
+        list.push(match stop {
+            Some(stop) => StreamEvent::done_with_reason(stop),
+            None => StreamEvent::done(),
+        });
+        let (tx, rx) = mpsc::channel(list.len());
+        for e in list {
+            tx.try_send(e).expect("room for the scripted events");
+        }
+        rx
+    }
+
+    /// A read-only tool that echoes, and a deferred one `find_tools` loads.
+    struct Echo {
+        name: &'static str,
+        deferred: bool,
+        read_only: bool,
+    }
+
+    impl tools::registry::DynTool for Echo {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> String {
+            format!("{} things", self.name)
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn should_defer(&self) -> bool {
+            self.deferred
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            self.read_only
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::ok(format!("{} ran", self.name)) })
+        }
+    }
+
+    async fn harness(model: &Arc<Scripted>) -> Harness {
+        let path = std::env::temp_dir().join(format!("nebo-turn-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(db::Store::new(path.to_str().unwrap()).expect("store"));
+        let registry = Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone()))));
+        registry.register(Box::new(Echo { name: "echo", deferred: false, read_only: true })).await;
+        registry.register(Box::new(Echo { name: "weather", deferred: true, read_only: true })).await;
+        registry.register(Box::new(Echo { name: "writer", deferred: false, read_only: false })).await;
+        registry.register(Box::new(Echo { name: "delegate", deferred: false, read_only: true })).await;
+        registry.register(Box::new(tools::find_tools::FindToolsTool::new(registry.clone()))).await;
+        Harness::new(
+            store,
+            registry,
+            vec![model.clone() as Arc<dyn ai::Provider>],
+            crate::selector::ModelSelector::new(Default::default()),
+            Arc::new(crate::concurrency::ConcurrencyController::new(Some(4))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        )
+    }
+
+    const KEY: &str = "agent:ops:web";
+    const RECAP: &str = "You asked for the plan; it is drafted. Next: review it.";
+
+    fn owner(text: &str) -> TurnRequest {
+        TurnRequest {
+            session_key: KEY.into(),
+            input: TurnInput::Owner {
+                text: text.into(),
+                images: Vec::new(),
+                attachments: Vec::new(),
+            },
+            seat: SeatRequest {
+                agent_id: String::new(),
+                user_id: String::new(),
+                origin: tools::Origin::User,
+                door: types::permissions::Door::Chat,
+                mode: Some(Mode::FullAccess),
+                ceiling: None,
+                cwd: None,
+                seed_taint: Vec::new(),
+                audience: None,
+                tool_allowlist: None,
+                tool_denial_hint: None,
+                handoff_depth: 0,
+                model_override: String::new(),
+                model_preference: None,
+                personality_snippet: None,
+                tool_scope: None,
+            },
+            mode: TurnMode::Chat,
+            delivery: Delivery {
+                channel: "web".into(),
+                channel_ctx: None,
+                mention_briefing: None,
+            },
+            cancel: tokio_util::sync::CancellationToken::new(),
+            progress: None,
+        }
+    }
+
+    /// Run the turn to its last event; returns every event.
+    async fn run_turn(h: &Harness, req: TurnRequest) -> Vec<StreamEvent> {
+        let mut handle = h.start_turn(req).await.expect("start");
+        let mut seen = Vec::new();
+        while let Some(e) = handle.events.recv().await {
+            seen.push(e);
+        }
+        for _ in 0..200 {
+            if !h.is_session_busy(KEY) {
+                return seen;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the turn never released its session");
+    }
+
+    fn exit_of(events: &[StreamEvent]) -> String {
+        let done: Vec<&StreamEvent> = events.iter().filter(|e| e.event_type == ai::StreamEventType::Done).collect();
+        assert_eq!(done.len(), 1, "one Done per turn task");
+        done[0].stop_reason.clone().unwrap_or_default()
+    }
+
+    fn stored(h: &Harness) -> Vec<ChatMessage> {
+        let sid = h.sessions.resolve_session_id_by_key(KEY).expect("session");
+        h.store.get_chat_messages(&h.sessions.active_chat_id(&sid)).expect("rows")
+    }
+
+    fn kinds(rows: &[ChatMessage]) -> Vec<String> {
+        rows.iter().filter_map(reminders::attachment_kind).collect()
+    }
+
+    fn texts(req: &ChatRequest) -> Vec<String> {
+        req.messages.iter().map(|m| m.content.clone()).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn text_reply_ends_the_turn() {
+        let model = Scripted::new(vec![Step::Say("Hello.")]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Hi")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(model.calls().len(), 1, "one call, no continuation");
+        let rows = stored(&h);
+        let convo: Vec<(&str, &str)> = rows
+            .iter()
+            .filter(|m| reminders::attachment_kind(m).is_none())
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(convo, [("user", "Hi"), ("assistant", "Hello.")]);
+        let call = &model.calls()[0];
+        let last_words = call.messages.iter().rev().find(|m| !m.content.starts_with("<system-reminder>")).unwrap();
+        assert_eq!(last_words.content, "Hi", "the owner's words, then this step's attachments");
+        assert!(call.system.contains(crate::prompt::CACHE_BOUNDARY));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tool_round_then_answer() {
+        let model = Scripted::new(vec![Step::Call("echo", serde_json::json!({})), Step::Say("It echoed.")]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Echo something")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[0].tools.iter().any(|t| t.name == "echo"), "the core tool is declared");
+        let last = calls[1].messages.last().unwrap();
+        assert_eq!(last.role, "tool");
+        assert!(last.tool_results.as_ref().unwrap().to_string().contains("echo ran"), "the result reaches the next call");
+        assert!(stored(&h).iter().any(|m| m.role == "assistant" && m.content == "It echoed."));
+    }
+
+    /// A dropped call is taken again with the same rows: the step's
+    /// attachments were stored once, before the first call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transient_retry_resends_the_same_rows() {
+        let model = Scripted::new(vec![Step::Transient, Step::Say("Back.")]);
+        let h = harness(&model).await;
+        let mut req = owner("Where were we?");
+        req.delivery.mention_briefing = Some("Team Ops: Ava leads.".into());
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "the dropped call and its retry");
+        assert_eq!(texts(&calls[0]), texts(&calls[1]), "the retry resends the same rows");
+        assert!(texts(&calls[0]).iter().any(|t| t.contains("Team Ops: Ava leads.")), "the briefing is a row");
+        assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "run_briefing").count(), 1, "written once");
+    }
+
+    /// The output cap cuts a reply: the call is taken again at the higher
+    /// cap, and a second cut continues in place from one resume row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cutoff_resumes_once() {
+        let model = Scripted::new(vec![Step::Cut("Part one"), Step::Cut("Part two"), Step::Say("Part three.")]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Write it all")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[1].max_tokens > calls[0].max_tokens, "the first cut escalates the cap");
+        let resume = events::attachment_for(&TurnEvent::CutoffResume).unwrap();
+        let resumes = |c: &ChatRequest| c.messages.iter().filter(|m| m.content.contains(&resume.text)).count();
+        assert_eq!((resumes(&calls[1]), resumes(&calls[2])), (0, 1), "one resume row, after the second cut");
+        assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "cutoff_resume").count(), 1);
+    }
+
+    /// The owner speaks while a tool round runs: the next step's call
+    /// carries their words, and their caller hears the turn is busy.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mid_turn_owner_message_heard_next_step() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let (busy_tx, busy_rx) = tokio::sync::oneshot::channel();
+        let h2 = h.clone();
+        let hook: Hook = Box::pin(async move {
+            let mut handle = h2.start_turn(owner("Also check the calendar")).await.expect("queued");
+            let first = handle.events.recv().await.expect("status");
+            let _ = busy_tx.send(first.stop_reason);
+        });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook),
+            Step::Say("Done, and the calendar is clear."),
+        ]);
+        let events = run_turn(&h, owner("Echo something")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(busy_rx.await.unwrap().as_deref(), Some(session_gate::QUEUED_INTO_RUNNING_TURN));
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "heard inside the same turn");
+        assert!(!texts(&calls[0]).iter().any(|t| t.contains("Also check the calendar")));
+        assert!(texts(&calls[1]).iter().any(|t| t.contains("Also check the calendar")), "heard at the next step");
+    }
+
+    /// Input that lands during the last step was in no call: the next turn
+    /// hears it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn message_after_last_step_starts_next_turn() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let h2 = h.clone();
+        let hook: Hook = Box::pin(async move {
+            let mut handle = h2.start_turn(owner("One more thing")).await.expect("queued");
+            while handle.events.recv().await.is_some() {}
+        });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::During(Box::new(Step::Say("Here you go.")), hook),
+            Step::Say("And the one more thing."),
+        ]);
+        let events = run_turn(&h, owner("First thing")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(events.iter().filter(|e| e.event_type == ai::StreamEventType::Done).count(), 1, "one Done");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "a second turn ran");
+        assert!(!texts(&calls[0]).iter().any(|t| t.contains("One more thing")));
+        assert!(texts(&calls[1]).iter().any(|t| t.contains("One more thing")));
+    }
+
+    /// `find_tools` loads a deferred tool: its schema joins the request from
+    /// the next step, and the step before only listed its name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deferred_tool_loaded_mid_turn_is_callable_next_step() {
+        let model = Scripted::new(vec![
+            Step::Call(tools::find_tools::FIND_TOOLS, serde_json::json!({"query": "select:weather"})),
+            Step::Call("weather", serde_json::json!({})),
+            Step::Say("Sunny."),
+        ]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Weather?")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3);
+        let declared = |c: &ChatRequest| c.tools.iter().any(|t| t.name == "weather");
+        assert!(!declared(&calls[0]), "deferred before it is loaded");
+        assert!(texts(&calls[0]).iter().any(|t| t.contains("available through find_tools") && t.contains("weather")), "listed by name");
+        assert!(declared(&calls[1]) && declared(&calls[2]), "declared from the next step on");
+        let weather_result = calls[2].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+        assert!(weather_result.contains("weather ran"), "{weather_result}");
+    }
+
+    /// The owner's spending limit ends the turn before the next step, with
+    /// a status line that says so.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn budget_limit_ends_the_turn_with_a_status_line() {
+        let model = Scripted::new(vec![Step::Paid(Box::new(Step::Call("echo", serde_json::json!({}))), 50_000)]);
+        let h = harness(&model).await;
+        let mut req = owner("Do the thing");
+        req.mode = TurnMode::Workflow(Box::new(crate::runner::WorkflowMode {
+            trace: RequestTrace::new("agent_turn"),
+            objective: String::new(),
+            instruction: String::new(),
+            advertised_tools: ["echo".to_string()].into(),
+            tainted: false,
+            spend_cap_microcents: 1_000_000,
+            park: None,
+        }));
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), super::super::delegation::collect::STOP_SPEND_CAP);
+        assert_eq!(model.calls().len(), 1, "no step after the limit");
+        let status = events
+            .iter()
+            .find(|e| e.stop_reason.as_deref() == Some("spend_cap_reached") && e.event_type != ai::StreamEventType::Done)
+            .expect("a status line");
+        assert!(status.text.contains("$0.05 of $0.01"), "{}", status.text);
+    }
+
+    /// Stop means stop: the open call gets an interrupted result and the
+    /// thread records the interrupt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_records_interrupt() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let req = owner("Echo something");
+        let cancel = req.cancel.clone();
+        let hook: Hook = Box::pin(async move { cancel.cancel() });
+        *model.script.lock().unwrap() =
+            VecDeque::from(vec![Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook)]);
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), "cancelled");
+        let rows = stored(&h);
+        assert!(rows.iter().any(|m| m.content == conversation::INTERRUPT_MESSAGE), "the interrupt is recorded");
+        let calls_open = rows.iter().filter(|m| m.role == "tool").all(|m| {
+            m.tool_results.as_deref().is_some_and(|r| r.contains(conversation::INTERRUPTED_TOOL_RESULT) || r.contains("echo ran"))
+        });
+        assert!(calls_open, "every call has a result");
+        assert_eq!(model.calls().len(), 1, "no step after the stop");
+    }
+
+    /// The recap is written after a chat turn and stored, and no later
+    /// request ever carries it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recap_never_enters_a_request() {
+        let model = Scripted::new(vec![Step::Say("Drafted."), Step::Say("Thanks!")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("Draft the plan")).await;
+        let sid = h.sessions.resolve_session_id_by_key(KEY).unwrap();
+        let chat_id = h.sessions.active_chat_id(&sid);
+        let mut stored_recap = None;
+        for _ in 0..200 {
+            stored_recap = h.store.latest_chat_recap(&chat_id).unwrap();
+            if stored_recap.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(stored_recap.expect("the recap is stored").text, RECAP);
+        run_turn(&h, owner("Thank you")).await;
+        for call in model.calls() {
+            assert!(!call.system.contains(RECAP) && !texts(&call).iter().any(|t| t.contains(RECAP)), "a recap entered a request");
+        }
+    }
+
+    /// An explore helper's surface has no helper tool, and a call that
+    /// changes something is refused whatever it arrives as.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explore_helper_only_looks() {
+        let model = Scripted::new(vec![Step::Call("writer", serde_json::json!({})), Step::Say("Found it.")]);
+        let h = harness(&model).await;
+        let mut req = owner("Look around");
+        req.session_key = "subagent:agent:ops:web:h-1".into();
+        req.mode = TurnMode::Helper {
+            parent_session_key: KEY.into(),
+            kind: crate::harness::delegation::HelperKind::Explore,
+            depth: 1,
+        };
+        let mut handle = h.start_turn(req).await.expect("start");
+        while handle.events.recv().await.is_some() {}
+        let calls = model.calls();
+        assert!(!calls[0].tools.iter().any(|t| t.name == "delegate"), "no helper tool for an explore helper");
+        assert!(calls[0].tools.iter().any(|t| t.name == "echo"));
+        let result = calls[1].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+        assert!(result.contains("only looks") && !result.contains("writer ran"), "{result}");
+    }
+
+    /// The provider refuses the window: the conversation is checkpointed and
+    /// the step is taken again from the boundary, with the session's facts
+    /// told again after it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn overflow_checkpoints_then_retries() {
+        let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Carried on.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("Start the report")).await;
+        let events = run_turn(&h, owner("Keep going")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3, "the refused call and its retry");
+        let retry = texts(&calls[2]);
+        assert!(retry[0].starts_with(compact::checkpoint::BOUNDARY_LEAD), "the retry opens on the boundary: {}", retry[0]);
+        assert!(!retry.iter().any(|t| t == "Start the report"), "history before the boundary is not sent");
+        let rows = stored(&h);
+        assert_eq!(rows.iter().filter(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)).count(), 1);
+        assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
+    }
+
+    struct Watch(Mutex<Vec<String>>);
+
+    impl goal::GoalObserver for Watch {
+        fn status(&self, goal: &goal::AgreedGoal) {
+            self.0.lock().unwrap().push(goal.status.as_str().to_string());
+        }
+        fn kickoff(&self, _goal: &goal::AgreedGoal, _prompt: String) {}
+        fn background(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    /// An agreed goal holds the turn open: an unmet check continues with the
+    /// check's reason as a row, and a met check ends the turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unmet_goal_continues_until_the_check_says_met() {
+        let model = Scripted::new(vec![Step::Say("Tests written."), Step::Say("All tests pass now.")]);
+        model.verdicts.lock().unwrap().extend([
+            r#"{"met": false, "reason": "the transcript shows \"2 failing\""}"#,
+            r#"{"met": true, "reason": "\"All tests pass now.\""}"#,
+        ]);
+        let mut h = harness(&model).await;
+        let watch = Arc::new(Watch(Mutex::new(Vec::new())));
+        h.goal_observer = Some(watch.clone());
+        let sid = h.sessions.get_or_create(KEY, "").unwrap().id;
+        goal::GoalStore::new(&h.sessions, &sid).set("all tests pass", goal::GoalSource::OwnerCommand).unwrap();
+
+        let events = run_turn(&h, owner("Fix the tests")).await;
+        assert_eq!(exit_of(&events), "goal_met");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "one continuation");
+        assert!(texts(&calls[1]).iter().any(|t| t.contains("The agreed goal isn't met yet") && t.contains("2 failing")));
+        assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "goal_check").count(), 1);
+        assert!(watch.0.lock().unwrap().iter().any(|s| s == "met"), "the owner is told");
+    }
 }

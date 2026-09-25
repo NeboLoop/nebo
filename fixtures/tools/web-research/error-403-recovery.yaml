@@ -4,20 +4,26 @@ description: |
   The model searches, clicks a result that returns 403 (or similar access
   denied). It must recognize the error, not retry the same URL, and try
   a different source instead.
-target_component: web
+target_component: search_web
 
 conversation:
   - role: user
     content: "Find the pricing for Cloudflare Workers and summarize the free tier limits"
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  fetch_url:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: starts-with-search
-      text: "Model's first call is web(action: 'search') about Cloudflare Workers pricing"
+      text: "Model's first web call (after loading it with find_tools) is search_web about Cloudflare Workers pricing"
       severity: critical
   recovery:
     - id: recognizes-access-denied
@@ -44,7 +50,7 @@ ideal_behavior:
   tool_calls: 6
   total_tokens: 10000
   narrative: |
-    1. search → results
-    2. navigate to first result → 403 or blocked
-    3. Recognize error, navigate to second result → read_page → success
+    1. search_web → results
+    2. browser_open first result → 403 or blocked
+    3. Recognize error, navigate to second result → browser_read → success
     4. Report pricing information

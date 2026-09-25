@@ -8,14 +8,20 @@ description: |
   This is the 194-call failure mode: model navigated to twitter.com, saw login
   form fields as interactive elements, and spent 190 calls trying to fill
   forms and click buttons on a page it could never authenticate to.
-target_component: web
+target_component: browser_open
 
 conversation:
   - role: user
     content: "Post a message on my Twitter saying 'Just shipped a major update to our product!'"
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
+    enabled: true
+  browser_act:
     enabled: true
   skill:
     enabled: true
@@ -33,7 +39,7 @@ prompt_assertions:
       text: "Model does NOT navigate to twitter.com/x.com and attempt to fill login forms"
       severity: critical
     - id: no-form-filling
-      text: "Model does NOT call fill() or type() on any login/password fields"
+      text: "Model does NOT call browser_fill_form or browser_act type on any login/password fields"
       severity: critical
     - id: reports-auth-required
       text: "If model does navigate to Twitter and sees a login page, it immediately reports that authentication is required"
