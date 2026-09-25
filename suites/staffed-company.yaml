@@ -44,3 +44,5 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc39-a-woken-turn-keeps-the-seat-of-the-conversation-it-continues.yaml
   - ../fixtures/staffed-company/conversation/sc40-an-update-for-a-finished-helper-tells-its-parent.yaml
   - ../fixtures/staffed-company/conversation/sc41-an-assignment-outcome-reaches-the-assigner-when-it-happens.yaml
+  - ../fixtures/staffed-company/conversation/sc42-a-channel-message-during-a-running-turn-joins-it-silently.yaml
+  - ../fixtures/staffed-company/conversation/sc43-a-woken-turn-replies-in-the-chat-channel-it-came-from.yaml
