@@ -2476,8 +2476,7 @@ async fn run_loop(
                 }
                 wf_lines.push(String::new());
                 wf_lines.push(
-                    "Use work(resource: \"<name>\", action: \"run\") to trigger a workflow manually. \
-                     Use work(resource: \"<name>\", action: \"status\") to check its last run."
+                    "Start a workflow by hand with run_workflow; workflow_status shows its last run."
                         .to_string(),
                 );
                 parts.push(wf_lines.join("\n"));
