@@ -120,11 +120,14 @@ pub const RENAMES: &[Rename] = &[
         to: "delegate",
         params: &[("agent_type", "helper_type"), ("isolate", "isolation")],
     },
+    // The old orchestrate took one prompt for a whole job. Fan-out is several
+    // delegate calls in one response; a stored call becomes one helper
+    // given the job, which starts its own helpers for independent parts.
     Rename {
         tool: "agent",
         resource: Some("task"),
         action: Some("orchestrate"),
-        to: "orchestrate",
+        to: "delegate",
         params: &[],
     },
     Rename {

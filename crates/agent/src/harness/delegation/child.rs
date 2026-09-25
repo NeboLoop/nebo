@@ -1,5 +1,5 @@
-//! The ONE constructor of a child turn: a first launch, a continuation, a
-//! notification turn and a DAG node all use it. The child inherits the
+//! The ONE constructor of a child turn: a first launch, a continuation and a
+//! notification turn all use it. The child inherits the
 //! parent's seat and can only narrow it (moved from the orchestrator's
 //! `build_subagent_request`, #246).
 
@@ -80,7 +80,7 @@ pub fn child_request(
         // A helper stays at its parent's hop depth: a helper must not
         // restart the coworker chain cap at zero.
         handoff_depth: p.handoff_depth,
-        model_override: spec.model.clone().unwrap_or_else(|| p.model_override.clone()),
+        model_override: p.model_override.clone(),
         model_preference: p.model_preference.clone(),
         personality_snippet: None,
         tool_scope: p.tool_scope.clone(),
@@ -146,7 +146,6 @@ pub(crate) mod tests {
             kind,
             background: true,
             isolation: None,
-            model: None,
             skills: Vec::new(),
         }
     }
@@ -221,38 +220,5 @@ pub(crate) mod tests {
         };
         let req = child_request(&parent, "h-1", &spec(HelperKind::General), None, TurnInput::None);
         assert_eq!(req.seat.mode, Some(Mode::Plan));
-    }
-
-    /// A DAG node is a helper like any other: same constructor, same seat,
-    /// and its depth counts from its key.
-    #[test]
-    fn dag_node_uses_the_one_constructor() {
-        let seat = parent_seat();
-        let grant = parent_grant(Mode::Ask);
-        let parent = Parent {
-            session_key: "subagent:agent:bookkeeper:web:h-1",
-            seat: &seat,
-            grant: Some(&grant),
-            run_taint: &[],
-            cancel: CancellationToken::new(),
-        };
-        let node = crate::task_graph::TaskNode {
-            id: "n1".into(),
-            prompt: "Sum the column.".into(),
-            description: "sum it".into(),
-            agent_type: crate::task_graph::AgentType::Explore,
-            model_override: "smart".into(),
-            depends_on: vec![],
-            status: crate::task_graph::TaskStatus::Pending,
-            result: None,
-            error: None,
-        };
-        let spec = HelperSpec::from_node(&node, "[Results from prerequisite tasks]");
-        assert!(spec.prompt.starts_with("[Results from prerequisite tasks]\n\nSum the column."));
-        let req = child_request(&parent, "n1", &spec, None, TurnInput::None);
-        assert_eq!(ceiling_of(&req), &grant);
-        assert_eq!(req.seat.mode, Some(Mode::Ask));
-        assert_eq!(req.seat.model_override, "smart");
-        assert!(matches!(req.mode, TurnMode::Helper { depth: 2, kind: HelperKind::Explore, .. }));
     }
 }

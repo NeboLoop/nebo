@@ -53,7 +53,7 @@ pub struct SpawnRequest {
     /// Parent run's agent-to-agent hop count — inherited so a sub-agent cannot
     /// restart the coworker chain cap at zero.
     pub handoff_depth: u8,
-    /// A batch (`spawn_parallel`) only: "worktree" gives each child its own copy of the
+    /// "worktree" gives the helper its own copy of the
     /// project (a git worktree when `workspace` is a repo, a scratch copy
     /// otherwise) and merges the results back. Empty = share the tree.
     pub isolate: String,
@@ -106,7 +106,7 @@ impl SpawnRequest {
     }
 }
 
-/// Result from a sub-agent or DAG execution.
+/// Result from a helper.
 #[derive(Debug, Clone)]
 pub struct SpawnResult {
     pub task_id: String,
@@ -137,18 +137,6 @@ pub trait SubAgentOrchestrator: Send + Sync {
     fn spawn(
         &self,
         req: SpawnRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
-
-    /// Decompose a complex task into a graph of helpers and run it.
-    ///
-    /// `parent` is [`SpawnRequest::child_of`] the run that asked: every node
-    /// is built from it, so the graph's helpers sit, run at the model, and
-    /// are limited exactly as a single spawn's would be. A node's own model,
-    /// when the decomposition names one, replaces the parent's.
-    fn execute_dag(
-        &self,
-        prompt: &str,
-        parent: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
     /// Stop one of the helpers the conversation `caller` started.
@@ -184,13 +172,6 @@ pub trait SubAgentOrchestrator: Send + Sync {
         &self,
         caller: &str,
     ) -> Pin<Box<dyn Future<Output = Vec<(String, String, String)>> + Send + '_>>;
-
-    /// Start several helpers at once and wait for them (each one moves to
-    /// the background past the foreground budget, as a single one does).
-    fn spawn_parallel(
-        &self,
-        requests: Vec<SpawnRequest>,
-    ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
     /// Settle helpers a restart interrupted.
     fn recover(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
