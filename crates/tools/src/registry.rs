@@ -376,6 +376,10 @@ pub struct Registry {
     /// Coworker message rail (server-implemented dispatch of agent→agent
     /// messages), shared with MessageTool. Filled LATE like `notify_fn`.
     coworker_rail: crate::coworker::CoworkerRailCell,
+    /// The workflow manager, filled when the workflow tools register
+    /// ([`Registry::register_workflows`]); `stop_task` shares the cell to
+    /// stop workflow runs.
+    workflows: crate::workflows::WorkflowManagerCell,
     /// The harness's agreed goal, bound LATE once the harness exists; the
     /// `suggest_goal` tool shares the handle.
     goals: crate::goal_tool::GoalHandle,
@@ -407,6 +411,7 @@ impl Registry {
             job_consent: Arc::new(std::sync::RwLock::new(None)),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             coworker_rail: crate::coworker::new_rail_cell(),
+            workflows: Default::default(),
             goals: crate::goal_tool::new_handle(),
             resource_permits: ResourcePermits::new(),
             lease: comm::lease::process(),
@@ -467,6 +472,15 @@ impl Registry {
     /// Set the plugin store for injecting plugin binary env vars into subprocesses.
     pub fn set_plugin_store(&self, ps: Arc<napp::plugin::PluginStore>) {
         *self.plugin_store.write().unwrap() = Some(ps);
+    }
+
+    /// Register the workflow tools over `manager`, the one workflow manager;
+    /// `stop_task` stops its runs from then on.
+    pub async fn register_workflows(&self, manager: Arc<dyn crate::workflows::WorkflowManager>) {
+        *self.workflows.write().unwrap() = Some(manager.clone());
+        for tool in crate::workflows::tools(manager) {
+            self.register(Box::new(tool)).await;
+        }
     }
 
     /// Set the canonical marketplace-code installer. Called LATE by the server (after
@@ -973,6 +987,7 @@ impl Registry {
             orchestrator: crate::orchestrator::new_handle(),
             store: None,
             runs: None,
+            workflows: self.workflows.clone(),
         };
         self.register_files_and_commands(helpers).await;
         let mut os_tool = crate::os_tool::OsTool::new();
@@ -1094,6 +1109,7 @@ impl Registry {
             orchestrator: orchestrator.clone(),
             store: Some(store.clone()),
             runs: run_querier.clone(),
+            workflows: self.workflows.clone(),
         })
         .await;
 
@@ -1143,9 +1159,18 @@ impl Registry {
         // conversations, the advisor panel, research, the profile, asking
         // and reaching the owner, and the agreed goal.
         let run_querier = run_querier.unwrap_or_else(crate::run_querier::new_handle);
+        // The teams on this Nebo: a local object that works with no hub; the
+        // comm handle, when present, only adds the optional hub mirror.
+        // send_message posts into teams through the same core.
+        let teams = Arc::new(crate::team_tool::Teams::new(
+            Some(store.clone()),
+            comm_plugin.clone(),
+            broadcaster.clone(),
+            self.coworker_rail.clone(),
+        ));
         let families = [
             crate::memory_tools::Memory::new(store.clone(), hybrid_searcher, memory_embedder).tools(),
-            crate::helper_tools::Helpers::new(store.clone(), orchestrator.clone()).tools(),
+            crate::helper_tools::Helpers::new(store.clone(), orchestrator.clone(), teams.clone(), self.coworker_rail.clone()).tools(),
             crate::task_tools::Tasks::new(store.clone(), run_querier).tools(),
             crate::history_tools::History::new(store.clone()).tools(),
             crate::advisor_tools::Advisors::new(store.clone(), advisor_runner).tools(),
@@ -1230,17 +1255,12 @@ impl Registry {
         }
 
         // Message tool (coworker messages + SMS) — always registered (core)
-        self.register(Box::new(crate::message_tool::MessageTool::new(
-            store.clone(),
-            self.coworker_rail.clone(),
-        )))
+        self.register(Box::new(crate::message_tool::MessageTool::new(store.clone())))
         .await;
 
         // The workflow tools (lifecycle and runs).
         if let Some(manager) = workflow_manager {
-            for tool in crate::workflows::tools(manager) {
-                self.register(Box::new(tool)).await;
-            }
+            self.register_workflows(manager).await;
         }
 
         self.register(Box::new(crate::publisher_tool::PublisherTool::new(
@@ -1271,15 +1291,7 @@ impl Registry {
         self.register(Box::new(crate::vm_tool::VmTool::new()))
             .await;
 
-        // The team tools (teams of local employees): a team is a local
-        // object and works with no hub at all. The comm handle, when
-        // present, only adds the optional hub mirror.
-        let teams = Arc::new(crate::team_tool::Teams::new(
-            Some(store.clone()),
-            comm_plugin.clone(),
-            broadcaster.clone(),
-            self.coworker_rail.clone(),
-        ));
+        // The team tools (teams of local employees), on the core above.
         for tool in crate::team_tool::tools(teams) {
             self.register(Box::new(tool)).await;
         }
@@ -2150,12 +2162,13 @@ mod tests {
     /// moved helpers, memory and asking off agent and message (agent 6,005 ·
     /// message 2,657 · delegate 1,702 · remember 1,039 · recall 701 ·
     /// ask_owner 618 · forget 336). Tools WP3 deferred the employee family
-    /// and deleted agent: −6,005. Each package that lands lowers the
-    /// numbers; they never rise.
+    /// and deleted agent: −6,005. WP9 moved coworker messages off message to
+    /// send_message (message 1,450: −1,207). Each package that lands lowers
+    /// the numbers; they never rise.
     #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 21_162;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 19_955;
     #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 21_614;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 20_407;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

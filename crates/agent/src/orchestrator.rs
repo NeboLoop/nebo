@@ -1625,7 +1625,9 @@ mod child_limits {
         let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
         let handle = tools::new_handle();
         let _ = handle.set(Box::new(rec.clone()));
-        (dir, tools::helper_tools::Helpers::new(store, handle).tools())
+        let rail = tools::coworker::new_rail_cell();
+        let teams = Arc::new(tools::team_tool::Teams::new(Some(store.clone()), None, None, rail.clone()));
+        (dir, tools::helper_tools::Helpers::new(store, handle, teams, rail).tools())
     }
 
     fn rule(key: types::permissions::RuleKey, field: Option<types::permissions::RuleField>, effect: types::permissions::Effect) -> types::permissions::Rule {

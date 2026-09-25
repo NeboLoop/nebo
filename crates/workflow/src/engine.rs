@@ -72,7 +72,9 @@ pub(crate) fn producer_slug(store: &Store, agent_id: &str) -> String {
 /// fail-open-with-everything sent every connected MCP server's full schemas
 /// (~20k tokens/call) to activities whose agent.json declared `mcps: []`.
 /// What an activity always gets: the tools that deliver its result.
-const DELIVERY_TOOLS: [&str; 3] = ["message", "message_owner", "push_notification"];
+/// A coworker is reached with send_message; the owner with message_owner or
+/// push_notification.
+const DELIVERY_TOOLS: [&str; 3] = ["send_message", "message_owner", "push_notification"];
 
 pub(crate) fn scoped_activity_tools<'a>(
     activity: &Activity,
@@ -1328,8 +1330,8 @@ fn typed_node_preamble(activity_type: &str) -> Option<&'static str> {
         ),
         "agent" => Some(
             "This is a coworker activity: message the employee named in the parameters \
-             via message(resource: \"coworker\", action: \"send\", to: \"<name>\", \
-             text: \"<the task>\") and relay their reply.",
+             via send_message(to: \"<name>\", message: \"<the task>\") and relay \
+             their reply.",
         ),
         "connector" => Some(
             "This is an MCP connector activity: call the configured server's tool \
@@ -1714,7 +1716,7 @@ mod engine_tests {
     }
 
     fn fake_registry() -> Vec<Box<dyn DynTool>> {
-        ["plugin", "remember", "message", "message_owner", "push_notification", "os", "web", "browser"]
+        ["plugin", "remember", "send_message", "message_owner", "push_notification", "os", "web", "browser"]
             .iter()
             .map(|n| Box::new(FakeTool(n)) as Box<dyn DynTool>)
             .collect()
@@ -1735,7 +1737,7 @@ mod engine_tests {
         let scoped = scoped_activity_tools(&activity, &registry, None, None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
         // plugin + remember referenced; delivery always rides along; os/web/browser stripped
-        assert_eq!(names, vec!["plugin", "remember", "message", "message_owner", "push_notification"]);
+        assert_eq!(names, vec!["plugin", "remember", "send_message", "message_owner", "push_notification"]);
     }
 
     #[test]
@@ -1787,7 +1789,7 @@ mod engine_tests {
         let registry = fake_registry();
         let scoped = scoped_activity_tools(&activity, &registry, None, None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["message", "message_owner", "push_notification", "os"]);
+        assert_eq!(names, vec!["send_message", "message_owner", "push_notification", "os"]);
     }
 
         #[test]
@@ -1831,7 +1833,7 @@ mod engine_tests {
         // Step text never names a tool, but the skill doc shows plugin( usage
         let scoped = scoped_activity_tools(&activity, &registry, Some(&skills), None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["plugin", "message", "message_owner", "push_notification"]);
+        assert_eq!(names, vec!["plugin", "send_message", "message_owner", "push_notification"]);
     }
 
     fn prompt_with_tools(tool_names: &[&str]) -> String {
