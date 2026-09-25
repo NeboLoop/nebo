@@ -92,6 +92,8 @@ pub struct TurnContext {
     /// A review fork's limits: it can only save skills, into its employee's
     /// learned tree.
     pub review_fork: Option<crate::review_fork::ReviewForkCtx>,
+    /// The employee's own tools the run's tool scope leaves out.
+    pub withheld_tools: Arc<HashSet<String>>,
 }
 
 impl TurnContext {
@@ -528,8 +530,15 @@ pub(crate) async fn prepare(
         }
         _ => prompt::Role::Employee,
     };
+    let withheld_tools = Arc::new(match agent.as_ref() {
+        Some(a) => tool_surface::scope_withheld(a, req.seat.tool_scope.as_deref(), &h.tools).await,
+        None => HashSet::new(),
+    });
     let job_tools = match agent.as_ref() {
-        Some(a) => prompt::inputs::job_tools(a, req.seat.tool_scope.as_deref(), &h.tools).await,
+        Some(a) => {
+            prompt::inputs::job_tools(a, req.seat.tool_scope.as_deref(), &h.tools, &withheld_tools)
+                .await
+        }
         None => String::new(),
     };
     let session_context = [
@@ -655,6 +664,7 @@ pub(crate) async fn prepare(
         taint,
         after_turn,
         review_fork,
+        withheld_tools,
     };
     if cx.plan_mode() && !plan_mode_announced(&h.sessions, session_id) {
         st.reminders.add(&TurnEvent::PlanMode { entered: true });
@@ -785,6 +795,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             company_memory_sealed: cx.seat.company_memory_sealed,
             workflow: cx.workflow(),
             mode: &cx.request.mode,
+            withheld: &cx.withheld_tools,
         };
         let surface = tool_surface::surface(&h.tools, &h.store, &conversation, &surface_seat).await;
         st.loaded_tools = surface.loaded.clone();
@@ -853,6 +864,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             tool_allowlist: cx.request.seat.tool_allowlist.as_ref(),
             tool_denial_hint: &cx.request.seat.tool_denial_hint,
             declared_tools: &declared_names,
+            withheld_tools: &cx.withheld_tools,
         };
         let issue_credential = h.tool_credentials.as_ref().map(|credentials| {
             let tool_scope = &tool_scope;
@@ -2127,6 +2139,120 @@ mod tests {
             owner_words(&h),
             2,
             "the turn's own input and the owner's queued message; not the channel's"
+        );
+    }
+
+    /// An employee with its own tools `quote` and `refund`, and a tool scope
+    /// `storefront` that lists only `quote`.
+    async fn scoped_employee(h: &Harness) {
+        for name in ["quote", "refund"] {
+            h.tools
+                .register_for_agent(
+                    "ops",
+                    Box::new(Echo {
+                        name,
+                        deferred: true,
+                        read_only: true,
+                    }),
+                )
+                .await;
+        }
+        let config =
+            napp::agent::parse_agent_config(r#"{"scopes": {"storefront": {"tools": ["quote"]}}}"#)
+                .unwrap();
+        h.agent_registry.write().await.insert(
+            "ops".into(),
+            tools::ActiveAgent {
+                agent_id: "ops".into(),
+                name: "Ops".into(),
+                agent_md: String::new(),
+                config: Some(config),
+                channel_id: None,
+                degraded: None,
+                soul: None,
+                rules: None,
+            },
+        );
+    }
+
+    fn scoped(text: &str, scope: Option<&str>) -> TurnRequest {
+        let mut req = owner(text);
+        req.seat.agent_id = "ops".into();
+        req.seat.tool_scope = scope.map(str::to_string);
+        req
+    }
+
+    /// The text every request of the model's calls carried.
+    fn request_text(model: &Scripted) -> String {
+        model
+            .calls()
+            .iter()
+            .flat_map(texts)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A tool scope's `tools` narrow the employee's own tools in its
+    /// conversations: one the scope leaves out is not listed, not named in
+    /// the job's tools, can't be loaded, and a call to it is refused. The
+    /// runtime's own tools stay.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tool_scope_narrows_the_employees_own_tools() {
+        let model = Scripted::new(vec![
+            Step::Call(
+                "find_tools",
+                serde_json::json!({ "query": "select:refund" }),
+            ),
+            Step::Call("refund", serde_json::json!({})),
+            Step::Say("I can't do that here."),
+        ]);
+        let h = harness(&model).await;
+        scoped_employee(&h).await;
+        run_turn(
+            &h,
+            scoped("Handle the storefront question", Some("storefront")),
+        )
+        .await;
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3);
+        let first = texts(&calls[0]).join("\n");
+        assert!(first.contains("quote"), "the scope's own tool is listed");
+        assert!(
+            !first.contains("refund"),
+            "the tool the scope leaves out is not listed or named"
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|c| c.tools.iter().all(|t| t.name != "refund")),
+            "never declared"
+        );
+        let results: Vec<String> = stored(&h)
+            .iter()
+            .filter(|m| m.role == "tool")
+            .filter_map(|m| m.tool_results.clone())
+            .collect();
+        assert!(
+            results[0].contains("No deferred tool matches"),
+            "it can't be loaded: {}",
+            results[0]
+        );
+        assert!(
+            results[1].contains("isn't one of the tools for this conversation"),
+            "the call is refused: {}",
+            results[1]
+        );
+        assert!(!results[1].contains("refund ran"));
+
+        // The same employee with no scope has both.
+        let model = Scripted::new(vec![Step::Say("Sure.")]);
+        let h = harness(&model).await;
+        scoped_employee(&h).await;
+        run_turn(&h, scoped("Handle the storefront question", None)).await;
+        let text = request_text(&model);
+        assert!(
+            text.contains("quote") && text.contains("refund"),
+            "no scope narrows nothing"
         );
     }
 
