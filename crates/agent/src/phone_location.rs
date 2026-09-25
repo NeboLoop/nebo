@@ -3,7 +3,9 @@
 //! (`PUT /phone/location`) replaces its whole recipient list on every
 //! update; an empty list revokes. A reading expires ten minutes after it was
 //! taken, so a phone that went quiet never reads as live. A turn of an
-//! employee it is shared with hears the reading as a `phone_location` row.
+//! employee it is shared with hears each new reading as a `phone_location`
+//! row; once nothing is shared with it any more, the conversation is told
+//! the readings it heard are withdrawn (`harness::events`).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -112,25 +114,46 @@ impl PhoneLocations {
     }
 
     /// What `agent_id`'s turn is told at `now`: each good reading shared
-    /// with it, or `None`.
-    pub fn reading_for(&self, agent_id: &str, now: i64) -> Option<String> {
+    /// with it, or `None` when nothing is.
+    pub fn reading_for(&self, agent_id: &str, now: i64) -> Option<SharedPosition> {
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         entries.retain(|_, (_, expires)| *expires > now);
-        let lines: Vec<String> = entries
-            .values()
-            .filter(|(r, _)| r.agent_ids.iter().any(|id| id == agent_id))
-            .filter_map(|(r, _)| {
+        let mut shared: Vec<(&(String, String), &PhoneReading)> = entries
+            .iter()
+            .filter(|(_, (r, _))| r.agent_ids.iter().any(|id| id == agent_id))
+            .map(|(key, (r, _))| (key, r))
+            .collect();
+        shared.sort_by(|a, b| a.0.cmp(b.0));
+        let (lines, taken): (Vec<String>, Vec<String>) = shared
+            .into_iter()
+            .filter_map(|((_, device), r)| {
                 let (lat, lon, accuracy, taken_at) = (r.latitude?, r.longitude?, r.accuracy_metres?, r.taken_at?);
-                Some(format!(
-                    "The owner's phone is at {lat:.6}, {lon:.6}, accurate to about {accuracy:.0} m, read {} seconds ago. \
-                     This is a location reading, not a route or an arrival estimate: an ETA needs a destination and \
-                     routing. Location access does not authorize contacting anyone.",
-                    (now - taken_at).max(0)
+                Some((
+                    format!(
+                        "The owner's phone is at {lat:.6}, {lon:.6}, accurate to about {accuracy:.0} m, read {} seconds ago. \
+                         This is a location reading, not a route or an arrival estimate: an ETA needs a destination and \
+                         routing. Location access does not authorize contacting anyone.",
+                        (now - taken_at).max(0)
+                    ),
+                    format!("{device}@{taken_at}"),
                 ))
             })
-            .collect();
-        (!lines.is_empty()).then(|| lines.join("\n"))
+            .unzip();
+        (!lines.is_empty()).then(|| SharedPosition {
+            text: lines.join("\n"),
+            taken: taken.join(","),
+        })
     }
+}
+
+/// The readings a turn may be told, and which readings they are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedPosition {
+    /// The rows' words.
+    pub text: String,
+    /// Each reading's phone and the moment it was taken: the same readings
+    /// give the same value, so a conversation is told each reading once.
+    pub taken: String,
 }
 
 #[cfg(test)]
@@ -158,6 +181,7 @@ mod tests {
         assert!(
             l.reading_for("dispatch", 1001)
                 .unwrap()
+                .text
                 .contains("40.000000, -111.000000")
         );
         let mut revoked = reading();

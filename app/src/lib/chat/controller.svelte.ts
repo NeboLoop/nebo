@@ -21,6 +21,7 @@ import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { parseMessages } from '$lib/chat/history';
 import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
+import { isThinking } from '$lib/chat/progress';
 import { formatTime } from '$lib/time';
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
@@ -757,6 +758,16 @@ export function createChatController(config: ChatControllerConfig) {
     }
   }
   unsubs.push(onServer('research_progress', handleResearchProgress));
+
+  // The run's progress snapshot (every 5 s, to every client): while this
+  // turn runs with no call running, the employee is thinking. Never starts
+  // or ends a turn; its own events do. Not an `onServer` handler: a
+  // broadcast every client gets proves nothing about this client's send.
+  function handleAgentProgress(data: any) {
+    if (!isLoading || !isThinking(data?.runs, activeSessionKey ?? '')) return;
+    activityStatus = get(t)('chatInput.thinking');
+  }
+  unsubs.push(ws.on('agent_progress', handleAgentProgress));
   unsubs.push(onServer('usage', handleUsage));
   unsubs.push(onServer('quota_warning', handleQuotaWarning));
   unsubs.push(onServer('chat_error', handleChatError));
