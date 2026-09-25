@@ -264,3 +264,211 @@ async fn department_locks_and_reporting_line_refuses_cycles() {
     assert!(nebo.agent(&a).reports_to.is_none(), "blank = answers to the owner");
     assert_eq!(nebo.agent(&a).department.as_deref(), Some("Revenue"), "the department was not touched by a line edit");
 }
+
+/// Every door an employee is hired through grants the job its package
+/// declares, through the one grant (`codes::hire`): a code the owner pastes
+/// in their chat, the Hire tap, a hire on the owner's account (the hub's
+/// install event), the hire card (`POST /codes`), the `hire_employee` tool
+/// in the owner's own run, a collection, and the owner's create from a
+/// package. A code posted in a chat channel, or the tool in a run that
+/// isn't the owner's, hires with no job: only the owner consents.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_hiring_door_grants_the_declared_job() {
+    use agent::ChannelDispatcher;
+    use types::permissions::{Effect, RuleKey, RuleSource, Scope};
+
+    let nebo = session().await;
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(
+            &profile,
+            "NeboAI",
+            "neboai",
+            "proof-token",
+            None,
+            None,
+            0,
+            1,
+            Some("token"),
+            None,
+        )
+        .unwrap();
+    let job = json!({ "requires": { "interfaces": ["mail", "calendar"] }, "workflows": {} });
+    // Each door hires its own employee.
+    let offer = |n: u32, name: &str| {
+        let code = format!("AGNT-HYRE-{n:04}");
+        let id = format!("hire-door-{n}");
+        hub_offers_agent(&code, &id, name, job.clone());
+        (code, id)
+    };
+    // The job the owner's consent granted: its capability allow rules.
+    let granted = |id: &str| -> Vec<String> {
+        let mut caps: Vec<String> = nebo
+            .store()
+            .permission_rules_in(&Scope::Employee(id.to_string()))
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.effect == Effect::Allow && matches!(r.source, RuleSource::Hire { .. }))
+            .filter_map(|r| match r.key {
+                RuleKey::Capability(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        caps.sort();
+        caps
+    };
+    let the_job = vec!["calendar".to_string(), "mail".to_string()];
+    let mut hired = Vec::new();
+
+    // A code the owner pastes in their own chat (the WS door's call).
+    let (code, pasted) = offer(1, "Pasted Hire");
+    crate::codes::handle_code(
+        &nebo.state,
+        crate::codes::CodeType::Agent,
+        &code,
+        "agent:main:web",
+    )
+    .await;
+    assert_eq!(granted(&pasted), the_job, "pasted code");
+    hired.push(pasted);
+
+    // The Hire tap on the store.
+    let (_, tapped) = offer(2, "Tapped Hire");
+    nebo.post_ok(&format!("/store/products/{tapped}/install"), &json!({}))
+        .await;
+    assert_eq!(granted(&tapped), the_job, "Hire tap");
+    hired.push(tapped);
+
+    // A hire on the owner's account, from the web or the phone: the hub's
+    // install event.
+    let (_, remote) = offer(3, "Remote Hire");
+    let event = napp::InstallEvent {
+        event_type: "tool_installed".into(),
+        tool_id: remote.clone(),
+        payload: json!({}),
+    };
+    crate::handle_comm_install_event(&nebo.state, event)
+        .await
+        .expect("the install event");
+    assert_eq!(granted(&remote), the_job, "hub hire");
+    hired.push(remote);
+
+    // The hire card in the owner's chat redeems through `POST /codes`.
+    let (code, carded) = offer(4, "Card Hire");
+    nebo.post_ok("/codes", &json!({ "code": code })).await;
+    assert_eq!(granted(&carded), the_job, "hire card");
+    hired.push(carded);
+
+    // The `hire_employee` tool, called in the owner's own run.
+    let (code, tooled) = offer(5, "Tool Hire");
+    let owner_run = Nebo::ctx("", Origin::User);
+    let r = nebo
+        .tool(&owner_run, "hire_employee", json!({ "code": code }))
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+    assert_eq!(
+        granted(&tooled),
+        the_job,
+        "hire_employee in the owner's run"
+    );
+    hired.push(tooled);
+
+    // A collection: each employee in it is hired by the owner's act.
+    let (item, collected) = offer(6, "Collected Hire");
+    hub_offers_collection(
+        "COLL-HYRE-0001",
+        "hire-collection",
+        "Hire Pack",
+        &[item.as_str()],
+    );
+    nebo.post_ok("/codes", &json!({ "code": "COLL-HYRE-0001" }))
+        .await;
+    assert_eq!(granted(&collected), the_job, "collection");
+    hired.push(collected);
+
+    // The owner's own create from a package.
+    let created = nebo.hire("Created Hire", job.clone()).await;
+    assert_eq!(granted(&created), the_job, "owner's create");
+    hired.push(created);
+
+    // Not the owner's act: a code posted in a chat channel.
+    let (code, channelled) = offer(7, "Channel Hire");
+    let channel = crate::channel_dispatch::ChannelDispatchImpl::new(nebo.state.clone());
+    let reply = channel
+        .dispatch(
+            "",
+            "slack:dm:stranger",
+            tools::ChannelContext::default(),
+            &code,
+        )
+        .await
+        .expect("the channel's reply");
+    assert!(
+        nebo.store().get_agent(&channelled).unwrap().is_some(),
+        "installed: {reply}"
+    );
+    assert!(
+        granted(&channelled).is_empty(),
+        "a channel's code grants no job"
+    );
+    hired.push(channelled);
+
+    // Not the owner's act: the tool in a run that came in from a channel.
+    let (code, unattended) = offer(8, "Unattended Hire");
+    let r = nebo
+        .tool(
+            &Nebo::ctx("", Origin::Comm),
+            "hire_employee",
+            json!({ "code": code }),
+        )
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+    assert!(
+        nebo.store().get_agent(&unattended).unwrap().is_some(),
+        "installed: {}",
+        r.content
+    );
+    assert!(
+        granted(&unattended).is_empty(),
+        "a hire outside the owner's run grants no job"
+    );
+    hired.push(unattended);
+
+    // A rehire never undoes what the owner set: a capability the owner
+    // turned off stays off.
+    let (code, rehired) = offer(9, "Rehired Hire");
+    crate::codes::handle_code(
+        &nebo.state,
+        crate::codes::CodeType::Agent,
+        &code,
+        "agent:main:web",
+    )
+    .await;
+    nebo.put_ok(
+        &format!("/entity-config/agent/{rehired}"),
+        &json!({ "permissions": { "mail": false } }),
+    )
+    .await;
+    crate::codes::handle_code(
+        &nebo.state,
+        crate::codes::CodeType::Agent,
+        &code,
+        "agent:main:web",
+    )
+    .await;
+    let mail = nebo
+        .store()
+        .permission_rules_in(&Scope::Employee(rehired.clone()))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.key == RuleKey::Capability("mail".into()) && r.field.is_none())
+        .expect("the owner's rule");
+    assert_eq!(mail.effect, Effect::Deny, "the owner's setting stands");
+    hired.push(rehired);
+
+    // Leave the shared server as it was found.
+    for id in hired {
+        let _ = nebo.delete(&format!("/agents/{id}")).await;
+    }
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}

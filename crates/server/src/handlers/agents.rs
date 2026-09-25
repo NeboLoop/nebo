@@ -803,7 +803,7 @@ pub async fn create_agent(
     crate::codes::finalize_agent_install(&state, &id, &agent.name).await;
     // The owner's create from a package is the hire: its declared needs
     // become the job.
-    crate::codes::grant_declared(&state, &id, None).await;
+    crate::codes::hire(&state, &id, tools::InstalledBy::Owner).await;
 
     // Cascade: resolve skill dependencies. Only marketplace-referenced skills are
     // separate installs — bare names are plugin-provided tool bindings (see
@@ -823,7 +823,10 @@ pub async fn create_agent(
 
     let cascade = if !deps.is_empty() {
         let mut visited = std::collections::HashSet::new();
-        Some(crate::deps::resolve_cascade(&state, deps, &mut visited).await)
+        Some(
+            crate::deps::resolve_cascade(&state, deps, &mut visited, tools::InstalledBy::Owner)
+                .await,
+        )
     } else {
         None
     };

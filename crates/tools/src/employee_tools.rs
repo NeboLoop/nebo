@@ -466,7 +466,7 @@ impl DynTool for EmployeeTool {
                 Kind::ListEmployees => p.handle_list().await,
                 Kind::GetEmployee => p.handle_info(&input).await,
                 Kind::FindEmployees => p.handle_discover(&input, ctx).await,
-                Kind::HireEmployee => p.handle_install(&input).await,
+                Kind::HireEmployee => p.handle_install(ctx, &input).await,
                 Kind::CreateEmployee => p.create_with_consent(&input, ctx).await,
                 Kind::UpdateEmployee => p.update_with_consent(&input, ctx).await,
                 Kind::DeleteEmployee => p.handle_delete(&input).await,

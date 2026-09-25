@@ -27,3 +27,4 @@ fixtures:
   - ../fixtures/staffed-company/migrations/sc15-migrations-run-forward-on-a-real-database.yaml
   - ../fixtures/staffed-company/layers/sc16-an-uploaded-pack-keeps-its-own-slug.yaml
   - ../fixtures/staffed-company/connections/sc17-an-install-by-another-door-answers-the-install-card.yaml
+  - ../fixtures/staffed-company/seats/sc18-every-hiring-door-grants-the-declared-job.yaml

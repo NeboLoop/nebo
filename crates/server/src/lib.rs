@@ -2538,7 +2538,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 let deps = crate::deps::extract_agent_deps_from_frontmatter(&frontmatter);
                 if !deps.is_empty() {
                     let mut visited = std::collections::HashSet::new();
-                    crate::deps::resolve_cascade(&cascade_state, deps, &mut visited).await;
+                    // The boot-time reconcile: no one's act is behind it.
+                    crate::deps::resolve_cascade(&cascade_state, deps, &mut visited, tools::InstalledBy::Other).await;
                 }
             }
         });
@@ -3247,10 +3248,13 @@ async fn handle_agent_fs_events(
                                         crate::deps::extract_agent_deps_from_frontmatter(&fm);
                                     if !deps.is_empty() {
                                         let mut visited = std::collections::HashSet::new();
+                                        // An employee found on disk: its
+                                        // dependencies come with no one's act.
                                         crate::deps::resolve_cascade(
                                             &cascade_state,
                                             deps,
                                             &mut visited,
+                                            tools::InstalledBy::Other,
                                         )
                                         .await;
                                     }
