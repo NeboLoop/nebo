@@ -6,8 +6,8 @@
 //! the catalog operation itself (a rule on the tool's name matches it too),
 //! and `operation_performed` names the same operation.
 
-use std::collections::{BTreeMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
@@ -17,12 +17,12 @@ use crate::registry::{DynTool, ToolResult};
 
 /// The catalog actions that only read. An operation whose last segment is
 /// one of these, and which the catalog does not gate, changes nothing.
-const READ_ACTIONS: &[&str] =
-    &["get", "list", "search", "find", "query", "read", "status", "stats", "history", "usage"];
+const READ_ACTIONS: &[&str] = &[
+    "get", "list", "search", "find", "query", "read", "status", "stats", "history", "usage",
+];
 
 /// Input fields that name who money goes to or comes from.
-const COUNTERPARTY_FIELDS: &[&str] =
-    &["counterparty", "vendorId", "vendor", "customerId", "customer", "payee"];
+const COUNTERPARTY_FIELDS: &[&str] = &["counterparty", "vendorId", "vendor", "customerId", "customer", "payee"];
 /// Input fields that name who a message goes to.
 const RECIPIENT_FIELDS: &[&str] = &["to", "sendTo", "recipient", "recipients", "cc", "bcc"];
 /// Input fields that carry an amount in cents.
@@ -68,23 +68,31 @@ pub struct ProvidedOperation {
     pub note: String,
 }
 
+/// A provider and the operation it performs.
+type Provided = (Arc<dyn OperationProvider>, ProvidedOperation);
+
 /// A catalog operation as a tool, with every provider that performs it.
 pub struct OperationTool {
     name: String,
     operation: String,
-    capability: Option<&'static str>,
+    /// The catalog term the operation belongs to (`ledger`): what an
+    /// employee's `requires.interfaces` names.
+    interface: String,
     hint: String,
     description: String,
     schema: Value,
-    providers: Vec<(Arc<dyn OperationProvider>, ProvidedOperation)>,
+    providers: Vec<Provided>,
 }
 
 /// One tool per operation the providers perform, in name order.
 pub fn operation_tools(providers: &[Arc<dyn OperationProvider>]) -> Vec<OperationTool> {
-    let mut by_op: BTreeMap<String, Vec<(Arc<dyn OperationProvider>, ProvidedOperation)>> = BTreeMap::new();
+    let mut by_op: BTreeMap<String, Vec<Provided>> = BTreeMap::new();
     for provider in providers {
         for op in provider.operations() {
-            by_op.entry(op.operation.clone()).or_default().push((provider.clone(), op));
+            by_op
+                .entry(op.operation.clone())
+                .or_default()
+                .push((provider.clone(), op));
         }
     }
     by_op
@@ -97,28 +105,35 @@ pub fn operation_tools(providers: &[Arc<dyn OperationProvider>]) -> Vec<Operatio
 }
 
 impl OperationTool {
-    fn new(operation: String, providers: Vec<(Arc<dyn OperationProvider>, ProvidedOperation)>) -> Self {
+    fn new(operation: String, providers: Vec<Provided>) -> Self {
         let name = operation_tool_name(&operation);
-        let capability = operation.split('.').next().filter(|c| !c.is_empty()).map(intern);
+        let interface = operation.split('.').next().unwrap_or_default().to_string();
         let hint = operation.replace(['.', '-'], " ");
         let gated = crate::interface_catalog::is_gated(&operation);
         let read_only = reads_only(&operation);
         let schema = Self::build_schema(&providers, gated, read_only);
         let description = Self::describe(&operation, &providers, gated, read_only);
-        Self { name, operation, capability, hint, description, schema, providers }
+        Self {
+            name,
+            operation,
+            interface,
+            hint,
+            description,
+            schema,
+            providers,
+        }
     }
 
-    fn describe(
-        operation: &str,
-        providers: &[(Arc<dyn OperationProvider>, ProvidedOperation)],
-        gated: bool,
-        read_only: bool,
-    ) -> String {
+    fn describe(operation: &str, providers: &[Provided], gated: bool, read_only: bool) -> String {
         let mut out = match providers {
             [(p, _)] => format!("Performs {operation} through {}.\n", p.service()),
             _ => format!(
                 "Performs {operation} through one of: {}. `provider` picks which.\n",
-                providers.iter().map(|(p, _)| p.provider()).collect::<Vec<_>>().join(", ")
+                providers
+                    .iter()
+                    .map(|(p, _)| p.provider())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         };
         if gated {
@@ -141,11 +156,7 @@ impl OperationTool {
         out.trim_end().to_string()
     }
 
-    fn build_schema(
-        providers: &[(Arc<dyn OperationProvider>, ProvidedOperation)],
-        gated: bool,
-        read_only: bool,
-    ) -> Value {
+    fn build_schema(providers: &[Provided], gated: bool, read_only: bool) -> Value {
         let mut properties = Map::new();
         let mut required: Vec<String> = Vec::new();
         let mut open = false;
@@ -201,17 +212,24 @@ impl OperationTool {
     }
 
     /// The provider this call names, or the only one.
-    fn provider_for(&self, input: &Value) -> Result<&(Arc<dyn OperationProvider>, ProvidedOperation), String> {
+    fn provider_for(&self, input: &Value) -> Result<&Provided, String> {
         if let [one] = self.providers.as_slice() {
             return Ok(one);
         }
         let named = input.get("provider").and_then(|p| p.as_str()).unwrap_or_default();
-        self.providers.iter().find(|(p, _)| p.provider() == named).ok_or_else(|| {
-            format!(
-                "`provider` must be one of: {}.",
-                self.providers.iter().map(|(p, _)| p.provider()).collect::<Vec<_>>().join(", ")
-            )
-        })
+        self.providers
+            .iter()
+            .find(|(p, _)| p.provider() == named)
+            .ok_or_else(|| {
+                format!(
+                    "`provider` must be one of: {}.",
+                    self.providers
+                        .iter()
+                        .map(|(p, _)| p.provider())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
     }
 }
 
@@ -222,26 +240,12 @@ fn reads_only(operation: &str) -> bool {
         && operation.rsplit('.').next().is_some_and(|a| READ_ACTIONS.contains(&a))
 }
 
-/// A capability name as `&'static str`, each distinct one kept once.
-fn intern(s: &str) -> &'static str {
-    static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let mut names = NAMES.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(known) = names.get(s) {
-        return known;
-    }
-    let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
-    names.insert(leaked);
-    leaked
-}
-
 fn text_fields(input: &Value, fields: &[&str]) -> Vec<String> {
     let mut out = Vec::new();
     for f in fields {
         match input.get(*f) {
             Some(Value::String(s)) if !s.trim().is_empty() => out.push(s.trim().to_string()),
-            Some(Value::Array(items)) => {
-                out.extend(items.iter().filter_map(|i| i.as_str()).map(str::to_string))
-            }
+            Some(Value::Array(items)) => out.extend(items.iter().filter_map(|i| i.as_str()).map(str::to_string)),
             Some(Value::Number(n)) => out.push(n.to_string()),
             _ => {}
         }
@@ -274,9 +278,11 @@ impl DynTool for OperationTool {
         self.operation.clone()
     }
 
-    fn capability(&self, _input: &Value) -> Option<&'static str> {
-        self.capability
-    }
+    // No job capability: an operation is decided by the rules written for
+    // it (and the catalog's gating), as plugin operations always were. A
+    // catalog term as its capability waits for the consent that grants an
+    // employee its bound interfaces; until then every operation would sit
+    // outside every job.
 
     fn operation_performed(&self, _input: &Value) -> Option<String> {
         Some(self.operation.clone())
@@ -309,9 +315,9 @@ impl DynTool for OperationTool {
         if !self.read_only(input) {
             return None;
         }
-        match self.capability {
-            Some("mail") => Some(types::provenance::ProvenanceClass::ExternalEmail),
-            Some("sms") => Some(types::provenance::ProvenanceClass::Channel),
+        match self.interface.as_str() {
+            "mail" => Some(types::provenance::ProvenanceClass::ExternalEmail),
+            "sms" => Some(types::provenance::ProvenanceClass::Channel),
             _ => None,
         }
     }
@@ -350,6 +356,11 @@ impl DynTool for OperationTool {
 }
 
 impl OperationTool {
+    /// The catalog term the operation belongs to (`ledger`).
+    pub fn interface(&self) -> &str {
+        &self.interface
+    }
+
     /// "creating bill in QuickBooks" / "Created bill in QuickBooks".
     fn labels(&self) -> (String, String) {
         let mut parts = self.operation.split('.').skip(1).collect::<Vec<_>>();
@@ -361,7 +372,10 @@ impl OperationTool {
         };
         match crate::humanize::strap_verb(action) {
             Some((gerund, past)) => (format!("{gerund} {noun}{service}"), format!("{past} {noun}{service}")),
-            None => (format!("running {action} on {noun}{service}"), format!("Ran {action} on {noun}{service}")),
+            None => (
+                format!("running {action} on {noun}{service}"),
+                format!("Ran {action} on {noun}{service}"),
+            ),
         }
     }
 }
@@ -385,14 +399,21 @@ pub struct PluginProvider {
 
 impl PluginProvider {
     pub fn new(runner: Arc<PluginRunner>, slug: &str) -> Self {
-        Self { slug: slug.to_string(), runner }
+        Self {
+            slug: slug.to_string(),
+            runner,
+        }
     }
 
     /// The input a binding template takes: each placeholder a parameter,
     /// described by the flag it fills.
     fn provided(&self, operation: &str, template: &str, skills: &[String]) -> ProvidedOperation {
         use napp::plugin::BindingPart;
-        let mut op = ProvidedOperation { operation: operation.to_string(), open: true, ..Default::default() };
+        let mut op = ProvidedOperation {
+            operation: operation.to_string(),
+            open: true,
+            ..Default::default()
+        };
         let words = napp::plugin::parse_binding_template(template).unwrap_or_default();
         let mut flag: Option<String> = None;
         for parts in &words {
@@ -402,16 +423,22 @@ impl PluginProvider {
                     BindingPart::Field(name) => (name, serde_json::json!({"type": "string"}), true),
                     BindingPart::Cents(name) => {
                         op.cents.push(name.clone());
-                        (name, serde_json::json!({"type": "integer", "description": "Amount in cents."}), true)
+                        (
+                            name,
+                            serde_json::json!({"type": "integer", "description": "Amount in cents."}),
+                            true,
+                        )
                     }
                     BindingPart::List { field, flag: f } => (
                         field,
                         serde_json::json!({"type": "array", "items": {"type": "string"}, "description": format!("One {f} per item.")}),
                         true,
                     ),
-                    BindingPart::Optional { field, flag: f } => {
-                        (field, serde_json::json!({"type": "string", "description": format!("Sent as {f}.")}), false)
-                    }
+                    BindingPart::Optional { field, flag: f } => (
+                        field,
+                        serde_json::json!({"type": "string", "description": format!("Sent as {f}.")}),
+                        false,
+                    ),
                 };
                 let mut schema = schema;
                 if schema.get("description").is_none()
@@ -431,7 +458,10 @@ impl PluginProvider {
         }
         let service = self.service();
         let resource = operation.split('.').rev().nth(1).unwrap_or_default();
-        let mut relevant: Vec<&String> = skills.iter().filter(|s| !resource.is_empty() && s.contains(resource)).collect();
+        let mut relevant: Vec<&String> = skills
+            .iter()
+            .filter(|s| !resource.is_empty() && s.contains(resource))
+            .collect();
         if relevant.is_empty() {
             relevant = skills.iter().take(5).collect();
         }
@@ -470,7 +500,12 @@ impl OperationProvider for PluginProvider {
         let Some(manifest) = self.runner.plugin_store().get_manifest(&self.slug) else {
             return Vec::new();
         };
-        let skills: Vec<String> = self.runner.list_services(&self.slug).into_iter().map(|(n, _)| n).collect();
+        let skills: Vec<String> = self
+            .runner
+            .list_services(&self.slug)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
         let mut ops: Vec<ProvidedOperation> = manifest
             .interface_bindings
             .iter()
@@ -493,6 +528,7 @@ impl OperationProvider for PluginProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     /// A provider with fixed operations, recording what it was asked to do.
     struct Fixed {
@@ -525,7 +561,14 @@ mod tests {
     fn fixed(name: &'static str, ops: &[&str]) -> Arc<Fixed> {
         Arc::new(Fixed {
             name,
-            ops: ops.iter().map(|o| ProvidedOperation { operation: o.to_string(), open: true, ..Default::default() }).collect(),
+            ops: ops
+                .iter()
+                .map(|o| ProvidedOperation {
+                    operation: o.to_string(),
+                    open: true,
+                    ..Default::default()
+                })
+                .collect(),
             seen: Mutex::new(Vec::new()),
         })
     }
@@ -538,7 +581,10 @@ mod tests {
     fn an_operation_is_named_by_its_segments() {
         assert_eq!(operation_tool_name("ledger.bill.create"), "ledger_bill_create");
         assert_eq!(operation_tool_name("ledger.card.limit.set"), "ledger_card_limit_set");
-        assert_eq!(operation_tool_name("email-marketing.campaign.test-send"), "email_marketing_campaign_test_send");
+        assert_eq!(
+            operation_tool_name("email-marketing.campaign.test-send"),
+            "email_marketing_campaign_test_send"
+        );
     }
 
     /// The spec every operation tool answers: the rule key is the catalog
@@ -547,23 +593,49 @@ mod tests {
     /// four-segment operation is its own gated entry.
     #[test]
     fn the_spec_follows_the_catalog() {
-        let p = fixed("ledgerly", &["ledger.invoice.list", "ledger.bill.create", "ledger.card.limit.set"]);
+        let p = fixed(
+            "ledgerly",
+            &["ledger.invoice.list", "ledger.bill.create", "ledger.card.limit.set"],
+        );
         let all = tools(vec![p]);
         let get = |n: &str| all.iter().find(|t| t.name() == n).unwrap();
         let list = get("ledger_invoice_list");
         assert!(list.read_only(&json()) && list.concurrency_safe(&json()));
         assert_eq!(list.effects(&json()), types::permissions::CallEffects::none());
-        assert!(list.schema()["properties"].get("clientKey").is_none() && list.schema()["properties"].get("display").is_none());
+        assert!(
+            list.schema()["properties"].get("clientKey").is_none()
+                && list.schema()["properties"].get("display").is_none()
+        );
         let bill = get("ledger_bill_create");
         assert!(!bill.read_only(&json()));
         assert_eq!(bill.rule_key(&json()), "ledger.bill.create");
         assert_eq!(bill.operation_performed(&json()).as_deref(), Some("ledger.bill.create"));
-        assert_eq!(bill.capability(&json()), Some("ledger"));
-        assert!(bill.schema()["properties"].get("display").is_some() && bill.schema()["properties"].get("clientKey").is_some());
-        assert!(bill.description().starts_with("Performs ledger.bill.create through Ledgerly."), "{}", bill.description());
+        assert_eq!(bill.interface(), "ledger");
+        assert_eq!(
+            bill.capability(&json()),
+            None,
+            "the operation's own rules and gating decide it"
+        );
+        assert!(
+            bill.schema()["properties"].get("display").is_some()
+                && bill.schema()["properties"].get("clientKey").is_some()
+        );
+        assert!(
+            bill.description()
+                .starts_with("Performs ledger.bill.create through Ledgerly."),
+            "{}",
+            bill.description()
+        );
         assert_eq!(bill.search_hint(), "ledger bill create");
-        assert!(crate::interface_catalog::is_gated("ledger.card.limit.set"), "four segments are an entry, not a port");
-        assert!(get("ledger_card_limit_set").schema()["properties"].get("display").is_some());
+        assert!(
+            crate::interface_catalog::is_gated("ledger.card.limit.set"),
+            "four segments are an entry, not a port"
+        );
+        assert!(
+            get("ledger_card_limit_set").schema()["properties"]
+                .get("display")
+                .is_some()
+        );
     }
 
     /// Money, who it goes to and who a message reaches, read from the call.
@@ -580,7 +652,8 @@ mod tests {
             seen: Mutex::new(Vec::new()),
         });
         let all = tools(vec![p]);
-        let e = all[0].effects(&serde_json::json!({"totalCents": 125005, "customerId": "21", "sendTo": "ap@example.com"}));
+        let e =
+            all[0].effects(&serde_json::json!({"totalCents": 125005, "customerId": "21", "sendTo": "ap@example.com"}));
         assert_eq!(e.money_cents, Some(125005));
         assert_eq!(e.counterparty.as_deref(), Some("21"));
         assert_eq!(e.recipients, vec!["ap@example.com".to_string()]);
@@ -597,11 +670,21 @@ mod tests {
         assert_eq!(all.len(), 1);
         let send = &all[0];
         assert_eq!(send.schema()["required"], serde_json::json!(["provider"]));
-        assert_eq!(send.schema()["properties"]["provider"]["enum"], serde_json::json!(["alpha-mail", "zeta-mail"]));
-        assert!(send.validate_input(&json()).unwrap_err().contains("alpha-mail, zeta-mail"));
+        assert_eq!(
+            send.schema()["properties"]["provider"]["enum"],
+            serde_json::json!(["alpha-mail", "zeta-mail"])
+        );
+        assert!(
+            send.validate_input(&json())
+                .unwrap_err()
+                .contains("alpha-mail, zeta-mail")
+        );
         let ctx = ToolContext::default();
         let r = send
-            .execute_dyn(&ctx, serde_json::json!({"provider": "zeta-mail", "to": "a@example.com", "display": "Email Ann"}))
+            .execute_dyn(
+                &ctx,
+                serde_json::json!({"provider": "zeta-mail", "to": "a@example.com", "display": "Email Ann"}),
+            )
             .await;
         assert_eq!(r.content, "zeta-mail did mail.message.send");
         assert_eq!(b.seen.lock().unwrap()[0].1, serde_json::json!({"to": "a@example.com"}));
@@ -616,7 +699,11 @@ mod tests {
     #[test]
     fn a_binding_template_is_the_schema() {
         let tmp = tempfile::tempdir().unwrap();
-        let ps = Arc::new(napp::plugin::PluginStore::new(tmp.path().join("p"), tmp.path().join("u"), None));
+        let ps = Arc::new(napp::plugin::PluginStore::new(
+            tmp.path().join("p"),
+            tmp.path().join("u"),
+            None,
+        ));
         let db = Arc::new(db::Store::new(tmp.path().join("t.db").to_str().unwrap()).unwrap());
         let provider = PluginProvider::new(Arc::new(PluginRunner::new(ps, db)), "ledgerly");
         let op = provider.provided(
@@ -625,13 +712,19 @@ mod tests {
             &["ledgerly-payment".to_string(), "ledgerly-bill".to_string()],
         );
         assert_eq!(op.required, ["customerId", "invoiceIds", "amountCents"]);
-        assert_eq!(op.properties["customerId"], serde_json::json!({"type": "string", "description": "Sent as --customer-ref."}));
+        assert_eq!(
+            op.properties["customerId"],
+            serde_json::json!({"type": "string", "description": "Sent as --customer-ref."})
+        );
         assert_eq!(op.properties["invoiceIds"]["type"], "array");
         assert_eq!(op.properties["amountCents"]["type"], "integer");
         assert_eq!(op.properties["memo"]["description"], "Sent as --memo.");
         assert_eq!(op.cents, ["amountCents"]);
         assert!(op.open);
-        assert_eq!(op.note, "Other fields go to Ledgerly as --name value flags; the skills that document them: ledgerly-payment.");
+        assert_eq!(
+            op.note,
+            "Other fields go to Ledgerly as --name value flags; the skills that document them: ledgerly-payment."
+        );
         let plain = provider.provided("mail.message.send", "send", &[]);
         assert!(plain.properties.is_empty() && plain.required.is_empty());
         assert_eq!(plain.note, "Its fields go to Ledgerly as --name value flags.");

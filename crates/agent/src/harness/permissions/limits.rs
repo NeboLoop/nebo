@@ -170,11 +170,9 @@ const OUTSIDE_OPERATION_CAPABILITIES: &[&str] = &["calendar"];
 /// never perform one, except the capabilities an owner may enable.
 fn denied_operation_for_origin(origin: Origin, t: &Target) -> bool {
     matches!(origin, Origin::Caller | Origin::Visitor)
-        && t.operation.is_some()
-        && !t
-            .capability
-            .as_deref()
-            .is_some_and(|c| OUTSIDE_OPERATION_CAPABILITIES.contains(&c))
+        && t.operation.as_deref().is_some_and(|op| {
+            !op.split('.').next().is_some_and(|c| OUTSIDE_OPERATION_CAPABILITIES.contains(&c))
+        })
 }
 
 /// Whether a call with this rule key is refused for the origin.
@@ -338,7 +336,7 @@ mod tests {
                 tool: tool.clone(),
                 key: tool,
                 operation: Some(operation.to_string()),
-                capability: operation.split('.').next().map(str::to_string),
+                capability: None,
                 field: None,
                 read_only: false,
                 effects: types::permissions::CallEffects::unknown(),

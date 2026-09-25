@@ -49,7 +49,14 @@ impl PluginCliTool {
             .unwrap_or_else(|| crate::humanize::service_name(slug));
         let description = Self::describe(&runner, slug, &service, manifest.as_ref());
         let hint = search_hint(&service, manifest.as_ref());
-        Self { name: plugin_tool_name(slug), slug: slug.to_string(), service, description, hint, runner }
+        Self {
+            name: plugin_tool_name(slug),
+            slug: slug.to_string(),
+            service,
+            description,
+            hint,
+            runner,
+        }
     }
 
     fn describe(
@@ -69,7 +76,11 @@ impl PluginCliTool {
         } else {
             let named = skills.iter().take(SKILLS_NAMED).cloned().collect::<Vec<_>>().join(", ");
             let more = skills.len().saturating_sub(SKILLS_NAMED);
-            let more = if more > 0 { format!(" (and {more} more)") } else { String::new() };
+            let more = if more > 0 {
+                format!(" (and {more} more)")
+            } else {
+                String::new()
+            };
             out.push_str(&format!(
                 "- `command` is the subcommand and flags, as its skills document them. Load the \
                  skill with use_skill before the first command; don't guess flags: {named}{more}.\n"
@@ -80,7 +91,11 @@ impl PluginCliTool {
              - It runs directly, with no shell: no pipes, redirects or `&&`.\n",
         );
         if let Some(auth) = manifest.and_then(|m| m.auth.as_ref()) {
-            let label = if auth.label.is_empty() { service } else { auth.label.as_str() };
+            let label = if auth.label.is_empty() {
+                service
+            } else {
+                auth.label.as_str()
+            };
             if auth.profile_dir_env.is_some() {
                 out.push_str(&format!(
                     "- Each employee uses its own {label} account; with none connected, a connect card appears on first use.\n"
@@ -175,9 +190,10 @@ impl DynTool for PluginCliTool {
         if has_command {
             return input;
         }
-        let lifted = input.get_mut("args").and_then(|a| a.as_object_mut()).and_then(|args| {
-            ["command", "cmd"].iter().find_map(|k| args.remove(*k))
-        });
+        let lifted = input
+            .get_mut("args")
+            .and_then(|a| a.as_object_mut())
+            .and_then(|args| ["command", "cmd"].iter().find_map(|k| args.remove(*k)));
         if let (Some(command), Some(obj)) = (lifted, input.as_object_mut()) {
             obj.insert("command".into(), command);
         }
@@ -225,7 +241,10 @@ fn search_hint(service: &str, manifest: Option<&napp::plugin::PluginManifest>) -
         }
     }
     // The fillers only make up a short hint.
-    let own = words.iter().filter(|w| !["service", "commands", "account"].contains(&w.as_str())).count();
+    let own = words
+        .iter()
+        .filter(|w| !["service", "commands", "account"].contains(&w.as_str()))
+        .count();
     words.truncate(own.clamp(3, 8));
     words.join(" ")
 }
@@ -396,7 +415,11 @@ mod tests {
         for skill in skills {
             let sd = dir.join("skills").join(skill);
             std::fs::create_dir_all(&sd).unwrap();
-            std::fs::write(sd.join("SKILL.md"), format!("---\nname: {skill}\ndescription: {skill}\n---\n")).unwrap();
+            std::fs::write(
+                sd.join("SKILL.md"),
+                format!("---\nname: {skill}\ndescription: {skill}\n---\n"),
+            )
+            .unwrap();
         }
     }
 
@@ -410,7 +433,9 @@ mod tests {
             root.join("user_plugins"),
             None,
         )));
-        registry.register_all(store.clone(), crate::orchestrator::new_handle()).await;
+        registry
+            .register_all(store.clone(), crate::orchestrator::new_handle())
+            .await;
         (registry, store)
     }
 
@@ -422,7 +447,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (registry, store) = registry(tmp.path()).await;
         assert!(registry.get(FIND_PLUGINS).await.is_some() && registry.get(READ_PLUGIN_EVENTS).await.is_some());
-        assert!(registry.get_tool_names().await.iter().all(|n| plugin_slug(n).is_none()), "nothing installed yet");
+        assert!(
+            registry.get_tool_names().await.iter().all(|n| plugin_slug(n).is_none()),
+            "nothing installed yet"
+        );
 
         install(
             tmp.path(),
@@ -437,19 +465,32 @@ mod tests {
         let tool = registry.get("plugin__ledgerly").await.expect("the plugin's tool");
         assert!(registry.is_deferred("plugin__ledgerly").await);
         let d = tool.description();
-        assert!(d.starts_with("Runs Ledgerly commands. Bookkeeping for small businesses."), "{d}");
-        assert!(d.contains("use_skill") && d.contains("ledgerly-bill, ledgerly-invoice"), "{d}");
-        assert!(d.contains("never here: ledger_invoice_send"), "the gated operation has its own tool: {d}");
+        assert!(
+            d.starts_with("Runs Ledgerly commands. Bookkeeping for small businesses."),
+            "{d}"
+        );
+        assert!(
+            d.contains("use_skill") && d.contains("ledgerly-bill, ledgerly-invoice"),
+            "{d}"
+        );
+        assert!(
+            d.contains("never here: ledger_invoice_send"),
+            "the gated operation has its own tool: {d}"
+        );
         assert!(!d.contains("plugin("), "{d}");
         assert_eq!(tool.search_hint(), "ledgerly accounting service");
         for op in ["ledger_invoice_send", "ledger_invoice_list"] {
             assert!(registry.is_deferred(op).await, "{op}");
         }
-        let ledger: std::collections::HashSet<String> = ["ledger_invoice_list", "ledger_invoice_send"].map(str::to_string).into();
+        let ledger: std::collections::HashSet<String> = ["ledger_invoice_list", "ledger_invoice_send"]
+            .map(str::to_string)
+            .into();
         assert_eq!(registry.operation_tools_for(&["ledger".to_string()]).await, ledger);
         assert!(registry.operation_tools_for(&["mail".to_string()]).await.is_empty());
 
-        store.upsert_installed_plugin("ledgerly", "Ledgerly", "0.1.0", "", "", "", "unverified").unwrap();
+        store
+            .upsert_installed_plugin("ledgerly", "Ledgerly", "0.1.0", "", "", "", "unverified")
+            .unwrap();
         store.set_plugin_enabled("ledgerly", false).unwrap();
         registry.refresh_plugin_tools().await;
         for gone in ["plugin__ledgerly", "ledger_invoice_send", "ledger_invoice_list"] {
@@ -460,7 +501,9 @@ mod tests {
         assert!(registry.get("plugin__ledgerly").await.is_some());
         std::fs::remove_dir_all(tmp.path().join("plugins").join("ledgerly")).unwrap();
         registry.refresh_plugin_tools().await;
-        assert!(registry.get("plugin__ledgerly").await.is_none() && registry.get("ledger_invoice_send").await.is_none());
+        assert!(
+            registry.get("plugin__ledgerly").await.is_none() && registry.get("ledger_invoice_send").await.is_none()
+        );
     }
 
     /// An installed plugin that is not connected still has its tool (it is
@@ -480,14 +523,22 @@ mod tests {
         );
         let (registry, _store) = registry(tmp.path()).await;
         let tool = registry.get("plugin__mailer").await.expect("installed means nameable");
-        assert!(tool.description().contains("Not connected yet"), "{}", tool.description());
+        assert!(
+            tool.description().contains("Not connected yet"),
+            "{}",
+            tool.description()
+        );
         assert!(registry.get("mail_message_send").await.is_none());
     }
 
     #[test]
     fn a_nested_command_is_the_command() {
         let tmp = tempfile::tempdir().unwrap();
-        let ps = Arc::new(napp::plugin::PluginStore::new(tmp.path().join("p"), tmp.path().join("u"), None));
+        let ps = Arc::new(napp::plugin::PluginStore::new(
+            tmp.path().join("p"),
+            tmp.path().join("u"),
+            None,
+        ));
         let db = Arc::new(db::Store::new(tmp.path().join("t.db").to_str().unwrap()).unwrap());
         let tool = PluginCliTool::new(Arc::new(PluginRunner::new(ps, db)), "ledgerly");
         let lifted = tool.normalize_input(serde_json::json!({"args": {"command": "doctor"}}));
@@ -496,8 +547,14 @@ mod tests {
         let kept = serde_json::json!({"command": "query run", "args": {"command": "x", "query": "SELECT 1"}});
         assert_eq!(tool.normalize_input(kept.clone()), kept);
         // The owner reads the service's name, or the model's own sentence.
-        assert_eq!(tool.activity(&serde_json::json!({"command": "doctor"})), "using Ledgerly");
-        assert_eq!(tool.outcome(&serde_json::json!({"display": "Send invoice 1041"})), "Send invoice 1041");
+        assert_eq!(
+            tool.activity(&serde_json::json!({"command": "doctor"})),
+            "using Ledgerly"
+        );
+        assert_eq!(
+            tool.outcome(&serde_json::json!({"display": "Send invoice 1041"})),
+            "Send invoice 1041"
+        );
         assert_eq!(tool.rule_key(&serde_json::json!({})), "plugin__ledgerly");
     }
 
@@ -511,8 +568,16 @@ mod tests {
         assert!(find.read_only(&serde_json::json!({"query": "x"})));
         assert!(!find.concurrency_safe(&serde_json::json!({"query": "x"})));
         let r = registry
-            .execute(&ToolContext::default(), READ_PLUGIN_EVENTS, serde_json::json!({"plugin": "nothing"}))
+            .execute(
+                &ToolContext::default(),
+                READ_PLUGIN_EVENTS,
+                serde_json::json!({"plugin": "nothing"}),
+            )
             .await;
-        assert!(r.is_error && r.content.contains("No installed plugin is named nothing"), "{}", r.content);
+        assert!(
+            r.is_error && r.content.contains("No installed plugin is named nothing"),
+            "{}",
+            r.content
+        );
     }
 }

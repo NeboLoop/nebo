@@ -696,7 +696,7 @@ impl Registry {
     }
 
     /// The operation tools an employee binds through `requires.interfaces`:
-    /// every registered operation tool whose capability it names. They are
+    /// every registered operation tool whose catalog term it names. They are
     /// always loaded for that employee.
     pub async fn operation_tools_for(&self, interfaces: &[String]) -> HashSet<String> {
         if interfaces.is_empty() {
@@ -708,8 +708,8 @@ impl Registry {
             .await
             .iter()
             .filter(|(_, t)| {
-                t.operation_performed(&empty).is_some()
-                    && t.capability(&empty).is_some_and(|c| interfaces.iter().any(|i| i == c))
+                t.operation_performed(&empty)
+                    .is_some_and(|op| interfaces.iter().any(|i| op.split('.').next() == Some(i.as_str())))
             })
             .map(|(name, _)| name.clone())
             .collect()
