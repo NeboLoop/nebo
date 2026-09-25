@@ -950,6 +950,7 @@ export interface PermissionItem {
 export interface PermissionsPage {
 	mode: Mode
 	modeFromCompany: boolean
+	companyMode: Mode
 	job: PermissionItem[]
 	canAdd: PermissionItem[]
 	money: PermissionItem[]

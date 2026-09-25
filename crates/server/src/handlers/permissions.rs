@@ -28,6 +28,8 @@ pub struct PermissionsPage {
     pub mode: Mode,
     /// The employee has no mode of its own and follows the company default.
     pub mode_from_company: bool,
+    /// The company default mode.
+    pub company_mode: Mode,
     /// What the job includes: the capabilities it may use.
     pub job: Vec<PermissionItem>,
     /// Capabilities the owner can add to the job.
@@ -299,16 +301,18 @@ fn shown_rules(store: &db::Store, agent_id: Option<&str>) -> Result<Vec<(Rule, b
 
 /// Build one page: an employee's (`Some`) or the company defaults (`None`).
 fn page(store: &db::Store, agent_id: Option<&str>, connected: &BTreeSet<String>) -> Result<PermissionsPage, NeboError> {
+    let company_mode = store.permission_mode(&Scope::Company)?.unwrap_or_default();
     let (mode, mode_from_company) = match agent_id {
         Some(id) => match store.permission_mode(&Scope::Employee(id.to_string()))? {
             Some(m) => (m, false),
-            None => (store.permission_mode(&Scope::Company)?.unwrap_or_default(), true),
+            None => (company_mode, true),
         },
-        None => (store.permission_mode(&Scope::Company)?.unwrap_or_default(), false),
+        None => (company_mode, false),
     };
     let mut p = PermissionsPage {
         mode,
         mode_from_company,
+        company_mode,
         job: Vec::new(),
         can_add: Vec::new(),
         money: Vec::new(),
@@ -964,7 +968,7 @@ mod tests {
         set(Some("a"), "plan").unwrap();
         assert_eq!(store.permission_mode(&emp()).unwrap(), Some(Mode::Plan));
         let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
-        assert_eq!((p.mode, p.mode_from_company), (Mode::Plan, false));
+        assert_eq!((p.mode, p.mode_from_company, p.company_mode), (Mode::Plan, false, Mode::Automatic));
         set(Some("a"), "company").unwrap();
         assert_eq!(store.permission_mode(&emp()).unwrap(), None);
         set(None, "full_access").unwrap();
