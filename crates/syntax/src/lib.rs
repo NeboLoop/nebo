@@ -502,13 +502,16 @@ pub fn query(source: &str, lang: Lang, ts_query: &str) -> Result<Vec<QueryHit>, 
 }
 
 /// One simple command in a shell script: the command name and its arguments
-/// with quoting removed, and whether variable assignments prefix it
-/// (`FOO=1 cmd`). Redirections are not words. A word whose value is only
+/// with quoting removed, whether variable assignments prefix it
+/// (`FOO=1 cmd`), and whether an output redirect on it, or on a statement
+/// around it, sends to a file (anything but a file descriptor or
+/// `/dev/null`). Redirections are not words. A word whose value is only
 /// known when the script runs (`$X`, `$(…)`, a glob, `{a,b}`) is `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellCommand {
     pub assigns: bool,
     pub words: Vec<Option<String>>,
+    pub writes: bool,
 }
 
 /// Every simple command in a bash script, the nested ones included (command
@@ -543,7 +546,13 @@ pub fn shell_commands(script: &str) -> Option<Vec<ShellCommand>> {
 }
 
 fn shell_command(node: Node, script: &str) -> ShellCommand {
-    let mut command = ShellCommand { assigns: false, words: Vec::new() };
+    let mut writes = false;
+    let mut around = Some(node);
+    while let Some(n) = around {
+        writes |= redirects_to_a_file(n, script);
+        around = n.parent();
+    }
+    let mut command = ShellCommand { assigns: false, words: Vec::new(), writes };
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
@@ -554,6 +563,29 @@ fn shell_command(node: Node, script: &str) -> ShellCommand {
         }
     }
     command
+}
+
+/// Whether one of `node`'s own redirects writes a file: `>`, `>>`, `>|`,
+/// `&>`, `&>>`, `<>`, or `>&` to anything but a descriptor, unless the
+/// target is `/dev/null`. A target only known when the script runs counts.
+fn redirects_to_a_file(node: Node, script: &str) -> bool {
+    let mut cursor = node.walk();
+    let redirects: Vec<Node> = node.named_children(&mut cursor).filter(|c| c.kind() == "file_redirect").collect();
+    redirects.into_iter().any(|redirect| {
+        let mut cursor = redirect.walk();
+        let op = redirect
+            .children(&mut cursor)
+            .find(|c| !c.is_named())
+            .map(|c| node_text(c, script))
+            .unwrap_or_default();
+        let target = redirect.child_by_field_name("destination").and_then(|d| shell_word(d, script));
+        let to_null = target.as_deref() == Some("/dev/null");
+        match op {
+            ">" | ">>" | ">|" | "&>" | "&>>" | "<>" => !to_null,
+            ">&" => !to_null && !target.is_some_and(|t| t == "-" || t.chars().all(|c| c.is_ascii_digit())),
+            _ => false,
+        }
+    })
 }
 
 /// The value of one word, or `None` when only running the script knows it.
