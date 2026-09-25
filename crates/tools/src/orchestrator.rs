@@ -115,6 +115,8 @@ pub struct SpawnResult {
     /// they are: the launch receipt, or the finished helper's report.
     pub output: String,
     pub error: Option<String>,
+    /// The untrusted content a finished helper read: its report carries it.
+    pub taint: Vec<types::provenance::ProvenanceClass>,
 }
 
 /// Background work that is not a model turn (the deep-research pipeline),

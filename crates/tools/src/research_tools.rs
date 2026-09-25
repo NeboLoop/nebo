@@ -396,6 +396,7 @@ mod tests {
                     success: true,
                     output: "Helper h-1 is working in the background.".into(),
                     error: None,
+                    taint: Vec::new(),
                 })
             })
         }

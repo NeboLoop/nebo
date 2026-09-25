@@ -71,6 +71,7 @@ impl HelperDoor {
                 task_id,
                 success: true,
                 error: None,
+                taint: Vec::new(),
             },
             Launch::Finished(c) => finished(c),
         })
@@ -146,6 +147,7 @@ fn finished(c: Completion) -> SpawnResult {
         success: error.is_none(),
         output: notify::render_foreground(&c),
         error,
+        taint: c.taint.clone(),
     }
 }
 
@@ -161,7 +163,7 @@ impl SubAgentOrchestrator for HelperDoor {
         let started = self.helpers.start_work(&parent_turn(&req), &req.description, work);
         Box::pin(async move {
             let (task_id, output) = started?;
-            Ok(SpawnResult { task_id, success: true, output, error: None })
+            Ok(SpawnResult { task_id, success: true, output, error: None, taint: Vec::new() })
         })
     }
 
@@ -197,6 +199,7 @@ impl SubAgentOrchestrator for HelperDoor {
                     success: true,
                     output: said,
                     error: None,
+                    taint: Vec::new(),
                 })
             })
         })
@@ -246,7 +249,7 @@ mod tests {
     struct Recording(Arc<Recorder>);
 
     fn done() -> SpawnResult {
-        SpawnResult { task_id: "h1".into(), success: true, output: "done".into(), error: None }
+        SpawnResult { task_id: "h1".into(), success: true, output: "done".into(), error: None, taint: Vec::new() }
     }
 
     impl SubAgentOrchestrator for Recording {

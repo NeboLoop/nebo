@@ -344,7 +344,7 @@ impl ShellTool {
                 result.push_str(&msg);
             }
             if is_error {
-                return ToolResult { payload: None, need: None, parked_ask: None,
+                return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(),
                     content: format!("{}\n{}", exit_header(&output.status), result),
                     is_error: true,
                     image_url: None,

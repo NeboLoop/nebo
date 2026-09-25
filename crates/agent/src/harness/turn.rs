@@ -385,7 +385,7 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
                 &super::delegation::render_notification(c),
                 None,
                 None,
-                Some(&super::delegation::notify::row_metadata(&[])),
+                Some(&super::delegation::notify::row_metadata(&c.taint)),
             )
             .map(|_| ()),
         TurnInput::None => Ok(()),
@@ -755,7 +755,7 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
                         &super::delegation::render_notification(c),
                         None,
                         None,
-                        Some(&super::delegation::notify::row_metadata(&[])),
+                        Some(&super::delegation::notify::row_metadata(&c.taint)),
                     )
                     .map(|_| ())
                     .map_err(|e| format!("failed to store the notification: {e}"));
@@ -2853,6 +2853,45 @@ mod tests {
         let rows = stored(&h);
         assert_eq!(rows.iter().filter(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)).count(), 1);
         assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
+    }
+
+    /// A tool result that carries untrusted content (a helper's report of
+    /// what it read).
+    struct Relay;
+
+    impl tools::registry::DynTool for Relay {
+        fn name(&self) -> &str {
+            "relay"
+        }
+        fn description(&self) -> String {
+            "relays a helper's report".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                tools::ToolResult::ok("the page says 40% off").with_taint(vec![types::provenance::ProvenanceClass::Web])
+            })
+        }
+    }
+
+    /// Parity 5.1: a result that carries untrusted content taints the run
+    /// that reads it — the turn's provenance names it at its end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_result_that_carries_what_a_helper_read_taints_the_run() {
+        let model = Scripted::new(vec![Step::Call("relay", serde_json::json!({})), Step::Say("It is 40% off.")]);
+        let h = harness_with(&model, vec![Box::new(Relay)]).await;
+        let events = run_turn(&h, owner("What does the sale page say?")).await;
+        let done = events.iter().find(|e| e.event_type == ai::StreamEventType::Done).unwrap();
+        assert_eq!(done.provenance.clone().unwrap_or_default(), vec![types::provenance::ProvenanceClass::Web]);
     }
 
     /// The text of the latest stored attachment row of `kind`.

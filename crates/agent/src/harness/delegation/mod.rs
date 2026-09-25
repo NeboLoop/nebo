@@ -144,6 +144,9 @@ pub struct Completion {
     pub status: CompletionStatus,
     pub result: String,
     pub usage: ai::UsageInfo,
+    /// The untrusted content the helper read: its result carries it to
+    /// whoever reads it, as a tool result, a notification row or a wake.
+    pub taint: Vec<ProvenanceClass>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -633,6 +636,7 @@ impl Helpers {
             status,
             result,
             usage: ai::UsageInfo::default(),
+            taint: Vec::new(),
         }
     }
 
@@ -800,7 +804,9 @@ impl Helpers {
                     status: CompletionStatus::Failed { error: error.to_string() },
                     result: String::new(),
                     usage: ai::UsageInfo::default(),
+                    taint: Vec::new(),
                 },
+                0,
             );
         }
     }
@@ -944,7 +950,7 @@ impl Helpers {
     /// its parent, unless its own helpers still run: then it notifies once
     /// they are done and it has heard them.
     fn finish(self: &Arc<Self>, task_id: &str, mut completion: Completion) -> Option<TurnRequest> {
-        let (parent_key, completion) = {
+        let (parent_key, completion, depth) = {
             let mut state = self.state();
             let h = state.helpers.get_mut(task_id)?;
             let continues = matches!(completion.status, CompletionStatus::Done | CompletionStatus::Partial { .. })
@@ -980,7 +986,7 @@ impl Helpers {
                 completion.result = std::mem::take(&mut h.earlier_reports).join("\n\n");
             }
             let waiter = h.waiter.take();
-            let (session_key, parent_key) = (h.session_key.clone(), h.parent_key.clone());
+            let (session_key, parent_key, depth) = (h.session_key.clone(), h.parent_key.clone(), h.parent_seat.handoff_depth);
             let completion = match waiter {
                 Some(waiter) => match waiter.send(completion) {
                     Ok(()) => {
@@ -1000,21 +1006,22 @@ impl Helpers {
                 return None;
             }
             state.forget(task_id);
-            (parent_key, completion)
+            (parent_key, completion, depth)
         };
-        self.deliver(&parent_key, completion);
+        self.deliver(&parent_key, completion, depth);
         None
     }
 
-    /// Hand `c` to the session `parent_key`. A running parent hears it at
-    /// its next step (a notification row); an idle helper parent gets a
-    /// notification turn; an owner session goes through the wake rail, which
-    /// does the same for it. A stopped helper never starts a turn: its
-    /// parent, or the owner, stopped it.
-    fn deliver(self: &Arc<Self>, parent_key: &str, c: Completion) {
+    /// Hand `c` to the session `parent_key`, whose run is `depth` hops down
+    /// a coworker chain. A running parent hears it at its next step (a
+    /// notification row); an idle helper parent gets a notification turn; an
+    /// owner session goes through the wake rail, which does the same for it.
+    /// Every path carries what the helper read. A stopped helper never
+    /// starts a turn: its parent, or the owner, stopped it.
+    fn deliver(self: &Arc<Self>, parent_key: &str, c: Completion, depth: u8) {
         let text = render_notification(&c);
         let wakes = c.status != CompletionStatus::Stopped;
-        let mut release: Option<(String, Completion)> = None;
+        let mut release: Option<(String, Completion, u8)> = None;
         let mut resume: Option<(String, TurnRequest)> = None;
         {
             let mut state = self.state();
@@ -1027,12 +1034,12 @@ impl Helpers {
                 Some(pid) => {
                     let running = state.helpers.get(&pid).is_some_and(|p| p.running);
                     if running || !wakes {
-                        self.append_notification(parent_key, &text);
+                        self.append_notification(parent_key, &text, &c.taint);
                         if !running && !state.running_children(parent_key)
                             && let Some(p) = state.helpers.get_mut(&pid)
                             && let Some(held) = p.held.take()
                         {
-                            release = Some((p.parent_key.clone(), held));
+                            release = Some((p.parent_key.clone(), held, p.parent_seat.handoff_depth));
                             state.forget(&pid);
                         }
                     } else {
@@ -1040,7 +1047,8 @@ impl Helpers {
                     }
                 }
                 None if wakes => {
-                    let queued = self.store.engine_enqueue_wake(parent_key, notify::WAKE_KIND, &text, "[]", 0);
+                    let taint = serde_json::to_string(&c.taint).unwrap_or_else(|_| "[]".to_string());
+                    let queued = self.store.engine_enqueue_wake(parent_key, notify::WAKE_KIND, &text, &taint, depth);
                     match queued {
                         Ok(_) => {
                             if let Some(wake) = &self.wake {
@@ -1049,24 +1057,24 @@ impl Helpers {
                         }
                         Err(e) => {
                             warn!(error = %e, session = %parent_key, "helper notification could not be queued; writing it as a row");
-                            self.append_notification(parent_key, &text);
+                            self.append_notification(parent_key, &text, &c.taint);
                         }
                     }
                 }
-                None => self.append_notification(parent_key, &text),
+                None => self.append_notification(parent_key, &text, &c.taint),
             }
         }
         if let Some((pid, req)) = resume {
             let _ = self.store.update_task_running(&pid);
             self.spawn_turn(pid, req, None);
         }
-        if let Some((grandparent, held)) = release {
-            self.deliver(&grandparent, held);
+        if let Some((grandparent, held, depth)) = release {
+            self.deliver(&grandparent, held, depth);
         }
     }
 
-    fn append_notification(&self, session_key: &str, text: &str) {
-        if let Err(e) = notify::append_row(&self.sessions, session_key, text, &[]) {
+    fn append_notification(&self, session_key: &str, text: &str, taint: &[ProvenanceClass]) {
+        if let Err(e) = notify::append_row(&self.sessions, session_key, text, taint) {
             warn!(error = %e, session = %session_key, "helper notification row could not be written");
         }
     }
@@ -1221,6 +1229,13 @@ mod tests {
             let _ = self.events.send(StreamEvent::text(text)).await;
             let _ = self.events.send(StreamEvent::done()).await;
         }
+
+        /// Answer as a turn that read untrusted content: its `Done` carries
+        /// the run's provenance, as the turn driver sends it.
+        async fn answer_having_read(&self, text: &str, taint: Vec<ProvenanceClass>) {
+            let _ = self.events.send(StreamEvent::text(text)).await;
+            let _ = self.events.send(StreamEvent::done().with_provenance(taint)).await;
+        }
     }
 
     struct Scripted {
@@ -1332,6 +1347,62 @@ mod tests {
 
     fn task_id_of(launch_text: &str) -> String {
         launch_text.split_whitespace().nth(1).unwrap().to_string()
+    }
+
+    /// Parity 5.1: a helper that read the web returns tainted, whichever
+    /// way its result travels: the wake an owner session is woken with, the
+    /// row a running parent helper hears, and a foreground result.
+    #[tokio::test]
+    async fn a_helpers_result_carries_what_it_read() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:buyer:web");
+        let text = rig.helpers.delegate(&owner, None, &[], &call("Read the supplier's web page.", None)).await.unwrap();
+        let parent = rig.next_turn().await;
+        assert_eq!(parent.request.session_key, helper_key("agent:buyer:web", &task_id_of(&text)));
+
+        // The helper starts a helper of its own, and reads the web.
+        let nested = rig
+            .helpers
+            .delegate(&parent.request, None, &[], &call("Open the price list web page.", None))
+            .await
+            .unwrap();
+        let child = rig.next_turn().await;
+        assert_eq!(child.request.session_key, helper_key(&parent.request.session_key, &task_id_of(&nested)));
+        child.answer_having_read("Widgets are 4.10 each.", vec![ProvenanceClass::Web]).await;
+        let parent_key = parent.request.session_key.clone();
+        for _ in 0..200 {
+            if !rig.notification_rows(&parent_key).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let id = rig.sessions.resolve_session_id_by_key(&parent_key).unwrap();
+        let rows = rig.store.get_chat_messages(&rig.sessions.active_chat_id(&id)).unwrap();
+        let row = rows.iter().find(|m| notify::is_notification_row(m)).expect("the running parent hears it as a row");
+        assert_eq!(notify::row_taint(row), vec![ProvenanceClass::Web], "the row a running parent hears");
+
+        // The parent heard it and finishes, having read the web itself: the
+        // owner's wake carries it.
+        rig.heard(&parent_key);
+        parent.answer_having_read("Supplier prices are up 3%.", vec![ProvenanceClass::Web]).await;
+        assert_eq!(rig.next_wake().await, "agent:buyer:web");
+        let (batch, _) = rig.store.engine_claim_session_events("agent:buyer:web", 0).unwrap();
+        let wake = batch.iter().find(|w| w.kind == notify::WAKE_KIND).expect("a notification wake");
+        assert_eq!(wake.provenance, r#"["web"]"#, "the wake the owner's session is woken with");
+
+        // A foreground helper's completion carries it too.
+        let mut fg = HelperSpec::from_input(&call("Read the returns web page.", Some(false))).unwrap();
+        fg.background = false;
+        let launched = {
+            let helpers = rig.helpers.clone();
+            let owner = rig.owner_turn("agent:buyer:web");
+            tokio::spawn(async move { helpers.launch(&owner, None, &[], fg).await })
+        };
+        rig.next_turn().await.answer_having_read("Returns take 30 days.", vec![ProvenanceClass::Web]).await;
+        match launched.await.unwrap().unwrap() {
+            Launch::Finished(c) => assert_eq!(c.taint, vec![ProvenanceClass::Web], "a foreground result"),
+            Launch::Background { .. } => panic!("it finished inside the budget"),
+        }
     }
 
     #[tokio::test]

@@ -37,6 +37,8 @@ pub struct Collected {
     /// The turn ended at a limit, not because the work was done.
     pub limit: Option<&'static str>,
     pub usage: ai::UsageInfo,
+    /// The untrusted content the turn read (its `Done` event's provenance).
+    pub taint: Vec<types::provenance::ProvenanceClass>,
 }
 
 impl Collected {
@@ -73,6 +75,7 @@ impl Collected {
             status,
             result: spill_if_long(&text, spill_dir),
             usage: self.usage,
+            taint: self.taint,
         }
     }
 }
@@ -133,6 +136,7 @@ pub async fn collect(
                         out.error = Some(event.error.unwrap_or_else(|| "the helper's turn failed".to_string()));
                     }
                     StreamEventType::Done => {
+                        out.taint = event.provenance.clone().unwrap_or_default();
                         out.limit = match event.stop_reason.as_deref() {
                             Some(STOP_MAX_STEPS) => Some("hit its step limit"),
                             Some(STOP_SPEND_CAP) => Some("hit its spending limit"),

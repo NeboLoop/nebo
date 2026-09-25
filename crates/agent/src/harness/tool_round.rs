@@ -428,7 +428,7 @@ pub(crate) async fn run_tool_round(
         }
         // Capture pre-truncation snapshots for the summarizer (only name + short content)
         summary_tool_calls.push(tc.clone());
-        summary_tool_results.push(ToolResult { payload: None, need: None, parked_ask: None,
+        summary_tool_results.push(ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(),
             content: truncate_str(&result.content, 300).to_string(),
             is_error: result.is_error,
             image_url: None,
@@ -948,6 +948,10 @@ async fn run_call(
     };
     let duration_ms = started.elapsed().as_millis() as u64;
     info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %truncate_str(&result.content, 300), "tool result");
+    // What the result carries, the run has now read.
+    if !result.taint.is_empty() {
+        scope.run_taint.lock().unwrap().extend(result.taint.iter().copied());
+    }
     if let Some(note) = pre_hook_note {
         result.content.push_str("\n\n");
         result.content.push_str(&note);
