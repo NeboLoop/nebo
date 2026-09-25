@@ -153,6 +153,78 @@ pub async fn answer_permission_ask(
     }
 }
 
+// ── The phone as it shipped ─────────────────────────────────────────────
+//
+// The phone app released before nebo-mobile #68 answers a parked workflow
+// run by its run id, on its `wf-approval:<run>` Inbox rows. A run now parks
+// on an ask, so these two routes read and answer the ask that holds the run,
+// through the ask's one answer path; nothing else is kept. #68 moves the
+// phone to the ask routes above and ships in the same release train.
+
+/// A parked run's standing in the words the shipped phone reads: pending
+/// earns its Approve and Deny buttons; an expired ask was a No.
+fn run_approval_status(ask: &Ask) -> &'static str {
+    match ask.status {
+        AskStatus::Open => "pending",
+        AskStatus::Answered {
+            answer: Answer::No, ..
+        }
+        | AskStatus::Expired => "denied",
+        AskStatus::Answered { .. } => "approved",
+    }
+}
+
+/// GET /api/v1/agents/workflow-runs/{run_id}/approval — where the ask a
+/// workflow run parked on stands.
+pub async fn get_workflow_run_approval(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let status = state
+        .permission_asks
+        .for_run(&run_id)
+        .map_err(ask_error)?
+        .map_or("unknown", |a| run_approval_status(&a));
+    Ok(Json(serde_json::json!({ "status": status })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WorkflowRunApprovalBody {
+    pub approved: bool,
+}
+
+/// POST /api/v1/agents/workflow-runs/{run_id}/approval — Approve is "This
+/// once", Deny is "No", on the ask the run is parked on. The first answer
+/// anywhere wins; the status says which one it was.
+pub async fn answer_workflow_run_approval(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(body): Json<WorkflowRunApprovalBody>,
+) -> HandlerResult<serde_json::Value> {
+    let ask = state
+        .permission_asks
+        .for_run(&run_id)
+        .map_err(ask_error)?
+        .ok_or_else(|| ask_error(AskError::NotFound))?;
+    let answer = if body.approved {
+        Answer::ThisOnce
+    } else {
+        Answer::No
+    };
+    let settled =
+        match state
+            .permission_asks
+            .answer(&state.tools, &ask.id, answer, AnsweredVia::Mobile)
+        {
+            Ok(settled) => settled.ask,
+            Err(AskError::Settled(ask)) => *ask,
+            Err(e) => return Err(ask_error(e)),
+        };
+    Ok(Json(
+        serde_json::json!({ "status": run_approval_status(&settled), "runId": run_id }),
+    ))
+}
+
 // ── The Permissions pages ───────────────────────────────────────────────
 
 /// One employee's permissions, or the company defaults, in plain words.

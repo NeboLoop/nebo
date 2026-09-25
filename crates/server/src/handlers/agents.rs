@@ -4731,15 +4731,20 @@ pub async fn get_agent_operations(
                 read_only: false,
                 effects: types::permissions::CallEffects::unknown(),
             };
-            // What the owner's own chat would get: the rule that decides the
-            // operation, else it runs inside the job. Untrusted origins
-            // (inbound email/DM, apps, skills, MCP, callers) additionally
-            // ask for gated operations at run time (WS2).
+            // What the owner's own chat would get, in the permission
+            // check's order: a deny refuses and an ask rule asks in every
+            // mode; then Full Access runs it, Plan runs no change, and an
+            // allow runs it; else Ask mode asks and it runs inside the job.
+            // Untrusted origins (inbound email/DM, apps, skills, MCP,
+            // callers) additionally ask for gated operations at run time
+            // (WS2).
             let effective = match (rules.decide(&target), mode) {
                 (Some((_, types::permissions::Effect::Deny)), _) => "blocked",
+                (Some((_, types::permissions::Effect::Ask)), _) => "approval",
                 (_, types::permissions::Mode::FullAccess) => "always",
-                (Some((_, effect)), _) => access(effect),
-                (None, types::permissions::Mode::Ask | types::permissions::Mode::Plan) => "approval",
+                (_, types::permissions::Mode::Plan) => "blocked",
+                (Some((_, types::permissions::Effect::Allow)), _) => "always",
+                (None, types::permissions::Mode::Ask) => "approval",
                 (None, _) => "always",
             };
             serde_json::json!({
@@ -4760,7 +4765,7 @@ pub async fn get_agent_operations(
         .collect();
 
     Ok(Json(serde_json::json!({
-        "default": if mode == types::permissions::Mode::Ask { "approval" } else { "always" },
+        "default": crate::entity_config::default_access(mode),
         "configured": configured,
         "interfaces": interfaces,
         "available": available,

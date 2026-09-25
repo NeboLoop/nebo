@@ -1,0 +1,11 @@
+id: sc20-the-phones-default-is-the-employees-mode
+name: "SC20 — The phone's default is the employee's mode"
+description: |
+  The phone's per-employee default (Always / Ask me first / Blocked) maps to
+  the employee's permission mode (Automatic / Ask / Plan) and back: Blocked
+  reloads as Blocked and the permission check refuses the operation; Ask me
+  first reloads as Ask; Always as Always. Re-sending the default in force
+  with an override, as the screen does, leaves Full Access in place.
+target_component: staffed-company
+proof: staffed_proof::policy::the_phones_default_is_the_employees_mode
+conversation: []

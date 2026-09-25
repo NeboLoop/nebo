@@ -377,6 +377,15 @@ impl Asks {
         Ok(row.and_then(Ask::from_row))
     }
 
+    /// The ask a workflow run is (or was last) parked on.
+    pub fn for_run(&self, run_id: &str) -> Result<Option<Ask>, AskError> {
+        let row = self
+            .store
+            .permission_ask_for_run(run_id)
+            .map_err(|e| AskError::Store(e.to_string()))?;
+        Ok(row.and_then(Ask::from_row))
+    }
+
     /// The asks waiting on the owner, oldest first; `session_key` narrows
     /// them to one session (the open chat).
     pub fn open(&self, session_key: Option<&str>) -> Result<Vec<Ask>, AskError> {

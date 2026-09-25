@@ -14,6 +14,15 @@ pub fn routes() -> Router<AppState> {
             "/permissions/asks/{id}/answer",
             axum::routing::post(handlers::permissions::answer_permission_ask),
         )
+        // The shipped phone's approvals (see the handlers).
+        .route(
+            "/agents/workflow-runs/{run_id}/approval",
+            axum::routing::get(handlers::permissions::get_workflow_run_approval),
+        )
+        .route(
+            "/agents/workflow-runs/{run_id}/approval",
+            axum::routing::post(handlers::permissions::answer_workflow_run_approval),
+        )
         .route(
             "/agents/{id}/permissions",
             axum::routing::get(handlers::permissions::get_agent_permissions),

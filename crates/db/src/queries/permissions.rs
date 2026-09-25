@@ -625,6 +625,22 @@ impl Store {
         Ok(())
     }
 
+    /// The ask a workflow run parked on, the latest when it parked more
+    /// than once.
+    pub fn permission_ask_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<PermissionAskRow>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            &format!("SELECT {ASK_COLUMNS} FROM permission_asks WHERE run_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 1"),
+            params![run_id],
+            row_to_ask,
+        )
+        .optional()
+        .map_err(db_err)
+    }
+
     /// The asks still waiting on the owner, oldest first; `session_key`
     /// narrows them to one session.
     pub fn open_permission_asks(&self, session_key: Option<&str>) -> Result<Vec<PermissionAskRow>, NeboError> {
