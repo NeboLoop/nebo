@@ -232,6 +232,10 @@ pub struct ChatConfig {
     /// platform-authored prompts like the christening self-introduction. The
     /// model sees it; the transcript never does.
     pub hidden_prompt: bool,
+    /// The coworker whose message the prompt is (display name): the input is
+    /// theirs — a colleague's information, never the owner's word. Set by
+    /// the coworker rail only.
+    pub coworker: Option<String>,
     /// Recall-for-audience: the agent id this run replies to (coworker rail
     /// only). `None` for owner-initiated runs.
     pub audience: Option<String>,
@@ -387,6 +391,8 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
         TurnInput::None
     } else if config.hidden_prompt {
         TurnInput::Platform { text: config.prompt.clone() }
+    } else if let Some(from) = &config.coworker {
+        TurnInput::Coworker { from: from.clone(), text: config.prompt.clone() }
     } else {
         TurnInput::Owner {
             text: config.prompt.clone(),

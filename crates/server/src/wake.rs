@@ -176,6 +176,7 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         seed_taint,
         tool_allowlist: None,
         hidden_prompt: false,
+        coworker: None,
         audience: None,
         cwd: None,
         model_override: None,

@@ -278,6 +278,18 @@ pub(crate) struct InputRow<'a> {
     /// The owner wrote it in their own app: the row carries
     /// [`db::OWNER_MARK`], the only mark a consent reads as the owner's word.
     pub by_owner: bool,
+    /// A coworker wrote it (their name): the row is marked as theirs
+    /// ([`coworker_mark`]).
+    pub coworker: Option<&'a str>,
+}
+
+/// Mark a user row's metadata as a coworker's words: whoever reads the row
+/// (the owner's transcript, a consent) sees it is a colleague's, not the
+/// owner's. The mid-turn mark (`MidTurnFrom::Coworker`) says the same for a
+/// message queued into a running turn.
+pub(crate) fn coworker_mark(metadata: &mut serde_json::Value, from: &str) {
+    metadata["from"] = serde_json::json!("coworker");
+    metadata["coworker"] = serde_json::json!(from);
 }
 
 /// Mark a user row's metadata as the owner's own words ([`db::OWNER_MARK`]).
@@ -404,6 +416,18 @@ pub(crate) async fn persist_input(
         Some(value.to_string())
     } else {
         metadata
+    };
+
+    let metadata = match input.coworker {
+        Some(from) => {
+            let mut value: serde_json::Value = metadata
+                .as_deref()
+                .and_then(|m| serde_json::from_str(m).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            coworker_mark(&mut value, from);
+            Some(value.to_string())
+        }
+        None => metadata,
     };
 
     let t_msg_save = std::time::Instant::now();

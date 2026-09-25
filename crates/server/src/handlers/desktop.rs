@@ -122,6 +122,7 @@ pub async fn teach_stop(
         seed_taint: vec![],
         tool_allowlist: None,
         hidden_prompt: false,
+        coworker: None,
         audience: None,
         cwd: None,
         model_override: None,

@@ -343,6 +343,7 @@ pub(crate) async fn run_in_thread(
         seed_taint,
         tool_allowlist: None,
         hidden_prompt: false,
+        coworker: Some(route.from_name.clone()),
         // Recall-for-audience: the target's recall is filtered against this
         // requester unless the owner granted them in `memory.share_with`.
         audience: Some(sender_ref.to_string()),

@@ -164,6 +164,7 @@ pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -
         seed_taint: vec![],
         tool_allowlist: None,
         hidden_prompt: false,
+        coworker: None,
         audience: None,
         cwd: None,
         model_override: None,

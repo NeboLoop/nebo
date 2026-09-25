@@ -377,6 +377,17 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
             .sessions
             .append_message(session_id, "user", text, None, None, Some(r#"{"isMeta":true,"hiddenPrompt":true}"#))
             .map(|_| ()),
+        TurnInput::Coworker { from, text } => h
+            .sessions
+            .append_message(
+                session_id,
+                "user",
+                text,
+                None,
+                None,
+                Some(&MidTurnFrom::Coworker { from: from.clone() }.metadata()),
+            )
+            .map(|_| ()),
         TurnInput::Notification(c) => h
             .sessions
             .append_message(
@@ -631,9 +642,10 @@ pub(crate) async fn prepare(
     // it once it has finished.
     let history = h.sessions.get_messages_since_checkpoint(session_id).unwrap_or_default();
     let mut surfaced = super::memory_context::surfaced_memories(&history);
-    // Only the owner's words are searched for; other input recalls nothing.
+    // The words someone wrote are searched for (a coworker's recall under
+    // its audience limit); other input recalls nothing.
     let recall_prompt = match &req.input {
-        TurnInput::Owner { text, .. } => text.as_str(),
+        TurnInput::Owner { text, .. } | TurnInput::Coworker { text, .. } => text.as_str(),
         _ => "",
     };
     let recall = super::memory_context::RecallPrefetch::start(
@@ -742,10 +754,11 @@ pub(crate) async fn prepare(
 
 /// Store the turn's input as its row.
 async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result<(), String> {
-    let (text, images, attachments, hidden): (&str, &[ai::ImageContent], &[comm::wire::Attachment], bool) =
+    let (text, images, attachments, hidden, coworker): (&str, &[ai::ImageContent], &[comm::wire::Attachment], bool, Option<&str>) =
         match &req.input {
-            TurnInput::Owner { text, images, attachments } => (text, images, attachments, false),
-            TurnInput::Platform { text } => (text, &[], &[], true),
+            TurnInput::Owner { text, images, attachments } => (text, images, attachments, false, None),
+            TurnInput::Platform { text } => (text, &[], &[], true, None),
+            TurnInput::Coworker { from, text } => (text, &[], &[], false, Some(from.as_str())),
             TurnInput::Notification(c) => {
                 return h
                     .sessions
@@ -777,6 +790,7 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
             attachments,
             hidden,
             by_owner: !hidden && owner_speaks(req),
+            coworker,
         },
     )
     .await

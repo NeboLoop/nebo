@@ -325,6 +325,7 @@ impl<'a> Rig<'a> {
             seed_taint: vec![],
             tool_allowlist: None,
             hidden_prompt: false,
+            coworker: None,
             audience: None,
             cwd: None,
             model_override: None,
@@ -887,4 +888,64 @@ async fn the_owners_next_message_answers_the_open_question() {
         futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_none(),
         "the card is closed"
     );
+}
+
+/// Parity 5.4: a coworker's message is a coworker's. The employee reads it
+/// as a colleague's — in its own thread, and when a second message lands
+/// while it is still working on the first — never as the owner's, and the
+/// row it is stored as says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coworkers_message_is_read_as_a_coworkers() {
+    let nebo = session().await;
+    let sender = nebo.hire("Proof 54 Buyer", json!({ "workflows": {} })).await;
+    let clerk = nebo.hire("Proof 54 Clerk", json!({ "workflows": {} })).await;
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !t.opener().contains("MARK-C54") {
+            return None;
+        }
+        // A row that lands while a call is in flight is stored before that
+        // call's answer: read the whole thread.
+        if t.says("MARK-C54-SECOND") && t.answered("FIRST-DONE") && !t.answered("HEARD-AS") {
+            let who = if t.says("Your coworker Proof 54 Buyer sent you a message while you were working") {
+                "HEARD-AS-COWORKER"
+            } else {
+                "HEARD-AS-OTHER"
+            };
+            return Some(Step::say(who));
+        }
+        (!t.answered("FIRST-DONE")).then(|| Step::held("c54", "FIRST-DONE"))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    let from = format!("agent:{sender}:web");
+    rig.open_session(&from);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(from.clone(), "s1");
+    let first = nebo
+        .tool(&ctx, "send_message", json!({"to": "Proof 54 Clerk", "message": "MARK-C54 file the invoice"}))
+        .await;
+    assert!(!first.is_error, "{}", first.content);
+    rig.until(20, "the clerk works on the first message", || rig.company.calls_naming("MARK-C54") > 0)
+        .await;
+    let second = nebo
+        .tool(&ctx, "send_message", json!({"to": "Proof 54 Clerk", "message": "MARK-C54-SECOND and the receipt"}))
+        .await;
+    assert!(!second.is_error, "{}", second.content);
+    rig.company.open("c54");
+    let thread = format!("agent:{clerk}:coworker:{sender}");
+    rig.until(30, "the second message is heard", || {
+        rig.thread(&thread).iter().any(|m| m.role == "assistant" && m.content.starts_with("HEARD-AS"))
+    })
+    .await;
+    let rows = rig.thread(&thread);
+    assert!(
+        rows.iter().any(|m| m.role == "assistant" && m.content == "HEARD-AS-COWORKER"),
+        "read as a colleague's: {:?}",
+        rows.iter().map(|m| m.content.clone()).collect::<Vec<_>>()
+    );
+    for text in ["MARK-C54 file the invoice", "MARK-C54-SECOND and the receipt"] {
+        let row = rows.iter().find(|m| m.role == "user" && m.content.contains(text)).expect("stored");
+        let meta: Value = serde_json::from_str(row.metadata.as_deref().unwrap_or("{}")).unwrap();
+        assert_eq!(meta["from"], "coworker", "{text}: stored as the coworker's: {meta}");
+        assert_eq!(meta["coworker"], "Proof 54 Buyer", "{text}: {meta}");
+        assert!(meta.get(db::OWNER_MARK).is_none(), "{text}: never the owner's word");
+    }
 }
