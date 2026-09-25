@@ -38,6 +38,10 @@ fn put(store: &db::Store, r: Rule) -> Rule {
     store.write_permission_rule(&r, &Writer::Owner).unwrap()
 }
 
+fn activity_of(agent: &str) -> db::PermissionActivityFilter {
+    db::PermissionActivityFilter { agent_id: Some(agent.into()), limit: 100, ..Default::default() }
+}
+
 fn cap(c: &str) -> RuleKey {
     RuleKey::Capability(c.into())
 }
@@ -296,7 +300,7 @@ async fn every_door_goes_through_the_check() {
     }
     assert_eq!(ran.load(Ordering::SeqCst), 0, "a door skipped the check");
     let recorded: std::collections::HashSet<String> =
-        store.permission_activity("emp", 100).unwrap().into_iter().map(|a| a.door).collect();
+        store.permission_activity(&activity_of("emp")).unwrap().0.into_iter().map(|a| a.door).collect();
     for door in &doors {
         assert!(recorded.contains(door.label()), "{door:?} was not recorded: {recorded:?}");
     }
@@ -468,7 +472,7 @@ async fn activity_names_the_rule() {
     let c = ctx(&store, "emp", Origin::User);
     reg.execute(&c, "web", json!({})).await;
     reg.execute(&c, "memory", json!({})).await;
-    let rows = store.permission_activity("emp", 10).unwrap();
+    let rows = store.permission_activity(&activity_of("emp")).unwrap().0;
     let web = rows.iter().find(|r| r.rule_key == "fetch_url").expect("recorded");
     assert_eq!(web.decision, "allow");
     let why: Why = serde_json::from_str(&web.why).unwrap();

@@ -32,6 +32,22 @@ export interface ActiveTurnStatus {
 	currentTool: string
 }
 
+export interface ActivityPage {
+	rows: ActivityRow[]
+	total: number
+}
+
+export interface ActivityRow {
+	at: number
+	employeeId: string
+	employee: string
+	action: string
+	decision: string
+	why: string
+	door: string
+	unreviewed: boolean
+}
+
 export interface Advisor {
 	id: number
 	name: string
@@ -793,6 +809,13 @@ export interface MessageResponse {
 	message: string
 }
 
+export interface MoneyAmounts {
+	perActionCents?: number
+	perDayCents?: number
+	perDayCount?: number
+	perCounterpartyDayCents?: number
+}
+
 export interface MoneyLimit {
 	per_action_cents?: number
 	per_day_cents?: number
@@ -914,6 +937,27 @@ export interface PendingWrite {
 	status: string
 	createdAt: number
 	resolvedAt?: number
+}
+
+export interface PermissionItem {
+	id: string
+	sentence: string
+	removable: boolean
+	fromCompany: boolean
+	money?: MoneyAmounts
+}
+
+export interface PermissionsPage {
+	mode: Mode
+	modeFromCompany: boolean
+	job: PermissionItem[]
+	canAdd: PermissionItem[]
+	money: PermissionItem[]
+	folders: PermissionItem[]
+	alwaysAllowed: PermissionItem[]
+	asksFirst: PermissionItem[]
+	never: PermissionItem[]
+	fixed: PermissionItem[]
 }
 
 export interface PluginRegistry {
@@ -2109,9 +2153,17 @@ export interface ReloadAgentResponse {
 	agent: Agent
 }
 
+export interface RemoveAgentPermissionResponse {
+	message: string
+}
+
 export interface RemoveCollectionItemResponse {
 	collection: unknown
 	removedItem: string
+}
+
+export interface RemoveCompanyPermissionResponse {
+	message: string
 }
 
 export interface RemovePluginResponse {

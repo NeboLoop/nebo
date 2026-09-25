@@ -19,6 +19,7 @@ mod integrations;
 mod memory;
 mod neboai;
 mod notifications;
+mod permissions;
 mod plugins;
 mod provider;
 mod roles;
@@ -86,6 +87,7 @@ pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppS
         .merge(store::routes())
         .merge(entity_config::routes())
         .merge(notifications::routes())
+        .merge(permissions::routes())
         .merge(apps::routes())
         .merge(artifact_updates::routes())
         .merge(user::public_routes())

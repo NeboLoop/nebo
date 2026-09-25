@@ -17,6 +17,7 @@ pub mod memory;
 pub mod neboai;
 pub mod notification;
 pub mod openai;
+pub mod permissions;
 pub mod plugins;
 pub mod provider;
 pub mod setup;

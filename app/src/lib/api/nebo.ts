@@ -391,6 +391,27 @@ export function getAgentOperations(id: string) {
 }
 
 /**
+ * @description "Get agent permissions"
+ */
+export function getAgentPermissions(id: string) {
+	return webapi.get<components.PermissionsPage>(`/api/v1/agents/${id}/permissions`)
+}
+
+/**
+ * @description "Update agent permissions"
+ */
+export function updateAgentPermissions(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.PermissionsPage>(`/api/v1/agents/${id}/permissions`, req)
+}
+
+/**
+ * @description "Remove agent permission"
+ */
+export function removeAgentPermission(id: string, ruleId: string) {
+	return webapi.delete<components.RemoveAgentPermissionResponse>(`/api/v1/agents/${id}/permissions/items/${ruleId}`)
+}
+
+/**
  * @description "Purge agent data"
  */
 export function purgeAgentData(id: string, req: Record<string, unknown> = {}) {
@@ -1410,6 +1431,34 @@ export function markRead(id: string, req: Record<string, unknown> = {}) {
  */
 export function installOrg(req: Record<string, unknown> = {}) {
 	return webapi.post<components.InstallOrgResponse>(`/api/v1/org/install`, req)
+}
+
+/**
+ * @description "List permission activity"
+ */
+export function listPermissionActivity(agentId?: string, door?: string, decision?: string, limit?: number, offset?: number) {
+	return webapi.get<components.ActivityPage>(`/api/v1/permissions/activity`, { agentId, door, decision, limit, offset })
+}
+
+/**
+ * @description "Get company permissions"
+ */
+export function getCompanyPermissions() {
+	return webapi.get<components.PermissionsPage>(`/api/v1/permissions/company`)
+}
+
+/**
+ * @description "Update company permissions"
+ */
+export function updateCompanyPermissions(req: Record<string, unknown> = {}) {
+	return webapi.put<components.PermissionsPage>(`/api/v1/permissions/company`, req)
+}
+
+/**
+ * @description "Remove company permission"
+ */
+export function removeCompanyPermission(ruleId: string) {
+	return webapi.delete<components.RemoveCompanyPermissionResponse>(`/api/v1/permissions/company/items/${ruleId}`)
 }
 
 /**
