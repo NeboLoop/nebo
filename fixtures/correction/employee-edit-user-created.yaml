@@ -1,4 +1,4 @@
-id: correction-agent-edit-user-created
+id: correction-employee-edit-user-created
 name: "Correction — editing a user-created employee starts at its own files"
 description: |
   Replayed from a live voice session on 2026-09-05. The owner asked for an
@@ -10,8 +10,10 @@ description: |
   identical-call block. Info now reports the row's own directory and source,
   the install action refuses name-shaped codes before any network call, and
   the plugin and glob errors say what to do next. This fixture pins the
-  shape of a good run: info, then the update, in a handful of calls.
-target_component: agent
+  shape of a good run: get_employee, then update_employee, in a handful of
+  calls. Both are deferred tools since tools WP3; loading them with one
+  find_tools call first is the expected path.
+target_component: get_employee
 
 setup:
   # A user-created employee WITH files under user/agents, the shape of the
@@ -26,7 +28,9 @@ conversation:
     content: "Inspect the night-desk-{{tag}} employee's full prompt and instructions. Add an instruction to end phone calls properly: summarize what was captured, confirm next steps, thank the caller, and say goodbye before hanging up, instead of disconnecting abruptly."
 
 tool_config:
-  agent:
+  get_employee:
+    enabled: true
+  update_employee:
     enabled: true
   read_file:
     enabled: true
@@ -35,32 +39,32 @@ tool_config:
 
 prompt_assertions:
   first_call:
-    - id: starts-with-registry
-      text: "The first call is agent(resource: registry, action: info) on night-desk-{{tag}}, or its update"
+    - id: starts-with-the-employee
+      text: "The employee is read with get_employee (or updated with update_employee) naming night-desk-{{tag}} before any file search; loading those tools with find_tools first is fine"
       severity: critical
-      check: { first_call: true, tool: agent }
+      check: { tool: [get_employee, update_employee], arg: name, contains: "night-desk-{{tag}}" }
   recovery:
     - id: no-wrong-tree-search
-      text: "The model never lists, finds, or reads under the installed-agents directory (Nebo/nebo/agents) looking for this employee; if it reads files, they are under the path the info result named"
+      text: "The model never lists, finds, or reads under the installed-agents directory (Nebo/nebo/agents) looking for this employee; if it reads files, they are under the path the get_employee result named"
       severity: critical
     - id: no-reinstall
-      text: "No agent install call is made; the employee already exists"
+      text: "No hire_employee call is made; the employee already exists"
       severity: critical
     - id: no-tool-errors
       text: "Every call the model makes is accepted: no missing-parameter, unknown-action, invalid-code, or not-found error in any tool result"
       severity: critical
       check: { max_errors: 0 }
     - id: bounded
-      text: "At most 6 tool calls"
+      text: "At most 7 tool calls (find_tools to load the employee tools counts as one)"
       severity: critical
-      check: { max_tool_calls: 6 }
+      check: { max_tool_calls: 7 }
     - id: update-lands
       text: "An update or a file edit of AGENT.md succeeds and its result says the persona or instructions were changed"
       severity: critical
     - id: honest-summary
-      text: "The final response says the instructions were updated only because a tool result said so, and does not claim the employee is a marketplace agent or not installed"
+      text: "The final response says the instructions were updated only because a tool result said so, and does not claim the employee is from the marketplace or not installed"
       severity: important
 
 ideal_behavior:
-  tool_calls: 2
-  narrative: "One info call that names the employee's directory and shows the persona, then one update with the new instructions, then a two-line confirmation."
+  tool_calls: 3
+  narrative: "find_tools(query: \"select:get_employee,update_employee\"), one get_employee call that names the employee's directory and shows the instructions, then one update_employee with the new instructions, then a two-line confirmation."

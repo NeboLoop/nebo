@@ -1990,7 +1990,7 @@ async fn run_loop(
                     lines.push(format!("- **{}**{}", a.name, desc));
                 }
                 lines.push(String::new());
-                lines.push("Use agents(action: \"list\") for full details. Use agents(action: \"activate\", name: \"...\") to switch.".to_string());
+                lines.push("get_employee(name) shows one in full; list_employees lists them all.".to_string());
                 lines.join("\n")
             }
         }

@@ -31,7 +31,7 @@ conversation:
     content: "Yes, create it."
 
 tool_config:
-  agent:
+  create_employee:
     enabled: true
   message:
     enabled: true

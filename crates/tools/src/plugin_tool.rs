@@ -1551,9 +1551,9 @@ impl PluginTool {
                     ));
                 }
                 result.push_str(&format!(
-                    "\nAgents can reference these via watch triggers:\n\
-                     agent(resource: \"registry\", action: \"create\", name: \"...\", automations: [\n  \
-                       {{\"name\": \"...\", \"plugin\": \"{}\", \"event\": \"<event-name>\", \"steps\": [...]}}])",
+                    "\nAn employee can run on these through a watch trigger in its agent.json \
+                     (create_employee with agent_json):\n  \
+                       {{\"workflows\": {{\"<name>\": {{\"trigger\": {{\"type\": \"watch\", \"plugin\": \"{}\", \"event\": \"<event-name>\"}}, \"activities\": [...]}}}}}}",
                     slug
                 ));
                 ToolResult::ok(result)
