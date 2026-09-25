@@ -34,8 +34,6 @@ conversation:
     content: "Now text +1-555-0177 too — different customer, also never contacted, their order shipped as well."
 
 tool_config:
-  agent:
-    enabled: true
   message:
     enabled: true
 

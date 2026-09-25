@@ -30,8 +30,6 @@ conversation:
     content: "Ask Field Researcher to look up Example Supplies' current VAT rate on their website for you."
 
 tool_config:
-  agent:
-    enabled: true
   message:
     enabled: true
   search_web:

@@ -569,6 +569,32 @@ mod tests {
         assert!(tool(&family, "create_employee").effects(&json!({"name": "x"})).deletes.is_empty());
     }
 
+    /// A create or update drafts from a name or makes a draft the owner
+    /// said yes to; a call with neither is refused before it runs.
+    #[test]
+    fn a_create_or_update_names_the_employee_or_its_draft() {
+        let (family, _dir) = family();
+        for name in ["create_employee", "update_employee"] {
+            let t = tool(&family, name);
+            assert!(t.validate_input(&json!({"description": "x"})).is_err(), "{name}");
+            assert!(t.validate_input(&json!({"name": "Front Desk"})).is_ok(), "{name}");
+            assert!(t.validate_input(&json!({"draft_id": "d-1"})).is_ok(), "{name}");
+            assert!(t.schema()["properties"]["draft_id"].is_object(), "{name}");
+        }
+    }
+
+    /// Making an employee goes through the one consent step: with the
+    /// permission system not yet bound, nothing is created.
+    #[tokio::test]
+    async fn create_goes_through_the_consent_step() {
+        let (family, dir) = family();
+        let r = tool(&family, "create_employee")
+            .execute_dyn(&ToolContext::default(), json!({"name": "front-desk", "description": "Answers calls"}))
+            .await;
+        assert!(r.is_error && r.content.contains("permissions aren't ready"), "{}", r.content);
+        assert!(!dir.path().join("b").join("front-desk").exists());
+    }
+
     /// Turning an employee off goes to the handler that unloads it.
     #[tokio::test]
     async fn active_false_unloads() {

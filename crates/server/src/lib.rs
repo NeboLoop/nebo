@@ -5462,7 +5462,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 // coordination-only tool surface — prose alone lost twice to
                 // "I could just do this myself". Experts keep the full roster;
                 // the work is theirs. Coordination is the room, messages,
-                // the task list, assignments and memory; a helper would do
+                // the roster, the task list, assignments and memory; a helper would do
                 // the work itself, so the organizer gets none.
                 tool_allowlist: if organizer_run {
                     Some(
@@ -5472,7 +5472,8 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                             "loop_channel_members",
                             "find_tools",
                             "message",
-                            "agent",
+                            "list_employees",
+                            "get_employee",
                             "create_task",
                             "update_task",
                             "get_task",

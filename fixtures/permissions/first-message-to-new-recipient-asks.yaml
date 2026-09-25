@@ -28,8 +28,6 @@ conversation:
     content: "Text +1-555-0142 and let them know their order shipped. We've never been in touch with this number before."
 
 tool_config:
-  agent:
-    enabled: true
   message:
     enabled: true
 
