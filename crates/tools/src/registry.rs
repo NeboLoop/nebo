@@ -1037,23 +1037,26 @@ impl Registry {
         self.register(Box::new(crate::code_tool::CodeTool::new()))
             .await;
 
-        // Web tool (HTTP fetch + search + browser) — requires "web" permission
+        // The web and browser tools (search, fetch, HTTP, the browser) —
+        // requires "web" permission. They share one core.
         if allowed("web") {
-            let mut web_tool = crate::web_tool::WebTool::new().with_store(store.clone());
+            let mut web = crate::web_tool::WebCore::new().with_store(store.clone());
             // Platform search via Janus: resolve the gateway URL (honoring the
-            // NEBOAI_JANUS_URL env override) and the bot identity so web(search)
+            // NEBOAI_JANUS_URL env override) and the bot identity so search_web
             // hits a real search API instead of scraping engines through a browser.
             if let Ok(cfg) = config::Config::load_embedded() {
                 let bot_id = config::read_bot_id().unwrap_or_default();
-                web_tool = web_tool.with_janus_search(cfg.neboai.janus_url.clone(), bot_id);
+                web = web.with_janus_search(cfg.neboai.janus_url.clone(), bot_id);
             }
             if let Some(mgr) = browser_manager {
-                web_tool = web_tool.with_browser(mgr);
+                web = web.with_browser(mgr);
             }
             if let Some(ref bc) = broadcaster {
-                web_tool = web_tool.with_broadcaster(bc.clone());
+                web = web.with_broadcaster(bc.clone());
             }
-            self.register(Box::new(web_tool)).await;
+            for tool in crate::web_tool::tools(web) {
+                self.register(Box::new(tool)).await;
+            }
         }
 
         // The packs this company works by (R8): create, add, list, show, remove.
@@ -1447,13 +1450,6 @@ pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json
         "bash" | "shell" | "bash_tool" | "bashtool" | "run_command" | "exec" => {
             ("os", vec![("resource", "shell"), ("action", "exec")])
         }
-        // Web operations → web
-        "web_search" | "websearch" | "websearchtool" | "search" => {
-            ("web", vec![("action", "search")])
-        }
-        "web_fetch" | "webfetch" | "webfetchtool" | "fetch" | "fetch_url" => {
-            ("web", vec![("action", "fetch")])
-        }
         _ => return None,
     };
     let params = params
@@ -1605,30 +1601,34 @@ mod tests {
         assert_eq!(result.content, "array:2");
     }
 
-    /// Side effects are each tool's own `read_only` answer: web reads look,
-    /// web clicks and non-GET requests act; a status poll of a workflow is a
-    /// read that still never runs alongside others; an emitted event acts
-    /// only through its subscribers' own runs.
+    /// Side effects are each tool's own `read_only` answer: web reads look
+    /// and run together; clicks, page changes and non-GET requests act and
+    /// run alone; a status poll of a workflow is a read that still never
+    /// runs alongside others; an emitted event acts only through its
+    /// subscribers' own runs.
     #[tokio::test]
     async fn side_effects_are_each_tools_read_only_answer() {
         use serde_json::json;
-        let web = crate::web_tool::WebTool::new();
-        for read in [
-            json!({"action": "read_page"}),
-            json!({"action": "navigate", "url": "https://example.com"}),
-            json!({"action": "search", "query": "x"}),
-            json!({"action": "fetch", "method": "get", "url": "https://example.com"}),
+        let web = crate::web_tool::tools(crate::web_tool::WebCore::new());
+        let tool = |name: &str| web.iter().find(|t| t.name() == name).unwrap();
+        for (name, read) in [
+            ("browser_read", json!({})),
+            ("search_web", json!({"queries": ["x"]})),
+            ("fetch_url", json!({"url": "https://example.com"})),
+            ("http_request", json!({"method": "GET", "url": "https://example.com"})),
         ] {
-            assert!(web.read_only(&read), "{read}");
-            assert!(web.concurrency_safe(&read), "{read}");
+            assert!(tool(name).read_only(&read), "{name} {read}");
+            assert!(tool(name).concurrency_safe(&read), "{name} {read}");
         }
-        for act in [
-            json!({"action": "click", "ref": "e1"}),
-            json!({"action": "fill", "ref": "e1", "value": "x"}),
-            json!({"action": "fetch", "method": "POST", "url": "https://example.com"}),
+        for (name, act) in [
+            ("browser_act", json!({"action": "click", "ref": "e1"})),
+            ("browser_open", json!({"url": "https://example.com"})),
+            ("browser_fill_form", json!({"fields": [{"ref": "e1", "value": "x"}]})),
+            ("http_request", json!({"method": "POST", "url": "https://example.com"})),
+            ("http_request", json!({"method": "DELETE", "url": "https://example.com"})),
         ] {
-            assert!(!web.read_only(&act), "{act}");
-            assert!(web.concurrency_safe(&act), "the browser is per session: {act}");
+            assert!(!tool(name).read_only(&act), "{name} {act}");
+            assert!(!tool(name).concurrency_safe(&act), "a web write runs alone: {name} {act}");
         }
         let (bus, _rx) = crate::events::EventBus::new();
         let emit = crate::emit_tool::EmitTool::new(bus);
@@ -1993,7 +1993,7 @@ mod tests {
     const PRE_INTERFACE_TOOLS: &[&str] = &[
         "a2ui", "agent", "authority", "code", "emit", "event", "execute", "exit", "loop",
         "mcp", "message", "notebook", "os", "pack", "plugin", "publisher", "rules", "skill",
-        "team", "vm", "web", "work",
+        "team", "vm", "work",
     ];
 
     /// The enum-dispatch surfaces the interface allows (device surfaces).
@@ -2050,7 +2050,7 @@ mod tests {
 
     #[test]
     fn the_pre_interface_list_is_closed_and_the_allowed_surfaces_are_the_device_ones() {
-        assert_eq!(PRE_INTERFACE_TOOLS.len(), 22, "packages only remove names from this list");
+        assert_eq!(PRE_INTERFACE_TOOLS.len(), 21, "packages only remove names from this list");
         assert!(ENUM_SURFACES.iter().all(|(t, _)| is_tool_name(t)));
     }
 
@@ -2062,11 +2062,12 @@ mod tests {
     /// 704 · mcp 645) and 53,032 on Linux (os 14,524 · web 8,362 · mcp 643).
     /// The plugin tool (core too, and sized by the installed plugins) needs a
     /// plugin store and is not in this roster. Each package that lands lowers
-    /// the numbers; they never rise.
+    /// the numbers; they never rise. WP5 deferred the web family: −8,361 on
+    /// macOS, −8,362 on Linux.
     #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 52_728;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 44_367;
     #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 53_032;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 44_670;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2093,7 +2094,7 @@ mod tests {
         let deferred = registry.get_deferred_names().await;
         let mut core: Vec<String> = registry.get_tool_names().await.into_iter().filter(|n| !deferred.contains(n)).collect();
         core.sort();
-        assert_eq!(core, ["agent", "event", "find_tools", "mcp", "message", "os", "skill", "team", "web"]);
+        assert_eq!(core, ["agent", "event", "find_tools", "mcp", "message", "os", "skill", "team"]);
         for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
@@ -2109,7 +2110,8 @@ mod tests {
             ("agent", serde_json::json!({"resource": "memory", "action": "store"})),
             ("agent", serde_json::json!({"resource": "task", "action": "spawn"})),
             ("skill", serde_json::json!({"action": "load", "name": "x"})),
-            ("web", serde_json::json!({"action": "fetch", "url": "https://example.com"})),
+            ("fetch_url", serde_json::json!({"url": "https://example.com"})),
+            ("browser_act", serde_json::json!({"action": "click", "ref": "e1"})),
             ("message", serde_json::json!({"resource": "owner", "action": "notify"})),
             ("find_tools", serde_json::json!({"query": "x"})),
         ];
@@ -2137,9 +2139,9 @@ mod tests {
         assert!(cleared("os", json!({"action": "read", "path": "/tmp/x"})).await);
         assert!(cleared("os", json!({"resource": "file", "action": "write", "path": "/tmp/x"})).await);
         assert!(cleared("os", json!({"action": "exec", "command": "ls"})).await);
-        assert!(cleared("web", json!({"action": "search", "query": "x"})).await);
-        assert!(cleared("web", json!({"action": "fetch", "url": "https://example.com"})).await);
-        assert!(!cleared("web", json!({"action": "click", "ref": "e1"})).await);
+        assert!(cleared("search_web", json!({"queries": ["x"]})).await);
+        assert!(cleared("fetch_url", json!({"url": "https://example.com"})).await);
+        assert!(!cleared("browser_act", json!({"action": "click", "ref": "e1"})).await);
         assert!(!cleared("os", json!({"resource": "calendar", "action": "today"})).await);
         assert!(!cleared("agent", json!({"resource": "memory", "action": "recall"})).await);
         assert!(!cleared("skill", json!({"action": "load", "name": "x"})).await);
@@ -2147,7 +2149,8 @@ mod tests {
             let registry = registry.clone();
             async move { registry.get(name).await.unwrap().taint(&input) }
         };
-        assert_eq!(taint("web", json!({"action": "fetch", "url": "https://example.com"})).await, Some(ProvenanceClass::Web));
+        assert_eq!(taint("fetch_url", json!({"url": "https://example.com"})).await, Some(ProvenanceClass::Web));
+        assert_eq!(taint("browser_read", json!({})).await, Some(ProvenanceClass::Web));
         assert_eq!(taint("os", json!({"resource": "mail", "action": "unread"})).await, Some(ProvenanceClass::ExternalEmail));
         assert_eq!(taint("os", json!({"resource": "mail", "action": "send", "to": "a@example.com"})).await, None);
         assert_eq!(taint("message", json!({"resource": "sms", "action": "read"})).await, Some(ProvenanceClass::Channel));

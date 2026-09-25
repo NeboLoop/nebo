@@ -86,8 +86,8 @@ agent(resource: "memory", action: "search", query: "relevant topic keywords")
 
 If the user mentions a website or product, use the browser to understand it:
 ```
-web(action: "navigate", url: "their-reference.com")
-web(action: "read_page")
+browser_open(url: "https://their-reference.com")
+browser_read()
 ```
 
 ### Step 4: Propose 2-3 Approaches
