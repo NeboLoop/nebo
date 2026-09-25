@@ -70,7 +70,12 @@ impl Kind {
                     "at": { "type": "string", "description": "Run once, this long from now: \"in 5 minutes\", \"in 2 hours\"." },
                     "cron": { "type": "string", "description": "Run at a clock time or on a repeat: second minute hour day month weekday." },
                     "prompt": { "type": "string", "description": "What to do when it fires; you run it with your tools and memory." },
-                    "command": { "type": "string", "description": "A shell command to run instead of a prompt." }
+                    "command": { "type": "string", "description": "A shell command to run instead of a prompt." },
+                    "overlap": {
+                        "type": "string",
+                        "enum": ["skip", "buffer_one", "allow_all"],
+                        "description": "When it comes due while its last run is still going: skip that time (the default), buffer_one (run once when the last run ends), or allow_all (run anyway)."
+                    }
                 },
                 "required": ["name"]
             }),
@@ -252,6 +257,10 @@ impl ScheduleTool {
         let cron_val = cron_field(input);
         let command = str_field(input, "command");
         let prompt = str_field(input, "prompt");
+        let overlap = match input["overlap"].as_str().map(db::models::OverlapPolicy::parse).transpose() {
+            Ok(o) => o,
+            Err(e) => return ToolResult::error(e.to_string()),
+        };
 
         let mut fires_at: Option<String> = None;
         let schedule = if !cron_val.is_empty() {
@@ -308,6 +317,7 @@ impl ScheduleTool {
             true,
             agent_id.as_deref(),
             channel_ctx_json.as_deref(),
+            overlap,
         ) {
             Ok(job) => ToolResult::ok(format!(
                 "Created schedule '{}' (id={}): {} ({}){}",
@@ -356,7 +366,7 @@ impl ScheduleTool {
         // One fire, queued to the engine — the same way a scheduled fire
         // runs. Wait for it to settle so the caller gets the outcome, not a
         // promise.
-        let run_id = match self.store.queue_cron_run(&job, true) {
+        let run_id = match self.store.queue_cron_run(&job, true, false) {
             Ok(id) => id,
             Err(e) => return ToolResult::error(format!("Failed to queue the run: {e}")),
         };

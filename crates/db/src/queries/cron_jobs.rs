@@ -7,13 +7,13 @@
 use rusqlite::params;
 
 use crate::Store;
-use crate::models::{CronHistory, CronJob};
+use crate::models::{CronHistory, CronJob, OverlapPolicy};
 use crate::queries::engine::NewRun;
 use types::NeboError;
 
 /// The job row plus its derived columns. Every read goes through this.
 const JOB_SELECT: &str = "SELECT j.id, j.name, j.schedule, j.command, j.task_type, j.message, j.deliver, j.instructions,
-        j.enabled, j.created_at, j.agent_id, j.channel_ctx_json,
+        j.enabled, j.created_at, j.agent_id, j.channel_ctx_json, j.overlap_policy,
         (SELECT datetime(MAX(r.created_at), 'unixepoch') FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id) AS last_run,
         (SELECT COUNT(*) FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id) AS run_count,
         (SELECT r.error FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1) AS last_error
@@ -63,12 +63,14 @@ impl Store {
         enabled: bool,
         agent_id: Option<&str>,
         channel_ctx_json: Option<&str>,
+        // `None` = the default, skip.
+        overlap: Option<OverlapPolicy>,
     ) -> Result<CronJob, NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json],
+            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json, overlap_policy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'))",
+            params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json, overlap.map(OverlapPolicy::as_str)],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         let id = conn.last_insert_rowid();
@@ -89,18 +91,22 @@ impl Store {
         enabled: bool,
         agent_id: Option<&str>,
         channel_ctx_json: Option<&str>,
+        // `None` keeps the job's policy (skip for a new one): a trigger
+        // re-registered at every load never undoes the owner's choice.
+        overlap: Option<OverlapPolicy>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json, overlap_policy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COALESCE(?11, 'skip'))
              ON CONFLICT(name) DO UPDATE SET
                 schedule = excluded.schedule, command = excluded.command,
                 task_type = excluded.task_type, message = excluded.message,
                 deliver = excluded.deliver, instructions = excluded.instructions,
                 enabled = excluded.enabled,
-                agent_id = excluded.agent_id, channel_ctx_json = excluded.channel_ctx_json",
-            params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json],
+                agent_id = excluded.agent_id, channel_ctx_json = excluded.channel_ctx_json,
+                overlap_policy = COALESCE(?11, overlap_policy)",
+            params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json, overlap.map(OverlapPolicy::as_str)],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -182,10 +188,13 @@ impl Store {
     /// Queue one fire of a job as an engine run. The engine loop executes it
     /// and records the outcome on the same row; `manual` marks a run-now so
     /// its completion is announced to the UI rather than the desktop.
-    pub fn queue_cron_run(&self, job: &CronJob, manual: bool) -> Result<String, NeboError> {
+    /// `buffered` holds it `waiting` until the fire before it ends (overlap
+    /// policy buffer_one); the engine releases it then.
+    pub fn queue_cron_run(&self, job: &CronJob, manual: bool, buffered: bool) -> Result<String, NeboError> {
         let id = uuid::Uuid::new_v4().to_string();
         let inputs = serde_json::json!({ "job_id": job.id, "name": job.name, "manual": manual }).to_string();
         self.engine_create_run(&NewRun {
+            state: buffered.then_some("waiting"),
             id: &id,
             kind: "task",
             session_key: &format!("cron-{}", job.name),
@@ -253,6 +262,7 @@ fn row_to_cron_job(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
         created_at: row.get("created_at")?,
         agent_id: row.get("agent_id")?,
         channel_ctx_json: row.get("channel_ctx_json")?,
+        overlap_policy: row.get("overlap_policy")?,
     })
 }
 
@@ -292,17 +302,17 @@ mod tests {
     fn derived_columns_and_history_read_from_engine_runs() {
         let store = temp_store();
         let job = store
-            .create_cron_job("j", "0 0 9 * * *", "echo hi", "shell", None, None, None, true, None, None)
+            .create_cron_job("j", "0 0 9 * * *", "echo hi", "shell", None, None, None, true, None, None, None)
             .unwrap();
         assert_eq!(job.run_count, Some(0));
         assert!(job.last_run.is_none());
         assert!(store.list_cron_history(job.id, 10, 0).unwrap().is_empty());
 
-        let first = store.queue_cron_run(&job, false).unwrap();
+        let first = store.queue_cron_run(&job, false, false).unwrap();
         store.engine_set_run_state(&first, "running", 1_000, None).unwrap();
         store.engine_set_run_result(&first, "hi", None).unwrap();
         store.engine_set_run_state(&first, "done", 1_001, None).unwrap();
-        let second = store.queue_cron_run(&job, true).unwrap();
+        let second = store.queue_cron_run(&job, true, false).unwrap();
         store.engine_set_run_state(&second, "running", 2_000, None).unwrap();
         store.engine_set_run_state(&second, "failed", 2_001, Some("exit code: 1")).unwrap();
 

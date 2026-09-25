@@ -2928,6 +2928,10 @@
 		"askSetup": "{name}に設定を頼む",
 		"editorInstructions": "何をするか",
 		"editorSchedule": "いつ実行するか",
+		"editorOverlap": "前回の実行がまだ続いている場合",
+		"overlapSkip": "今回はスキップ",
+		"overlapBufferOne": "終了後に1回実行",
+		"overlapAllowAll": "それでも実行",
 		"deleteReminderTitle": "「{name}」を削除しますか？",
 		"deleteReminderBody": "この定期タスクは実行を停止し、削除されます。過去の実行は実行履歴に残ります。"
 	},

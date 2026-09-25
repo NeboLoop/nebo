@@ -2928,6 +2928,10 @@
 		"askSetup": "{name} bitten, einen einzurichten",
 		"editorInstructions": "Was es tut",
 		"editorSchedule": "Wann es läuft",
+		"editorOverlap": "Wenn der letzte Lauf noch läuft",
+		"overlapSkip": "Diesmal auslassen",
+		"overlapBufferOne": "Einmal danach ausführen",
+		"overlapAllowAll": "Trotzdem ausführen",
 		"deleteReminderTitle": "„{name}“ löschen?",
 		"deleteReminderBody": "Diese geplante Aufgabe läuft nicht mehr und wird entfernt. Vergangene Läufe bleiben im Lauf-Verlauf."
 	},

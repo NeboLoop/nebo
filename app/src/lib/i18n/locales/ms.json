@@ -2928,6 +2928,10 @@
 		"askSetup": "Minta {name} menyediakan satu",
 		"editorInstructions": "Apa yang dikerjakan",
 		"editorSchedule": "Bila ia berjalan",
+		"editorOverlap": "Jika larian terakhir masih berjalan",
+		"overlapSkip": "Langkau kali ini",
+		"overlapBufferOne": "Jalankan sekali apabila ia tamat",
+		"overlapAllowAll": "Jalankan juga",
 		"deleteReminderTitle": "Padam \"{name}\"?",
 		"deleteReminderBody": "Tugas berjadual ini berhenti berjalan dan dipadam. Larian sebelumnya kekal dalam sejarah."
 	},

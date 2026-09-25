@@ -135,6 +135,9 @@ pub struct NewRun<'a> {
     pub definition: Option<&'a str>,
     pub inputs: Option<&'a str>,
     pub external_ref: Option<&'a str>,
+    /// The state it starts in; `None` = queued. A buffered schedule fire
+    /// starts `waiting` for the one before it to end.
+    pub state: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -666,8 +669,8 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO engine_runs (id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref)
-             VALUES (?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![r.id, r.kind, r.session_key, r.agent_id, r.lane, r.parent_run_id, r.definition, r.inputs, r.external_ref],
+             VALUES (?1, ?2, COALESCE(?10, 'queued'), ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![r.id, r.kind, r.session_key, r.agent_id, r.lane, r.parent_run_id, r.definition, r.inputs, r.external_ref, r.state],
         )
         .db_err("engine_create_run")?;
         Ok(())
@@ -883,8 +886,40 @@ impl Store {
         .db_err("engine_count_runs_for_ref")
     }
 
+    /// The fires of a schedule buffered behind the one still going
+    /// (overlap policy buffer_one): task runs waiting on a `cron:` ref,
+    /// oldest first.
+    pub fn engine_buffered_fires(&self) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs
+                 WHERE kind = 'task' AND state = 'waiting' AND substr(COALESCE(external_ref, ''), 1, 5) = 'cron:'
+                 ORDER BY created_at, id"
+            ))
+            .db_err("engine_buffered_fires")?;
+        let rows = stmt
+            .query_map([], row_to_run)
+            .db_err("engine_buffered_fires")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_buffered_fires")?;
+        Ok(rows)
+    }
+
+    /// Is a fire of this ref already buffered, waiting for the one before
+    /// it (overlap policy buffer_one holds one at most)?
+    pub fn engine_has_buffered_fire_for_ref(&self, external_ref: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM engine_runs WHERE external_ref = ?1 AND kind = 'task' AND state = 'waiting')",
+            params![external_ref],
+            |r| r.get::<_, bool>(0),
+        )
+        .db_err("engine_has_buffered_fire_for_ref")
+    }
+
     /// Is a fire of this ref still queued or running? The overlap policy
-    /// (skip) asks before starting another.
+    /// asks before starting another.
     pub fn engine_has_live_run_for_ref(&self, external_ref: &str) -> Result<bool, NeboError> {
         let conn = self.conn()?;
         conn.query_row(

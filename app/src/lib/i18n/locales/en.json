@@ -2946,6 +2946,10 @@
 		"askSetup": "Ask {name} to set one up",
 		"editorInstructions": "What it does",
 		"editorSchedule": "When it runs",
+		"editorOverlap": "If the last run is still going",
+		"overlapSkip": "Skip this time",
+		"overlapBufferOne": "Run once when it ends",
+		"overlapAllowAll": "Run anyway",
 		"deleteReminderTitle": "Delete \"{name}\"?",
 		"deleteReminderBody": "This scheduled task stops running and is removed. Past runs stay in the run history."
 	},

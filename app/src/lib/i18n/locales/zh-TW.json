@@ -2928,6 +2928,10 @@
 		"askSetup": "請 {name} 設定一個",
 		"editorInstructions": "它做什麼",
 		"editorSchedule": "什麼時候執行",
+		"editorOverlap": "如果上一次執行仍在進行",
+		"overlapSkip": "本次略過",
+		"overlapBufferOne": "結束後執行一次",
+		"overlapAllowAll": "仍然執行",
 		"deleteReminderTitle": "刪除「{name}」？",
 		"deleteReminderBody": "這個排程工作會停止執行並被刪除。過去的執行仍留在執行紀錄中。"
 	},

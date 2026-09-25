@@ -2928,6 +2928,10 @@
 		"askSetup": "Be {name} ställa in en",
 		"editorInstructions": "Vad den gör",
 		"editorSchedule": "När den körs",
+		"editorOverlap": "Om den senaste körningen fortfarande pågår",
+		"overlapSkip": "Hoppa över den här gången",
+		"overlapBufferOne": "Kör en gång när den är klar",
+		"overlapAllowAll": "Kör ändå",
 		"deleteReminderTitle": "Ta bort ”{name}”?",
 		"deleteReminderBody": "Den här schemalagda uppgiften slutar köras och tas bort. Tidigare körningar finns kvar i körningshistoriken."
 	},

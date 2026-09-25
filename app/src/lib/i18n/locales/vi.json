@@ -2928,6 +2928,10 @@
 		"askSetup": "Nhờ {name} lập một cái",
 		"editorInstructions": "Làm việc gì",
 		"editorSchedule": "Chạy khi nào",
+		"editorOverlap": "Nếu lần chạy trước vẫn đang diễn ra",
+		"overlapSkip": "Bỏ qua lần này",
+		"overlapBufferOne": "Chạy một lần khi nó xong",
+		"overlapAllowAll": "Vẫn chạy",
 		"deleteReminderTitle": "Xóa \"{name}\"?",
 		"deleteReminderBody": "Tác vụ theo lịch này sẽ ngừng chạy và bị xóa. Các lượt chạy trước vẫn nằm trong lịch sử."
 	},

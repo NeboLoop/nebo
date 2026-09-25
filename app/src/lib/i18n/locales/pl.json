@@ -2928,6 +2928,10 @@
 		"askSetup": "Poproś {name}, aby to ustawił",
 		"editorInstructions": "Co robi",
 		"editorSchedule": "Kiedy się uruchamia",
+		"editorOverlap": "Jeśli ostatnie uruchomienie wciąż trwa",
+		"overlapSkip": "Pomiń tym razem",
+		"overlapBufferOne": "Uruchom raz po zakończeniu",
+		"overlapAllowAll": "Uruchom mimo to",
 		"deleteReminderTitle": "Usunąć „{name}”?",
 		"deleteReminderBody": "To zaplanowane zadanie przestaje się uruchamiać i zostaje usunięte. Dotychczasowe przebiegi zostają w historii."
 	},

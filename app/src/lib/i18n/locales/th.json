@@ -2928,6 +2928,10 @@
 		"askSetup": "ให้ {name} ตั้งให้สักอัน",
 		"editorInstructions": "ทำอะไร",
 		"editorSchedule": "รันเมื่อไร",
+		"editorOverlap": "หากการทำงานครั้งก่อนยังไม่เสร็จ",
+		"overlapSkip": "ข้ามครั้งนี้",
+		"overlapBufferOne": "ทำงานหนึ่งครั้งเมื่อเสร็จ",
+		"overlapAllowAll": "ทำงานต่อไป",
 		"deleteReminderTitle": "ลบ \"{name}\" ไหม",
 		"deleteReminderBody": "งานตามตารางนี้จะหยุดรันและถูกลบ การทำงานก่อนหน้ายังอยู่ในประวัติ"
 	},

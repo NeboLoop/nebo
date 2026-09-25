@@ -2928,6 +2928,10 @@
 		"askSetup": "让 {name} 来设置一个",
 		"editorInstructions": "它做什么",
 		"editorSchedule": "什么时候运行",
+		"editorOverlap": "如果上一次运行仍在进行",
+		"overlapSkip": "本次跳过",
+		"overlapBufferOne": "结束后运行一次",
+		"overlapAllowAll": "仍然运行",
 		"deleteReminderTitle": "删除“{name}”？",
 		"deleteReminderBody": "这个定时任务会停止运行并被删除。过去的运行仍保留在运行记录中。"
 	},

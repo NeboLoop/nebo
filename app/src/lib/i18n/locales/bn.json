@@ -2928,6 +2928,10 @@
 		"askSetup": "{name}-কে একটি সেট করতে বলুন",
 		"editorInstructions": "এটি কী করে",
 		"editorSchedule": "এটি কখন চলে",
+		"editorOverlap": "আগের রানটি এখনও চলতে থাকলে",
+		"overlapSkip": "এবার বাদ দিন",
+		"overlapBufferOne": "শেষ হলে একবার চালান",
+		"overlapAllowAll": "তবুও চালান",
 		"deleteReminderTitle": "\"{name}\" মুছবেন?",
 		"deleteReminderBody": "এই নির্ধারিত কাজটি চলা বন্ধ হয়ে যায় এবং সরে যায়। আগের রানগুলো রানের ইতিহাসে থাকে।"
 	},

@@ -2928,6 +2928,10 @@
 		"askSetup": "בקש מ-{name} להגדיר אחת",
 		"editorInstructions": "מה זה עושה",
 		"editorSchedule": "מתי זה רץ",
+		"editorOverlap": "אם ההרצה הקודמת עדיין פועלת",
+		"overlapSkip": "דלג הפעם",
+		"overlapBufferOne": "הרץ פעם אחת כשתסתיים",
+		"overlapAllowAll": "הרץ בכל זאת",
 		"deleteReminderTitle": "למחוק את \"{name}\"?",
 		"deleteReminderBody": "המשימה המתוזמנת הזו מפסיקה לרוץ ומוסרת. הרצות קודמות נשארות בהיסטוריית ההרצות."
 	},

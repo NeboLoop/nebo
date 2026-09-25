@@ -2928,6 +2928,10 @@
 		"askSetup": "Minta {name} menyiapkan satu",
 		"editorInstructions": "Apa yang dikerjakan",
 		"editorSchedule": "Kapan dijalankan",
+		"editorOverlap": "Jika proses terakhir masih berjalan",
+		"overlapSkip": "Lewati kali ini",
+		"overlapBufferOne": "Jalankan sekali setelah selesai",
+		"overlapAllowAll": "Tetap jalankan",
 		"deleteReminderTitle": "Hapus \"{name}\"?",
 		"deleteReminderBody": "Tugas terjadwal ini berhenti berjalan dan dihapus. Eksekusi sebelumnya tetap ada di riwayat."
 	},

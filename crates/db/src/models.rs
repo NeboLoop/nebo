@@ -270,6 +270,52 @@ pub struct CronJob {
     /// routes back through the same channel bridge. NULL for jobs created
     /// outside a channel.
     pub channel_ctx_json: Option<String>,
+    /// What a fire does while the last one is still going: `skip`,
+    /// `buffer_one` or `allow_all` ([`OverlapPolicy`]).
+    pub overlap_policy: String,
+}
+
+impl CronJob {
+    /// The job's overlap policy. The column's CHECK holds it to the three
+    /// values, so a row always reads as one of them.
+    pub fn overlap(&self) -> OverlapPolicy {
+        OverlapPolicy::parse(&self.overlap_policy).unwrap_or(OverlapPolicy::Skip)
+    }
+}
+
+/// What a schedule does when it comes due while its last fire — and the
+/// workflow that fire started — is still going. Temporal's schedule
+/// overlap policy, the three values an owner has a use for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlapPolicy {
+    /// This occurrence is skipped and noted. The default.
+    Skip,
+    /// One occurrence waits and starts when the last fire ends; any more
+    /// while it waits are skipped.
+    BufferOne,
+    /// Every occurrence starts, whatever is still running.
+    AllowAll,
+}
+
+impl OverlapPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OverlapPolicy::Skip => "skip",
+            OverlapPolicy::BufferOne => "buffer_one",
+            OverlapPolicy::AllowAll => "allow_all",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, types::NeboError> {
+        match s {
+            "skip" => Ok(OverlapPolicy::Skip),
+            "buffer_one" => Ok(OverlapPolicy::BufferOne),
+            "allow_all" => Ok(OverlapPolicy::AllowAll),
+            other => Err(types::NeboError::Validation(format!(
+                "overlap policy must be skip, buffer_one or allow_all, not {other:?}"
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

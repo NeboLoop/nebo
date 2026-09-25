@@ -456,6 +456,7 @@ export interface CronJob {
 	instructions?: string
 	agentId?: string
 	channelCtxJson?: string
+	overlapPolicy: string
 }
 
 export interface DashboardApproval {
@@ -1338,6 +1339,11 @@ export interface AgentStatsResponse {
 	recentErrors: WorkflowRunError[]
 }
 
+export interface AnswerWorkflowRunApprovalResponse {
+	status: string
+	runId: string
+}
+
 export interface ApplyAgentUpdateResponse {
 	ok: boolean
 	agent: Agent
@@ -1587,7 +1593,7 @@ export interface EnableAgentChannelResponse {
 }
 
 export interface GetAgentOperationsResponse {
-	default: string
+	default: unknown
 	configured: unknown
 	interfaces: unknown
 	available: unknown[]
@@ -1754,6 +1760,10 @@ export interface GetToolOutputResponse {
 
 export interface GetWorkflowResponse {
 	workflow: Workflow
+}
+
+export interface GetWorkflowRunApprovalResponse {
+	status: string
 }
 
 export interface HttpProxyResponse {
@@ -2307,6 +2317,10 @@ export interface UpdateModelConfigResponse {
 
 export interface UpdateModelResponse {
 	message: string
+}
+
+export interface UpdateResponse {
+	accepted: boolean
 }
 
 export interface UpdateSettingsResponse {

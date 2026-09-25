@@ -2928,6 +2928,10 @@
 		"askSetup": "Pídele a {name} que cree uno",
 		"editorInstructions": "Qué hace",
 		"editorSchedule": "Cuándo se ejecuta",
+		"editorOverlap": "Si la última ejecución sigue en curso",
+		"overlapSkip": "Omitir esta vez",
+		"overlapBufferOne": "Ejecutar una vez al terminar",
+		"overlapAllowAll": "Ejecutar de todos modos",
 		"deleteReminderTitle": "¿Eliminar \"{name}\"?",
 		"deleteReminderBody": "Esta tarea programada deja de ejecutarse y se elimina. Las ejecuciones anteriores se conservan en el historial."
 	},

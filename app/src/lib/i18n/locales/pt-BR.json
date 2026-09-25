@@ -2928,6 +2928,10 @@
 		"askSetup": "Peça a {name} que crie um",
 		"editorInstructions": "O que ele faz",
 		"editorSchedule": "Quando ele roda",
+		"editorOverlap": "Se a última execução ainda estiver em andamento",
+		"overlapSkip": "Pular desta vez",
+		"overlapBufferOne": "Executar uma vez quando terminar",
+		"overlapAllowAll": "Executar mesmo assim",
 		"deleteReminderTitle": "Excluir “{name}”?",
 		"deleteReminderBody": "Esta tarefa agendada para de rodar e é excluída. As execuções passadas ficam no histórico."
 	},

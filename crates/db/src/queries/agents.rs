@@ -1296,7 +1296,7 @@ mod structure_tests {
         seat(&s, "a", "Social");
         seat(&s, "ab", "Other");
         let job = |name: &str, task_type: &str, agent: Option<&str>| {
-            s.create_cron_job(name, "0 0 9 * * * *", "", task_type, Some("x"), None, None, true, agent, None)
+            s.create_cron_job(name, "0 0 9 * * * *", "", task_type, Some("x"), None, None, true, agent, None, None)
                 .unwrap();
         };
         job("agent-a-plan-week", "agent_workflow", Some("a"));

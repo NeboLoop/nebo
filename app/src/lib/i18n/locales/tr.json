@@ -2928,6 +2928,10 @@
 		"askSetup": "{name} adlı çalışandan bir tane kurmasını isteyin",
 		"editorInstructions": "Ne yapar",
 		"editorSchedule": "Ne zaman çalışır",
+		"editorOverlap": "Son çalıştırma hâlâ sürüyorsa",
+		"overlapSkip": "Bu sefer atla",
+		"overlapBufferOne": "Bitince bir kez çalıştır",
+		"overlapAllowAll": "Yine de çalıştır",
 		"deleteReminderTitle": "\"{name}\" silinsin mi?",
 		"deleteReminderBody": "Bu zamanlanmış görev çalışmayı bırakır ve kaldırılır. Geçmiş çalıştırmalar çalıştırma geçmişinde kalır."
 	},

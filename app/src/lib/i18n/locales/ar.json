@@ -2928,6 +2928,10 @@
 		"askSetup": "اطلب من {name} إعداد واحد",
 		"editorInstructions": "ماذا يفعل",
 		"editorSchedule": "متى يعمل",
+		"editorOverlap": "إذا كان التشغيل السابق لا يزال جاريًا",
+		"overlapSkip": "تخطَّ هذه المرة",
+		"overlapBufferOne": "شغّل مرة واحدة عند انتهائه",
+		"overlapAllowAll": "شغّل على أي حال",
 		"deleteReminderTitle": "حذف «{name}»؟",
 		"deleteReminderBody": "تتوقف هذه المهمة المجدولة وتُزال. تبقى التشغيلات السابقة في سجل التشغيل."
 	},

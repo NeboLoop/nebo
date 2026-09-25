@@ -2928,6 +2928,10 @@
 		"askSetup": "Chiedi a {name} di crearne uno",
 		"editorInstructions": "Cosa fa",
 		"editorSchedule": "Quando parte",
+		"editorOverlap": "Se l'ultima esecuzione è ancora in corso",
+		"overlapSkip": "Salta questa volta",
+		"overlapBufferOne": "Esegui una volta al termine",
+		"overlapAllowAll": "Esegui comunque",
 		"deleteReminderTitle": "Eliminare «{name}»?",
 		"deleteReminderBody": "Questa attività pianificata smette di partire e viene eliminata. Le esecuzioni passate restano nella cronologia."
 	},

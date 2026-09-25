@@ -65,7 +65,7 @@ fn install() -> Install {
         .create_workflow("wf-1", None, "weekly-report", "1.0", WORKFLOW.trim(), Some(r#"Post with team(action: "post", team: "ops", text: "out")"#), None)
         .unwrap();
     store
-        .create_cron_job("check-run", "0 * * * * *", "", "agent", Some(CRON), None, None, true, Some("dm"), None)
+        .create_cron_job("check-run", "0 * * * * *", "", "agent", Some(CRON), None, None, true, Some("dm"), None, None)
         .unwrap();
     let grants: Vec<String> = ["agent:memory", "web", "os:calendar", "plugin:shopify", "recall"].map(String::from).to_vec();
     store.create_api_key("key-1", "Front desk", "hash", "nk_1", "dm", &[], &grants).unwrap();
@@ -80,6 +80,7 @@ fn install() -> Install {
             definition: Some(WORKFLOW.trim()),
             inputs: None,
             external_ref: None,
+            state: None,
         })
         .unwrap();
     store

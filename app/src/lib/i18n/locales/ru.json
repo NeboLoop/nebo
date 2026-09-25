@@ -2928,6 +2928,10 @@
 		"askSetup": "Попросите {name} настроить",
 		"editorInstructions": "Что он делает",
 		"editorSchedule": "Когда запускается",
+		"editorOverlap": "Если предыдущий запуск ещё идёт",
+		"overlapSkip": "Пропустить в этот раз",
+		"overlapBufferOne": "Запустить один раз после завершения",
+		"overlapAllowAll": "Всё равно запустить",
 		"deleteReminderTitle": "Удалить «{name}»?",
 		"deleteReminderBody": "Эта задача по расписанию перестанет запускаться и будет удалена. Прошлые запуски останутся в истории."
 	},

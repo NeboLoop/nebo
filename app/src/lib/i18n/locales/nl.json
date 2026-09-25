@@ -2928,6 +2928,10 @@
 		"askSetup": "{name} vragen er een op te zetten",
 		"editorInstructions": "Wat het doet",
 		"editorSchedule": "Wanneer het draait",
+		"editorOverlap": "Als de vorige run nog bezig is",
+		"overlapSkip": "Deze keer overslaan",
+		"overlapBufferOne": "Eén keer uitvoeren als die klaar is",
+		"overlapAllowAll": "Toch uitvoeren",
 		"deleteReminderTitle": "\"{name}\" verwijderen?",
 		"deleteReminderBody": "Deze geplande taak stopt met draaien en wordt verwijderd. Eerdere runs blijven in de rungeschiedenis staan."
 	},

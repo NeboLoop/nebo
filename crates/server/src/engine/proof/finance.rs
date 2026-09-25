@@ -251,7 +251,7 @@ fn uc25_a_reimbursement_waits_for_the_receipt() {
 fn uc26_subscription_retries_never_storm_after_downtime() {
     let w = World::new();
     let created = local(2026, 9, 1, 8, 0, 0);
-    let job = w.s.create_cron_job("retry-subscriptions", "0 0 * * * *", "echo retry", "shell", None, None, None, true, None, None).unwrap();
+    let job = w.s.create_cron_job("retry-subscriptions", "0 0 * * * *", "echo retry", "shell", None, None, None, true, None, None, None).unwrap();
     let target = crate::engine::cron_target(&job);
     let Enqueued::Inserted(floor) = w.s.engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(created), ..Default::default() }).unwrap() else { panic!() };
     w.s.engine_complete_event(floor, created).unwrap();
