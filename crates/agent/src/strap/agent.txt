@@ -25,7 +25,7 @@ Spawn sub-agents for independent work. Two modes:
 
 **CRITICAL: Sub-agents are born blind.** They only know what you pass them.
 - **plugins**: Pass plugin install codes the sub-agent needs. It gets the plugin's description, skills, and usage docs.
-- **tools**: Pass STRAP tool names ("web", "message", "os", "agent", "skill", "mcp"). It gets the full tool documentation.
+- **tools**: Pass STRAP tool names ("web", "message", "os", "agent", "use_skill", "mcp"). It gets the full tool documentation.
 - **skills**: Pass skill names for SKILL.md instructions pre-loaded into context.
 If you use plugins or specific tools, you MUST pass them to any sub-agent that will need them too.
 

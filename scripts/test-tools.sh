@@ -158,36 +158,34 @@ if case_ agent-send-02 "send to an unknown task says to spawn afresh"; then
 fi
 
 # ---- one door to a skill (Rule 8) -----------------------------------------
-# A plugin's usage lives in its skills, and there is exactly ONE way to find
-# and read one: the skill tool. 2026-09-15: the plugin tool had its own
-# `help` action printing a trimmed label (`products`), the skill tool had its
-# own `help` preview and a `catalog` alias of `list`, and an employee bounced
-# between all four, concluded the docs were stale, and guessed GraphQL for 51
-# calls. These cases keep the second doors shut.
-if case_ skill-onedoor-01 "a plugin's skill loads through the skill tool"; then
-  call '{"action":"list"}' skill
-  expect_ok
-  SKILL=$(echo "$LAST" | grep -o '\b[a-z0-9]\{2,\}-[a-z0-9-]\{2,\}\b' | head -1)
+# A plugin's usage lives in its skills, and there is exactly ONE way to read
+# one: use_skill. 2026-09-15: the plugin tool had its own `help` action
+# printing a trimmed label (`products`), the skill tool had its own `help`
+# preview and a `catalog` alias of `list`, and an employee bounced between
+# all four, concluded the docs were stale, and guessed GraphQL for 51 calls.
+# Tools WP4 retired the skill tool itself. These cases keep the second doors
+# shut.
+if case_ skill-onedoor-01 "an installed skill loads through use_skill"; then
+  SKILL=$(curl -s -m 10 "http://$TEST_SERVER/api/v1/extensions" | jq -r '[.extensions[] | select(.enabled != false) | .name][0] // empty')
   if [ -z "$SKILL" ]; then
     echo "  (no skills installed — nothing to load)"; ok
   else
-    call "$(jq -cn --arg n "$SKILL" '{action:"load",name:$n}')" skill
-    expect_ok
+    call "$(jq -cn --arg n "$SKILL" '{name:$n}')" use_skill
+    expect_ok "Loaded skill"
     ok
   fi
 fi
 
-if case_ skill-onedoor-02 "skill help is gone; the answer names load"; then
-  call '{"action":"help","name":"anything"}' skill
-  expect_error "Unknown action"
-  echo "$LAST" | grep -q "use load" || die "the recovery must name load"
+if case_ skill-onedoor-02 "an unknown skill points at the listing and find_skills"; then
+  call '{"name":"no-such-skill-xyz"}' use_skill
+  expect_error "No skill named"
+  echo "$LAST" | grep -q "find_skills" || die "the recovery must name find_skills"
   ok
 fi
 
-if case_ skill-onedoor-03 "skill catalog is gone; list is the one word"; then
-  call '{"action":"catalog"}' skill
-  expect_error "Unknown action"
-  echo "$LAST" | grep -q "list" || die "the recovery must name list"
+if case_ skill-onedoor-03 "the skill tool is gone"; then
+  call '{"action":"list"}' skill
+  expect_error "No such tool available"
   ok
 fi
 

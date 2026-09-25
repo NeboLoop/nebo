@@ -174,7 +174,6 @@ struct RoundCarry {
     files_read_this_session: HashSet<String>,
     recent_result_content_hashes: Vec<u64>,
     readonly_result_hash_by_call: HashMap<(u64, u64), u64>,
-    tool_doc_cache: Vec<(String, String)>,
     plan_touch: Option<(usize, String)>,
     edits_since_check: usize,
     last_desktop_act: Option<String>,
@@ -1068,13 +1067,7 @@ async fn step_events(
     }
     if let (Some(loader), None) = (h.skill_loader.as_ref(), cx.workflow()) {
         let scope = (!cx.agent_id().is_empty()).then_some(cx.agent_id());
-        let now: events::Listing = loader
-            .list_summaries(scope)
-            .await
-            .into_iter()
-            .filter(|s| s.enabled)
-            .map(|s| (s.name, s.description))
-            .collect();
+        let now: events::Listing = loader.listing(scope).await;
         let announced = events::announced("skill_listing", conversation);
         if let Some(delta) = events::LinedDelta::between(&announced, &now) {
             st.reminders.add(&TurnEvent::SkillListing(delta));
@@ -1352,7 +1345,6 @@ async fn tool_round(
             recent_result_content_hashes: &mut carry.recent_result_content_hashes,
             readonly_result_hash_by_call: &mut carry.readonly_result_hash_by_call,
             read_ledger: &mut st.read_ledger,
-            tool_doc_cache: &mut carry.tool_doc_cache,
             plan_touch: &mut carry.plan_touch,
             edits_since_check: &mut carry.edits_since_check,
             last_desktop_act: &mut carry.last_desktop_act,

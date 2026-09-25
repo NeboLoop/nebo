@@ -85,7 +85,6 @@ pub async fn run_live(
             "os".into(),
             "agent".into(),
             "message".into(),
-            "skill".into(),
         ];
         let strap_section =
             crate::prompt::build_strap_section(&all_tool_names);

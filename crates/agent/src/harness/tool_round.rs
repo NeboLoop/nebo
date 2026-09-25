@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use ai::{Provider, RequestTrace, StreamEvent, StreamEventType};
 use tools::{Origin, Registry, ToolContext, ToolResult};
@@ -61,10 +61,6 @@ const IDENTICAL_READONLY_CALL_ABORT: usize = 3;
 
 /// Failed reads of one path before further reads of it are refused.
 const READ_FAILURE_LIMIT: usize = 3;
-
-/// Tool documentation results kept per run, and the bytes kept of each.
-const MAX_TOOL_DOC_ENTRIES: usize = 5;
-const MAX_TOOL_DOC_CONTENT: usize = 4_000;
 
 /// What a run's tool calls carry: the one builder of their `ToolContext`,
 /// for the round and for a CLI provider's calls over `/agent/mcp`.
@@ -228,7 +224,6 @@ pub(crate) struct RoundGuards<'a> {
     pub recent_result_content_hashes: &'a mut Vec<u64>,
     pub readonly_result_hash_by_call: &'a mut HashMap<(u64, u64), u64>,
     pub read_ledger: &'a mut crate::read_ledger::ReadLedger,
-    pub tool_doc_cache: &'a mut Vec<(String, String)>,
     pub plan_touch: &'a mut Option<(usize, String)>,
     pub edits_since_check: &'a mut usize,
     pub last_desktop_act: &'a mut Option<String>,
@@ -307,7 +302,6 @@ pub(crate) async fn run_tool_round(
         recent_result_content_hashes,
         readonly_result_hash_by_call,
         read_ledger,
-        tool_doc_cache,
         plan_touch,
         edits_since_check,
         last_desktop_act,
@@ -1252,25 +1246,6 @@ pub(crate) async fn run_tool_round(
             crate::review_fork::note_voluntary_save(session_id);
         }
 
-        // Cache tool documentation results so they survive sliding window eviction.
-        // Detect help/schema actions on skill and plugin tools.
-        if !result.is_error && result.content.len() > 100
-            && let Some(cache_key) = detect_tool_doc_call(&tc.name, &tc.input) {
-            let content = if result.content.len() > MAX_TOOL_DOC_CONTENT {
-                truncate_str(&result.content, MAX_TOOL_DOC_CONTENT).to_string()
-            } else {
-                result.content.clone()
-            };
-            // Remove existing entry with same key (LRU refresh)
-            tool_doc_cache.retain(|(k, _)| k != &cache_key);
-            // Evict oldest if at capacity
-            if tool_doc_cache.len() >= MAX_TOOL_DOC_ENTRIES {
-                tool_doc_cache.remove(0);
-            }
-            tool_doc_cache.push((cache_key.clone(), content));
-            debug!(key = %cache_key, "cached tool documentation");
-        }
-
         let row = ToolResultRow {
             tool_call_id: tc.id.clone(),
             outcome: Some(tools.labels(&tc.name, &tc.input).await.1),
@@ -1635,27 +1610,6 @@ async fn apply_post_tool_hooks(
         result.is_error = resp.is_error;
     }
     attached
-}
-
-/// Detect if a tool call is requesting documentation (help/schema).
-/// Returns a cache key like "skill:gws-sheets" if so.
-fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<String> {
-    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-
-    match tool_name {
-        "skill" => {
-            if action == "help" || action == "list" || action == "docs" {
-                let skill_name = input
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                Some(format!("skill:{}", skill_name))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
 }
 
 /// Most calls of one parallel batch that run at once (Claude Code's pool).

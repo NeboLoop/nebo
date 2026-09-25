@@ -2,10 +2,9 @@
 // it and the view switches on the ids. `label` holds an i18n key, translated
 // with $t at render time.
 //
-// Ambient capability permissions (file/shell/web…) are managed once, globally,
-// in Settings → Permissions and inherited by every employee. Approvals is
-// deliberately per-employee: the three-state control over each employee's
-// gated operations, so a global setting never overrides a critical decision.
+// Permissions is the employee's own page of what it may do (its job, mode,
+// money limits, folders, always-allowed answers); Settings → Permissions
+// holds the company defaults it inherits.
 export const agentSettingsSections = [
 	{ id: 'general', label: 'agentSettings.general' },
 	{ id: 'identity', label: 'settings.navItems.identity' },
@@ -14,9 +13,6 @@ export const agentSettingsSections = [
 	{ id: 'rules', label: 'settings.navItems.rules' },
 	{ id: 'configure', label: 'agent.configure' },
 	{ id: 'skills', label: 'settings.navItems.skills' },
-	// What this employee is allowed to reach — the same `requires.interfaces` a
-	// packaged employee declares, chosen from what the company has connected.
-	{ id: 'capabilities', label: 'agentSettings.capabilities' },
 	{ id: 'channels', label: 'agentSettings.channels' },
 	{ id: 'accounts', label: 'agentSettings.connectedAccounts' },
 	{ id: 'phone', label: 'agentSettings.phone' },
@@ -24,7 +20,7 @@ export const agentSettingsSections = [
 	// API lets a client call it as a model. Each is its own page.
 	{ id: 'webhooks', label: 'agentSettings.webhooks' },
 	{ id: 'api', label: 'agentSettings.apiKeys' },
-	{ id: 'approvals', label: 'agentSettings.approvals' },
+	{ id: 'permissions', label: 'permissions.title' },
 	{ id: 'memory', label: 'agentSettings.memory' }
 ] as const;
 

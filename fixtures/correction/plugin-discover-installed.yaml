@@ -28,7 +28,7 @@ tool_config:
     enabled: true
   agent:
     enabled: true
-  skill:
+  use_skill:
     enabled: true
 
 prompt_assertions:

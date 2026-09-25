@@ -39,7 +39,7 @@ description: |
   only carry weight on a machine that has one.
 
   Measured over 8 live runs against a real install (2026-09-21): 5 clean, at
-  1, 1, 2, 3 and 3 calls. Two runs opened on loading a skill with an
+  1, 1, 2, 3 and 3 calls. Two runs opened on a skill load with an
   invented name — "quickbooks" and "quickbooks-processor" — because
   installing the plugin also installs its 28 quickbooks-* skills, which is
   the machine a customer has; both are first-call misses this fixture is
@@ -60,6 +60,8 @@ conversation:
 
 tool_config:
   plugin__quickbooks:
+    enabled: true
+  use_skill:
     enabled: true
   run_command:
     enabled: true
@@ -85,6 +87,7 @@ prompt_assertions:
           - "is missing"
           - "No such tool"
           - "not found"
+          - "No skill named"
     - id: bounded
       text: "At most 5 tool calls (4 on the plugin, plus the find_tools call that loads plugin__quickbooks). Critical on a connected machine; on the gate bot (no merchant grant, 2026-09-23: 8 calls reading skills and probing before doctor said not connected) it is the model's cost to report, not the light that blocks a merge — the shape checks above are what the gate proves here."
       severity: important

@@ -1056,7 +1056,7 @@ fn calls_since_unexecuted_skill_load(messages: &[ChatMessage]) -> Option<usize> 
         if arr.iter().any(|c| tools::plugin_tools::plugin_slug(&name_of(c)).is_some()) {
             return deepest; // plugin execution counts as producing
         }
-        if arr.iter().any(|c| name_of(c) == "skill") {
+        if arr.iter().any(|c| name_of(c) == tools::skill_tool::USE_SKILL) {
             deepest = Some(calls_since);
         }
         calls_since += arr.len();
@@ -1488,9 +1488,7 @@ fn last_discovery_query(messages: &[ChatMessage]) -> String {
         for c in calls.iter().rev() {
             let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let input = c.get("input").cloned().unwrap_or(serde_json::Value::Null);
-            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let discovery = name == tools::plugin_tools::FIND_PLUGINS
-                || (name == "skill" && matches!(action, "discover" | "search" | "browse"));
+            let discovery = matches!(name, "find_skills" | "find_plugins");
             if !discovery {
                 continue;
             }
@@ -1652,8 +1650,8 @@ fn recent_tool_calls(messages: &[ChatMessage], limit: usize) -> Vec<(String, Str
 }
 
 /// Detects when the main agent is in an exploratory research loop —
-/// repeatedly calling discovery-flavored tools (`find_tools`, `skill
-/// discover`, `find_plugins`, repeated plugin probes) trying to figure out how to do
+/// repeatedly calling discovery-flavored tools (`find_tools`,
+/// `find_skills`, `find_plugins`, repeated plugin probes) trying to figure out how to do
 /// something — and nudges it to delegate the discovery to a sub-agent instead.
 ///
 /// Why: every exploratory tool call adds a user message + tool result pair
@@ -1661,9 +1659,9 @@ fn recent_tool_calls(messages: &[ChatMessage], limit: usize) -> Vec<(String, Str
 /// downstream turn. A sub-agent burns its OWN context on the research and
 /// returns one consolidated answer, keeping the main chat history clean.
 ///
-/// The prescribed chain `skill discover` → `skill load` → a plugin command
-/// is not exploration: `skill load` never counts, and one plugin call is
-/// not a probe. Triggers when RESEARCH_DELEGATION_THRESHOLD or more of the last
+/// The prescribed chain `find_skills` → `use_skill` → a plugin command is
+/// not exploration: `use_skill` never counts, and one plugin call is not a
+/// probe. Triggers when RESEARCH_DELEGATION_THRESHOLD or more of the last
 /// RESEARCH_DELEGATION_WINDOW calls were discovery-flavored.
 struct ResearchDelegationNudge;
 impl Reminder for ResearchDelegationNudge {
@@ -1685,8 +1683,8 @@ impl Reminder for ResearchDelegationNudge {
         let mut plugin_count = 0usize;
         for (name, action) in &window {
             match (name.as_str(), action.as_str()) {
-                ("skill", "load") => {} // the prescribed chain
-                ("find_tools", _) | ("find_plugins", _) | ("skill", _) => discovery_count += 1,
+                ("use_skill", _) => {} // the prescribed chain
+                ("find_tools", _) | ("find_skills", _) | ("find_plugins", _) => discovery_count += 1,
                 (n, _) if tools::plugin_tools::plugin_slug(n).is_some() => plugin_count += 1,
                 _ => {}
             }
@@ -2319,7 +2317,7 @@ mod tests {
 
     #[test]
     fn test_research_delegation_nudge_on_discovery_loop() {
-        let msgs = calls_as_msgs(&[("find_tools", ""), ("skill", "discover"), ("find_tools", "")]);
+        let msgs = calls_as_msgs(&[("find_tools", ""), ("find_skills", ""), ("find_tools", "")]);
         assert!(
             ResearchDelegationNudge
                 .check(&rctx_tools(&msgs, &[], 3))
@@ -2337,8 +2335,8 @@ mod tests {
     #[test]
     fn test_research_delegation_nudge_spares_the_prescribed_chain() {
         let chain = calls_as_msgs(&[
-            ("skill", "discover"),
-            ("skill", "load"),
+            ("find_skills", ""),
+            ("use_skill", ""),
             ("plugin__nebo-office", ""),
         ]);
         assert!(
@@ -2347,18 +2345,18 @@ mod tests {
         );
         // Genuine probing around that chain still fires.
         let probing = calls_as_msgs(&[
-            ("skill", "discover"),
-            ("skill", "load"),
+            ("find_skills", ""),
+            ("use_skill", ""),
             ("find_plugins", ""),
             ("find_tools", ""),
-            ("skill", "discover"),
+            ("find_skills", ""),
         ]);
         assert!(ResearchDelegationNudge.check(&rctx_tools(&probing, &[], 5)).is_some());
     }
 
     #[test]
     fn test_skill_execution_nudge_preparation_loop() {
-        let skill = r#"[{"name":"skill","input":{"action":"load","name":"pptx"}}]"#;
+        let skill = r#"[{"name":"use_skill","input":{"name":"pptx"}}]"#;
         let reads = r#"[{"name":"read_file","input":{"path":"a"}},{"name":"read_file","input":{"path":"b"}}]"#;
         let mut msgs = vec![
             make_msg("user", "make me a deck"),
