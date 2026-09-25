@@ -42,9 +42,6 @@ pub struct Loader {
     /// Raw content of bundled skills for lazy template loading.
     /// Keyed by skill name, value is the full SKILL.md content from include_str!().
     bundled_raw: HashMap<String, &'static str>,
-    /// Pre-built compact catalog string, rebuilt on load_all() / watcher reload.
-    /// Names-only format (the deferred tool-listing format).
-    cached_catalog: Arc<RwLock<String>>,
     /// License keys for sealed .napp files, keyed by artifact_id.
     /// Populated from the license key cache before load_all().
     license_keys: Arc<RwLock<HashMap<String, [u8; 32]>>>,
@@ -70,7 +67,6 @@ impl Loader {
             db_store: None,
             watcher_paused: Arc::new(AtomicBool::new(false)),
             bundled_raw,
-            cached_catalog: Arc::new(RwLock::new(String::new())),
             license_keys: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -227,9 +223,7 @@ impl Loader {
             }
         }
 
-        let catalog = build_catalog_string(&loaded, SHARED_CATALOG_HEADING);
         *self.skills.write().await = loaded;
-        *self.cached_catalog.write().await = catalog;
         info!(count, "loaded skills from manifest (warm start)");
         Some(count)
     }
@@ -371,10 +365,7 @@ impl Loader {
         verify_dependencies(&mut loaded, self.plugin_store.as_deref());
 
         let count = loaded.len();
-        // Rebuild cached catalog before storing (names-only, deferred-tool format)
-        let catalog = build_catalog_string(&loaded, SHARED_CATALOG_HEADING);
         *self.skills.write().await = loaded;
-        *self.cached_catalog.write().await = catalog;
         info!(count, installed_dir = %self.installed_dir.display(), user_dir = %self.user_dir.display(), "loaded skills (cold start)");
         count
     }
@@ -424,9 +415,7 @@ impl Loader {
             // Re-run verify_dependencies in case plugins changed between runs
             let mut skills = self.skills.write().await;
             verify_dependencies(&mut skills, self.plugin_store.as_deref());
-            let catalog = build_catalog_string(&skills, SHARED_CATALOG_HEADING);
             drop(skills);
-            *self.cached_catalog.write().await = catalog;
 
             // Rewrite manifest with updated degraded states
             self.write_manifest(&manifest_path).await;
@@ -500,13 +489,10 @@ impl Loader {
             }
         }
 
-        // Re-verify all dependencies and rebuild catalog
+        // Re-verify all dependencies
         {
             let mut skills = self.skills.write().await;
             verify_dependencies(&mut skills, self.plugin_store.as_deref());
-            let catalog = build_catalog_string(&skills, SHARED_CATALOG_HEADING);
-            drop(skills);
-            *self.cached_catalog.write().await = catalog;
         }
 
         // Rewrite manifest
@@ -589,11 +575,8 @@ impl Loader {
             names.push(skill.name.clone());
             all.insert(skill.name.clone(), skill);
         }
+        drop(all);
         if !names.is_empty() {
-            // Rebuild catalog with new skills
-            let catalog = build_catalog_string(&all, SHARED_CATALOG_HEADING);
-            drop(all);
-            *self.cached_catalog.write().await = catalog;
             info!(count = names.len(), skills = ?names, "loaded app skills");
         }
         names
@@ -605,10 +588,8 @@ impl Loader {
         for name in names {
             all.remove(name);
         }
+        drop(all);
         if !names.is_empty() {
-            let catalog = build_catalog_string(&all, SHARED_CATALOG_HEADING);
-            drop(all);
-            *self.cached_catalog.write().await = catalog;
             debug!(count = names.len(), "unloaded app skills");
         }
     }
@@ -642,49 +623,49 @@ impl Loader {
         matches.into_iter().cloned().collect()
     }
 
-    /// Return the compact skill catalog for the system prompt: the cached
-    /// shared catalog (rebuilt on load_all / watcher reload) plus, when the run
-    /// is agent-scoped, a separately headed block of that seat's OWN skills —
-    /// the procedures its package ships and anything it has learned — rendered
-    /// with the same budget rules.
-    ///
-    /// Two blocks, two headings, one count each. They used to share the
-    /// heading "Available Skills" with different totals, which told the model
-    /// two different numbers for the same thing. The seat's own block is kept
-    /// separate rather than merged into the shared list for two reasons: the
-    /// shared catalog stays cached instead of being rebuilt per run, and the
-    /// shared list's character budget can never evict a seat's own procedures —
-    /// the ones it is actually employed to run.
-    pub async fn compact_catalog(&self, agent: Option<&str>) -> String {
-        let shared = self.cached_catalog.read().await.clone();
-        let Some(agent_id) = agent else {
-            return shared;
-        };
+    /// The skill listing: every enabled skill visible to `agent`, name → one
+    /// line, in Claude Code's shape. A line is the description, with up to
+    /// three triggers the name doesn't already say ("pptx" alone doesn't say
+    /// "powerpoint"), cut at [`LISTING_LINE_CHARS`]. Past
+    /// [`LISTING_BUDGET_CHARS`] the shared skills' lines are shortened evenly
+    /// and, past that, dropped to names only; the seat's own skills (its
+    /// package's procedures and what it learned, the ones it is employed to
+    /// run) keep their whole lines.
+    pub async fn listing(&self, agent: Option<&str>) -> std::collections::BTreeMap<String, String> {
         let skills = self.skills.read().await;
-        let own: HashMap<String, Skill> = skills
-            .iter()
-            .filter(|(_, s)| s.owner_agent_id.as_deref() == Some(agent_id))
-            .map(|(k, s)| {
-                // Mask ownership so build_catalog_string (which excludes
-                // owner-scoped skills from the shared catalog) renders them.
-                let mut s = s.clone();
-                s.owner_agent_id = None;
-                (k.clone(), s)
-            })
-            .collect();
+        let mut visible: Vec<&Skill> = skills.values().filter(|s| s.enabled && s.visible_to(agent)).collect();
+        // A seat's own skill shadows a shared one of the same name.
+        visible.sort_by_key(|s| (s.owner_agent_id.is_some(), s.name.clone()));
+        let own = |s: &Skill| agent.is_some() && s.owner_agent_id.as_deref() == agent;
+        let mut lines: std::collections::BTreeMap<String, (String, bool)> = Default::default();
+        for s in visible {
+            lines.insert(s.name.clone(), (listing_line(s), own(s)));
+        }
         drop(skills);
-        if own.is_empty() {
-            return shared;
+
+        let entry_chars = |name: &str, line: &str| name.chars().count() + line.chars().count() + 4;
+        let total: usize = lines.iter().map(|(n, (l, _))| entry_chars(n, l) + 1).sum();
+        if total > LISTING_BUDGET_CHARS {
+            let own_chars: usize = lines.iter().filter(|(_, (_, o))| *o).map(|(n, (l, _))| entry_chars(n, l) + 1).sum();
+            let shared: Vec<&String> = lines.iter().filter(|(_, (_, o))| !*o).map(|(n, _)| n).collect();
+            let names_chars: usize = shared.iter().map(|n| n.chars().count() + 5).sum();
+            let per_line = LISTING_BUDGET_CHARS.saturating_sub(own_chars + names_chars) / shared.len().max(1);
+            let cut = |line: &str| -> String {
+                if per_line < LISTING_MIN_LINE_CHARS {
+                    String::new()
+                } else if line.chars().count() > per_line {
+                    format!("{}…", line.chars().take(per_line - 1).collect::<String>())
+                } else {
+                    line.to_string()
+                }
+            };
+            for (line, own) in lines.values_mut() {
+                if !*own {
+                    *line = cut(line);
+                }
+            }
         }
-        let own_catalog = build_catalog_string(&own, OWN_CATALOG_HEADING);
-        if own_catalog.is_empty() {
-            return shared;
-        }
-        if shared.is_empty() {
-            own_catalog
-        } else {
-            format!("{}\n{}", shared, own_catalog)
-        }
+        lines.into_iter().map(|(n, (l, _))| (n, l)).collect()
     }
 
     /// List lightweight summaries of all skills visible to `agent`.
@@ -882,7 +863,7 @@ impl Loader {
              To use a plugin:\n\
              1. plugin(action: \"list\") - installed plugins and their commands\n\
              2. plugin(action: \"discover\", query: \"what you need\") - search the marketplace when nothing installed fits\n\
-             3. skill(action: \"load\", name: \"<skill name>\") - the plugin's skills are listed by name under it in the plugin tool; read the one for the job BEFORE the first exec\n\
+             3. use_skill(name: \"<skill name>\") - the plugin's skills are listed by name under it in the plugin tool; load the one for the job BEFORE the first exec\n\
              4. plugin(resource: \"<slug>\", action: \"exec\", command: \"<subcommand> +<flags>\")\n\n\
              IMPORTANT: Always read docs (step 3) before your first exec of any plugin.\n\
              The command field is CLI args, NOT colon syntax. Never use \"service:method\".\n\n\
@@ -981,7 +962,7 @@ impl Loader {
 
         format!(
             "## Agent Required Plugins\n\
-             This agent depends on these plugins. Their skills are listed by name in the plugin tool; skill(action: \"load\", name: \"<skill name>\") is a plugin's usage, and skill(action: \"discover\", query: \"<slug> <task>\") finds the one for a job.\n\n\
+             This agent depends on these plugins. Their skills are listed by name in the plugin tool; use_skill(name: \"<skill name>\") loads a plugin's usage, and find_skills(query: \"<slug> <task>\") finds the one for a job.\n\n\
              {}\n",
             lines.join("\n")
         )
@@ -995,7 +976,6 @@ impl Loader {
         let learned_dir = self.learned_dir.clone();
         let agent_dirs = self.agent_dirs.clone();
         let skills = self.skills.clone();
-        let cached_catalog = self.cached_catalog.clone();
         let plugin_store = self.plugin_store.clone();
         let watcher_paused = self.watcher_paused.clone();
         let plugins_dir = plugin_store
@@ -1311,8 +1291,6 @@ impl Loader {
                         verify_dependencies(&mut loaded, plugin_store.as_deref());
 
                         let count = loaded.len();
-                        let catalog = build_catalog_string(&loaded, SHARED_CATALOG_HEADING);
-
                         // Update manifest for next warm start
                         let hashes = manifest::compute_hashes(&loaded);
                         let manifest = SkillManifest::from_skill_map(&loaded, &hashes);
@@ -1322,7 +1300,6 @@ impl Loader {
                         }
 
                         *skills.write().await = loaded;
-                        *cached_catalog.write().await = catalog;
                         info!(count, "reloaded skills after filesystem change");
                     }
                     Err(e) => {
@@ -1368,20 +1345,6 @@ impl Loader {
     }
 }
 
-/// Build the skill listing for the system prompt: discovery metadata in
-/// context, full SKILL.md loads on invoke.
-///
-/// Plugins ship whole skill packs (gws ~99, zendesk ~77), so a flat listing
-/// can't fit any sane budget. Two tiers instead:
-/// - **Entries** (`- name: description`, description capped): standalone
-///   skills plus pack *entry* skills — a skill whose name is a hyphen-prefix
-///   of a sibling's (`pptx` → `pptx-shapes`). Entry bodies link their helper
-///   sub-skills, so listing the entry is enough to reach the whole family.
-/// - **Packs**: remaining plugin-embedded skills collapse to `slug (count)`
-///   in one line — the model drills in with skill(action: "discover").
-///
-/// Without this listing the model has no way to know a matching skill exists
-/// and hand-rolls the task (the nebo-office pptx flail).
 /// The short name inside a qualified skill reference — `@org/skills/name` →
 /// `name` (an optional `@version` suffix is dropped). `None` when the input
 /// isn't in qualified form, so plain names never get mangled.
@@ -1523,127 +1486,42 @@ fn load_learned_skills(learned_root: &Path, loaded: &mut HashMap<String, Skill>)
     }
 }
 
-/// Heading for the shared roster — bundled, installed, plugin and user skills,
-/// the ones every run can load.
-const SHARED_CATALOG_HEADING: &str = "Available Skills";
+/// Most characters of one listing line (Claude Code's cap).
+const LISTING_LINE_CHARS: usize = 250;
 
-/// Heading for the block carrying one seat's own skills: what its package
-/// ships plus what it has learned. Its own heading and its own count, because
-/// two blocks headed "Available Skills" with different totals stated two
-/// different numbers for one thing.
-const OWN_CATALOG_HEADING: &str = "Your Own Skills";
+/// The listing's budget in characters (Claude Code's default: 1% of a
+/// 200K-token window).
+const LISTING_BUDGET_CHARS: usize = 8_000;
 
-fn build_catalog_string(skills: &HashMap<String, Skill>, heading: &str) -> String {
-    const MAX_DESC_CHARS: usize = 250;
-    const CHAR_BUDGET: usize = 8_000;
+/// Below this many characters a shortened line says nothing: the listing
+/// drops to names.
+const LISTING_MIN_LINE_CHARS: usize = 20;
 
-    // Learned skills are per-employee — excluded from the shared cached
-    // catalog; compact_catalog() appends the caller's own on demand.
-    let enabled: Vec<&Skill> = skills
-        .values()
-        .filter(|s| s.enabled && s.owner_agent_id.is_none())
-        .collect();
-    if enabled.is_empty() {
-        return String::new();
-    }
-
-    // ponytail: O(n²) prefix scan, runs only on load/reload (~542 skills = instant)
-    let is_entry = |name: &str| -> bool {
-        enabled.iter().any(|o| {
-            o.name.len() > name.len()
-                && o.name.starts_with(name)
-                && o.name.as_bytes()[name.len()] == b'-'
-        })
-    };
-    let pack_of = |s: &Skill| s.plugins.first().map(|p| p.name.clone());
-
-    let mut tier_entries: Vec<&Skill> = enabled
+/// A skill's listing line: its description and the triggers its name
+/// doesn't already carry, on one line, cut at [`LISTING_LINE_CHARS`].
+fn listing_line(s: &Skill) -> String {
+    let desc = s.description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name_lower = s.name.to_lowercase();
+    let aliases: Vec<&str> = s
+        .triggers
         .iter()
-        .copied()
-        .filter(|s| pack_of(s).is_none() || is_entry(&s.name))
+        .map(|t| t.trim())
+        .filter(|t| {
+            let tl = t.to_lowercase();
+            !tl.is_empty() && !name_lower.contains(&tl) && !tl.contains(&name_lower)
+        })
+        .take(3)
         .collect();
-    tier_entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-    let mut pack_counts: std::collections::BTreeMap<String, usize> = Default::default();
-    for s in &enabled {
-        if let Some(pack) = pack_of(s) {
-            if !is_entry(&s.name) {
-                *pack_counts.entry(pack).or_default() += 1;
-            }
-        }
+    let line = match (desc.is_empty(), aliases.is_empty()) {
+        (_, true) => desc,
+        (true, false) => format!("({})", aliases.join(", ")),
+        (false, false) => format!("{desc} ({})", aliases.join(", ")),
+    };
+    if line.chars().count() > LISTING_LINE_CHARS {
+        format!("{}…", line.chars().take(LISTING_LINE_CHARS - 1).collect::<String>())
+    } else {
+        line
     }
-
-    let mut body = String::new();
-    let mut listed = 0usize;
-    for s in &tier_entries {
-        let desc = s.description.trim();
-        // Surface up to 3 declared triggers as aliases ("pptx" alone doesn't
-        // say "powerpoint"; the triggers do). Skip ones redundant with the name.
-        let name_lower = s.name.to_lowercase();
-        let aliases: Vec<&str> = s
-            .triggers
-            .iter()
-            .map(|t| t.trim())
-            .filter(|t| {
-                let tl = t.to_lowercase();
-                !tl.is_empty() && !name_lower.contains(&tl) && !tl.contains(&name_lower)
-            })
-            .take(3)
-            .collect();
-        let label = if aliases.is_empty() {
-            s.name.clone()
-        } else {
-            format!("{} ({})", s.name, aliases.join(", "))
-        };
-        let line = if desc.is_empty() {
-            format!("- {}\n", label)
-        } else if desc.chars().count() > MAX_DESC_CHARS {
-            let truncated: String = desc.chars().take(MAX_DESC_CHARS - 1).collect();
-            format!("- {}: {}…\n", label, truncated)
-        } else {
-            format!("- {}: {}\n", label, desc)
-        };
-        if body.len() + line.len() > CHAR_BUDGET {
-            break;
-        }
-        body.push_str(&line);
-        listed += 1;
-    }
-    if listed < tier_entries.len() {
-        body.push_str(&format!(
-            "- …and {} more — find them with skill(action: \"discover\", query: \"...\")\n",
-            tier_entries.len() - listed
-        ));
-    }
-
-    if !pack_counts.is_empty() {
-        let packs: Vec<String> = pack_counts
-            .iter()
-            .map(|(slug, n)| format!("{} ({})", slug, n))
-            .collect();
-        body.push_str(&format!(
-            "\nSkill packs with more per-command recipes — search with skill(action: \"discover\", query: \"<pack> <task>\"): {}.\n",
-            packs.join(", ")
-        ));
-    }
-
-    // The header reconciles: total = listed + not shown (budget) + inside packs.
-    let in_packs: usize = pack_counts.values().sum();
-    let not_shown = tier_entries.len() - listed;
-    let mut breakdown = format!("{} total: {} listed below", enabled.len(), listed);
-    if not_shown > 0 {
-        breakdown.push_str(&format!(", {} more not shown", not_shown));
-    }
-    if in_packs > 0 {
-        breakdown.push_str(&format!(", {} inside packs", in_packs));
-    }
-    format!(
-        "## {} ({})\n\n{}\n\
-         When a skill matches the task, load it BEFORE acting: skill(action: \"load\", name: \"...\"), then follow its instructions.",
-        heading,
-        breakdown,
-        body
-    )
 }
 
 /// Write a skill file to a directory as `{name}/SKILL.md` per Agent Skills spec.
@@ -2472,11 +2350,9 @@ Triage instructions.
             "${{NEBO_SKILL_DIR}} must expand to the package's skill directory"
         );
 
-        // The prompt catalog carries it for its own seat only.
-        let own_catalog = loader.compact_catalog(Some("copywriter")).await;
-        assert!(own_catalog.contains("project-conventions"));
-        let shared_catalog = loader.compact_catalog(None).await;
-        assert!(!shared_catalog.contains("project-conventions"));
+        // The skill listing carries it for its own seat only.
+        assert!(loader.listing(Some("copywriter")).await.contains_key("project-conventions"));
+        assert!(!loader.listing(None).await.contains_key("project-conventions"));
     }
 
     #[tokio::test]
@@ -2561,11 +2437,7 @@ Triage instructions.
     }
 
     #[tokio::test]
-    async fn test_prompt_catalog_states_one_count_per_heading() {
-        // A seat's prompt used to carry two "## Available Skills" headings with
-        // different totals — two numbers for one thing, and a claim about the
-        // seat's own capabilities that was false either way. One heading per
-        // count now: the shared roster, and the seat's own.
+    async fn test_listing_lines_are_one_line_descriptions() {
         let installed = TempDir::new().unwrap();
         let user = TempDir::new().unwrap();
         let agents = TempDir::new().unwrap();
@@ -2576,44 +2448,65 @@ Triage instructions.
             "copy-brief",
             &package_skill_md("copy-brief", "Test a brief"),
         );
-        create_employee_package(
-            agents.path(),
-            "copywriter",
-            "copywriter",
-            "claim-register",
-            &package_skill_md("claim-register", "Register a claim"),
-        );
-
         let loader = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
             .with_agent_dirs(vec![agents.path().to_path_buf()]);
         loader.load_all().await;
 
-        let seat = loader.compact_catalog(Some("copywriter")).await;
-        assert_eq!(
-            seat.matches("## Available Skills").count(),
-            1,
-            "the shared roster is named once, with one count:\n{seat}"
-        );
-        assert_eq!(
-            seat.matches("## Your Own Skills").count(),
-            1,
-            "the seat's own skills are named once, with their own count"
-        );
-        assert!(
-            seat.contains("## Your Own Skills (2 total: 2 listed below)"),
-            "the seat's count must be the two procedures it can actually load:\n{seat}"
-        );
-        assert!(seat.contains("copy-brief"));
-        assert!(seat.contains("claim-register"));
+        let seat = loader.listing(Some("copywriter")).await;
+        assert_eq!(seat.get("copy-brief").map(String::as_str), Some("Test a brief"));
+        let skill = |name: &str, desc: &str, triggers: &str| {
+            super::super::skill::parse_skill_md(
+                format!("---\nname: {name}\ndescription: \"{desc}\"\ntriggers: [{triggers}]\n---\nbody\n").as_bytes(),
+            )
+            .unwrap()
+        };
+        let long = skill("deck", &format!("Build a\\n deck {}", "x".repeat(400)), "powerpoint, deck");
+        let line = listing_line(&long);
+        assert!(line.starts_with("Build a deck "), "{line}");
+        assert_eq!(line.chars().count(), LISTING_LINE_CHARS);
+        assert!(line.ends_with('…'));
+        let short = skill("pptx", "Slides", "powerpoint, pptx");
+        assert_eq!(listing_line(&short), "Slides (powerpoint)");
+    }
 
-        // The shared catalog carries neither the seat's block nor its skills.
-        let shared = loader.compact_catalog(None).await;
-        assert!(!shared.contains("## Your Own Skills"));
-        assert!(!shared.contains("copy-brief"));
+    /// Past the budget the shared lines shorten, then drop to names; the
+    /// seat's own lines stay whole.
+    #[tokio::test]
+    async fn test_listing_keeps_a_seats_own_lines_past_the_budget() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let agents = TempDir::new().unwrap();
+        for i in 0..60 {
+            let name = format!("shared-skill-{i:02}");
+            let dir = user.path().join(&name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {}\n---\nbody\n", "d".repeat(240)),
+            )
+            .unwrap();
+        }
+        create_employee_package(
+            agents.path(),
+            "copywriter",
+            "copywriter",
+            "copy-brief",
+            &package_skill_md("copy-brief", &"o".repeat(240)),
+        );
+        let loader = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
+            .with_agent_dirs(vec![agents.path().to_path_buf()]);
+        loader.load_all().await;
+
+        let seat = loader.listing(Some("copywriter")).await;
+        assert_eq!(seat["copy-brief"], "o".repeat(240), "the seat's own line is whole");
+        let shared = &seat["shared-skill-00"];
+        assert!(shared.chars().count() < 240 && shared.ends_with('…'), "{shared}");
+        let chars: usize = seat.iter().map(|(n, l)| n.len() + l.chars().count() + 5).sum();
+        assert!(chars <= LISTING_BUDGET_CHARS + 300, "{chars}");
     }
 
     #[tokio::test]
-    async fn test_prompt_catalog_stays_small_with_a_whole_company() {
+    async fn test_listing_stays_small_with_a_whole_company() {
         // 48 employees, 4 procedures each, every seat using the same four
         // names. The shared catalog that goes into every prompt must not grow
         // with the workforce; a seat only ever pays for its own four.
@@ -2646,23 +2539,16 @@ Triage instructions.
             .with_agent_dirs(vec![agents.path().to_path_buf()]);
         loader.load_all().await;
 
-        let shared = loader.compact_catalog(None).await;
+        let shared = loader.listing(None).await;
         for name in names {
-            assert!(
-                !shared.contains(name),
-                "{name} must not reach the shared catalog"
-            );
+            assert!(!shared.contains_key(name), "{name} must not reach the shared listing");
         }
 
-        let seat = loader.compact_catalog(Some("seat-7")).await;
+        let seat = loader.listing(Some("seat-7")).await;
         for name in names {
-            assert!(seat.contains(name), "the seat must see its own {name}");
+            assert!(seat.contains_key(name), "the seat must see its own {name}");
         }
-        let own_cost = seat.len() - shared.len();
-        assert!(
-            own_cost < 2_000,
-            "a seat's own procedures added {own_cost} chars to the prompt; four skills must stay small"
-        );
+        assert_eq!(seat.len() - shared.len(), names.len(), "a seat pays for its own four, never the workforce's");
     }
 
     #[tokio::test]

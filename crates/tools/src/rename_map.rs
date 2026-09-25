@@ -398,6 +398,23 @@ pub const RENAMES: &[Rename] = &[
     web("browser", "browser_batch", "browser_batch", &[("actions", "steps")]),
     web("browser", "webmcp_list", "browser_page_tools", &[]),
     web("browser", "webmcp_call", "browser_call_page_tool", &[]),
+    // The `skill` tool (tools WP4): `skill(name)` with no action was a load.
+    // `unload` has no successor: switching a skill off is the owner's, in
+    // the app.
+    skill(None, crate::skill_tool::USE_SKILL),
+    skill(Some("load"), crate::skill_tool::USE_SKILL),
+    skill(Some("list"), "find_skills"),
+    skill(Some("discover"), "find_skills"),
+    skill(Some("browse"), "read_skill_file"),
+    skill(Some("read_resource"), "read_skill_file"),
+    skill(Some("create"), "save_skill"),
+    skill(Some("update"), "save_skill"),
+    skill(Some("delete"), "delete_skill"),
+    skill(Some("install"), "install_skill"),
+    skill(Some("configure"), "configure_skill"),
+    skill(Some("secrets"), "configure_skill"),
+    skill(Some("rate"), "rate_skill"),
+    skill(Some("reviews"), "read_skill_reviews"),
     // The `event` tool (tools WP9): one tool per scheduling job. A pause and
     // a resume both become set_schedule_paused (`paused: true` / `false`).
     flat("event", "create", "create_schedule", &[("schedule", "cron")]),
@@ -488,6 +505,11 @@ const fn hub(
     params: &'static [(&'static str, &'static str)],
 ) -> Rename {
     Rename { tool: "loop", resource: Some(resource), action: Some(action), to, params }
+}
+
+/// A retired `skill(action)` shape.
+const fn skill(action: Option<&'static str>, to: &'static str) -> Rename {
+    Rename { tool: "skill", resource: None, action, to, params: &[] }
 }
 
 /// A retired `web(resource, action)` shape.

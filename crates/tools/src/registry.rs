@@ -1190,31 +1190,26 @@ impl Registry {
             self.register(Box::new(tool)).await;
         }
 
-        // Skill tool (skill management) — always registered (core)
-        if let Some(ref loader) = skill_loader {
-            let mut skill_tool = crate::skill_tool::SkillTool::new(loader.clone())
-                .with_store(store.clone())
-                .with_notify_fn(self.notify_fn.clone())
-                .with_code_installer(self.code_installer.clone());
-            // Wire the plugin registry so skill discover/help can redirect
-            // when the LLM confuses a plugin slug for a skill name.
-            let ps_opt = self.plugin_store.read().unwrap().clone();
-            if let Some(ps) = ps_opt {
-                skill_tool = skill_tool.with_plugin_store(ps);
-            }
-            self.register(Box::new(skill_tool)).await;
-        } else {
+        // The skill tools: use_skill (core) and the deferred family, sharing
+        // one core over the skill loader.
+        let loader = skill_loader.clone().unwrap_or_else(|| {
             let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let installed_dir = data.join("nebo").join("skills");
-            let user_dir = data.join("user").join("skills");
-            let loader_default = Arc::new(crate::skills::Loader::new(installed_dir, user_dir));
-            let mut skill_tool = crate::skill_tool::SkillTool::new(loader_default)
-                .with_code_installer(self.code_installer.clone());
-            let ps_opt = self.plugin_store.read().unwrap().clone();
-            if let Some(ps) = ps_opt {
-                skill_tool = skill_tool.with_plugin_store(ps);
-            }
-            self.register(Box::new(skill_tool)).await;
+            Arc::new(crate::skills::Loader::new(data.join("nebo").join("skills"), data.join("user").join("skills")))
+        });
+        let mut skills = crate::skill_tool::SkillCore::new(loader)
+            .with_notify_fn(self.notify_fn.clone())
+            .with_code_installer(self.code_installer.clone());
+        if skill_loader.is_some() {
+            skills = skills.with_store(store.clone());
+        }
+        // Wire the plugin registry so a skill search can say when the query
+        // named a plugin.
+        let ps_opt = self.plugin_store.read().unwrap().clone();
+        if let Some(ps) = ps_opt {
+            skills = skills.with_plugin_store(ps);
+        }
+        for tool in crate::skill_tool::tools(skills) {
+            self.register(Box::new(tool)).await;
         }
 
         // Execute tool (script execution) — deferred (only activated when user mentions scripts/code)
@@ -2076,7 +2071,7 @@ mod tests {
     /// Each tool package removes its names; nothing is ever added.
     const PRE_INTERFACE_TOOLS: &[&str] = &[
         "a2ui", "agent", "authority", "code", "execute", "exit", "mcp", "message", "notebook",
-        "os", "pack", "plugin", "publisher", "rules", "skill", "vm",
+        "os", "pack", "plugin", "publisher", "rules", "vm",
     ];
 
     /// The enum-dispatch surfaces the interface allows (device surfaces).
@@ -2133,7 +2128,7 @@ mod tests {
 
     #[test]
     fn the_pre_interface_list_is_closed_and_the_allowed_surfaces_are_the_device_ones() {
-        assert_eq!(PRE_INTERFACE_TOOLS.len(), 16, "packages only remove names from this list");
+        assert_eq!(PRE_INTERFACE_TOOLS.len(), 15, "packages only remove names from this list");
         assert!(ENUM_SURFACES.iter().all(|(t, _)| is_tool_name(t)));
     }
 
@@ -2148,15 +2143,15 @@ mod tests {
     /// 1,087 · read_file 782 · edit_file 705 · write_file 448) and 37,798
     /// on Linux (os 9,609). The plugin tool (core too, and sized by the
     /// installed plugins) needs a plugin store and is not in this roster.
-    /// Each package that lands lowers the numbers; they never rise. Tools
-    /// WP2 moved helpers, memory and asking off agent and message: 29,684
-    /// on macOS (agent 6,005 · os 9,155 · message 2,657 · delegate 1,702 ·
-    /// remember 1,039 · recall 701 · ask_owner 618 · forget 336); Linux
-    /// drops by the same amount except its os text, held at its WP1 size.
+    /// WP4 swapped skill (3,102) for use_skill (585): −2,517. Tools WP2
+    /// moved helpers, memory and asking off agent and message (agent 6,005 ·
+    /// message 2,657 · delegate 1,702 · remember 1,039 · recall 701 ·
+    /// ask_owner 618 · forget 336). Each package that lands lowers the
+    /// numbers; they never rise.
     #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 29_684;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 27_167;
     #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 30_136;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 27_619;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2188,7 +2183,7 @@ mod tests {
             core,
             [
                 "agent", "ask_owner", "delegate", "edit_file", "find_tools", "forget", "mcp", "message", "os",
-                "read_file", "recall", "remember", "run_command", "skill", "write_file"
+                "read_file", "recall", "remember", "run_command", "use_skill", "write_file"
             ]
         );
         for name in ["read_output", "stop_task", "list_processes", "send_input", "share_file", "convert_file", "checkpoint_files", "list_checkpoints", "restore_checkpoint", "write_plan", "check_plan"] {
@@ -2211,7 +2206,8 @@ mod tests {
             ("agent", serde_json::json!({"resource": "registry", "action": "discover"})),
             ("remember", serde_json::json!({"key": "k", "value": "v"})),
             ("delegate", serde_json::json!({"description": "d", "prompt": "p"})),
-            ("skill", serde_json::json!({"action": "load", "name": "x"})),
+            ("use_skill", serde_json::json!({"name": "x"})),
+            ("save_skill", serde_json::json!({"name": "x", "content": "y"})),
             ("fetch_url", serde_json::json!({"url": "https://example.com"})),
             ("browser_act", serde_json::json!({"action": "click", "ref": "e1"})),
             ("message", serde_json::json!({"resource": "sms", "action": "send"})),
@@ -2248,7 +2244,8 @@ mod tests {
         assert!(!cleared("browser_act", json!({"action": "click", "ref": "e1"})).await);
         assert!(!cleared("os", json!({"resource": "calendar", "action": "today"})).await);
         assert!(!cleared("recall", json!({"query": "x"})).await);
-        assert!(!cleared("skill", json!({"action": "load", "name": "x"})).await);
+        assert!(!cleared("use_skill", json!({"name": "x"})).await);
+        assert!(cleared("find_skills", json!({"query": "x"})).await);
         let taint = |name: &'static str, input: serde_json::Value| {
             let registry = registry.clone();
             async move { registry.get(name).await.unwrap().taint(&input) }

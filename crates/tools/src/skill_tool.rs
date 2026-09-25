@@ -1,32 +1,35 @@
+//! The skill tools: `use_skill` (core) loads a skill's instructions into the
+//! conversation, and the deferred family finds, reads, saves, deletes,
+//! installs, configures and reviews skills. They share one [`SkillCore`]
+//! over the skill loader. The installed skills reach the model as the skill
+//! listing (name + one line each), never through a tool.
+
 use std::sync::Arc;
 
-use crate::domain::DomainInput;
-use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
 use crate::skills::{Loader, SkillSource};
 
-/// SkillTool manages skills — SKILL.md-defined agent capabilities.
-/// Delegates to the agent::skills::Loader for directory-based loading and hot-reload.
-pub struct SkillTool {
+/// What every skill tool shares: the loader and the channels its writes
+/// report through.
+pub struct SkillCore {
     loader: Arc<Loader>,
     store: Option<Arc<db::Store>>,
     /// Live-broadcast callback (wired to ClientHub via the registry cell, same
     /// pattern as MessageTool). Used so a staged learned-skill write surfaces
     /// in the Inbox immediately, not on next load.
     notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
-    /// Optional reference to the live plugin registry. When set, skill
-    /// discover/help can detect when the LLM has confused a plugin slug
-    /// for a skill name and redirect to the `plugin` tool instead of
-    /// returning a dead "not found." Runtime-driven — no hardcoded slugs.
+    /// Optional reference to the live plugin registry. When set, a skill
+    /// search that finds nothing can say when the query named a plugin
+    /// rather than a skill. Runtime-driven — no hardcoded slugs.
     plugin_store: Option<Arc<napp::plugin::PluginStore>>,
-    /// Shared canonical-installer cell (server-injected). `install` delegates here so it
+    /// Shared canonical-installer cell (server-injected). `install_skill` delegates here so it
     /// goes through the ONE `codes::handle_code` pathway — never a direct API bypass.
     code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
 }
 
-impl SkillTool {
+impl SkillCore {
     pub fn new(loader: Arc<Loader>) -> Self {
         Self {
             loader,
@@ -48,6 +51,20 @@ impl SkillTool {
         cell: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
     ) -> Self {
         self.notify_fn = cell;
+        self
+    }
+
+    /// Inject the shared canonical-installer cell (from the `Registry`).
+    pub fn with_code_installer(
+        mut self,
+        installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+    ) -> Self {
+        self.code_installer = installer;
+        self
+    }
+
+    pub fn with_plugin_store(mut self, plugin_store: Arc<napp::plugin::PluginStore>) -> Self {
+        self.plugin_store = Some(plugin_store);
         self
     }
 
@@ -169,20 +186,6 @@ impl SkillTool {
         }
     }
 
-    /// Inject the shared canonical-installer cell (from the `Registry`).
-    pub fn with_code_installer(
-        mut self,
-        installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
-    ) -> Self {
-        self.code_installer = installer;
-        self
-    }
-
-    pub fn with_plugin_store(mut self, plugin_store: Arc<napp::plugin::PluginStore>) -> Self {
-        self.plugin_store = Some(plugin_store);
-        self
-    }
-
     /// Find an installed plugin whose slug matches `term` (case-insensitive
     /// exact or substring). Returns the canonical slug if matched.
     fn match_plugin_slug(&self, term: &str) -> Option<String> {
@@ -206,10 +209,10 @@ impl SkillTool {
         exact.or(substring)
     }
 
-    /// The ONE "no such skill" line: names the two calls that resolve it.
+    /// The ONE "no such skill" line: where the installed names are.
     fn not_found(name: &str) -> String {
         format!(
-            "Skill '{}' not found. skill(action: \"list\") shows installed names; skill(action: \"discover\", query: ...) searches.",
+            "No skill named '{}'. Installed skills are in the skill listing; find_skills searches them by what they do.",
             name
         )
     }
@@ -239,7 +242,7 @@ impl SkillTool {
     }
 
     /// Resolve a skill name to its directory under the user skills dir
-    /// (create/read/update/enable/disable/delete all go through here).
+    /// (save/read/enable/delete all go through here).
     fn user_skill_dir(name: &str) -> Result<std::path::PathBuf, String> {
         Self::validate_skill_name(name)?;
         let dir = Self::user_skills_dir()?;
@@ -266,1106 +269,566 @@ impl SkillTool {
         }
         Ok(skill_dir)
     }
-}
 
-impl DynTool for SkillTool {
-    fn name(&self) -> &str {
-        "skill"
-    }
-
-    fn description(&self) -> String {
-        "Capabilities & knowledge — skill catalog, loading, and execution.\n\
-         USE THIS when: user asks for something unfamiliar, or you're unsure if a specialized skill exists for the task.\n\n\
-         NEVER USE this tool for channel messaging (slack/discord/teams/etc.). \
-         Channels are PLUGINS, not skills — route channel I/O through the `plugin` tool with the channel name as `resource`. \
-         `skill discover` will not find any channel by name; `skill help` will not return a channel's commands.\n\n\
-         Before replying to any request, scan your available skills:\n\
-         1. If a skill clearly applies → load it with skill(action: \"load\", name: \"...\") to get detailed instructions, then follow them\n\
-         2. If multiple skills could apply → choose the most specific one\n\
-         3. If no skill applies → proceed with your built-in tools\n\n\
-         - skill(action: \"list\") — Browse all available skills and apps\n\
-         - skill(action: \"browse\", name: \"xlsx-processor\") — List resource files in a skill's directory\n\
-         - skill(action: \"read_resource\", name: \"xlsx-processor\", path: \"scripts/recalc.py\") — Read a resource file\n\
-         - skill(action: \"load\", name: \"coding-assistant\") — Activate for current session (skill(name: \"...\") with no action is the same load)\n\
-         - skill(action: \"install\", code: \"SKIL-XXXX-XXXX\") — Install from marketplace\n\
-         - skill(action: \"configure\", name: \"brave-search\", key: \"BRAVE_API_KEY\", value: \"...\") — Set a secret\n\
-         - skill(action: \"discover\", query: \"email management\") — Search for skills matching a description\n\
-         - skill(action: \"reviews\", name: \"...\") — read reviews for a skill\n\
-         - skill(action: \"rate\", name: \"...\", rating: 5, review: \"It saved me a ton of time\") — Leave a 1–5 ★ review on a marketplace skill\n\n\
-         If you're about to do something and aren't sure if a skill exists for it, call skill(action: \"discover\", query: \"what you're trying to do\") to check.\n\
-         If a skill returns an auth error, guide the user to Settings → Apps to reconnect.\n\n\
-         GUARDRAILS: Only invoke skills that appear in the list or discover results. Do not guess skill names."
-            .to_string()
-    }
-
-    fn schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "Action to perform",
-                    "enum": ["list", "discover", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "reviews", "rate"]
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Skill name (slug)"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Skill YAML content (for create/update)"
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Relative path for browse filter or resource read"
-                },
-                "code": {
-                    "type": "string",
-                    "description": "Marketplace code for install (e.g. SKIL-XXXX-XXXX)"
-                },
-                "key": {
-                    "type": "string",
-                    "description": "Secret/API key name for configure action (e.g. BRAVE_API_KEY)"
-                },
-                "value": {
-                    "type": "string",
-                    "description": "Secret value for configure action"
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Search query for discover action (describe what you're trying to do)"
-                },
-                "rating": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 5,
-                    "description": "Star rating 1–5 (for rate action)"
-                },
-                "review": {
-                    "type": "string",
-                    "description": "Free-text review body (for rate action). Keep it honest and useful — what worked, what didn't."
-                }
-            },
-            "required": ["action"]
-        })
-    }
-
-    fn search_hint(&self) -> &str {
-        "skills instructions load discover install"
-    }
-
-    fn should_defer(&self) -> bool {
-        false
-    }
-
-    fn read_only(&self, input: &serde_json::Value) -> bool {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        // `rate` is intentionally excluded — it mutates marketplace state.
-        matches!(action, "list" | "discover" | "browse" | "read_resource" | "reviews" | "secrets")
-    }
-
-    fn rule_key(&self, input: &serde_json::Value) -> String {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        match action {
-            "list" | "discover" | "browse" => "find_skills",
-            "read_resource" => "read_skill_file",
-            "create" | "update" => "save_skill",
-            "delete" => "delete_skill",
-            "install" => "install_skill",
-            "configure" | "secrets" => "configure_skill",
-            "rate" => "rate_skill",
-            "reviews" => "read_skill_reviews",
-            "unload" => "skill",
-            // `skill(name: "x")` with no action is a load.
-            _ => "use_skill",
-        }
-        .to_string()
-    }
-
-    /// Pre-interface: it settles its own call shapes (see
-    /// `DynTool::validates_input`).
-    fn validates_input(&self) -> bool {
-        false
-    }
-
-    fn execute_dyn<'a>(
-        &'a self,
-        ctx: &'a ToolContext,
-        input: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
-        Box::pin(async move {
-            // skill(name: "x") with no action is a load: the shorthand the
-            // skill strap taught, made into the load call before dispatch so
-            // there is one load path.
-            let mut input = input;
-            if input.get("action").and_then(|v| v.as_str()).is_none_or(str::is_empty)
-                && input.get("name").and_then(|v| v.as_str()).is_some_and(|n| !n.is_empty())
-                && let Some(obj) = input.as_object_mut()
-            {
-                obj.insert("action".into(), serde_json::Value::String("load".into()));
-            }
-            let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
-                Ok(v) => v,
-                Err(e) => return ToolResult::error(format!(
-                    "Failed to parse input: {e}. Every skill call names an action: \
-                     skill(action: \"list\"), skill(action: \"discover\", query: \"<what you need>\"), \
-                     skill(action: \"load\", name: \"<skill>\"), or skill(action: \"browse\", name: \"<skill>\", path: \"<file>\"). \
-                     Resend with the action and its fields."
-                )),
+    /// Load a skill's instructions: its expanded body (the review fork gets
+    /// the full SKILL.md of its own learned skills, which it rewrites whole).
+    /// A skill switched off on disk is switched on and loaded in the same
+    /// call.
+    async fn load(&self, ctx: &ToolContext, scope: Scope<'_>, name: &str, args: Option<&str>) -> ToolResult {
+        if !self.loader.get(name, scope.agent).await.is_some_and(|s| s.enabled) {
+            // Switched off on disk: switch it back on, then load it.
+            let skill_dir = match Self::user_skill_dir(name) {
+                Ok(d) => d,
+                Err(e) => return ToolResult::error(e),
             };
+            if !skill_dir.join("SKILL.md.disabled").exists() {
+                return ToolResult::error(Self::not_found(name));
+            }
+            if let Err(e) = std::fs::rename(skill_dir.join("SKILL.md.disabled"), skill_dir.join("SKILL.md")) {
+                return ToolResult::error(format!("Failed to enable skill: {}. Do not retry — this is a filesystem error.", e));
+            }
+            // Make it live now instead of waiting for the watcher.
+            self.loader.reload_from_disk().await;
+        }
+        let Some(skill) = self.loader.get(name, scope.agent).await.filter(|s| s.enabled) else {
+            return ToolResult::error(Self::not_found(name));
+        };
+        // Read mark for the review fork: a save or delete of a learned skill
+        // requires it was loaded THIS run.
+        if let Ok(mut read) = ctx.skills_read.lock() {
+            read.insert(skill.name.clone());
+        }
+        // The review fork rewrites whole files — hand it the FULL source
+        // (frontmatter + body) so a save preserves triggers/priority/version
+        // instead of reconstructing frontmatter blind.
+        if scope.learned_owner.is_some()
+            && matches!(skill.source, SkillSource::Learned)
+            && let Some(raw) = skill.source_path.as_deref().and_then(|p| std::fs::read_to_string(p).ok())
+        {
+            return ToolResult::ok(format!(
+                "Loaded skill '{}'. CURRENT FULL SKILL.md (rewrite the whole file with save_skill, keeping frontmatter fields you don't mean to change):\n\n{}",
+                skill.name, raw
+            ));
+        }
+        let body = with_args(&self.loader.expand_template(&skill, self.store.as_deref()), args);
+        let base = skill
+            .base_dir
+            .as_deref()
+            .map(|d| format!("Base directory for this skill: {}\n\n", d.display()))
+            .unwrap_or_default();
+        ToolResult::ok(format!("Loaded skill '{}'. Follow its instructions:\n\n{base}{body}", skill.name))
+    }
 
-            // Per-employee skill scope: runs bound to an agent (session key
-            // "agent:<id>:...") also see that agent's Learned skills.
-            let agent_scope =
-                Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|id| !id.is_empty());
-            // Review-fork marker: when set, create/update/delete target the
-            // learned tree of this agent (with read-before-write) instead of
-            // user/skills/. The owner is also the read scope.
-            let learned_owner = ctx.learned_write_agent.clone();
-            let agent = learned_owner.as_deref().or(agent_scope.as_deref());
+    async fn find(&self, scope: Scope<'_>, query: &str) -> ToolResult {
+        let matches = self.loader.discover_summaries(query, scope.agent).await;
+        if !matches.is_empty() {
+            let lines: Vec<String> =
+                matches.iter().take(10).map(|s| format!("- {}: {}", s.name, s.description)).collect();
+            return ToolResult::ok(format!(
+                "Skills matching \"{}\":\n{}\n\nLoad one with use_skill, then follow its instructions.",
+                query,
+                lines.join("\n")
+            ));
+        }
+        // If the query matches a registered plugin slug (channel plugins
+        // like slack/discord, or any other installed plugin), the model
+        // probably meant the plugin. Say so rather than a dead "no match."
+        if let Some(slug) = self.match_plugin_slug(query) {
+            // "slack" IS the plugin; "send the weekly report to slack"
+            // merely contains its slug. Only the first shape gets the flat
+            // "is a plugin" verdict.
+            let q = query.trim();
+            if q.eq_ignore_ascii_case(&slug) || !q.contains(char::is_whitespace) {
+                return ToolResult::ok(format!(
+                    "`{}` is a plugin, not a skill. Skills are local capability bundles; plugins are managed binaries. \
+                     USE: plugin(resource: \"{}\", action: \"exec\", command: \"help\") to see its commands, \
+                     then call plugin(resource: \"{}\", command: \"<subcommand> ...\") to use it. \
+                     For channel messaging (upload/post/dm/reply), the bridge fills channel and thread from context; you only need the operation and its arguments.",
+                    slug, slug, slug
+                ));
+            }
+            return ToolResult::ok(format!(
+                "No installed skill matches \"{}\". The installed plugin `{}` matches part of that query; \
+                 if that is what you need, plugin(resource: \"{}\", action: \"exec\", command: \"help\") lists its commands. \
+                 Otherwise proceed with your other tools.",
+                query, slug, slug
+            ));
+        }
+        // A keyword miss over installed skills is not a verdict on the
+        // capability: the other tools handle most jobs with no skill at all.
+        ToolResult::ok(format!(
+            "No installed skill or plugin matches \"{}\". That only means no skill is installed for it; proceed with your other tools. If a marketplace skill would help, tell the user.",
+            query
+        ))
+    }
 
-            match domain_input.action.as_str() {
-                "list" => {
-                    // Budget-constrained catalog: show count +
-                    // capped entries with truncated descriptions. Never dump the full
-                    // catalog — use discover(query) for targeted search.
-                    const MAX_CATALOG_ENTRIES: usize = 30;
-                    const MAX_DESC_CHARS: usize = 120;
+    /// A skill's files: the list with no path, a file's text with one.
+    async fn read_file(&self, scope: Scope<'_>, name: &str, path: &str) -> ToolResult {
+        let Some(skill) = self.loader.get(name, scope.agent).await else {
+            return ToolResult::error(Self::not_found(name));
+        };
+        let mut resources = match skill.list_resources() {
+            Ok(r) => r,
+            Err(e) => return ToolResult::error(format!("Failed to list resources: {}. Do not retry — this is a filesystem error.", e)),
+        };
+        // A path that names a file reads it; one that names a folder lists
+        // what is under it.
+        if !path.is_empty() && resources.iter().any(|r| r == path) {
+            return match skill.read_resource(path) {
+                Ok(data) => match String::from_utf8(data.clone()) {
+                    Ok(text) => ToolResult::ok(text),
+                    Err(_) => ToolResult::ok(format!("binary file, {} bytes", data.len())),
+                },
+                Err(e) => ToolResult::error(e),
+            };
+        }
+        if !path.is_empty() {
+            let prefix = if path.ends_with('/') { path.to_string() } else { format!("{}/", path) };
+            resources.retain(|r| r.starts_with(&prefix));
+        }
+        if resources.is_empty() {
+            return if path.is_empty() {
+                ToolResult::ok(format!("Skill '{}' has no files besides its instructions.", name))
+            } else {
+                ToolResult::ok(format!(
+                    "No files under '{}/{}'. Leave out path to list the skill's files; pass a listed path to read one.",
+                    name, path
+                ))
+            };
+        }
+        resources.sort();
+        let listing: Vec<String> = resources
+            .iter()
+            .map(|r| {
+                let size = skill
+                    .base_dir
+                    .as_ref()
+                    .and_then(|base| std::fs::metadata(base.join(r)).ok())
+                    .map(|m| format!(" ({} bytes)", m.len()))
+                    .unwrap_or_default();
+                format!("  {}{}", r, size)
+            })
+            .collect();
+        ToolResult::ok(format!("Files in '{}':\n{}", name, listing.join("\n")))
+    }
 
-                    let skills = self.loader.list_summaries(agent).await;
-                    if skills.is_empty() {
-                        ToolResult::ok(
-                            "No skills installed. Create one with skill(action: \"create\", name: \"my-skill\", content: \"...\")",
-                        )
-                    } else {
-                        let total = skills.len();
-                        let enabled = skills.iter().filter(|s| s.enabled).count();
-                        let lines: Vec<String> = skills
-                            .iter()
-                            .filter(|s| s.enabled)
-                            .take(MAX_CATALOG_ENTRIES)
-                            .map(|s| {
-                                // Char-boundary safe: String::truncate panics
-                                // mid-codepoint on a multi-byte description.
-                                let desc = if s.description.len() > MAX_DESC_CHARS {
-                                    format!("{}...", crate::truncate_str(&s.description, MAX_DESC_CHARS))
-                                } else {
-                                    s.description.clone()
-                                };
-                                format!("- **{}** — {}", s.name, desc)
-                            })
-                            .collect();
-                        let shown = lines.len();
-                        let mut result = format!("{} skills ({} enabled):\n{}", total, enabled, lines.join("\n"));
-                        if enabled == 0 {
-                            result.push_str(&format!(
-                                "All {} are disabled. Enable one with skill(action: \"load\", name: ...).",
-                                total
-                            ));
-                        }
-                        if enabled > shown {
-                            result.push_str(&format!(
-                                "\n\n... and {} more. Use skill(action: \"discover\", query: \"...\") to search.",
-                                enabled - shown
-                            ));
-                        }
-                        result.push_str("\n\nTo use a skill: skill(action: \"load\", name: \"<name>\") to load its full instructions, then follow them inline. (help = metadata preview; load = full instructions.)");
-                        ToolResult::ok(result)
-                    }
-                }
-                "discover" => {
-                    let query = input["query"].as_str().unwrap_or("");
-                    if query.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "discover",
-                            "query",
-                            "skill(action: \"discover\", query: \"email management\")",
-                        ));
-                    }
-                    let matches = self.loader.discover_summaries(query, agent).await;
-                    if matches.is_empty() {
-                        // If the query matches a registered plugin slug
-                        // (channel plugins like slack/discord, or any
-                        // other installed plugin), the LLM probably
-                        // meant to call the plugin tool. Redirect rather
-                        // than returning a dead "no skills match."
-                        if let Some(slug) = self.match_plugin_slug(query) {
-                            // "slack" IS the plugin; "send the weekly report to
-                            // slack" merely contains its slug. Only the first
-                            // shape gets the flat "is a plugin" verdict.
-                            let q = query.trim();
-                            let is_the_slug = q.eq_ignore_ascii_case(&slug)
-                                || !q.contains(char::is_whitespace);
-                            if is_the_slug {
-                                return ToolResult::ok(format!(
-                                    "`{}` is a plugin, not a skill. Skills are local capability bundles; plugins are managed binaries. \
-                                     USE: plugin(resource: \"{}\", action: \"exec\", command: \"help\") to see its commands, \
-                                     then call plugin(resource: \"{}\", command: \"<subcommand> ...\") to use it. \
-                                     For channel messaging (upload/post/dm/reply), the bridge fills channel and thread from context; you only need the operation and its arguments.",
-                                    slug, slug, slug
-                                ));
-                            }
-                            return ToolResult::ok(format!(
-                                "No installed skill matches \"{}\". The installed plugin `{}` matches part of that query; \
-                                 if that is what you need, plugin(resource: \"{}\", action: \"exec\", command: \"help\") lists its commands. \
-                                 Otherwise proceed with your built-in tools (os, web, code).",
-                                query, slug, slug
-                            ));
-                        }
-                        {
-                        // A keyword miss over installed skills is not a verdict on
-                        // the capability: the built-in tools handle most jobs with no
-                        // skill at all. The old text made models abandon those.
-                        ToolResult::ok(format!(
-                            "No installed skill or plugin matches \"{}\". That only means no skill is installed for it; proceed with your built-in tools (os, web, code). If a marketplace skill would help, tell the user.",
-                            query
-                        ))
-                    }
-                    } else {
-                        let lines: Vec<String> = matches
-                            .iter()
-                            .take(10)
-                            .map(|s| format!("- **{}** — {}", s.name, s.description))
-                            .collect();
-                        ToolResult::ok(format!(
-                            "Skills matching \"{}\":\n{}\n\nTo use a skill, call: skill(action: \"load\", name: \"<name>\") to load its full instructions, then follow them inline.",
-                            query,
-                            lines.join("\n")
-                        ))
-                    }
-                }
-                "browse" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "browse",
-                            "name",
-                            "skill(action: \"browse\", name: \"xlsx-processor\")",
-                        ));
-                    }
-                    let filter_path = input["path"].as_str().unwrap_or("");
-
-                    match self.loader.get(name, agent).await {
-                        Some(skill) => match skill.list_resources() {
-                            Ok(mut resources) => {
-                                // Browsing straight to a file means "show me this
-                                // file" — read it. Treating the path only as a
-                                // directory prefix answered "No resources found"
-                                // for a file that exists, and the model's next
-                                // guess was an absolute path that missed the
-                                // skill's real directory entirely.
-                                if !filter_path.is_empty()
-                                    && resources.iter().any(|r| r == filter_path)
-                                {
-                                    return match skill.read_resource(filter_path) {
-                                        Ok(data) => match String::from_utf8(data.clone()) {
-                                            Ok(text) => ToolResult::ok(text),
-                                            Err(_) => ToolResult::ok(format!(
-                                                "binary file, {} bytes",
-                                                data.len()
-                                            )),
-                                        },
-                                        Err(e) => ToolResult::error(e),
-                                    };
-                                }
-                                if !filter_path.is_empty() {
-                                    let prefix = if filter_path.ends_with('/') {
-                                        filter_path.to_string()
-                                    } else {
-                                        format!("{}/", filter_path)
-                                    };
-                                    resources.retain(|r| r.starts_with(&prefix));
-                                }
-                                if resources.is_empty() {
-                                    if filter_path.is_empty() {
-                                        ToolResult::ok(format!(
-                                            "Skill '{}' has no resource files.",
-                                            name
-                                        ))
-                                    } else {
-                                        ToolResult::ok(format!(
-                                            "No resources found under '{}/{}'. Use \
-                                             skill(action: \"browse\", name: \"{}\") to list \
-                                             what exists; pass a listed file path to read it.",
-                                            name, filter_path, name
-                                        ))
-                                    }
-                                } else {
-                                    resources.sort();
-                                    let listing: Vec<String> = resources
-                                        .iter()
-                                        .map(|r| {
-                                            let size = if let Some(ref base) = skill.base_dir {
-                                                std::fs::metadata(base.join(r))
-                                                    .map(|m| format!(" ({} bytes)", m.len()))
-                                                    .unwrap_or_default()
-                                            } else {
-                                                String::new()
-                                            };
-                                            format!("  {}{}", r, size)
-                                        })
-                                        .collect();
-                                    ToolResult::ok(format!(
-                                        "Resources in '{}':\n{}",
-                                        name,
-                                        listing.join("\n")
-                                    ))
-                                }
-                            }
-                            Err(e) => ToolResult::error(format!("Failed to list resources: {}. Do not retry — this is a filesystem error.", e)),
-                        },
-                        None => ToolResult::error(Self::not_found(name)),
-                    }
-                }
-                "read_resource" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    let path = input["path"].as_str().unwrap_or("");
-                    if name.is_empty() || path.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "read_resource",
-                            "name and path",
-                            "skill(action: \"read_resource\", name: \"xlsx-processor\", path: \"scripts/recalc.py\")",
-                        ));
-                    }
-
-                    match self.loader.get(name, agent).await {
-                        Some(skill) => match skill.read_resource(path) {
-                            Ok(data) => match String::from_utf8(data.clone()) {
-                                Ok(text) => ToolResult::ok(text),
-                                Err(_) => {
-                                    ToolResult::ok(format!("binary file, {} bytes", data.len()))
-                                }
-                            },
-                            Err(e) => ToolResult::error(e),
-                        },
-                        None => ToolResult::error(Self::not_found(name)),
-                    }
-                }
-                "load" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "load",
-                            "name",
-                            "skill(action: \"load\", name: \"coding-assistant\")",
-                        ));
-                    }
-                    // Canonical "give me this skill's instructions": if enabled, return
-                    // its expanded body so you can follow it now (loaded inline, rides in
-                    // message history, unloads via the sliding window).
-                    if let Some(skill) = self.loader.get(name, agent).await {
-                        if skill.enabled {
-                            // Read mark for the review fork: update/delete of a
-                            // learned skill requires it was loaded THIS run.
-                            if let Ok(mut read) = ctx.skills_read.lock() {
-                                read.insert(skill.name.clone());
-                            }
-                            // The review fork rewrites whole files — hand it the
-                            // FULL source (frontmatter + body) so an update
-                            // preserves triggers/priority/version instead of
-                            // reconstructing frontmatter blind. Normal runs keep
-                            // the expanded body (instructions to follow).
-                            if learned_owner.is_some()
-                                && matches!(skill.source, SkillSource::Learned)
-                            {
-                                if let Some(raw) = skill
-                                    .source_path
-                                    .as_deref()
-                                    .and_then(|p| std::fs::read_to_string(p).ok())
-                                {
-                                    return ToolResult::ok(format!(
-                                        "Loaded skill '{}'. CURRENT FULL SKILL.md (rewrite the whole file, keeping frontmatter fields you don't mean to change):\n\n{}",
-                                        skill.name, raw
-                                    ));
-                                }
-                            }
-                            let body = self.loader.expand_template(&skill, self.store.as_deref());
-                            return ToolResult::ok(format!(
-                                "Loaded skill '{}'. Follow these instructions:\n\n{}",
-                                skill.name, body
-                            ));
-                        }
-                    }
-                    // Otherwise enable a disabled skill on disk (available next message).
-                    let skill_dir = match Self::user_skill_dir(name) {
-                        Ok(d) => d,
-                        Err(e) => return ToolResult::error(e),
-                    };
-                    if skill_dir.join("SKILL.md.disabled").exists() {
-                        match std::fs::rename(
-                            skill_dir.join("SKILL.md.disabled"),
-                            skill_dir.join("SKILL.md"),
-                        ) {
-                            Ok(_) => {
-                                // Make it live now, so the load that follows
-                                // finds it instead of waiting for the watcher.
-                                self.loader.reload_from_disk().await;
-                                ToolResult::ok(format!(
-                                    "Enabled skill '{}'. Load it now with skill(action: \"load\", name: \"{}\").",
-                                    name, name
-                                ))
-                            }
-                            Err(e) => ToolResult::error(format!("Failed to enable skill: {}. Do not retry — this is a filesystem error.", e)),
-                        }
-                    } else {
-                        ToolResult::error(Self::not_found(name))
-                    }
-                }
-                "unload" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "unload",
-                            "name",
-                            "skill(action: \"unload\", name: \"coding-assistant\")",
-                        ));
-                    }
-                    let skill_dir = match Self::user_skill_dir(name) {
-                        Ok(d) => d,
-                        Err(e) => return ToolResult::error(e),
-                    };
-
-                    if skill_dir.join("SKILL.md.disabled").exists() {
-                        ToolResult::ok(format!("Skill '{}' is already disabled.", name))
-                    } else if skill_dir.join("SKILL.md").exists() {
-                        match std::fs::rename(
-                            skill_dir.join("SKILL.md"),
-                            skill_dir.join("SKILL.md.disabled"),
-                        ) {
-                            Ok(_) => ToolResult::ok(format!("Skill '{}' disabled.", name)),
-                            Err(e) => ToolResult::error(format!("Failed to disable skill: {}. Do not retry — this is a filesystem error.", e)),
-                        }
-                    } else {
-                        ToolResult::error(Self::not_found(name))
-                    }
-                }
-                "create" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    let content_raw = input["content"].as_str().unwrap_or("");
-
-                    if name.is_empty() || content_raw.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "create",
-                            "name and content",
-                            "skill(action: \"create\", name: \"my-skill\", content: \"---\\nname: my-skill\\n---\\nInstructions here\")",
-                        ));
-                    }
-
-                    // LLMs often send literal \n instead of real newlines in tool call strings.
-                    let content = content_raw.replace("\\n", "\n");
-
-                    let skill_dir = match learned_owner.as_deref() {
-                        // Review fork: create in the learned tree, never user/skills/.
-                        Some(owner) => {
-                            if let Some(existing) = self.loader.get(name, Some(owner)).await {
-                                return ToolResult::error(format!(
-                                    "Skill '{}' already exists (source: {}). Load it and use skill(action: \"update\") to extend it instead of creating a duplicate.",
-                                    name,
-                                    source_words(&existing.source)
-                                ));
-                            }
-                            match self.learned_skill_dir(owner, name) {
-                                Ok(d) => d,
-                                Err(e) => return ToolResult::error(e),
-                            }
-                        }
-                        None => match Self::user_skill_dir(name) {
-                            Ok(d) => d,
-                            Err(e) => return ToolResult::error(e),
-                        },
-                    };
-
-                    // Always write as {name}/SKILL.md per Agent Skills spec
-                    let final_content = if content.trim_start().starts_with("---") {
-                        content.clone()
-                    } else {
-                        format!(
-                            "---\nname: {}\ndescription: {}\n---\n{}",
-                            name, name, content
-                        )
-                    };
-
-                    // Staged learning: the create becomes a pending write for
-                    // the owner to approve from the Inbox.
-                    if ctx.learned_write_staged {
-                        if let Some(owner) = learned_owner.as_deref() {
-                            let gist = format!("Create learned skill '{}'", name);
-                            return self.stage_learned_write(
-                                owner,
-                                "create",
-                                name,
-                                Some(&final_content),
-                                &gist,
-                                "",
-                                None,
-                            );
-                        }
-                    }
-
-                    let path = skill_dir.join("SKILL.md");
-                    // Never overwrite silently: a second create with the same
-                    // name replaced the owner's skill and reported "Created".
-                    if path.exists() {
-                        return ToolResult::error(format!(
-                            "Skill '{}' already exists at {}. Use skill(action: \"update\", name: \"{}\", content: ...) to change it, or pick another name.",
-                            name,
-                            path.display(),
-                            name
-                        ));
-                    }
-                    if let Err(e) = std::fs::create_dir_all(&skill_dir) {
-                        return ToolResult::error(format!("Failed to create skill dir: {}. Do not retry — this is a filesystem error.", e));
-                    }
-                    match std::fs::write(&path, &final_content) {
-                        Ok(_) => {
-                            // Make the skill (and its triggers) live NOW — the fs
-                            // watcher is not instant and first-call trigger tests
-                            // race it. Same pattern as the install paths.
-                            self.loader.reload_from_disk().await;
-                            // Auto-mode learned create: record the revert anchor
-                            // (prior_content None — nothing existed before). Skipped
-                            // on a re-apply (approve/revert already have a row).
-                            if let Some(owner) =
-                                learned_owner.as_deref().filter(|_| !ctx.learned_write_reapply)
-                            {
-                                let gist = format!("Create learned skill '{}'", name);
-                                self.record_applied_learning(
-                                    owner, "create", name, Some(&final_content), &gist, "", None,
-                                );
-                            }
-                            ToolResult::ok(format!(
-                                "Created skill '{}' at {}",
-                                name,
-                                path.display()
-                            ))
-                        }
-                        Err(e) => ToolResult::error(format!("Failed to write skill: {}. Do not retry — this is a filesystem error.", e)),
-                    }
-                }
-                "update" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    let content = input["content"].as_str().unwrap_or("");
-
-                    if name.is_empty() || content.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "update",
-                            "name and content",
-                            "skill(action: \"update\", name: \"my-skill\", content: \"---\\nname: my-skill\\n---\\nUpdated instructions\")",
-                        ));
-                    }
-
-                    // Check if skill exists in loader or as file
-                    if let Some(skill) = self.loader.get(name, agent).await {
-                        // Protect marketplace (installed) skills from modification
-                        if matches!(skill.source, SkillSource::Installed) {
-                            return ToolResult::error(format!(
-                                "Cannot update marketplace skill '{}'. It was installed from NeboAI and is read-only.",
-                                name
-                            ));
-                        }
-                        if matches!(skill.source, SkillSource::Learned) {
-                            // Only the review fork may rewrite learned skills,
-                            // only its own, and only after loading them THIS
-                            // run (read-before-write: rewrite from actual
-                            // content, never a transcript-inferred recollection).
-                            let Some(owner) = learned_owner.as_deref() else {
-                                return ToolResult::error(format!(
-                                    "Cannot update learned skill '{}'. It is managed by the self-improvement loop; review changes from the Inbox.",
-                                    name
-                                ));
-                            };
-                            if skill.owner_agent_id.as_deref() != Some(owner) {
-                                return ToolResult::error(format!(
-                                    "Cannot update learned skill '{}': it belongs to a different employee.",
-                                    name
-                                ));
-                            }
-                            let read = ctx
-                                .skills_read
-                                .lock()
-                                .map(|r| r.contains(&skill.name))
-                                .unwrap_or(false);
-                            if !read {
-                                return ToolResult::error(format!(
-                                    "Read-before-write: load skill '{}' first (skill(action: \"load\", name: \"{}\")) and rewrite from its returned content, then retry the update.",
-                                    name, name
-                                ));
-                            }
-                            // Staged learning: normalize + validate now (so
-                            // approve can't fail parsing), then park the write.
-                            if ctx.learned_write_staged {
-                                let normalized = content.replace("\\n", "\n");
-                                let final_content = if normalized.trim_start().starts_with("---") {
-                                    normalized
-                                } else {
-                                    format!(
-                                        "---\nname: {}\ndescription: {}\n---\n{}",
-                                        skill.name, skill.description, normalized
-                                    )
-                                };
-                                if let Err(e) = crate::skills::parse_skill_frontmatter(
-                                    final_content.as_bytes(),
-                                ) {
-                                    return ToolResult::error(format!(
-                                        "Update rejected: content would not parse as a valid skill ({}). Send the FULL SKILL.md including the --- frontmatter block.",
-                                        e
-                                    ));
-                                }
-                                let hash = skill
-                                    .source_path
-                                    .as_deref()
-                                    .map(crate::skills::hash_skill_file)
-                                    .unwrap_or_default();
-                                let prior = skill
-                                    .source_path
-                                    .as_deref()
-                                    .and_then(|p| std::fs::read_to_string(p).ok());
-                                let gist = format!("Update learned skill '{}'", name);
-                                return self.stage_learned_write(
-                                    owner,
-                                    "update",
-                                    name,
-                                    Some(&final_content),
-                                    &gist,
-                                    &hash,
-                                    prior.as_deref(),
-                                );
-                            }
-                        }
-                        if let Some(ref path) = skill.source_path {
-                            // Models routinely send the body without the YAML
-                            // header; writing that verbatim knocks the skill
-                            // out of the loader on the next reload. Re-wrap
-                            // bare content with the skill's existing identity,
-                            // then refuse anything that still doesn't parse.
-                            let normalized = content.replace("\\n", "\n");
-                            let final_content = if normalized.trim_start().starts_with("---") {
-                                normalized
-                            } else {
-                                format!(
-                                    "---\nname: {}\ndescription: {}\n---\n{}",
-                                    skill.name, skill.description, normalized
-                                )
-                            };
-                            if let Err(e) =
-                                crate::skills::parse_skill_frontmatter(final_content.as_bytes())
-                            {
-                                return ToolResult::error(format!(
-                                    "Update rejected: content would not parse as a valid skill ({}). Send the FULL SKILL.md including the --- frontmatter block.",
-                                    e
-                                ));
-                            }
-                            // Capture the restore point BEFORE overwriting, but
-                            // only for an auto-mode learned write (a user-skill
-                            // edit is not a "learning" and gets no revert anchor).
-                            let learned_write = matches!(skill.source, SkillSource::Learned)
-                                .then(|| learned_owner.as_deref())
-                                .flatten();
-                            let prior = learned_write
-                                .and_then(|_| std::fs::read_to_string(path).ok());
-                            let prior_hash = learned_write
-                                .map(|_| crate::skills::hash_skill_file(path))
-                                .unwrap_or_default();
-                            match std::fs::write(path, &final_content) {
-                                Ok(_) => {
-                                    self.loader.reload_from_disk().await;
-                                    if let Some(owner) =
-                                        learned_write.filter(|_| !ctx.learned_write_reapply)
-                                    {
-                                        let gist = format!("Update learned skill '{}'", name);
-                                        self.record_applied_learning(
-                                            owner, "update", name, Some(&final_content), &gist,
-                                            &prior_hash, prior.as_deref(),
-                                        );
-                                    }
-                                    return ToolResult::ok(format!("Updated skill '{}'", name));
-                                }
-                                Err(e) => {
-                                    return ToolResult::error(format!("Failed to update: {}. Do not retry — this is a filesystem error.", e));
-                                }
-                            }
-                        }
-                    }
-
-                    let skill_dir = match Self::user_skill_dir(name) {
-                        Ok(d) => d,
-                        Err(e) => return ToolResult::error(e),
-                    };
-                    let skill_md = skill_dir.join("SKILL.md");
-                    if !skill_md.exists() {
-                        return ToolResult::error(Self::not_found(name));
-                    }
-                    match std::fs::write(&skill_md, content) {
+    /// Create the skill, or replace it when it exists.
+    async fn save(&self, ctx: &ToolContext, scope: Scope<'_>, name: &str, content: &str) -> ToolResult {
+        match self.loader.get(name, scope.agent).await {
+            // The review fork saves learned skills only: a same-named skill
+            // of another source is never its to replace.
+            Some(existing) if scope.learned_owner.is_some() && !matches!(existing.source, SkillSource::Learned) => {
+                ToolResult::error(format!(
+                    "Skill '{}' already exists (source: {}). Save the lesson under another name.",
+                    name,
+                    source_words(&existing.source)
+                ))
+            }
+            Some(skill) => self.update(ctx, scope, skill, content).await,
+            None if scope.learned_owner.is_none()
+                && Self::user_skill_dir(name).is_ok_and(|d| d.join("SKILL.md").exists()) =>
+            {
+                match Self::user_skill_dir(name) {
+                    Ok(dir) => match std::fs::write(dir.join("SKILL.md"), content) {
                         Ok(_) => ToolResult::ok(format!("Updated skill '{}'", name)),
                         Err(e) => ToolResult::error(format!("Failed to update: {}. Do not retry — this is a filesystem error.", e)),
-                    }
+                    },
+                    Err(e) => ToolResult::error(e),
                 }
-                "delete" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "delete",
-                            "name",
-                            "skill(action: \"delete\", name: \"my-skill\")",
-                        ));
-                    }
-
-                    // Protect marketplace (installed) skills from deletion
-                    if let Some(skill) = self.loader.get(name, agent).await {
-                        if matches!(skill.source, SkillSource::Installed) {
-                            return ToolResult::error(format!(
-                                "Cannot delete marketplace skill '{}'. It was installed from NeboAI and is read-only.",
-                                name
-                            ));
-                        }
-                        if matches!(skill.source, SkillSource::Learned) {
-                            // Fork-only, own-skill-only, read-before-write —
-                            // same rules as update. Deletes the learned dir.
-                            let Some(owner) = learned_owner.as_deref() else {
-                                return ToolResult::error(format!(
-                                    "Cannot delete learned skill '{}'. It is managed by the self-improvement loop; review changes from the Inbox.",
-                                    name
-                                ));
-                            };
-                            if skill.owner_agent_id.as_deref() != Some(owner) {
-                                return ToolResult::error(format!(
-                                    "Cannot delete learned skill '{}': it belongs to a different employee.",
-                                    name
-                                ));
-                            }
-                            let read = ctx
-                                .skills_read
-                                .lock()
-                                .map(|r| r.contains(&skill.name))
-                                .unwrap_or(false);
-                            if !read {
-                                return ToolResult::error(format!(
-                                    "Read-before-write: load skill '{}' first to confirm what you are deleting, then retry.",
-                                    name
-                                ));
-                            }
-                            // The full SKILL.md is the delete's restore point —
-                            // a revert re-creates the skill from it.
-                            let prior = skill
-                                .source_path
-                                .as_deref()
-                                .and_then(|p| std::fs::read_to_string(p).ok());
-                            let hash = skill
-                                .source_path
-                                .as_deref()
-                                .map(crate::skills::hash_skill_file)
-                                .unwrap_or_default();
-                            // Staged learning: park the delete for approval.
-                            if ctx.learned_write_staged {
-                                let gist = format!("Delete learned skill '{}'", name);
-                                return self.stage_learned_write(
-                                    owner, "delete", name, None, &gist, &hash,
-                                    prior.as_deref(),
-                                );
-                            }
-                            let dir = match self.learned_skill_dir(owner, name) {
-                                Ok(d) => d,
-                                Err(e) => return ToolResult::error(e),
-                            };
-                            if dir.is_dir() {
-                                if let Err(e) = std::fs::remove_dir_all(&dir) {
-                                    return ToolResult::error(format!(
-                                        "Failed to delete learned skill: {}. Do not retry — this is a filesystem error.",
-                                        e
-                                    ));
-                                }
-                            }
-                            self.loader.reload_from_disk().await;
-                            // Auto-mode learned delete: record the revert anchor
-                            // (skipped on a re-apply — approve/revert own the row).
-                            if !ctx.learned_write_reapply {
-                                let gist = format!("Delete learned skill '{}'", name);
-                                self.record_applied_learning(
-                                    owner, "delete", name, None, &gist, &hash, prior.as_deref(),
-                                );
-                            }
-                            return ToolResult::ok(format!("Deleted learned skill '{}'", name));
-                        }
-                    }
-
-                    let skill_dir = match Self::user_skill_dir(name) {
-                        Ok(d) => d,
-                        Err(e) => return ToolResult::error(e),
-                    };
-                    if !skill_dir.is_dir() {
-                        return ToolResult::error(format!(
-                            "Skill '{}' not found; nothing deleted. skill(action: \"list\") shows installed names.",
-                            name
-                        ));
-                    }
-                    if let Err(e) = std::fs::remove_dir_all(&skill_dir) {
-                        tracing::warn!(skill = %name, error = %e, "failed to remove skill directory");
-                        return ToolResult::error(format!("Failed to delete skill '{}': {}", name, e));
-                    }
-
-                    ToolResult::ok(format!("Deleted skill '{}'", name))
-                }
-                "configure" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    let key = input["key"].as_str().unwrap_or("");
-                    let value = input["value"].as_str().unwrap_or("");
-
-                    if name.is_empty() || key.is_empty() || value.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "configure",
-                            "name, key, and value",
-                            "skill(action: \"configure\", name: \"brave-search\", key: \"BRAVE_API_KEY\", value: \"...\")",
-                        ));
-                    }
-
-                    let store = match &self.store {
-                        Some(s) => s,
-                        None => {
-                            return ToolResult::error(
-                                "configure not available — store not configured. The user needs to restart Nebo so the database initializes.",
-                            );
-                        }
-                    };
-
-                    // Validate key name matches a declared secret in the skill
-                    if let Some(skill) = self.loader.get(name, agent).await {
-                        let declarations = skill.secrets();
-                        if !declarations.is_empty() && !declarations.iter().any(|d| d.key == key) {
-                            let valid_keys: Vec<&str> =
-                                declarations.iter().map(|d| d.key.as_str()).collect();
-                            return ToolResult::error(format!(
-                                "Unknown secret '{}' for skill '{}'. Declared secrets: {}",
-                                key,
-                                name,
-                                valid_keys.join(", ")
-                            ));
-                        }
-                    }
-
-                    // Encrypt and store
-                    let encrypted = match auth::credential::encrypt(value) {
-                        Ok(v) => v,
-                        Err(e) => return ToolResult::error(format!("encryption failed: {}. Do not retry — this is a configuration error.", e)),
-                    };
-
-                    match store.set_skill_secret(name, key, &encrypted) {
-                        Ok(()) => ToolResult::ok(format!(
-                            "Configured {} for skill '{}'. The value is stored encrypted.",
-                            key, name
-                        )),
-                        Err(e) => ToolResult::error(format!("failed to save secret: {}. Do not retry — this is a database error.", e)),
-                    }
-                }
-                "secrets" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "secrets",
-                            "name",
-                            "skill(action: \"secrets\", name: \"brave-search\")",
-                        ));
-                    }
-
-                    // Show declared secrets and their configuration status
-                    let skill = match self.loader.get(name, agent).await {
-                        Some(s) => s,
-                        None => return ToolResult::error(Self::not_found(name)),
-                    };
-
-                    let declarations = skill.secrets();
-                    if declarations.is_empty() {
-                        return ToolResult::ok(format!(
-                            "Skill '{}' does not declare any secrets.",
-                            name
-                        ));
-                    }
-
-                    let store = match &self.store {
-                        Some(s) => s,
-                        None => {
-                            return ToolResult::error(
-                                "secrets not available — store not configured. The user needs to restart Nebo so the database initializes.",
-                            );
-                        }
-                    };
-
-                    let stored = store.list_skill_secrets(name).unwrap_or_default();
-                    let stored_keys: std::collections::HashSet<&str> =
-                        stored.iter().map(|(k, _)| k.as_str()).collect();
-
-                    let lines: Vec<String> = declarations
-                        .iter()
-                        .map(|d| {
-                            let status = if stored_keys.contains(d.key.as_str()) {
-                                "configured"
-                            } else if d.required {
-                                "MISSING (required)"
-                            } else {
-                                "not set (optional)"
-                            };
-                            let label = if d.label.is_empty() {
-                                d.key.clone()
-                            } else {
-                                format!("{} ({})", d.label, d.key)
-                            };
-                            let hint = if d.hint.is_empty() {
-                                String::new()
-                            } else {
-                                format!("\n    {}", d.hint)
-                            };
-                            format!("- {} [{}]{}", label, status, hint)
-                        })
-                        .collect();
-
-                    ToolResult::ok(format!(
-                        "Secrets for skill '{}':\n{}",
-                        name,
-                        lines.join("\n")
-                    ))
-                }
-                "install" => {
-                    let code = input["code"].as_str().unwrap_or("");
-                    if code.is_empty() || !code.starts_with("SKIL-") {
-                        return ToolResult::error(
-                            "'code' is required and must start with SKIL- (e.g. SKIL-XXXX-XXXX)",
-                        );
-                    }
-                    // Delegate to the ONE canonical install pathway (`codes::handle_code`):
-                    // redeem + persist + reload + cascade deps, identical to the WS code flow.
-                    // No direct API bypass.
-                    let installer = self.code_installer.read().unwrap().clone();
-                    match installer {
-                        Some(installer) => {
-                            let msg = installer.install(code).await;
-                            // The installer trait returns one string for both
-                            // outcomes; a failure must not arrive as success.
-                            if install_failed(&msg) {
-                                ToolResult::error(msg)
-                            } else {
-                                ToolResult::ok(msg)
-                            }
-                        }
-                        None => ToolResult::error(
-                            "Installing from a code is not available in this context. Tell the user to install it from the Nebo app.",
-                        ),
-                    }
-                }
-                "reviews" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "reviews",
-                            "name",
-                            "skill(action: \"reviews\", name: \"calendar\")",
-                        ));
-                    }
-                    let store = match &self.store {
-                        Some(s) => s,
-                        None => {
-                            return ToolResult::error(
-                                "reviews not available — store not configured. The user needs to restart Nebo so the database initializes.",
-                            );
-                        }
-                    };
-                    let api = match crate::build_neboai_api(store) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            return ToolResult::error(format!(
-                                "NeboAI connection required: {}",
-                                e
-                            ));
-                        }
-                    };
-                    match api.get_skill_reviews(name, None, None).await {
-                        Ok(resp) => {
-                            if resp.reviews.is_empty() {
-                                return ToolResult::ok(format!(
-                                    "No reviews yet for skill '{}'.",
-                                    name
-                                ));
-                            }
-                            let lines: Vec<String> = resp
-                                .reviews
-                                .iter()
-                                .map(|r| {
-                                    let who = if r.reviewer_type == "bot" {
-                                        // Bot slugs are already stored prefixed with `@`
-                                        // (e.g. `@bot_xyz`). `/` is reserved for slash
-                                        // commands — never use it for identities.
-                                        format!("🤖 {}", if r.reviewer_name.is_empty() { r.reviewer_slug.clone() } else { r.reviewer_name.clone() })
-                                    } else if !r.reviewer_name.is_empty() {
-                                        r.reviewer_name.clone()
-                                    } else {
-                                        "Anonymous".to_string()
-                                    };
-                                    let stars = "★".repeat(r.rating as usize);
-                                    format!("- {} {} — {}", who, stars, r.body)
-                                })
-                                .collect();
-                            ToolResult::ok(format!(
-                                "Reviews for skill '{}':\n{}",
-                                name,
-                                lines.join("\n")
-                            ))
-                        }
-                        Err(e) => ToolResult::error(format!("failed to fetch reviews: {}. Tell the user; do not retry in this turn.", e)),
-                    }
-                }
-                "rate" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    let rating = input["rating"].as_i64().unwrap_or(0);
-                    let review_body =
-                        input["review"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "rate",
-                            "name",
-                            "skill(action: \"rate\", name: \"calendar\", rating: 5, review: \"Great skill\")",
-                        ));
-                    }
-                    if input["rating"].is_null() {
-                        return ToolResult::error(errors::missing_param(
-                            "rate",
-                            "rating",
-                            "skill(action: \"rate\", name: \"calendar\", rating: 5, review: \"Great skill\")",
-                        ));
-                    }
-                    if !(1..=5).contains(&rating) {
-                        return ToolResult::error(format!(
-                            "rating must be an integer 1-5 (got {})",
-                            input["rating"]
-                        ));
-                    }
-                    let store = match &self.store {
-                        Some(s) => s,
-                        None => {
-                            return ToolResult::error("rate not available — store not configured. The user needs to restart Nebo so the database initializes.");
-                        }
-                    };
-                    let api = match crate::build_neboai_api(store) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            return ToolResult::error(format!(
-                                "NeboAI connection required: {}",
-                                e
-                            ));
-                        }
-                    };
-                    let body = serde_json::json!({ "rating": rating, "review": review_body });
-                    match api.submit_skill_review(name, &body).await {
-                        Ok(_) => ToolResult::ok(format!(
-                            "Posted {}★ review on skill '{}'.",
-                            rating, name
-                        )),
-                        Err(e) => ToolResult::error(format!("failed to post review: {}. Tell the user; do not retry in this turn.", e)),
-                    }
-                }
-                other => ToolResult::error(format!(
-                    "Unknown action: {}. Available: list, discover, browse, read_resource, load, unload, create, update, delete, install, configure, secrets, reviews, rate. To read a skill, use load; to find one, use discover.",
-                    other
-                )),
             }
-        })
+            None => self.create(ctx, scope, name, content).await,
+        }
+    }
+
+    async fn create(&self, ctx: &ToolContext, scope: Scope<'_>, name: &str, content_raw: &str) -> ToolResult {
+        // LLMs often send literal \n instead of real newlines in tool call strings.
+        let content = content_raw.replace("\\n", "\n");
+
+        let skill_dir = match scope.learned_owner {
+            // Review fork: create in the learned tree, never user/skills/.
+            Some(owner) => match self.learned_skill_dir(owner, name) {
+                Ok(d) => d,
+                Err(e) => return ToolResult::error(e),
+            },
+            None => match Self::user_skill_dir(name) {
+                Ok(d) => d,
+                Err(e) => return ToolResult::error(e),
+            },
+        };
+
+        // Always write as {name}/SKILL.md per Agent Skills spec
+        let final_content = if content.trim_start().starts_with("---") {
+            content.clone()
+        } else {
+            format!("---\nname: {}\ndescription: {}\n---\n{}", name, name, content)
+        };
+
+        // Staged learning: the create becomes a pending write for the owner
+        // to approve from the Inbox.
+        if ctx.learned_write_staged
+            && let Some(owner) = scope.learned_owner
+        {
+            let gist = format!("Create learned skill '{}'", name);
+            return self.stage_learned_write(owner, "create", name, Some(&final_content), &gist, "", None);
+        }
+
+        let path = skill_dir.join("SKILL.md");
+        // Never overwrite silently: a file the loader could not read is
+        // still someone's skill.
+        if path.exists() {
+            return ToolResult::error(format!(
+                "Skill '{}' already exists at {} but could not be loaded. Pick another name, or fix that file.",
+                name,
+                path.display()
+            ));
+        }
+        if let Err(e) = std::fs::create_dir_all(&skill_dir) {
+            return ToolResult::error(format!("Failed to create skill dir: {}. Do not retry — this is a filesystem error.", e));
+        }
+        match std::fs::write(&path, &final_content) {
+            Ok(_) => {
+                // Make the skill (and its triggers) live NOW — the fs
+                // watcher is not instant and first-call trigger tests race
+                // it. Same pattern as the install paths.
+                self.loader.reload_from_disk().await;
+                // Auto-mode learned create: record the revert anchor
+                // (prior_content None — nothing existed before). Skipped on a
+                // re-apply (approve/revert already have a row).
+                if let Some(owner) = scope.learned_owner.filter(|_| !ctx.learned_write_reapply) {
+                    let gist = format!("Create learned skill '{}'", name);
+                    self.record_applied_learning(owner, "create", name, Some(&final_content), &gist, "", None);
+                }
+                ToolResult::ok(format!("Created skill '{}' at {}", name, path.display()))
+            }
+            Err(e) => ToolResult::error(format!("Failed to write skill: {}. Do not retry — this is a filesystem error.", e)),
+        }
+    }
+
+    async fn update(&self, ctx: &ToolContext, scope: Scope<'_>, skill: crate::skills::Skill, content: &str) -> ToolResult {
+        let name = skill.name.clone();
+        // Protect marketplace (installed) skills from modification
+        if matches!(skill.source, SkillSource::Installed) {
+            return ToolResult::error(format!(
+                "Cannot change marketplace skill '{}'. It was installed from NeboAI and is read-only.",
+                name
+            ));
+        }
+        if matches!(skill.source, SkillSource::Learned) {
+            // Only the review fork may rewrite learned skills, only its own,
+            // and only after loading them THIS run (read-before-write:
+            // rewrite from actual content, never a transcript-inferred
+            // recollection).
+            let Some(owner) = scope.learned_owner else {
+                return ToolResult::error(format!(
+                    "Cannot change learned skill '{}'. It is managed by the self-improvement loop; review changes from the Inbox.",
+                    name
+                ));
+            };
+            if skill.owner_agent_id.as_deref() != Some(owner) {
+                return ToolResult::error(format!(
+                    "Cannot change learned skill '{}': it belongs to a different employee.",
+                    name
+                ));
+            }
+            let read = ctx.skills_read.lock().map(|r| r.contains(&skill.name)).unwrap_or(false);
+            if !read {
+                return ToolResult::error(format!(
+                    "Read-before-write: load skill '{}' first with use_skill and rewrite from its returned content, then save again.",
+                    name
+                ));
+            }
+            // Staged learning: normalize + validate now (so approve can't
+            // fail parsing), then park the write.
+            if ctx.learned_write_staged {
+                let final_content = with_frontmatter(&skill, content);
+                if let Err(e) = crate::skills::parse_skill_frontmatter(final_content.as_bytes()) {
+                    return ToolResult::error(format!(
+                        "Save rejected: content would not parse as a valid skill ({}). Send the FULL SKILL.md including the --- frontmatter block.",
+                        e
+                    ));
+                }
+                let hash = skill.source_path.as_deref().map(crate::skills::hash_skill_file).unwrap_or_default();
+                let prior = skill.source_path.as_deref().and_then(|p| std::fs::read_to_string(p).ok());
+                let gist = format!("Update learned skill '{}'", name);
+                return self.stage_learned_write(owner, "update", &name, Some(&final_content), &gist, &hash, prior.as_deref());
+            }
+        }
+        let Some(ref path) = skill.source_path else {
+            return ToolResult::error(Self::not_found(&name));
+        };
+        // Models routinely send the body without the YAML header; writing that
+        // verbatim knocks the skill out of the loader on the next reload.
+        // Re-wrap bare content with the skill's existing identity, then refuse
+        // anything that still doesn't parse.
+        let final_content = with_frontmatter(&skill, content);
+        if let Err(e) = crate::skills::parse_skill_frontmatter(final_content.as_bytes()) {
+            return ToolResult::error(format!(
+                "Save rejected: content would not parse as a valid skill ({}). Send the FULL SKILL.md including the --- frontmatter block.",
+                e
+            ));
+        }
+        // Capture the restore point BEFORE overwriting, but only for an
+        // auto-mode learned write (a user-skill edit is not a "learning" and
+        // gets no revert anchor).
+        let learned_write = matches!(skill.source, SkillSource::Learned).then_some(scope.learned_owner).flatten();
+        let prior = learned_write.and_then(|_| std::fs::read_to_string(path).ok());
+        let prior_hash = learned_write.map(|_| crate::skills::hash_skill_file(path)).unwrap_or_default();
+        match std::fs::write(path, &final_content) {
+            Ok(_) => {
+                self.loader.reload_from_disk().await;
+                if let Some(owner) = learned_write.filter(|_| !ctx.learned_write_reapply) {
+                    let gist = format!("Update learned skill '{}'", name);
+                    self.record_applied_learning(owner, "update", &name, Some(&final_content), &gist, &prior_hash, prior.as_deref());
+                }
+                ToolResult::ok(format!("Updated skill '{}'", name))
+            }
+            Err(e) => ToolResult::error(format!("Failed to update: {}. Do not retry — this is a filesystem error.", e)),
+        }
+    }
+
+    async fn delete(&self, ctx: &ToolContext, scope: Scope<'_>, name: &str) -> ToolResult {
+        // Protect marketplace (installed) skills from deletion
+        if let Some(skill) = self.loader.get(name, scope.agent).await {
+            if matches!(skill.source, SkillSource::Installed) {
+                return ToolResult::error(format!(
+                    "Cannot delete marketplace skill '{}'. It was installed from NeboAI and is read-only.",
+                    name
+                ));
+            }
+            if matches!(skill.source, SkillSource::Learned) {
+                // Fork-only, own-skill-only, read-before-write — same rules
+                // as a save. Deletes the learned dir.
+                let Some(owner) = scope.learned_owner else {
+                    return ToolResult::error(format!(
+                        "Cannot delete learned skill '{}'. It is managed by the self-improvement loop; review changes from the Inbox.",
+                        name
+                    ));
+                };
+                if skill.owner_agent_id.as_deref() != Some(owner) {
+                    return ToolResult::error(format!(
+                        "Cannot delete learned skill '{}': it belongs to a different employee.",
+                        name
+                    ));
+                }
+                let read = ctx.skills_read.lock().map(|r| r.contains(&skill.name)).unwrap_or(false);
+                if !read {
+                    return ToolResult::error(format!(
+                        "Read-before-write: load skill '{}' first with use_skill to confirm what you are deleting, then retry.",
+                        name
+                    ));
+                }
+                // The full SKILL.md is the delete's restore point — a revert
+                // re-creates the skill from it.
+                let prior = skill.source_path.as_deref().and_then(|p| std::fs::read_to_string(p).ok());
+                let hash = skill.source_path.as_deref().map(crate::skills::hash_skill_file).unwrap_or_default();
+                // Staged learning: park the delete for approval.
+                if ctx.learned_write_staged {
+                    let gist = format!("Delete learned skill '{}'", name);
+                    return self.stage_learned_write(owner, "delete", name, None, &gist, &hash, prior.as_deref());
+                }
+                let dir = match self.learned_skill_dir(owner, name) {
+                    Ok(d) => d,
+                    Err(e) => return ToolResult::error(e),
+                };
+                if dir.is_dir()
+                    && let Err(e) = std::fs::remove_dir_all(&dir)
+                {
+                    return ToolResult::error(format!(
+                        "Failed to delete learned skill: {}. Do not retry — this is a filesystem error.",
+                        e
+                    ));
+                }
+                self.loader.reload_from_disk().await;
+                // Auto-mode learned delete: record the revert anchor (skipped
+                // on a re-apply — approve/revert own the row).
+                if !ctx.learned_write_reapply {
+                    let gist = format!("Delete learned skill '{}'", name);
+                    self.record_applied_learning(owner, "delete", name, None, &gist, &hash, prior.as_deref());
+                }
+                return ToolResult::ok(format!("Deleted learned skill '{}'", name));
+            }
+        }
+
+        let skill_dir = match Self::user_skill_dir(name) {
+            Ok(d) => d,
+            Err(e) => return ToolResult::error(e),
+        };
+        if !skill_dir.is_dir() {
+            return ToolResult::error(format!("{} Nothing deleted.", Self::not_found(name)));
+        }
+        if let Err(e) = std::fs::remove_dir_all(&skill_dir) {
+            tracing::warn!(skill = %name, error = %e, "failed to remove skill directory");
+            return ToolResult::error(format!("Failed to delete skill '{}': {}", name, e));
+        }
+        ToolResult::ok(format!("Deleted skill '{}'", name))
+    }
+
+    async fn install(&self, code: &str) -> ToolResult {
+        // Delegate to the ONE canonical install pathway (`codes::handle_code`):
+        // redeem + persist + reload + cascade deps, identical to the WS code
+        // flow. No direct API bypass.
+        let installer = self.code_installer.read().unwrap().clone();
+        match installer {
+            Some(installer) => {
+                let msg = installer.install(code).await;
+                // The installer trait returns one string for both outcomes; a
+                // failure must not arrive as success.
+                if install_failed(&msg) { ToolResult::error(msg) } else { ToolResult::ok(msg) }
+            }
+            None => ToolResult::error(
+                "Installing from a code is not available in this context. Tell the user to install it from the Nebo app.",
+            ),
+        }
+    }
+
+    /// Set a secret (`key` + `value`), or show the declared secrets and
+    /// which are set (neither).
+    async fn configure(&self, scope: Scope<'_>, name: &str, key: &str, value: &str) -> ToolResult {
+        let Some(store) = &self.store else {
+            return ToolResult::error(
+                "Skill secrets are not available — store not configured. The user needs to restart Nebo so the database initializes.",
+            );
+        };
+        if key.is_empty() {
+            return self.secrets(store, scope, name).await;
+        }
+
+        // Validate key name matches a declared secret in the skill
+        if let Some(skill) = self.loader.get(name, scope.agent).await {
+            let declarations = skill.secrets();
+            if !declarations.is_empty() && !declarations.iter().any(|d| d.key == key) {
+                let valid_keys: Vec<&str> = declarations.iter().map(|d| d.key.as_str()).collect();
+                return ToolResult::error(format!(
+                    "Unknown secret '{}' for skill '{}'. Declared secrets: {}",
+                    key,
+                    name,
+                    valid_keys.join(", ")
+                ));
+            }
+        }
+
+        let encrypted = match auth::credential::encrypt(value) {
+            Ok(v) => v,
+            Err(e) => return ToolResult::error(format!("encryption failed: {}. Do not retry — this is a configuration error.", e)),
+        };
+        match store.set_skill_secret(name, key, &encrypted) {
+            Ok(()) => ToolResult::ok(format!("Configured {} for skill '{}'. The value is stored encrypted.", key, name)),
+            Err(e) => ToolResult::error(format!("failed to save secret: {}. Do not retry — this is a database error.", e)),
+        }
+    }
+
+    async fn secrets(&self, store: &db::Store, scope: Scope<'_>, name: &str) -> ToolResult {
+        let Some(skill) = self.loader.get(name, scope.agent).await else {
+            return ToolResult::error(Self::not_found(name));
+        };
+        let declarations = skill.secrets();
+        if declarations.is_empty() {
+            return ToolResult::ok(format!("Skill '{}' does not declare any secrets.", name));
+        }
+        let stored = store.list_skill_secrets(name).unwrap_or_default();
+        let stored_keys: std::collections::HashSet<&str> = stored.iter().map(|(k, _)| k.as_str()).collect();
+        let lines: Vec<String> = declarations
+            .iter()
+            .map(|d| {
+                let status = if stored_keys.contains(d.key.as_str()) {
+                    "configured"
+                } else if d.required {
+                    "MISSING (required)"
+                } else {
+                    "not set (optional)"
+                };
+                let label = if d.label.is_empty() { d.key.clone() } else { format!("{} ({})", d.label, d.key) };
+                let hint = if d.hint.is_empty() { String::new() } else { format!("\n    {}", d.hint) };
+                format!("- {} [{}]{}", label, status, hint)
+            })
+            .collect();
+        ToolResult::ok(format!("Secrets for skill '{}':\n{}", name, lines.join("\n")))
+    }
+
+    /// The marketplace API, or the model-facing reason there is none.
+    fn neboai_api(&self) -> Result<comm::api::NeboAIApi, String> {
+        let Some(store) = &self.store else {
+            return Err("Skill reviews are not available — store not configured. The user needs to restart Nebo so the database initializes.".to_string());
+        };
+        crate::build_neboai_api(store).map_err(|e| format!("NeboAI connection required: {}", e))
+    }
+
+    async fn reviews(&self, name: &str) -> ToolResult {
+        let api = match self.neboai_api() {
+            Ok(a) => a,
+            Err(e) => return ToolResult::error(e),
+        };
+        match api.get_skill_reviews(name, None, None).await {
+            Ok(resp) => {
+                if resp.reviews.is_empty() {
+                    return ToolResult::ok(format!("No reviews yet for skill '{}'.", name));
+                }
+                let lines: Vec<String> = resp
+                    .reviews
+                    .iter()
+                    .map(|r| {
+                        let who = if r.reviewer_type == "bot" {
+                            // Bot slugs are already stored prefixed with `@`
+                            // (e.g. `@bot_xyz`). `/` is reserved for slash
+                            // commands — never use it for identities.
+                            format!("🤖 {}", if r.reviewer_name.is_empty() { r.reviewer_slug.clone() } else { r.reviewer_name.clone() })
+                        } else if !r.reviewer_name.is_empty() {
+                            r.reviewer_name.clone()
+                        } else {
+                            "Anonymous".to_string()
+                        };
+                        let stars = "★".repeat(r.rating as usize);
+                        format!("- {} {} — {}", who, stars, r.body)
+                    })
+                    .collect();
+                ToolResult::ok(format!("Reviews for skill '{}':\n{}", name, lines.join("\n")))
+            }
+            Err(e) => ToolResult::error(format!("failed to fetch reviews: {}. Tell the user; do not retry in this turn.", e)),
+        }
+    }
+
+    async fn rate(&self, name: &str, rating: i64, review: &str) -> ToolResult {
+        let api = match self.neboai_api() {
+            Ok(a) => a,
+            Err(e) => return ToolResult::error(e),
+        };
+        let body = serde_json::json!({ "rating": rating, "review": review });
+        match api.submit_skill_review(name, &body).await {
+            Ok(_) => ToolResult::ok(format!("Posted {}★ review on skill '{}'.", rating, name)),
+            Err(e) => ToolResult::error(format!("failed to post review: {}. Tell the user; do not retry in this turn.", e)),
+        }
+    }
+}
+
+/// Whose skills a call sees and writes.
+#[derive(Clone, Copy)]
+struct Scope<'a> {
+    /// The seat whose own skills (package and learned) the call sees beside
+    /// the shared ones.
+    agent: Option<&'a str>,
+    /// Set on the review fork: saves and deletes target this seat's learned
+    /// tree, with read-before-write.
+    learned_owner: Option<&'a str>,
+}
+
+/// `content` as a whole SKILL.md: bare instructions get the skill's existing
+/// name and description as frontmatter.
+fn with_frontmatter(skill: &crate::skills::Skill, content: &str) -> String {
+    let normalized = content.replace("\\n", "\n");
+    if normalized.trim_start().starts_with("---") {
+        normalized
+    } else {
+        format!("---\nname: {}\ndescription: {}\n---\n{}", skill.name, skill.description, normalized)
+    }
+}
+
+/// The skill's instructions with the call's arguments: in place of
+/// `$ARGUMENTS` where the skill has it, otherwise after the instructions.
+fn with_args(body: &str, args: Option<&str>) -> String {
+    match args.map(str::trim).filter(|a| !a.is_empty()) {
+        None => body.to_string(),
+        Some(args) if body.contains("$ARGUMENTS") => body.replace("$ARGUMENTS", args),
+        Some(args) => format!("{body}\n\nARGUMENTS: {args}"),
     }
 }
 
@@ -1385,10 +848,331 @@ fn install_failed(msg: &str) -> bool {
     msg.starts_with("Failed to install") || msg.contains("is not a valid install code")
 }
 
+fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {
+    input.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// The skill tools, one purpose each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    UseSkill,
+    FindSkills,
+    ReadSkillFile,
+    SaveSkill,
+    DeleteSkill,
+    InstallSkill,
+    ConfigureSkill,
+    RateSkill,
+    ReadSkillReviews,
+}
+
+const KINDS: &[Kind] = &[
+    Kind::UseSkill,
+    Kind::FindSkills,
+    Kind::ReadSkillFile,
+    Kind::SaveSkill,
+    Kind::DeleteSkill,
+    Kind::InstallSkill,
+    Kind::ConfigureSkill,
+    Kind::RateSkill,
+    Kind::ReadSkillReviews,
+];
+
+/// The name of the always-loaded skill tool.
+pub const USE_SKILL: &str = "use_skill";
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::UseSkill => USE_SKILL,
+            Kind::FindSkills => "find_skills",
+            Kind::ReadSkillFile => "read_skill_file",
+            Kind::SaveSkill => "save_skill",
+            Kind::DeleteSkill => "delete_skill",
+            Kind::InstallSkill => "install_skill",
+            Kind::ConfigureSkill => "configure_skill",
+            Kind::RateSkill => "rate_skill",
+            Kind::ReadSkillReviews => "read_skill_reviews",
+        }
+    }
+
+    fn search_hint(self) -> &'static str {
+        match self {
+            Kind::UseSkill => "load a skill's instructions to follow",
+            Kind::FindSkills => "search installed skills by what they do",
+            Kind::ReadSkillFile => "read or list a skill's files",
+            Kind::SaveSkill => "create or rewrite a skill",
+            Kind::DeleteSkill => "delete a skill you made",
+            Kind::InstallSkill => "install a marketplace skill from a code",
+            Kind::ConfigureSkill => "set a skill's API key secret",
+            Kind::RateSkill => "rate and review a marketplace skill",
+            Kind::ReadSkillReviews => "read a marketplace skill's reviews",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Kind::UseSkill => "Loads a skill: packaged instructions for a kind of work. Available skills are listed in reminders, one line each.\n\
+                - When the task matches a listed skill, load it first and follow its instructions.\n\
+                - Only listed names are valid; find_skills searches them by what they do.\n\
+                - A skill loaded earlier in this conversation is already here: follow it instead of loading it again.",
+            Kind::FindSkills => "Searches the installed skills by what they do and returns matching names with one line each.\n\
+                - The skill listing in reminders already names every skill; search when its lines don't settle which one fits.\n\
+                - No match only means no skill is installed for it: do the work with your other tools.",
+            Kind::ReadSkillFile => "Reads a file a skill ships beside its instructions: a script, template or reference.\n\
+                - Leave out `path` to list the skill's files.\n\
+                - `path` is relative to the skill's folder, as the list shows it.",
+            Kind::SaveSkill => "Creates a skill, or replaces one you made, from a whole SKILL.md.\n\
+                - `content` is the full file: a --- frontmatter block with name and description, then the instructions.\n\
+                - To change an existing skill, load it with use_skill first and rewrite from what it returned.\n\
+                - Marketplace skills are read-only.",
+            Kind::DeleteSkill => "Deletes a skill you made. Marketplace skills are read-only.",
+            Kind::InstallSkill => "Installs a skill from the NeboAI marketplace with its install code (SKIL-XXXX-XXXX).",
+            Kind::ConfigureSkill => "Sets a secret a skill needs, such as an API key; the value is stored encrypted.\n\
+                - With `key` and `value`: saves that secret.\n\
+                - With only `name`: lists the secrets the skill declares and which are set.",
+            Kind::RateSkill => "Leaves a 1–5 star review on a marketplace skill: what worked and what didn't.",
+            Kind::ReadSkillReviews => "Reads the reviews of a marketplace skill.",
+        }
+    }
+
+    fn schema(self) -> serde_json::Value {
+        let name = |desc: &str| serde_json::json!({ "type": "string", "description": desc });
+        match self {
+            Kind::UseSkill => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": name("Exact name from the skill listing."),
+                    "args": { "type": "string", "description": "Arguments for the skill, when it takes any." }
+                },
+                "required": ["name"]
+            }),
+            Kind::FindSkills => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "What you're trying to do, in a few words." }
+                },
+                "required": ["query"]
+            }),
+            Kind::ReadSkillFile => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": name("The skill's name."),
+                    "path": { "type": "string", "description": "A file or folder inside the skill, e.g. scripts/recalc.py." }
+                },
+                "required": ["name"]
+            }),
+            Kind::SaveSkill => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": name("The skill's name: lowercase words joined by hyphens."),
+                    "content": { "type": "string", "description": "The whole SKILL.md: frontmatter, then instructions." }
+                },
+                "required": ["name", "content"]
+            }),
+            Kind::DeleteSkill => serde_json::json!({
+                "type": "object",
+                "properties": { "name": name("The skill's name.") },
+                "required": ["name"]
+            }),
+            Kind::InstallSkill => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string", "description": "The marketplace install code, SKIL-XXXX-XXXX." }
+                },
+                "required": ["code"]
+            }),
+            Kind::ConfigureSkill => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": name("The skill's name."),
+                    "key": { "type": "string", "description": "The secret's name the skill declares, e.g. BRAVE_API_KEY." },
+                    "value": { "type": "string", "description": "The secret's value." }
+                },
+                "required": ["name"]
+            }),
+            Kind::RateSkill => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": name("The skill's name."),
+                    "rating": { "type": "integer", "minimum": 1, "maximum": 5, "description": "Stars, 1–5." },
+                    "review": { "type": "string", "description": "What worked and what didn't." }
+                },
+                "required": ["name", "rating"]
+            }),
+            Kind::ReadSkillReviews => serde_json::json!({
+                "type": "object",
+                "properties": { "name": name("The skill's name.") },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    fn read_only(self, input: &serde_json::Value) -> bool {
+        match self {
+            Kind::UseSkill | Kind::FindSkills | Kind::ReadSkillFile | Kind::ReadSkillReviews => true,
+            Kind::ConfigureSkill => str_field(input, "key").is_empty(),
+            Kind::SaveSkill | Kind::DeleteSkill | Kind::InstallSkill | Kind::RateSkill => false,
+        }
+    }
+
+    fn validate(self, input: &serde_json::Value) -> Result<(), String> {
+        let blank = |k: &str| str_field(input, k).trim().is_empty();
+        match self {
+            Kind::FindSkills if blank("query") => Err("`query` is empty: say what you're trying to do.".to_string()),
+            Kind::FindSkills => Ok(()),
+            Kind::InstallSkill if !str_field(input, "code").starts_with("SKIL-") => {
+                Err("`code` must be a skill install code starting with SKIL- (e.g. SKIL-XXXX-XXXX).".to_string())
+            }
+            Kind::InstallSkill => Ok(()),
+            _ if blank("name") => Err("`name` is empty: pass the skill's name.".to_string()),
+            Kind::SaveSkill if blank("content") => Err("`content` is empty: pass the whole SKILL.md.".to_string()),
+            Kind::ConfigureSkill if blank("key") != blank("value") => {
+                Err("Pass `key` and `value` together to set a secret, or neither to list the skill's secrets.".to_string())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// (activity, outcome) for the owner.
+    fn labels(self, input: &serde_json::Value) -> (String, String) {
+        let name = str_field(input, "name");
+        let skill = if name.is_empty() { "a skill".to_string() } else { format!("the {name} skill") };
+        match self {
+            Kind::UseSkill => (format!("loading {skill}"), format!("Loaded {skill}")),
+            Kind::FindSkills => ("searching skills".into(), "Searched skills".into()),
+            Kind::ReadSkillFile => (format!("reading {skill}'s files"), format!("Read {skill}'s files")),
+            Kind::SaveSkill => (format!("saving {skill}"), format!("Saved {skill}")),
+            Kind::DeleteSkill => (format!("deleting {skill}"), format!("Deleted {skill}")),
+            Kind::InstallSkill => ("installing a skill".into(), "Installed a skill".into()),
+            Kind::ConfigureSkill => (format!("setting up {skill}"), format!("Set up {skill}")),
+            Kind::RateSkill => (format!("reviewing {skill}"), format!("Reviewed {skill}")),
+            Kind::ReadSkillReviews => (format!("reading reviews of {skill}"), format!("Read reviews of {skill}")),
+        }
+    }
+}
+
+/// One skill tool (see [`Kind`] for the family).
+pub struct SkillTool {
+    core: Arc<SkillCore>,
+    kind: Kind,
+}
+
+/// Every skill tool, sharing one core.
+pub fn tools(core: SkillCore) -> Vec<SkillTool> {
+    let core = Arc::new(core);
+    KINDS.iter().map(|&kind| SkillTool { core: core.clone(), kind }).collect()
+}
+
+impl DynTool for SkillTool {
+    fn name(&self) -> &str {
+        self.kind.name()
+    }
+
+    fn description(&self) -> String {
+        self.kind.description().to_string()
+    }
+
+    fn schema(&self) -> serde_json::Value {
+        self.kind.schema()
+    }
+
+    fn search_hint(&self) -> &str {
+        self.kind.search_hint()
+    }
+
+    /// `use_skill` is core; the rest load through `find_tools`.
+    fn should_defer(&self) -> bool {
+        self.kind != Kind::UseSkill
+    }
+
+    fn read_only(&self, input: &serde_json::Value) -> bool {
+        self.kind.read_only(input)
+    }
+
+    fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
+        self.kind.validate(input)
+    }
+
+    /// Loaded instructions are the conversation's working text: never
+    /// swapped for a saved-to-disk preview.
+    fn max_result_chars(&self, _input: &serde_json::Value) -> Option<usize> {
+        match self.kind {
+            Kind::UseSkill => None,
+            _ => Some(crate::registry::DEFAULT_MAX_RESULT_CHARS),
+        }
+    }
+
+    /// A search, a file read or the reviews can be run again; loaded
+    /// instructions stay.
+    fn cleared_when_stale(&self, _input: &serde_json::Value) -> bool {
+        matches!(self.kind, Kind::FindSkills | Kind::ReadSkillFile | Kind::ReadSkillReviews)
+    }
+
+    fn activity(&self, input: &serde_json::Value) -> String {
+        self.kind.labels(input).0
+    }
+
+    fn outcome(&self, input: &serde_json::Value) -> String {
+        self.kind.labels(input).1
+    }
+
+    fn execute_dyn<'a>(
+        &'a self,
+        ctx: &'a ToolContext,
+        input: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+        Box::pin(async move {
+            // Per-employee skill scope: runs bound to an agent (session key
+            // "agent:<id>:...") also see that agent's own skills. On the
+            // review fork its learned tree is also the write target.
+            let agent_scope =
+                Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|id| !id.is_empty());
+            let learned_owner = ctx.learned_write_agent.as_deref();
+            let scope = Scope {
+                agent: learned_owner.or(agent_scope.as_deref()),
+                learned_owner,
+            };
+            let core = &self.core;
+            let name = str_field(&input, "name");
+            match self.kind {
+                Kind::UseSkill => {
+                    core.load(ctx, scope, name, input.get("args").and_then(|v| v.as_str())).await
+                }
+                Kind::FindSkills => core.find(scope, str_field(&input, "query")).await,
+                Kind::ReadSkillFile => core.read_file(scope, name, str_field(&input, "path")).await,
+                Kind::SaveSkill => core.save(ctx, scope, name, str_field(&input, "content")).await,
+                Kind::DeleteSkill => core.delete(ctx, scope, name).await,
+                Kind::InstallSkill => core.install(str_field(&input, "code")).await,
+                Kind::ConfigureSkill => {
+                    core.configure(scope, name, str_field(&input, "key"), str_field(&input, "value")).await
+                }
+                Kind::RateSkill => {
+                    let rating = input.get("rating").and_then(|v| v.as_i64()).unwrap_or(0);
+                    if !(1..=5).contains(&rating) {
+                        return ToolResult::error(format!("rating must be an integer 1-5 (got {})", input["rating"]));
+                    }
+                    core.rate(name, rating, str_field(&input, "review")).await
+                }
+                Kind::ReadSkillReviews => core.reviews(name).await,
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{install_failed, source_words, SkillTool};
-    use crate::skills::SkillSource;
+    use super::*;
+    use serde_json::json;
+
+    fn family(dir: &std::path::Path) -> Vec<SkillTool> {
+        let loader = Arc::new(Loader::new(dir.join("installed"), dir.join("user")));
+        tools(SkillCore::new(loader))
+    }
+
+    fn tool<'a>(family: &'a [SkillTool], name: &str) -> &'a SkillTool {
+        family.iter().find(|t| t.name() == name).unwrap()
+    }
 
     #[test]
     fn install_failures_are_detected_and_sources_are_words() {
@@ -1396,49 +1180,111 @@ mod tests {
         assert!(install_failed("'SKIL-1' is not a valid install code (e.g. ...)"));
         assert!(!install_failed("Installed skill 'foo' (v1.2)"));
         assert_eq!(source_words(&SkillSource::Learned), "a learned skill of this employee");
-        assert!(SkillTool::not_found("x").contains("skill(action: \"discover\", query: ...)"));
+        assert!(SkillCore::not_found("x").contains("find_skills"));
     }
 
-    /// `skill(name: "x")` with no action is the load call, not "Unknown
-    /// action" and not a schema error.
-    #[tokio::test]
-    async fn a_name_with_no_action_is_a_load() {
-        use crate::registry::DynTool;
+    /// One tool loads, the rest are deferred, and each is one purpose with
+    /// no action enum.
+    #[test]
+    fn use_skill_is_core_and_the_family_is_deferred() {
         let dir = tempfile::tempdir().unwrap();
-        let loader = std::sync::Arc::new(crate::skills::Loader::new(
-            dir.path().join("installed"),
-            dir.path().join("user"),
-        ));
-        let tool = SkillTool::new(loader);
-        let ctx = crate::origin::ToolContext::default();
-        let result = tool
-            .execute_dyn(&ctx, serde_json::json!({"name": "no-such-skill"}))
-            .await;
+        let family = family(dir.path());
+        let names: Vec<&str> = family.iter().map(|t| t.name()).collect();
+        assert_eq!(
+            names,
+            [
+                "use_skill", "find_skills", "read_skill_file", "save_skill", "delete_skill",
+                "install_skill", "configure_skill", "rate_skill", "read_skill_reviews"
+            ]
+        );
+        for t in &family {
+            assert_eq!(t.should_defer(), t.name() != USE_SKILL, "{}", t.name());
+            assert!(t.schema()["properties"].get("action").is_none(), "{}", t.name());
+        }
+        let use_skill = tool(&family, USE_SKILL);
+        assert!(use_skill.read_only(&json!({"name": "x"})));
+        assert!(use_skill.concurrency_safe(&json!({"name": "x"})));
+        assert_eq!(use_skill.max_result_chars(&json!({})), None);
+        let configure = tool(&family, "configure_skill");
+        assert!(configure.read_only(&json!({"name": "x"})));
+        assert!(!configure.read_only(&json!({"name": "x", "key": "K", "value": "v"})));
+        assert!(!tool(&family, "save_skill").read_only(&json!({"name": "x", "content": "y"})));
+    }
+
+    #[test]
+    fn inputs_are_checked_before_the_handler() {
+        let dir = tempfile::tempdir().unwrap();
+        let family = family(dir.path());
+        assert!(tool(&family, USE_SKILL).validate_input(&json!({"name": " "})).is_err());
+        assert!(tool(&family, "install_skill").validate_input(&json!({"code": "PLUG-1"})).is_err());
+        assert!(tool(&family, "install_skill").validate_input(&json!({"code": "SKIL-AB12-CD34"})).is_ok());
+        let configure = tool(&family, "configure_skill");
+        assert!(configure.validate_input(&json!({"name": "x", "key": "K"})).is_err());
+        assert!(configure.validate_input(&json!({"name": "x"})).is_ok());
+        assert!(tool(&family, "save_skill").validate_input(&json!({"name": "x", "content": ""})).is_err());
+    }
+
+    /// An unknown name answers with where the names are, not a schema error.
+    #[tokio::test]
+    async fn an_unknown_skill_points_at_the_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let family = family(dir.path());
+        let ctx = ToolContext::default();
+        let result = tool(&family, USE_SKILL).execute_dyn(&ctx, json!({"name": "no-such-skill"})).await;
         assert!(result.is_error, "{}", result.content);
         assert!(result.content.contains("no-such-skill"), "{}", result.content);
-        assert!(!result.content.contains("Unknown action"), "{}", result.content);
-        assert!(!result.content.contains("Failed to parse"), "{}", result.content);
+        assert!(result.content.contains("skill listing"), "{}", result.content);
+    }
+
+    /// Loading returns the instructions, with the base directory and the
+    /// call's arguments; a file read and a listing reach the skill's files.
+    #[tokio::test]
+    async fn a_load_brings_the_instructions_and_the_files_are_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("installed").join("invoicing");
+        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: invoicing\ndescription: Draft an invoice\n---\nBill the client for $ARGUMENTS.\n",
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("scripts").join("total.py"), "print(1)\n").unwrap();
+        let loader = Arc::new(Loader::new(dir.path().join("installed"), dir.path().join("user")));
+        loader.load_all().await;
+        let family = tools(SkillCore::new(loader));
+        let ctx = ToolContext::default();
+
+        let loaded = tool(&family, USE_SKILL)
+            .execute_dyn(&ctx, json!({"name": "invoicing", "args": "March"}))
+            .await;
+        assert!(!loaded.is_error, "{}", loaded.content);
+        assert!(loaded.content.contains("Bill the client for March."), "{}", loaded.content);
+        assert!(loaded.content.contains("Base directory for this skill:"), "{}", loaded.content);
+
+        let read = tool(&family, "read_skill_file");
+        let files = read.execute_dyn(&ctx, json!({"name": "invoicing"})).await;
+        assert!(files.content.contains("scripts/total.py"), "{}", files.content);
+        let file = read.execute_dyn(&ctx, json!({"name": "invoicing", "path": "scripts/total.py"})).await;
+        assert_eq!(file.content, "print(1)\n");
+
+        let found = tool(&family, "find_skills").execute_dyn(&ctx, json!({"query": "invoice"})).await;
+        assert!(found.content.contains("- invoicing: Draft an invoice"), "{}", found.content);
+    }
+
+    #[test]
+    fn arguments_fill_the_placeholder_or_follow_the_instructions() {
+        assert_eq!(with_args("Do $ARGUMENTS now", Some("x")), "Do x now");
+        assert_eq!(with_args("Do it", Some("x")), "Do it\n\nARGUMENTS: x");
+        assert_eq!(with_args("Do it", Some("  ")), "Do it");
+        assert_eq!(with_args("Do it", None), "Do it");
     }
 
     #[test]
     fn test_user_skill_dir_rejects_traversal_names() {
         // Names that could escape the skills directory must be rejected
         // before any filesystem operation (esp. delete's remove_dir_all).
-        for bad in [
-            "../../foo",
-            "..",
-            "a/../b",
-            "foo/bar",
-            "foo\\bar",
-            "/etc",
-            ".",
-            "",
-        ] {
-            assert!(
-                SkillTool::user_skill_dir(bad).is_err(),
-                "expected rejection for {:?}",
-                bad
-            );
+        for bad in ["../../foo", "..", "a/../b", "foo/bar", "foo\\bar", "/etc", ".", ""] {
+            assert!(SkillCore::user_skill_dir(bad).is_err(), "expected rejection for {:?}", bad);
         }
     }
 }
