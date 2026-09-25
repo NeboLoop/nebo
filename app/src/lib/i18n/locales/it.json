@@ -3076,7 +3076,7 @@
 		"allowedAlways": "Consentito d'ora in poi",
 		"allowedOnce": "Consentito questa volta",
 		"declined": "Rifiutato",
-		"expired": "Scaduto, contato come No",
+		"withdrawn": "Ritirata: il lavoro per cui era è terminato",
 		"failed": "Impossibile inviare la risposta. Riprova."
 	},
 	"permissions": {

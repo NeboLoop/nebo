@@ -600,4 +600,45 @@ Date
         let sql = "CREATE TABLE bare (id INT);";
         assert_eq!(extract_goose_up(sql), sql);
     }
+
+    /// At the upgrade, every open ask becomes a wait in the engine with its
+    /// first reminder a day out, and the asks the old 72-hour sweep settled
+    /// stay settled, as the declines they were. Nothing expires an ask now.
+    #[test]
+    fn open_asks_become_engine_waits_and_expired_ones_stay_declined() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 180).unwrap();
+        conn.execute_batch(
+            "INSERT INTO permission_asks (id, agent_id, session_key, door, ask_case, sentence, target, call, seat, status, created_at, expires_at)
+               VALUES ('open-1', 'emp', 'agent:emp:web', '\"chat\"', '{}', 'texting +15550142', '{}', '{}', '{}', 'open', 100, 259300);
+             INSERT INTO permission_asks (id, agent_id, session_key, door, ask_case, sentence, target, call, seat, status, answer, created_at, expires_at, answered_at)
+               VALUES ('old-1', 'emp', 'agent:emp:web', '\"chat\"', '{}', 'texting +15550177', '{}', '{}', '{}', 'expired', 'no', 100, 259300, 259300);",
+        )
+        .unwrap();
+        run_migrations_to(&conn, 181).unwrap();
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('permission_asks')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(!columns.iter().any(|c| c == "expires_at"), "no expiry: {columns:?}");
+        let old: (String, Option<String>) =
+            conn.query_row("SELECT status, answer FROM permission_asks WHERE id = 'old-1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(old, ("answered".to_string(), Some("no".to_string())), "a settled ask stays settled");
+        drop(conn);
+        let store = crate::Store::new(&path.to_string_lossy()).unwrap();
+        let run = store.engine_get_run("open-1").unwrap().expect("the open ask is a run in the engine");
+        assert_eq!((run.kind.as_str(), run.state.as_str(), run.agent_id.as_str()), ("ask", "waiting", "emp"));
+        let wait = store.engine_get_wait(run.current_wait_id.expect("a live wait")).unwrap().unwrap();
+        assert_eq!((wait.action.as_str(), wait.on_kind.as_str(), wait.key.as_str()), ("resume", "answer", "ask:open-1"));
+        let due = wait.deadline.expect("the first reminder");
+        let now = chrono::Utc::now().timestamp();
+        assert!((now + 86_400 - 60..=now + 86_400 + 60).contains(&due), "a day out: {due}");
+        let timers = store.engine_pending_timers("wait").unwrap();
+        assert_eq!(timers.iter().filter(|e| e.target_id == wait.id.to_string()).count(), 1, "the reminder is the wait's timer");
+        assert!(store.engine_get_run("old-1").unwrap().is_none(), "a settled ask waits on nothing");
+    }
 }

@@ -3076,7 +3076,7 @@
 		"allowedAlways": "Được phép từ giờ",
 		"allowedOnce": "Được phép lần này",
 		"declined": "Đã từ chối",
-		"expired": "Hết hạn, tính là Không",
+		"withdrawn": "Đã rút lại: công việc liên quan đã kết thúc",
 		"failed": "Không gửi được câu trả lời. Hãy thử lại."
 	},
 	"permissions": {

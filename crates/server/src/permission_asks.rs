@@ -152,6 +152,33 @@ impl AskSurfaces for OwnerSurfaces {
         state.hub.broadcast("permission_ask", serde_json::to_value(&c).unwrap_or_default());
     }
 
+    fn remind(&self, ask: &Ask) {
+        let state = &self.state;
+        let c = card(state, ask);
+        let (title, body) = (title(&c), body(&c));
+        let id = inbox_id(&c.id);
+        let user_id = state.store.ensure_local_user_id().unwrap_or_default();
+        if let Err(e) = state.store.resurface_notification(&id, &user_id) {
+            warn!(ask = %c.id, error = %e, "ask's Inbox row not brought back");
+        }
+        tools::owner_notify::emit(
+            &state.store,
+            Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+            &tools::owner_notify::OwnerNotification {
+                id: &id,
+                kind: "permission_ask",
+                title: &title,
+                body: Some(&body),
+                action_url: None,
+                agent_id: (!c.agent_id.is_empty()).then_some(c.agent_id.as_str()),
+                loud: true,
+            },
+        );
+        push_to_inbox(state, &c);
+        state.hub.broadcast("permission_ask", serde_json::to_value(&c).unwrap_or_default());
+        info!(ask = %c.id, "ask still open; the owner was reminded");
+    }
+
     fn resolved(&self, ask: &Ask) {
         let state = &self.state;
         let c = card(state, ask);
@@ -213,7 +240,6 @@ mod tests {
             status: "open".into(),
             answer: None,
             created_at: 0,
-            expires_at: 0,
         }
     }
 

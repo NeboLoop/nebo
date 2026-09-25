@@ -3775,7 +3775,6 @@ async fn try_handle_comm_control(
         let card = crate::handlers::permissions::card(state, &ask);
         let answer = crate::permission_asks::reply_answer(&card, answer);
         return match state.permission_asks.answer(
-            &state.tools,
             ask_id,
             answer,
             agent::harness::permissions::AnsweredVia::Chat,

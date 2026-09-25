@@ -3076,7 +3076,7 @@
 		"allowedAlways": "Dibenarkan mulai sekarang",
 		"allowedOnce": "Dibenarkan kali ini",
 		"declined": "Ditolak",
-		"expired": "Tamat tempoh, dikira sebagai Tidak",
+		"withdrawn": "Ditarik balik: kerja yang berkaitan telah tamat",
 		"failed": "Jawapan anda tidak dapat dihantar. Cuba lagi."
 	},
 	"permissions": {

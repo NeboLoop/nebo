@@ -1,6 +1,7 @@
 //! The ask, proven through the real server: an unattended run parks only
 //! the step that asks, the one card reaches the Inbox, the phone's answer
-//! resumes that step alone, and an ask nobody answers expires as a No.
+//! resumes that step alone, and an ask nobody answers never expires: it
+//! comes back to the owner as a reminder and waits.
 //!
 //! The asking step here is outside the employee's job (§2.12.4 case 4),
 //! decided by code today; every surfaced case parks through the same ask.
@@ -162,14 +163,15 @@ async fn heartbeat_ask_parks_only_that_step() {
     assert!(nebo.get_ok(&format!("/permissions/asks?session={key}")).await["asks"].as_array().unwrap().is_empty());
 }
 
-/// An ask nobody answers: past the 72-hour window the sweep expires it as a
-/// No, never as a yes. The parked call never runs, the employee is told it
-/// was declined, and its next try at the same call is a plain refusal to
-/// plan around, not a repeat ask or a silent retry.
+/// An ask nobody answers never expires and never counts as a No. When its
+/// wait's timer wakes it, the card comes back to the top of the owner's
+/// Inbox, unread, and the ask waits again for the next reminder. The owner
+/// answers days later: the server's own engine loop hears the answer, the
+/// parked call runs once and the employee is told.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ask_expires_as_no() {
+async fn an_unanswered_ask_never_expires_and_is_reminded() {
     let nebo = session().await;
-    let agent = format!("ex-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let agent = format!("rm-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let key = format!("agent:{agent}:heartbeat");
     let (names, ran) = heartbeat_steps(&nebo, &agent.replace('-', "_")).await;
     let ctx = heartbeat(&key);
@@ -177,37 +179,49 @@ async fn ask_expires_as_no() {
     let ask_id = parked.parked_ask.expect("parked");
     let asks = &nebo.state.permission_asks;
     let created = asks.get(&ask_id).unwrap().unwrap().created_at;
-    let window = agent::harness::permissions::ask::EXPIRES_AFTER_SECS;
-    assert_eq!(window, 72 * 3600, "the default window");
+    let user = nebo.store().ensure_local_user_id().unwrap();
+    let inbox_id = format!("permission-ask:{ask_id}");
 
-    // Not a minute early; then exactly once.
-    asks.expire_due(created + window - 60);
-    assert_eq!(nebo.get_ok(&format!("/permissions/asks/{ask_id}")).await["status"], "open");
-    asks.expire_due(created + window + 1);
-    asks.expire_due(created + window + 120);
+    // The owner saw the card and left it.
+    nebo.store().mark_notification_read(&inbox_id, &user).unwrap();
+
+    // The ask's wait: on the answer, its timer the first reminder a day out.
+    let run = nebo.store().engine_get_run(&ask_id).unwrap().expect("the ask waits in the engine");
+    let wait = nebo.store().engine_get_wait(run.current_wait_id.unwrap()).unwrap().unwrap();
+    assert_eq!(wait.deadline, Some(created + 24 * 3600));
+
+    // Four days on, the reminders have come due twice: each brings the card
+    // back unread, and the ask stays open.
+    for day in [1, 3] {
+        asks.resume(&nebo.state.tools, &ask_id, created + day * 24 * 3600 + 60).unwrap();
+        let row = nebo.store().get_notification(&inbox_id, &user).unwrap().expect("the card is in the Inbox");
+        assert!(row.read_at.is_none(), "the reminder brings it back unread");
+        nebo.store().mark_notification_read(&inbox_id, &user).unwrap();
+    }
     let card = nebo.get_ok(&format!("/permissions/asks/{ask_id}")).await;
-    assert_eq!(card["status"], "expired", "{card}");
+    assert_eq!(card["status"], "open", "{card}");
+    assert!(card.get("expiresAt").is_none(), "an ask has no expiry: {card}");
     let row = nebo.store().get_permission_ask(&ask_id).unwrap().unwrap();
-    assert_eq!((row.status.as_str(), row.answer.as_deref()), ("expired", Some("no")));
-    assert_eq!(count(&ran)[1], 0, "the parked call never ran");
+    assert_eq!((row.status.as_str(), row.answer.as_deref()), ("open", None));
+    assert_eq!(count(&ran)[1], 0, "the parked call never ran on its own");
+    assert!(told(&nebo, &key).iter().all(|t| !t.contains(&ask_id)), "nobody told the employee no");
     let own = nebo.store().permission_rules_in(&types::permissions::Scope::Employee(agent.clone())).unwrap();
     assert!(own.is_empty(), "nothing was granted: {own:?}");
 
-    // The employee is told, once, that it counts as declined.
-    let expired: Vec<_> = told(&nebo, &key).into_iter().filter(|t| t.contains(&ask_id)).collect();
-    assert_eq!(expired.len(), 1, "{expired:?}");
-    assert!(expired[0].contains("no answer in 72 hours, so it counts as declined\nIt did not run."), "{}", expired[0]);
-
-    // Its next step at the same call: a plain refusal, never a repeat ask.
-    let again = nebo.tool(&ctx, &names[1], json!({ "to": "+15550177" })).await;
-    assert!(again.is_error && again.parked_ask.is_none(), "{}", again.content);
-    assert!(again.content.starts_with("The owner already said no to this"), "{}", again.content);
-    assert_eq!(count(&ran)[1], 0);
-
-    // An answer after expiry takes nothing back.
-    let late = nebo
+    // The owner answers: the server's engine loop wakes the ask and the
+    // call runs, once.
+    let answered = nebo
         .post_ok(&format!("/permissions/asks/{ask_id}/answer"), &json!({ "answer": "this_once", "via": "mobile" }))
         .await;
-    assert_eq!(late["status"], "expired");
-    assert_eq!(count(&ran)[1], 0);
+    assert_eq!(answered["status"], "allowed");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if told(&nebo, &key).iter().any(|t| t.contains(&ask_id) && t.contains("allowed, this once\nIt ran:\nDONE")) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the answer never resumed the ask: {:?}", told(&nebo, &key));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(count(&ran)[1], 1);
+    assert_eq!(nebo.store().engine_get_run(&ask_id).unwrap().unwrap().state, "done");
 }

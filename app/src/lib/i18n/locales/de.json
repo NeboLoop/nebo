@@ -3076,7 +3076,7 @@
 		"allowedAlways": "Ab jetzt erlaubt",
 		"allowedOnce": "Dieses Mal erlaubt",
 		"declined": "Abgelehnt",
-		"expired": "Abgelaufen, als Nein gewertet",
+		"withdrawn": "Zurückgezogen: Die Arbeit, für die es war, ist beendet",
 		"failed": "Deine Antwort konnte nicht gesendet werden. Versuch es erneut."
 	},
 	"permissions": {

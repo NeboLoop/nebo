@@ -1,0 +1,14 @@
+id: e4-an-ask-waits-four-days-across-a-restart-and-the-answer-resumes-it
+name: "E4 — An approval can take until Thursday"
+description: |
+  E4 — Every ask is a durable wait in the engine with no expiry (owner,
+  09-25). An employee's step asks the owner on Monday; nobody answers. On
+  Tuesday and Thursday the card comes back to the owner as a reminder, and
+  the ask stays open. Nebo restarts on Wednesday and the wait survives. On
+  Friday, four days on, the owner answers from the phone: the answer is the
+  signal that wakes the wait, the step runs once and the employee hears it.
+  Must never: an ask that expires, silence that counts as a No, a reminder
+  that runs the call, a restart that loses the wait.
+target_component: engine
+proof: engine::proof::longrun::e4_an_ask_waits_four_days_across_a_restart_and_the_answer_resumes_it
+conversation: []

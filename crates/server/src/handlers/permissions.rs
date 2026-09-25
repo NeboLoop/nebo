@@ -45,12 +45,12 @@ pub struct PermissionAskCard {
     /// Whether "This once" is offered (an employee's extra needs are granted
     /// for good or not at all).
     pub this_once: bool,
-    /// open | allowed | declined | expired
+    /// open | allowed | declined | withdrawn (the work that waited on it
+    /// ended without it). An open ask stays open until it is answered.
     pub status: String,
     /// allow_always | this_once | no, once answered.
     pub answer: Option<String>,
     pub created_at: i64,
-    pub expires_at: i64,
 }
 
 /// The card for `ask`.
@@ -59,7 +59,7 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         AskStatus::Open => ("open", None),
         AskStatus::Answered { answer: Answer::No, .. } => ("declined", Some(Answer::No)),
         AskStatus::Answered { answer, .. } => ("allowed", Some(answer)),
-        AskStatus::Expired => ("expired", None),
+        AskStatus::Withdrawn => ("withdrawn", None),
     };
     PermissionAskCard {
         id: ask.id.clone(),
@@ -73,7 +73,6 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         status: status.to_string(),
         answer: answer.map(|a| a.as_str().to_string()),
         created_at: ask.created_at,
-        expires_at: ask.expires_at,
     }
 }
 
@@ -146,8 +145,8 @@ pub async fn answer_permission_ask(
     let invalid = |msg: &str| to_error_response(NeboError::Validation(msg.to_string()));
     let answer = Answer::parse(&body.answer).ok_or_else(|| invalid("answer must be allow_always, this_once or no"))?;
     let via = AnsweredVia::parse(&body.via).ok_or_else(|| invalid("via must be chat, inbox or mobile"))?;
-    match state.permission_asks.answer(&state.tools, &id, answer, via) {
-        Ok(settled) => Ok(Json(card(&state, &settled.ask))),
+    match state.permission_asks.answer(&id, answer, via) {
+        Ok(ask) => Ok(Json(card(&state, &ask))),
         Err(AskError::Settled(ask)) => Ok(Json(card(&state, &ask))),
         Err(e) => Err(ask_error(e)),
     }
@@ -162,15 +161,15 @@ pub async fn answer_permission_ask(
 // phone to the ask routes above and ships in the same release train.
 
 /// A parked run's standing in the words the shipped phone reads: pending
-/// earns its Approve and Deny buttons; an expired ask was a No.
+/// earns its Approve and Deny buttons.
 fn run_approval_status(ask: &Ask) -> &'static str {
     match ask.status {
         AskStatus::Open => "pending",
         AskStatus::Answered {
             answer: Answer::No, ..
-        }
-        | AskStatus::Expired => "denied",
+        } => "denied",
         AskStatus::Answered { .. } => "approved",
+        AskStatus::Withdrawn => "withdrawn",
     }
 }
 
@@ -211,15 +210,11 @@ pub async fn answer_workflow_run_approval(
     } else {
         Answer::No
     };
-    let settled =
-        match state
-            .permission_asks
-            .answer(&state.tools, &ask.id, answer, AnsweredVia::Mobile)
-        {
-            Ok(settled) => settled.ask,
-            Err(AskError::Settled(ask)) => *ask,
-            Err(e) => return Err(ask_error(e)),
-        };
+    let settled = match state.permission_asks.answer(&ask.id, answer, AnsweredVia::Mobile) {
+        Ok(ask) => ask,
+        Err(AskError::Settled(ask)) => *ask,
+        Err(e) => return Err(ask_error(e)),
+    };
     Ok(Json(
         serde_json::json!({ "status": run_approval_status(&settled), "runId": run_id }),
     ))

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tools::{GateVerdict, PermissionGate, ResolvedCall, ToolContext, ToolResult};
 use types::permissions::{AskCase, Decision, Effect, Grant, JudgementMode, Mode, Target, Verdict, Why};
 
-pub use ask::{Answer, AnsweredVia, Ask, AskError, AskStatus, AskSurfaces, Asks, Settled};
+pub use ask::{Answer, AnsweredVia, Ask, AskError, AskStatus, AskSurfaces, Asks};
 pub use rules::RuleSet;
 
 /// The permission check: the registry's gate.

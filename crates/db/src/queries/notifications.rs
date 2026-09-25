@@ -102,6 +102,18 @@ impl Store {
         Ok(())
     }
 
+    /// Bring a notification back to the top of the Inbox, unread: a
+    /// reminder about something still waiting on the owner.
+    pub fn resurface_notification(&self, id: &str, user_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE notifications SET read_at = NULL, created_at = strftime('%s', 'now') WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )
+        .db_err("notifications")?;
+        Ok(())
+    }
+
     pub fn mark_all_notifications_read(&self, user_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(

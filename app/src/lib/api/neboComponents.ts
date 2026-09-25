@@ -929,7 +929,6 @@ export interface PermissionAskCard {
 	status: string
 	answer?: string
 	createdAt: number
-	expiresAt: number
 }
 
 export interface PermissionAsksResponse {
@@ -2685,11 +2684,6 @@ export interface ChatStreamEvent {
 export interface ChatErrorEvent {
 	error: string
 	session_id: string
-}
-
-export interface SessionCompactEvent {
-	success: boolean
-	error: string
 }
 
 /** Client → Server WebSocket message types */
