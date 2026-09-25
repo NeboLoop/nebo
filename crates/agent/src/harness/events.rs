@@ -18,6 +18,9 @@ pub enum TurnEvent {
     SessionSnapshot(SessionFacts),
     /// The time a turn starts, for the owner (`sections::owner_now`).
     TurnTime(String),
+    /// Where the owner's phone is, when the owner shares it with the
+    /// employee (`crate::phone_location`).
+    PhoneLocation(String),
     /// The channel's rules changed, or were never told: the replacement,
     /// whole (`told` says whether there was an earlier version).
     ChannelRulesChanged { rules: String, told: bool },
@@ -162,6 +165,7 @@ pub const NAMES: &[&str] = &[
     "channel_rules",
     "coworker_access",
     "time",
+    "phone_location",
     "agents_listing",
     "date_changed",
     "run_briefing",
@@ -220,6 +224,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
     let (kind, text) = match e {
         TurnEvent::SessionSnapshot(_) => return None,
         TurnEvent::TurnTime(now) => ("time", non_empty(now)?),
+        TurnEvent::PhoneLocation(reading) => ("phone_location", non_empty(reading)?),
         TurnEvent::ChannelRulesChanged { rules, told } => {
             let lead = told.then_some("The channel's rules have changed; these replace the earlier ones:");
             return replacement_row("channel_rules", rules, lead);
@@ -955,6 +960,7 @@ mod tests {
                 status: "running".into(),
             },
             TurnEvent::TurnTime("It is 2:05 PM (America/Denver, UTC-06:00) on Thursday, September 24, 2026.".into()),
+            TurnEvent::PhoneLocation("The owner's phone is at 40.000000, -111.000000.".into()),
             TurnEvent::ChannelRulesChanged {
                 rules: "# Channel rules\nNo markdown.".into(),
                 told: true,

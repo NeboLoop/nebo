@@ -871,6 +871,7 @@ pub(crate) fn apply_seat_declaration(
 /// A declaration's needs, through the one needs step.
 async fn declared_needs(
     name: &str,
+    agent_id: &str,
     config: &napp::agent::AgentConfig,
     installed: &[(String, Vec<String>)],
     reader: &dyn tools::needs::DescriptionReader,
@@ -878,6 +879,7 @@ async fn declared_needs(
     let declared = tools::needs::DeclaredNeeds::of(config);
     let src = tools::needs::JobSource {
         name,
+        agent_id,
         description: "",
         skills: &[],
         plugins: &[],
@@ -903,7 +905,7 @@ pub(crate) async fn grant_declared(state: &AppState, agent_id: &str, before: Opt
     let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) else { return };
     let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
     let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
-    let declared = declared_needs(&agent.name, &config, &installed, &reader).await;
+    let declared = declared_needs(&agent.name, agent_id, &config, &installed, &reader).await;
     let (needs, source) = match before {
         None => {
             let own = state
@@ -932,7 +934,7 @@ pub(crate) async fn grant_declared(state: &AppState, agent_id: &str, before: Opt
             )
         }
         Some(before) => {
-            let was = declared_needs(&agent.name, before, &installed, &reader).await;
+            let was = declared_needs(&agent.name, agent_id, before, &installed, &reader).await;
             (tools::needs::added(&was, &declared), types::permissions::RuleSource::JobEdit)
         }
     };

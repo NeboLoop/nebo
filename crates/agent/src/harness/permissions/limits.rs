@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use tools::Origin;
-use types::permissions::{Decision, Target, Why};
+use types::permissions::{Decision, Door, Target, Why};
 
 use super::CheckCx;
 
@@ -201,6 +201,31 @@ pub fn origin_label(origin: Origin) -> &'static str {
     }
 }
 
+/// A call the run's origin never makes, refused in the one wording for
+/// what happened: another employee asked (limit `coworker`; a coworker's
+/// request can only be answered), or the call came from where the origin
+/// says (limit `origin`). The activity page words each limit for the owner.
+fn origin_refusal(cx: &CheckCx<'_>, t: &Target) -> Decision {
+    match cx.ctx.door {
+        Door::Coworker { .. } => deny(
+            "coworker",
+            format!(
+                "'{}' is not permitted: a coworker asked for this, and a coworker's request can only be \
+                 answered with a reply. Say in your reply what you would need; do not retry.",
+                t.key
+            ),
+        ),
+        _ => deny(
+            "origin",
+            format!(
+                "'{}' is not permitted when called from {}. Tell the user what you needed it for; do not retry.",
+                t.key,
+                origin_label(cx.ctx.origin)
+            ),
+        ),
+    }
+}
+
 fn deny(limit: &str, reason: String) -> Decision {
     Decision::Deny { reason, why: Why::HardLimit { limit: limit.to_string() } }
 }
@@ -213,14 +238,7 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
         return Some(deny("safeguard", err));
     }
     if denied_for_origin(cx.ctx.origin, &t.key) || denied_operation_for_origin(cx.ctx.origin, t) {
-        return Some(deny(
-            "origin",
-            format!(
-                "'{}' is not permitted when called from {}. Tell the user what you needed it for; do not retry.",
-                t.key,
-                origin_label(cx.ctx.origin)
-            ),
-        ));
+        return Some(origin_refusal(cx, t));
     }
     // The restricted run's allowlist (the review fork, phone callers).
     if !cx.ctx.whitelist_allows(t) {

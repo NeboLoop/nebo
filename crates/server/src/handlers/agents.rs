@@ -1404,6 +1404,7 @@ pub async fn work_out_agent_needs(
     let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
     let src = JobSource {
         name,
+        agent_id,
         description,
         skills: &[],
         plugins: &[],

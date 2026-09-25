@@ -149,9 +149,8 @@ pub struct TurnState {
     pub model: String,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
-    /// The last call's request and the provider that answered it: the recap
-    /// forks them.
-    last_call: Option<(ChatRequest, Arc<dyn ai::Provider>)>,
+    /// The last call that got a reply: the recap forks it.
+    last_call: Option<LastCall>,
     persisted_renderings: HashSet<String>,
     /// Stored calls whose tool was asked whether its result may be cleared,
     /// and those it said may.
@@ -160,6 +159,17 @@ pub struct TurnState {
     /// When the turn checkpoints for itself, with its failure breaker.
     trigger: compact::checkpoint::Trigger,
     round: RoundCarry,
+}
+
+/// The last call that got a reply, as the recap forks it.
+struct LastCall {
+    request: ChatRequest,
+    /// The provider that answered it.
+    provider: Arc<dyn ai::Provider>,
+    /// The last stored row the request was built from: what was stored after
+    /// it (the reply, its results) extends the request as the next step's
+    /// would.
+    heard_through: Option<String>,
 }
 
 /// What the tool round keeps from one round to the next within a turn.
@@ -304,6 +314,19 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
 fn owner_speaks(req: &TurnRequest) -> bool {
     matches!(req.mode, TurnMode::Chat)
         && matches!(req.input, TurnInput::Owner { .. })
+        && req.seat.origin == tools::Origin::User
+        && req.seat.audience.is_none()
+}
+
+/// Whether the owner is in this turn's conversation: an owner chat turn in
+/// the owner's own chat (the app, the phone, the owner's loop), started by
+/// the owner's message, a message queued behind it, or a result the owner's
+/// work brought back. Not a scheduled or other unattended turn, a coworker,
+/// a chat channel, a visitor or a caller, and not a prompt the platform
+/// wrote (an introduction). Only these turns get a recap.
+fn owner_in_turn(req: &TurnRequest) -> bool {
+    matches!(req.mode, TurnMode::Chat)
+        && !matches!(req.input, TurnInput::Platform { .. })
         && req.seat.origin == tools::Origin::User
         && req.seat.audience.is_none()
 }
@@ -661,6 +684,13 @@ pub(crate) async fn prepare(
 
     // The first step's events: when the turn starts, then its briefing.
     st.reminders.add(&TurnEvent::TurnTime(sections::owner_now(memory_timezone.as_deref())));
+    // The owner's phone position, for an employee the owner shares it with;
+    // never on a turn a stranger or another program started.
+    if req.seat.origin.is_trusted()
+        && let Some(reading) = h.phone_locations.reading_for(&req.seat.agent_id, chrono::Utc::now().timestamp())
+    {
+        st.reminders.add(&TurnEvent::PhoneLocation(reading));
+    }
     if let Some(briefing) = req.delivery.mention_briefing.as_deref() {
         st.reminders.add(&TurnEvent::RunBriefing(briefing.to_string()));
     }
@@ -1021,7 +1051,11 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             block_order,
             provider,
         } = reply;
-        st.last_call = Some((fork_of.clone(), provider.clone()));
+        st.last_call = Some(LastCall {
+            request: fork_of.clone(),
+            provider: provider.clone(),
+            heard_through: st.seen.last().map(|m| m.id.clone()),
+        });
         let text = post_receive(cx, text, tool_calls.len()).await;
         if stream_error.is_some() {
             // Calls that arrived on a broken stream are not run or stored.
@@ -1360,7 +1394,7 @@ async fn checkpoint(
 ) -> Result<(), String> {
     let h = &cx.harness;
     let provider = match &st.last_call {
-        Some((_, provider)) => provider.clone(),
+        Some(last) => last.provider.clone(),
         None => h.providers.read().await.first().cloned().ok_or("no provider to checkpoint with")?,
     };
     let taint: Vec<types::provenance::ProvenanceClass> =
@@ -1601,26 +1635,25 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         "turn ended"
     );
     usage::record_run_usage(&h.store, &h.selector, cx.agent_id(), &cx.request.session_key, &st.model, &st.usage, &exit.label());
+    // The chat is named after its first exchange and again at its third,
+    // however the turn ended: one the owner stopped is named too.
+    if matches!(cx.request.mode, TurnMode::Chat) {
+        super::after_turn::spawn_chat_title_generation(
+            h.providers.clone(),
+            h.store.clone(),
+            h.sessions.active_chat_id(&cx.session_id),
+            cx.session_id.clone(),
+            h.selector.get_cheapest_model(),
+            h.title_sink(),
+        );
+    }
     if *exit == TurnExit::Cancelled {
         return;
     }
-    if matches!(cx.request.mode, TurnMode::Chat)
-        && let Some((request, provider)) = st.last_call.take()
+    if owner_in_turn(&cx.request)
+        && let Some(last) = st.last_call.take()
     {
-        // The recap forks the turn's own conversation, ending with its
-        // answer; it is stored and emitted, never read back.
-        let messages = conversation::convert_messages(&h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default());
-        let recap = super::recap::RecapRequest {
-            chat_id: h.sessions.active_chat_id(&cx.session_id),
-            turn_id: cx.progress.run_id.clone(),
-            system: request.system,
-            cache_breakpoints: request.cache_breakpoints,
-            messages,
-            model: request.model,
-            provider,
-            agent_id: (!cx.agent_id().is_empty()).then(|| cx.agent_id().to_string()),
-        };
-        tokio::spawn(super::recap::write_recap(h.store.clone(), h.concurrency.clone(), h.broadcast(), recap));
+        spawn_recap(cx, last);
     }
     if !cx.after_turn {
         return;
@@ -1658,17 +1691,37 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     .schedule()
     .await;
     super::after_turn::spawn_personality_synthesis(&h.store, &h.providers, &cx.seat.memory.user_id, &h.concurrency).await;
-    super::after_turn::spawn_chat_title_generation(
-        h.providers.clone(),
-        h.store.clone(),
-        h.sessions.active_chat_id(&cx.session_id),
-        cx.session_id.clone(),
-        h.selector.get_cheapest_model(),
-        h.title_sink(),
-    );
     if !matches!(exit, TurnExit::ProviderFailed(_)) {
         super::after_turn::start_review(h, &cx.request, &cx.session_id);
     }
+}
+
+/// Write the recap of the turn just finished, in the background. The call
+/// forks the turn's last request, extended by what was stored after it (the
+/// answer), so it reads the turn's cached prefix: the same system prompt,
+/// tools, conversation and model, as Claude Code's forked recap does. A
+/// checkpoint taken after the last call replaced the conversation it was
+/// built from; that turn has no cached prefix to fork and gets no recap.
+fn spawn_recap(cx: &TurnContext, last: LastCall) {
+    let h = &cx.harness;
+    let stored = h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default();
+    let Some(after) = last
+        .heard_through
+        .as_deref()
+        .and_then(|id| stored.iter().position(|m| m.id == id))
+    else {
+        info!(session_id = %cx.session_id, "a checkpoint followed the turn's last call: no recap");
+        return;
+    };
+    let mut fork_of = last.request;
+    fork_of.messages.extend(conversation::convert_messages(&stored[after + 1..]));
+    let recap = super::recap::RecapRequest {
+        chat_id: h.sessions.active_chat_id(&cx.session_id),
+        turn_id: cx.progress.run_id.clone(),
+        fork_of,
+        provider: last.provider,
+    };
+    tokio::spawn(super::recap::write_recap(h.store.clone(), h.concurrency.clone(), h.broadcast(), recap));
 }
 
 /// Add every stored tool call not yet `checked` whose tool says its result
@@ -2122,6 +2175,19 @@ mod tests {
         assert_eq!(texts(&calls[0]), texts(&calls[1]), "the retry resends the same rows");
         assert!(texts(&calls[0]).iter().any(|t| t.contains("Team Ops: Ava leads.")), "the briefing is a row");
         assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "run_briefing").count(), 1, "written once");
+    }
+
+    /// A dropped model connection is retried silently: nothing on the
+    /// turn's stream reads as a stop, so no screen ends the turn early.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reconnect_is_silent() {
+        let model = Scripted::new(vec![Step::Transient, Step::Say("Back.")]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Where were we?")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let notices: Vec<&StreamEvent> =
+            events.iter().filter(|e| e.event_type == ai::StreamEventType::ControlNotice).collect();
+        assert!(notices.is_empty(), "a reconnect said something: {notices:?}");
     }
 
     /// The output cap cuts a reply: the call is taken again at the higher
@@ -2624,6 +2690,105 @@ mod tests {
         for call in model.calls() {
             assert!(!call.system.contains(RECAP) && !texts(&call).iter().any(|t| t.contains(RECAP)), "a recap entered a request");
         }
+    }
+
+    /// A recap is for the owner coming back to the thread: a scheduled
+    /// turn and a coworker's request get none; the owner's own chat does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recaps_are_for_turns_the_owner_is_in() {
+        let model = Scripted::new(vec![Step::Say("Checked."), Step::Say("Noted."), Step::Say("Nothing new.")]);
+        let h = harness(&model).await;
+        let mut job = owner("Check the overnight entries");
+        job.seat.origin = tools::Origin::System;
+        job.seat.door = types::permissions::Door::Schedule;
+        run_turn(&h, job).await;
+        let mut coworker = owner("Note the VAT rate");
+        coworker.seat.origin = tools::Origin::Comm;
+        coworker.seat.door = types::permissions::Door::Coworker { from: "supervisor".into() };
+        run_turn(&h, coworker).await;
+        assert!(model.side_call("owner_recap").await.is_none(), "no owner, no recap");
+        run_turn(&h, owner("Anything new?")).await;
+        assert!(model.side_call("owner_recap").await.is_some(), "the owner's turn is recapped");
+    }
+
+    /// The recap forks the turn's last request, extended by the answer, so
+    /// it reads the turn's cached prefix, and it names the run it recaps.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_recap_forks_the_turns_last_request() {
+        let model = Scripted::new(vec![Step::Call("echo", serde_json::json!({})), Step::Say("Drafted.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("Draft the plan")).await;
+        let recap = model.side_call("owner_recap").await.expect("a recap");
+        let last = model.calls().last().cloned().expect("a main call");
+        assert_eq!(recap.system, last.system);
+        assert_eq!(recap.model, last.model);
+        assert_eq!(recap.cache_breakpoints, last.cache_breakpoints);
+        let names = |r: &ChatRequest| r.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        assert!(!names(&last).is_empty());
+        assert_eq!(names(&recap), names(&last), "the turn's tools");
+        assert_eq!(recap.tool_choice, last.tool_choice);
+        let n = last.messages.len();
+        assert_eq!(recap.messages.len(), n + 2, "the last request, its answer, the instruction");
+        for (a, b) in recap.messages.iter().zip(&last.messages) {
+            assert_eq!((&a.role, &a.content), (&b.role, &b.content), "the last request is the prefix");
+        }
+        assert_eq!((recap.messages[n].role.as_str(), recap.messages[n].content.as_str()), ("assistant", "Drafted."));
+        assert_eq!(recap.messages[n + 1].content, crate::harness::recap::RECAP_INSTRUCTION);
+        assert!(!last.trace.run_id.is_empty());
+        assert_eq!(recap.trace.run_id, last.trace.run_id, "the run it recaps");
+    }
+
+    /// A first turn the owner stops is named from the owner's words, and
+    /// Nebo's own rows (the turn's facts, the interrupt line) are not in the
+    /// transcript the title is written from.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_first_turn_the_owner_stops_is_titled() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let req = owner("Reconcile the September invoices");
+        let cancel = req.cancel.clone();
+        let hook: Hook = Box::pin(async move { cancel.cancel() });
+        *model.script.lock().unwrap() = VecDeque::from(vec![Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook)]);
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), "cancelled");
+        let title = model.side_call("title").await.expect("the stopped first turn is titled");
+        let transcript = texts(&title).join("\n");
+        assert!(transcript.contains("Reconcile the September invoices"), "{transcript}");
+        assert!(!transcript.contains("<system-reminder>"), "{transcript}");
+        assert!(!transcript.contains(conversation::INTERRUPT_MESSAGE), "{transcript}");
+    }
+
+    /// The owner's phone position reaches the turn of an employee the
+    /// owner shares it with, as a row; a turn a chat channel started never
+    /// hears it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_shared_phone_position_is_a_row_for_the_owners_turns_only() {
+        let model = Scripted::new(vec![Step::Say("On my way."), Step::Say("Hello.")]);
+        let h = harness(&model).await;
+        let now = chrono::Utc::now().timestamp();
+        h.phone_locations()
+            .update(
+                crate::phone_location::PhoneReading {
+                    account_id: "owner".into(),
+                    device_id: "phone".into(),
+                    revision: 1,
+                    agent_ids: vec!["assistant".into()],
+                    latitude: Some(40.7608),
+                    longitude: Some(-111.891),
+                    accuracy_metres: Some(12.0),
+                    taken_at: Some(now),
+                },
+                now,
+            )
+            .unwrap();
+        let mut channel = owner("Hi from Slack");
+        channel.seat.origin = tools::Origin::Comm;
+        run_turn(&h, channel).await;
+        run_turn(&h, owner("How far am I from the office?")).await;
+        let calls = model.calls();
+        let heard = |c: &ChatRequest| texts(c).iter().any(|t| t.contains("40.760800, -111.891000"));
+        assert!(!heard(&calls[0]), "a chat channel's turn never hears where the owner is");
+        assert!(heard(&calls[1]), "the owner's turn does");
     }
 
     /// An explore helper's surface has no helper tool, and a call that

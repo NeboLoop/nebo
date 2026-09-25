@@ -34,6 +34,7 @@
   import { openAsks } from '$lib/stores/permissionAsks';
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
+  import { stepMeta } from '$lib/chat/stepMeta';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -1085,17 +1086,6 @@
   function plainNote(line: string): string {
     return line.replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim();
   }
-  /** What a tool row says after its label: the search query, or the page's
-   *  address (as a link). */
-  function stepMeta(tool: ToolMsg): { text: string; href?: string } | null {
-    const r = (tool.request ?? {}) as Record<string, unknown>;
-    const str = (k: string) => (typeof r[k] === 'string' ? (r[k] as string) : '');
-    const url = str('url');
-    if (url) return { text: url, href: url };
-    const query = str('query') || str('q');
-    if (query) return { text: query };
-    return null;
-  }
   /** The command a call ran, shown as code under its row. */
   function shellCommand(tool: ToolMsg): string {
     const r = (tool.request ?? {}) as Record<string, unknown>;
@@ -1444,7 +1434,7 @@
                 </div>
               {:else}
                 {@const tool = step.tool}
-                {@const meta = stepMeta(tool)}
+                {@const meta = stepMeta(tool.request)}
                 {@const expandable = canExpand(tool)}
                 {@const isExpanded = !!expandedResults[step.key]}
                 {@const cmd = shellCommand(tool)}
