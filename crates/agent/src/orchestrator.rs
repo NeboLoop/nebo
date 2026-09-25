@@ -1801,7 +1801,7 @@ mod child_limits {
         let dir = tempfile::tempdir().unwrap();
         let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
         assert_eq!(
-            crate::harness::seat::run_grant(&store, &child).mode,
+            crate::harness::seat::run_grant(&store, child.grant_request()).mode,
             types::permissions::Mode::FullAccess,
             "the owner's Full Access did not reach the child"
         );

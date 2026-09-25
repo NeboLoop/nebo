@@ -786,8 +786,8 @@ pub async fn execute_activity(
     // The owner's per-run spending limit for this employee (0 = none). The
     // package's token_budget figures are estimates and never enforced.
     let spend_cap_microcents: i64 = store.agent_run_spend_cap_cents(agent_id) * 1_000_000;
-    // Detect if browser tool is available for this activity
-    let has_browser = tools.iter().any(|t| t.name() == "web");
+    // Detect if the browser tools are available for this activity
+    let has_browser = tools.iter().any(|t| t.name().starts_with("browser_"));
     let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
 
     // Trace builder — links every LLM call to this agent/run/workflow/action/step
@@ -1553,16 +1553,16 @@ fn build_activity_prompt_with_context(
     }
     prompt.push('\n');
 
-    // Browser automation guide — injected when web tool is available
+    // Browser automation guide — injected when the browser tools are available
     if has_browser {
         prompt.push_str("\n## Browser Automation Guide\n\
-            - Always call read_page FIRST before any click, fill, or navigate action.\n\
-            - Use element refs from the read_page output for click/fill/select — never guess selectors.\n\
-            - After navigate, wait briefly then read_page to see the new content.\n\
-            - For forms: click the field first, then type/fill the value.\n\
-            - If you cannot find an element, scroll down and read_page again.\n\
-            - Do NOT open new_tab unless you need multiple pages simultaneously.\n\
-            - Verify results with a final read_page after completing actions.\n\n");
+            - Call browser_read FIRST before acting on a page.\n\
+            - Use element refs from browser_read for browser_act and browser_fill_form — never guess.\n\
+            - After browser_open, check the page it returns before acting.\n\
+            - For forms: browser_fill_form, or click the field then type.\n\
+            - If you cannot find an element, scroll down and browser_read again.\n\
+            - Do NOT open a new tab unless you need multiple pages simultaneously.\n\
+            - Verify results with a final browser_read after completing actions.\n\n");
     }
 
     // Emit instruction — injected into last activity only when declared

@@ -4,20 +4,26 @@ description: |
   The model must research a recent topic where the first result may not
   have complete information. Tests whether the model digs deeper when
   initial results are insufficient.
-target_component: web
+target_component: search_web
 
 conversation:
   - role: user
     content: "What were the major announcements at the most recent RustConf? Summarize the keynote highlights."
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  fetch_url:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: starts-with-search
-      text: "Model's first call is web(action: 'search') about RustConf"
+      text: "Model's first web call (after loading it with find_tools) is search_web about RustConf"
       severity: critical
   recovery:
     - id: navigates-to-content
@@ -44,7 +50,7 @@ ideal_behavior:
   tool_calls: 10
   total_tokens: 18000
   narrative: |
-    1. web(action: "search", query: "RustConf 2025 keynote announcements") → results
-    2. navigate to conference recap or blog post → read_page → scroll → read_page
-    3. navigate to another source for additional coverage → read_page
+    1. search_web(queries: ["RustConf 2025 keynote announcements"]) → results
+    2. browser_open conference recap or blog post → browser_read → scroll → browser_read
+    3. browser_open another source for additional coverage → browser_read
     4. Summarize keynote highlights with specifics

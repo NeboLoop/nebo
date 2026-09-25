@@ -359,8 +359,11 @@ fn select_from(
 
 // --- Concrete reminders ---
 
-/// Tools whose results bring external (untrusted) content into the conversation.
-const EXTERNAL_CONTENT_TOOLS: &[&str] = &["web", "browser"];
+/// Tools whose results bring external (untrusted) content into the
+/// conversation: the web tools and every browser tool.
+fn is_external_content_tool(name: &str) -> bool {
+    matches!(name, "search_web" | "fetch_url" | "http_request") || name.starts_with("browser_")
+}
 
 /// UntrustedContent — prompt-injection defense. When recent tool results carried
 /// content fetched from the web, remind the model (in the high-salience stream)
@@ -382,7 +385,7 @@ impl Reminder for UntrustedContent {
         let touched_external = ctx
             .recent_tool_names
             .iter()
-            .any(|n| EXTERNAL_CONTENT_TOOLS.contains(&n.as_str()));
+            .any(|n| is_external_content_tool(n));
         // Engine-stamped taint covers sources the tool-name check can't see:
         // mail, external files, channel messages, and coworker replies that
         // carry them (a colleague relaying a webpage is still a webpage).
@@ -1290,7 +1293,7 @@ impl Reminder for ToolResultGrounding {
         2
     }
     fn check(&self, ctx: &ReminderContext) -> Option<String> {
-        if !ctx.recent_tool_names.iter().any(|n| n == "web") {
+        if !ctx.recent_tool_names.iter().any(|n| is_external_content_tool(n)) {
             return None;
         }
 
@@ -1310,7 +1313,7 @@ impl Reminder for ToolResultGrounding {
             };
             for c in &calls {
                 let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                if !EXTERNAL_CONTENT_TOOLS.contains(&name) {
+                if !is_external_content_tool(name) {
                     continue;
                 }
                 if let Some(id) = c.get("id").and_then(|v| v.as_str()) {
@@ -2272,13 +2275,13 @@ mod tests {
         let big = "x".repeat(1500);
         let tr = serde_json::json!([{ "tool_call_id": "w1", "content": big, "is_error": false }]).to_string();
         let mut call = make_msg("assistant", "");
-        call.tool_calls = Some(r#"[{"id":"w1","name":"web","input":{"action":"fetch"}}]"#.into());
+        call.tool_calls = Some(r#"[{"id":"w1","name":"fetch_url","input":{"url":"https://example.com"}}]"#.into());
         let tool_msg = ChatMessage {
             tool_results: Some(tr),
             ..make_msg("tool", "")
         };
         let msgs = vec![make_msg("user", "look it up"), call, tool_msg];
-        let web = vec!["web".to_string()];
+        let web = vec!["fetch_url".to_string()];
         let out = ToolResultGrounding
             .check(&rctx_tools(&msgs, &web, 3))
             .expect("fires on substantial web result");
@@ -2621,14 +2624,16 @@ mod tests {
 
     #[test]
     fn test_untrusted_content_fires_on_web() {
-        let web = vec!["web".to_string()];
-        assert!(
-            UntrustedContent
-                .check(&rctx_tools(&[], &web, 3))
-                .unwrap()
-                .contains("untrusted data"),
-            "fires after external web content"
-        );
+        for tool in ["search_web", "fetch_url", "browser_read"] {
+            let web = vec![tool.to_string()];
+            assert!(
+                UntrustedContent
+                    .check(&rctx_tools(&[], &web, 3))
+                    .unwrap()
+                    .contains("untrusted data"),
+                "fires after external web content: {tool}"
+            );
+        }
         // No external tools in the recent set → no fire.
         let local = vec!["os".to_string(), "event".to_string()];
         assert!(UntrustedContent.check(&rctx_tools(&[], &local, 3)).is_none());

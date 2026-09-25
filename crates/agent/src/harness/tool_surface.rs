@@ -198,6 +198,82 @@ fn family_prefix(name: &str) -> Option<String> {
     None
 }
 
+/// What a step's surface is built from: the seat's side of it.
+pub struct SurfaceInputs<'a> {
+    pub agent_id: &'a str,
+    /// Declared on every step for this employee: its `requires.tools` and,
+    /// when its job needs plugins, the plugin tool. Its own app tools join
+    /// them from the registry.
+    pub always_load: &'a HashSet<String>,
+    /// A restricted run's allowlist: only what it admits is declared or
+    /// listed.
+    pub allowlist: Option<&'a HashSet<String>>,
+    /// An isolated seat with no matter: company Memory is withheld.
+    pub company_memory_sealed: bool,
+    /// A workflow activity's scoped set: its declaration, deferred tools
+    /// included, with the `exit` primitive.
+    pub workflow: Option<&'a crate::runner::WorkflowMode>,
+    /// A helper's kind and depth take the helper tools off its surface.
+    pub mode: &'a crate::harness::TurnMode,
+}
+
+/// One step's tool surface.
+pub struct Surface {
+    /// The definitions the request carries, in name order.
+    pub declared: Vec<ToolDefinition>,
+    /// The deferred tools loaded in this conversation.
+    pub loaded: BTreeSet<String>,
+    /// The change in the deferred listing since the conversation was last
+    /// told; `None` when it is current.
+    pub listing: Option<ListingDelta>,
+}
+
+/// The surface of the next call: core ∪ always_load ∪ loaded, narrowed by
+/// the seat, plus the listing delta the step writes before its call.
+/// `conversation` is the conversation as stored since the last checkpoint.
+pub async fn surface(
+    tools: &tools::Registry,
+    store: &db::Store,
+    conversation: &[ChatMessage],
+    seat: &SurfaceInputs<'_>,
+) -> Surface {
+    if let Some(m) = seat.workflow {
+        let mut declared: Vec<ToolDefinition> =
+            tools.list().await.into_iter().filter(|d| m.advertised_tools.contains(&d.name)).collect();
+        if m.advertised_tools.contains("exit") && !declared.iter().any(|d| d.name == "exit") {
+            let exit = tools::ExitTool::new();
+            declared.push(ToolDefinition {
+                name: "exit".into(),
+                description: tools::registry::DynTool::description(&exit),
+                input_schema: tools::registry::DynTool::schema(&exit),
+            });
+        }
+        declared.sort_by(|a, b| a.name.cmp(&b.name));
+        return Surface { declared, loaded: BTreeSet::new(), listing: None };
+    }
+
+    let deferred = tools.get_deferred_names().await;
+    let loaded = loaded_tools(conversation, &deferred);
+    let mut all = tools.list().await;
+    let mut own = tools.agent_tool_names(seat.agent_id).await;
+    if seat.company_memory_sealed {
+        crate::harness::seat::seal_company_memory(store, tools, seat.agent_id, &mut all, &mut own).await;
+    }
+    let always: HashSet<String> = seat.always_load.iter().cloned().chain(own).collect();
+    let mut declared = declared(all, &deferred, &always, &loaded);
+    declared.retain(|d| crate::harness::delegation::on_surface(seat.mode, &d.name));
+    let mut listed = listed(&deferred, &declared);
+    listed.retain(|n| crate::harness::delegation::on_surface(seat.mode, n));
+    if let Some(allowlist) = seat.allowlist {
+        declared.retain(|d| crate::runner::allowlist_admits(allowlist, &d.name));
+        listed.retain(|n| crate::runner::allowlist_admits(allowlist, n));
+    }
+    let announced: BTreeSet<String> =
+        crate::harness::events::announced("tools_available", conversation).into_keys().collect();
+    let listing = ListingDelta::between(&announced, &listed);
+    Surface { declared, loaded, listing }
+}
+
 /// Remove company-Memory tools from a run's declared set (the per-employee
 /// ethical wall). `memory_tool_names` is resolved by the caller from the MCP
 /// proxy → integration mapping, so this stays pure and testable.
