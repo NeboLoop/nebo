@@ -532,7 +532,6 @@ impl FileTool {
         }
 
         // UTF-16 files read from the decoded text; everything else streams from disk.
-        let is_utf16 = utf16_text.is_some();
         let reader: Box<dyn BufRead> = match utf16_text {
             Some(text) => Box::new(std::io::Cursor::new(text)),
             None => Box::new(BufReader::with_capacity(1024 * 1024, file)),
@@ -547,7 +546,6 @@ impl FileTool {
         let mut result = String::new();
         let mut line_num = 0usize;
         let mut lines_read = 0usize;
-        let mut limit_truncated = false;
         let mut over_budget = false;
         // Spill artifacts (large tool results persisted under <session>/tool-results/)
         // already CONTAIN the line numbers from the read that produced them —
@@ -578,7 +576,6 @@ impl FileTool {
             }
 
             if lines_read >= limit {
-                limit_truncated = true;
                 // Count the rest so the note states the real total, not a floor.
                 let total = line_num + (&mut lines_iter).count();
                 total_lines = Some(total);
@@ -645,43 +642,15 @@ impl FileTool {
             result.push_str(&note);
         }
 
-        // Outline-first reads (PRD P4.1): a BLIND read (no offset/limit given)
-        // that does not cover the whole file gets the file's tree-sitter
-        // outline prepended, so the next read can target a symbol's line range
-        // instead of paging forward blindly. Decoration of the ONE read
-        // pathway — never a second one. Ranged reads and files with no
-        // compiled-in grammar are untouched (absence, not noise).
-        let outline = if (limit_truncated || over_budget)
-            && input.offset <= 0
-            && input.limit <= 0
-            && !is_utf16
-            && let Some(lang) = syntax::Lang::from_path(Path::new(&path))
-            && let Ok(full) = std::fs::read_to_string(&path)
-            && let Ok(symbols) = syntax::outline(&full, lang)
-            && !symbols.is_empty()
-        {
-            format!(
-                "[Outline ({}, {} lines total) — this read does not cover the whole file; request specific sections with offset/limit using these [start-end] line ranges.]\n{}\n\n",
-                lang.name(),
-                full.lines().count(),
-                crate::code_tool::render_outline(&symbols, 200),
-            )
-        } else {
-            String::new()
-        };
-
         if over_budget {
             return ToolResult::error(format!(
-                "{}File content ({} bytes rendered from line {}; the file has {} lines) exceeds the read budget of {} bytes (about 25,000 tokens). Use offset and limit to read a portion of the file, or grep for the content you need instead of reading the whole file.",
-                outline,
+                "File content ({} bytes rendered from line {}; the file has {} lines) exceeds the read budget of {} bytes (about 25,000 tokens). Use offset and limit to read a portion of the file, or grep for the content you need instead of reading the whole file.",
                 result.len(),
                 offset,
                 total_lines.unwrap_or(line_num),
                 FILE_READ_MAX_BYTES
             ));
         }
-        result = format!("{}{}", outline, result);
-
         if let Some(ref callback) = self.on_file_read {
             callback(&path);
         }
@@ -2876,7 +2845,7 @@ mod tests {
         );
     }
 
-    // ── Outline-first reads (PRD P4.1) ──────────────────────────────
+    // ── Cut-off reads ───────────────────────────────────────────────
 
     /// Write a source file long enough to trip the default 2000-line read
     /// truncation.
@@ -2890,60 +2859,18 @@ mod tests {
         path
     }
 
-    /// A blind read that comes back truncated prepends the tree-sitter
-    /// outline with ranged-read instructions — and the outline's own cap is
-    /// stated, never silent.
+    /// A blind read that comes back cut off is the read and its range note,
+    /// nothing added: Claude Code's Read appends no outline.
     #[test]
-    fn truncated_read_of_source_file_prepends_outline() {
+    fn a_cut_off_read_is_the_read_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = big_rust_file(dir.path());
         let tool = FileTool::new();
         let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
         assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.starts_with("[Outline (rust, 2100 lines total)"), "{}", crate::truncate_str(&r.content, 200));
-        assert!(r.content.contains("fn f0  [1-1]"), "{}", crate::truncate_str(&r.content, 400));
-        assert!(
-            r.content.contains("… 1900 more omitted"),
-            "outline cap must be stated: {}",
-            crate::truncate_str(&r.content, 400)
-        );
-        assert!(r.content.contains("offset/limit"), "must tell the model how to read ranges");
-        // The truncated content still follows — the outline decorates the ONE
-        // read pathway, it does not replace the read.
+        assert!(r.content.starts_with("     1\tfn f0() {}"), "{}", crate::truncate_str(&r.content, 200));
+        assert!(!r.content.contains("[Outline"), "{}", crate::truncate_str(&r.content, 200));
         assert!(r.content.contains("showing lines 1-2000"), "{}", crate::truncate_str(&r.content, 200));
-    }
-
-    /// A read that is NOT truncated carries no outline preamble.
-    #[test]
-    fn untruncated_read_has_no_outline_preamble() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("small.rs");
-        fs::write(&path, "fn a() {}\nfn b() {}\n").unwrap();
-        let tool = FileTool::new();
-        let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
-        assert!(!r.is_error);
-        assert!(!r.content.contains("[Outline"), "{}", r.content);
-    }
-
-    /// An explicitly RANGED read never gets the outline — the model is
-    /// already reading by range, so the preamble would be repeated noise.
-    #[test]
-    fn ranged_read_has_no_outline_preamble() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = big_rust_file(dir.path());
-        let tool = FileTool::new();
-        let r = tool.execute(
-            &ctx(),
-            json!({"action":"read","path": path.to_str().unwrap(), "offset": 5}),
-        );
-        assert!(!r.is_error);
-        assert!(!r.content.contains("[Outline"), "{}", crate::truncate_str(&r.content, 200));
-        let r = tool.execute(
-            &ctx(),
-            json!({"action":"read","path": path.to_str().unwrap(), "limit": 10}),
-        );
-        assert!(!r.is_error);
-        assert!(!r.content.contains("[Outline"), "{}", crate::truncate_str(&r.content, 200));
     }
 
     /// A limit-truncated read states the real total and the offset to continue

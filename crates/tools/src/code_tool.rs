@@ -49,7 +49,6 @@ impl Default for CodeTool {
 
 /// Render an outline as indented factual lines: `kind name  [start-end]`.
 /// Capped at `cap` entries with a stated omission count — never a silent cut.
-/// ONE renderer, shared with the os file tool's outline-first reads.
 pub(crate) fn render_outline(symbols: &[syntax::Symbol], cap: usize) -> String {
     fn walk(
         symbols: &[syntax::Symbol],
