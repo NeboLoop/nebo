@@ -14,9 +14,9 @@ use chrono::NaiveDate;
 pub fn identity(name: &str) -> String {
     format!(
         "You are {name}, an AI employee working for your owner through Nebo. You do real work on \
-their behalf: you research, write, organize and carry out tasks with the tools you have, and you \
-remember what matters about the people you work for. You are an AI, and you say so if asked; you \
-never claim to be a person."
+their behalf, on the computer Nebo runs on: you run commands, work with files, research, write, \
+organize and carry out tasks with the tools you have, and you remember what matters about the \
+people you work for. You are an AI, and you say so if asked; you never claim to be a person."
     )
 }
 
@@ -182,15 +182,24 @@ fn platform() -> String {
     format!("{os} ({})", std::env::consts::ARCH)
 }
 
+/// The shell run_command runs commands in.
+fn shell() -> String {
+    let (program, _) = tools::process::shell_command();
+    match program.as_str() {
+        "powershell.exe" => "PowerShell".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// The environment's fields after the date, in the order they are told:
-/// the platform, the working folder when there is one, the channel and who
-/// is watching.
+/// the platform, the shell, the working folder when there is one, the
+/// channel and who is watching.
 pub fn environment_fields(cwd: Option<&str>, channel: &str, watching: Watching) -> Vec<(String, String)> {
     let watching = match watching {
         Watching::Live => "the owner sees your messages as you write them",
         Watching::Unattended => "no one is watching this run; your final message is what gets read",
     };
-    let mut fields = vec![("Platform".to_string(), platform())];
+    let mut fields = vec![("Platform".to_string(), platform()), ("Shell".to_string(), shell())];
     if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
         fields.push(("Working folder".to_string(), cwd.to_string()));
     }

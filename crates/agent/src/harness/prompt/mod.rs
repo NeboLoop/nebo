@@ -210,6 +210,6 @@ mod tests {
         assert!(e.fixed < 8_000);
     }
 
-    const FIXED_CHARS: usize = 5_130;
+    const FIXED_CHARS: usize = 5_191;
     const HELPER_FIXED_CHARS: usize = 5_637;
 }
