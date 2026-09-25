@@ -501,6 +501,108 @@ pub fn query(source: &str, lang: Lang, ts_query: &str) -> Result<Vec<QueryHit>, 
     Ok(hits)
 }
 
+/// One simple command in a shell script: the command name and its arguments
+/// with quoting removed, and whether variable assignments prefix it
+/// (`FOO=1 cmd`). Redirections are not words. A word whose value is only
+/// known when the script runs (`$X`, `$(…)`, a glob, `{a,b}`) is `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellCommand {
+    pub assigns: bool,
+    pub words: Vec<Option<String>>,
+}
+
+/// Every simple command in a bash script, the nested ones included (command
+/// and process substitutions, backticks, subshells, redirect targets,
+/// function bodies), in source order. `None` when the grammar rejects any of
+/// it.
+pub fn shell_commands(script: &str) -> Option<Vec<ShellCommand>> {
+    let tree = parse(script, Lang::Bash).ok()?;
+    if tree.root_node().has_error() {
+        return None;
+    }
+    let mut commands = Vec::new();
+    let mut cursor = tree.walk();
+    'walk: loop {
+        let node = cursor.node();
+        if node.kind() == "command" {
+            commands.push(shell_command(node, script));
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                continue 'walk;
+            }
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    Some(commands)
+}
+
+fn shell_command(node: Node, script: &str) -> ShellCommand {
+    let mut command = ShellCommand { assigns: false, words: Vec::new() };
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "variable_assignment" => command.assigns = true,
+            "command_name" => command.words.push(child.named_child(0).and_then(|w| shell_word(w, script))),
+            kind if kind.ends_with("redirect") => {}
+            _ => command.words.push(shell_word(child, script)),
+        }
+    }
+    command
+}
+
+/// The value of one word, or `None` when only running the script knows it.
+fn shell_word(node: Node, script: &str) -> Option<String> {
+    let text = node_text(node, script);
+    match node.kind() {
+        "word" | "number" => {
+            let mut out = String::new();
+            let mut chars = text.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => out.extend(chars.next().filter(|&n| n != '\n')),
+                    '*' | '?' | '[' | '{' => return None,
+                    c => out.push(c),
+                }
+            }
+            Some(out)
+        }
+        "raw_string" => text.strip_prefix('\'')?.strip_suffix('\'').map(str::to_string),
+        "string" => {
+            let mut cursor = node.walk();
+            if node.named_children(&mut cursor).any(|c| c.kind() != "string_content") {
+                return None;
+            }
+            let inner = text.strip_prefix('"')?.strip_suffix('"')?;
+            let mut out = String::new();
+            let mut chars = inner.chars().peekable();
+            while let Some(c) = chars.next() {
+                match (c, chars.peek()) {
+                    ('\\', Some('\n')) => {
+                        chars.next();
+                    }
+                    ('\\', Some(&n @ ('$' | '`' | '"' | '\\'))) => {
+                        chars.next();
+                        out.push(n);
+                    }
+                    (c, _) => out.push(c),
+                }
+            }
+            Some(out)
+        }
+        "concatenation" => {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor).map(|c| shell_word(c, script)).collect()
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
