@@ -413,7 +413,9 @@ mod tests {
         let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
         let handle = tools::orchestrator::new_handle();
         let _ = handle.set(Box::new(Recording(rec.clone())));
-        (dir, tools::helper_tools::Helpers::new(store, handle).tools())
+        let rail = tools::coworker::new_rail_cell();
+        let teams = Arc::new(tools::team_tool::Teams::new(Some(store.clone()), None, None, rail.clone()));
+        (dir, tools::helper_tools::Helpers::new(store, handle, teams, rail).tools())
     }
 
     /// The escalation #246 closed: a helper of an employee with shell off and

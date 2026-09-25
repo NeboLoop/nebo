@@ -12,149 +12,16 @@ use db::Store;
 /// pattern the agent worker uses (`agent::agent_worker::NotifyFn`).
 pub type NotifyFn = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
-/// MessageTool handles outbound delivery to coworkers (named AI employees on
-/// this bot) and SMS. Reaching the owner is `message_owner`,
-/// `push_notification` and `check_dnd` (`owner_tools`).
+/// MessageTool sends and reads SMS. Coworkers and teams are `send_message`;
+/// reaching the owner is `message_owner`, `push_notification` and
+/// `check_dnd` (`owner_tools`).
 pub struct MessageTool {
     store: Arc<Store>,
-    /// Coworker message rail (server-implemented), late-wired: read at
-    /// execution time.
-    coworker_rail: crate::coworker::CoworkerRailCell,
 }
 
 impl MessageTool {
-    pub fn new(store: Arc<Store>, coworker_rail: crate::coworker::CoworkerRailCell) -> Self {
-        Self { store, coworker_rail }
-    }
-
-    fn infer_resource(&self, action: &str, input: &serde_json::Value) -> &str {
-        let to = input["to"].as_str().unwrap_or("").trim();
-        let phone_like = !to.is_empty()
-            && to.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | ' ' | '-' | '(' | ')'));
-        match action {
-            "conversations" | "read" | "search" => "sms",
-            // send to a phone number is sms; send to anyone else is a
-            // coworker (smoke 2026-09-06: to + text with no resource).
-            "send" if phone_like => "sms",
-            "send" if !to.is_empty() || input.get("text").is_some() => "coworker",
-            _ => "",
-        }
-    }
-
-    async fn handle_coworker(&self, ctx: &ToolContext, input: &serde_json::Value) -> ToolResult {
-        let text = input["text"].as_str().unwrap_or("");
-        // A send with no `to` that names exactly one installed employee in its
-        // text is addressed to them (smoke, 2026-09-05: "Chief of Staff" was in
-        // the text and the call died on the missing field).
-        let names: Vec<String> = self
-            .store
-            .list_agents(500, 0)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|a| a.name)
-            .filter(|n| !n.trim().is_empty())
-            .collect();
-        // Names are matched with hyphens and underscores as spaces, so the
-        // user's "chief-of-staff" is the employee "Chief of Staff".
-        let norm = |t: &str| t.to_ascii_lowercase().replace(['-', '_'], " ");
-        let unique_name_in = |haystack: &str| -> Option<String> {
-            let hay = norm(haystack);
-            let mut hits = names.iter().filter(|n| hay.contains(&norm(n)));
-            match (hits.next(), hits.next()) {
-                (Some(n), None) => Some(n.clone()),
-                _ => None,
-            }
-        };
-        let inferred: Option<String> = if input["to"].as_str().unwrap_or("").is_empty() {
-            // The text first; then the user's own request in this chat, which
-            // is where the model read the name (smoke 2026-09-06: "Ask the
-            // chief-of-staff agent ..." became text: "Draft my weekly report.").
-            unique_name_in(text).or_else(|| {
-                // The session's current chat, by the ONE derivation the store
-                // owns. `chat_id_from_thread_key` only understands `:thread:`
-                // keys, so on every ordinary `agent:<id>:<channel>` key (and
-                // the harness's `eval:` keys) this fallback silently never ran
-                // — smoke 2026-09-15: "Ask the chief-of-staff agent…" died on
-                // "Missing required parameter 'to'".
-                let session = self.store.get_session_by_name(&ctx.session_key).ok().flatten()?;
-                let chat_id = self.store.session_chat_id(&session.id)?;
-                let last_user = self
-                    .store
-                    .get_recent_chat_messages(&chat_id, 8)
-                    .ok()?
-                    .into_iter()
-                    .rev()
-                    .find(|m| m.role == "user")?;
-                unique_name_in(&last_user.content)
-            })
-        } else {
-            None
-        };
-        let to = input["to"].as_str().filter(|t| !t.is_empty()).map(String::from).or(inferred);
-        let Some(to) = to else {
-            let roster = if names.is_empty() {
-                String::new()
-            } else {
-                format!(" Installed employees: {}.", names.join(", "))
-            };
-            return ToolResult::error(format!(
-                "{}{roster}",
-                errors::missing_param(
-                    "send",
-                    "to",
-                    "message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\")",
-                )
-            ));
-        };
-        let to = to.as_str();
-        if text.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "send",
-                "text",
-                "message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\")",
-            ));
-        }
-
-        let rail = self.coworker_rail.read().unwrap().clone();
-        let Some(rail) = rail else {
-            return ToolResult::error(
-                "Coworker messaging is not available in this environment (no coworker rail wired; use send_loop_message for hub bots).",
-            );
-        };
-
-        let wait = input["wait"].as_bool().unwrap_or(true);
-        match crate::coworker::deliver(&rail, ctx, to, text, wait).await {
-            Ok(delivery) => {
-                // Structured payload → the chat renders a first-class
-                // "Messaged {name}" event (clickable through to the coworker
-                // thread) instead of a bare tool chip. threadKey identifies
-                // the delivered-into thread for the view-only transcript.
-                let payload = serde_json::json!({
-                    "kind": "coworker_message",
-                    "to": delivery.to_name,
-                    "toAgentId": delivery.to_agent_id,
-                    "threadKey": delivery.thread_key,
-                    "text": text,
-                    "reply": delivery.reply.clone(),
-                });
-                match delivery.reply {
-                    Some(ref reply) => ToolResult::ok(format!(
-                        "Message delivered to {}. Their reply:\n\n{}",
-                        delivery.to_name, reply
-                    ))
-                    .with_payload(payload),
-                    None => ToolResult::ok(format!(
-                        "Message delivered to {} — they are handling it in their own session; \
-                         when their reply arrives you will be woken automatically to act on it \
-                         and report. Until then, report this as \"asked {} — waiting\", never as \
-                         done.",
-                        delivery.to_name, delivery.to_name
-                    ))
-                    .with_payload(payload),
-                }
-            }
-            Err(e) => ToolResult::error(e),
-        }
+    pub fn new(store: Arc<Store>) -> Self {
+        Self { store }
     }
 }
 
@@ -164,14 +31,8 @@ impl DynTool for MessageTool {
     }
 
     fn description(&self) -> String {
-        "Outbound delivery — message coworkers (named AI employees), and send SMS.\n\
-         USE THIS when: handing work to a named coworker, or when the user wants to send a text to someone outside NeboAI.\n\n\
-         Coworkers (named employees on this bot):\n\
-         - message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"Can you confirm tomorrow's 2pm?\") — Message a coworker and wait for their reply\n\
-         - message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"FYI: the Smith file moved.\", wait: false) — Fire-and-forget (delivery is acknowledged; their reply wakes you automatically to act on it)\n\
-         The message is delivered into the coworker's own session — their persona, their memory, their connected accounts, their receipt — and the conversation is visible to the owner on both sides. \
-         Work for a coworker? Message them by name. Extra hands for your own work? Start a helper with delegate.\n\
-         Never claim a coworker's work is done — report \"asked X — waiting\" or relay their actual reply.\n\n\
+        "SMS — send, list, read and search text messages with people outside NeboAI.\n\
+         To message a coworker (another employee on this Nebo) or a team, use send_message.\n\n\
          - message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\") — Send SMS (macOS)\n\
          - message(resource: \"sms\", action: \"conversations\") — List SMS conversations\n\
          - message(resource: \"sms\", action: \"read\", phone: \"+15551234567\") — Read SMS messages\n\
@@ -188,7 +49,7 @@ impl DynTool for MessageTool {
                 "resource": {
                     "type": "string",
                     "description": "REQUIRED. The messaging resource category — determines which actions are available.",
-                    "enum": ["coworker", "sms"]
+                    "enum": ["sms"]
                 },
                 "action": {
                     "type": "string",
@@ -196,8 +57,6 @@ impl DynTool for MessageTool {
                     "enum": ["send", "conversations", "read", "search"]
                 },
                 "text": { "type": "string", "description": "Message text" },
-                "to": { "type": "string", "description": "REQUIRED for a coworker send: the employee to message, by installed name (e.g. \"receptionist\") or id. Never leave it out and name them in the text instead." },
-                "wait": { "type": "boolean", "description": "Coworker send: wait for their reply (default true). false = fire-and-forget; their reply wakes you automatically.", "default": true },
                 "phone": { "type": "string", "description": "Phone number or contact for SMS" },
                 "from": { "type": "string", "description": "SMS send: which of your phone lines to text from (E.164). Omit to use your first texting line." },
                 "query": { "type": "string", "description": "Search query for SMS search" },
@@ -209,7 +68,7 @@ impl DynTool for MessageTool {
 
 
     fn search_hint(&self) -> &str {
-        "message coworker employee sms text"
+        "send read search sms text messages"
     }
 
     fn should_defer(&self) -> bool {
@@ -222,9 +81,8 @@ impl DynTool for MessageTool {
             .get("resource")
             .and_then(|v| v.as_str())
             .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| self.infer_resource(action, input));
+            .unwrap_or_else(|| infer_resource(action));
         match (resource, action) {
-            ("coworker", _) => "send_message",
             ("sms", "send") => "sms_message_send",
             ("sms", "conversations") => "sms_conversations",
             ("sms", "search") => "sms_search",
@@ -234,8 +92,9 @@ impl DynTool for MessageTool {
         .to_string()
     }
 
+    /// Who a text goes to: the phone number a recipient rule matches.
     fn rule_field(&self, input: &serde_json::Value) -> Option<types::permissions::RuleField> {
-        let to = input.get("to").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty())?;
+        let to = input.get("phone").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty())?;
         Some(types::permissions::RuleField::Recipient(to.trim().to_string()))
     }
 
@@ -266,7 +125,7 @@ impl DynTool for MessageTool {
                 Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|s| !s.is_empty());
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Input did not match the schema: {}. Every call needs resource (coworker or sms) and action; fix the call and send it again.", e)),
+                Err(e) => return ToolResult::error(format!("Input did not match the schema: {}. Every call needs resource (sms) and action; fix the call and send it again.", e)),
             };
 
             let mut input = input;
@@ -274,30 +133,31 @@ impl DynTool for MessageTool {
                 let corrected = crate::domain::auto_correct_resource(
                     &domain_input,
                     &mut input,
-                    &["coworker", "sms"],
+                    &["sms"],
                 );
                 if corrected.is_empty() {
-                    self.infer_resource(&domain_input.action, &input).to_string()
+                    infer_resource(&domain_input.action).to_string()
                 } else {
                     corrected
                 }
             };
 
             match resource.as_str() {
-                "coworker" => match domain_input.action.as_str() {
-                    "send" => self.handle_coworker(ctx, &input).await,
-                    other => ToolResult::error(format!(
-                        "Unknown action '{}' for coworker resource. Available: send",
-                        other
-                    )),
-                },
                 "sms" => handle_sms(&self.store, ctx, agent_id.as_deref(), &domain_input.action, &input).await,
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: coworker, sms",
+                    "Resource {:?} not available. Available: sms. To message a coworker or a team, use send_message.",
                     other
                 )),
             }
         })
+    }
+}
+
+/// Every action of this tool is an SMS action.
+fn infer_resource(action: &str) -> &'static str {
+    match action {
+        "send" | "conversations" | "read" | "search" => "sms",
+        _ => "",
     }
 }
 

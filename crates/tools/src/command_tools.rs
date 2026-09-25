@@ -187,12 +187,14 @@ impl DynTool for RunCommandTool {
 // ── read_output / stop_task ────────────────────────────────────────
 
 /// What `read_output` and `stop_task` reach besides background commands:
-/// helpers (the orchestrator, with the task table behind it) and runs.
+/// helpers (the orchestrator, with the task table behind it), runs, and
+/// workflow runs (`stop_task` only).
 #[derive(Clone)]
 pub struct Helpers {
     pub orchestrator: crate::OrchestratorHandle,
     pub store: Option<Arc<db::Store>>,
     pub runs: Option<crate::run_querier::RunQuerierHandle>,
+    pub workflows: crate::workflows::WorkflowManagerCell,
 }
 
 impl Helpers {
@@ -256,9 +258,15 @@ impl Helpers {
                 Err(e) => return ToolResult::error(e),
             }
         }
+        let workflows = self.workflows.read().unwrap().clone();
+        if let Some(manager) = workflows
+            && manager.cancel(id).await.is_ok()
+        {
+            return ToolResult::ok(format!("Stopped workflow run {id}"));
+        }
         ToolResult::error(format!(
             "Nothing running has the id '{id}' ({helper_err}). Ids come from run_command with \
-             background: true (bg-…), from delegate, and from list_runs."
+             background: true (bg-…), from delegate, from list_runs, and from run_workflow."
         ))
     }
 }
@@ -347,8 +355,8 @@ impl DynTool for StopTaskTool {
     }
 
     fn description(&self) -> String {
-        "Stops a background command, a helper or a run.\n\
-         - `task_id` is the id run_command (background: true), delegate or list_runs gave you.\n\
+        "Stops a background command, a helper, a run or a workflow run.\n\
+         - `task_id` is the id run_command (background: true), delegate, list_runs or run_workflow gave you.\n\
          - To end another process on this computer, use run_command (kill)."
             .to_string()
     }
@@ -357,7 +365,7 @@ impl DynTool for StopTaskTool {
         json!({
             "type": "object",
             "properties": {
-                "task_id": { "type": "string", "description": "The background command's, helper's or run's id." }
+                "task_id": { "type": "string", "description": "The background command's, helper's, run's or workflow run's id." }
             },
             "required": ["task_id"]
         })
@@ -516,7 +524,7 @@ mod tests {
     }
 
     fn helpers() -> Helpers {
-        Helpers { orchestrator: crate::orchestrator::new_handle(), store: None, runs: None }
+        Helpers { orchestrator: crate::orchestrator::new_handle(), store: None, runs: None, workflows: Default::default() }
     }
 
     /// A background command's whole life through the command tools: start,
@@ -560,6 +568,18 @@ mod tests {
         assert_eq!((read.rule_key(&helper).as_str(), read.capability(&helper)), ("read_output", None));
         assert_eq!((stop.rule_key(&helper).as_str(), stop.capability(&helper)), ("stop_task", None));
         assert!(read.read_only(&cmd) && !stop.read_only(&cmd));
+    }
+
+    /// A workflow run's id stops the run through the workflow manager.
+    #[tokio::test]
+    async fn a_workflow_run_id_stops_the_workflow_run() {
+        let manager = Arc::new(crate::workflows::TestManager::default());
+        let h = helpers();
+        *h.workflows.write().unwrap() = Some(manager.clone() as Arc<dyn crate::workflows::WorkflowManager>);
+        let ctx = ToolContext::new(crate::origin::Origin::User);
+        let r = StopTaskTool { machine: machine(), helpers: h }.execute_dyn(&ctx, json!({"task_id": "run-7"})).await;
+        assert!(!r.is_error && r.content == "Stopped workflow run run-7", "{}", r.content);
+        assert_eq!(*manager.calls.lock().unwrap(), ["cancel run-7"]);
     }
 
     /// An id that is neither a command nor a known helper says where ids
