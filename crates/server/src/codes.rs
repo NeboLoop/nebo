@@ -1330,7 +1330,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
                         async move {
                             let platform = napp::plugin::current_platform_key();
                             let m = api_inner
-                                .get_plugin(&dep_slug, &platform)
+                                .get_plugin::<napp::plugin::PluginManifest>(&dep_slug, &platform)
                                 .await
                                 .map_err(|e| {
                                     napp::NappError::PluginDownloadFailed(e.to_string())
@@ -1405,7 +1405,7 @@ pub(crate) async fn fetch_and_install_plugin(
 ) -> Result<(), NeboError> {
     let platform = napp::plugin::current_platform_key();
     let detail = api
-        .get_plugin(slug, &platform)
+        .get_plugin::<napp::plugin::PluginManifest>(slug, &platform)
         .await
         .map_err(|e| NeboError::Internal(format!("fetch plugin detail for {slug}: {e}")))?;
     let version = if detail.version.is_empty() {
@@ -2072,6 +2072,7 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     // System info for the owner's manage console — which machine is this bot?
     config.insert("platform".into(), std::env::consts::OS.to_string());
     config.insert("hostname".into(), host_label());
+    config.insert("runtime".into(), RUNTIME.to_string());
 
     // Pin the PRIMARY agent's identity on CONNECT so the loop's default agent is
     // deterministically "Nebo" (the local `assistant` row) and can never be
@@ -2720,6 +2721,9 @@ async fn refresh_neboai_token(
     Some(token_resp.access_token)
 }
 
+/// What this bot runs, as the hub knows it (connect redeem + CONNECT).
+const RUNTIME: &str = "nebo";
+
 /// Core NEBO code redemption logic. Called by both:
 /// - `handle_nebo_code()` (chat-based code interception)
 /// - `connect_handler()` (HTTP POST /neboai/connect)
@@ -2728,7 +2732,7 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
     let api_server = state.config.neboai.api_url.clone();
 
     // 1. Redeem code (pre-auth, standalone)
-    let resp = comm::api::redeem_code(&api_server, code, "nebo-rs", "desktop", &bot_id)
+    let resp = comm::api::redeem_code(&api_server, code, "nebo-rs", "desktop", &bot_id, RUNTIME)
         .await
         .map_err(|e| NeboError::Internal(format!("redeem failed: {e}")))?;
 

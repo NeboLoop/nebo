@@ -36,6 +36,22 @@ pub fn provisioned_credential() -> Option<String> {
     std::env::var("NEBO_BOOT_TOKEN").ok().filter(|t| !t.trim().is_empty())
 }
 
+/// Detect the current platform key matching NeboAI conventions.
+///
+/// Returns e.g., "darwin-arm64", "linux-amd64", "windows-amd64".
+pub fn current_platform_key() -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    format!("{}-{}", os, arch)
+}
+
 /// Default production API server.
 pub const DEFAULT_API_SERVER: &str = "https://api.neboai.com";
 
@@ -635,7 +651,7 @@ impl NeboAIApi {
         let body = serde_json::json!({
             "code": code,
             "botIds": [self.bot_id],
-            "platform": napp::plugin::current_platform_key(),
+            "platform": current_platform_key(),
         });
         self.do_json(reqwest::Method::POST, "/api/v1/codes/redeem", Some(&body))
             .await
@@ -1426,12 +1442,13 @@ impl NeboAIApi {
 
     /// Get plugin manifest from NeboAI for a specific platform.
     ///
-    /// Returns the full `PluginManifest` which includes per-platform binary entries.
-    pub async fn get_plugin(
+    /// Decodes into the caller's manifest type (Nebo's is
+    /// `napp::plugin::PluginManifest`, with per-platform binary entries).
+    pub async fn get_plugin<T: DeserializeOwned>(
         &self,
         slug: &str,
         platform: &str,
-    ) -> Result<napp::plugin::PluginManifest, CommError> {
+    ) -> Result<T, CommError> {
         let path = format!(
             "/api/v1/plugins/{}?platform={}",
             urlencoding::encode(slug),
@@ -1745,13 +1762,15 @@ impl NeboAIApi {
 // ── Standalone functions (pre-auth, no client instance needed) ───────
 
 /// Redeem a connection code for bot credentials.
-/// Unauthenticated — used during initial setup.
+/// Unauthenticated — used during initial setup. `runtime` names what the bot
+/// runs: "nebo", "openclaw" or "hermes".
 pub async fn redeem_code(
     api_server: &str,
     code: &str,
     name: &str,
     purpose: &str,
     bot_id: &str,
+    runtime: &str,
 ) -> Result<RedeemCodeResponse, CommError> {
     let client = Client::new();
     let url = format!("{}/api/v1/bots/connect/redeem", api_server);
@@ -1760,6 +1779,7 @@ pub async fn redeem_code(
         name: name.into(),
         purpose: purpose.into(),
         bot_id: bot_id.into(),
+        runtime: runtime.into(),
     };
 
     let resp = client

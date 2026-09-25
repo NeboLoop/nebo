@@ -30,6 +30,9 @@ use tracing::{debug, info, warn};
 use crate::NappError;
 use crate::signing::SigningKeyProvider;
 
+/// The hub platform key (e.g. "darwin-arm64"); the hub client owns it.
+pub use comm::api::current_platform_key;
+
 // ── Types ───────────────────────────────────────────────────────────
 
 /// Plugin manifest stored locally at `<data_dir>/nebo/plugins/<slug>/<version>/plugin.json`.
@@ -2671,22 +2674,6 @@ pub enum PluginFsEvent {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
-
-/// Detect the current platform key matching NeboAI conventions.
-///
-/// Returns e.g., "darwin-arm64", "linux-amd64", "windows-amd64".
-pub fn current_platform_key() -> String {
-    let os = match std::env::consts::OS {
-        "macos" => "darwin",
-        other => other,
-    };
-    let arch = match std::env::consts::ARCH {
-        "aarch64" => "arm64",
-        "x86_64" => "amd64",
-        other => other,
-    };
-    format!("{}-{}", os, arch)
-}
 
 /// Env every plugin process must carry regardless of which code path spawned it.
 ///
