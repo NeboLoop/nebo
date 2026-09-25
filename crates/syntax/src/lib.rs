@@ -3,7 +3,7 @@
 //! The code-intelligence spine (PRD_CODING_HARNESS Pillar 2): zero external
 //! processes, works on every customer machine, offline. Consumed by the `code`
 //! STRAP tool (outline/symbols/parse_check/query/context) and by the os file
-//! tool's edit-verification chain and outline-first reads.
+//! tool's edit-verification chain.
 //!
 //! Tier-1 grammars only: rust, typescript(+tsx), javascript, python, go,
 //! json, yaml, toml, bash, html, css, markdown.
