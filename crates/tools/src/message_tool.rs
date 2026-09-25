@@ -118,7 +118,7 @@ impl MessageTool {
         let rail = self.coworker_rail.read().unwrap().clone();
         let Some(rail) = rail else {
             return ToolResult::error(
-                "Coworker messaging is not available in this environment (no coworker rail wired; use loop(resource: \"dm\") for hub bots).",
+                "Coworker messaging is not available in this environment (no coworker rail wired; use send_loop_message for hub bots).",
             );
         };
 

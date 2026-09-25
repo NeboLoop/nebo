@@ -1115,7 +1115,7 @@ impl Registry {
             crate::helper_tools::Helpers::new(store.clone(), orchestrator.clone()).tools(),
             crate::task_tools::Tasks::new(store.clone(), run_querier).tools(),
             crate::history_tools::History::new(store.clone()).tools(),
-            crate::advisor_tools::Advisors::new(store.clone(), advisor_runner.clone()).tools(),
+            crate::advisor_tools::Advisors::new(store.clone(), advisor_runner).tools(),
             crate::research_tools::Research::new(structured_agent).tools(),
             crate::profile_tools::Profile::new(store.clone(), self.notify_fn.clone()).tools(),
             crate::owner_tools::Owner::new(store.clone(), self.notify_fn.clone()).tools(),
@@ -1127,7 +1127,6 @@ impl Registry {
         for tool in families.into_iter().flatten() {
             self.register(tool).await;
         }
-        let runner_for_events = advisor_runner;
 
         // Agent tool: employees (the registry) — always registered (core)
         {
@@ -1153,12 +1152,10 @@ impl Registry {
             self.register(Box::new(crate::bot_tool::AgentTool::new(persona))).await;
         }
 
-        // Event tool (scheduled tasks / cron) — always registered (core)
-        let mut event_tool = crate::event_tool::EventTool::new(store.clone());
-        if let Some(runner) = runner_for_events {
-            event_tool = event_tool.with_runner(runner);
+        // The schedule tools (reminders and recurring jobs).
+        for tool in crate::event_tool::tools(store.clone()) {
+            self.register(Box::new(tool)).await;
         }
-        self.register(Box::new(event_tool)).await;
 
         // Skill tool (skill management) — always registered (core)
         if let Some(ref loader) = skill_loader {
@@ -1208,10 +1205,11 @@ impl Registry {
         )))
         .await;
 
-        // Work tool (workflow lifecycle + execution) — deferred (only activated when user mentions workflows)
+        // The workflow tools (lifecycle and runs).
         if let Some(manager) = workflow_manager {
-            self.register(Box::new(crate::workflows::WorkTool::new(manager)))
-                .await;
+            for tool in crate::workflows::tools(manager) {
+                self.register(Box::new(tool)).await;
+            }
         }
 
         self.register(Box::new(crate::publisher_tool::PublisherTool::new(
@@ -1242,16 +1240,18 @@ impl Registry {
         self.register(Box::new(crate::vm_tool::VmTool::new()))
             .await;
 
-        // Team tool (teams of local employees) — always registered (core): a
-        // team is a local object and works with no hub at all. The comm
-        // handle, when present, only adds the optional hub mirror.
-        self.register(Box::new(crate::team_tool::TeamTool::new(
+        // The team tools (teams of local employees): a team is a local
+        // object and works with no hub at all. The comm handle, when
+        // present, only adds the optional hub mirror.
+        let teams = Arc::new(crate::team_tool::Teams::new(
             Some(store.clone()),
             comm_plugin.clone(),
             broadcaster.clone(),
             self.coworker_rail.clone(),
-        )))
-        .await;
+        ));
+        for tool in crate::team_tool::tools(teams) {
+            self.register(Box::new(tool)).await;
+        }
 
         // Authority tool (standing authority inside the constitution). Deferred:
         // it reaches the model only when a seat's `requires.tools` names
@@ -1259,19 +1259,17 @@ impl Registry {
         self.register(Box::new(crate::authority_tool::AuthorityTool::new(store.clone())))
             .await;
 
-        // Loop tool (NeboAI comms: dm, channel, loop, topic) — requires "loop" permission.
-        // The comm handle exists from startup; the real LoopTool's per-action
-        // `is_connected()` check reflects the live connection state, so it is always
-        // registered when the handle is available (even before NeboAI connects).
-        if allowed("loop") {
-            if let Some(ref comm) = comm_plugin {
-                self.register(Box::new(crate::loop_tool::LoopTool::new(
-                    comm.clone(),
-                    Some(store.clone()),
-                    broadcaster.clone(),
-                    self.coworker_rail.clone(),
-                )))
-                .await;
+        // The NeboAI loop tools (hub messages, channels, loops, topics) —
+        // require the "loop" permission. The comm handle exists from startup;
+        // each call's `is_connected()` check reflects the live connection
+        // state, so they are registered whenever the handle is available
+        // (even before NeboAI connects).
+        if allowed("loop")
+            && let Some(ref comm) = comm_plugin
+        {
+            let core = crate::loop_tool::LoopCore::new(comm.clone(), Some(store.clone()));
+            for tool in crate::loop_tool::tools(core) {
+                self.register(Box::new(tool)).await;
             }
         }
     }
@@ -2064,9 +2062,8 @@ mod tests {
     /// The tools that still carry several jobs behind `action`/`resource`.
     /// Each tool package removes its names; nothing is ever added.
     const PRE_INTERFACE_TOOLS: &[&str] = &[
-        "a2ui", "agent", "authority", "code", "emit", "event", "execute", "exit", "loop",
-        "mcp", "message", "notebook", "os", "pack", "plugin", "publisher", "rules", "skill",
-        "team", "vm", "work",
+        "a2ui", "agent", "authority", "code", "execute", "exit", "mcp", "message", "notebook",
+        "os", "pack", "plugin", "publisher", "rules", "skill", "vm",
     ];
 
     /// The enum-dispatch surfaces the interface allows (device surfaces).
@@ -2123,7 +2120,7 @@ mod tests {
 
     #[test]
     fn the_pre_interface_list_is_closed_and_the_allowed_surfaces_are_the_device_ones() {
-        assert_eq!(PRE_INTERFACE_TOOLS.len(), 21, "packages only remove names from this list");
+        assert_eq!(PRE_INTERFACE_TOOLS.len(), 16, "packages only remove names from this list");
         assert!(ENUM_SURFACES.iter().all(|(t, _)| is_tool_name(t)));
     }
 
@@ -2136,16 +2133,17 @@ mod tests {
     /// The plugin tool (core too, and sized by the installed plugins) needs a
     /// plugin store and is not in this roster. Each package that lands lowers
     /// the numbers; they never rise. WP5 deferred the web family: −8,361 on
-    /// macOS, −8,362 on Linux.
+    /// macOS, −8,362 on Linux. WP9 deferred the schedule and team families
+    /// (team 2,747 · event 2,229).
     ///
-    /// Tools WP2 (helpers, memory, ask): 36,554 on macOS (agent 6,006 · os
+    /// Tools WP2 (helpers, memory, ask): 31,578 on macOS (agent 6,006 · os
     /// 14,070 · message 2,657 · delegate 1,702 · remember 1,039 · recall 701
     /// · ask_owner 618 · forget 336); Linux drops by the same amount except
     /// its os text, which is held at its WP0 size.
     #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 36_554;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 31_578;
     #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 37_006;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 32_030;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2176,11 +2174,11 @@ mod tests {
         assert_eq!(
             core,
             [
-                "agent", "ask_owner", "delegate", "event", "find_tools", "forget", "mcp", "message", "os",
-                "recall", "remember", "skill", "team"
+                "agent", "ask_owner", "delegate", "find_tools", "forget", "mcp", "message", "os", "recall",
+                "remember", "skill"
             ]
         );
-        for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules"] {
+        for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules", "create_schedule", "list_teams"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
     }
