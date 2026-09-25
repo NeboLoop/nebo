@@ -301,7 +301,7 @@ impl FileTool {
         let mut result = self.handle_write(session, &write);
         if !result.is_error {
             result.content = format!(
-                "plan written to {} ({} step{}). Verify with os(resource: \"file\", action: \"plan_check\", path: \"{}\") — only a passing verify command ticks a step.\n{}",
+                "plan written to {} ({} step{}). Verify with check_plan(path: \"{}\") — only a passing verify command ticks a step.\n{}",
                 fi.path,
                 steps.len(),
                 if steps.len() == 1 { "" } else { "s" },
@@ -393,7 +393,7 @@ impl FileTool {
     fn handle_read(&self, ctx: &ToolContext, input: &FileInput) -> ToolResult {
         let session = ctx.session_key.as_str();
         if input.path.is_empty() {
-            return ToolResult::error(errors::missing_param("read", "path", "os(resource: \"file\", action: \"read\", path: \"/tmp/file.txt\")"));
+            return ToolResult::error(errors::missing_param("read", "path", "read_file(path: \"/tmp/file.txt\")"));
         }
 
         // Resolve the user-supplied path through the canonical resolver:
@@ -518,7 +518,7 @@ impl FileTool {
                         format!("size unknown (metadata reports 0 bytes; {} bytes were read)", n)
                     };
                     return ToolResult::ok(format!(
-                        "[Binary file detected: content not shown. {}; {}. To inspect the raw bytes: os(resource: \"shell\", action: \"exec\", command: \"hexdump -C '{}' | head\")]",
+                        "[Binary file detected: content not shown. {}; {}. To inspect the raw bytes: run_command(command: \"hexdump -C '{}' | head\", description: \"Show the file's first bytes\")]",
                         size,
                         reason,
                         path
@@ -632,8 +632,8 @@ impl FileTool {
                 // read and is returned as one.
                 return ToolResult::error(format!(
                     "(no content returned — this file is {} bytes on disk, so it is NOT empty. \
-                     This is a read failure, not the file's contents. Try os(resource: \"file\", \
-                     action: \"grep\", path: \"{}\", pattern: \".\") instead of repeating this read.)",
+                     This is a read failure, not the file's contents. Search it with run_command \
+                     (grep -n . '{}' | head) instead of repeating this read.)",
                     size, path
                 ));
             } else {
@@ -695,13 +695,13 @@ impl FileTool {
 
     fn handle_write(&self, session: &str, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
-            return ToolResult::error(errors::missing_param("write", "path", "os(resource: \"file\", action: \"write\", path: \"/tmp/file.txt\", content: \"hello\")"));
+            return ToolResult::error(errors::missing_param("write", "path", "write_file(path: \"/tmp/file.txt\", content: \"hello\")"));
         }
         // Reject empty content (catches wrong field name like 'text' instead of 'content').
         // Append to existing file with empty content is allowed (no-op but not an error).
         if input.content.is_empty() && !input.append {
             return ToolResult::error(
-                "Error: content is required for write. Use the 'content' field (not 'text' or 'data'). Example: os(resource: \"file\", action: \"write\", path: \"/tmp/f.txt\", content: \"hello\")",
+                "Error: content is required for write. Use the 'content' field (not 'text' or 'data'). Example: write_file(path: \"/tmp/f.txt\", content: \"hello\")",
             );
         }
 
@@ -718,9 +718,9 @@ impl FileTool {
             .map(|e| e.to_ascii_lowercase())
             .unwrap_or_default();
         let redirect = match ext_lower.as_str() {
-            "docx" | "doc" => Some("write the content as Markdown (.md), then os(resource: \"file\", action: \"convert\", path: ..., to: \"docx\")"),
-            "xlsx" | "xls" => Some("write the data as CSV (.csv), then os(resource: \"file\", action: \"convert\", path: ..., to: \"xlsx\")"),
-            "pdf" => Some("write the content as Markdown (.md), then os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")"),
+            "docx" | "doc" => Some("write the content as Markdown (.md), then convert_file(path: ..., to: \"docx\")"),
+            "xlsx" | "xls" => Some("write the data as CSV (.csv), then convert_file(path: ..., to: \"xlsx\")"),
+            "pdf" => Some("write the content as Markdown (.md), then convert_file(path: ..., to: \"pdf\")"),
             "pptx" | "ppt" => Some("use the pptx skill: write a JSON spec, then run the nebo-office binary (`nebo-office pptx create spec.json -o out.pptx`)"),
             _ => None,
         };
@@ -830,7 +830,7 @@ impl FileTool {
                         "\n\nWARNING: this .html contains raw JSX (e.g. className=, <Component/>) \
                          with no transpiler, so it renders BLANK in a browser. To build an \
                          interactive React artifact, write the component as a .jsx file, then \
-                         os(resource: \"file\", action: \"convert\", path: \"<file>.jsx\", to: \"html\"). \
+                         convert_file(path: \"<file>.jsx\", to: \"html\"). \
                          Never put JSX or CDN-loaded React directly in a .html.",
                     );
                 }
@@ -850,10 +850,10 @@ impl FileTool {
 
     fn handle_edit(&self, session: &str, input: &FileInput) -> ToolResult {
         if input.path.is_empty() {
-            return ToolResult::error(errors::missing_param("edit", "path", "os(resource: \"file\", action: \"edit\", path: \"/tmp/file.txt\", old_string: \"old\", new_string: \"new\")"));
+            return ToolResult::error(errors::missing_param("edit", "path", "edit_file(path: \"/tmp/file.txt\", old_string: \"old\", new_string: \"new\")"));
         }
         if input.old_string.is_empty() {
-            return ToolResult::error(errors::missing_param("edit", "old_string", "os(resource: \"file\", action: \"edit\", path: \"/tmp/file.txt\", old_string: \"text to find\", new_string: \"replacement\")"));
+            return ToolResult::error(errors::missing_param("edit", "old_string", "edit_file(path: \"/tmp/file.txt\", old_string: \"text to find\", new_string: \"replacement\")"));
         }
         if input.old_string == input.new_string {
             return ToolResult::error("Error: old_string and new_string are identical. The edit would produce no change.");
@@ -972,7 +972,7 @@ impl FileTool {
             return ToolResult::error(errors::missing_param(
                 "share",
                 "path",
-                "os(resource: \"file\", action: \"share\", path: \"/data/files/deck.pptx\")",
+                "share_file(path: \"/data/files/deck.pptx\")",
             ));
         }
 

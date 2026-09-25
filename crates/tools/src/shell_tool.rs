@@ -64,10 +64,7 @@ impl ShellTool {
         let mut si: ShellInput = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => {
-                return ToolResult::error(format!(
-                    "invalid input: {e}. Shape: os(resource: \"shell\", action: \"exec\", command: \"...\") \
-                     with optional timeout (seconds), cwd, background: true"
-                ))
+                return ToolResult::error(format!("invalid input: {e}"))
             }
         };
 
@@ -119,12 +116,12 @@ impl ShellTool {
             return ToolResult::error(errors::missing_param(
                 "exec",
                 "command",
-                "os(resource: \"shell\", action: \"exec\", command: \"ls -la\")",
+                "run_command(command: \"ls -la\", description: \"List files\")",
             ));
         }
 
         // Document conversion has ONE canonical pathway — the embedded Typst
-        // engine behind `os(file convert)`. Host converter binaries only exist
+        // engine behind `convert_file`. Host converter binaries only exist
         // on some machines (wkhtmltopdf is abandoned upstream), so shelling out
         // to them produces runs that work on the developer's laptop and fail on
         // every customer install. Redirect instead of executing.
@@ -138,8 +135,8 @@ impl ShellTool {
                 return ToolResult::error(
                     "Host document converters are not available on user machines. \
                      Convert documents with the built-in engine instead: write the document \
-                     as Markdown, then os(resource: \"file\", action: \"convert\", \
-                     path: \"/path/doc.md\", to: \"pdf\"). It typesets identically on every \
+                     as Markdown, then convert_file(path: \"/path/doc.md\", to: \"pdf\"). \
+                     It typesets identically on every \
                      platform and the PDF appears in the Work panel automatically.",
                 );
             }
@@ -214,9 +211,9 @@ impl ShellTool {
             return ToolResult::error(
                 "This git command discards work (stash, reset --hard, checkout/restore of \
                  tracked files, clean -f, force push, branch -D) and is not available. \
-                 To be able to undo a change, take a checkpoint first: os(resource: \
-                 \"file\", action: \"checkpoint\", paths: [...]) and restore it with \
-                 action: \"restore\". For parallel edits use a worktree (agent spawn_parallel \
+                 To be able to undo a change, take a checkpoint first with \
+                 checkpoint_files(paths: [...]) and put it back with restore_checkpoint. \
+                 For parallel edits use a worktree (agent spawn_parallel \
                  with isolate: \"worktree\"). If the owner truly wants history rewritten, \
                  tell them the exact command and let them run it."
                     .to_string(),
@@ -229,9 +226,9 @@ impl ShellTool {
         if crate::policy::is_sed_in_place(&input.command) {
             return ToolResult::error(
                 "In-place sed is not available: it edits a file outside the supervised edit \
-                 path (no read check, no verification, no ledger). Use os(resource: \"file\", \
-                 action: \"edit\", path, old_string, new_string) for the same change, or \
-                 replace_all: true for every occurrence. Plain `sed` that prints to stdout is fine."
+                 path (no read check, no verification, no ledger). Use edit_file(path, \
+                 old_string, new_string) for the same change, or replace_all: true for every \
+                 occurrence. Plain `sed` that prints to stdout is fine."
                     .to_string(),
             );
         }
@@ -318,7 +315,7 @@ impl ShellTool {
                     "Command killed after {}s (its timeout): `{}`\n\
                      Output before the kill:\n{}\
                      Pass a larger timeout for a longer job, or run it with background: true \
-                     and poll with action: \"poll\".",
+                     and read its output with read_output.",
                     timeout_secs,
                     if input.command.len() > 80 {
                         format!("{}...", crate::truncate_str(&input.command, 80))
@@ -608,7 +605,7 @@ impl ShellTool {
 
             match result {
                 Ok(output) if output.status.success() => ToolResult::ok(format!(
-                    "Sent SIG{} to PID {}. Confirm it exited with action: \"info\", pid: {}",
+                    "Sent SIG{} to PID {}. Confirm it exited with list_processes(pid: {})",
                     sig, pid, pid
                 )),
                 Ok(output) => {
@@ -707,11 +704,9 @@ impl ShellTool {
         let action = input.action.as_str();
         if matches!(action, "poll" | "log" | "write" | "kill" | "info") && input.session_id.is_empty() {
             return ToolResult::error(format!(
-                "session_id is required: os(resource: \"shell\", action: \"{action}\", \
-                 session_id: \"<id from the background start>\"){}",
+                "task_id is required: the id run_command gave the background command (bg-…){}",
                 match action {
-                    "write" => ", plus data: \"<text to send to stdin>\"",
-                    "kill" | "info" => "; for a system process pass pid: <number> instead",
+                    "kill" | "info" => "; for another process on this computer, use list_processes with pid",
                     _ => "",
                 }
             ));
@@ -880,12 +875,11 @@ fn session_status(exited: bool, exit_code: Option<i32>) -> String {
     }
 }
 
-/// The three calls that manage a background session, spelled out so the
-/// model does not have to guess the resource/action pair.
+/// The calls that manage a background command, spelled out with its id.
 fn session_next_steps(session_id: &str) -> String {
     format!(
-        "Running. Poll: os(resource: \"shell\", action: \"poll\", session_id: \"{session_id}\"); \
-         full log: action \"log\"; stop: action \"kill\"."
+        "Running. Read its output with read_output(task_id: \"{session_id}\"); stop it with \
+         stop_task(task_id: \"{session_id}\")."
     )
 }
 
@@ -1272,7 +1266,7 @@ mod tests {
 
         let r = t.execute(&ctx(), json!({"action": "poll"})).await;
         assert!(r.is_error);
-        assert!(r.content.contains("session_id: \"<id from the background start>\""), "{}", r.content);
+        assert!(r.content.contains("task_id is required"), "{}", r.content);
 
         let r = t.execute(&ctx(), json!({"action": "frobnicate", "pid": 1})).await;
         assert!(r.content.contains("for a PID-based call. Valid: list, kill, info"), "{}", r.content);
@@ -1288,7 +1282,7 @@ mod tests {
             .await;
         assert!(!r.is_error, "{}", r.content);
         assert!(
-            r.content.contains("Poll: os(resource: \"shell\", action: \"poll\", session_id: \""),
+            r.content.contains("read_output(task_id: \""),
             "{}",
             r.content
         );
