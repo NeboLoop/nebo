@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "本轮上下文：{files} 个文件被重新读取了 {times} 次，压缩 {passes} 轮。",
+		"goalLine": "目标：{condition}（{turns} 轮）",
+		"goalLastCheck": "上次检查：{reason}",
+		"goalPaused": "已暂停。你的下一条消息会恢复它。",
 		"resumedActivity": "仍在处理：{tool}",
 		"waitingForYou": "等待你处理",
 		"subagentStep": "{op} · 第 {n} 步",
@@ -2465,6 +2468,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "同一步骤中有 {n} 个动作需要你的批准",
+			"goalHeadline": "确认这个目标吗？工作会持续进行，直到检查确认目标已达成。",
 			"yourAgent": "你的员工"
 		},
 		"approvalModal": {

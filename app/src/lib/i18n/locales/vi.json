@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Ngữ cảnh lượt này: {files} tệp được đọc lại {times} lần, {passes} lượt nén.",
+		"goalLine": "Mục tiêu: {condition} ({turns} lượt)",
+		"goalLastCheck": "lần kiểm tra gần nhất: {reason}",
+		"goalPaused": "Đã tạm dừng. Tin nhắn tiếp theo của bạn sẽ tiếp tục.",
 		"resumedActivity": "Vẫn đang làm: {tool}",
 		"waitingForYou": "Đang chờ bạn",
 		"subagentStep": "{op} · bước {n}",
@@ -2465,6 +2468,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} hành động trong một bước cần bạn phê duyệt",
+			"goalHeadline": "Thống nhất mục tiêu này? Công việc tiếp tục cho đến khi kiểm tra xác nhận đã đạt.",
 			"yourAgent": "Nhân viên của bạn"
 		},
 		"approvalModal": {

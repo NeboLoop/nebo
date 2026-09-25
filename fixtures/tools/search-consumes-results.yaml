@@ -2,7 +2,7 @@ id: search-consumes-results
 name: "Web search — consume results, no re-search treadmill"
 description: |
   A current-fact question (pricing) that must be answered from the web. The
-  2026-07-09 incident: the agent fired 14+ web(search) calls with varied queries,
+  2026-07-09 incident: the agent fired 14+ search_web calls with varied queries,
   never read a result page, and never answered — because every search tier
   returned results with EMPTY snippets (bare title+URL lists), so there was
   nothing to consume and the model kept re-querying.
@@ -10,7 +10,7 @@ description: |
   Fixed by making the search contract honest: every tier populates snippets
   (extract_search_links captures description text + DDG's duplicate-href snippet
   anchors), and when no preview text exists the payload says so explicitly and
-  points at read_page. This fixture guards the behavior, whatever the future
+  points at fetch_url. This fixture guards the behavior, whatever the future
   cause: search → consume (answer from snippets or read a page) — never
   search → search → search.
 target_component: agent
@@ -20,17 +20,19 @@ conversation:
     content: "What does ChatGPT 5.6 cost per million input and output tokens? Give me the current prices."
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  fetch_url:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: searches-first
-      text: "Model starts with a web search (resource: search) for the pricing"
+      text: "Model starts with search_web for the pricing"
       severity: important
   recovery:
     - id: consumes-results
-      text: "After a search returns results, the model either answers using the result snippets OR calls web read_page/fetch on a result URL — it does NOT issue another search without consuming the previous results"
+      text: "After a search returns results, the model either answers using the result snippets OR calls fetch_url or browser_open + browser_read on a result URL — it does NOT issue another search without consuming the previous results"
       severity: critical
     - id: no-treadmill
       text: "Model performs at most 3 web searches total for this single-fact question"
@@ -48,7 +50,7 @@ ideal_behavior:
   total_tokens: 3000
   narrative: |
     The agent searches once, reads the pricing from the result snippets (or makes
-    one read_page call on the most authoritative result), and answers with the
+    one fetch_url call on the most authoritative result), and answers with the
     concrete numbers. If results genuinely lack preview text, the payload now says
-    so explicitly and the agent's next call is read_page on a result URL — never
+    so explicitly and the agent's next call is fetch_url on a result URL — never
     another search with a reworded query.

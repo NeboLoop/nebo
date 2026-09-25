@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "บริบทของรอบนี้: อ่านไฟล์ซ้ำ {files} ไฟล์ {times} ครั้ง บีบอัด {passes} รอบ",
+		"goalLine": "เป้าหมาย: {condition} ({turns} รอบ)",
+		"goalLastCheck": "ตรวจล่าสุด: {reason}",
+		"goalPaused": "หยุดชั่วคราว ข้อความถัดไปของคุณจะทำต่อ",
 		"resumedActivity": "ยังทำอยู่: {tool}",
 		"waitingForYou": "รอคุณอยู่",
 		"subagentStep": "{op} · ขั้นที่ {n}",
@@ -2465,6 +2468,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} การกระทำในขั้นตอนเดียวต้องให้คุณอนุมัติ",
+			"goalHeadline": "ตกลงเป้าหมายนี้ไหม? งานจะดำเนินต่อจนกว่าการตรวจจะยืนยันว่าสำเร็จ",
 			"yourAgent": "พนักงานของคุณ"
 		},
 		"approvalModal": {

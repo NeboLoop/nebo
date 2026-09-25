@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Bu turdaki bağlam: {files} dosya {times} kez yeniden okundu, {passes} sıkıştırma geçişi.",
+		"goalLine": "Hedef: {condition} ({turns} tur)",
+		"goalLastCheck": "son kontrol: {reason}",
+		"goalPaused": "Duraklatıldı. Bir sonraki mesajınız devam ettirir.",
 		"resumedActivity": "Hâlâ çalışıyor: {tool}",
 		"waitingForYou": "Sizi bekliyor",
 		"subagentStep": "{op} · adım {n}",
@@ -2465,6 +2468,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "Tek adımdaki {n} işlem onayınızı bekliyor",
+			"goalHeadline": "Bu hedefte anlaşalım mı? Bir kontrol ulaşıldığını doğrulayana kadar çalışma sürer.",
 			"yourAgent": "Çalışanınız"
 		},
 		"approvalModal": {

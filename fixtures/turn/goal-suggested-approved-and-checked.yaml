@@ -1,8 +1,8 @@
-id: goal-proposed-approved-and-checked
-name: "An agreed goal is proposed from the owner's words, approved, and checked until met"
+id: goal-suggested-approved-and-checked
+name: "An agreed goal is suggested from the owner's words, approved, and checked until met"
 description: |
   The owner asks for an outcome with a checkable end state that takes many
-  steps. On the turn controller the employee proposes it as the agreed goal
+  steps. On the turn controller the employee suggests it as the agreed goal
   (`suggest_goal`; the owner's own words stated the end state, so it may be
   set directly or through the approval card, which this harness approves),
   and the done check at the end of each stop judges the transcript against
@@ -44,8 +44,8 @@ tool_config:
 
 prompt_assertions:
   first_call:
-    - id: goal-is-proposed
-      text: "The employee proposes (or, from the owner's own words, sets) the agreed goal"
+    - id: goal-is-suggested
+      text: "The employee suggests (or, from the owner's own words, sets) the agreed goal"
       severity: critical
       check: { tool: suggest_goal }
   recovery:

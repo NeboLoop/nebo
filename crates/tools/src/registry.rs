@@ -307,11 +307,9 @@ pub trait DynTool: Send + Sync {
     fn mcp_proxy_info(&self) -> Option<(String, String)> {
         None
     }
-    /// Execution budget for THIS call, when it legitimately exceeds the
-    /// runner's default tool timeout (e.g. deep research runs for many
-    /// minutes by design). `None` = use the runner default. Observed live:
-    /// the 300s default killed every standard/deep research mid-flight and
-    /// the model spiraled into retries.
+    /// This call's working-time limit, parked time not counted. `None`: the
+    /// call runs until it finishes or the turn is stopped; the loop has no
+    /// blanket tool budget of its own.
     fn execution_timeout(&self, _input: &serde_json::Value) -> Option<std::time::Duration> {
         None
     }
@@ -320,6 +318,13 @@ pub trait DynTool: Send + Sync {
         ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>>;
+}
+
+/// Why a call can't run as written.
+enum Invalid {
+    Unparsed(String),
+    Schema { input: serde_json::Value, issues: Vec<String> },
+    Tool(String),
 }
 
 /// Registry manages available tools.
@@ -729,10 +734,46 @@ impl Registry {
 
     /// Whether this call may run alongside the other concurrency-safe calls
     /// of its response. `false` for an unknown tool.
+    /// Whether the call may run alongside other concurrency-safe calls of
+    /// its response: the tool says so for the call as it will run, and the
+    /// call is valid. An unknown tool or invalid input is not safe.
     pub async fn concurrency_safe(&self, tool_name: &str, input: &serde_json::Value) -> bool {
-        self.get(tool_name)
-            .await
-            .is_some_and(|tool| tool.concurrency_safe(input))
+        let Some(tool) = self.get(tool_name).await else {
+            return false;
+        };
+        match self.settle(tool.as_ref(), tool_name, input.clone()).await {
+            Ok(input) => tool.concurrency_safe(&input),
+            Err(_) => false,
+        }
+    }
+
+    /// The call as it will run, or why it can't: arguments that never
+    /// parsed, input the schema refuses, or the tool's own check. Stringified
+    /// values are repaired against the schema and the tool settles the call's
+    /// shape first, so every check (and the tool) sees the call that runs.
+    async fn settle(&self, tool: &dyn DynTool, name: &str, mut input: serde_json::Value) -> Result<serde_json::Value, Invalid> {
+        // Arguments that never parsed arrive as `{"_raw": "..."}` (the
+        // provider's salvage of a cut or malformed stream).
+        if let Some(raw) = unparsed_arguments(&input) {
+            return Err(Invalid::Unparsed(raw.to_string()));
+        }
+        if let Some(def) = self.definition(name).await {
+            crate::mcp_tool::coerce_schema_types(&mut input, &def.input_schema);
+        }
+        let input = tool.normalize_input(input);
+        let validator = if tool.validates_input() {
+            self.validators.read().await.get(name).cloned()
+        } else {
+            None
+        };
+        if let Some(validator) = validator {
+            let issues = crate::input_schema::issues(&validator, &input);
+            if !issues.is_empty() {
+                return Err(Invalid::Schema { input, issues });
+            }
+        }
+        tool.validate_input(&input).map_err(Invalid::Tool)?;
+        Ok(input)
     }
 
     /// Whether this call changes nothing outside this process. `false` for
@@ -805,7 +846,7 @@ impl Registry {
         } else {
             None
         };
-        let (name, mut input) = if let Some((strap_name, params)) = alias {
+        let (name, input) = if let Some((strap_name, params)) = alias {
             let mut merged = input;
             if let Some(obj) = merged.as_object_mut() {
                 for (k, v) in params {
@@ -824,35 +865,14 @@ impl Registry {
             return ToolResult::error(crate::result_shape::unknown_tool(name));
         };
 
-        // Arguments that never parsed arrive as `{"_raw": "..."}` (the
-        // provider's salvage of a cut or malformed stream).
-        if let Some(raw) = unparsed_arguments(&input) {
-            return ToolResult::error(bad_json_error(name, raw));
-        }
-
-        // Repair model-stringified values against the tool's own schema
-        // (`tasks: "[{...}]"`, `limit: "5"`), then settle the call's shape
-        // BEFORE anything reads it: every check below, and the tool itself,
-        // sees the call that executes, whichever shape the model wrote.
-        if let Some(def) = self.definition(name).await {
-            crate::mcp_tool::coerce_schema_types(&mut input, &def.input_schema);
-        }
-        input = tool.normalize_input(input);
-
-        let validator = if tool.validates_input() {
-            self.validators.read().await.get(name).cloned()
-        } else {
-            None
-        };
-        if let Some(validator) = validator {
-            let issues = crate::input_schema::issues(&validator, &input);
-            if !issues.is_empty() {
+        let input = match self.settle(tool.as_ref(), name, input).await {
+            Ok(input) => input,
+            Err(Invalid::Unparsed(raw)) => return ToolResult::error(bad_json_error(name, &raw)),
+            Err(Invalid::Schema { input, issues }) => {
                 return ToolResult::error(self.validation_error(ctx, tool.as_ref(), &input, issues).await);
             }
-        }
-        if let Err(message) = tool.validate_input(&input) {
-            return ToolResult::error(crate::result_shape::tool_use_error(&message));
-        }
+            Err(Invalid::Tool(message)) => return ToolResult::error(crate::result_shape::tool_use_error(&message)),
+        };
 
         // The permission check: hard limits, the ceiling, the rules and the
         // mode, decided on the call as it will run.
@@ -1048,23 +1068,26 @@ impl Registry {
         self.register(Box::new(crate::code_tool::CodeTool::new()))
             .await;
 
-        // Web tool (HTTP fetch + search + browser) — requires "web" permission
+        // The web and browser tools (search, fetch, HTTP, the browser) —
+        // requires "web" permission. They share one core.
         if allowed("web") {
-            let mut web_tool = crate::web_tool::WebTool::new().with_store(store.clone());
+            let mut web = crate::web_tool::WebCore::new().with_store(store.clone());
             // Platform search via Janus: resolve the gateway URL (honoring the
-            // NEBOAI_JANUS_URL env override) and the bot identity so web(search)
+            // NEBOAI_JANUS_URL env override) and the bot identity so search_web
             // hits a real search API instead of scraping engines through a browser.
             if let Ok(cfg) = config::Config::load_embedded() {
                 let bot_id = config::read_bot_id().unwrap_or_default();
-                web_tool = web_tool.with_janus_search(cfg.neboai.janus_url.clone(), bot_id);
+                web = web.with_janus_search(cfg.neboai.janus_url.clone(), bot_id);
             }
             if let Some(mgr) = browser_manager {
-                web_tool = web_tool.with_browser(mgr);
+                web = web.with_browser(mgr);
             }
             if let Some(ref bc) = broadcaster {
-                web_tool = web_tool.with_broadcaster(bc.clone());
+                web = web.with_broadcaster(bc.clone());
             }
-            self.register(Box::new(web_tool)).await;
+            for tool in crate::web_tool::tools(web) {
+                self.register(Box::new(tool)).await;
+            }
         }
 
         // The packs this company works by (R8): create, add, list, show, remove.
@@ -1459,13 +1482,6 @@ pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json
         "bash" | "shell" | "bash_tool" | "bashtool" | "run_command" | "exec" => {
             ("os", vec![("resource", "shell"), ("action", "exec")])
         }
-        // Web operations → web
-        "web_search" | "websearch" | "websearchtool" | "search" => {
-            ("web", vec![("action", "search")])
-        }
-        "web_fetch" | "webfetch" | "webfetchtool" | "fetch" | "fetch_url" => {
-            ("web", vec![("action", "fetch")])
-        }
         _ => return None,
     };
     let params = params
@@ -1617,30 +1633,34 @@ mod tests {
         assert_eq!(result.content, "array:2");
     }
 
-    /// Side effects are each tool's own `read_only` answer: web reads look,
-    /// web clicks and non-GET requests act; a status poll of a workflow is a
-    /// read that still never runs alongside others; an emitted event acts
-    /// only through its subscribers' own runs.
+    /// Side effects are each tool's own `read_only` answer: web reads look
+    /// and run together; clicks, page changes and non-GET requests act and
+    /// run alone; a status poll of a workflow is a read that still never
+    /// runs alongside others; an emitted event acts only through its
+    /// subscribers' own runs.
     #[tokio::test]
     async fn side_effects_are_each_tools_read_only_answer() {
         use serde_json::json;
-        let web = crate::web_tool::WebTool::new();
-        for read in [
-            json!({"action": "read_page"}),
-            json!({"action": "navigate", "url": "https://example.com"}),
-            json!({"action": "search", "query": "x"}),
-            json!({"action": "fetch", "method": "get", "url": "https://example.com"}),
+        let web = crate::web_tool::tools(crate::web_tool::WebCore::new());
+        let tool = |name: &str| web.iter().find(|t| t.name() == name).unwrap();
+        for (name, read) in [
+            ("browser_read", json!({})),
+            ("search_web", json!({"queries": ["x"]})),
+            ("fetch_url", json!({"url": "https://example.com"})),
+            ("http_request", json!({"method": "GET", "url": "https://example.com"})),
         ] {
-            assert!(web.read_only(&read), "{read}");
-            assert!(web.concurrency_safe(&read), "{read}");
+            assert!(tool(name).read_only(&read), "{name} {read}");
+            assert!(tool(name).concurrency_safe(&read), "{name} {read}");
         }
-        for act in [
-            json!({"action": "click", "ref": "e1"}),
-            json!({"action": "fill", "ref": "e1", "value": "x"}),
-            json!({"action": "fetch", "method": "POST", "url": "https://example.com"}),
+        for (name, act) in [
+            ("browser_act", json!({"action": "click", "ref": "e1"})),
+            ("browser_open", json!({"url": "https://example.com"})),
+            ("browser_fill_form", json!({"fields": [{"ref": "e1", "value": "x"}]})),
+            ("http_request", json!({"method": "POST", "url": "https://example.com"})),
+            ("http_request", json!({"method": "DELETE", "url": "https://example.com"})),
         ] {
-            assert!(!web.read_only(&act), "{act}");
-            assert!(web.concurrency_safe(&act), "the browser is per session: {act}");
+            assert!(!tool(name).read_only(&act), "{name} {act}");
+            assert!(!tool(name).concurrency_safe(&act), "a web write runs alone: {name} {act}");
         }
         let (bus, _rx) = crate::events::EventBus::new();
         let emit = crate::emit_tool::EmitTool::new(bus);
@@ -1915,6 +1935,40 @@ mod tests {
         assert!(out.content.contains("A minimal valid call: {\"text\": <string>}"), "{}", out.content);
     }
 
+    /// Invalid input is never concurrency-safe: a call that won't run as
+    /// written doesn't join a parallel batch.
+    #[tokio::test]
+    async fn invalid_input_is_not_concurrency_safe() {
+        struct Reader;
+        impl DynTool for Reader {
+            fn name(&self) -> &str {
+                "reader"
+            }
+            fn description(&self) -> String {
+                String::new()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]})
+            }
+            fn read_only(&self, _input: &serde_json::Value) -> bool {
+                true
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a ToolContext,
+                _input: serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+                Box::pin(async { ToolResult::ok("read") })
+            }
+        }
+        let registry = Registry::new(crate::gate::test_gate());
+        registry.register(Box::new(Reader)).await;
+        assert!(registry.concurrency_safe("reader", &serde_json::json!({"path": "/a"})).await);
+        assert!(!registry.concurrency_safe("reader", &serde_json::json!({})).await, "missing a required field");
+        assert!(!registry.concurrency_safe("reader", &serde_json::json!({"_raw": "{\"pa"})).await, "never parsed");
+        assert!(!registry.concurrency_safe("nope", &serde_json::json!({})).await, "unknown tool");
+    }
+
     #[tokio::test]
     async fn validate_input_runs_after_the_schema_and_before_the_tool() {
         let r = echo_registry().await;
@@ -2005,7 +2059,7 @@ mod tests {
     const PRE_INTERFACE_TOOLS: &[&str] = &[
         "a2ui", "agent", "authority", "code", "emit", "event", "execute", "exit", "loop",
         "mcp", "message", "notebook", "os", "pack", "plugin", "publisher", "rules", "skill",
-        "team", "vm", "web", "work",
+        "team", "vm", "work",
     ];
 
     /// The enum-dispatch surfaces the interface allows (device surfaces).
@@ -2062,7 +2116,7 @@ mod tests {
 
     #[test]
     fn the_pre_interface_list_is_closed_and_the_allowed_surfaces_are_the_device_ones() {
-        assert_eq!(PRE_INTERFACE_TOOLS.len(), 22, "packages only remove names from this list");
+        assert_eq!(PRE_INTERFACE_TOOLS.len(), 21, "packages only remove names from this list");
         assert!(ENUM_SURFACES.iter().all(|(t, _)| is_tool_name(t)));
     }
 
@@ -2074,11 +2128,12 @@ mod tests {
     /// 704 · mcp 645) and 53,032 on Linux (os 14,524 · web 8,362 · mcp 643).
     /// The plugin tool (core too, and sized by the installed plugins) needs a
     /// plugin store and is not in this roster. Each package that lands lowers
-    /// the numbers; they never rise.
+    /// the numbers; they never rise. WP5 deferred the web family: −8,361 on
+    /// macOS, −8,362 on Linux.
     #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 52_728;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 44_367;
     #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 53_032;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 44_670;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2105,7 +2160,7 @@ mod tests {
         let deferred = registry.get_deferred_names().await;
         let mut core: Vec<String> = registry.get_tool_names().await.into_iter().filter(|n| !deferred.contains(n)).collect();
         core.sort();
-        assert_eq!(core, ["agent", "event", "find_tools", "mcp", "message", "os", "skill", "team", "web"]);
+        assert_eq!(core, ["agent", "event", "find_tools", "mcp", "message", "os", "skill", "team"]);
         for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
@@ -2121,7 +2176,8 @@ mod tests {
             ("agent", serde_json::json!({"resource": "memory", "action": "store"})),
             ("agent", serde_json::json!({"resource": "task", "action": "spawn"})),
             ("skill", serde_json::json!({"action": "load", "name": "x"})),
-            ("web", serde_json::json!({"action": "fetch", "url": "https://example.com"})),
+            ("fetch_url", serde_json::json!({"url": "https://example.com"})),
+            ("browser_act", serde_json::json!({"action": "click", "ref": "e1"})),
             ("message", serde_json::json!({"resource": "owner", "action": "notify"})),
             ("find_tools", serde_json::json!({"query": "x"})),
         ];
@@ -2149,9 +2205,9 @@ mod tests {
         assert!(cleared("os", json!({"action": "read", "path": "/tmp/x"})).await);
         assert!(cleared("os", json!({"resource": "file", "action": "write", "path": "/tmp/x"})).await);
         assert!(cleared("os", json!({"action": "exec", "command": "ls"})).await);
-        assert!(cleared("web", json!({"action": "search", "query": "x"})).await);
-        assert!(cleared("web", json!({"action": "fetch", "url": "https://example.com"})).await);
-        assert!(!cleared("web", json!({"action": "click", "ref": "e1"})).await);
+        assert!(cleared("search_web", json!({"queries": ["x"]})).await);
+        assert!(cleared("fetch_url", json!({"url": "https://example.com"})).await);
+        assert!(!cleared("browser_act", json!({"action": "click", "ref": "e1"})).await);
         assert!(!cleared("os", json!({"resource": "calendar", "action": "today"})).await);
         assert!(!cleared("agent", json!({"resource": "memory", "action": "recall"})).await);
         assert!(!cleared("skill", json!({"action": "load", "name": "x"})).await);
@@ -2159,7 +2215,8 @@ mod tests {
             let registry = registry.clone();
             async move { registry.get(name).await.unwrap().taint(&input) }
         };
-        assert_eq!(taint("web", json!({"action": "fetch", "url": "https://example.com"})).await, Some(ProvenanceClass::Web));
+        assert_eq!(taint("fetch_url", json!({"url": "https://example.com"})).await, Some(ProvenanceClass::Web));
+        assert_eq!(taint("browser_read", json!({})).await, Some(ProvenanceClass::Web));
         assert_eq!(taint("os", json!({"resource": "mail", "action": "unread"})).await, Some(ProvenanceClass::ExternalEmail));
         assert_eq!(taint("os", json!({"resource": "mail", "action": "send", "to": "a@example.com"})).await, None);
         assert_eq!(taint("message", json!({"resource": "sms", "action": "read"})).await, Some(ProvenanceClass::Channel));

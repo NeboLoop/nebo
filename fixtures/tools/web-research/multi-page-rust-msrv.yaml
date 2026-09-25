@@ -3,27 +3,33 @@ name: "Web Research — multi-page Rust MSRV"
 description: |
   The model must search for information, click into multiple results,
   read content, and synthesize an answer. Tests the full research workflow.
-target_component: web
+target_component: search_web
 
 conversation:
   - role: user
     content: "Find the current Rust MSRV policy and which version is recommended for new projects in 2026"
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  fetch_url:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: starts-with-search
-      text: "Model's first call is web(action: 'search') with a query about Rust MSRV"
+      text: "Model's first web call (after loading it with find_tools) is search_web with a query about Rust MSRV"
       severity: critical
   recovery:
     - id: clicks-into-results
       text: "Model navigates to at least 1 search result page to read detailed content"
       severity: critical
     - id: reads-content
-      text: "Model calls read_page or scroll+read_page to actually read page content, not just titles"
+      text: "Model reads page content with fetch_url or browser_read (scrolling as needed), not just titles"
       severity: important
     - id: synthesizes-answer
       text: "Model produces a final answer that addresses both MSRV policy and recommended version"
@@ -33,7 +39,7 @@ prompt_assertions:
       severity: important
   cost:
     - id: reasonable-calls
-      text: "Task completes in 5-15 tool calls (search + navigate/read for 2-3 sources)"
+      text: "Task completes in 5-15 tool calls (search_web + fetch_url or browser_open/browser_read for 2-3 sources)"
       severity: important
     - id: max-twenty-calls
       text: "Task completes in no more than 20 tool calls"
@@ -43,7 +49,7 @@ ideal_behavior:
   tool_calls: 8
   total_tokens: 15000
   narrative: |
-    1. web(action: "search", query: "Rust MSRV policy 2026") → read search results
-    2. navigate to rust-lang.org or relevant blog post → read_page → scroll → read_page
-    3. navigate to another source for recommended version → read_page
+    1. search_web(queries: ["Rust MSRV policy 2026"]) → read search results
+    2. browser_open rust-lang.org or relevant blog post → browser_read → scroll → browser_read
+    3. browser_open another source for recommended version → browser_read
     4. Synthesize answer from multiple sources

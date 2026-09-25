@@ -184,12 +184,22 @@ impl SessionManager {
     }
 
     /// The conversation the harness sends: the active chat from its latest
-    /// checkpoint boundary on (`harness::compact::checkpoint`), orphaned tool
-    /// results removed. The sliding-window path keeps `get_messages` until
-    /// the cutover deletes it.
+    /// checkpoint boundary on (`harness::compact::checkpoint`), with typed
+    /// attachment rows and notification rows kept, stored legacy steering
+    /// dropped and tool results whose call is not loaded removed. The
+    /// sliding-window path keeps `get_messages` until the cutover deletes it.
     pub fn get_messages_since_checkpoint(&self, session_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
         let chat_id = self.resolve_chat_id(session_id);
-        let messages = self.store.get_chat_messages_since_checkpoint(&chat_id)?;
+        let messages = self
+            .store
+            .get_chat_messages_since_checkpoint(&chat_id)?
+            .into_iter()
+            .filter(|m| {
+                !is_stored_steering(m)
+                    || crate::harness::reminders::attachment_kind(m).is_some()
+                    || crate::harness::delegation::notify::is_notification_row(m)
+            })
+            .collect();
         Ok(drop_orphan_results(messages))
     }
 
@@ -347,6 +357,10 @@ impl SessionManager {
         // Clear stale compaction summary so failure narratives don't carry over.
         self.store.update_session_summary(session_id, "")?;
 
+        // The agreed goal belonged to the old conversation, whose transcript
+        // the done check can no longer read.
+        self.store.delete_session_goal(session_id)?;
+
         // Update cache.
         if let Ok(mut cache) = self.chat_ids.write() {
             cache.insert(session_id.to_string(), new_chat_id.clone());
@@ -375,27 +389,6 @@ impl SessionManager {
     pub fn clear_current_messages(&self, session_id: &str) -> Result<(), NeboError> {
         let chat_id = self.resolve_chat_id(session_id);
         self.store.delete_chat_messages_by_chat_id(&chat_id)?;
-        self.store.reset_session_counters(session_id)?;
-        Ok(())
-    }
-
-    /// Compact the current conversation as a projection: the rows stay, the
-    /// chat's floor moves, and the summary becomes the first visible message.
-    /// Stays in the same conversation; a failure leaves everything untouched.
-    pub fn compact_current_messages(
-        &self,
-        session_id: &str,
-        summary: &str,
-    ) -> Result<(), NeboError> {
-        // The deferred tools loaded so far ride on the boundary row, so they
-        // stay loaded after the rows that loaded them are compacted away.
-        let loaded = crate::harness::tool_surface::loaded_names(&self.get_messages(session_id)?);
-        let metadata = (!loaded.is_empty())
-            .then(|| serde_json::json!({ crate::harness::tool_surface::LOADED_TOOLS_KEY: loaded }).to_string());
-        let chat_id = self.resolve_chat_id(session_id);
-        let msg_id = uuid::Uuid::new_v4().to_string();
-        self.store
-            .compact_chat_history(&chat_id, &msg_id, summary, metadata.as_deref())?;
         self.store.reset_session_counters(session_id)?;
         Ok(())
     }
@@ -535,21 +528,23 @@ mod tests {
         SessionManager::new(store)
     }
 
-    /// The harness load starts at the boundary, keeps attachment rows (the
-    /// sliding-window load drops them as stored steering) and drops a tool
+    /// The harness load starts at the latest boundary, keeps typed
+    /// attachment rows, drops stored legacy steering (no kind) and a tool
     /// result whose call is behind the boundary.
     #[test]
-    fn harness_load_keeps_attachments_and_drops_results_cut_from_their_call() {
+    fn harness_load_starts_at_the_boundary_and_keeps_attachments_only() {
         let mgr = test_manager();
         let sid = mgr.get_or_create("agent:a:web", "").unwrap().id;
         let calls = r#"[{"id":"c1","name":"os","input":{}}]"#;
         let results = r#"[{"tool_call_id":"c1","content":"ok","is_error":false}]"#;
+        let reminder = crate::harness::reminders::wrap("The date is now Friday.");
         mgr.append_message(&sid, "user", "before", None, None, None).unwrap();
         mgr.append_message(&sid, "assistant", "", Some(calls), None, None).unwrap();
         mgr.append_message(&sid, "user", "summary", None, None, Some(r#"{"checkpoint":true}"#)).unwrap();
         mgr.append_message(&sid, "tool", "", None, Some(results), None).unwrap();
-        let reminder = crate::harness::reminders::wrap("The date is now Friday.");
-        mgr.append_message(&sid, "user", &reminder, None, None, Some(r#"{"attachment":{"kind":"date"},"isMeta":true}"#))
+        mgr.append_message(&sid, "user", &reminder, None, None, Some(r#"{"attachment":{"kind":"date_changed"},"isMeta":true}"#))
+            .unwrap();
+        mgr.append_message(&sid, "user", &crate::harness::reminders::wrap("legacy"), None, None, Some(r#"{"isMeta":true}"#))
             .unwrap();
 
         let loaded = mgr.get_messages_since_checkpoint(&sid).unwrap();

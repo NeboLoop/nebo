@@ -15,7 +15,9 @@ conversation:
 tool_config:
   agent:
     enabled: true
-  web:
+  search_web:
+    enabled: true
+  fetch_url:
     enabled: true
 
 prompt_assertions:

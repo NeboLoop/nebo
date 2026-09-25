@@ -4,20 +4,26 @@ description: |
   The model clicks a search result that looks relevant from the snippet
   but the actual page content is irrelevant or outdated. It must go back
   and try a different result.
-target_component: web
+target_component: search_web
 
 conversation:
   - role: user
     content: "How do I set up hot module replacement in Vite 6? I keep getting a full page reload instead of HMR."
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  fetch_url:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: starts-with-search
-      text: "Model's first call is web(action: 'search') about Vite HMR setup"
+      text: "Model's first web call (after loading it with find_tools) is search_web about Vite HMR setup"
       severity: critical
   recovery:
     - id: recognizes-irrelevant
@@ -44,7 +50,7 @@ ideal_behavior:
   tool_calls: 10
   total_tokens: 15000
   narrative: |
-    1. search → results
-    2. navigate to first result → read_page → content is about Vite 3 (outdated)
-    3. go_back, navigate to different result → read_page → relevant Vite 6 content
+    1. search_web → results
+    2. browser_open first result → browser_read → content is about Vite 3 (outdated)
+    3. browser_history back, navigate to different result → browser_read → relevant Vite 6 content
     4. Provide specific HMR configuration steps

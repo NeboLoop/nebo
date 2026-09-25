@@ -111,13 +111,21 @@
         detailRows: factRows(input?.input as Record<string, unknown> | undefined),
       };
     }
+    // A suggested agreed goal: the owner approves the end state itself.
+    if (tool === 'suggest_goal') {
+      return {
+        actionType: 'goal',
+        actionDetail: str(input?.condition) ?? '',
+        headline: $t('components.approvalGate.goalHeadline'),
+      };
+    }
     if (resource === 'shell' || action === 'exec') {
       return { actionType: 'shell_command', actionDetail: str(input?.command) ?? '' };
     }
     if (resource === 'file' && (action === 'write' || action === 'edit')) {
       return { actionType: 'file_write', actionDetail: str(input?.path) ?? '' };
     }
-    if (tool === 'web') {
+    if (tool === 'http_request' || tool === 'fetch_url') {
       return { actionType: 'http_request', actionDetail: str(input?.url) ?? JSON.stringify(input ?? {}) };
     }
     return {

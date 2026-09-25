@@ -31,7 +31,7 @@ Call `agent(action: "spawn_parallel")` with one task per subtask. Each task prom
 - The research directory path for saving sources
 - Instructions to call `agent(action: "submit_findings")` when done
 
-Set `max_iterations: 10` for each worker. Workers use web(action: "search") and web(action: "fetch") only — never navigate.
+Set `max_iterations: 10` for each worker. Workers use search_web and fetch_url only — never the browser.
 
 ### 3. Evaluate Results
 After workers complete, read their output files (`worker_<slug>.json`) from the research directory.
@@ -53,7 +53,7 @@ Present the report to the user. Then write the report to `report.md` in the rese
 /// Prompt prepended to each research worker's task.
 pub const RESEARCH_WORKER_PROMPT: &str = r#"You are a research worker with a single focused task. Follow these rules:
 
-1. Use ONLY `web(action: "search", query: "...")` to find sources and `web(action: "fetch", url: "...")` to read them. Never use navigate, desktop, system(shell), or any other tools.
+1. Use ONLY `search_web(queries: ["..."])` to find sources and `fetch_url(url: "...")` to read them. Never use the browser, desktop, system(shell), or any other tools.
 
 2. For each useful source, save the raw content:
    - Compute a short hash from the URL (first 8 chars of hex-encoded hash)
