@@ -770,7 +770,8 @@ impl WebTool {
     }
 
     /// Bearer token for Janus calls. Parity with the LLM provider
-    /// (build_providers): the Janus token lives on the `neboai` auth profile —
+    /// (build_providers): the Janus token is the NeboAI token, resolved per
+    /// call through `auth::neboai_token` (it rotates on every comms connect) —
     /// a `janus` provider row never exists, so looking one up sent a bare
     /// bot_id and Janus replied 401 on every search, silently degrading tier 0
     /// to the scrape tiers. Shared by search and extract so the auth
@@ -778,14 +779,7 @@ impl WebTool {
     /// token came from a real `neboai` profile — the bare bot_id fallback is
     /// a known 401 cause, so callers surface it in their failure reasons.
     fn janus_bearer(&self, cfg: &JanusSearchConfig) -> (String, bool) {
-        match self
-            .store
-            .as_ref()
-            .and_then(|s| s.list_active_auth_profiles_by_provider("neboai").ok())
-            .and_then(|profiles| profiles.into_iter().find(|p| !p.api_key.is_empty()))
-            .map(|p| p.api_key)
-            .filter(|k| !k.is_empty())
-        {
+        match self.store.as_ref().and_then(|s| auth::neboai_token(s)) {
             Some(key) => (key, true),
             None => (cfg.bot_id.clone(), false),
         }

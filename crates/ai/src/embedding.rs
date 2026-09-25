@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::ProviderError;
+use crate::{ApiKey, ProviderError};
 
 /// Trait for embedding providers.
 #[async_trait]
@@ -19,7 +19,7 @@ pub trait EmbeddingProvider: Send + Sync {
 
 /// OpenAI-compatible embedding provider (text-embedding-3-small).
 pub struct OpenAIEmbeddingProvider {
-    api_key: String,
+    api_key: ApiKey,
     model: String,
     base_url: String,
     dims: usize,
@@ -28,9 +28,9 @@ pub struct OpenAIEmbeddingProvider {
 }
 
 impl OpenAIEmbeddingProvider {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: impl Into<ApiKey>) -> Self {
         Self {
-            api_key,
+            api_key: api_key.into(),
             model: "text-embedding-3-small".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             dims: 1536,
@@ -39,9 +39,9 @@ impl OpenAIEmbeddingProvider {
         }
     }
 
-    pub fn with_base_url(api_key: String, base_url: String) -> Self {
+    pub fn with_base_url(api_key: impl Into<ApiKey>, base_url: String) -> Self {
         Self {
-            api_key,
+            api_key: api_key.into(),
             model: "text-embedding-3-small".to_string(),
             base_url,
             dims: 1536,
@@ -100,7 +100,7 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
             let mut req_builder = self
                 .http_client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Authorization", format!("Bearer {}", self.api_key.current()))
                 .headers(crate::RequestTrace::new("embedding").headers());
             for (key, value) in &self.extra_headers {
                 req_builder = req_builder.header(key, value);
