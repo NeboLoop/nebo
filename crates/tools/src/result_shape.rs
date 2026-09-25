@@ -52,21 +52,42 @@ pub fn shape(tool: &str, dir: &Path, threshold: Option<usize>, result: &mut Tool
     }
 }
 
+/// Save `content` in `dir` (a session's [`results_dir`]): the one place a
+/// result that leaves the conversation is kept.
+fn save(dir: &Path, content: &str) -> std::io::Result<PathBuf> {
+    let path = dir.join(format!("{}.txt", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(dir)?;
+    crate::checkpoint::restrict_private(dir, true);
+    std::fs::write(&path, content)?;
+    crate::checkpoint::restrict_private(&path, false);
+    Ok(path)
+}
+
+/// Save an old result cleared under context pressure and return what the
+/// model sees in its place, as Claude Code writes it: where it was saved and
+/// how to read it. `None` when it couldn't be saved.
+pub fn persist_cleared(dir: &Path, content: &str) -> Option<String> {
+    match save(dir, content) {
+        Ok(path) => Some(format!(
+            "<persisted-output>\nTool result saved to: {}\n\nUse read_file to view\n</persisted-output>",
+            path.display()
+        )),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to save a cleared tool result");
+            None
+        }
+    }
+}
+
 /// Save `content` in `dir` (a session's [`results_dir`]) and return what
 /// the model sees in its place: the size, the path and a preview cut at a
 /// newline. A failed write keeps the preview and says the rest is gone.
 pub fn persist(dir: &Path, content: &str) -> String {
-    let path = dir.join(format!("{}.txt", uuid::Uuid::new_v4()));
-    let saved = std::fs::create_dir_all(dir)
-        .and_then(|()| {
-            crate::checkpoint::restrict_private(dir, true);
-            std::fs::write(&path, content)
-        })
-        .map(|()| crate::checkpoint::restrict_private(&path, false));
+    let saved = save(dir, content);
     let size = human_size(content.len());
     let preview = preview(content);
     match saved {
-        Ok(()) => format!(
+        Ok(path) => format!(
             "<persisted-output>\nOutput too large ({size}). Full output saved to: {}\n\n\
              Preview (first 2KB):\n{preview}\n</persisted-output>\n\
              Read the file a line range at a time, or search it with grep; don't read it whole.",
