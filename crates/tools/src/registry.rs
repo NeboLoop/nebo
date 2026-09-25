@@ -1225,12 +1225,12 @@ impl Registry {
         // each call's `is_connected()` check reflects the live connection
         // state, so they are registered whenever the handle is available
         // (even before NeboAI connects).
-        if allowed("loop") {
-            if let Some(ref comm) = comm_plugin {
-                let core = crate::loop_tool::LoopCore::new(comm.clone(), Some(store.clone()));
-                for tool in crate::loop_tool::tools(core) {
-                    self.register(Box::new(tool)).await;
-                }
+        if allowed("loop")
+            && let Some(ref comm) = comm_plugin
+        {
+            let core = crate::loop_tool::LoopCore::new(comm.clone(), Some(store.clone()));
+            for tool in crate::loop_tool::tools(core) {
+                self.register(Box::new(tool)).await;
             }
         }
     }
