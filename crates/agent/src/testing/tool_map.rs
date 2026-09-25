@@ -70,8 +70,7 @@ const ROWS: &[Row] = &[
     row("os", &["file"], &["plan"], "write_plan", &[]),
     row("os", &["file"], &["plan_check"], "check_plan", &[]),
     // agent: helpers and tasks
-    row("agent", &["task"], &["spawn", "spawn_parallel"], "delegate", &[("agent_type", "helper_type"), ("isolate", "isolation")]),
-    row("agent", &["task"], &["orchestrate"], "orchestrate", &[]),
+    row("agent", &["task"], &["spawn", "spawn_parallel", "orchestrate"], "delegate", &[("agent_type", "helper_type"), ("isolate", "isolation")]),
     row("agent", &["task"], &["send"], "send_message", &[("task_id", "to"), ("text", "message")]),
     row("agent", &["task"], &["status"], "read_output", &[]),
     row("agent", &["task"], &["cancel"], "stop_task", &[]),
