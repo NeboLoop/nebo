@@ -111,9 +111,23 @@ impl SpawnRequest {
 pub struct SpawnResult {
     pub task_id: String,
     pub success: bool,
+    /// The harness's own words for what happened, returned to the model as
+    /// they are: the launch receipt, or the finished helper's report.
     pub output: String,
     pub error: Option<String>,
 }
+
+/// Background work that is not a model turn (the deep-research pipeline),
+/// run as one of the caller's helpers: it gets the helper's stop token and a
+/// progress channel whose events become the helper's activity on the
+/// owner's screen, and returns its report.
+pub type Work = Box<
+    dyn FnOnce(
+            tokio_util::sync::CancellationToken,
+            tokio::sync::mpsc::Sender<ai::StreamEvent>,
+        ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
+        + Send,
+>;
 
 /// What `send` did with a message.
 #[derive(Debug, Clone)]
@@ -137,6 +151,15 @@ pub trait SubAgentOrchestrator: Send + Sync {
     fn spawn(
         &self,
         req: SpawnRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
+
+    /// Start `work` in the background as a helper of the run `req` was built
+    /// from: the one helper lifecycle (row, stop, progress, one notification
+    /// when it ends). Returns the launch receipt.
+    fn start_work(
+        &self,
+        req: SpawnRequest,
+        work: Work,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
     /// Stop one of the helpers the conversation `caller` started.

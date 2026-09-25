@@ -145,11 +145,6 @@ pub struct ScopeOut {
     pub question: String,
     pub summary: String,
     pub angles: Vec<Angle>,
-    /// 2-3 questions the model wants answered when the request is underspecified (empty
-    /// when the question is specific enough to research directly). Surfaced in the
-    /// pre-research confirmation so the user can sharpen scope before the expensive run.
-    #[serde(default)]
-    pub clarifying_questions: Vec<String>,
 }
 
 /// One web result returned by a search sub-agent.
@@ -359,8 +354,7 @@ pub fn scope_schema(cfg: &Config) -> Value {
                         "rationale": { "type": "string" }
                     }
                 }
-            },
-            "clarifying_questions": { "type": "array", "items": { "type": "string" } }
+            }
         }
     })
 }
@@ -879,11 +873,7 @@ fn scope_task(question: &str) -> String {
          angles (e.g. broad/primary, academic/technical, recent news, contrarian/skeptical, \
          practitioner/implementation). Make queries specific enough to surface high-signal results; \
          avoid redundancy. Return the question (verbatim or lightly normalized), a 1-2 sentence \
-         decomposition strategy as `summary`, and the angles.\n\n\
-         If the question is UNDERSPECIFIED — missing a constraint that would materially change the \
-         findings (e.g. budget, region, use-case, time window, audience) — also include 2-3 \
-         `clarifying_questions`. If it is specific enough to research well, leave clarifying_questions \
-         empty.\n\nStructured output only."
+         decomposition strategy as `summary`, and the angles.\n\nStructured output only."
     )
 }
 
@@ -1213,12 +1203,9 @@ async fn fetch_text(
     Ok((result.content[..end].to_string(), result.http_status))
 }
 
-/// Phase 0 — decompose the question into search angles (and flag underspecified questions
-/// via `clarifying_questions`). On failure, salvages to a single angle = the raw question.
-/// Public so the caller can preflight + confirm the plan before the expensive fan-out, then
-/// pass the result back to [`run`] as `pre_scoped` (so scope runs exactly once).
-pub async fn scope(agent: &Arc<dyn StructuredAgent>, question: &str, cfg: &Config) -> ScopeOut {
-    let cancel = CancellationToken::new();
+/// Phase 0 — decompose the question into search angles. On failure, salvages to a single
+/// angle = the raw question.
+async fn scope(agent: &Arc<dyn StructuredAgent>, question: &str, cfg: &Config, cancel: &CancellationToken) -> ScopeOut {
     match run_typed::<ScopeOut>(
         agent,
         StructuredTask {
@@ -1226,10 +1213,10 @@ pub async fn scope(agent: &Arc<dyn StructuredAgent>, question: &str, cfg: &Confi
             task: scope_task(question),
             schema: scope_schema(cfg),
             aux_tools: vec![],
-            tab_key: "subagent:research-preflight:sa-scope".to_string(),
+            tab_key: "subagent:research-scope:sa-scope".to_string(),
             max_tool_turns: None,
         },
-        &cancel,
+        cancel,
     )
     .await
     {
@@ -1244,7 +1231,6 @@ pub async fn scope(agent: &Arc<dyn StructuredAgent>, question: &str, cfg: &Confi
                     query: question.to_string(),
                     rationale: None,
                 }],
-                clarifying_questions: vec![],
             }
         }
     }
@@ -1260,7 +1246,6 @@ pub async fn run(
     cfg: Config,
     cancel: CancellationToken,
     progress: ProgressTx,
-    pre_scoped: Option<ScopeOut>,
 ) -> Result<ResearchReport, String> {
     let dir = crate::research::create_run_dir(&data_dir, &run_id, &question)?;
     let _ = crate::research::update_run_status(&dir, crate::research::RunStatus::Running);
@@ -1291,16 +1276,10 @@ pub async fn run(
         return Err("cancelled".into());
     }
 
-    // ── Phase 0: Scope (or reuse the scope the confirmation gate already approved) ──
-    let scope: ScopeOut = match pre_scoped {
-        Some(s) => s,
-        None => {
-            emit_node_start(&progress, "scope", "Scope: decomposing the question");
-            let s = scope(&agent, &question, &cfg).await;
-            emit_node_done(&progress, "scope", "Scope: decomposing the question", !s.angles.is_empty());
-            s
-        }
-    };
+    // ── Phase 0: Scope ──
+    emit_node_start(&progress, "scope", "Scope: decomposing the question");
+    let scope: ScopeOut = scope(&agent, &question, &cfg, &cancel).await;
+    emit_node_done(&progress, "scope", "Scope: decomposing the question", !scope.angles.is_empty());
     persist(&dir, "scope.json", &scope);
     debug!(angles = scope.angles.len(), "deep_research: scoped");
     emit_progress(&progress, format!("Searching {} angles…", scope.angles.len()));

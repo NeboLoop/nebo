@@ -1208,7 +1208,7 @@ impl Registry {
             crate::task_tools::Tasks::new(store.clone(), run_querier).tools(),
             crate::history_tools::History::new(store.clone()).tools(),
             crate::advisor_tools::Advisors::new(store.clone(), advisor_runner).tools(),
-            crate::research_tools::Research::new(structured_agent).tools(),
+            crate::research_tools::Research::new(structured_agent, orchestrator.clone()).tools(),
             crate::profile_tools::Profile::new(store.clone(), self.notify_fn.clone()).tools(),
             crate::owner_tools::Owner::new(store.clone(), self.notify_fn.clone()).tools(),
             vec![
