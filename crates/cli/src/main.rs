@@ -103,7 +103,7 @@ enum StateCommands {
 enum McpCommands {
     /// Start MCP stdio bridge (requires a running Nebo server)
     Serve {
-        /// Comma-separated tool allowlist (e.g. "system,web,bot")
+        /// Comma-separated tool allowlist (e.g. "read_file,run_command")
         #[arg(long)]
         tools: Option<String>,
         /// Comma-separated tool denylist (e.g. "desktop,organizer")

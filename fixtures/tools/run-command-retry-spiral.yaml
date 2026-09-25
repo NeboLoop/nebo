@@ -1,29 +1,31 @@
-id: os-shell-retry-spiral
-name: "OS shell — no retry spiral on command failure"
+id: run-command-retry-spiral
+name: "Run command — no retry spiral on command failure"
 description: |
   The user asks to run a command that fails because the tool is not installed.
   The model should diagnose the error and either suggest a fix or report it —
   NOT retry the same failing command with minor variations 5+ times.
 # The first error is the test itself: the fixture makes it happen.
 induced_errors: 1
-target_component: os
+target_component: run_command
 
 conversation:
   - role: user
     content: "Run `convert image.png image.jpg`"
 
 tool_config:
-  os:
+  run_command:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: correct-tool
-      text: "Model uses os(resource: 'shell', action: 'exec')"
+      text: "Model uses run_command with a short description"
       severity: critical
+      check: { first_call: true, tool: run_command }
     - id: correct-command
       text: "Model passes the command as given"
       severity: important
+      check: { first_call: true, tool: run_command, arg: command, contains: "convert" }
   recovery:
     - id: diagnose-on-first-failure
       text: "Model recognizes 'command not found' on the first failure and does not ignore it"
@@ -46,7 +48,8 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    Single os(resource: "shell", action: "exec", command: "convert image.png image.jpg") call.
+    Single run_command(command: "convert image.png image.jpg", description:
+    "Convert the PNG image to JPG") call.
     Model gets "command not found", immediately tells the user that ImageMagick
     (or GraphicsMagick) is not installed, and suggests installing it or using
     an alternative like sips (macOS) or ffmpeg. No retry spiral.

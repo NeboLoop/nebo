@@ -159,12 +159,14 @@ async fn hard_limits_run_before_rules_and_modes() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("ran");
     let command = format!("touch {}; test -d '{db_dir}'", marker.display());
-    let r = reg.execute(&full, "os", json!({ "command": command })).await;
+    let r = reg.execute(&full, "run_command", json!({ "command": command, "description": "Touch a marker" })).await;
     assert!(r.is_error && r.content.contains("BLOCKED"), "{}", r.content);
     assert!(!marker.exists(), "Full Access and an allow rule lifted the safeguard");
     // An origin limit: a chat channel never runs a command.
     let comm = with_mode(ctx(&store, "", Origin::Comm), Mode::FullAccess);
-    let r = reg.execute(&comm, "os", json!({ "command": format!("touch {}", marker.display()) })).await;
+    let r = reg
+        .execute(&comm, "run_command", json!({ "command": format!("touch {}", marker.display()), "description": "Touch a marker" }))
+        .await;
     assert!(r.is_error && r.content.contains("not permitted"), "{}", r.content);
     assert!(!marker.exists());
 }
@@ -216,19 +218,19 @@ async fn full_access_never_asks_but_deny_and_hard_limits_hold() {
     put(&store, rule(Scope::Company, RuleKey::Tool("send_invoice".into()), None, Effect::Ask));
     put(&store, rule(Scope::Company, cap("desktop"), None, Effect::Deny));
     let (inv, _) = Probe::new("invoices", "send_invoice", None);
-    let (shell, _) = Probe::new("os", "run_command", Some("shell"));
+    let (shell, _) = Probe::new("run_command", "run_command", Some("shell"));
     let (click, click_ran) = Probe::new("desktop", "desktop_click", Some("desktop"));
     let reg = registry(&store, vec![inv, shell, click]).await;
     let full = with_mode(ctx(&store, "", Origin::User), Mode::FullAccess);
     assert_eq!(reg.execute(&full, "invoices", json!({})).await.content, "RAN", "an ask rule allows");
-    assert_eq!(reg.execute(&full, "os", json!({})).await.content, "RAN", "outside the job allows");
+    assert_eq!(reg.execute(&full, "run_command", json!({})).await.content, "RAN", "outside the job allows");
     let r = reg.execute(&full, "desktop", json!({})).await;
     assert!(r.is_error, "a deny rule held: {}", r.content);
     assert_eq!(click_ran.load(Ordering::SeqCst), 0);
     // And the same calls in Automatic: the ask parks, outside the job parks.
     let auto = ctx(&store, "", Origin::User);
     assert!(reg.execute(&auto, "invoices", json!({})).await.parked_ask.is_some());
-    let outside = reg.execute(&auto, "os", json!({})).await;
+    let outside = reg.execute(&auto, "run_command", json!({})).await;
     assert!(outside.parked_ask.is_some() && outside.content.contains("outside"), "{}", outside.content);
 }
 
@@ -329,19 +331,25 @@ async fn call_resolved_as_it_will_run() {
     // A write outside every folder rule: outside the job, so it waits.
     let fenced = ctx(&store, "fenced", Origin::User);
     let target = outside.join("x.txt");
-    let w = reg.execute(&fenced, "os", json!({ "path": target.to_string_lossy(), "content": "y" })).await;
+    let w = reg.execute(&fenced, "write_file", json!({ "path": target.to_string_lossy(), "content": "y" })).await;
     assert!(w.parked_ask.is_some(), "{}", w.content);
     assert!(!target.exists(), "the write landed outside the folders");
     let marker = outside.join("ran");
     let e = reg
-        .execute(&fenced, "os", json!({ "command": format!("touch {}", marker.display()), "cwd": outside.to_string_lossy() }))
+        .execute(
+            &fenced,
+            "run_command",
+            json!({ "command": format!("touch {}", marker.display()), "description": "Touch a marker", "cwd": outside.to_string_lossy() }),
+        )
         .await;
     assert!(e.parked_ask.is_some(), "{}", e.content);
     assert!(!marker.exists(), "the command ran outside the folders");
 
-    // A shell command with no action is Shell, not Desktop.
+    // A command is Shell.
     let noshell = ctx(&store, "noshell", Origin::User);
-    let r = reg.execute(&noshell, "os", json!({ "command": format!("touch {}", marker.display()) })).await;
+    let r = reg
+        .execute(&noshell, "run_command", json!({ "command": format!("touch {}", marker.display()), "description": "Touch a marker" }))
+        .await;
     assert!(r.is_error && r.content.contains("Shell Commands"), "{}", r.content);
     assert!(!marker.exists());
 
@@ -375,10 +383,14 @@ async fn a_chat_channel_cannot_poll_or_stop_a_shell_session() {
     let reg = registry(&store, vec![]).await;
     reg.register_defaults().await;
     let c = ctx(&store, "", Origin::Comm);
-    for action in ["poll", "kill", "log"] {
-        let call = json!({ "resource": "shell", "action": action, "session_id": "s-1" });
-        let r = reg.execute(&c, "os", call).await;
-        assert!(r.is_error && r.content.contains("not permitted"), "{action}: {}", r.content);
+    for (tool, call) in [
+        ("read_output", json!({ "task_id": "bg-0000aaaa" })),
+        ("stop_task", json!({ "task_id": "bg-0000aaaa" })),
+        ("send_input", json!({ "task_id": "bg-0000aaaa", "text": "y\n" })),
+        ("list_processes", json!({})),
+    ] {
+        let r = reg.execute(&c, tool, call).await;
+        assert!(r.is_error && r.content.contains("not permitted"), "{tool}: {}", r.content);
     }
 }
 

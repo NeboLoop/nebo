@@ -1,12 +1,13 @@
 id: correction-read-over-budget-ranged
 name: "Correction — a read over the 100 KB budget is an error, and the model pages"
 description: |
-  A blind read of a 300 KB file exceeds the read budget. The tool answers
+  A blind read of a 300 KB file exceeds the read budget. read_file answers
   with an ERROR that names the file's line count and points at offset/limit
-  and grep — never a clipped payload (Claude Code's Read makes the same
-  choice: the error costs ~100 bytes, a truncated result costs the whole
-  budget). The model must take the hint: one targeted grep or ranged read,
-  then the answer. Not a loop of blind re-reads.
+  and at searching with grep through run_command — never a clipped payload
+  (Claude Code's Read makes the same choice: the error costs ~100 bytes, a
+  truncated result costs the whole budget). The model must take the hint:
+  one targeted run_command grep or ranged read_file, then the answer. Not a
+  loop of blind re-reads.
 target_component: tool
 
 setup:
@@ -19,18 +20,20 @@ conversation:
     content: "Read {{scratch}}/records.log and tell me the escalation code on the ANOMALY record."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  run_command:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: read-first
-      text: "The first call is an os file read or grep of {{scratch}}/records.log"
+      text: "The first call is read_file of {{scratch}}/records.log or a run_command grep of it"
       severity: important
-      check: { first_call: true, tool: os }
+      check: { first_call: true, tool: [read_file, run_command] }
   recovery:
     - id: takes-the-hint
-      text: "After the budget error (if the model read blind), the next call is a grep for ANOMALY or a ranged read with offset/limit — not another blind read of the whole file"
+      text: "After the budget error (if the model read blind), the next call is a run_command grep for ANOMALY or a read_file with offset/limit — not another blind read of the whole file"
       severity: critical
       check: { max_tool_calls: 4 }
     - id: at-most-one-error
@@ -43,4 +46,4 @@ prompt_assertions:
 
 ideal_behavior:
   tool_calls: 2
-  narrative: "A blind read comes back as a budget error naming 2999 lines and offset/limit/grep; one grep for ANOMALY; the answer ESC-7741."
+  narrative: "A blind read comes back as a budget error naming 2999 lines and offset/limit/grep; one run_command grep for ANOMALY; the answer ESC-7741."

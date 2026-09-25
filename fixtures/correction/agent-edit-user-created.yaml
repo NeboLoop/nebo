@@ -28,7 +28,9 @@ conversation:
 tool_config:
   agent:
     enabled: true
-  os:
+  read_file:
+    enabled: true
+  run_command:
     enabled: true
 
 prompt_assertions:
@@ -39,7 +41,7 @@ prompt_assertions:
       check: { first_call: true, tool: agent }
   recovery:
     - id: no-wrong-tree-search
-      text: "The model never globs or reads under the installed-agents directory (Nebo/nebo/agents) looking for this employee; if it reads files, they are under the path the info result named"
+      text: "The model never lists, finds, or reads under the installed-agents directory (Nebo/nebo/agents) looking for this employee; if it reads files, they are under the path the info result named"
       severity: critical
     - id: no-reinstall
       text: "No agent install call is made; the employee already exists"
