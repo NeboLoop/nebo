@@ -2,10 +2,11 @@
 //! inside the constitution.
 //!
 //! Authority is a permission rule on the seat: an allow on the operation,
-//! with money limits. Only the owner widens: a grant or a widening is
-//! written only when the owner answered this exact call (the operation
-//! `authority.grant.*` asks). Narrowing and suspending are an employee
-//! narrowing another's rules, which the store allows and nothing more.
+//! with money limits. Only the owner widens: a grant or a widening says so
+//! in its effects, so the permission check raises the owner's card for it
+//! in every mode, and the rule is written only when the owner answered this
+//! exact call. Narrowing and suspending are an employee narrowing another's
+//! rules, which the store allows and nothing more.
 
 use std::sync::Arc;
 
@@ -333,6 +334,18 @@ impl DynTool for AuthorityTool {
 
     fn read_only(&self, input: &serde_json::Value) -> bool {
         matches!(input["action"].as_str(), Some("list") | Some("show"))
+    }
+
+    /// A grant or a widening gives a seat more room: only the owner does
+    /// that, so the check asks the owner for it instead of running it.
+    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
+        if self.read_only(input) {
+            return types::permissions::CallEffects::none();
+        }
+        types::permissions::CallEffects {
+            widens: self.operation_performed(input).is_some(),
+            ..types::permissions::CallEffects::unknown()
+        }
     }
 
     fn rule_key(&self, input: &serde_json::Value) -> String {

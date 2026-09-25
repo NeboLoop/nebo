@@ -16,6 +16,7 @@ mod commander;
 mod company_policy;
 mod cron_jobs;
 mod embeddings;
+mod employee_drafts;
 mod engine;
 mod event_dedup;
 mod entity_config;
@@ -42,6 +43,7 @@ mod teams;
 pub use agents::agent_slug;
 pub use assignments::{Assignment, NewAssignment};
 pub use cron_jobs::cron_ref;
+pub use employee_drafts::{EmployeeCeilingRow, EmployeeDraftRow};
 pub use engine::{
     AgentChanges, EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,
