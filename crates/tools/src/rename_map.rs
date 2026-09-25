@@ -511,6 +511,9 @@ pub const RENAMES: &[Rename] = &[
     web("browser", "file_upload", "browser_upload", &[]),
     web("browser", "resize_window", "browser_resize", &[]),
     web("browser", "history", "browser_history", &[]),
+    web("browser", "go_back", "browser_history", &[]).sets(&[("direction", "\"back\"")]),
+    web("browser", "go_forward", "browser_history", &[]).sets(&[("direction", "\"forward\"")]),
+    web("browser", "close", "browser_close_tab", &[("tabId", "tab_id")]),
     web("browser", "status", "browser_status", &[]),
     web("browser", "browser_batch", "browser_batch", &[("actions", "steps")]),
     web("browser", "webmcp_list", "browser_page_tools", &[]),
@@ -613,6 +616,10 @@ pub const RENAMES: &[Rename] = &[
     flat("work", "toggle", "set_workflow_enabled", ON_WORKFLOW),
     // The `emit` tool (tools WP9).
     Rename { tool: "emit", resource: None, action: None, to: "emit_event", params: &[], sets: &[] },
+    // Shapes older than the agent tool that published content still writes:
+    // an event it emits, and a message it sends.
+    Rename { tool: "agent", resource: Some("event"), action: Some("emit"), to: "emit_event", params: &[], sets: &[] },
+    Rename { tool: "agent", resource: Some("message"), action: Some("send"), to: "send_message", params: &[("text", "message")], sets: &[] },
     // The pre-STRAP names the registry used to alias at call time. Their
     // calls are `os` calls; the single-purpose ones name their resource.
     Rename { tool: "organizer", resource: None, action: None, to: "os", params: &[], sets: &[] },
@@ -687,6 +694,10 @@ const DISPATCHING: &[&str] = &["os"];
 /// The action an old tool ran when a call named none (and no operation).
 const DEFAULT_ACTIONS: &[(&str, &str)] = &[("plugin", "exec")];
 
+/// Old tools that worked out a missing `resource` from the action: a call
+/// with none moves by its action alone, when that action names one job.
+const INFERRED_RESOURCE: &[&str] = &["web"];
+
 /// Every tool name a row retires or narrows, once each.
 pub fn old_tools() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = Vec::new();
@@ -726,6 +737,16 @@ fn row_for(
                 && (!r.to.contains("{resource}") || resource.is_some())
         })
         .max_by_key(|r| u8::from(r.resource.is_some()) * 2 + u8::from(r.action.is_some()))
+        .or_else(|| {
+            let (None, Some(action)) = (resource, action) else { return None };
+            if !INFERRED_RESOURCE.contains(&tool) {
+                return None;
+            }
+            let jobs: Vec<&'static Rename> =
+                RENAMES.iter().filter(|r| r.tool == tool && r.action == Some(action)).collect();
+            let one_job = jobs.windows(2).all(|w| w[0].to == w[1].to && w[0].params == w[1].params && w[0].sets == w[1].sets);
+            jobs.first().copied().filter(|_| one_job)
+        })
 }
 
 /// A catalog operation written where a plugin command goes
@@ -1260,6 +1281,11 @@ mod tests {
             (r#"os(resource: "file", action: "grep", pattern: "TODO", path: "src")"#, r#"run_command(command: "grep -rn 'TODO' src")"#),
             (r#"os(resource: "file", action: "read", path: "/tmp/a.txt")"#, r#"read_file(path: "/tmp/a.txt")"#),
             (r#"team(action: "post", team: "ops", text: "done")"#, r#"send_message(to: "ops", message: "done")"#),
+            // Published content: a web call that named only its action, and
+            // shapes older than the agent tool.
+            (r#"web(action: "navigate", url: "https://example.com")"#, r#"browser_open(url: "https://example.com")"#),
+            (r#"web(action: 'go_back')"#, r#"browser_history(direction: "back")"#),
+            (r#"agent(resource: "event", action: "emit", name: "done")"#, r#"emit_event(name: "done")"#),
             // A quote the author never closed: the call still ends at its bracket.
             (
                 r#"`plugin(resource: "rentcast", action: "exec", command: "properties search --limit 100`)"#,

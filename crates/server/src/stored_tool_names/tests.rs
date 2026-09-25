@@ -266,12 +266,21 @@ async fn a_run_parked_on_the_old_approval_card_waits_on_an_ask() {
     let check = std::sync::Arc::new(agent::Check::new(store.clone()));
     let registry = tools::Registry::new(check.clone());
     registry.register_all(store.clone(), tools::new_handle()).await;
+    // The hub can't be reached at the first start: the run is parked on its
+    // ask, and the conversion waits for the card to clear.
+    let unreachable = |_: String| async { Err::<(), String>("hub unreachable".into()) };
+    convert_parked_approvals(&store, &registry, check.as_ref(), unreachable).await.unwrap();
+    assert!(!store.upgrade_conversion_done(PARKED_APPROVALS).unwrap());
     let resolved = std::sync::Mutex::new(Vec::<String>::new());
-    let resolve = |id: &str| resolved.lock().unwrap().push(id.to_string());
+    let resolve = |id: String| {
+        resolved.lock().unwrap().push(id);
+        async { Ok::<(), String>(()) }
+    };
     convert_parked_approvals(&store, &registry, check.as_ref(), resolve).await.unwrap();
+    assert!(store.upgrade_conversion_done(PARKED_APPROVALS).unwrap());
 
     let asks = store.open_permission_asks(None).unwrap();
-    assert_eq!(asks.len(), 1, "one ask for the parked run");
+    assert_eq!(asks.len(), 1, "one ask for the parked run, parked once");
     assert_eq!(asks[0].run_id.as_deref(), Some("run-1"));
     let call: Value = serde_json::from_str(&asks[0].call).unwrap();
     assert_eq!(call["name"], "remember");
@@ -282,7 +291,12 @@ async fn a_run_parked_on_the_old_approval_card_waits_on_an_ask() {
     assert_eq!(*resolved.lock().unwrap(), ["wf-approval:run-1"]);
 
     // Once.
-    let resolve_again = |id: &str| panic!("converted twice: {id}");
+    let again = std::sync::Mutex::new(Vec::<String>::new());
+    let resolve_again = |id: String| {
+        again.lock().unwrap().push(id);
+        async { Ok::<(), String>(()) }
+    };
     convert_parked_approvals(&store, &registry, check.as_ref(), resolve_again).await.unwrap();
+    assert!(again.lock().unwrap().is_empty(), "done once");
     assert_eq!(store.open_permission_asks(None).unwrap().len(), 1);
 }

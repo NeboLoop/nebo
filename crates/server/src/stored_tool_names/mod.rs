@@ -553,15 +553,23 @@ fn move_hook(hook: &serde_yaml::Value) -> Option<Vec<serde_yaml::Value>> {
 /// once. Each parked call moves onto the current tool set and goes through
 /// the one check as the run's own call: an ask is parked on the owner and
 /// the run waits on it, as a run parked today does. When the owner's rules
-/// now settle the call, the run is released with that answer. The old
-/// Inbox card (`wf-approval:<run>`) is marked read here and handed to
-/// `resolve_card` for the hub's copy.
-pub(crate) async fn convert_parked_approvals(
+/// now settle the call, the run is released with that answer.
+///
+/// The old card (`wf-approval:<run>`) is marked read here, and `resolve_card`
+/// clears the hub's copy, whose Approve button no longer reaches a route.
+/// The conversion is recorded only once every card is cleared: a hub that
+/// can't be reached leaves it to the next start, which clears the cards of
+/// every run already waiting on an ask and parks nothing twice.
+pub(crate) async fn convert_parked_approvals<R, F>(
     store: &db::Store,
     registry: &tools::Registry,
     gate: &dyn tools::PermissionGate,
-    resolve_card: impl Fn(&str),
-) -> Result<(), NeboError> {
+    resolve_card: R,
+) -> Result<(), NeboError>
+where
+    R: Fn(String) -> F,
+    F: std::future::Future<Output = Result<(), String>>,
+{
     if store.upgrade_conversion_done(PARKED_APPROVALS)? {
         return Ok(());
     }
@@ -571,6 +579,7 @@ pub(crate) async fn convert_parked_approvals(
         .filter_map(|a| a.run_id)
         .collect();
     let mut converted = Vec::new();
+    let mut runs: BTreeSet<String> = linked.clone();
     for (run_id, agent_id, _binding, display, _) in store.list_workflow_suspensions()? {
         if linked.contains(&run_id) {
             continue;
@@ -578,12 +587,22 @@ pub(crate) async fn convert_parked_approvals(
         let outcome = park_again(store, registry, gate, &run_id, &agent_id).await;
         info!(run_id = %run_id, outcome = %outcome, "parked approval converted");
         converted.push(serde_json::json!({ "run_id": run_id, "display": display, "outcome": outcome }));
+        runs.insert(run_id);
+    }
+    let user_id = store.ensure_local_user_id().unwrap_or_default();
+    let mut uncleared = 0;
+    for run_id in &runs {
         let old_card = format!("wf-approval:{run_id}");
-        let user_id = store.ensure_local_user_id().unwrap_or_default();
         if let Err(e) = store.mark_notification_read(&old_card, &user_id) {
             warn!(run_id = %run_id, error = %e, "old approval card not marked read");
         }
-        resolve_card(&old_card);
+        if let Err(e) = resolve_card(old_card).await {
+            warn!(run_id = %run_id, error = %e, "the hub's old approval card not cleared; tried again at the next start");
+            uncleared += 1;
+        }
+    }
+    if uncleared > 0 {
+        return Ok(());
     }
     store.record_upgrade_conversion(PARKED_APPROVALS, &Value::Array(converted).to_string())
 }

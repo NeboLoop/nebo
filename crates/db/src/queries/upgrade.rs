@@ -142,9 +142,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
         for name in tool_naming_places() {
-            let cells = store.tool_naming_cells(name).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert!(cells.is_empty(), "{name}");
-            store.set_tool_naming_cell(name, "none", "x").unwrap_or_else(|e| panic!("{name}: {e}"));
+            let before = store.tool_naming_cells(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            store.set_tool_naming_cell(name, "no such row", "x").unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(store.tool_naming_cells(name).unwrap(), before, "{name}: a write names its row");
         }
         assert!(store.tool_naming_cells("chat_messages.content").is_err(), "only the listed places");
     }

@@ -2249,7 +2249,16 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     permission_asks.attach(Arc::new(permission_asks::OwnerSurfaces { state: state.clone() }));
     // Runs parked on the old approval card become asks, once, now that the
     // card has somewhere to go.
-    let resolve_card = |id: &str| codes::push_inbox(&state, serde_json::json!({ "id": id, "resolved": true }));
+    let inbox = codes::inbox_api(&state.store, &state.config.neboai.api_url).map(Arc::new);
+    let resolve_card = |id: String| {
+        let inbox = inbox.clone();
+        async move {
+            match inbox {
+                Some(api) => api.push_inbox_item(&serde_json::json!({ "id": id, "resolved": true })).await.map_err(|e| e.to_string()),
+                None => Ok(()),
+            }
+        }
+    };
     if let Err(e) = stored_tool_names::convert_parked_approvals(&state.store, &state.tools, check.as_ref(), resolve_card).await {
         warn!(error = %e, "parked approvals not converted");
     }
