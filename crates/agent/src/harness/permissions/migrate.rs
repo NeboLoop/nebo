@@ -14,6 +14,7 @@
 //! | Operations nobody configured that move money | company ask rules |
 //! | Operations the company reserves to the owner (`company_policy.reserved`) | locked company ask rules |
 //! | MCP tool permissions (`mcp_integrations.tool_permissions`) | rules on the server's proxy tool names |
+//! | Interfaces an employee binds (`agents.frontmatter` `requires.interfaces`) | allow rules on each interface (the job) |
 
 use std::collections::HashMap;
 
@@ -170,6 +171,30 @@ pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, type
             match serde_json::from_str::<LegacyPolicy>(json) {
                 Ok(policy) => w.operations(&scope, &policy),
                 Err(_) => w.report.unreadable.push(format!("entity_config.operation_policy[{}]", ec.entity_id)),
+            }
+        }
+    }
+
+    // Each employee's bound interfaces: their operations ran before there
+    // was a job to be inside, so the interfaces it declares are its job. An
+    // employee's own rule on the capability stands.
+    for agent in store.list_agents(-1, 0)? {
+        let json = if agent.frontmatter.trim().is_empty() { "{}" } else { agent.frontmatter.as_str() };
+        let Ok(config) = napp::agent::parse_agent_config(json) else {
+            w.report.unreadable.push(format!("agents.frontmatter[{}]", agent.id));
+            continue;
+        };
+        let scope = Scope::Employee(agent.id.clone());
+        let own = store.permission_rules_in(&scope)?;
+        for interface in config
+            .requires
+            .interfaces
+            .iter()
+            .filter(|i| tools::interface_catalog::capabilities().contains(&i.as_str()))
+        {
+            let key = RuleKey::Capability(interface.clone());
+            if !own.iter().any(|r| r.key == key && r.field.is_none()) {
+                w.rule(scope.clone(), key, None, Effect::Allow, None, "agents.requires.interfaces");
             }
         }
     }

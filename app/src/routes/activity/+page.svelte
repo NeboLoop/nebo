@@ -1,8 +1,9 @@
 <!--
   Activity: every action an employee took, filterable by employee, where it
   started and what was decided. Each row answers "Why was this allowed?" in
-  plain words the server renders; actions the permission check couldn't
-  review are flagged. `?agent=<id>` opens it on one employee.
+  plain words the server renders, with who decided it (the rules, Jev or
+  the backup reviewer) and the reviewer's verdict; actions the permission
+  check couldn't review are flagged. `?agent=<id>` opens it on one employee.
 -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
@@ -130,6 +131,10 @@
                 </div>
                 {#if open[i]}
                   <p class="text-xs mt-1.5">{row.why}</p>
+                  <p class="text-xs mt-1 text-base-content/60">{row.decidedBy}</p>
+                  {#if row.verdict}
+                    <p class="text-xs text-base-content/60">{row.verdict}</p>
+                  {/if}
                 {/if}
               </li>
             {/each}

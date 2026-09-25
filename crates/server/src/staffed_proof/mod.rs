@@ -339,11 +339,14 @@ impl Nebo {
         let cx = agent::harness::permissions::CheckCx { ctx: &ctx, input: &input, grant: &grant, store: self.store() };
         let mut effects = types::permissions::CallEffects::unknown();
         effects.money_cents = amount_cents;
+        let key = tools::plugin_tool::port_suffix(op);
+        // The operation's interface is its job capability, as its tool says.
+        let capability = key.split('.').next().filter(|c| tools::interface_catalog::capabilities().contains(c)).map(str::to_string);
         let target = types::permissions::Target {
-            tool: tools::operation_tools::operation_tool_name(&tools::plugin_tool::port_suffix(op)),
-            key: tools::plugin_tool::port_suffix(op),
+            tool: tools::operation_tools::operation_tool_name(&key),
+            key,
             operation: Some(op.to_string()),
-            capability: None,
+            capability,
             field: None,
             read_only: false,
             effects,

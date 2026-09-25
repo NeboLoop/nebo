@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 
 use agent::harness::permissions::{Answer, AnsweredVia, Ask, AskError, AskStatus};
 use types::permissions::{
-    AskCase, Effect, Mode, MoneyLimit, Rule, RuleError, RuleField, RuleKey, RuleSource, Scope, Why, Writer,
+    AskCase, Effect, JudgementMode, Mode, MoneyLimit, Rule, RuleError, RuleField, RuleKey, RuleSource, Scope, Why,
+    Writer,
 };
 use types::NeboError;
 
@@ -292,6 +293,13 @@ pub struct ActivityRow {
     pub door: String,
     /// Neither judge could review it; it ran unchecked.
     pub unreviewed: bool,
+    /// Who decided it, in plain words: the permission rules, or the
+    /// reviewer that judged what the rules could not (Jev, or the backup
+    /// reviewer).
+    pub decided_by: String,
+    /// The reviewer's verdict and its reason, in plain words; empty when
+    /// the rules decided alone.
+    pub verdict: String,
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────
@@ -626,7 +634,8 @@ fn activity(store: &db::Store, q: &ActivityQuery) -> Result<ActivityPage, NeboEr
     let rows = rows
         .into_iter()
         .map(|r| {
-            let (why, unreviewed) = why_sentence(store, &r.decision, &r.why);
+            let (why, why_unreviewed) = why_sentence(store, &r.decision, &r.why);
+            let (decided_by, verdict) = review_sentences(r.judgement.as_deref());
             ActivityRow {
                 at: r.created_at,
                 employee: name_of(&r.agent_id),
@@ -635,7 +644,9 @@ fn activity(store: &db::Store, q: &ActivityQuery) -> Result<ActivityPage, NeboEr
                 decision: r.decision,
                 why,
                 door: r.door,
-                unreviewed,
+                unreviewed: r.unreviewed || why_unreviewed,
+                decided_by,
+                verdict,
             }
         })
         .collect();
@@ -682,6 +693,30 @@ fn why_sentence(store: &db::Store, decision: &str, why: &str) -> (String, bool) 
         Why::Ceiling => "It can't do more than the employee or run it works for".into(),
     };
     (s, false)
+}
+
+/// Who decided a recorded call, and the reviewer's verdict: from the
+/// judgement recorded with it (`{mode, verdict, by, reason}`), or the
+/// permission rules alone when no reviewer was asked. A shadow verdict is
+/// recorded only; the rules' decision stood.
+fn review_sentences(judgement: Option<&str>) -> (String, String) {
+    let Some(j) = judgement.and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok()) else {
+        return ("Decided by the permission rules".into(), String::new());
+    };
+    let reason = j["reason"].as_str().unwrap_or_default().trim().trim_end_matches('.');
+    let by = match j["by"].as_str() {
+        Some("jev") => "Reviewed by Jev",
+        Some(_) => "Reviewed by the backup reviewer",
+        None => "Not reviewed: neither reviewer could run",
+    };
+    let shadow = j["mode"].as_str() == Some(JudgementMode::Shadow.as_str());
+    let verdict = match (j["verdict"].as_str(), shadow) {
+        (Some("allow"), _) => format!("It judged this fine: {reason}"),
+        (Some("ask"), false) => format!("It judged you should be asked: {reason}"),
+        (Some("ask"), true) => format!("It would have asked you, but its verdicts are only recorded for now: {reason}"),
+        _ => "The permission check couldn't run, so it went ahead".to_string(),
+    };
+    (by.to_string(), verdict)
 }
 
 fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
@@ -1178,5 +1213,72 @@ mod tests {
         assert_eq!(page.rows.iter().rev().nth(2).unwrap().action, "Run commands", "no label: the key in words");
         let only_asks = activity(&store, &ActivityQuery { decision: Some("ask".into()), ..Default::default() }).unwrap();
         assert_eq!(only_asks.total, 1);
+    }
+
+    /// The activity names who decided each call (the rules, Jev or the
+    /// backup reviewer), the reviewer's verdict, and flags a call neither
+    /// reviewer could check, all in plain words.
+    #[test]
+    fn activity_shows_the_review_and_who_gave_it() {
+        let (_d, store) = store();
+        let record = |why: Why, judgement: Option<serde_json::Value>, unreviewed: bool| {
+            store
+                .record_permission_activity(&db::PermissionActivityRow {
+                    agent_id: "a".into(),
+                    door: "local_api".into(),
+                    tool: "mail_message_send".into(),
+                    rule_key: "mail.message.send".into(),
+                    activity: "sending an email".into(),
+                    decision: "allow".into(),
+                    why: serde_json::to_string(&why).unwrap(),
+                    unreviewed,
+                    judgement: judgement.map(|j| j.to_string()),
+                    created_at: 1,
+                    ..Default::default()
+                })
+                .unwrap()
+        };
+        let inside = || Why::Mode { mode: Mode::Automatic };
+        record(inside(), None, false);
+        record(
+            Why::Judged { by: "jev".into(), reason: "a reply to the sender.".into() },
+            Some(serde_json::json!({ "mode": "enforce", "verdict": "allow", "by": "jev", "reason": "a reply to the sender." })),
+            false,
+        );
+        record(
+            inside(),
+            Some(serde_json::json!({ "mode": "shadow", "verdict": "ask", "by": "aux_classifier", "reason": "posts publicly" })),
+            false,
+        );
+        record(
+            inside(),
+            Some(serde_json::json!({ "mode": "shadow", "verdict": "unjudged", "by": null, "reason": "the permission check couldn't run" })),
+            true,
+        );
+
+        let page = activity(&store, &ActivityQuery::default()).unwrap();
+        let rows: Vec<&ActivityRow> = page.rows.iter().rev().collect();
+        let seen: Vec<(&str, &str, bool)> =
+            rows.iter().map(|r| (r.decided_by.as_str(), r.verdict.as_str(), r.unreviewed)).collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("Decided by the permission rules", "", false),
+                ("Reviewed by Jev", "It judged this fine: a reply to the sender", false),
+                (
+                    "Reviewed by the backup reviewer",
+                    "It would have asked you, but its verdicts are only recorded for now: posts publicly",
+                    false
+                ),
+                ("Not reviewed: neither reviewer could run", "The permission check couldn't run, so it went ahead", true),
+            ]
+        );
+        for r in &rows {
+            for s in [&r.action, &r.why, &r.decided_by, &r.verdict] {
+                for f in ["mail.message.send", "_", "{", "jev", "aux", "shadow", "enforce"] {
+                    assert!(!s.contains(f), "{s:?} carries {f:?}");
+                }
+            }
+        }
     }
 }

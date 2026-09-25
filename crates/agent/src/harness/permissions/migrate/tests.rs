@@ -300,6 +300,53 @@ fn migrated_decisions_equal_todays() {
     }
 }
 
+/// The interfaces an employee binds become its job: its operations ran
+/// before the upgrade and still run; an employee that binds none is asked
+/// (outside its job), and an employee's own "off" on the interface stands.
+#[test]
+fn bound_interfaces_become_the_job() {
+    let (_d, store, conn) = legacy();
+    let hire = |id: &str, config: &str| {
+        store.create_agent(id, None, id, "", "", config, None, None).unwrap();
+    };
+    hire("clerk", r#"{"requires": {"interfaces": ["ledger", "not-a-catalog-term"]}}"#);
+    hire("other", "{}");
+    hire("off", r#"{"requires": {"interfaces": ["ledger"]}}"#);
+    employee(&conn, "off", "permissions", r#"{"ledger": false}"#);
+    migrate_legacy(&store).unwrap().expect("ran");
+
+    let ledger = RuleKey::Capability("ledger".into());
+    assert_eq!(effect_of(&store, Scope::Employee("clerk".into()), ledger.clone(), None), Some(Effect::Allow));
+    assert!(
+        rules_in(&store, Scope::Employee("clerk".into()))
+            .iter()
+            .all(|r| r.key != RuleKey::Capability("not-a-catalog-term".into())),
+        "only the catalog's terms are capabilities"
+    );
+    assert_eq!(effect_of(&store, Scope::Employee("other".into()), ledger.clone(), None), None);
+    assert_eq!(effect_of(&store, Scope::Employee("off".into()), ledger, None), Some(Effect::Deny));
+
+    let t = Target {
+        tool: "ledger_invoice_update".into(),
+        key: "ledger.invoice.update".into(),
+        operation: Some("ledger.invoice.update".into()),
+        capability: Some("ledger".into()),
+        field: None,
+        read_only: false,
+        effects: types::permissions::CallEffects::unknown(),
+    };
+    let decide_for = |agent: &str| {
+        let grant = crate::harness::permissions::resolve_grant(&store, agent, None);
+        let ctx = tools::ToolContext { origin: tools::Origin::Workflow, ..Default::default() };
+        let input = json!({});
+        let cx = crate::harness::permissions::CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store };
+        crate::harness::permissions::decide(&cx, &t)
+    };
+    assert!(matches!(decide_for("clerk"), Decision::Allow { .. }), "{:?}", decide_for("clerk"));
+    assert!(matches!(decide_for("other"), Decision::Ask { .. }), "{:?}", decide_for("other"));
+    assert!(matches!(decide_for("off"), Decision::Deny { .. }), "{:?}", decide_for("off"));
+}
+
 /// Nothing outside the conversion reads the old permission shapes: the
 /// capability toggles, saved commands, Full Access, per-employee grants,
 /// fence and policy, and the MCP tool map.
