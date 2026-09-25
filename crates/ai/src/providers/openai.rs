@@ -493,6 +493,12 @@ impl OpenAIProvider {
                                         func.and_then(|f| f.arguments.as_deref()),
                                     );
                                 }
+                                // Each call goes to the runner as soon as its
+                                // input is complete, so safe calls start while
+                                // the model is still writing the rest.
+                                for tc in tool_calls.take_complete() {
+                                    let _ = tx.send(tool_call_event(tc)).await;
+                                }
                             }
 
                             // Check finish reason — mark finished but don't break yet.
@@ -582,22 +588,9 @@ impl OpenAIProvider {
             );
         }
 
-        // Emit the assembled tool calls in the order they arrived.
+        // The calls whose input never completed, in the order they arrived.
         for tc in tool_calls.finish() {
-            // Unparseable arguments = the stream was cut off mid-payload.
-            // An empty-object fallback silently forwarded the lie; wrap the
-            // raw text instead so the registry's truncation corrective can
-            // name the cutoff and teach chunked writes (same shape the
-            // gateway's salvage uses — ONE downstream detector).
-            let input: serde_json::Value = serde_json::from_str(&tc.arguments)
-                .unwrap_or_else(|_| serde_json::json!({ "_raw": tc.arguments }));
-            let _ = tx
-                .send(StreamEvent::tool_call(ToolCall {
-                    id: tc.id,
-                    name: tc.name,
-                    input,
-                }))
-                .await;
+            let _ = tx.send(tool_call_event(tc)).await;
         }
 
         // The one Usage event for this stream — final cumulative totals.
@@ -1067,8 +1060,24 @@ fn map_http_error(
     }
 }
 
+/// A finished call as the runner's event. Unparseable arguments = the stream
+/// was cut off mid-payload. An empty-object fallback silently forwarded the
+/// lie; wrap the raw text instead so the registry's truncation corrective can
+/// name the cutoff and teach chunked writes (same shape the gateway's salvage
+/// uses — ONE downstream detector).
+fn tool_call_event(tc: AccumulatedToolCall) -> StreamEvent {
+    let input: serde_json::Value = serde_json::from_str(&tc.arguments)
+        .unwrap_or_else(|_| serde_json::json!({ "_raw": tc.arguments }));
+    StreamEvent::tool_call(ToolCall {
+        id: tc.id,
+        name: tc.name,
+        input,
+    })
+}
+
 // --- Helper types (kept for history deserialization and tool accumulation) ---
 
+#[derive(Clone)]
 struct AccumulatedToolCall {
     index: u32,
     id: String,
@@ -1076,6 +1085,19 @@ struct AccumulatedToolCall {
     arguments: String,
     /// The arguments arrived whole in one chunk; repeats of it are ignored.
     arguments_whole: bool,
+    /// Already handed to the runner by `take_complete`.
+    emitted: bool,
+}
+
+impl AccumulatedToolCall {
+    /// An id, a name and arguments that parse as a whole JSON object: nothing
+    /// a later chunk adds can change the input.
+    fn is_complete(&self) -> bool {
+        !self.id.is_empty()
+            && !self.name.is_empty()
+            && serde_json::from_str::<serde_json::Value>(&self.arguments)
+                .is_ok_and(|v| v.is_object())
+    }
 }
 
 /// A streamed response's tool calls, assembled from their chunks in the
@@ -1114,6 +1136,7 @@ impl ToolCallAccumulator {
                 name: String::new(),
                 arguments: String::new(),
                 arguments_whole: false,
+                emitted: false,
             });
             self.calls.len() - 1
         });
@@ -1138,11 +1161,27 @@ impl ToolCallAccumulator {
         }
     }
 
-    /// The complete calls (an id and a name), in arrival order.
+    /// The calls whose input is now complete and not yet handed over, in
+    /// arrival order: a call waits while an earlier one is still open, so the
+    /// runner receives them in the order the model wrote them.
+    fn take_complete(&mut self) -> Vec<AccumulatedToolCall> {
+        let mut out = Vec::new();
+        for call in self.calls.iter_mut().filter(|c| !c.emitted) {
+            if !call.is_complete() {
+                break;
+            }
+            call.emitted = true;
+            out.push(call.clone());
+        }
+        out
+    }
+
+    /// The calls not yet handed over that have an id and a name, in arrival
+    /// order.
     fn finish(self) -> Vec<AccumulatedToolCall> {
         self.calls
             .into_iter()
-            .filter(|c| !c.id.is_empty() && !c.name.is_empty())
+            .filter(|c| !c.emitted && !c.id.is_empty() && !c.name.is_empty())
             .collect()
     }
 
@@ -1327,6 +1366,97 @@ mod tests {
         acc.absorb(0, None, Some("read"), Some("{}"));
         acc.absorb(1, Some("call_b"), None, Some("{}"));
         assert!(calls(acc).is_empty());
+    }
+
+    /// A call is handed over once its arguments form a whole object, and not
+    /// again; one still open holds back the calls after it.
+    #[test]
+    fn a_call_is_taken_once_its_input_is_complete() {
+        let mut acc = ToolCallAccumulator::default();
+        acc.absorb(0, Some("call_a"), Some("read"), Some(""));
+        acc.absorb(0, None, None, Some(r#"{"pa"#));
+        assert!(acc.take_complete().is_empty());
+        acc.absorb(0, None, None, Some(r#"th":"/a"}"#));
+        let taken: Vec<_> = acc.take_complete().into_iter().map(|c| c.id).collect();
+        assert_eq!(taken, vec!["call_a"]);
+        acc.absorb(0, Some("call_a"), Some("read"), Some(r#"{"path":"/a"}"#));
+        assert!(acc.take_complete().is_empty(), "a repeat is not a second call");
+        acc.absorb(1, Some("call_b"), Some("grep"), Some(r#"{"q":"#));
+        acc.absorb(2, Some("call_c"), Some("read"), Some(r#"{"path":"/c"}"#));
+        assert!(acc.take_complete().is_empty(), "call_c waits for call_b");
+        acc.absorb(1, None, None, Some("1}"));
+        let taken: Vec<_> = acc.take_complete().into_iter().map(|c| c.id).collect();
+        assert_eq!(taken, vec!["call_b", "call_c"]);
+        assert!(calls(acc).is_empty(), "nothing is handed over twice");
+    }
+
+    /// Over the wire, a streamed multi-call response: the first call reaches
+    /// the runner while the stream is still open, before the model has
+    /// finished writing the second.
+    #[tokio::test]
+    async fn each_call_is_emitted_while_the_stream_is_still_open() {
+        let chunk = |tc: &str| {
+            format!(
+                "data: {{\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{tc}]}},\"finish_reason\":null}}]}}\n\n"
+            )
+        };
+        let head = [
+            chunk(r#"{"index":0,"id":"call_a","type":"function","function":{"name":"read","arguments":""}}"#),
+            chunk(r#"{"index":0,"function":{"arguments":"{\"path\":"}}"#),
+            chunk(r#"{"index":0,"function":{"arguments":"\"/a\"}"}}"#),
+            chunk(r#"{"index":1,"id":"call_b","type":"function","function":{"name":"grep","arguments":"{\"q\":"}}"#),
+        ]
+        .concat();
+        let tail = [
+            chunk(r#"{"index":1,"function":{"arguments":"\"x\"}"}}"#),
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n".to_string(),
+        ]
+        .concat();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{head}"
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+            // The model is still writing call_b until the test releases it.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), release_rx).await;
+            sock.write_all(tail.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+        let response = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let reader = tokio::spawn(OpenAIProvider::handle_stream(response, tx));
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while let Some(ev) = rx.recv().await {
+                if let Some(tc) = ev.tool_call {
+                    return Some(tc);
+                }
+            }
+            None
+        })
+        .await
+        .expect("call_a must arrive while the stream is still open")
+        .expect("a tool call");
+        assert_eq!((first.id.as_str(), first.input.clone()), ("call_a", serde_json::json!({"path": "/a"})));
+
+        release_tx.send(()).unwrap();
+        reader.await.unwrap();
+        server.await.unwrap();
+        let mut rest = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(tc) = ev.tool_call {
+                rest.push((tc.id, tc.input));
+            }
+        }
+        assert_eq!(rest, vec![("call_b".to_string(), serde_json::json!({"q": "x"}))]);
     }
 
     /// End to end over the wire: two Janus-shaped calls in one response are
