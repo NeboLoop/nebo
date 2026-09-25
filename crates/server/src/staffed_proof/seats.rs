@@ -50,9 +50,9 @@ async fn out_of_bounds_work_becomes_an_assignment() {
     let handed = nebo
         .tool(
             &ctx,
-            "agent",
+            "assign_task",
             json!({
-                "resource": "task", "action": "assign", "to": "Operations Lead",
+                "to": "Operations Lead",
                 "subject": format!("Ledger Clerk is stopped on {OP}: {DISPLAY}"),
                 "done_means": format!("Decide {OP} for Ledger Clerk. It fell outside what Ledger Clerk may do unattended: {REASON}. The work that is stopped: {DISPLAY}."),
             }),
@@ -103,7 +103,7 @@ async fn out_of_bounds_work_becomes_an_assignment() {
     assert_eq!(nebo.store().manager_chain(&bk).unwrap(), vec![(om.clone(), "Front Office".to_string())]);
     // A seat may not assign to itself.
     let me = nebo
-        .tool(&ctx, "agent", json!({ "resource": "task", "action": "assign", "to": "Ledger Clerk", "subject": "x", "done_means": "y" }))
+        .tool(&ctx, "assign_task", json!({ "to": "Ledger Clerk", "subject": "x", "done_means": "y" }))
         .await;
     assert!(me.is_error && me.content.contains("That is you"), "{}", me.content);
 }

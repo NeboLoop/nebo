@@ -50,18 +50,10 @@ pub struct SpawnRequest {
     /// content is injected so the sub-agent has instructions without needing
     /// to discover/load them itself. Keeps the parent context lean.
     pub skills: Vec<String>,
-    /// Plugin install codes the sub-agent should have access to. Plugin docs
-    /// and capabilities are injected into the sub-agent's system prompt so it
-    /// knows how to use them from turn 1.
-    pub plugins: Vec<String>,
-    /// STRAP domain tool names the sub-agent needs (e.g. "web", "loop", "message").
-    /// The corresponding STRAP doc is injected so the sub-agent knows the tool's
-    /// resources, actions, and usage patterns.
-    pub tools: Vec<String>,
     /// Parent run's agent-to-agent hop count — inherited so a sub-agent cannot
     /// restart the coworker chain cap at zero.
     pub handoff_depth: u8,
-    /// spawn_parallel only: "worktree" gives each child its own copy of the
+    /// A batch (`spawn_parallel`) only: "worktree" gives each child its own copy of the
     /// project (a git worktree when `workspace` is a repo, a scratch copy
     /// otherwise) and merges the results back. Empty = share the tree.
     pub isolate: String,

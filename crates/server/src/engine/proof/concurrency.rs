@@ -566,8 +566,6 @@ fn background_child(marker: &str) -> tools::SpawnRequest {
         wait: false,
         max_iterations: 10,
         skills: vec![],
-        plugins: vec![],
-        tools: vec![],
         handoff_depth: 0,
         isolate: String::new(),
         workspace: String::new(),

@@ -81,7 +81,7 @@ Now that the problem is clear, understand the landscape around it:
 
 Use Nebo's memory to check for relevant context:
 ```
-agent(resource: "memory", action: "search", query: "relevant topic keywords")
+recall(query: "relevant topic keywords")
 ```
 
 If the user mentions a website or product, use the browser to understand it:
@@ -194,11 +194,11 @@ Revise until they're happy.
 Store the design document in Nebo's memory:
 
 ```
-agent(resource: "memory", action: "store", key: "designs/[project-name]/document", value: "Full design document", layer: "tacit")
-agent(resource: "memory", action: "store", key: "designs/[project-name]/problem", value: "One-sentence problem statement", layer: "tacit")
-agent(resource: "memory", action: "store", key: "designs/[project-name]/approach", value: "Chosen approach summary", layer: "tacit")
-agent(resource: "memory", action: "store", key: "designs/[project-name]/date", value: "YYYY-MM-DD", layer: "tacit")
-agent(resource: "memory", action: "store", key: "designs/[project-name]/status", value: "brainstormed", layer: "tacit")
+remember(key: "designs/[project-name]/document", value: "Full design document", layer: "tacit")
+remember(key: "designs/[project-name]/problem", value: "One-sentence problem statement", layer: "tacit")
+remember(key: "designs/[project-name]/approach", value: "Chosen approach summary", layer: "tacit")
+remember(key: "designs/[project-name]/date", value: "YYYY-MM-DD", layer: "tacit")
+remember(key: "designs/[project-name]/status", value: "brainstormed", layer: "tacit")
 ```
 
 Tell the user: *"I've saved this design. When you're ready to turn it into a detailed spec, just say 'write a spec for [project name]' and we'll pick up right where we left off."*
@@ -294,7 +294,7 @@ The user is the expert on their business. You are the expert on structured think
 **You do:**
 1. Search memory:
    ```
-   agent(resource: "memory", action: "search", query: "designs notification system")
+   recall(query: "designs notification system")
    ```
 2. Find the previous design document
 3. Say: *"I found our design from [date]. We went with [approach]. What's changed that makes you want to rethink it?"*

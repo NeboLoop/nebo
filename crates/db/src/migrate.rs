@@ -420,7 +420,7 @@ mod idempotency_tests {
             "This conversation continues from an earlier part that was summarized:\n\nOwner wants the Q3 report.\n\n\
              If you need a specific detail from before this summary (an exact snippet, an error message, something you \
              wrote), the earlier conversation is still stored: search it with \
-             agent(resource: \"session\", action: \"query\", query: \"...\")."
+             search_history(query: \"...\")."
         );
         assert_eq!(long[1].id, "l020");
         let short = store.get_chat_messages_since_checkpoint("short").unwrap();

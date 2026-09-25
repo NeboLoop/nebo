@@ -2312,6 +2312,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             broadcast: Some(Arc::new(move |event: &str, payload: serde_json::Value| hub.broadcast(event, payload))),
             goal_observer: Some(Arc::new(handlers::goal::GoalOutlet::new(state.clone()))),
         });
+        // `suggest_goal` reaches the agreed goal through the harness.
+        state.tools.bind_goals(Arc::new(agent::harness::goal::GoalSuggestions::new(state.harness.clone())));
     }
 
     // Wire the comm incoming-message handler now that AppState exists. Install
@@ -5492,7 +5494,9 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 // decompose/delegate/integrate, so its room runs carry a
                 // coordination-only tool surface — prose alone lost twice to
                 // "I could just do this myself". Experts keep the full roster;
-                // the work is theirs.
+                // the work is theirs. Coordination is the room, messages,
+                // the task list, assignments and memory; a helper would do
+                // the work itself, so the organizer gets none.
                 tool_allowlist: if organizer_run {
                     Some(
                         [
@@ -5502,10 +5506,18 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                             "find_tools",
                             "message",
                             "agent",
+                            "create_task",
+                            "update_task",
+                            "get_task",
+                            "list_tasks",
+                            "assign_task",
+                            "list_assignments",
+                            "recall",
+                            "remember",
                         ]
-                            .into_iter()
-                            .map(String::from)
-                            .collect(),
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
                     )
                 } else {
                     None

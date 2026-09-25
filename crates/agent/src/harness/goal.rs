@@ -817,6 +817,62 @@ impl Suggestions {
     }
 }
 
+/// The `suggest_goal` tool's door onto [`Suggestions`]: the call's own
+/// conversation, its approval card on the harness's approval channels, the
+/// goal told and kicked off through the harness's goal outlet.
+pub struct GoalSuggestions {
+    harness: super::Harness,
+    suggestions: Suggestions,
+}
+
+impl GoalSuggestions {
+    pub fn new(harness: super::Harness) -> Self {
+        Self { harness, suggestions: Suggestions::default() }
+    }
+}
+
+impl tools::GoalSuggester for GoalSuggestions {
+    fn suggest<'a>(
+        &'a self,
+        ctx: &'a tools::ToolContext,
+        condition: &'a str,
+        ask_owner: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let unavailable = || "Goals can't be set in this conversation. Keep working toward what the owner asked.".to_string();
+            let observer = self.harness.goal_observer().ok_or_else(unavailable)?;
+            let approvals = self.harness.approval_channels.as_ref().ok_or_else(unavailable)?;
+            // A card needs someone watching this conversation; without a
+            // stream only the owner's own words can set a goal.
+            let events = match (&ctx.stream_tx, ask_owner) {
+                (Some(tx), _) => tx.clone(),
+                (None, false) => mpsc::channel(1).0,
+                (None, true) => {
+                    return Err("Nobody can approve a goal in this run. Keep working toward what was asked.".to_string());
+                }
+            };
+            let call = ai::ToolCall {
+                id: ctx.tool_call_id.clone(),
+                name: "suggest_goal".to_string(),
+                input: serde_json::json!({ "condition": condition }),
+            };
+            self.suggestions
+                .suggest(
+                    SuggestContext {
+                        sessions: &self.harness.sessions,
+                        session_id: &ctx.session_id,
+                        call: &call,
+                        approvals,
+                        events: &events,
+                        observer,
+                    },
+                    SuggestInput { condition: condition.to_string(), ask_owner },
+                )
+                .await
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

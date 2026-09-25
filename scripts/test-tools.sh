@@ -141,19 +141,19 @@ if case_ plan-06 "a destructive verify command is refused and stays unticked"; t
   ok
 fi
 
-# ---- sub-agent continuation (Stage 9) ---------------------------------------
+# ---- helper continuation (Stage 9) ------------------------------------------
 # The live continuation itself is fixtures/tools/agent-send-continuation.yaml
-# (a model in the loop). Here: the verb exists and its two refusals say what
-# to do next, so a model never spirals on them.
-if case_ agent-send-01 "send without a message names the missing parameter"; then
-  call '{"resource":"task","action":"send","task_id":"sa-x"}' agent
-  expect_error "message"; echo "$LAST" | grep -q 'action: "send"' || die "usage example shown"
+# (a model in the loop). Here: send_message exists and its two refusals say
+# what to do next, so a model never spirals on them.
+if case_ agent-send-01 "send_message without a message names the missing parameter"; then
+  call '{"to":"sa-x"}' send_message
+  expect_error "message"
   ok
 fi
 
-if case_ agent-send-02 "send to an unknown task says to spawn afresh"; then
-  call '{"resource":"task","action":"send","task_id":"sa-nope","message":"more"}' agent
-  expect_error "No sub-agent sa-nope to continue"; echo "$LAST" | grep -q "Spawn a new one" || die "recovery named"
+if case_ agent-send-02 "send_message to an unknown helper says to start afresh"; then
+  call '{"to":"sa-nope","message":"more"}' send_message
+  expect_error "sa-nope"; echo "$LAST" | grep -qiE "new one|delegate" || die "recovery named"
   ok
 fi
 
