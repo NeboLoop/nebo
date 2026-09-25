@@ -224,17 +224,15 @@ async fn the_store_and_the_ledger_hold_under_contention() {
     }
 }
 
-/// Given words for every model call: the plan request gets `tasks`
-/// independent sub-tasks, every other call gets "done" after a short think.
-/// For `reject_for` after the first call past the plan, every call is
-/// refused with a 429 and Retry-After 1 s — a wave the way Janus sends one:
-/// everyone, for a moment. `live`/`peak` count the calls in flight at the
-/// provider. The permits, the harness's loop and retries, the store and the
-/// DAG scheduler are the product's own.
+/// Given words for every model call: "done" after a short think. For
+/// `reject_for` after the first call, every call is refused with a 429 and
+/// Retry-After 1 s — a wave the way Janus sends one: everyone, for a moment.
+/// `live`/`peak` count the calls in flight at the provider. The permits, the
+/// harness's loop and retries, the store and the helper registry are the
+/// product's own.
 struct GivenWords(Arc<Words>);
 
 struct Words {
-    tasks: usize,
     reject_for: std::time::Duration,
     reject_until: std::sync::Mutex<Option<std::time::Instant>>,
     /// Calls refused in the wave.
@@ -246,10 +244,9 @@ struct Words {
 }
 
 impl Words {
-    fn new(tasks: usize, reject_for: std::time::Duration) -> Arc<Self> {
+    fn new(reject_for: std::time::Duration) -> Arc<Self> {
         use std::sync::atomic::AtomicUsize;
         Arc::new(Self {
-            tasks,
             reject_for,
             reject_until: std::sync::Mutex::new(None),
             refused: AtomicUsize::new(0),
@@ -281,25 +278,14 @@ impl ai::Provider for GivenWords {
     fn id(&self) -> &str {
         "given-words"
     }
-    async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+    async fn stream(&self, _req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
         use std::sync::atomic::Ordering::SeqCst;
-        let asks_for_plan = req
-            .messages
-            .iter()
-            .any(|m| m.content.contains("Break this task into independent sub-tasks"));
         let words = &self.0;
-        let text = if asks_for_plan {
-            let plan: Vec<_> = (1..=words.tasks)
-                .map(|i| json!({"id": i.to_string(), "description": format!("part-{i}"), "prompt": format!("do part {i}"), "agent_type": "general", "depends_on": []}))
-                .collect();
-            serde_json::to_string(&plan).unwrap()
-        } else {
-            if words.refusing() {
-                words.refused.fetch_add(1, SeqCst);
-                return Err(ai::ProviderError::RateLimit { retry_after_secs: Some(1) });
-            }
-            "done".to_string()
-        };
+        if words.refusing() {
+            words.refused.fetch_add(1, SeqCst);
+            return Err(ai::ProviderError::RateLimit { retry_after_secs: Some(1) });
+        }
+        let text = "done".to_string();
         let me = words.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(4);
         tokio::spawn(async move {
@@ -346,74 +332,81 @@ fn helper_door(harness: &agent::Harness) -> agent::harness::delegation::door::He
     agent::harness::delegation::door::HelperDoor::new(helpers, harness.clone())
 }
 
-/// The run a proof's fan-out is spawned from: the owner's, with no limits.
-fn owner_run() -> tools::SpawnRequest {
+/// One part of a fan-out: a foreground helper of the owner's run, with no
+/// limits.
+fn part(i: usize) -> tools::SpawnRequest {
     tools::SpawnRequest {
+        prompt: format!("do part {i}"),
+        description: format!("part-{i}"),
+        agent_type: "general".into(),
         parent_session_id: "agent:ops:web".into(),
         parent_session_key: "agent:ops:web".into(),
         user_id: "owner".into(),
+        wait: true,
         ..Default::default()
     }
 }
 
+/// A fan-out as the model makes one: `n` delegate calls in one response,
+/// run side by side by the tool round. Each report, in order.
+async fn fan_out(
+    door: &agent::harness::delegation::door::HelperDoor,
+    n: usize,
+) -> Vec<Result<tools::SpawnResult, String>> {
+    use tools::SubAgentOrchestrator as _;
+    futures::future::join_all((1..=n).map(|i| door.spawn(part(i)))).await
+}
+
 /// A fan-out finishes when only two model calls may run at once. A permit
 /// is taken where the resource is spent, at the call, never around a unit
-/// of work that makes calls: the DAG once held an LLM permit per sub-task
-/// while each sub-task's turn took one per call, so at the permit floor
-/// two sub-tasks held both and waited forever. Three independent helpers
+/// of work that makes calls: a helper that held an LLM permit while its
+/// turn took one per call would, at the permit floor, leave two helpers
+/// holding both and waiting forever. Three delegate calls in one response
 /// run through the real harness and all three report back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fan_out_finishes_at_the_permit_floor() {
-    use tools::SubAgentOrchestrator as _;
-
     let concurrency = Arc::new(agent::ConcurrencyController::new(Some(2)));
     assert_eq!(concurrency.ceiling(), 2, "the scenario runs at the permit floor");
-    let harness = harness_over(Arc::new(GivenWords(Words::new(3, std::time::Duration::ZERO))), concurrency);
-    let orchestrator = helper_door(&harness);
+    let harness = harness_over(Arc::new(GivenWords(Words::new(std::time::Duration::ZERO))), concurrency);
+    let door = helper_door(&harness);
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        orchestrator.execute_dag("three independent jobs", owner_run()),
-    )
-    .await
-    .expect("the fan-out deadlocked: a permit is held around work that needs permits")
-    .expect("the fan-out runs");
-    assert!(result.success, "every sub-task completes: {:?}", result.error);
-    for part in ["part-1", "part-2", "part-3"] {
-        assert!(result.output.contains(part), "sub-task '{part}' is missing from: {}", result.output);
+    let reports = tokio::time::timeout(std::time::Duration::from_secs(30), fan_out(&door, 3))
+        .await
+        .expect("the fan-out deadlocked: a permit is held around work that needs permits");
+    for (i, report) in reports.into_iter().enumerate() {
+        let part = format!("part-{}", i + 1);
+        let report = report.expect("the helper starts");
+        assert!(report.success, "{part} completes: {:?}", report.error);
+        assert!(report.output.contains(&part), "{part} reports as itself: {}", report.output);
     }
 }
 
 /// A 429 slows the whole bot, not the one call that got it, and the bot
-/// recovers on its own. Eight sub-tasks fan out over eight permits and
+/// recovers on its own. Eight helpers fan out over eight permits and
 /// Janus refuses everyone for a moment (Retry-After 1 s). The pool halves
 /// once for the wave (not once per refusal), the refused calls wait the
 /// second they were told, no later moment runs all eight again until
-/// successes rebuild the pool, every sub-task still finishes, and the pool
+/// successes rebuild the pool, every helper still finishes, and the pool
 /// is back to eight — with no header from Janus and no resource probe.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_429_slows_the_whole_bot_and_it_recovers() {
     use std::sync::atomic::Ordering::SeqCst;
-    use tools::SubAgentOrchestrator as _;
 
     let concurrency = Arc::new(agent::ConcurrencyController::new(Some(8)));
     concurrency.set_ceiling(8);
     assert_eq!(concurrency.effective_permits(), 8);
-    let words = Words::new(8, std::time::Duration::from_millis(300));
+    let words = Words::new(std::time::Duration::from_millis(300));
     let harness = harness_over(Arc::new(GivenWords(words.clone())), concurrency.clone());
-    let orchestrator = helper_door(&harness);
+    let door = helper_door(&harness);
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        orchestrator.execute_dag("eight independent jobs", owner_run()),
-    )
-    .await
-    .expect("the fan-out finished")
-    .expect("the fan-out runs");
-    assert!(result.success, "every sub-task completes after the 429 wave: {:?}", result.error);
-    for i in 1..=8 {
-        let part = format!("part-{i}");
-        assert!(result.output.contains(&part), "sub-task '{part}' is missing from: {}", result.output);
+    let reports = tokio::time::timeout(std::time::Duration::from_secs(60), fan_out(&door, 8))
+        .await
+        .expect("the fan-out finished");
+    for (i, report) in reports.into_iter().enumerate() {
+        let part = format!("part-{}", i + 1);
+        let report = report.expect("the helper starts");
+        assert!(report.success, "{part} completes after the 429 wave: {:?}", report.error);
+        assert!(report.output.contains(&part), "{part} reports as itself: {}", report.output);
     }
     assert!(words.refused.load(SeqCst) >= 1, "the wave refused someone");
     let after = words.peak_after_reject.load(SeqCst);
