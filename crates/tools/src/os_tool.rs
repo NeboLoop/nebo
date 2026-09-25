@@ -340,7 +340,6 @@ impl OsTool {
                 "lists" => "reminders_lists".to_string(),
                 _ => "reminders_list".to_string(),
             },
-            "notification" => "push_notification".to_string(),
             _ => "os".to_string(),
         }
     }
@@ -488,8 +487,7 @@ impl OsTool {
     /// Actions one resource owns by name that another resource also uses,
     /// settled by the parameters the call carries. Each arm is a misroute the
     /// 2026-09-05 audit found live: a window `move` with `app` went to the
-    /// mouse, a notification `send` went to Mail (and its approval gate), a
-    /// stdin `write` went to the file tool, and every session verb with a
+    /// mouse, a stdin `write` went to the file tool, and every session verb with a
     /// `session_id` was unroutable.
     pub(crate) fn infer_resource_from_shared_action(
         action: &str,
@@ -539,9 +537,6 @@ impl OsTool {
             "click" if has("app") && !has_input_target => "ui",
             // A `find` inside a named app looks for an element, not a secret.
             "find" if has("app") => "ui",
-            "send" if input.get("to").is_none() && (has("title") || has("message")) => {
-                "notification"
-            }
             _ => "",
         }
     }
@@ -677,7 +672,7 @@ impl OsTool {
 
     /// Every resource the os tool dispatches to.
     const RESOURCE_NAMES: &'static [&'static str] = &[
-        "file", "shell", "window", "input", "clipboard", "capture", "notification",
+        "file", "shell", "window", "input", "clipboard", "capture",
         "ui", "menu", "dialog", "space", "shortcut", "tts", "dock",
         "app", "settings", "music", "keychain", "search",
         "mail", "contacts", "calendar", "reminders",
@@ -854,7 +849,7 @@ impl DynTool for OsTool {
         // model call os(action: "today", calendar: …) on a headless server
         // and get the refusal below after the fact.
         let server_note = if crate::server_mode() {
-            "SERVER MODE — this Nebo runs in the cloud: no mail, contacts, calendar, reminders, notification, shortcut, tts or dock (never call them here); window, input, clipboard, capture, ui, menu, dialog and space only while a desktop session is up. File, shell, web, keychain, settings and search work normally.\n\n"
+            "SERVER MODE — this Nebo runs in the cloud: no mail, contacts, calendar, reminders, shortcut, tts or dock (never call them here); window, input, clipboard, capture, ui, menu, dialog and space only while a desktop session is up. File, shell, web, keychain, settings and search work normally.\n\n"
         } else {
             ""
         };
@@ -862,7 +857,7 @@ impl DynTool for OsTool {
          Rules:\n\
          - ALWAYS call this tool for file/system facts — NEVER answer from memory or training data. To read a file, call os(resource: \"file\", action: \"read\"); do NOT claim a file is missing or report its contents without calling first.\n\
          - Prefer file actions over shell: use file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find.\n\
-         - Always pass `action`. `resource` is inferred when the action belongs to one resource (read→file, exec→shell, play→music, volume→settings) or its parameters settle it (session_id→shell, move+app→window, click+label→input (resolved against the last capture), send+title→notification); pass it for actions several resources share (create, list, search, get, delete).\n\
+         - Always pass `action`. `resource` is inferred when the action belongs to one resource (read→file, exec→shell, play→music, volume→settings) or its parameters settle it (session_id→shell, move+app→window, click+label→input (resolved against the last capture)); pass it for actions several resources share (create, list, search, get, delete).\n\
          - Interactive React (dashboards, charts, visualizations): write the component as a .jsx file, then convert it (action: \"convert\", to: \"html\") — Nebo transpiles it into a self-contained, renderable page. NEVER put JSX or CDN-loaded React (unpkg/esm) directly in a .html; raw JSX has no transpiler in the browser and renders blank.\n\
          - Before edit or overwrite of an EXISTING file, read it first (edit/overwrite are rejected without a prior read). A brand-new file needs no prior read.\n\
          - glob = find files by NAME pattern (*.md, src/**/*.rs); grep = match text INSIDE files by regex. Do not confuse them.\n\
@@ -874,7 +869,6 @@ impl DynTool for OsTool {
          - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste — by ref through accessibility; right_click on a [menu] element opens its context menu and lists the items as refs; every act returns the window after it and says whether it was delivered and what changed; wait_for waits for text/an element/a menu instead of guessing a pause\n\
          - clipboard: read, write, clear\n\
          - capture: screenshot, see (ref: drills into a +N container), wait (app + text | label | gone | menu | window)\n\
-         - notification: send, alert\n\
          - ui: tree, find, click, get_value, set_value, list_apps\n\
          - menu: list (name: \"File\" lists that menu), menus, click (name: \"File > Export…\"), status, click_status — the app's menu bar, read and pressed through accessibility\n\
          - dialog: detect, list, click, fill, dismiss\n\
@@ -920,7 +914,7 @@ impl DynTool for OsTool {
                 "description": "Optional. The resource category — usually inferred from the action (read→file, exec→shell). Specify it only to disambiguate actions shared across resources (e.g. create, list).",
                 "enum": [
                     "file", "shell",
-                    "window", "input", "clipboard", "capture", "notification",
+                    "window", "input", "clipboard", "capture",
                     "ui", "menu", "dialog", "space", "shortcut", "tts", "dock",
                     "app", "settings", "music", "keychain", "search",
                     "mail", "contacts", "calendar", "reminders"
@@ -1047,9 +1041,8 @@ impl DynTool for OsTool {
         props.insert("app".into(), prop("string", "Application name"));
         props.insert(
             "title".into(),
-            prop("string", "Window or notification title"),
+            prop("string", "Window title"),
         );
-        props.insert("message".into(), prop("string", "Notification message"));
         props.insert("text".into(), prop("string", "The text: a mail send's message (plain text), or text to type, write, or speak for desktop input/tts."));
         props.insert("html".into(), prop("string", "Optional HTML version of a mail send's message, where the provider can send one (Outlook). Mail.app and the Linux clients send plain text and refuse it."));
         props.insert("key".into(), prop("string", "Key to press"));
@@ -1223,7 +1216,7 @@ impl DynTool for OsTool {
             "window" | "input" | "ui" | "menu" | "dialog" | "space" | "shortcut" => {
                 Some(ResourceKind::Screen)
             }
-            // Parallelizable: capture, app, clipboard, notification, tts, dock, file,
+            // Parallelizable: capture, app, clipboard, tts, dock, file,
             // shell, settings, music, keychain, search, mail, contacts, calendar, reminders
             _ => None,
         }
@@ -1432,7 +1425,7 @@ impl DynTool for OsTool {
             if resource.is_empty() {
                 return ToolResult::error(format!(
                     "Could not infer a resource from action '{}'. Pass resource explicitly (file, shell, \
-                     window, input, clipboard, capture, notification, ui, menu, dialog, space, shortcut, \
+                     window, input, clipboard, capture, ui, menu, dialog, space, shortcut, \
                      tts, dock, app, settings, music, keychain, search, mail, contacts, calendar, \
                      reminders) or use one of the documented actions.",
                     domain_input.action
@@ -1465,8 +1458,7 @@ impl DynTool for OsTool {
                 );
                 let never_in_cloud = matches!(
                     resource.as_str(),
-                    "notification"
-                        | "shortcut"
+                    "shortcut"
                         | "tts"
                         | "dock"
                         | "mail"
@@ -1522,7 +1514,7 @@ impl DynTool for OsTool {
                 }
 
                 // Desktop resources — delegate to DesktopTool
-                "window" | "input" | "clipboard" | "capture" | "notification" | "ui" | "menu"
+                "window" | "input" | "clipboard" | "capture" | "ui" | "menu"
                 | "dialog" | "space" | "shortcut" | "tts" | "dock" => {
                     self.desktop_tool.execute_dyn(ctx, input).await
                 }
@@ -1620,18 +1612,9 @@ impl DynTool for OsTool {
                     }
                 }
 
-                // Resources that live on OTHER tools: redirect with the exact
-                // call, so a wrong-tool guess costs one corrected call, not a
-                // hunt. (These are the names models actually reach for here.)
-                res @ ("context" | "memory" | "session" | "task" | "profile" | "advisors") => {
-                    ToolResult::error(format!(
-                        "'{res}' is not an os resource — it lives on the `agent` tool. \
-                         Call agent(resource: \"{res}\", action: ...) instead."
-                    ))
-                }
                 other => ToolResult::error(format!(
                     "Unknown resource '{}'. Available: file, shell, window, input, clipboard, capture, \
-                     notification, ui, menu, dialog, space, shortcut, tts, dock, app, settings, music, \
+                     ui, menu, dialog, space, shortcut, tts, dock, app, settings, music, \
                      keychain, search, mail, contacts, calendar, reminders",
                     other
                 )),
@@ -1720,8 +1703,6 @@ mod tests {
             (serde_json::json!({"action": "click", "app": "Safari", "ref": "B3"}), "input"),
             (serde_json::json!({"action": "click", "name": "OK"}), "dialog"),
             (serde_json::json!({"action": "click", "x": 100, "y": 200}), "input"),
-            (serde_json::json!({"action": "send", "title": "Done", "message": "Task complete"}), "notification"),
-            (serde_json::json!({"action": "send", "message": "hi"}), "notification"),
             (serde_json::json!({"action": "send", "to": "a@b.c", "subject": "x"}), "mail"),
             (serde_json::json!({"action": "write", "session_id": "s1", "data": "y\n"}), "shell"),
             (serde_json::json!({"action": "write", "path": "/tmp/x", "content": "y"}), "file"),

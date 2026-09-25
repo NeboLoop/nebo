@@ -368,6 +368,9 @@ pub struct Registry {
     /// Coworker message rail (server-implemented dispatch of agent→agent
     /// messages), shared with MessageTool. Filled LATE like `notify_fn`.
     coworker_rail: crate::coworker::CoworkerRailCell,
+    /// The harness's agreed goal, bound LATE once the harness exists; the
+    /// `suggest_goal` tool shares the handle.
+    goals: crate::goal_tool::GoalHandle,
     resource_permits: ResourcePermits,
     /// This process's lease (`comm::lease`): the gate in `execute`.
     lease: &'static comm::lease::Lease,
@@ -395,6 +398,7 @@ impl Registry {
             code_installer: Arc::new(std::sync::RwLock::new(None)),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
             coworker_rail: crate::coworker::new_rail_cell(),
+            goals: crate::goal_tool::new_handle(),
             resource_permits: ResourcePermits::new(),
             lease: comm::lease::process(),
         }
@@ -474,6 +478,12 @@ impl Registry {
     /// exists; MessageTool shares the cell and reads it at execution time.
     pub fn set_coworker_rail(&self, rail: Arc<dyn crate::coworker::CoworkerRail>) {
         *self.coworker_rail.write().unwrap() = Some(rail);
+    }
+
+    /// Bind the harness's agreed goal: `suggest_goal` calls go to it. Until
+    /// it is bound, the tool says goals can't be set here.
+    pub fn bind_goals(&self, goals: Arc<dyn crate::goal_tool::GoalSuggester>) {
+        let _ = self.goals.set(goals);
     }
 
     /// Set the agent loader for PersonaTool filesystem access.
@@ -1062,30 +1072,30 @@ impl Registry {
         // The seat's own context section (R15): the write half of the layers.
         self.register(Box::new(crate::rules_tool::RulesTool::new(store.clone(), active_agent.clone()))).await;
 
-        // Agent tool (memory, tasks, sessions, context, advisors, ask, runs, registry) — always registered (core)
-        let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator.clone())
-            .with_notify_fn(self.notify_fn.clone())
-            // The same cell the `message` tool gets: an unanswerable question
-            // in an unattended run travels up the reporting line on the ONE rail.
-            .with_coworker_rail(self.coworker_rail.clone());
-        let runner_for_events = advisor_runner.clone();
-        if let Some(runner) = advisor_runner {
-            agent_tool = agent_tool.with_advisor_runner(runner);
+        // Memory (core), helpers (delegate core), tasks and runs, past
+        // conversations, the advisor panel, research, the profile, asking
+        // and reaching the owner, and the agreed goal.
+        let run_querier = run_querier.unwrap_or_else(crate::run_querier::new_handle);
+        let families = [
+            crate::memory_tools::Memory::new(store.clone(), hybrid_searcher, memory_embedder).tools(),
+            crate::helper_tools::Helpers::new(store.clone(), orchestrator.clone()).tools(),
+            crate::task_tools::Tasks::new(store.clone(), run_querier).tools(),
+            crate::history_tools::History::new(store.clone()).tools(),
+            crate::advisor_tools::Advisors::new(store.clone(), advisor_runner.clone()).tools(),
+            crate::research_tools::Research::new(structured_agent).tools(),
+            crate::profile_tools::Profile::new(store.clone(), self.notify_fn.clone()).tools(),
+            crate::owner_tools::Owner::new(store.clone(), self.notify_fn.clone()).tools(),
+            vec![
+                Box::new(crate::ask_owner_tool::AskOwnerTool::new(store.clone(), self.coworker_rail.clone())) as Box<dyn DynTool>,
+                Box::new(crate::goal_tool::SuggestGoalTool::new(self.goals.clone())),
+            ],
+        ];
+        for tool in families.into_iter().flatten() {
+            self.register(tool).await;
         }
-        if let Some(searcher) = hybrid_searcher {
-            agent_tool = agent_tool.with_hybrid_searcher(searcher);
-        }
-        if let Some(embedder) = memory_embedder {
-            agent_tool = agent_tool.with_memory_embedder(embedder);
-        }
-        if let Some(sa) = structured_agent {
-            agent_tool = agent_tool.with_structured_agent(sa);
-        }
-        if let Some(rq) = run_querier {
-            agent_tool = agent_tool.with_run_querier(rq);
-        }
+        let runner_for_events = advisor_runner;
 
-        // Persona/registry resource — agent management, delegation, installed agents
+        // Agent tool: employees (the registry) — always registered (core)
         {
             let agent_reg = active_agent.unwrap_or_else(|| {
                 std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
@@ -1105,10 +1115,8 @@ impl Registry {
             let persona =
                 crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader)
                     .with_code_installer(self.code_installer.clone());
-            agent_tool = agent_tool.with_persona(persona);
+            self.register(Box::new(crate::bot_tool::AgentTool::new(persona))).await;
         }
-
-        self.register(Box::new(agent_tool)).await;
 
         // Event tool (scheduled tasks / cron) — always registered (core)
         let mut event_tool = crate::event_tool::EventTool::new(store.clone());
@@ -1158,10 +1166,9 @@ impl Registry {
             self.register(Box::new(execute_tool)).await;
         }
 
-        // Message tool (owner notifications + coworker messages) — always registered (core)
+        // Message tool (coworker messages + SMS) — always registered (core)
         self.register(Box::new(crate::message_tool::MessageTool::new(
             store.clone(),
-            self.notify_fn.clone(),
             self.coworker_rail.clone(),
         )))
         .await;
@@ -2063,10 +2070,15 @@ mod tests {
     /// The plugin tool (core too, and sized by the installed plugins) needs a
     /// plugin store and is not in this roster. Each package that lands lowers
     /// the numbers; they never rise.
+    ///
+    /// Tools WP2 (helpers, memory, ask): 44,915 on macOS (agent 6,006 · os
+    /// 14,070 · message 2,657 · delegate 1,702 · remember 1,039 · recall 701
+    /// · ask_owner 618 · forget 336); Linux drops by the same amount except
+    /// its os text, which is held at its WP0 size.
     #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 52_728;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 44_915;
     #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 53_032;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 45_368;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2084,16 +2096,23 @@ mod tests {
         assert!(total <= CORE_DEFINITION_CHARS_BUDGET, "always-loaded definitions are {total} chars, over the {CORE_DEFINITION_CHARS_BUDGET} budget: {core:?}");
     }
 
-    /// Deferred at WP0: everything but the core. Code, loop, work, emit,
-    /// pack, rules, a2ui, publisher, notebook, vm and authority are listed
-    /// and loadable, never dropped.
+    /// Deferred: everything but the core. Code, loop, work, emit, pack,
+    /// rules, a2ui, publisher, notebook, vm and authority are listed and
+    /// loadable, never dropped. The pre-interface tools stay core until
+    /// their package replaces them.
     #[tokio::test]
     async fn the_core_is_the_strap_tools_and_find_tools() {
         let (registry, _dir) = full_registry().await;
         let deferred = registry.get_deferred_names().await;
         let mut core: Vec<String> = registry.get_tool_names().await.into_iter().filter(|n| !deferred.contains(n)).collect();
         core.sort();
-        assert_eq!(core, ["agent", "event", "find_tools", "mcp", "message", "os", "skill", "team", "web"]);
+        assert_eq!(
+            core,
+            [
+                "agent", "ask_owner", "delegate", "event", "find_tools", "forget", "mcp", "message", "os",
+                "recall", "remember", "skill", "team", "web"
+            ]
+        );
         for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
@@ -2106,11 +2125,13 @@ mod tests {
         let calls = [
             ("os", serde_json::json!({"action": "exec", "command": "ls"})),
             ("os", serde_json::json!({"action": "read", "path": "/tmp/x"})),
-            ("agent", serde_json::json!({"resource": "memory", "action": "store"})),
-            ("agent", serde_json::json!({"resource": "task", "action": "spawn"})),
+            ("agent", serde_json::json!({"resource": "registry", "action": "discover"})),
+            ("remember", serde_json::json!({"key": "k", "value": "v"})),
+            ("delegate", serde_json::json!({"description": "d", "prompt": "p"})),
             ("skill", serde_json::json!({"action": "load", "name": "x"})),
             ("web", serde_json::json!({"action": "fetch", "url": "https://example.com"})),
-            ("message", serde_json::json!({"resource": "owner", "action": "notify"})),
+            ("message", serde_json::json!({"resource": "sms", "action": "send"})),
+            ("message_owner", serde_json::json!({"message": "m"})),
             ("find_tools", serde_json::json!({"query": "x"})),
         ];
         for (tool, input) in calls {
@@ -2141,7 +2162,7 @@ mod tests {
         assert!(cleared("web", json!({"action": "fetch", "url": "https://example.com"})).await);
         assert!(!cleared("web", json!({"action": "click", "ref": "e1"})).await);
         assert!(!cleared("os", json!({"resource": "calendar", "action": "today"})).await);
-        assert!(!cleared("agent", json!({"resource": "memory", "action": "recall"})).await);
+        assert!(!cleared("recall", json!({"query": "x"})).await);
         assert!(!cleared("skill", json!({"action": "load", "name": "x"})).await);
         let taint = |name: &'static str, input: serde_json::Value| {
             let registry = registry.clone();

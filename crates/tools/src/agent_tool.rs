@@ -223,7 +223,7 @@ impl PersonaTool {
             "'{action}' is not a registry action. To read one employee use info (name); to change it use update; \
              to list them use list. All actions: {REGISTRY_ACTIONS}. There is no delegate: work for a named coworker \
              is a message, message(resource: \"coworker\", action: \"send\", to: \"<employee>\", text: \"<what you need>\"); \
-             anonymous extra hands for your own work are agent(resource: \"task\", action: \"spawn\", prompt: ...)."
+             anonymous extra hands for your own work are a helper: delegate(description, prompt)."
         )
     }
 

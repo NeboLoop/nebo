@@ -138,7 +138,7 @@ The point of evaluation isn't just to catch mistakes — it's to improve how you
 Save your evaluation criteria to memory so the AI knows your standards:
 
 ```
-agent(resource: "memory", action: "store", key: "preferences/quality-standards", value: "Always cite sources for statistics. Never fabricate quotes. Prioritize actionable recommendations over general advice. Flag uncertainty explicitly.", layer: "tacit")
+remember(key: "preferences/quality-standards", value: "Always cite sources for statistics. Never fabricate quotes. Prioritize actionable recommendations over general advice. Flag uncertainty explicitly.", layer: "tacit")
 ```
 
 ---

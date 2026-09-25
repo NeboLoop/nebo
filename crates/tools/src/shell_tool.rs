@@ -216,8 +216,8 @@ impl ShellTool {
                  tracked files, clean -f, force push, branch -D) and is not available. \
                  To be able to undo a change, take a checkpoint first: os(resource: \
                  \"file\", action: \"checkpoint\", paths: [...]) and restore it with \
-                 action: \"restore\". For parallel edits use a worktree (agent spawn_parallel \
-                 with isolate: \"worktree\"). If the owner truly wants history rewritten, \
+                 action: \"restore\". For parallel edits give each helper its own copy \
+                 (delegate with isolation: \"worktree\"). If the owner truly wants history rewritten, \
                  tell them the exact command and let them run it."
                     .to_string(),
             );
