@@ -1061,6 +1061,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             stream_error,
             block_order,
             provider,
+            thinking,
+            thinking_model,
         } = reply;
         st.last_call = Some(LastCall {
             request: fork_of.clone(),
@@ -1072,7 +1074,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             // Calls that arrived on a broken stream are not run or stored.
             tool_calls.clear();
         }
-        save_reply(cx, &text, &tool_calls, &block_order).await;
+        save_reply(cx, &text, &tool_calls, &block_order, (&thinking, &thinking_model)).await;
 
         if !tool_calls.is_empty() {
             // A CLI provider ran its tools itself over /agent/mcp.
@@ -1392,18 +1394,19 @@ fn build_request(
     ChatRequest {
         tool_credential: None,
         tool_choice: Default::default(),
-        messages: conversation::convert_messages(window),
+        messages: conversation::convert_messages(window, &st.model),
         tools: declared,
         max_tokens: st.call.max_output_tokens(),
         temperature: if cx.workflow().is_some() { 0.0 } else { 0.7 },
         system: prompt::system_prompt().to_string(),
         model: model_name.to_string(),
-        // One setting for every step of every turn, so thinking never
-        // changes the cached request mid-conversation (Claude Code sets it
-        // once for the session, `src/QueryEngine.ts:278-355`). It is off:
-        // the conversation doesn't store thinking blocks, and a direct
-        // Anthropic tool loop with thinking on is refused without them.
-        enable_thinking: false,
+        // Set by the turn's model (its speed), so it holds for every step and
+        // never changes the cached request mid-turn: on where the model
+        // thinks, as Claude Code turns thinking on for every model that
+        // supports it (`src/QueryEngine.ts:278-282`,
+        // `src/utils/thinking.ts:90-162`). The blocks come back with their
+        // turn (`conversation::convert_messages`).
+        enable_thinking: cx.harness.selector.thinks(&st.model),
         metadata: st.call.sticky_metadata.clone(),
         cache_breakpoints: prompt::cache_breakpoints(),
         cancel_token: Some(cx.request.cancel.clone()),
@@ -1502,13 +1505,21 @@ async fn post_receive(cx: &TurnContext, text: String, tool_calls: usize) -> Stri
         .unwrap_or(text)
 }
 
-/// Store the reply with its tool calls and its block order.
-async fn save_reply(cx: &TurnContext, text: &str, tool_calls: &[ai::ToolCall], block_order: &[(&'static str, Option<usize>)]) {
+/// Store the reply with its tool calls, its block order and its thinking
+/// blocks with the model that wrote them.
+async fn save_reply(
+    cx: &TurnContext,
+    text: &str,
+    tool_calls: &[ai::ToolCall],
+    block_order: &[(&'static str, Option<usize>)],
+    (thinking, thinking_model): (&[ai::ThinkingBlock], &str),
+) {
     if text.is_empty() && tool_calls.is_empty() {
         return;
     }
     let calls = (!tool_calls.is_empty()).then(|| serde_json::to_string(tool_calls).ok()).flatten();
-    let metadata = (block_order.len() > 1 || block_order.first().is_some_and(|b| b.0 == "tool")).then(|| {
+    let mut metadata = serde_json::Map::new();
+    if block_order.len() > 1 || block_order.first().is_some_and(|b| b.0 == "tool") {
         let blocks: Vec<serde_json::Value> = block_order
             .iter()
             .map(|(kind, idx)| match (*kind, idx) {
@@ -1516,8 +1527,10 @@ async fn save_reply(cx: &TurnContext, text: &str, tool_calls: &[ai::ToolCall], b
                 _ => serde_json::json!({"type": "text"}),
             })
             .collect();
-        serde_json::json!({ "contentBlocks": blocks }).to_string()
-    });
+        metadata.insert("contentBlocks".into(), serde_json::json!(blocks));
+    }
+    conversation::mark_thinking(&mut metadata, thinking, thinking_model);
+    let metadata = (!metadata.is_empty()).then(|| serde_json::Value::Object(metadata).to_string());
     let h = &cx.harness;
     if let Err(e) = h.sessions.append_message(&cx.session_id, "assistant", text, calls.as_deref(), None, metadata.as_deref()) {
         warn!(session_id = %cx.session_id, error = %e, "failed to save the reply");
@@ -1625,7 +1638,7 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
     }
     // The conversation the model just answered, the answer included.
     let transcript =
-        conversation::convert_messages(&h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default());
+        conversation::convert_messages(&h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default(), "");
     let end = turn_end::TurnEnd {
         transcript: &transcript,
         step: st.step,
@@ -1752,7 +1765,8 @@ fn spawn_recap(cx: &TurnContext, last: LastCall) {
         return;
     };
     let mut fork_of = last.request;
-    fork_of.messages.extend(conversation::convert_messages(&stored[after + 1..]));
+    let model = format!("{}/{}", last.provider.id(), fork_of.model);
+    fork_of.messages.extend(conversation::convert_messages(&stored[after + 1..], &model));
     let recap = super::recap::RecapRequest {
         chat_id: h.sessions.active_chat_id(&cx.session_id),
         turn_id: cx.progress.run_id.clone(),
@@ -1819,6 +1833,8 @@ mod tests {
         Held(Vec<(&'static str, serde_json::Value)>, Arc<Probe>),
         /// The step, its first token this long in coming.
         Slow(Box<Step>, std::time::Duration),
+        /// The step, after a whole thinking block.
+        Thought(Box<Step>, ai::ThinkingBlock),
     }
 
     /// What the probe tools saw: each call's tool, and whether it started
@@ -1976,6 +1992,11 @@ mod tests {
                     cost_microdollars: Some(microdollars),
                     ..Default::default()
                 }));
+                (list, stop)
+            }
+            Step::Thought(inner, block) => {
+                let (mut list, stop) = answer(*inner)?;
+                list.insert(0, StreamEvent::thinking_block(block));
                 (list, stop)
             }
             Step::During(..) | Step::Held(..) | Step::Slow(..) => unreachable!("answered in stream"),
@@ -3695,6 +3716,81 @@ mod tests {
                 "{what}: the messages only grow at their end; message {first_difference:?} changed"
             );
         }
+    }
+
+    /// A selector where `scripted/deep` thinks and `scripted/plain` doesn't.
+    fn thinking_selector() -> crate::selector::ModelSelector {
+        let info = |id: &str, caps: &[&str]| crate::selector::ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            context_window: 200_000,
+            input_price: 1.0,
+            output_price: 1.0,
+            cached_input_price: 0.1,
+            capabilities: caps.iter().map(|c| c.to_string()).collect(),
+            kind: Vec::new(),
+            preferred: false,
+            active: true,
+        };
+        crate::selector::ModelSelector::new(crate::selector::ModelRoutingConfig {
+            default_model: "scripted/deep".into(),
+            provider_models: [("scripted".to_string(), vec![info("deep", &["tools", "thinking"]), info("plain", &["tools"])])].into(),
+            provider_credentials: [("scripted".to_string(), true)].into(),
+            ..Default::default()
+        })
+    }
+
+    fn signed(text: &str) -> ai::ThinkingBlock {
+        ai::ThinkingBlock::Thinking { thinking: text.into(), signature: format!("sig-{text}") }
+    }
+
+    fn on(model: &str, text: &str) -> TurnRequest {
+        let mut req = owner(text);
+        req.seat.model_override = model.into();
+        req
+    }
+
+    /// D14: on a model that thinks, thinking is on, and a tool loop sends
+    /// each step's thinking blocks back, unchanged and in order, with the
+    /// turn they belong to (Anthropic refuses the loop without them).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tool_loop_with_thinking_on_replays_the_blocks() {
+        let model = Scripted::new(vec![
+            Step::Thought(Box::new(Step::Call("echo", serde_json::json!({}))), signed("look first")),
+            Step::Thought(Box::new(Step::Say("Done.")), ai::ThinkingBlock::RedactedThinking { data: "opaque".into() }),
+        ]);
+        let h = harness_selecting(&model, Vec::new(), thinking_selector()).await;
+        run_turn(&h, on("scripted/deep", "Check it.")).await;
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|c| c.enable_thinking), "thinking is on for a model that thinks");
+        let replayed: Vec<&ai::Message> = calls[1].messages.iter().filter(|m| m.role == "assistant").collect();
+        assert_eq!(replayed.last().map(|m| m.thinking.clone()), Some(vec![signed("look first")]), "the step's blocks come back");
+    }
+
+    /// D14: a request to another model carries none of the blocks: their
+    /// signatures are bound to the model that wrote them. A model that
+    /// doesn't think gets thinking off.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_model_switch_drops_the_thinking_blocks() {
+        let model = Scripted::new(vec![
+            Step::Thought(Box::new(Step::Call("echo", serde_json::json!({}))), signed("look first")),
+            Step::Say("Done."),
+            Step::Say("Again."),
+            Step::Say("And back."),
+        ]);
+        let h = harness_selecting(&model, Vec::new(), thinking_selector()).await;
+        run_turn(&h, on("scripted/deep", "Check it.")).await;
+        run_turn(&h, on("scripted/plain", "Once more.")).await;
+        run_turn(&h, on("scripted/deep", "And again.")).await;
+        let calls = model.calls();
+        assert_eq!(calls.len(), 4);
+        assert!(!calls[2].enable_thinking, "a model that doesn't think gets thinking off");
+        assert!(calls[2].messages.iter().all(|m| m.thinking.is_empty()), "no block goes to another model");
+        assert!(
+            calls[3].messages.iter().any(|m| m.thinking == vec![signed("look first")]),
+            "back on the model that wrote them, they come back"
+        );
     }
 
     /// The shared cached prefix only ever grows by appending, across a

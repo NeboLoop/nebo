@@ -467,7 +467,8 @@ pub(crate) async fn run_tool_round(
     // A workflow step parked on the owner: the run suspends with the
     // conversation as it stands and the call that waits.
     if let (Some(park), Some((idx, tc, ask_id))) = (workflow_park, parked) {
-        let snapshot = convert_messages(&sessions.get_messages(session_id).unwrap_or_default());
+        // Resumed later, perhaps on another model: no signed thinking rides along.
+        let snapshot = convert_messages(&sessions.get_messages(session_id).unwrap_or_default(), "");
         let operation = targets[idx]
             .as_ref()
             .map(|t| t.operation.as_deref().map(tools::plugin_tool::port_suffix).unwrap_or_else(|| t.key.clone()))
