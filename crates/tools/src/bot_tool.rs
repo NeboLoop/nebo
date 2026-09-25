@@ -436,6 +436,7 @@ impl AgentTool {
         "input_values",
         "toggle_automation",
         "update_automation",
+        "draft_id",
     ];
 
     /// The resource a call means when it names none. Empty means the call
@@ -2616,7 +2617,7 @@ impl DynTool for AgentTool {
          - agent(resource: \"registry\", action: \"activate\", name: \"...\") — Activate an agent\n\
          - agent(resource: \"registry\", action: \"info\", name: \"...\") — Show agent details\n\
          - agent(resource: \"registry\", action: \"install\", code: \"AGNT-XXXX-XXXX\") — Install from marketplace\n\
-         - agent(resource: \"registry\", action: \"create\", name: \"...\", description: \"...\", automations: [{\"name\": \"...\", \"schedule\": \"weekdays at 9am\", \"steps\": [\"...\"]}]) — Create a user agent. Any recurring duty MUST go in automations (each becomes the agent's own scheduled workflow — shown in its Workflows tab and the Schedule page, runs as the agent) — never a bare create plus event crons.\n\
+         - agent(resource: \"registry\", action: \"create\", name: \"...\", description: \"...\", automations: [{\"name\": \"...\", \"schedule\": \"weekdays at 9am\", \"steps\": [\"...\"]}]) — Draft a user agent. Any recurring duty MUST go in automations (each becomes the agent's own workflow, run as it, on its Workflows tab and Schedule page) — never a bare create plus event crons.\n\
          - agent(resource: \"registry\", action: \"update\", name: \"...\", add_automations: [...]) — Add workflows to an existing agent (automations: replaces ALL existing ones; remove_automations: delete by name)",
         );
         description
@@ -2699,7 +2700,8 @@ impl DynTool for AgentTool {
                 },
                 "add_automations": { "type": "array", "items": { "type": "object" }, "description": "Registry update: ADD workflows to an existing agent without touching the others (same item shape as automations)" },
                 "remove_automations": { "type": "array", "items": { "type": "string" }, "description": "Registry update: remove workflows by name (also removes their schedules)" },
-                "agent_md": { "type": "string", "description": "AGENT.md persona markdown (registry create/update; optional — name+description alone auto-generate it)" }
+                "agent_md": { "type": "string", "description": "AGENT.md persona markdown (registry create/update; optional — name+description alone auto-generate it)" },
+                "draft_id": { "type": "string" }
             },
             "required": ["resource", "action"]
         })
@@ -2851,7 +2853,7 @@ impl DynTool for AgentTool {
                         if input.get("action").and_then(|v| v.as_str()) == Some("discover") {
                             persona.handle_discover(&input, ctx).await
                         } else {
-                            persona.handle_action(&input).await
+                            persona.handle_action(&input, ctx).await
                         }
                     } else {
                         ToolResult::error("Agent registry not configured")

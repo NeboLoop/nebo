@@ -12,6 +12,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::agents::create_agent),
         )
         .route(
+            "/agents/needs",
+            axum::routing::post(handlers::agents::work_out_agent_needs),
+        )
+        .route(
             "/agents/{id}",
             axum::routing::get(handlers::agents::get_agent),
         )

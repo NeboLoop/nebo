@@ -1460,7 +1460,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let run_querier_handle = tools::run_querier::new_handle();
 
     // The NeboAI comm plugin handle exists from startup; its `is_connected()`
-    // reflects live state. The loop tool holds this same handle, so it becomes
+    // reflects live state. The NeboAI loop tools hold this same handle, so they become
     // functional the moment the connection comes up — no registry rebuild needed.
     // (Also registered with the comm manager below.)
     let neboai_plugin: Arc<dyn comm::CommPlugin> = Arc::new(comm::NeboAIPlugin::new(Arc::new(
@@ -1800,7 +1800,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow::cases::CaseAssignmentOpener { store: store.clone() },
     ));
 
-    // Register EmitTool so it appears in tools list and is available to all
+    // Register emit_event so it appears in the tools list and is available to all
     // origins. One shared instance serves every employee, so it reads the
     // producing seat from the run's session key — an event raised from chat is
     // addressed by the same function the executors use.
@@ -1826,12 +1826,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(skill_loader.clone()),
         workflow_loop,
     ));
-    // Register WorkTool now that the manager exists
-    tool_registry
-        .register(Box::new(tools::WorkTool::new(
-            workflow_manager.clone() as Arc<dyn tools::WorkflowManager>
-        )))
-        .await;
+    // Register the workflow tools now that the manager exists
+    for tool in tools::workflows::tools(workflow_manager.clone() as Arc<dyn tools::WorkflowManager>) {
+        tool_registry.register(Box::new(tool)).await;
+    }
 
     // Create agent loader — embedded bundled + nebo/agents/ + user/agents/
     let agent_loader = Arc::new(
@@ -2387,6 +2385,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .set_code_installer(Arc::new(channel_dispatch::CodeInstallerImpl::new(
             state.clone(),
         )));
+
+    // Wire consent to jobs into the agent's `registry` create and update
+    // (late, like the installer above): a create drafts, works out the needs
+    // and grants them on the owner's yes, through the ONE permission store.
+    state.tools.set_job_consent(Arc::new(agent::harness::permissions::consent::Consent::new(
+        state.store.clone(),
+        Arc::new(agent::harness::permissions::consent::AuxReader::new(state.harness.providers())),
+    )));
 
     // Wire the coworker message rail (late, like the installer above — it needs
     // `AppState`). With this set, message(resource: "coworker") delivers real
@@ -3518,7 +3524,7 @@ fn notify_skipped_workflows(
         let title = format!("{}: workflow '{}' is invalid and will not run", agent_name, binding);
         let body = format!(
             "agent.json has a workflow this system can't parse ({}). Fix the \
-             definition or recreate it with the work tool.",
+             definition or recreate it with create_workflow.",
             error
         );
         let action_url = format!("/{}/settings/workflows", agent_id);
@@ -5479,7 +5485,14 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 // the work is theirs.
                 tool_allowlist: if organizer_run {
                     Some(
-                        ["loop", "message", "agent"]
+                        [
+                            "send_loop_message",
+                            "read_loop_channel",
+                            "loop_channel_members",
+                            "find_tools",
+                            "message",
+                            "agent",
+                        ]
                             .into_iter()
                             .map(String::from)
                             .collect(),

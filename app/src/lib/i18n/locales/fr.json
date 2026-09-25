@@ -387,7 +387,9 @@
 		"researchWriting": "rédige le rapport",
 		"researchOtherDomains": "+ {n} autres sites",
 		"researchVerified": "{n} affirmations vérifiées face aux sources",
-		"historyLoadFailed": "Impossible de charger cette conversation. Vérifiez votre connexion et réessayez."
+		"historyLoadFailed": "Impossible de charger cette conversation. Vérifiez votre connexion et réessayez.",
+		"consentCreates": "Dites oui et il sera créé avec exactement ce travail.",
+		"consentAdds": "Dites oui et ceci s'ajoute à son travail."
 	},
 	"chatInput": {
 		"placeholder": "Répondre...",
@@ -3014,7 +3016,13 @@
 		"placeholder": "par ex. Dispatch, Piper, Sam…",
 		"create": "L'embaucher",
 		"failed": "Impossible de créer l'employé. Réessayez.",
-		"marketplaceHint": "Vous préférez un expert prêt à l'emploi ? Parcourez la Boutique."
+		"marketplaceHint": "Vous préférez un expert prêt à l'emploi ? Parcourez la Boutique.",
+		"jobLabel": "Son travail (facultatif)",
+		"jobPlaceholder": "Que fera-t-il ? (facultatif)",
+		"working": "Nous déterminons ce dont il aura besoin…",
+		"willDo": "{name} pourra :",
+		"thisEmployee": "Cet employé",
+		"removeItem": "Retirer {item}"
 	},
 	"runLimit": {
 		"title": "Limite de dépense par exécution",

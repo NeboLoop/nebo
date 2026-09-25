@@ -387,7 +387,9 @@
 		"researchWriting": "skriver rapporten",
 		"researchOtherDomains": "+ {n} andra webbplatser",
 		"researchVerified": "{n} påståenden kontrollerade mot källor",
-		"historyLoadFailed": "Det här samtalet kunde inte laddas. Kontrollera din anslutning och försök igen."
+		"historyLoadFailed": "Det här samtalet kunde inte laddas. Kontrollera din anslutning och försök igen.",
+		"consentCreates": "Säg ja så skapas medarbetaren med exakt det här jobbet.",
+		"consentAdds": "Säg ja så läggs det här till i jobbet."
 	},
 	"chatInput": {
 		"placeholder": "Svara...",
@@ -3014,7 +3016,13 @@
 		"placeholder": "t.ex. Dispatch, Piper, Sam…",
 		"create": "Anställ",
 		"failed": "Medarbetaren kunde inte skapas. Försök igen.",
-		"marketplaceHint": "Vill du hellre ha en färdigbyggd expert? Bläddra i Marknadsplatsen."
+		"marketplaceHint": "Vill du hellre ha en färdigbyggd expert? Bläddra i Marknadsplatsen.",
+		"jobLabel": "Deras jobb (valfritt)",
+		"jobPlaceholder": "Vad ska de göra? (valfritt)",
+		"working": "Tar reda på vad de behöver…",
+		"willDo": "{name} kommer att:",
+		"thisEmployee": "Den här medarbetaren",
+		"removeItem": "Ta bort {item}"
 	},
 	"runLimit": {
 		"title": "Utgiftstak per körning",

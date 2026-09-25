@@ -2373,6 +2373,13 @@ export interface UserUpdateProfileResponse {
 	profile: unknown
 }
 
+export interface WorkOutAgentNeedsResponse {
+	line: string
+	items: string[]
+	accounts: string[]
+	draftId: string | null
+}
+
 // ── Common Types ───────────────────────────────────────────────────
 
 export interface ErrorResponse {

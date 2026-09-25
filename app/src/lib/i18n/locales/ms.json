@@ -387,7 +387,9 @@
 		"researchWriting": "menulis laporan",
 		"researchOtherDomains": "+ {n} laman lain",
 		"researchVerified": "{n} dakwaan disahkan terhadap sumber",
-		"historyLoadFailed": "Tidak dapat memuatkan perbualan ini. Semak sambungan anda dan cuba lagi."
+		"historyLoadFailed": "Tidak dapat memuatkan perbualan ini. Semak sambungan anda dan cuba lagi.",
+		"consentCreates": "Katakan ya dan pekerja ini dicipta dengan tugas tepat ini.",
+		"consentAdds": "Katakan ya dan ini ditambah pada tugasnya."
 	},
 	"chatInput": {
 		"placeholder": "Balas...",
@@ -3014,7 +3016,13 @@
 		"placeholder": "cth. Dispatch, Piper, Sam…",
 		"create": "Ambil dia bekerja",
 		"failed": "Tidak dapat mencipta pekerja. Cuba lagi.",
-		"marketplaceHint": "Mahu pakar yang sudah siap? Lihat Pasaran."
+		"marketplaceHint": "Mahu pakar yang sudah siap? Lihat Pasaran.",
+		"jobLabel": "Tugasnya (pilihan)",
+		"jobPlaceholder": "Apa yang akan dilakukan? (pilihan)",
+		"working": "Menentukan apa yang diperlukan…",
+		"willDo": "{name} akan:",
+		"thisEmployee": "Pekerja ini",
+		"removeItem": "Buang {item}"
 	},
 	"runLimit": {
 		"title": "Had perbelanjaan setiap larian",

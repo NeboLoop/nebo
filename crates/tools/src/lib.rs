@@ -51,6 +51,7 @@ pub mod mcp_tool;
 pub mod memory_guard;
 pub mod message_tool;
 pub mod music_tool;
+pub mod needs;
 pub mod notebook_tool;
 pub mod orchestrator;
 mod organizer;
@@ -134,13 +135,11 @@ pub use coworker::{
 };
 pub use domain::*;
 pub use emit_tool::EmitTool;
-pub use event_tool::EventTool;
 pub use events::{Event, EventBus};
 pub use execute_tool::ExecuteTool;
 pub use exit_tool::{EXIT_SENTINEL, ExitTool};
 pub use file_tool::FileTool;
 pub use keychain_tool::KeychainTool;
-pub use loop_tool::LoopTool;
 pub use message_tool::MessageTool;
 pub use music_tool::MusicTool;
 pub use orchestrator::{
@@ -158,7 +157,7 @@ pub use shell_tool::ShellTool;
 pub use skill_tool::SkillTool;
 pub use find_tools::FindToolsTool;
 pub use web_tool::WebTool;
-pub use workflows::{WorkTool, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
+pub use workflows::{WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 
 /// Build a NeboAI API client from a Store (for tool install actions).
 pub(crate) fn build_neboai_api(store: &db::Store) -> Result<comm::api::NeboAIApi, String> {

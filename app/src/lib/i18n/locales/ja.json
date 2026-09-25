@@ -387,7 +387,9 @@
 		"researchWriting": "レポートを作成中",
 		"researchOtherDomains": "+他{n}サイト",
 		"researchVerified": "{n}件の主張を情報源と照合済み",
-		"historyLoadFailed": "この会話を読み込めませんでした。接続を確認してもう一度お試しください。"
+		"historyLoadFailed": "この会話を読み込めませんでした。接続を確認してもう一度お試しください。",
+		"consentCreates": "「はい」と答えると、この仕事内容のまま作成されます。",
+		"consentAdds": "「はい」と答えると、これが仕事内容に加わります。"
 	},
 	"chatInput": {
 		"placeholder": "返信...",
@@ -3014,7 +3016,13 @@
 		"placeholder": "例：Dispatch、Piper、Sam…",
 		"create": "採用する",
 		"failed": "社員を作成できませんでした。もう一度お試しください。",
-		"marketplaceHint": "すぐに使える専門家をお探しですか？マーケットプレイスをご覧ください。"
+		"marketplaceHint": "すぐに使える専門家をお探しですか？マーケットプレイスをご覧ください。",
+		"jobLabel": "仕事内容（任意）",
+		"jobPlaceholder": "何をしてもらいますか？（任意）",
+		"working": "必要なものを確認しています…",
+		"willDo": "{name}ができること：",
+		"thisEmployee": "この従業員",
+		"removeItem": "{item}を外す"
 	},
 	"runLimit": {
 		"title": "1実行あたりの上限金額",

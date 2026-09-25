@@ -1,4 +1,4 @@
-//! Emit tool — allows workflow activities and chat runs to fire events into
+//! `emit_event` — lets workflow activities and chat runs fire events into
 //! the EventBus.
 //!
 //! Always available to workflow activities (injected by the engine). No tool
@@ -11,7 +11,7 @@ use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
 /// Who is speaking. An event's address names the seat that produced the fact,
-/// so the emit tool must be able to answer this before it can build a source.
+/// so emit_event must be able to answer this before it can build a source.
 enum Producer {
     /// No owning seat (a standalone workflow run with no agent).
     None,
@@ -21,6 +21,9 @@ enum Producer {
     /// is read from the run's session key at execution time.
     FromSession(Arc<db::Store>),
 }
+
+/// A call with no event name.
+const NO_SOURCE: &str = "`source` names the event, e.g. \"lead.qualified\".";
 
 /// Tool that emits events into the EventBus.
 pub struct EmitTool {
@@ -70,11 +73,11 @@ impl EmitTool {
 
 impl DynTool for EmitTool {
     fn name(&self) -> &str {
-        "emit"
+        "emit_event"
     }
 
     fn description(&self) -> String {
-        "Emit an event that can trigger other workflows. Provide a source string (e.g. 'email.urgent') and optional payload object.".to_string()
+        "Announces an event that workflows can be triggered by, e.g. \"lead.qualified\" with the lead's details in `payload`. Call it once per item when announcing several.".to_string()
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -83,11 +86,11 @@ impl DynTool for EmitTool {
             "properties": {
                 "source": {
                     "type": "string",
-                    "description": "Event source identifier, e.g. 'email.urgent' or 'lead.qualified'"
+                    "description": "The event's name, e.g. \"email.urgent\" or \"lead.qualified\"."
                 },
                 "payload": {
                     "type": "object",
-                    "description": "Optional event payload data"
+                    "description": "The event's data."
                 }
             },
             "required": ["source"]
@@ -96,7 +99,7 @@ impl DynTool for EmitTool {
 
 
     fn search_hint(&self) -> &str {
-        "emit event trigger automations"
+        "announce an event that triggers workflows"
     }
 
     /// The event goes on the local bus and nothing leaves the machine;
@@ -109,14 +112,19 @@ impl DynTool for EmitTool {
         false
     }
 
-    fn rule_key(&self, _input: &serde_json::Value) -> String {
-        "emit_event".to_string()
+    fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
+        match input["source"].as_str() {
+            Some(s) if !s.trim().is_empty() => Ok(()),
+            _ => Err(NO_SOURCE.to_string()),
+        }
     }
 
-    /// Pre-interface: it settles its own call shapes (see
-    /// `DynTool::validates_input`).
-    fn validates_input(&self) -> bool {
-        false
+    fn activity(&self, input: &serde_json::Value) -> String {
+        format!("announcing {}", input["source"].as_str().unwrap_or("an event").trim())
+    }
+
+    fn outcome(&self, input: &serde_json::Value) -> String {
+        format!("Announced {}", input["source"].as_str().unwrap_or("an event").trim())
     }
 
     fn execute_dyn<'a>(
@@ -125,14 +133,11 @@ impl DynTool for EmitTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            let named = match input["source"].as_str() {
-                Some(s) if !s.trim().is_empty() => s.trim().to_string(),
-                _ => return ToolResult::error(crate::errors::missing_param(
-                    "emit",
-                    "source",
-                    "emit(source: \"my-workflow\", payload: {\"key\": \"value\"})",
-                )),
-            };
+            // Workflow activities hold their own instance of this tool.
+            let named = input["source"].as_str().unwrap_or("").trim().to_string();
+            if named.is_empty() {
+                return ToolResult::error(NO_SOURCE);
+            }
 
             // The ONE addressing function: a registered company event goes out
             // bare, a seat's own event is addressed by the seat exactly once.

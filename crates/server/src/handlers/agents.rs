@@ -661,7 +661,14 @@ pub async fn create_agent(
     // "+ new employee" flow names it at birth — hiring starts with a name.
     if body.get("blank").and_then(|v| v.as_bool()).unwrap_or(false) {
         let name = body["name"].as_str().filter(|n| !n.trim().is_empty());
-        return create_blank_agent(state, name).await;
+        // The builder's Create: the drafted job (`POST /agents/needs`), less
+        // the items the owner removed, named by their words.
+        let draft_id = body["draftId"].as_str().filter(|d| !d.is_empty());
+        let removed: Vec<String> = body["removed"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|w| w.as_str().and_then(tools::needs::capability_for_words)).collect())
+            .unwrap_or_default();
+        return create_blank_agent(state, name, draft_id, &removed).await;
     }
 
     let agent_md = body["agentMd"].as_str().ok_or_else(|| {
@@ -1341,7 +1348,85 @@ pub async fn update_agent(
         });
     }
 
+    // Save on the owner's page is the consent to the edit's line (drafted
+    // by `POST /agents/needs` with this agent): what it adds joins the job.
+    if let Some(draft_id) = body["draftId"].as_str().filter(|d| !d.is_empty()) {
+        match tools::needs::open_draft(&state.store, draft_id, "edit") {
+            Ok((row, _, added)) if row.agent_id == id => {
+                let source = types::permissions::RuleSource::JobEdit;
+                if let Err(e) = agent::harness::permissions::consent::grant_job(&state.store, &id, &added, source) {
+                    warn!(agent = %id, error = %e, "the edit's added needs were not granted");
+                }
+                let _ = state.store.use_employee_draft(draft_id);
+            }
+            Ok(_) => warn!(agent = %id, draft = draft_id, "an edit draft for another employee was ignored"),
+            Err(e) => warn!(agent = %id, error = %e, "the edit draft could not be used"),
+        }
+    }
+
     Ok(Json(serde_json::json!({ "agent": updated })))
+}
+
+/// POST /agents/needs — the one needs step for the owner's pages. With
+/// `typeConfig` (a package's agent.json), the line above Hire, read off the
+/// manifest with no model call. With `description`, the line above Create in
+/// the builder, drafted so Create grants what was shown; with `agentId` too,
+/// only what an edit adds, drafted for Save. Items and accounts are plain
+/// words; no rule string reaches the page.
+pub async fn work_out_agent_needs(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    use tools::needs::{self, DeclaredNeeds, Draft, JobSource};
+    let name = body["name"].as_str().map(str::trim).filter(|n| !n.is_empty()).unwrap_or("This employee");
+    let description = body["description"].as_str().unwrap_or("");
+    let agent_id = body["agentId"].as_str().unwrap_or("");
+    let declared = body
+        .get("typeConfig")
+        .filter(|v| v.is_object())
+        .and_then(|tc| napp::agent::parse_agent_config(&tc.to_string()).ok())
+        .map(|c| DeclaredNeeds::of(&c));
+    let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
+    let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
+    let src = JobSource {
+        name,
+        description,
+        skills: &[],
+        plugins: &[],
+        workflows: &[],
+        declared: declared.as_ref(),
+        installed: &installed,
+    };
+    let mut worked_out = needs::work_out_needs(&src, &reader).await;
+    if declared.is_none() && !agent_id.is_empty() {
+        let before = agent::harness::permissions::consent::job_of(&state.store, agent_id).map_err(to_error_response)?;
+        worked_out = needs::added(&before, &worked_out);
+    }
+    let (draft_id, line) = if declared.is_some() {
+        (serde_json::Value::Null, needs::consent_line(name, &worked_out))
+    } else {
+        let input = serde_json::json!({ "name": name, "description": description });
+        let draft = Draft {
+            kind: if agent_id.is_empty() { "create" } else { "edit" },
+            agent_id,
+            creator_id: "",
+            chat_id: "",
+            name,
+            input: &input,
+            needs: &worked_out,
+        };
+        let (id, line) =
+            needs::save_draft(&state.store, &draft).map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+        (serde_json::Value::String(id), line)
+    };
+    let items: Vec<String> = worked_out.items().into_iter().map(|t| t.words).collect();
+    let accounts: Vec<&str> = worked_out.accounts.iter().filter_map(|a| needs::words_of(&a.capability)).collect();
+    Ok(Json(serde_json::json!({
+        "line": line,
+        "items": items,
+        "accounts": accounts,
+        "draftId": draft_id,
+    })))
 }
 
 /// DELETE /agents/{id}
@@ -1682,15 +1767,36 @@ pub async fn process_agent_bindings(
 async fn create_blank_agent(
     state: AppState,
     name: Option<&str>,
+    draft_id: Option<&str>,
+    removed: &[String],
 ) -> HandlerResult<serde_json::Value> {
     let id = uuid::Uuid::new_v4().to_string();
     let name = name.map(str::trim).unwrap_or("New Agent");
-    let agent_md = format!("---\nname: {:?}\ndescription: \"\"\n---\n", name);
+    let draft = match draft_id {
+        Some(d) => Some(
+            tools::needs::open_draft(&state.store, d, "create")
+                .map_err(|e| to_error_response(types::NeboError::Validation(e)))?,
+        ),
+        None => None,
+    };
+    let description = draft.as_ref().and_then(|(_, input, _)| input["description"].as_str()).unwrap_or("").trim();
+    let agent_md = format!("---\nname: {:?}\ndescription: {:?}\n---\n", name, description);
 
     let agent = state
         .store
-        .create_agent(&id, None, name, "", &agent_md, "{}", None, None)
+        .create_agent(&id, None, name, description, &agent_md, "{}", None, None)
         .map_err(to_error_response)?;
+
+    // Create is the owner's consent to the line it showed: the drafted
+    // needs, less what the owner removed, become the job.
+    if let (Some((row, _, needs)), Some(draft_id)) = (&draft, draft_id) {
+        let kept = needs.without(removed);
+        let source = types::permissions::RuleSource::Created { draft_id: draft_id.to_string() };
+        if let Err(e) = agent::harness::permissions::consent::grant_job(&state.store, &id, &kept, source) {
+            warn!(agent = %id, error = %e, "the builder's job was not granted");
+        }
+        let _ = state.store.use_employee_draft(&row.id);
+    }
 
     // Auto-activate: insert into agent_registry so it shows in sidebar
     let active = tools::ActiveAgent {
