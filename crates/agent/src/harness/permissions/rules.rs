@@ -2,9 +2,11 @@
 //! the employee's job, and the money a standing allow covers.
 //!
 //! Rules live at two scopes, company defaults and one employee's overrides.
-//! When any employee-scope rule matches a call, the employee scope decides;
-//! otherwise the company's does. Within the deciding scope deny beats ask
-//! and ask beats allow; a more specific field never outranks a broader deny.
+//! A deny from either scope decides, as a deny from any of Claude Code's
+//! rule sources does: an employee's rule never undoes a company deny.
+//! Otherwise, when any employee-scope rule matches a call, the employee
+//! scope decides; else the company's does. Within the deciding scope ask
+//! beats allow; a more specific field never outranks a broader deny.
 
 use std::path::{Path, PathBuf};
 
@@ -43,6 +45,9 @@ impl RuleSet {
     /// The rule that decides `t` and its effect, or `None` when no rule
     /// matches.
     pub fn decide(&self, t: &Target) -> Option<(&Rule, Effect)> {
+        if let Some(deny) = self.all().find(|r| r.effect == Effect::Deny && matches(r, t)) {
+            return Some((deny, Effect::Deny));
+        }
         self.deciding(t)
             .iter()
             .filter(|r| matches(r, t))
@@ -238,13 +243,27 @@ mod tests {
         assert_eq!(set(vec![broad_deny, narrow_allow]).decide(&t).map(|d| d.1), Some(Effect::Deny));
     }
 
+    /// A deny from either scope decides: an employee's allow never undoes
+    /// a company deny. An employee's own rule still narrows a company
+    /// allow, and its allow still covers a company ask.
     #[test]
-    fn employee_rule_overrides_company_default() {
+    fn a_company_deny_beats_an_employee_allow() {
         let t = target("fetch_url", Some("web"), None);
-        let company_deny = rule(Scope::Company, RuleKey::Capability("web".into()), None, Effect::Deny);
-        let employee_allow = rule(Scope::Employee("a".into()), RuleKey::Capability("web".into()), None, Effect::Allow);
-        assert_eq!(set(vec![company_deny.clone()]).decide(&t).map(|d| d.1), Some(Effect::Deny));
-        assert_eq!(set(vec![company_deny, employee_allow]).decide(&t).map(|d| d.1), Some(Effect::Allow));
+        let web = || RuleKey::Capability("web".into());
+        let company = |e| rule(Scope::Company, web(), None, e);
+        let employee = |e| rule(Scope::Employee("a".into()), web(), None, e);
+        let decide = |rules: Vec<Rule>| set(rules).decide(&t).map(|(r, e)| (r.scope.clone(), e));
+        assert_eq!(decide(vec![company(Effect::Deny)]), Some((Scope::Company, Effect::Deny)));
+        assert_eq!(decide(vec![company(Effect::Deny), employee(Effect::Allow)]), Some((Scope::Company, Effect::Deny)));
+        assert_eq!(decide(vec![company(Effect::Deny), employee(Effect::Ask)]), Some((Scope::Company, Effect::Deny)));
+        let rules = set(vec![company(Effect::Deny), employee(Effect::Allow)]);
+        assert!(!rules.in_job(&t, &serde_json::json!({})), "a company deny keeps it outside the job");
+        assert!(!rules.owner_allowed(&t));
+        // The employee's own narrows a company allow, and covers its ask.
+        let own = Scope::Employee("a".into());
+        assert_eq!(decide(vec![company(Effect::Allow), employee(Effect::Deny)]), Some((own.clone(), Effect::Deny)));
+        assert_eq!(decide(vec![company(Effect::Allow), employee(Effect::Ask)]), Some((own.clone(), Effect::Ask)));
+        assert_eq!(decide(vec![company(Effect::Ask), employee(Effect::Allow)]), Some((own, Effect::Allow)));
     }
 
     #[test]

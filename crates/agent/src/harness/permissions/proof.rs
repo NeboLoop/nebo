@@ -150,3 +150,52 @@ async fn builder_removed_capability_not_granted() {
     assert!(matches!(decision(&store, "lead-finder", "web"), Decision::Ask { case: AskCase::OutsideJob { .. } }));
     assert!(matches!(decision(&store, "lead-finder", "mail"), Decision::Allow { .. }));
 }
+
+/// `company-deny-beats-employee-allow`: a deny from any scope decides, as a
+/// deny from any of Claude Code's rule sources does. The company turns the
+/// shell off; an employee's own allow (its job, or an "Allow always") never
+/// turns it back on, and an answer the owner gave once never runs it.
+#[tokio::test]
+async fn company_deny_beats_employee_allow() {
+    let (_d, store) = store();
+    let rule = |scope: Scope, effect: Effect, source: RuleSource| types::permissions::Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope,
+        key: RuleKey::Capability("shell".into()),
+        field: None,
+        effect,
+        money: None,
+        source,
+        locked: false,
+        created_at: 0,
+    };
+    let owner = types::permissions::Writer::Owner;
+    store.write_permission_rule(&rule(Scope::Employee("dev".into()), Effect::Allow, RuleSource::Owner), &owner).unwrap();
+    assert!(matches!(decision(&store, "dev", "shell"), Decision::Allow { .. }), "the employee's job runs");
+    store.write_permission_rule(&rule(Scope::Company, Effect::Deny, RuleSource::Owner), &owner).unwrap();
+    assert!(matches!(decision(&store, "dev", "shell"), Decision::Deny { .. }), "the company deny binds the employee");
+    store
+        .write_permission_rule(&rule(Scope::Employee("dev".into()), Effect::Allow, RuleSource::AllowAlways { ask_id: "a1".into() }), &owner)
+        .unwrap();
+    assert!(matches!(decision(&store, "dev", "shell"), Decision::Deny { .. }), "an Allow always doesn't undo it");
+    // An ask the owner answered once is not a way around it either.
+    let grant = resolve_grant(&store, "dev", None);
+    let ctx = ToolContext {
+        origin: Origin::User,
+        session_key: "agent:dev:web".into(),
+        grant: Some(Arc::new(grant.clone())),
+        answered_ask: Some("a2".into()),
+        ..Default::default()
+    };
+    let t = Target {
+        tool: "probe".into(),
+        key: "shell_call".into(),
+        operation: None,
+        capability: Some("shell".into()),
+        field: None,
+        read_only: false,
+        effects: CallEffects::unknown(),
+    };
+    let input = serde_json::json!({});
+    assert!(matches!(decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t), Decision::Deny { .. }));
+}

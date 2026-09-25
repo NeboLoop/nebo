@@ -28,6 +28,8 @@ fixtures:
   # Growth: "Allow always" and job edits (PRD-Permissions §4.5, §4.3)
   - ../fixtures/permissions/allow-always-never-asks-again.yaml
   - ../fixtures/permissions/job-edit-surfaces-only-new-needs.yaml
+  # Precedence: a deny from any scope wins (Claude Code's merged sources)
+  - ../fixtures/permissions/company-deny-beats-employee-allow.yaml
   # Limits: helpers, employee-made employees, coworkers (§4.6; #246)
   - ../fixtures/turn/helper-cannot-exceed-parent.yaml
   - ../fixtures/permissions/employee-made-employee-capped-one-card.yaml

@@ -5,7 +5,7 @@
 //!
 //! | Old shape | Becomes |
 //! |---|---|
-//! | Capability toggles (company `user_profiles.tool_permissions`, employee `entity_config.permissions`) | allow / deny rules on the capability (the job) |
+//! | Capability toggles (company `user_profiles.tool_permissions`, employee `entity_config.permissions`) | allow / deny rules on the capability (the job); a company "off" that some employee turned on becomes a deny for each employee that didn't, since a company deny now binds every employee |
 //! | Screen and browser grants (`entity_config.resource_grants`) | deny rules on the screen and browser keys |
 //! | Path fence (`entity_config.allowed_paths`) | folder rules |
 //! | Saved "always allow" commands (`user_profiles.approved_commands`) | allow rules on `run_command` with a command prefix |
@@ -66,14 +66,37 @@ pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, type
         .and_then(|p| p.tool_permissions.as_deref())
         .and_then(|j| w.parse("user_profiles.tool_permissions", j))
         .unwrap_or_default();
+    // Each employee's own toggles, read once.
+    let configs = store.list_entity_configs("agent")?;
+    let employee_toggles: Vec<HashMap<String, bool>> = configs
+        .iter()
+        .map(|ec| {
+            ec.permissions
+                .as_deref()
+                .and_then(|j| w.parse(&format!("entity_config.permissions[{}]", ec.entity_id), j))
+                .unwrap_or_default()
+        })
+        .collect();
     // A capability no toggle names was on: the old gate only refused an
-    // explicit `false`.
+    // explicit `false`. A company "off" was a default an employee could
+    // turn back on; a company deny now binds every employee, so where one
+    // did, the "off" stays with each employee that didn't, and the company
+    // leaves it out of the job (asked, not refused, for anyone new).
+    let company_cap = |w: &mut Writes<'_>, cap: &str, on: bool| {
+        let turned_on: Vec<bool> = employee_toggles.iter().map(|t| t.get(cap) == Some(&true)).collect();
+        if on || !turned_on.contains(&true) {
+            w.rule(Scope::Company, RuleKey::Capability(cap.into()), None, if on { Effect::Allow } else { Effect::Deny }, None, "user_profiles.tool_permissions");
+            return;
+        }
+        for (ec, _) in configs.iter().zip(&turned_on).filter(|(_, on)| !**on) {
+            w.rule(Scope::Employee(ec.entity_id.clone()), RuleKey::Capability(cap.into()), None, Effect::Deny, None, "user_profiles.tool_permissions");
+        }
+    };
     for cap in tools::capabilities::CAPABILITIES.iter().map(|c| c.key).filter(|k| *k != "chat") {
-        let on = company_toggles.get(cap).copied().unwrap_or(true);
-        w.rule(Scope::Company, RuleKey::Capability(cap.into()), None, if on { Effect::Allow } else { Effect::Deny }, None, "user_profiles.tool_permissions");
+        company_cap(&mut w, cap, company_toggles.get(cap).copied().unwrap_or(true));
     }
     for (cap, on) in company_toggles.iter().filter(|(k, _)| is_extra_capability(k)) {
-        w.rule(Scope::Company, RuleKey::Capability(cap.clone()), None, if *on { Effect::Allow } else { Effect::Deny }, None, "user_profiles.tool_permissions");
+        company_cap(&mut w, cap, *on);
     }
     let commands: Vec<String> = profile
         .as_ref()
@@ -114,14 +137,9 @@ pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, type
     }
 
     // Each employee's own settings.
-    for ec in store.list_entity_configs("agent")? {
+    for (ec, employee_toggles) in configs.iter().zip(&employee_toggles) {
         let scope = Scope::Employee(ec.entity_id.clone());
-        let employee_toggles: HashMap<String, bool> = ec
-            .permissions
-            .as_deref()
-            .and_then(|j| w.parse(&format!("entity_config.permissions[{}]", ec.entity_id), j))
-            .unwrap_or_default();
-        for (cap, on) in &employee_toggles {
+        for (cap, on) in employee_toggles {
             if cap == "chat" {
                 continue;
             }
