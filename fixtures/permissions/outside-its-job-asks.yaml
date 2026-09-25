@@ -35,8 +35,6 @@ conversation:
     content: "Now look up their current VAT rate again."
 
 tool_config:
-  agent:
-    enabled: true
   search_web:
     enabled: true
   fetch_url:

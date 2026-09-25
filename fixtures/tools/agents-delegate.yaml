@@ -29,7 +29,7 @@ conversation:
     content: "Ask the chief-of-staff-{{tag}} agent to draft my weekly report."
 
 tool_config:
-  agent:
+  message:
     enabled: true
 
 prompt_assertions:

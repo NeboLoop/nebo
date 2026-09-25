@@ -8,7 +8,6 @@
 pub const CACHE_BOUNDARY: &str =
     "\n<!-- CACHE_BOUNDARY -->\n[--- cache boundary: content below changes per-turn ---]\n";
 
-const STRAP_AGENT: &str = include_str!("strap/agent.txt");
 const STRAP_CODE: &str = include_str!("strap/code.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
 const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
@@ -35,7 +34,6 @@ const STRAP_ORGANIZER: &str = include_str!("strap/organizer.txt");
 /// Get STRAP doc for a core tool (injected when the tool is active).
 pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
     match tool_name {
-        "agent" => Some(STRAP_AGENT),
         "code" => Some(STRAP_CODE),
         "message" => Some(STRAP_MESSAGE),
         "execute" => Some(STRAP_EXECUTE),

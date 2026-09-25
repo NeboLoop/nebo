@@ -32,8 +32,8 @@ impl ChannelDispatchImpl {
 
 /// Server-side implementation of [`tools::CodeInstaller`] — routes any marketplace code
 /// through the canonical `codes::handle_code` pathway (the same one this dispatcher and
-/// the WS code-install flow use). Injected into the agent's `registry` install action so
-/// `agent(resource:"registry", action:"install", code:…)` installs AND cascades every
+/// the WS code-install flow use). Injected into `hire_employee` so
+/// `hire_employee(code:…)` installs AND cascades every
 /// artifact type (skills, plugins, agents, apps, collections) correctly.
 pub struct CodeInstallerImpl {
     state: AppState,
