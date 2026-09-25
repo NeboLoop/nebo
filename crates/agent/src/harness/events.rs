@@ -96,7 +96,7 @@ pub struct SessionFacts {
     /// Today in the owner's timezone.
     pub date: chrono::NaiveDate,
     pub timezone: Option<String>,
-    /// Platform, working folder, channel, watching; in this order.
+    /// Platform, shell, working folder, channel, watching; in this order.
     pub environment: Vec<(String, String)>,
     pub mode: ModeFacts,
     /// The identity slice of the employee's memory.

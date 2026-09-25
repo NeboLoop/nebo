@@ -160,6 +160,14 @@ fn search<'a>(
         }
         return (found, missing);
     }
+    // A bare tool name is that tool: a query naming one exactly loads it,
+    // not the tools whose descriptions mention it.
+    if let Some(e) = catalog
+        .iter()
+        .find(|e| e.definition.name.eq_ignore_ascii_case(query))
+    {
+        return (vec![e], Vec::new());
+    }
     let mut words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let required: Vec<String> = words
         .iter()
@@ -293,6 +301,19 @@ mod tests {
         // Part of a name word.
         assert_eq!(names(&answer(&catalog(), "calend", 5)), ["calendar_event_create"]);
         assert_eq!(names(&answer(&catalog(), "issue", 5)), ["mcp__github__create_issue"]);
+    }
+
+    /// Gate run 36099651233: find_tools("fetch_url") loaded browser_open,
+    /// http_request and search_web — the tools whose descriptions mention
+    /// fetch_url — and never fetch_url itself.
+    #[test]
+    fn a_bare_tool_name_loads_that_tool_alone() {
+        let mut catalog = catalog();
+        catalog.push(entry("fetch_url", "Fetches a URL and returns its content as text.", "read a web page"));
+        catalog.push(entry("browser_open", "Opens a URL; to just read a page, fetch_url is faster.", ""));
+        catalog.push(entry("http_request", "Sends an HTTP request. To just read, use fetch_url.", ""));
+        assert_eq!(names(&answer(&catalog, "fetch_url", 5)), ["fetch_url"]);
+        assert_eq!(names(&answer(&catalog, "Fetch_URL", 5)), ["fetch_url"]);
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! Helpers: `delegate` starts one, `send_message` talks to a running or
-//! finished one — or, by the kind of `to`, to a coworker or a team — and
-//! `orchestrate` runs a decomposed job as a dependency graph of helpers. Behaviour stays in the orchestrator; these are its
-//! interface. Reading a helper's output and stopping it are `read_output`
+//! finished one — or, by the kind of `to`, to a coworker or a team.
+//! Behaviour stays in the helper registry; these are its interface.
+//! Several independent pieces of work are several `delegate` calls in one
+//! response. Reading a helper's output and stopping it are `read_output`
 //! and `stop_task`, shared with background commands (`command_tools`).
 
 use std::sync::Arc;
@@ -166,34 +167,6 @@ impl Helpers {
         }
     }
 
-    async fn orchestrate(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
-        let orch = match self.orchestrator() {
-            Ok(o) => o,
-            Err(e) => return ToolResult::error(e),
-        };
-        // The nodes of a decomposition are this run's own helpers: they sit,
-        // run at the model, and are limited like a single delegate.
-        match orch
-            .execute_dag(
-                input["prompt"].as_str().unwrap_or(""),
-                SpawnRequest::child_of(ctx),
-            )
-            .await
-        {
-            Ok(r) if r.success => ToolResult::ok(format!(
-                "Orchestration [{}] completed:\n\n{}",
-                r.task_id, r.output
-            )),
-            Ok(r) => ToolResult::error(format!(
-                "Orchestration [{}] had failures:\n\n{}\n\nError: {}",
-                r.task_id,
-                r.output,
-                r.error.unwrap_or_default()
-            )),
-            Err(e) => ToolResult::error(format!("Orchestration failed: {e}")),
-        }
-    }
-
     async fn send_message(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let to = input["to"].as_str().unwrap_or("").trim();
         let message = input["message"].as_str().unwrap_or("").trim();
@@ -305,16 +278,11 @@ fn employee_named_in_prompt(prompt: &str, names: &[String]) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HelperOp {
     Delegate,
-    Orchestrate,
     SendMessage,
 }
 
 impl HelperOp {
-    const ALL: [HelperOp; 3] = [
-        HelperOp::Delegate,
-        HelperOp::Orchestrate,
-        HelperOp::SendMessage,
-    ];
+    const ALL: [HelperOp; 2] = [HelperOp::Delegate, HelperOp::SendMessage];
 }
 
 struct HelperTool {
@@ -326,7 +294,6 @@ impl DynTool for HelperTool {
     fn name(&self) -> &str {
         match self.op {
             HelperOp::Delegate => "delegate",
-            HelperOp::Orchestrate => "orchestrate",
             HelperOp::SendMessage => "send_message",
         }
     }
@@ -340,9 +307,6 @@ impl DynTool for HelperTool {
                  - Several independent pieces: several delegate calls in one response. Helpers that edit files in the same project: `isolation: \"worktree\"` gives each its own copy, merged back when it finishes.\n\
                  - To continue a running or finished helper, use send_message with its id.\n\
                  - If you already know the file or answer, use the direct tool instead. Work for a named employee is a message to them, not a helper."
-                .to_string(),
-            HelperOp::Orchestrate => "Breaks a large job into steps that depend on each other and runs each step as a helper, in order, handing each step what the earlier ones found. Returns the combined result.\n\
-                 - For independent pieces, several delegate calls are faster."
                 .to_string(),
             HelperOp::SendMessage => "Sends a message to a helper you started (by its id), a coworker (another employee on this Nebo, by name) or a team (by name).\n\
                  - A running helper sees it at its next step; a finished one continues with it, keeping its context.\n\
@@ -366,13 +330,6 @@ impl DynTool for HelperTool {
                 },
                 "required": ["description", "prompt"]
             }),
-            HelperOp::Orchestrate => json!({
-                "type": "object",
-                "properties": {
-                    "prompt": { "type": "string", "description": "The whole job, with everything the steps need to know." }
-                },
-                "required": ["prompt"]
-            }),
             HelperOp::SendMessage => json!({
                 "type": "object",
                 "properties": {
@@ -389,7 +346,6 @@ impl DynTool for HelperTool {
     fn search_hint(&self) -> &str {
         match self.op {
             HelperOp::Delegate => "start a helper on separate work",
-            HelperOp::Orchestrate => "run dependent steps as helpers",
             HelperOp::SendMessage => "message a helper coworker or team",
         }
     }
@@ -429,7 +385,6 @@ impl DynTool for HelperTool {
         let blank = |k: &str| input[k].as_str().is_none_or(|s| s.trim().is_empty());
         let empty: &[&str] = match self.op {
             HelperOp::Delegate => &["description", "prompt"],
-            HelperOp::Orchestrate => &["prompt"],
             HelperOp::SendMessage => &["to", "message"],
         };
         match empty.iter().find(|k| blank(k)) {
@@ -442,7 +397,6 @@ impl DynTool for HelperTool {
         let desc = input["description"].as_str().unwrap_or("");
         match self.op {
             HelperOp::Delegate => format!("starting a helper: {desc}"),
-            HelperOp::Orchestrate => "running a multi-step job".to_string(),
             HelperOp::SendMessage => format!("messaging {}", self.helpers.recipient_label(input)),
         }
     }
@@ -451,7 +405,6 @@ impl DynTool for HelperTool {
         let desc = input["description"].as_str().unwrap_or("");
         match self.op {
             HelperOp::Delegate => format!("Started a helper: {desc}"),
-            HelperOp::Orchestrate => "Ran a multi-step job".to_string(),
             HelperOp::SendMessage => format!("Messaged {}", self.helpers.recipient_label(input)),
         }
     }
@@ -464,7 +417,6 @@ impl DynTool for HelperTool {
         Box::pin(async move {
             match self.op {
                 HelperOp::Delegate => self.helpers.delegate(&input, ctx).await,
-                HelperOp::Orchestrate => self.helpers.orchestrate(&input, ctx).await,
                 HelperOp::SendMessage => self.helpers.send_message(&input, ctx).await,
             }
         })
@@ -485,8 +437,6 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         spawned: Mutex<Vec<SpawnRequest>>,
-        batches: Mutex<Vec<Vec<SpawnRequest>>>,
-        dags: Mutex<Vec<(String, SpawnRequest)>>,
         sent: Mutex<Vec<(String, String, String)>>,
     }
 
@@ -510,14 +460,6 @@ mod tests {
                     "the report"
                 }))
             })
-        }
-        fn execute_dag(
-            &self,
-            prompt: &str,
-            parent: SpawnRequest,
-        ) -> Fut<'_, Result<SpawnResult, String>> {
-            self.dags.lock().unwrap().push((prompt.to_string(), parent));
-            Box::pin(async { Ok(done("all steps")) })
         }
         fn cancel(&self, _task_id: &str, _caller: &str) -> Fut<'_, Result<(), String>> {
             Box::pin(async { Ok(()) })
@@ -548,10 +490,6 @@ mod tests {
         }
         fn list_active(&self, _caller: &str) -> Fut<'_, Vec<(String, String, String)>> {
             Box::pin(async { Vec::new() })
-        }
-        fn spawn_parallel(&self, requests: Vec<SpawnRequest>) -> Fut<'_, Result<SpawnResult, String>> {
-            self.batches.lock().unwrap().push(requests);
-            Box::pin(async { Ok(done("merged")) })
         }
         fn recover(&self) -> Fut<'_, ()> {
             Box::pin(async {})
@@ -645,7 +583,6 @@ mod tests {
             names,
             [
                 ("delegate", false),
-                ("orchestrate", true),
                 ("send_message", true)
             ]
         );
@@ -719,7 +656,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_and_orchestrate_reach_the_orchestrator() {
+    async fn send_reaches_the_helper() {
         let rig = Rig::new();
         let r = rig
             .call(
@@ -736,15 +673,6 @@ mod tests {
             rig.rec.sent.lock().unwrap()[0].2,
             "agent:a1:web",
             "the sender is recorded"
-        );
-        let r = rig
-            .call("orchestrate", json!({"prompt": "research then write"}))
-            .await;
-        assert!(r.content.contains("all steps"), "{}", r.content);
-        assert_eq!(
-            rig.rec.dags.lock().unwrap()[0].1.model_override,
-            "janus/fast",
-            "nodes inherit the model"
         );
     }
 

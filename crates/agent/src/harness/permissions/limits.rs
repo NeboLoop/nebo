@@ -106,7 +106,6 @@ const OUTSIDE_KEYS: &[&str] = &[
     "reload_employee",
     "employee_stats",
     "delegate",
-    "orchestrate",
     "send_message",
     "read_output",
     "stop_task",

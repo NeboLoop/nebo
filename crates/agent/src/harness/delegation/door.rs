@@ -57,7 +57,6 @@ impl HelperDoor {
             kind: HelperKind::parse(&req.agent_type).unwrap_or(HelperKind::General),
             background,
             isolation: (req.isolate == "worktree").then_some(Isolation::Worktree),
-            model: None,
             skills: self.skills(&req.skills, &turn.seat.agent_id).await,
         }
     }
@@ -77,22 +76,6 @@ impl HelperDoor {
         })
     }
 
-    /// Break `prompt` into a graph of helpers with one model call.
-    async fn decompose(&self, prompt: &str, agent_id: &str) -> Result<Vec<crate::task_graph::TaskNode>, String> {
-        let provider = self
-            .harness
-            .providers
-            .read()
-            .await
-            .first()
-            .cloned()
-            .ok_or("No AI provider is configured to plan the work.")?;
-        let trace = ai::RequestTrace {
-            agent_id: agent_id.to_string(),
-            ..ai::RequestTrace::new("task_decompose")
-        };
-        crate::decompose::decompose_task(provider.as_ref(), trace, prompt).await
-    }
 }
 
 /// The parent's side of a helper: the run the tool call came from.
@@ -174,25 +157,6 @@ impl SubAgentOrchestrator for HelperDoor {
         })
     }
 
-    fn execute_dag(&self, prompt: &str, parent: SpawnRequest) -> Fut<'_, Result<SpawnResult, String>> {
-        let prompt = prompt.to_string();
-        Box::pin(async move {
-            let turn = parent_turn(&parent);
-            let nodes = self.decompose(&prompt, &turn.seat.agent_id).await?;
-            info!(nodes = nodes.len(), parent = %turn.session_key, "orchestrating a decomposed job");
-            let (output, success) = self
-                .helpers
-                .orchestrate(&turn, parent.seat.grant.as_deref(), &parent.seat.taint, nodes)
-                .await?;
-            Ok(SpawnResult {
-                task_id: format!("job-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
-                success,
-                output,
-                error: (!success).then(|| "One or more parts failed".to_string()),
-            })
-        })
-    }
-
     fn cancel(&self, task_id: &str, caller: &str) -> Fut<'_, Result<(), String>> {
         let stopped = self.helpers.stop(caller, task_id).map(|_| ());
         Box::pin(async move { stopped })
@@ -240,31 +204,6 @@ impl SubAgentOrchestrator for HelperDoor {
         Box::pin(async move { listed })
     }
 
-    fn spawn_parallel(&self, requests: Vec<SpawnRequest>) -> Fut<'_, Result<SpawnResult, String>> {
-        Box::pin(async move {
-            let descriptions: Vec<String> = requests.iter().map(|r| r.description.clone()).collect();
-            let launched =
-                futures::future::join_all(requests.into_iter().map(|req| self.spawn_one(req, false))).await;
-            let mut parts = Vec::new();
-            let mut all_ok = true;
-            for (description, result) in descriptions.iter().zip(launched) {
-                // Each part is headed by its description; a failed one says so.
-                let (ok, body) = match result {
-                    Ok(r) => (r.success, r.output),
-                    Err(e) => (false, format!("The helper could not start: {e}")),
-                };
-                all_ok &= ok;
-                parts.push(format!("## {description}{}\n\n{body}", if ok { "" } else { " (FAILED)" }));
-            }
-            Ok(SpawnResult {
-                task_id: format!("batch-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
-                success: all_ok,
-                output: parts.join("\n\n---\n\n"),
-                error: (!all_ok).then(|| "One or more helpers failed".to_string()),
-            })
-        })
-    }
-
     fn recover(&self) -> Fut<'_, ()> {
         Box::pin(async move {
             let swept = crate::worktree::cleanup_stale(crate::worktree::STALE_AFTER_SECS).await;
@@ -307,10 +246,6 @@ mod tests {
             self.0.0.lock().unwrap().push(req);
             Box::pin(async { Ok(done()) })
         }
-        fn execute_dag(&self, _prompt: &str, parent: SpawnRequest) -> Fut<'_, Result<SpawnResult, String>> {
-            self.0.0.lock().unwrap().push(parent);
-            Box::pin(async { Ok(done()) })
-        }
         fn cancel(&self, _: &str, _: &str) -> Fut<'_, Result<(), String>> {
             Box::pin(async { Ok(()) })
         }
@@ -323,10 +258,6 @@ mod tests {
         }
         fn list_active(&self, _: &str) -> Fut<'_, Vec<(String, String, String)>> {
             Box::pin(async { Vec::new() })
-        }
-        fn spawn_parallel(&self, requests: Vec<SpawnRequest>) -> Fut<'_, Result<SpawnResult, String>> {
-            self.0.0.lock().unwrap().extend(requests);
-            Box::pin(async { Ok(done()) })
         }
         fn recover(&self) -> Fut<'_, ()> {
             Box::pin(async {})
@@ -383,7 +314,6 @@ mod tests {
             kind: HelperKind::General,
             background: true,
             isolation: None,
-            model: None,
             skills: Vec::new(),
         };
         child_request(&parent, "h1", &spec, None, TurnInput::None)
@@ -420,8 +350,8 @@ mod tests {
 
     /// The escalation #246 closed: a helper of an employee with shell off and
     /// a folder fence came back with shell on and no fence. Every way a
-    /// helper starts — foreground, background, isolated, an orchestrated
-    /// node, a continuation by send_message — carries the parent's limits.
+    /// helper starts — foreground, background, isolated, a continuation by
+    /// send_message — carries the parent's limits.
     #[tokio::test]
     async fn every_helper_path_keeps_its_parents_limits() {
         let rec = Arc::new(Recorder::default());
@@ -431,7 +361,6 @@ mod tests {
             ("foreground", "delegate", serde_json::json!({"description": "a", "prompt": "a", "background": false})),
             ("background", "delegate", serde_json::json!({"description": "a", "prompt": "a"})),
             ("isolated", "delegate", serde_json::json!({"description": "b", "prompt": "b", "isolation": "worktree"})),
-            ("orchestrate", "orchestrate", serde_json::json!({"prompt": "a then b"})),
             ("send", "send_message", serde_json::json!({"to": "h1", "message": "and the edge cases"})),
         ] {
             call(&tools, &ctx, name, input).await;

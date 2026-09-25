@@ -43,9 +43,9 @@ pub const FOREGROUND_BUDGET: Duration = Duration::from_secs(120);
 /// had as partial.
 pub const INACTIVITY_LIMIT: Duration = Duration::from_secs(10 * 60);
 
-/// The rule keys of the helper tools: what Explore and Plan helpers, and a
+/// The rule key of the helper tool: what Explore and Plan helpers, and a
 /// helper at the depth cap, can never call.
-pub const HELPER_TOOL_KEYS: &[&str] = &["delegate", "orchestrate"];
+pub const HELPER_TOOL: &str = "delegate";
 
 /// The pending-task row kind of a helper.
 const ROW_KIND: &str = "helper";
@@ -58,7 +58,6 @@ pub struct HelperSpec {
     pub kind: HelperKind,
     pub background: bool,
     pub isolation: Option<Isolation>,
-    pub model: Option<String>,
     /// Skills the parent loaded, `(name, content)`: their instructions go
     /// with the work, written into the helper's thread before its first step.
     pub skills: Vec<(String, String)>,
@@ -86,30 +85,7 @@ impl HelperSpec {
             })?,
         };
         let background = input.get("background").and_then(|v| v.as_bool()).unwrap_or(true);
-        Ok(Self { description, prompt, kind, background, isolation: None, model: None, skills: Vec::new() })
-    }
-
-    /// A node of a decomposed job, with what the nodes it depends on found.
-    /// It runs through [`child::child_request`] like any other helper.
-    pub fn from_node(node: &crate::task_graph::TaskNode, dep_context: &str) -> Self {
-        let prompt = if dep_context.is_empty() {
-            node.prompt.clone()
-        } else {
-            format!("{dep_context}\n\n{}", node.prompt)
-        };
-        Self {
-            description: node.description.clone(),
-            prompt,
-            kind: match node.agent_type {
-                crate::task_graph::AgentType::Explore => HelperKind::Explore,
-                crate::task_graph::AgentType::Plan => HelperKind::Plan,
-                crate::task_graph::AgentType::General => HelperKind::General,
-            },
-            background: false,
-            isolation: None,
-            model: (!node.model_override.is_empty()).then(|| node.model_override.clone()),
-            skills: Vec::new(),
-        }
+        Ok(Self { description, prompt, kind, background, isolation: None, skills: Vec::new() })
     }
 }
 
@@ -211,7 +187,7 @@ pub fn helper_key(parent_key: &str, task_id: &str) -> String {
 /// `mode`: never for Explore or Plan helpers, never at the depth cap.
 pub fn on_surface(mode: &TurnMode, tool_name: &str) -> bool {
     match mode {
-        TurnMode::Helper { kind, depth, .. } if HELPER_TOOL_KEYS.contains(&tool_name) => {
+        TurnMode::Helper { kind, depth, .. } if tool_name == HELPER_TOOL => {
             !kind.read_only() && *depth < MAX_DEPTH
         }
         _ => true,
@@ -225,7 +201,7 @@ pub fn permits(mode: &TurnMode, target: &types::permissions::Target) -> Result<(
     let TurnMode::Helper { kind, depth, .. } = mode else {
         return Ok(());
     };
-    let delegating = HELPER_TOOL_KEYS.contains(&target.key.as_str());
+    let delegating = target.key == HELPER_TOOL;
     if kind.read_only() && (delegating || !target.read_only) {
         return Err(format!(
             "A {} helper only looks: {} changes something or starts a helper. Report what you \
@@ -278,7 +254,6 @@ struct Helper {
     session_key: String,
     description: String,
     kind: HelperKind,
-    model: Option<String>,
     /// The seat the helper was built from (its parent's), kept so a
     /// notification turn is built by the same constructor.
     parent_seat: SeatRequest,
@@ -450,45 +425,6 @@ impl Helpers {
         }
     }
 
-    /// Run an orchestrated job: its nodes start as their dependencies finish,
-    /// each through [`child::child_request`], and each node's report goes to
-    /// the nodes that depend on it and into the job's result, never to the
-    /// parent as a notification. Returns the combined result and whether
-    /// every node finished.
-    pub async fn orchestrate(
-        self: &Arc<Self>,
-        turn: &TurnRequest,
-        grant: Option<&Grant>,
-        run_taint: &[ProvenanceClass],
-        nodes: Vec<crate::task_graph::TaskNode>,
-    ) -> Result<(String, bool), String> {
-        use futures::stream::{FuturesUnordered, StreamExt};
-
-        let mut graph = crate::task_graph::TaskGraph::new(nodes);
-        graph.validate()?;
-        let mut running = FuturesUnordered::new();
-        loop {
-            for node_id in graph.get_ready_tasks() {
-                let Some(node) = graph.nodes.get(&node_id) else { continue };
-                let spec = HelperSpec::from_node(node, &format_dep_context(&graph.collect_dependency_results(&node_id)));
-                graph.mark_running(&node_id);
-                let (_, rx) = self.start(turn, grant, run_taint, spec).await?;
-                running.push(async move { (node_id, rx.await) });
-            }
-            let Some((node_id, completion)) = running.next().await else {
-                break;
-            };
-            match completion {
-                Ok(c) if matches!(c.status, CompletionStatus::Done | CompletionStatus::Partial { .. }) => {
-                    graph.mark_completed(&node_id, c.result)
-                }
-                Ok(c) => graph.mark_failed(&node_id, notify::render_result(&c)),
-                Err(_) => graph.mark_failed(&node_id, "the helper ended without a report".to_string()),
-            }
-        }
-        Ok((graph.synthesize_results(), !graph.has_failures()))
-    }
-
     /// Admit and spawn a helper; its completion comes back on the receiver
     /// unless it runs in the background.
     async fn start(
@@ -524,7 +460,6 @@ impl Helpers {
             "description": spec.description,
             "user_id": parent_seat.user_id,
             "helper_kind": spec.kind.as_str(),
-            "model": spec.model,
         })
         .to_string();
         let created = self
@@ -561,7 +496,6 @@ impl Helpers {
                     session_key,
                     description: spec.description.clone(),
                     kind: spec.kind,
-                    model: spec.model.clone(),
                     parent_seat: parent_seat.clone(),
                     parent_grant: grant.cloned(),
                     running: true,
@@ -646,7 +580,6 @@ impl Helpers {
                 session_key: row.session_key.clone(),
                 description: spec.description.clone(),
                 kind: spec.kind,
-                model: spec.model.clone(),
                 parent_seat: turn.seat.clone(),
                 parent_grant: grant.cloned(),
                 running: false,
@@ -903,7 +836,6 @@ impl Helpers {
                     kind: h.kind,
                     background: true,
                     isolation: None,
-                    model: h.model.clone(),
                     skills: Vec::new(),
                 };
                 let parent = Parent {
@@ -989,7 +921,6 @@ impl Helpers {
                             kind: p.kind,
                             background: true,
                             isolation: None,
-                            model: p.model.clone(),
                             skills: Vec::new(),
                         };
                         let parent = Parent {
@@ -1079,27 +1010,6 @@ async fn isolate(
         .map_err(|e| format!("Could not isolate {}: {e}", workspace.display()))
 }
 
-/// Most characters of one dependency's result carried into a node's brief.
-const MAX_DEP_CONTEXT_CHARS: usize = 4000;
-
-/// What the nodes a node depends on found, for its brief. Each result is
-/// clipped on a character boundary.
-pub fn format_dep_context(deps: &[(String, String)]) -> String {
-    if deps.is_empty() {
-        return String::new();
-    }
-    let mut parts = vec!["[Results from prerequisite tasks]\n".to_string()];
-    for (desc, result) in deps {
-        let truncated = match collect::clip_chars(result, MAX_DEP_CONTEXT_CHARS) {
-            Some(head) => format!("{head}...(truncated)"),
-            None => result.clone(),
-        };
-        parts.push(format!("--- Task \"{desc}\" (completed) ---\n{truncated}\n"));
-    }
-    parts.push("---\n\nYour task:".to_string());
-    parts.join("\n")
-}
-
 /// The spec a helper was started with, read back from its row.
 fn spec_of_row(store: &db::Store, row: &db::models::PendingTask) -> HelperSpec {
     let inputs = store
@@ -1119,7 +1029,6 @@ fn spec_of_row(store: &db::Store, row: &db::models::PendingTask) -> HelperSpec {
             .unwrap_or(HelperKind::General),
         background: true,
         isolation: None,
-        model: inputs.get("model").and_then(|v| v.as_str()).map(str::to_string),
         skills: Vec::new(),
     }
 }
@@ -1538,7 +1447,6 @@ mod tests {
     async fn depth_cap_removes_helper_tool() {
         assert!(on_surface(&helper_mode(HelperKind::General, 2), "delegate"));
         assert!(!on_surface(&helper_mode(HelperKind::General, 3), "delegate"));
-        assert!(!on_surface(&helper_mode(HelperKind::General, 3), "orchestrate"));
         assert!(on_surface(&helper_mode(HelperKind::General, 3), "read_file"));
         assert!(permits(&helper_mode(HelperKind::General, 3), &target("delegate", false)).is_err());
         assert_eq!(depth_of("subagent:subagent:subagent:agent:x:web:a:b:c"), 3);
@@ -1564,41 +1472,5 @@ mod tests {
         assert_eq!((spec.kind, spec.background), (HelperKind::Plan, false));
         assert!(HelperSpec::from_input(&serde_json::json!({"description": "d"})).is_err());
         assert!(HelperSpec::from_input(&serde_json::json!({"description": "d", "prompt": "p", "helper_type": "coder"})).is_err());
-    }
-
-    #[test]
-    fn test_format_dep_context_empty() {
-        assert_eq!(format_dep_context(&[]), "");
-    }
-
-    #[test]
-    fn test_format_dep_context_with_results() {
-        let deps = vec![
-            ("Research X".to_string(), "X is great".to_string()),
-            ("Research Y".to_string(), "Y is good".to_string()),
-        ];
-        let ctx = format_dep_context(&deps);
-        assert!(ctx.contains("Research X"));
-        assert!(ctx.contains("X is great"));
-        assert!(ctx.contains("Research Y"));
-        assert!(ctx.contains("Your task:"));
-    }
-
-    #[test]
-    fn test_format_dep_context_truncation() {
-        let long_result = "x".repeat(5000);
-        let deps = vec![("Task".to_string(), long_result)];
-        let ctx = format_dep_context(&deps);
-        assert!(ctx.contains("truncated"));
-        assert!(ctx.len() < 5500);
-    }
-
-    /// Multi-byte text past the clip point must not split a character (it
-    /// used to byte-slice at 4000 and panic).
-    #[test]
-    fn dep_context_clip_is_char_safe() {
-        let long_result = format!("a{}", "é".repeat(MAX_DEP_CONTEXT_CHARS));
-        let ctx = format_dep_context(&[("Task".to_string(), long_result)]);
-        assert!(ctx.contains(&format!("a{}...(truncated)", "é".repeat(MAX_DEP_CONTEXT_CHARS - 1))));
     }
 }
