@@ -19,6 +19,7 @@ mod workforce_reporter;
 pub mod import;
 pub mod middleware;
 mod migration;
+mod outside;
 mod plugin_commands;
 pub(crate) mod plugin_oauth;
 mod plugin_provider;
@@ -4091,20 +4092,29 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             "agent_space: routing to role"
         );
 
-        let session_key = if is_personal && is_default_bot {
-            // Default bot: use the companion chat's actual session key
-            resolve_companion_session_key(&state)
-        } else if is_personal {
-            // Custom agent: use agent-scoped session key (matches frontend's agent:{id}:web)
-            types::keyparser::build_agent_session_key(&agent_id, "web")
-        } else {
-            // External loop: separate session
-            types::keyparser::build_session_key(
-                "neboai",
-                "agent_space",
-                &format!("{}:{}", agent_slug, msg.conversation_id),
-            )
-        };
+        // A text, a voicemail or a chat webhook is someone outside, delivered
+        // into the employee's one agent-space conversation: each gets a
+        // thread of its own (owner rule 09-25), never the owner's session
+        // and never another caller's.
+        let outside_party = outside::outside_party(&msg.content);
+        let agent_row = if is_default_bot { "assistant" } else { agent_id.as_str() };
+        let route = outside::agent_space_route(agent_row, outside_party.as_ref(), &msg.id, || {
+            if is_personal && is_default_bot {
+                // Default bot: use the companion chat's actual session key
+                resolve_companion_session_key(&state)
+            } else if is_personal {
+                // Custom agent: use agent-scoped session key (matches frontend's agent:{id}:web)
+                types::keyparser::build_agent_session_key(&agent_id, "web")
+            } else {
+                // External loop: separate session
+                types::keyparser::build_session_key(
+                    "neboai",
+                    "agent_space",
+                    &format!("{}:{}", agent_slug, msg.conversation_id),
+                )
+            }
+        });
+        let session_key = route.session_key;
 
         if handle_comm_slash_command(
             &state,
@@ -4132,7 +4142,9 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 .or_else(|| state.store.get_agent(&agent_id).ok().flatten().map(|a| a.name))
                 .unwrap_or_else(|| agent_slug.clone())
         };
-        if !is_default_bot {
+        if let Some((chat_id, title)) = &route.thread {
+            handlers::voice::ensure_chat_row(&state, chat_id, &session_key, title.as_deref());
+        } else if !is_default_bot {
             let _ = state
                 .store
                 .create_chat(&session_key, &format!("Agent: {}", agent_name));
@@ -4177,15 +4189,15 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             return;
         }
 
-        // Webhook-originated events always run shell-restricted (Origin::Comm),
-        // even in the personal loop: the nbwh_ API key lives in external
-        // systems, so it must never confer owner-level (shell) privileges.
-        // See neboloop docs/PRD_WEBHOOKS.md §10.
+        // Someone outside always runs shell-restricted (Origin::Comm), even
+        // in the personal loop: a webhook's nbwh_ API key lives in external
+        // systems (neboloop docs/PRD_WEBHOOKS.md §10), and a texter is a
+        // stranger — neither confers the owner's privileges.
         let webhook_platform = serde_json::from_str::<serde_json::Value>(&msg.content)
             .ok()
             .and_then(|v| v.get("platformData").cloned())
             .filter(|p| p.get("channel").and_then(|c| c.as_str()) == Some("webhook"));
-        let is_webhook = webhook_platform.is_some();
+        let is_outside = outside_party.is_some();
 
         // Workflow-destination webhooks fire the bound workflow with the
         // payload and never run the agent chat: the key was minted for a
@@ -4207,7 +4219,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             prompt,
             user_id: String::new(),
             channel: "neboai".to_string(),
-            origin: comm_origin(is_personal && !is_webhook),
+            origin: comm_origin(is_personal && !is_outside),
             door: types::permissions::Door::Chat,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
@@ -4217,7 +4229,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 topic: "agent_space".to_string(),
                 conversation_id: msg.conversation_id.clone(),
                 handoff_depth: handoff_depth_in,
-                approval_relay: is_personal && !is_webhook,
+                approval_relay: is_personal && !is_outside,
                 from_agent_id: agent_id.clone(),
             }),
             entity_config,
@@ -4322,6 +4334,15 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                     // the id is the local one.
                     agent_id = a.id;
                 }
+            }
+        }
+        // A QR code or embed bound to an employee is an outside door. NeboAI
+        // binds it without telling this computer, so the first conversation
+        // through it is where the employee becomes multi-chat (owner rule
+        // 09-25). Each conversation is already its own session below.
+        if !agent_id.is_empty() {
+            if let Err(e) = state.store.mark_multi_chat(&agent_id) {
+                tracing::warn!(agent = %agent_id, error = %e, "could not record the embed door as multi-chat");
             }
         }
         let mention_context = build_embed_context(ctx, embed_info);

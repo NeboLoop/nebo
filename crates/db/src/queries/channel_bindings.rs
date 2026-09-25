@@ -77,7 +77,8 @@ impl Store {
         Ok(result)
     }
 
-    /// Enable a channel plugin for an agent (upsert).
+    /// Enable a channel plugin for an agent (upsert). A channel is an
+    /// outside door, so the employee becomes multi-chat.
     pub fn enable_channel_binding(
         &self,
         agent_id: &str,
@@ -92,7 +93,8 @@ impl Store {
             params![agent_id, plugin_slug],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
+        drop(conn);
+        self.mark_multi_chat(agent_id)
     }
 
     /// Disable a channel plugin for an agent.

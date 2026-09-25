@@ -809,24 +809,29 @@ const VOICE_RESUME_WINDOW: std::time::Duration = std::time::Duration::from_secs(
 /// How many of the employee's newest threads are checked for a running turn.
 const VOICE_RECENT_CHATS: usize = 8;
 
-/// The thread a voice session with no chat id joins: this employee's thread
-/// with a turn running, else its newest thread active within
-/// VOICE_RESUME_WINDOW, else a fresh id whose row waits for the first turn.
-/// Live 2026-09-03: three voice sessions on one employee minted three
-/// threads, and the third knew nothing of the scaffold the first started.
-pub(crate) async fn resolve_voice_chat(state: &AppState, agent_id: &str) -> String {
-    let store = state.store.clone();
-    let agent = agent_id.to_string();
-    let recent = tokio::task::spawn_blocking(move || store.list_recent_agent_chats(&agent, VOICE_RECENT_CHATS))
-        .await
-        .map_err(|e| types::NeboError::Internal(e.to_string()))
-        .and_then(|r| r)
-        .unwrap_or_else(|e| {
-            warn!(error = %e, "voice: could not list recent threads, minting");
-            Vec::new()
-        });
+/// The thread a voice session with no chat id joins, as an id (a fresh one's
+/// row waits for the first turn). The owner's session joins this employee's
+/// thread with a turn running, else its newest thread active within
+/// VOICE_RESUME_WINDOW — live 2026-09-03: three voice sessions on one
+/// employee minted three threads, and the third knew nothing of the
+/// scaffold the first started. A phone call is always a thread of its own.
+pub(crate) async fn resolve_voice_chat(state: &AppState, agent_id: &str, telephony: bool) -> String {
+    let recent = if telephony {
+        Vec::new()
+    } else {
+        let store = state.store.clone();
+        let agent = agent_id.to_string();
+        tokio::task::spawn_blocking(move || store.list_recent_agent_chats(&agent, VOICE_RECENT_CHATS))
+            .await
+            .map_err(|e| types::NeboError::Internal(e.to_string()))
+            .and_then(|r| r)
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "voice: could not list recent threads, minting");
+                Vec::new()
+            })
+    };
     let now = chrono::Utc::now().timestamp();
-    match pick_voice_chat(&recent, now, |key| state.harness.is_session_busy(key)) {
+    match pick_voice_chat(telephony, &recent, now, |key| state.harness.is_session_busy(key)) {
         Some(id) => {
             info!(chat = %id, "voice attached to an existing thread");
             id
@@ -835,12 +840,19 @@ pub(crate) async fn resolve_voice_chat(state: &AppState, agent_id: &str) -> Stri
     }
 }
 
-/// Pure choice over (thread, last activity in unix seconds), newest first.
-fn pick_voice_chat(
+/// Pure choice over (thread, last activity in unix seconds), newest first;
+/// `None` mints. A phone call (`telephony`) never joins a thread: owner
+/// rule (09-25), every outside caller is a chat of their own — one caller,
+/// one transcript, never appended to whoever rang before.
+pub(crate) fn pick_voice_chat(
+    telephony: bool,
     recent: &[(db::models::Chat, i64)],
     now: i64,
     busy: impl Fn(&str) -> bool,
 ) -> Option<String> {
+    if telephony {
+        return None;
+    }
     if let Some((c, _)) = recent
         .iter()
         .find(|(c, _)| c.session_name.as_deref().is_some_and(&busy))
@@ -1226,31 +1238,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
     }
     if team.is_none() && q.chat_id.as_deref().unwrap_or_default().is_empty() {
         let agent_id = q.agent_id.as_deref().unwrap_or_default();
-        // A phone call on a multi-chat employee is its own thread: one
-        // caller, one transcript, never appended to whoever rang before.
-        let per_call = q.telephony.is_some() && {
-            let store = state.store.clone();
-            let agent = agent_id.to_string();
-            tokio::task::spawn_blocking(move || {
-                store
-                    .get_entity_config("agent", &agent)
-                    .ok()
-                    .flatten()
-                    .and_then(|c| c.multi_chat)
-                    .unwrap_or(0)
-                    != 0
-            })
-            .await
-            .unwrap_or(false)
-        };
-        q.chat_id = Some(if per_call {
-            uuid::Uuid::new_v4().to_string()
-        } else {
-            // Fresh call from the composer's empty state: join the employee's
-            // working or recent thread, else mint an id now (the session key and
-            // tool scope need it) and let the row wait for a turn.
-            resolve_voice_chat(&state, agent_id).await
-        });
+        q.chat_id = Some(resolve_voice_chat(&state, agent_id, q.telephony.is_some()).await);
     }
 
     let Some((endpoint, bearer)) = resolve_realtime_leg(&state) else {
@@ -1643,14 +1631,7 @@ fn relay_loop_turn(state: &AppState, conv_id: &str, stream: &str, role: &str, co
 /// never renames a call after whatever the caller happened to say. Line
 /// label rides along when the employee holds several lines.
 fn phone_chat_title(caller_id: Option<&str>, line: Option<&str>, outbound: bool) -> String {
-    let who = caller_id.filter(|s| !s.is_empty()).map(|raw| {
-        let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
-        if digits.len() == 11 && digits.starts_with('1') {
-            format!("({}) {}-{}", &digits[1..4], &digits[4..7], &digits[7..])
-        } else {
-            raw.to_string()
-        }
-    });
+    let who = caller_id.filter(|s| !s.is_empty()).map(crate::outside::phone_display);
     let mut title = match (who, outbound) {
         (Some(w), false) => format!("Call from {w}"),
         (Some(w), true) => format!("Call to {w}"),
@@ -2318,6 +2299,43 @@ mod voice_prompt_tests {
         }
     }
 
+    /// Two callers ring one employee at once: call A is mid-turn in its
+    /// thread when call B connects. B gets a thread of its own — never A's
+    /// running one, never A's recent one — and so do a third caller and
+    /// A calling back; each transcript is written only to its own thread.
+    #[test]
+    fn two_overlapping_calls_to_one_employee_stay_in_separate_threads() {
+        let path = std::env::temp_dir().join(format!("nebo-voice-calls-{}.db", uuid::Uuid::new_v4()));
+        let store = db::Store::new(&path.to_string_lossy()).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let key = |chat: &str| format!("agent:desk:thread:{chat}");
+
+        store.create_chat_for_session("call-a", &key("call-a"), "Call from (801) 555-0100", None).unwrap();
+        store.create_chat_message("a1", "call-a", "user", "My account number is 4417.", None).unwrap();
+        let running = key("call-a");
+        let busy = |k: &str| k == running;
+        let recent = store.list_recent_agent_chats("desk", 8).unwrap();
+        assert_eq!(pick_voice_chat(false, &recent, now, busy).as_deref(), Some("call-a"), "the owner's own voice joins the working thread");
+
+        let mut calls = Vec::new();
+        for _ in 0..3 {
+            let chat = pick_voice_chat(true, &recent, now, busy).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            assert_ne!(chat, "call-a", "a caller never joins another caller's thread");
+            calls.push(chat);
+        }
+        calls.dedup();
+        assert_eq!(calls.len(), 3, "every call is its own thread");
+
+        let b = &calls[0];
+        store.create_chat_for_session(b, &key(b), "Call from (801) 555-0199", None).unwrap();
+        store.create_chat_message("b1", b, "user", "Cancel my order.", None).unwrap();
+        let words = |chat: &str| -> Vec<String> {
+            store.get_chat_messages(chat).unwrap().into_iter().map(|m| m.content).collect()
+        };
+        assert_eq!(words("call-a"), vec!["My account number is 4417."]);
+        assert_eq!(words(b), vec!["Cancel my order."]);
+    }
+
     /// A working thread wins even when a newer one exists; a quiet thread
     /// counts only inside the window; otherwise mint.
     #[test]
@@ -2326,10 +2344,10 @@ mod voice_prompt_tests {
         let fresh = (chat("new", "agent:a:thread:new"), now - 60);
         let old = (chat("old", "agent:a:thread:old"), now - 3 * 60 * 60);
         let busy = |key: &str| key.ends_with(":old");
-        assert_eq!(pick_voice_chat(&[fresh.clone(), old.clone()], now, busy).as_deref(), Some("old"));
-        assert_eq!(pick_voice_chat(&[fresh.clone()], now, |_| false).as_deref(), Some("new"));
-        assert_eq!(pick_voice_chat(&[old.clone()], now, |_| false), None);
-        assert_eq!(pick_voice_chat(&[], now, |_| true), None);
+        assert_eq!(pick_voice_chat(false, &[fresh.clone(), old.clone()], now, busy).as_deref(), Some("old"));
+        assert_eq!(pick_voice_chat(false, &[fresh.clone()], now, |_| false).as_deref(), Some("new"));
+        assert_eq!(pick_voice_chat(false, &[old.clone()], now, |_| false), None);
+        assert_eq!(pick_voice_chat(false, &[], now, |_| true), None);
     }
 
     fn shape(rows: &[Row]) -> Vec<String> {

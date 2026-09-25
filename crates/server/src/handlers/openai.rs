@@ -280,7 +280,7 @@ async fn resolve_thread(state: &AppState, agent_id: &str, agent_name: &str, user
         (session_key, chat_id)
     } else {
         // One conversation: join the working thread, as a voice call does.
-        let chat_id = super::voice::resolve_voice_chat(state, agent_id).await;
+        let chat_id = super::voice::resolve_voice_chat(state, agent_id, false).await;
         let session_key = format!("agent:{agent_id}:thread:{chat_id}");
         super::voice::ensure_chat_row(state, &chat_id, &session_key, Some(&format!("API · {agent_name}")));
         (session_key, chat_id)

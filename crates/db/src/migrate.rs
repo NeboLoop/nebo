@@ -429,6 +429,54 @@ mod idempotency_tests {
         assert_eq!(store.get_chat_messages("long").unwrap().len(), 101, "the thread keeps every row");
     }
 
+    /// Owner rule (09-25): an employee reachable from outside is a
+    /// multi-chat employee. The upgrade converts the ones already bound — a
+    /// channel binding (Slack, the phone line's bridge) or loop exposure —
+    /// leaves the unbound alone, and is idempotent.
+    #[test]
+    fn the_upgrade_makes_every_bound_employee_multi_chat() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 178).unwrap();
+        conn.execute_batch(
+            "INSERT INTO agents (id, name, description, agent_md, frontmatter, loop_exposed) VALUES
+               ('desk', 'Front Desk', '', '', '{}', 0),
+               ('scout', 'Scout', '', '', '{}', 1),
+               ('quiet', 'Quiet', '', '', '{}', 0),
+               ('paused', 'Paused', '', '', '{}', 0);
+             INSERT INTO channel_bindings (agent_id, plugin_slug, is_enabled) VALUES
+               ('desk', 'phonecall', 1),
+               ('paused', 'slack', 0);
+             INSERT INTO entity_config (entity_type, entity_id, multi_chat, model_preference) VALUES
+               ('agent', 'desk', 0, 'janus/fast');",
+        )
+        .unwrap();
+        run_migrations_to(&conn, 179).unwrap();
+        let multi = |id: &str| -> Option<i64> {
+            conn.query_row(
+                "SELECT multi_chat FROM entity_config WHERE entity_type = 'agent' AND entity_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .ok()
+        };
+        assert_eq!(multi("desk"), Some(1), "a bound single-chat employee is converted");
+        assert_eq!(multi("scout"), Some(1), "loop exposure is a door; a row is created");
+        assert_eq!(multi("quiet"), None, "an unbound employee is untouched");
+        assert_eq!(multi("paused"), None, "a switched-off channel is not a door");
+        let model: String = conn
+            .query_row("SELECT model_preference FROM entity_config WHERE entity_id = 'desk'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(model, "janus/fast", "the rest of the row is kept");
+        let snapshot = || -> Vec<(String, Option<i64>)> {
+            let mut stmt = conn.prepare("SELECT entity_id, multi_chat FROM entity_config ORDER BY entity_id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect()
+        };
+        let before = snapshot();
+        conn.execute_batch(include_str!("../migrations/0179_bound_employees_are_multi_chat.sql")).unwrap();
+        assert_eq!(snapshot(), before, "running it again changes nothing");
+    }
+
     /// The tools each MCP server offered at its last sync carry over from
     /// the old per-server permissions, so nothing the owner already saw is
     /// new at the upgrade; a server with no list starts with none.
