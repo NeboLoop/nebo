@@ -4917,11 +4917,11 @@ pub async fn resolve_learning(
         skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
         ..Default::default()
     };
-    let mut input = serde_json::json!({ "action": row.action, "name": row.target });
+    let mut input = serde_json::json!({ "name": row.target });
     if let Some(content) = body.content.as_deref().or(row.content.as_deref()) {
         input["content"] = serde_json::json!(content);
     }
-    let result = state.tools.execute(&ctx, "skill", input).await;
+    let result = state.tools.execute(&ctx, learned_write_tool(&row.action), input).await;
     if result.is_error {
         // Leave the row pending — the owner can retry after the cause clears.
         return Err(to_error_response(types::NeboError::Internal(format!(
@@ -4944,6 +4944,12 @@ pub async fn resolve_learning(
         );
     info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning approved and applied");
     Ok(Json(serde_json::json!({ "status": "approved" })))
+}
+
+/// The skill tool a learned write's action goes through: a create or an
+/// update is a save, a delete is a delete.
+fn learned_write_tool(action: &str) -> &'static str {
+    if action == "delete" { "delete_skill" } else { "save_skill" }
 }
 
 /// POST /api/v1/agents/learnings/{id}/revert — undo an APPLIED learned
@@ -5050,11 +5056,11 @@ pub async fn revert_learning(
         skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
         ..Default::default()
     };
-    let mut input = serde_json::json!({ "action": inverse_action, "name": row.target });
+    let mut input = serde_json::json!({ "name": row.target });
     if let Some(ref content) = inverse_content {
         input["content"] = serde_json::json!(content);
     }
-    let result = state.tools.execute(&ctx, "skill", input).await;
+    let result = state.tools.execute(&ctx, learned_write_tool(inverse_action), input).await;
     if result.is_error {
         return Err(to_error_response(types::NeboError::Internal(format!(
             "revert failed: {}",

@@ -42,7 +42,9 @@ impl ReviewForkCtx {
     pub fn new(owner_agent_id: String, staged: bool) -> Self {
         Self {
             owner_agent_id,
-            whitelist: HashSet::from(["skill".to_string()]),
+            // The skill library's own tools, and find_tools to load the
+            // deferred ones.
+            whitelist: ["use_skill", "save_skill", "delete_skill", "find_tools"].map(String::from).into(),
             skills_read: std::sync::Arc::new(Mutex::new(HashSet::new())),
             staged,
         }
@@ -94,7 +96,7 @@ pub fn finish(session_id: &str) {
 }
 
 /// The review prompt — adapted to Nebo's skill
-/// tool (load / update / create; memory is handled by the separate extraction
+/// tools (use_skill / save_skill; memory is handled by the separate extraction
 /// pass, not this fork). Keep the ACTIVE bias, the update ladder, and the
 /// anti-capture rules intact — they are the loop's quality control.
 pub const REVIEW_PROMPT: &str = "\
@@ -118,17 +120,18 @@ future session would benefit from.\n\
 - A skill you loaded this session turned out wrong, missing a step, or \
 outdated — patch it NOW.\n\n\
 HOW to save — follow these steps IN ORDER, in this pass, right now. (You \
-list and load skills YOURSELF here; nothing needs to have been loaded \
-earlier in the conversation.)\n\
-1. skill(action: \"list\") — see what learned skills already exist.\n\
-2. If one covers this class of task: skill(action: \"load\", name: \"...\") \
-to read its CURRENT content, then skill(action: \"update\", name: \"...\", \
-content: \"<full revised SKILL.md>\") with the new lesson merged in. \
-Updates are refused unless you load the skill first IN THIS PASS — that is \
-the required order, not a blocker.\n\
-3. Only if NO existing skill covers it: skill(action: \"create\", name: \
-\"...\", content: \"---\\nname: ...\\ndescription: <trigger class, under 60 \
-chars>\\n---\\n<body>\"). The name MUST describe a class of work (e.g. \
+load skills YOURSELF here; nothing needs to have been loaded earlier in the \
+conversation.)\n\
+1. Read the skill listing — it names the learned skills that already exist. \
+Load save_skill with find_tools(query: \"select:save_skill\").\n\
+2. If one covers this class of task: use_skill(name: \"...\") to read its \
+CURRENT content, then save_skill(name: \"...\", content: \"<full revised \
+SKILL.md>\") with the new lesson merged in. A save over an existing skill is \
+refused unless you load it first IN THIS PASS — that is the required order, \
+not a blocker.\n\
+3. Only if NO existing skill covers it: save_skill(name: \"...\", content: \
+\"---\\nname: ...\\ndescription: <trigger class, under 60 chars>\\n---\\n<body>\"). \
+The name MUST describe a class of work (e.g. \
 'report-formatting', 'vendor-email-tone') — NEVER a specific error string, \
 ticket, or 'fix-X-today' session artifact.\n\n\
 User-preference embedding (important): memory captures WHO the owner is; \
@@ -154,15 +157,15 @@ DECISION RULE — apply it mechanically before replying:\n\
 Scan the conversation for any of: (a) an explicit 'remember this' / 'from \
 now on' instruction, (b) a style, format, tone, or length correction, (c) a \
 workflow or approach correction, (d) a reusable technique or fix.\n\
-- If ANY are present: you MUST run the HOW steps above (list → load+update \
-or create) BEFORE replying. Replying 'Nothing to save.' while a correction \
+- If ANY are present: you MUST run the HOW steps above (listing → load + \
+save, or save a new one) BEFORE replying. Replying 'Nothing to save.' while a correction \
 exists in the conversation is a failure of this pass. Not-an-excuse list: \
 'it's already in memory' (memory is not the skill library), 'no skill was \
 loaded during the conversation' (you load it yourself in this pass), 'the \
 preference is minor' (corrections are always saved).\n\
 - Only if NONE are present: reply exactly 'Nothing to save.' and stop.\n\
 After saving, reply with one short line per skill created or updated.\n\n\
-Only the skill tool is available in this pass; other tools will be denied.";
+Only the skill tools are available in this pass; other tools will be denied.";
 
 #[cfg(test)]
 mod tests {

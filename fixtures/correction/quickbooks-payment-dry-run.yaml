@@ -37,7 +37,7 @@ description: |
   only carry weight on a machine that has one.
 
   Measured over 8 live runs against a real install (2026-09-21): 5 clean, at
-  1, 1, 2, 3 and 3 calls. Two runs opened on skill(action: "load") with an
+  1, 1, 2, 3 and 3 calls. Two runs opened on a skill load with an
   invented name — "quickbooks" and "quickbooks-processor" — because
   installing the plugin also installs its 28 quickbooks-* skills, which is
   the machine a customer has; both are first-call misses this fixture is
@@ -59,6 +59,8 @@ conversation:
 tool_config:
   plugin:
     enabled: true
+  use_skill:
+    enabled: true
   run_command:
     enabled: true
 
@@ -67,7 +69,7 @@ prompt_assertions:
     - id: plugin-first
       text: "The first call is the plugin (a query for the invoice's customer, or the payment call) or one of its skills — the plugin tool itself says a plugin's usage is its skills, and reading quickbooks-payment before acting is the pathway, not a detour. Never the shell."
       severity: critical
-      check: { first_call: true, tool: [plugin, skill] }
+      check: { first_call: true, tool: [plugin, use_skill] }
   recovery:
     - id: no-shell-plugin
       text: "No run_command call runs the quickbooks binary, pipes JSON into it, or sets QUICKBOOKS_* env vars"
@@ -81,6 +83,7 @@ prompt_assertions:
           - "exited with code"
           - "is required"
           - "not found"
+          - "No skill named"
     - id: bounded
       text: "At most 4 tool calls. Critical on a connected machine; on the gate bot (no merchant grant, 2026-09-23: 8 calls reading skills and probing before doctor said not connected) it is the model's cost to report, not the light that blocks a merge — the shape checks above are what the gate proves here."
       severity: important

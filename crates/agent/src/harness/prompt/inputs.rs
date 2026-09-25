@@ -157,7 +157,7 @@ pub fn self_context(agent: &tools::ActiveAgent) -> String {
         }
         sk_lines.push(String::new());
         sk_lines.push(
-            "These skills are part of your configuration. Use skill(action: \"discover\", query: \"...\") to find one and skill(action: \"load\", name: \"...\") to read it."
+            "These skills are part of your job. They are in the skill listing; load one with use_skill when the work calls for it."
                 .to_string(),
         );
         parts.push(sk_lines.join("\n"));

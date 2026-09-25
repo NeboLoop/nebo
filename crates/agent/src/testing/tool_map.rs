@@ -96,8 +96,14 @@ const ROWS: &[Row] = &[
     row("agent", &["research"], &["submit_findings"], "submit_findings", &[]),
     // skills
     row("skill", &[], &["load"], "use_skill", &[]),
-    row("skill", &[], &["discover", "browse"], "find_skills", &[]),
-    row("skill", &[], &["read_resource"], "read_skill_file", &[]),
+    row("skill", &[], &["discover", "list"], "find_skills", &[]),
+    row("skill", &[], &["read_resource", "browse"], "read_skill_file", &[]),
+    row("skill", &[], &["create", "update"], "save_skill", &[]),
+    row("skill", &[], &["delete"], "delete_skill", &[]),
+    row("skill", &[], &["install"], "install_skill", &[]),
+    row("skill", &[], &["configure", "secrets"], "configure_skill", &[]),
+    row("skill", &[], &["rate"], "rate_skill", &[]),
+    row("skill", &[], &["reviews"], "read_skill_reviews", &[]),
     row("tool_search", &[], &[], "find_tools", &[]),
     // web
     row("web", &["search"], &["search"], "search_web", &[]),
