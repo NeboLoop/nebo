@@ -171,6 +171,26 @@ async fn hard_limits_run_before_rules_and_modes() {
     assert!(!marker.exists());
 }
 
+/// A coworker's request that reaches past a reply is refused saying what
+/// happened: a coworker asked, and its request can only be answered. Not a
+/// chat channel, not someone outside the company.
+#[tokio::test]
+async fn a_coworkers_request_is_refused_as_a_coworkers() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("file"), None, Effect::Allow));
+    let (write, ran) = Probe::new("write_file", "write_file", Some("file"));
+    let reg = registry(&store, vec![write]).await;
+    let mut c = with_mode(ctx(&store, "emp", Origin::Comm), Mode::FullAccess);
+    c.door = Door::Coworker { from: "supervisor".into() };
+    let r = reg.execute(&c, "write_file", json!({})).await;
+    assert!(r.is_error && r.content.contains("a coworker asked for this"), "{}", r.content);
+    assert!(!r.content.contains("chat channel"), "{}", r.content);
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+    let rows = store.permission_activity(&activity_of("emp")).unwrap().0;
+    let row = rows.iter().find(|r| r.rule_key == "write_file").expect("recorded");
+    assert_eq!(serde_json::from_str::<Why>(&row.why).unwrap(), Why::HardLimit { limit: "coworker".into() });
+}
+
 #[tokio::test]
 async fn origin_limited_run_can_only_reply() {
     let (_d, store) = store();

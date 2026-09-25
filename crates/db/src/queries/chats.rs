@@ -419,6 +419,9 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The chat's latest `limit` turns as the owner reads them: user and
+    /// assistant rows, without Nebo's own (`isMeta`: session facts, the
+    /// interrupt line, hidden prompts).
     pub fn get_recent_chat_messages(
         &self,
         chat_id: &str,
@@ -429,6 +432,7 @@ impl Store {
             .prepare(
                 "SELECT * FROM (
                     SELECT *, rowid AS _rn FROM chat_messages WHERE chat_id = ?1 AND role IN ('user', 'assistant')
+                      AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
                     ORDER BY created_at DESC, _rn DESC LIMIT ?2
                  ) sub ORDER BY created_at ASC, _rn ASC",
             )
@@ -649,10 +653,13 @@ impl Store {
     /// Counting within a recent-messages window instead made long chats
     /// re-title forever: the sliding window kept containing exactly 1 or 3
     /// user messages, so the title chased whatever was said most recently.
+    /// The user rows the owner reads in the chat: Nebo's own (`isMeta`)
+    /// are not turns.
     pub fn count_chat_user_messages(&self, chat_id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?1 AND role = 'user'",
+            "SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?1 AND role = 'user'
+               AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')",
             params![chat_id],
             |row| row.get(0),
         )

@@ -19,6 +19,7 @@ pub mod neboai;
 pub mod notification;
 pub mod openai;
 pub mod permissions;
+pub mod phone_location;
 pub mod plugins;
 pub mod provider;
 pub mod setup;
