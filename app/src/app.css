@@ -561,3 +561,25 @@
 .permission-ask-error {
   @apply m-0 text-xs text-error;
 }
+
+/* The consent line: what an employee will be able to do, in plain words,
+   above Hire and Create and inline in the chat. The owner consents to jobs,
+   not actions; each builder item is removable before Create. */
+.consent-line {
+  @apply text-sm text-base-content/80 leading-relaxed;
+}
+.consent-items {
+  @apply flex flex-wrap gap-1.5;
+}
+.consent-item {
+  @apply inline-flex items-center gap-1 rounded-full bg-base-200 px-2.5 py-1 text-xs text-base-content/80;
+}
+.consent-item-remove {
+  @apply inline-flex items-center text-base-content/50 hover:text-base-content cursor-pointer;
+}
+.consent-chip {
+  @apply flex flex-col gap-1 my-2.5 rounded-xl border border-base-content/10 bg-base-200/60 px-3 py-2;
+}
+.consent-chip-hint {
+  @apply text-xs text-base-content/50;
+}

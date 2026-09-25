@@ -387,7 +387,9 @@
 		"researchWriting": "schrijft het rapport",
 		"researchOtherDomains": "+ {n} andere sites",
 		"researchVerified": "{n} beweringen gecontroleerd aan bronnen",
-		"historyLoadFailed": "Dit gesprek kon niet worden geladen. Controleer je verbinding en probeer het opnieuw."
+		"historyLoadFailed": "Dit gesprek kon niet worden geladen. Controleer je verbinding en probeer het opnieuw.",
+		"consentCreates": "Zeg ja en de medewerker wordt aangemaakt met precies deze taak.",
+		"consentAdds": "Zeg ja en dit komt bij de taak."
 	},
 	"chatInput": {
 		"placeholder": "Antwoord...",
@@ -3016,7 +3018,13 @@
 		"placeholder": "bijv. Dispatch, Piper, Sam…",
 		"create": "Neem ze aan",
 		"failed": "De medewerker kon niet worden aangemaakt. Probeer het opnieuw.",
-		"marketplaceHint": "Liever een kant-en-klare expert? Kijk rond op de Marktplaats."
+		"marketplaceHint": "Liever een kant-en-klare expert? Kijk rond op de Marktplaats.",
+		"jobLabel": "Hun taak (optioneel)",
+		"jobPlaceholder": "Wat gaan ze doen? (optioneel)",
+		"working": "We zoeken uit wat ze nodig hebben…",
+		"willDo": "{name} gaat:",
+		"thisEmployee": "Deze medewerker",
+		"removeItem": "{item} verwijderen"
 	},
 	"runLimit": {
 		"title": "Uitgavenlimiet per run",

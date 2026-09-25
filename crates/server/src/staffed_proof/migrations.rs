@@ -116,7 +116,7 @@ fn migrations_run_forward_on_a_real_database() {
         let reached = query_i64(path, "SELECT MAX(version) FROM _nebo_migrations");
         assert_eq!(reached, head(), "{label}: from {before} to head");
         assert!(before <= head(), "{label}: a database ahead of this branch");
-        for v in 153..=head() {
+        for v in db::migrate::versions().into_iter().filter(|v| *v >= 153) {
             assert_eq!(query_i64(path, &format!("SELECT COUNT(*) FROM _nebo_migrations WHERE version = {v}")), 1, "{label}: {v} applied");
         }
         // Nothing about an existing employee was invented.

@@ -27,6 +27,9 @@ pub struct PermissionAskCard {
     pub reason: String,
     /// Whether "Allow always" is offered (a locked must-ask can't be loosened).
     pub allow_always: bool,
+    /// Whether "This once" is offered (an employee's extra needs are granted
+    /// for good or not at all).
+    pub this_once: bool,
     /// open | allowed | declined | expired
     pub status: String,
     /// allow_always | this_once | no, once answered.
@@ -51,6 +54,7 @@ pub(crate) fn card(state: &AppState, ask: &Ask) -> PermissionAskCard {
         sentence: ask.sentence.clone(),
         reason: ask.reason().to_string(),
         allow_always: ask.allow_always_offered(&state.store),
+        this_once: ask.this_once_offered(),
         status: status.to_string(),
         answer: answer.map(|a| a.as_str().to_string()),
         created_at: ask.created_at,

@@ -42,7 +42,9 @@ pub(crate) fn push_to_inbox(state: &AppState, c: &PermissionAskCard) {
     if c.allow_always {
         buttons.push(button("Allow always", "primary", "allow_always"));
     }
-    buttons.push(button("This once", "default", "this_once"));
+    if c.this_once {
+        buttons.push(button("This once", "default", "this_once"));
+    }
     buttons.push(button("No", "danger", "no"));
     crate::codes::push_inbox(
         state,

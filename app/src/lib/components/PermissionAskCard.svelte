@@ -39,7 +39,9 @@
       {#if shown.allowAlways}
         <button type="button" class="btn btn-primary btn-sm rounded-full" disabled={busy} onclick={() => answer('allow_always')}>{$t('permissionAsk.allowAlways')}</button>
       {/if}
-      <button type="button" class="btn btn-sm rounded-full" disabled={busy} onclick={() => answer('this_once')}>{$t('permissionAsk.thisOnce')}</button>
+      {#if shown.thisOnce}
+        <button type="button" class="btn btn-sm rounded-full" disabled={busy} onclick={() => answer('this_once')}>{$t('permissionAsk.thisOnce')}</button>
+      {/if}
       <button type="button" class="btn btn-ghost btn-sm rounded-full" disabled={busy} onclick={() => answer('no')}>{$t('permissionAsk.no')}</button>
     </div>
   {:else if shown.status === 'allowed'}

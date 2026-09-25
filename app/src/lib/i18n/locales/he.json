@@ -387,7 +387,9 @@
 		"researchWriting": "כותב את הדוח",
 		"researchOtherDomains": "+ {n} אתרים נוספים",
 		"researchVerified": "{n} טענות אומתו מול המקורות",
-		"historyLoadFailed": "לא ניתן לטעון את השיחה הזו. בדוק את החיבור ונסה שוב."
+		"historyLoadFailed": "לא ניתן לטעון את השיחה הזו. בדוק את החיבור ונסה שוב.",
+		"consentCreates": "אמרו כן והוא ייווצר בדיוק עם התפקיד הזה.",
+		"consentAdds": "אמרו כן וזה יתווסף לתפקיד שלו."
 	},
 	"chatInput": {
 		"placeholder": "השב...",
@@ -3016,7 +3018,13 @@
 		"placeholder": "למשל דיספאץ', פייפר, סם…",
 		"create": "שכור אותם",
 		"failed": "לא ניתן היה ליצור את העובד. נסה שוב.",
-		"marketplaceHint": "רוצה מומחה מוכן מראש במקום? עיין בחנות."
+		"marketplaceHint": "רוצה מומחה מוכן מראש במקום? עיין בחנות.",
+		"jobLabel": "התפקיד (אופציונלי)",
+		"jobPlaceholder": "מה הוא יעשה? (אופציונלי)",
+		"working": "בודקים מה הוא יצטרך…",
+		"willDo": "{name} יוכל:",
+		"thisEmployee": "העובד הזה",
+		"removeItem": "הסרת {item}"
 	},
 	"runLimit": {
 		"title": "מגבלת הוצאה להרצה",

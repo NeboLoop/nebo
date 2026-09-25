@@ -216,7 +216,9 @@ impl Store {
             // A package's must-ask never replaces a rule the owner wrote; a
             // law (locked) ends whatever stood.
             (Some(e), Writer::Package { .. }) if !e.locked && !rule.locked => return Ok(e.clone()),
-            (Some(e), Writer::Owner | Writer::Migration | Writer::Employee { .. }) if e.locked => {
+            (Some(e), Writer::Owner | Writer::Migration | Writer::Employee { .. } | Writer::Creator { .. })
+                if e.locked =>
+            {
                 return Err(RuleError::Locked);
             }
             _ => {}

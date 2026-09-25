@@ -160,14 +160,22 @@ impl Ask {
     }
 
     /// Whether "Allow always" can be offered: a locked must-ask can't be
-    /// loosened by an answer.
+    /// loosened by an answer, and giving an employee more room is answered
+    /// each time.
     pub fn allow_always_offered(&self, store: &db::Store) -> bool {
         match &self.case {
             AskCase::AskRule { rule_id } => {
                 !store.get_permission_rule(rule_id).ok().flatten().is_some_and(|r| r.locked)
             }
+            AskCase::Widens => false,
             _ => true,
         }
+    }
+
+    /// Whether "This once" can be offered: an employee's extra needs are
+    /// part of its job, so they are granted for good or not at all.
+    pub fn this_once_offered(&self) -> bool {
+        !matches!(self.case, AskCase::CreatedExtras { .. })
     }
 
     /// Why it asked, in plain words for the card.
@@ -180,6 +188,8 @@ impl Ask {
             AskCase::UntrustedInput { .. } => "It acts on something that came from outside.",
             AskCase::AskRule { .. } => "This needs your OK every time.",
             AskCase::AskMode => "This employee asks before it changes anything.",
+            AskCase::Widens => "Only you can give an employee more room.",
+            AskCase::CreatedExtras { .. } => "It was made by another employee and needs more than that employee has.",
         }
     }
 }
@@ -270,7 +280,15 @@ impl Asks {
             created_at: now,
             expires_at: now + EXPIRES_AFTER_SECS,
         };
-        let row = db::PermissionAskRow {
+        if let Err(e) = self.raise(&ask) {
+            tracing::warn!(tool = %call.name(), error = %e, "ask not written");
+        }
+        ask.id
+    }
+
+    /// Write `ask` and send its card.
+    fn raise(&self, ask: &Ask) -> Result<(), types::NeboError> {
+        self.store.insert_permission_ask(&db::PermissionAskRow {
             id: ask.id.clone(),
             agent_id: ask.agent_id.clone(),
             session_key: ask.session_key.clone(),
@@ -285,16 +303,59 @@ impl Asks {
             created_at: ask.created_at,
             expires_at: ask.expires_at,
             ..Default::default()
-        };
-        match cx.store.insert_permission_ask(&row) {
-            Ok(()) => {
-                if let Some(s) = self.surfaces() {
-                    s.card(&ask);
-                }
-            }
-            Err(e) => tracing::warn!(tool = %call.name(), error = %e, "ask not written"),
+        })?;
+        if let Some(s) = self.surfaces() {
+            s.card(ask);
         }
-        ask.id
+        Ok(())
+    }
+
+    /// The one card for an employee made by an employee that needs more
+    /// than its creator holds (§2.12.7). `sentence` is the consent line for
+    /// the extras; `asker` the grant of the run that made it. Its answer is
+    /// [`super::consent::answer_extras`]; it has no call to run.
+    pub fn raise_extras(
+        &self,
+        asker: &Grant,
+        agent_id: &str,
+        capabilities: Vec<String>,
+        sentence: String,
+        session_key: &str,
+    ) -> Result<String, types::NeboError> {
+        let now = chrono::Utc::now().timestamp();
+        let ask = Ask {
+            id: uuid::Uuid::new_v4().to_string(),
+            agent_id: agent_id.to_string(),
+            session_key: session_key.to_string(),
+            door: Door::Chat,
+            case: AskCase::CreatedExtras { capabilities },
+            sentence,
+            target: Target {
+                tool: String::new(),
+                key: String::new(),
+                operation: None,
+                capability: None,
+                field: None,
+                read_only: false,
+                effects: types::permissions::CallEffects { widens: true, ..Default::default() },
+            },
+            call: StoredCall { name: String::new(), input: serde_json::Value::Null },
+            seat: SeatSnapshot {
+                grant: asker.clone(),
+                origin: tools::Origin::System,
+                user_id: String::new(),
+                session_id: String::new(),
+                untrusted_input: false,
+                cwd: None,
+                handoff_depth: 0,
+            },
+            status: AskStatus::Open,
+            run_id: None,
+            created_at: now,
+            expires_at: now + EXPIRES_AFTER_SECS,
+        };
+        self.raise(&ask)?;
+        Ok(ask.id)
     }
 
     /// The ask the owner said no to (or let expire) for this same call in
@@ -339,6 +400,28 @@ impl Asks {
             return Err(AskError::Settled(Box::new(self.get(id)?.ok_or(AskError::NotFound)?)));
         }
         ask.status = AskStatus::Answered { answer, via: Some(via) };
+        // An answer the card didn't offer counts as the one it did.
+        let answer = match answer {
+            Answer::AllowAlways if !ask.allow_always_offered(&self.store) => Answer::ThisOnce,
+            other => other,
+        };
+        if let AskCase::CreatedExtras { capabilities } = &ask.case {
+            let allow = answer != Answer::No;
+            if let Err(e) = super::consent::answer_extras(&self.store, id, allow) {
+                tracing::warn!(ask = %id, error = %e, "extras not granted");
+            }
+            if let Some(s) = self.surfaces() {
+                s.resolved(&ask);
+            }
+            let granted = format!("Granted: {}.", capabilities.join(", "));
+            let outcome = if allow {
+                AskOutcome::Ran { always: true, result: &granted, is_error: false }
+            } else {
+                AskOutcome::Declined
+            };
+            self.settle_without_running(&ask, outcome);
+            return Ok(Settled { ask, resumed: None });
+        }
         let mut always = false;
         if answer == Answer::AllowAlways {
             match self.store.write_permission_rule(&allow_always_rule(&self.store, &ask), &Writer::Owner) {
@@ -470,7 +553,9 @@ pub fn allow_always_rule(store: &db::Store, ask: &Ask) -> Rule {
             Some(r) => (r.key, r.field, None),
             None => (call_key(), t.field.clone(), None),
         },
-        AskCase::Irreversible { .. } | AskCase::AskMode => (call_key(), t.field.clone(), None),
+        AskCase::Irreversible { .. } | AskCase::AskMode | AskCase::Widens | AskCase::CreatedExtras { .. } => {
+            (call_key(), t.field.clone(), None)
+        }
     };
     Rule {
         id: String::new(),
@@ -916,6 +1001,42 @@ mod tests {
         r.store.link_permission_ask_run(&no, "run-2").unwrap();
         r.answer(&no, Answer::No, AnsweredVia::Inbox).await.unwrap();
         assert_eq!(r.seen.released.lock().unwrap()[1], ("run-2".to_string(), false));
+    }
+
+    /// An employee made by an employee asks for more than its creator
+    /// holds: one card, no call to run; Allow grants the extras for good.
+    #[tokio::test]
+    async fn extras_card_is_the_one_card_and_its_answer_grants_the_job() {
+        let r = rig().await;
+        let creator = Grant::new("office", Mode::Automatic);
+        let id = r
+            .asks
+            .raise_extras(&creator, "researcher", vec!["web".into(), "mail".into()], "Lead Researcher will search the web and send email".into(), "agent:office:web")
+            .unwrap();
+        assert_eq!(r.seen.cards(), 1, "the one card");
+        let ask = r.asks.get(&id).unwrap().expect("a readable ask");
+        assert!(ask.allow_always_offered(&r.store) && !ask.this_once_offered());
+        assert_eq!(ask.reason(), "It was made by another employee and needs more than that employee has.");
+        let settled = r.asks.answer(&r.reg, &id, Answer::AllowAlways, AnsweredVia::Mobile).unwrap();
+        assert!(settled.resumed.is_none(), "nothing to run");
+        let job: Vec<_> = r.store.permission_rules("researcher").unwrap().into_iter().map(|x| x.key).collect();
+        assert!(job.contains(&RuleKey::Capability("web".into())) && job.contains(&RuleKey::Capability("mail".into())), "{job:?}");
+        assert!(r.seen.notes()[0].1.contains("Granted: web, mail."), "{}", r.seen.notes()[0].1);
+        // No grants nothing.
+        let no = r.asks.raise_extras(&creator, "scribe", vec!["web".into()], "Scribe will search the web".into(), "agent:office:web").unwrap();
+        r.asks.answer(&r.reg, &no, Answer::No, AnsweredVia::Chat).unwrap();
+        assert!(r.store.permission_rules("scribe").unwrap().iter().all(|x| x.scope != Scope::Employee("scribe".into())));
+    }
+
+    /// Giving an employee more room is answered each time: no "Allow
+    /// always", and an answer the card didn't offer counts as "This once".
+    #[tokio::test]
+    async fn widening_is_answered_each_time() {
+        let r = rig().await;
+        let mut ask = r.asks.get(&r.park(KEY, Door::Chat, "+15550142").await).unwrap().unwrap();
+        ask.case = AskCase::Widens;
+        assert!(!ask.allow_always_offered(&r.store) && ask.this_once_offered());
+        assert_eq!(ask.reason(), "Only you can give an employee more room.");
     }
 
     #[tokio::test]
