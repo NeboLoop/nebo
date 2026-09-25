@@ -124,8 +124,10 @@ pub async fn deliver(state: &AppState, session_key: &str) {
     }
     drop(claim);
     // A running turn hears the rows at its next step, or on the turn it
-    // hands them to when they land after its last one.
-    if state.harness.is_session_busy(session_key) {
+    // hands them to when they land after its last one. A turn already
+    // closing has made its last check for input: the rows need a turn of
+    // their own, which waits for its slot.
+    if state.harness.hears_new_rows(session_key) {
         return;
     }
 

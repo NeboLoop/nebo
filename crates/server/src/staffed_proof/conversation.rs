@@ -100,15 +100,25 @@ impl Thread<'_> {
             .join("\n")
     }
 
-    /// Every `*-RESULT` word this step reads new, in order, once.
-    fn new_results(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        for word in self
-            .new_text()
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-        {
-            if word.ends_with("-RESULT") && !out.iter().any(|w| w == word) {
-                out.push(word.to_string());
+    /// The model already said `words` in this thread.
+    fn answered(&self, words: &str) -> bool {
+        self.req
+            .messages
+            .iter()
+            .any(|m| m.role == "assistant" && m.content.contains(words))
+    }
+
+    /// Every `*-RESULT` word the thread has brought in and the model has not
+    /// said yet, in order, once. A row that lands while a call is in flight
+    /// is stored before that call's answer, so "since the last answer"
+    /// would miss it; a model reads the whole thread.
+    fn unreported_results(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for m in self.req.messages.iter().filter(|m| m.role != "assistant") {
+            for word in m.content.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+                if word.ends_with("-RESULT") && !self.answered(word) && !out.iter().any(|w| w == word) {
+                    out.push(word.to_string());
+                }
             }
         }
         out
@@ -433,7 +443,7 @@ async fn the_owner_is_answered_while_the_company_works() {
                     ),
                 ]));
             }
-            let results = t.new_results();
+            let results = t.unreported_results();
             (!results.is_empty()).then(|| Step::say(format!("REPORT {}", results.join(" "))))
         }),
         // Books answers through a helper of its own.
@@ -445,7 +455,7 @@ async fn the_owner_is_answered_while_the_company_works() {
                 return Some(Step::say("Started on the books."));
             }
             let fresh = t.new_text();
-            if fresh.contains("BOOKS-HELPER-RESULT") {
+            if t.says("BOOKS-HELPER-RESULT") && !t.answered("BOOKS-RESULT") {
                 return Some(Step::say(
                     "BOOKS-RESULT: the budget is 2,000 (the ledger helper checked).",
                 ));
@@ -741,7 +751,7 @@ async fn a_woken_turn_replies_where_the_work_came_from() {
                     json!({"description": "price the order", "prompt": "MARK-R1 price the order"}),
                 )]));
             }
-            let results = t.new_results();
+            let results = t.unreported_results();
             (!results.is_empty()).then(|| Step::say(format!("REPORT {}", results.join(" "))))
         }),
         worker("MARK-R1", "r1", "R1-RESULT"),

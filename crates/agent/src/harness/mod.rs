@@ -221,6 +221,14 @@ impl Harness {
         session_gate::session_is_busy(&self.active_turns, key)
     }
 
+    /// A turn running on `key` will still hear a row written now: it is
+    /// running and its loop has not ended. A closing turn has made its last
+    /// check for input, so a row written now needs a turn of its own.
+    pub fn hears_new_rows(&self, key: &str) -> bool {
+        session_gate::live_session_under(&self.active_turns, key)
+            .is_some_and(|live| !session_gate::turn_is_closing(&self.active_turns, &live))
+    }
+
     /// The running turn's live counters on `key`, if one is running.
     pub fn active_turn_status(&self, key: &str) -> Option<types::api::ActiveTurnStatus> {
         session_gate::active_turn_status(&self.active_turns, key)
