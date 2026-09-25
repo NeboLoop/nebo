@@ -39,7 +39,7 @@ A task list is for work that will take many tool calls across several distinct s
 Only mark a task completed when it is FULLY accomplished. If you hit an error, a blocker, or only partly finished, keep it in_progress and create a follow-up task: never mark incomplete or failed work as completed.
 
 When to spawn vs do it yourself:
-- For several searches at once use web(action: search, queries: [...]); spawn sub-agents only for independent multi-step investigations.
+- For several searches at once use search_web(queries: [...]); spawn sub-agents only for independent multi-step investigations.
 - Do it yourself when: a single task, tasks that depend on each other's results, quick lookups.
 
 **Memory (3-tier persistence):**

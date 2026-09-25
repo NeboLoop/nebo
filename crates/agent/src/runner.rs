@@ -17,11 +17,15 @@ use crate::concurrency::ConcurrencyController;
 use crate::db_context;
 use crate::harness::compact::trim;
 use crate::harness::conversation::{
-    MidTurnFrom, convert_messages, mid_turn_message_landed, parent_taint, record_interrupt, sanitize_message_order,
+    InputRow, MidTurnFrom, convert_messages, mid_turn_message_landed, parent_taint, persist_input, record_interrupt, sanitize_message_order,
     unanswered_mid_turn_message,
 };
 use crate::harness::model_call::{self, prefer_non_gateway};
 use crate::harness::seat;
+use crate::harness::session_gate::{
+    ActiveTurnStatus, ActiveTurns, Admission, QUEUED_INTO_RUNNING_TURN, RunProgress, active_turn_status,
+    admit_or_queue, live_session_under, session_is_busy,
+};
 use crate::harness::{after_turn, usage};
 use types::keyparser;
 use crate::prompt;
@@ -238,30 +242,13 @@ pub struct WorkflowPark<'a> {
 
 /// Whether a restricted run's allowlist names this tool: by name, as the
 /// tool of a `tool:resource` entry, or by a `prefix*` family.
-fn allowlist_admits(allowlist: &HashSet<String>, name: &str) -> bool {
+pub(crate) fn allowlist_admits(allowlist: &HashSet<String>, name: &str) -> bool {
     allowlist.contains(name)
         || allowlist.iter().any(|e| {
             e.split_once(':').is_some_and(|(tool, _)| tool == name)
                 || e.strip_suffix('*')
                     .is_some_and(|prefix| !prefix.is_empty() && name.starts_with(prefix))
         })
-}
-
-/// The pictures a user row has to store as bytes: the ones no attachment
-/// covers. An image that arrived as an attachment is already on disk under its
-/// file id, and `convert_messages` reads it back from there when the turn is
-/// replayed, so storing the base64 beside it put the same picture in the
-/// database twice — once as a row a person loads, once as a file.
-fn images_to_store(req: &RunRequest) -> Option<&[ai::ImageContent]> {
-    if req.images.is_empty() {
-        return None;
-    }
-    let stored = req
-        .attachments
-        .iter()
-        .filter(|a| !a.file_id.is_empty() && a.mime_type.starts_with("image/"))
-        .count();
-    (stored < req.images.len()).then_some(req.images.as_slice())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -380,166 +367,6 @@ pub struct RunRequest {
     pub workflow: Option<WorkflowMode>,
 }
 
-/// A turn in flight on one session. The runner admits ONE per session key: a
-/// second request while it runs is appended to the session as the owner's next
-/// message (the loop reloads history every iteration, so the model hears it at
-/// its next step) and the caller gets a status line instead of a second worker
-/// on the same job. Live 2026-09-03: four voice "status?" calls started four
-/// more runs on one thread; they fought over one file for five minutes.
-pub struct ActiveTurn {
-    pub started: std::time::Instant,
-    pub progress: RunProgress,
-    /// The turn's cancel token: set means the owner stopped it and its loop
-    /// is unwinding, so the slot frees in a moment.
-    pub cancel_token: CancellationToken,
-    /// Its loop has ended (`TurnGuard::close`): nothing reads the thread for
-    /// it any more, and the slot frees in a moment.
-    pub closing: bool,
-}
-
-pub type ActiveTurns = Arc<std::sync::Mutex<HashMap<String, ActiveTurn>>>;
-
-/// Admit a turn on `session_key`, or say why not. Check and insert are one
-/// step under the lock so two callers cannot both pass.
-pub fn admit_turn(
-    turns: &ActiveTurns,
-    session_key: &str,
-    progress: RunProgress,
-    cancel_token: CancellationToken,
-) -> Result<TurnGuard, String> {
-    let mut map = turns.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(active) = map.get(session_key) {
-        return Err(busy_status_line(active));
-    }
-    map.insert(
-        session_key.to_string(),
-        ActiveTurn { started: std::time::Instant::now(), progress, cancel_token, closing: false },
-    );
-    Ok(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() })
-}
-
-/// True when the turn holding `session_key` is on its way out — cancelled, or
-/// its loop has ended — so the next message should wait for the slot rather
-/// than be queued into a loop that will not read it.
-pub fn turn_is_closing(turns: &ActiveTurns, session_key: &str) -> bool {
-    turns
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(session_key)
-        .is_some_and(|t| t.closing || t.cancel_token.is_cancelled())
-}
-
-/// The typed stop reason a busy session answers with. Consumers render it as
-/// status (chat: a note under the message, spinner kept; voice: read aloud),
-/// never as the employee's reply.
-pub const QUEUED_INTO_RUNNING_TURN: &str = "queued_into_running_turn";
-
-/// Releases the session when the run's task ends, however it ends.
-pub struct TurnGuard {
-    turns: ActiveTurns,
-    session_key: String,
-}
-
-impl TurnGuard {
-    /// The turn's loop has ended. The task still has its tail to run (the
-    /// report, title, cleanup) before the slot frees; a message arriving now
-    /// waits for the slot and starts the next turn instead of being queued
-    /// into this one, which will not read it.
-    pub fn close(&self) {
-        if let Some(t) = self.turns.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&self.session_key) {
-            t.closing = true;
-        }
-    }
-}
-
-impl Drop for TurnGuard {
-    fn drop(&mut self) {
-        // Recover a poisoned lock: a panic elsewhere must not leave the session
-        // marked busy, which would queue every later message forever.
-        self.turns.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.session_key);
-    }
-}
-
-/// ONE answer to "is a turn running on this session": the same map the
-/// admission check uses, so callers that never register with the server's
-/// run registry (voice, MCP) are seen too.
-pub fn session_is_busy(turns: &ActiveTurns, session_key: &str) -> bool {
-    live_session_under(turns, session_key).is_some()
-}
-
-/// The live session under `session_key`: the key itself, or an activity
-/// session a workflow turn runs under (`<turn session>:<activity>::<n>`).
-/// The engine holds a case turn's own session key; the runner marks the
-/// activity's. Seen live: a reply that landed mid-turn was "not busy" by
-/// exact match, deferred, and the turn closed the case without hearing it.
-pub fn live_session_under(turns: &ActiveTurns, session_key: &str) -> Option<String> {
-    let map = turns.lock().unwrap_or_else(|p| p.into_inner());
-    if map.contains_key(session_key) {
-        return Some(session_key.to_string());
-    }
-    let prefix = format!("{session_key}:");
-    map.keys().find(|k| k.starts_with(&prefix)).cloned()
-}
-
-pub use types::api::ActiveTurnStatus;
-
-pub fn active_turn_status(turns: &ActiveTurns, session_key: &str) -> Option<ActiveTurnStatus> {
-    let map = turns.lock().unwrap_or_else(|p| p.into_inner());
-    map.get(session_key).map(ActiveTurn::status)
-}
-
-impl ActiveTurn {
-    fn status(&self) -> ActiveTurnStatus {
-        ActiveTurnStatus {
-            elapsed_secs: self.started.elapsed().as_secs(),
-            tool_calls: self.progress.tool_call_count.load(std::sync::atomic::Ordering::Relaxed),
-            current_tool: self.progress.current_tool.lock().map(|t| t.clone()).unwrap_or_default(),
-        }
-    }
-}
-
-/// The live counters as one phrase ("3 minutes in, 12 tool calls so far,
-/// currently running os: exec"). The busy line below and voice's `status`
-/// tool both read it, so they never describe the same run differently.
-pub fn progress_phrase(st: &ActiveTurnStatus) -> String {
-    let elapsed = if st.elapsed_secs < 90 {
-        format!("{} seconds", st.elapsed_secs)
-    } else {
-        format!("{} minutes", st.elapsed_secs / 60)
-    };
-    let doing = if st.current_tool.is_empty() {
-        "thinking".to_string()
-    } else {
-        format!("running {}", st.current_tool)
-    };
-    let calls_part = match st.tool_calls {
-        0 => String::new(),
-        1 => ", 1 tool call so far".to_string(),
-        n => format!(", {n} tool calls so far"),
-    };
-    format!("{elapsed} in{calls_part}, currently {doing}")
-}
-
-/// What a second caller hears while a turn is busy. Built from the live
-/// counters, no model call; read aloud by voice, shown as status in chat.
-pub fn busy_status_line(active: &ActiveTurn) -> String {
-    format!(
-        "Still on the last thing, {}. I'll pick this up at my next step; if that work \
-         finishes first, your message is waiting in the thread.",
-        progress_phrase(&active.status())
-    )
-}
-
-/// Shared atomic counters for live run progress reporting.
-/// Created by the server's RunRegistry and threaded into the runner.
-#[derive(Clone, Debug)]
-pub struct RunProgress {
-    pub run_id: String,
-    pub iteration_count: Arc<std::sync::atomic::AtomicU32>,
-    pub tool_call_count: Arc<std::sync::atomic::AtomicU32>,
-    pub current_tool: Arc<std::sync::Mutex<String>>,
-}
-
 /// Per-run mutable state (prevents data races across concurrent runs).
 pub(crate) struct RunState {
     prompt_overhead: usize,
@@ -573,7 +400,7 @@ pub(crate) struct RunState {
 }
 
 impl RunState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             prompt_overhead: 0,
             system_overhead_tokens: 0,
@@ -748,7 +575,7 @@ impl Runner {
     /// Run the agentic loop: prompt -> stream -> tool calls -> loop.
     /// Returns a receiver of streaming events.
     pub async fn run(&self, mut req: RunRequest) -> Result<mpsc::Receiver<StreamEvent>, ProviderError> {
-        seat::restrict_outside_origin(&mut req);
+        seat::restrict_outside_origin(req.origin, &mut req.tool_allowlist, &mut req.tool_denial_hint);
         let t_run_entry = std::time::Instant::now();
         info!(
             session_key = %req.session_key,
@@ -792,77 +619,60 @@ impl Runner {
             tool_call_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             current_tool: Arc::new(std::sync::Mutex::new(String::new())),
         });
-        let turn_guard = match admit_turn(&self.active_turns, &session_key, progress.clone(), req.cancel_token.clone()) {
-            Ok(guard) => guard,
-            Err(status) => {
-                // The owner pressed stop and typed the next thing at once, or
-                // the turn's loop has just ended. The turn is unwinding;
-                // queuing this message into it would leave it in the thread
-                // unanswered (that queue is read by a loop that has exited or
-                // is about to). Wait for the slot, briefly, and start the new
-                // turn.
-                let mut admitted = None;
-                if turn_is_closing(&self.active_turns, &session_key) {
-                    for _ in 0..100 {
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        if let Ok(g) = admit_turn(&self.active_turns, &session_key, progress.clone(), req.cancel_token.clone()) {
-                            admitted = Some(g);
-                            break;
-                        }
-                    }
-                }
-                if let Some(g) = admitted {
-                    g
-                } else {
-                // The owner's words reach the running turn as its next message.
-                // They are stored as typed (the chat shows them clean) and
-                // marked as having arrived mid-work; the framing the model
-                // needs is added when the window is built (`convert_messages`),
-                // the way Claude Code keeps the transcript clean and frames the
-                // queued message for the model only. Untrusted caller framing
-                // (phone lines) rides along in the briefing below.
-                // A coworker's run names its sender as the audience: its
-                // message is a colleague's, never framed as the owner's.
-                let from = match req.audience.as_deref() {
-                    Some(coworker) => MidTurnFrom::Coworker { from: coworker.to_string() },
-                    None => {
-                        let via = if req.channel.is_empty() { "chat" } else { req.channel.as_str() };
-                        MidTurnFrom::Owner { via: via.to_string() }
-                    }
-                };
-                let meta = from.metadata();
-                if let Err(e) = self.sessions.append_message(&session_id, "user", &req.prompt, None, None, Some(&meta)) {
-                    warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
-                }
-                // The briefing (team roster, turn rule) is steering: it rides
-                // the running turn's next call on the wake rail and is never
-                // written to the thread.
-                if let Some(ctx) = req.mention_context.as_deref() {
-                    steering::push_wake(
-                        &session_key,
-                        steering::WakeEntry {
-                            wake_id: None,
-                            content: steering::wrap_system_reminder(ctx),
-                            taint: Vec::new(),
-                        },
-                    );
-                }
-                info!(session_id = %session_id, channel = %req.channel, "second request on a busy session queued into the running turn");
-                // The running loop hears it at its next step, or before it ends
-                // the turn on a reply (`mid_turn_message_landed`); once the loop
-                // has ended the turn is closing and the wait above starts a new
-                // turn.
-                let (tx, rx) = mpsc::channel(4);
-                // A send fails only if the caller already dropped the receiver;
-                // there is nobody left to tell.
-                let _ = tx
-                    .send(StreamEvent::control_notice(status, QUEUED_INTO_RUNNING_TURN))
-                    .await;
-                let _ = tx.send(StreamEvent::done()).await;
-                return Ok(rx);
-                }
+        // The owner's words reach the running turn as its next message. They
+        // are stored as typed (the chat shows them clean) and marked as
+        // having arrived mid-work; the framing the model needs is added when
+        // the window is built (`convert_messages`), the way Claude Code keeps
+        // the transcript clean and frames the queued message for the model
+        // only. Untrusted caller framing (phone lines) rides along in the
+        // briefing below.
+        // A coworker's run names its sender as the audience: its message is a
+        // colleague's, never framed as the owner's.
+        let from = match req.audience.as_deref() {
+            Some(coworker) => MidTurnFrom::Coworker { from: coworker.to_string() },
+            None => {
+                let via = if req.channel.is_empty() { "chat" } else { req.channel.as_str() };
+                MidTurnFrom::Owner { via: via.to_string() }
             }
         };
+        let queue = || {
+            let meta = from.metadata();
+            if let Err(e) = self.sessions.append_message(&session_id, "user", &req.prompt, None, None, Some(&meta)) {
+                warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
+            }
+        };
+        let turn_guard =
+            match admit_or_queue(&self.active_turns, &session_key, progress.clone(), req.cancel_token.clone(), queue)
+                .await
+            {
+                Admission::Admitted(guard) => guard,
+                Admission::Queued { status } => {
+                    // The briefing (team roster, turn rule) is steering: it rides
+                    // the running turn's next call on the wake rail and is never
+                    // written to the thread.
+                    if let Some(ctx) = req.mention_context.as_deref() {
+                        steering::push_wake(
+                            &session_key,
+                            steering::WakeEntry {
+                                wake_id: None,
+                                content: steering::wrap_system_reminder(ctx),
+                                taint: Vec::new(),
+                            },
+                        );
+                    }
+                    info!(session_id = %session_id, channel = %req.channel, "second request on a busy session queued into the running turn");
+                    // The running loop hears it at its next step, or before it
+                    // ends the turn on a reply (`mid_turn_message_landed`).
+                    let (tx, rx) = mpsc::channel(4);
+                    // A send fails only if the caller already dropped the
+                    // receiver; there is nobody left to tell.
+                    let _ = tx
+                        .send(StreamEvent::control_notice(status, QUEUED_INTO_RUNNING_TURN))
+                        .await;
+                    let _ = tx.send(StreamEvent::done()).await;
+                    return Ok(rx);
+                }
+            };
 
         // Pre-load skills into the sub-agent's conversation.
         // Each skill becomes a user message with isMeta metadata so the UI doesn't
@@ -993,123 +803,21 @@ impl Runner {
         // replaced with an LLM-generated summary so the full document never
         // enters the main chat context.
         if !req.prompt.is_empty() && !continuation {
-            let (effective_content, metadata) = if crate::large_input::is_large(&req.prompt) {
-                info!(
-                    session_id = %session_id,
-                    prompt_len = req.prompt.len(),
-                    "large input detected — saving to file and summarising"
-                );
-
-                let msg_id = uuid::Uuid::new_v4().to_string();
-
-                // 1. Save full content to disk
-                let file_path = crate::large_input::save_to_file(&req.prompt, &msg_id)
-                    .map_err(|e| ProviderError::Request(format!("large input save: {e}")))?;
-                let file_path_str = file_path.to_string_lossy().to_string();
-
-                // 2. Detect content type for prompt tuning
-                let content_type = crate::large_input::detect_content_type(&req.prompt);
-
-                // 3. Summarise in an ISOLATED context (sidecar pattern).
-                //    Acquire provider, drop lock, then call — the full text
-                //    never touches the session or DB.
-                let cheap_model = self.selector.get_cheapest_model();
-                let summary = {
-                    let prov = prefer_non_gateway(&self.providers.read().await);
-                    match prov {
-                        Some(p) => crate::large_input::summarize(
-                            RequestTrace {
-                                agent_id: req.agent_id.clone(),
-                                ..RequestTrace::new("large_input_summary")
-                            },
-                            p.as_ref(),
-                            &req.prompt,
-                            content_type,
-                            &cheap_model,
-                        )
-                        .await
-                        .unwrap_or_else(|e| {
-                            warn!(error = %e, "large input summarisation failed, using fallback");
-                            crate::large_input::fallback_summary(&req.prompt)
-                        }),
-                        None => crate::large_input::fallback_summary(&req.prompt),
-                    }
-                };
-
-                // 4. Build replacement content + metadata
-                let result = crate::large_input::build_replacement(
-                    &req.prompt,
-                    &summary,
-                    &file_path_str,
-                    content_type,
-                );
-
-                // Merge with image metadata when both are present
-                let mut meta_value: serde_json::Value =
-                    serde_json::from_str(&result.metadata_json).unwrap_or_default();
-                if let Some(images) = images_to_store(&req) {
-                    meta_value["images"] = serde_json::json!(images);
-                }
-
-                info!(
-                    session_id = %session_id,
-                    summary_len = result.content.len(),
-                    file = %file_path_str,
-                    "large input replaced with summary"
-                );
-
-                (result.content, Some(meta_value.to_string()))
-            } else {
-                // Normal-sized prompt — pass through as-is
-                let metadata = images_to_store(&req)
-                    .map(|images| serde_json::json!({ "images": images }).to_string());
-                (req.prompt.clone(), metadata)
-            };
-
-            let metadata = if req.attachments.is_empty() {
-                metadata
-            } else {
-                let mut value: serde_json::Value = metadata
-                    .as_deref()
-                    .and_then(|m| serde_json::from_str(m).ok())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                value["attachments"] = serde_json::json!(req.attachments);
-                Some(value.to_string())
-            };
-
-            // A platform-authored prompt stays in the model's history and out
-            // of the owner's transcript — `isMeta` is what the read path
-            // filters on.
-            let metadata = if req.hidden_prompt {
-                let mut value: serde_json::Value = metadata
-                    .as_deref()
-                    .and_then(|m| serde_json::from_str(m).ok())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                value["isMeta"] = serde_json::json!(true);
-                value["hiddenPrompt"] = serde_json::json!(true);
-                Some(value.to_string())
-            } else {
-                metadata
-            };
-
-            let t_msg_save = std::time::Instant::now();
-            info!(session_id = %session_id, prompt_len = effective_content.len(), "appending user message");
-            self.sessions
-                .append_message(
-                    &session_id,
-                    "user",
-                    &effective_content,
-                    None,
-                    None,
-                    metadata.as_deref(),
-                )
-                .map_err(|e| {
-                    warn!(session_id = %session_id, error = %e, "failed to append user message");
-                    ProviderError::Request(format!("failed to store message: {}", e))
-                })?;
-
-            info!(ms = t_msg_save.elapsed().as_millis() as u64, session_id = %session_id, "[telemetry] user message saved");
-
+            persist_input(
+                &self.sessions,
+                &self.providers,
+                &self.selector,
+                &req.agent_id,
+                &session_id,
+                InputRow {
+                    text: &req.prompt,
+                    images: &req.images,
+                    attachments: &req.attachments,
+                    hidden: req.hidden_prompt,
+                },
+            )
+            .await
+            .map_err(ProviderError::Request)?;
             // @mention routing context rides the FIRST LLM call as an
             // ephemeral <system-reminder> (seeded into run_loop's pending
             // reminders) — never persisted to the session.
@@ -1181,7 +889,7 @@ impl Runner {
             DEFAULT_MAX_ITERATIONS
         };
         let min_iterations = req.min_iterations;
-        let grant = Arc::new(crate::harness::seat::run_grant(&self.store, &req));
+        let grant = Arc::new(crate::harness::seat::run_grant(&self.store, req.grant_request()));
         let personality_snippet = req.personality_snippet.clone();
         let run_cwd = req.cwd.clone();
         let presence_tracker = req.presence_tracker.clone();
@@ -1762,7 +1470,7 @@ pub(crate) fn desktop_evidence(result: &str) -> String {
 /// Add every stored tool call not yet `checked` whose tool says its result
 /// may be cleared once stale (`DynTool::cleared_when_stale`) to `clearable`.
 /// A call to a tool no longer registered is never cleared.
-async fn extend_clearable(tools: &Registry, messages: &[ChatMessage], checked: &mut HashSet<String>, clearable: &mut trim::Clearable) {
+pub(crate) async fn extend_clearable(tools: &Registry, messages: &[ChatMessage], checked: &mut HashSet<String>, clearable: &mut trim::Clearable) {
     for msg in messages.iter().filter(|m| m.role == "assistant") {
         let Some(calls) = msg
             .tool_calls
@@ -2314,180 +2022,19 @@ async fn run_loop(
     // Build static system prompt — use modular prompt when no custom one is provided
     // STRAP docs and tool list are NOT included here — they're injected per-iteration
     // based on which tools pass the context filter (dynamic injection).
-    let active_agent_body = active_agent_entry.as_ref().map(|r| {
-        // Strip YAML frontmatter from AGENT.md — inject only the prose body.
-        // Frontmatter is machine metadata (name, triggers, etc.), not persona instructions.
-        match napp::agent::split_frontmatter(&r.agent_md) {
-            Ok((yaml_str, body)) => {
-                if yaml_str.is_empty() {
-                    body
-                } else {
-                    // Include a compact identity header from frontmatter properties
-                    let mut result = String::new();
-                    if let Ok(mapping) = serde_yaml::from_str::<serde_yaml::Mapping>(&yaml_str) {
-                        let mut identity_parts = Vec::new();
-                        for (k, v) in &mapping {
-                            if let (serde_yaml::Value::String(key), val) = (k, v) {
-                                match key.as_str() {
-                                    "name" | "description" | "triggers" => {
-                                        let val_str = match val {
-                                            serde_yaml::Value::String(s) => s.clone(),
-                                            serde_yaml::Value::Sequence(seq) => seq
-                                                .iter()
-                                                .filter_map(|i| match i {
-                                                    serde_yaml::Value::String(s) => {
-                                                        Some(s.as_str())
-                                                    }
-                                                    _ => None,
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .join(", "),
-                                            _ => continue,
-                                        };
-                                        identity_parts.push(format!("- **{}**: {}", key, val_str));
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        if !identity_parts.is_empty() {
-                            result.push_str(&identity_parts.join("\n"));
-                            result.push_str("\n\n");
-                        }
-                    }
-                    result.push_str(&body);
-                    result
-                }
-            }
-            Err(_) => r.agent_md.clone(),
-        }
-    });
+    let active_agent_body = active_agent_entry.as_ref().map(|r| crate::harness::prompt::inputs::persona_body(&r.agent_md));
     // Build focused context for agent-required plugins (descriptions + skill names).
-    let agent_plugin_context = if let Some(ref agent_entry) = active_agent_entry {
-        if let Some(ref cfg) = agent_entry.config {
-            let mut required = cfg.requires.plugins.clone();
-            // Merge scope-specific plugins
-            if let Some(scope_name) = tool_scope {
-                if let Some(scope) = cfg.scopes.get(scope_name) {
-                    for p in &scope.plugins {
-                        if !required.contains(p) {
-                            required.push(p.clone());
-                        }
-                    }
-                }
-            }
-            skill_loader
-                .as_ref()
-                .map(|l| l.agent_plugin_context(&required))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
+    let agent_plugin_context = active_agent_entry
+        .as_ref()
+        .map(|a| crate::harness::prompt::inputs::plugin_context(a, tool_scope, skill_loader))
+        .unwrap_or_default();
 
     // Build agent self-awareness context: workflows, skills, and capabilities.
     // The agent must know about itself from turn 1.
-    let agent_self_context = if let Some(ref agent_entry) = active_agent_entry {
-        if let Some(ref cfg) = agent_entry.config {
-            let mut parts = Vec::new();
-
-            // Workflows
-            if !cfg.workflows.is_empty() {
-                let mut wf_lines = vec![format!("## Your Workflows ({})\n", cfg.workflows.len())];
-                let mut sorted: Vec<_> = cfg.workflows.iter().collect();
-                sorted.sort_by_key(|(name, _)| name.as_str());
-                for (name, binding) in &sorted {
-                    let trigger_desc = match &binding.trigger {
-                        napp::agent::AgentTrigger::Schedule { schedule, cron, .. } => {
-                            if let Some(s) = schedule {
-                                format!("schedule: {}", s)
-                            } else {
-                                format!("schedule: {}", cron)
-                            }
-                        }
-                        napp::agent::AgentTrigger::Heartbeat { interval, window } => {
-                            if let Some(w) = window {
-                                format!("heartbeat: every {} within {}", interval, w)
-                            } else {
-                                format!("heartbeat: every {}", interval)
-                            }
-                        }
-                        napp::agent::AgentTrigger::Event { sources } => {
-                            format!("event: {}", sources.join(", "))
-                        }
-                        napp::agent::AgentTrigger::Watch { plugin, event, .. } => {
-                            if let Some(ev) = event {
-                                format!("watch: {}.{}", plugin, ev)
-                            } else {
-                                format!("watch: {}", plugin)
-                            }
-                        }
-                        napp::agent::AgentTrigger::Folder { path, .. } => {
-                            format!("folder: {}", path)
-                        }
-                        napp::agent::AgentTrigger::Manual => "manual".to_string(),
-                        napp::agent::AgentTrigger::Call { line } => {
-                            format!(
-                                "call tree for the {} phone line",
-                                if line.is_empty() { "every" } else { line }
-                            )
-                        }
-                    };
-                    let desc = if binding.description.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" — {}", binding.description)
-                    };
-                    let activity_count = binding.activities.len();
-                    wf_lines.push(format!(
-                        "- **{}**{} [{}] ({} activities)",
-                        name, desc, trigger_desc, activity_count
-                    ));
-                }
-                wf_lines.push(String::new());
-                wf_lines.push(
-                    "Use work(resource: \"<name>\", action: \"run\") to trigger a workflow manually. \
-                     Use work(resource: \"<name>\", action: \"status\") to check its last run."
-                        .to_string(),
-                );
-                parts.push(wf_lines.join("\n"));
-            }
-
-            // Skills declared by this agent
-            if !cfg.skills.is_empty() {
-                let mut sk_lines = vec![format!("## Your Skills ({})\n", cfg.skills.len())];
-                for skill_ref in &cfg.skills {
-                    sk_lines.push(format!("- {}", skill_ref));
-                }
-                sk_lines.push(String::new());
-                sk_lines.push(
-                    "These skills are part of your configuration. Use skill(action: \"discover\", query: \"...\") to find one and skill(action: \"load\", name: \"...\") to read it."
-                        .to_string(),
-                );
-                parts.push(sk_lines.join("\n"));
-            }
-
-            // Sidecar tools (custom HTTP endpoint tools defined by this agent)
-            if !cfg.tools.is_empty() {
-                let mut tool_lines = vec![format!("## Your Custom Tools ({})\n", cfg.tools.len())];
-                for tool_def in &cfg.tools {
-                    tool_lines.push(format!(
-                        "- **{}** — {}",
-                        tool_def.name, tool_def.description
-                    ));
-                }
-                parts.push(tool_lines.join("\n"));
-            }
-
-            parts.join("\n\n")
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
+    let agent_self_context = active_agent_entry
+        .as_ref()
+        .map(crate::harness::prompt::inputs::self_context)
+        .unwrap_or_default();
 
     // Compact skill listing (name + capped description per enabled skill).
     // Discovery metadata only — full bodies load on demand via skill(action: "load").
@@ -2528,7 +2075,7 @@ async fn run_loop(
     };
 
     // Load workspace context file (.nebo.md or NEBO.md) — walk up from CWD to git root or home.
-    let context_file = load_context_file();
+    let context_file = crate::harness::prompt::inputs::workspace_notes();
 
     // Resolved model identity for the stable prompt — the run's override when
     // set (the same "provider/model" string ToolContext.model_preference
@@ -3562,7 +3109,13 @@ async fn run_loop(
         .await
         {
             model_call::CallOutcome::Reply(reply) => reply,
-            model_call::CallOutcome::Retry => continue,
+            model_call::CallOutcome::Retry(model_call::RetryWhy::StreamCut) => {
+                if let Some(cut) = crate::harness::events::attachment_for(&crate::harness::events::TurnEvent::StreamCut) {
+                    pending_stream_reminders.push(steering::wrap_system_reminder(&cut.text));
+                }
+                continue;
+            }
+            model_call::CallOutcome::Retry(_) => continue,
             model_call::CallOutcome::Cancelled => return Ok(turn_exit_reason.label()),
             model_call::CallOutcome::CancelledInBackoff => return Ok("cancelled".to_string()),
             model_call::CallOutcome::Exhausted => break,
@@ -3789,6 +3342,7 @@ async fn run_loop(
                     workflow_mode,
                     decide,
                     active_task: &active_task,
+                    turn_mode: None,
                     guard_cfg: &guard_cfg,
                     side_trace: &side_trace,
                 },
@@ -4065,8 +3619,10 @@ async fn run_loop(
         if let Some(retry) =
             model_call::output_cutoff(&mut call_state, stop_reason.as_deref(), iteration, session_id)
         {
-            if let model_call::StepRetry::WithReminder(reminder) = retry {
-                pending_stream_reminders.push(reminder);
+            if let model_call::StepRetry::Resume = retry
+                && let Some(resume) = crate::harness::events::attachment_for(&crate::harness::events::TurnEvent::CutoffResume)
+            {
+                pending_stream_reminders.push(steering::wrap_system_reminder(&resume.text));
             }
             continue;
         }
@@ -4436,44 +3992,6 @@ async fn run_loop(
     )
     .await;
     Ok(turn_exit_reason.label())
-}
-
-/// Load workspace context from `.nebo.md` or `NEBO.md`.
-/// Walks up from CWD to git root (or home dir), returns the first match.
-fn load_context_file() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-    let mut dir = cwd.as_path();
-
-    loop {
-        for name in &[".nebo.md", "NEBO.md"] {
-            let path = dir.join(name);
-            if path.is_file() {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        let sanitized = crate::sanitize::sanitize_for_prompt(&content);
-                        debug!(path = %path.display(), "loaded workspace context file");
-                        return Some(sanitized);
-                    }
-                    Err(e) => {
-                        warn!(path = %path.display(), error = %e, "failed to read context file");
-                    }
-                }
-            }
-        }
-
-        // Stop at git root
-        if dir.join(".git").exists() {
-            break;
-        }
-
-        // Walk up
-        match dir.parent() {
-            Some(parent) if parent != dir => dir = parent,
-            _ => break,
-        }
-    }
-
-    None
 }
 
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
@@ -5173,70 +4691,6 @@ mod named_invocation_tests {
     }
 }
 
-#[cfg(test)]
-mod attachment_storage_tests {
-    use super::{images_to_store, RunRequest};
-
-    fn attachment(mime: &str) -> comm::wire::Attachment {
-        comm::wire::Attachment {
-            file_id: "f-1".into(),
-            filename: "photo.jpg".into(),
-            mime_type: mime.into(),
-            size: 1024,
-            url: String::new(),
-            thumbnail_url: None,
-            width: None,
-            height: None,
-            duration: None,
-        }
-    }
-
-    fn picture() -> ai::ImageContent {
-        ai::ImageContent {
-            media_type: "image/jpeg".into(),
-            data: "aGVsbG8=".into(),
-        }
-    }
-
-    /// A picture that arrived as an attachment is on disk under its file id;
-    /// the row keeps the id alone. Writing the base64 beside it stored the
-    /// same image twice, and the transcript carries both.
-    #[test]
-    fn an_attached_picture_is_not_also_stored_as_bytes() {
-        let req = RunRequest {
-            images: vec![picture()],
-            attachments: vec![attachment("image/jpeg")],
-            ..Default::default()
-        };
-        assert!(images_to_store(&req).is_none());
-    }
-
-    /// A picture no attachment covers — a channel that hands over bytes with
-    /// no file behind them — still has to be stored, or the model loses it on
-    /// the next turn.
-    #[test]
-    fn a_picture_with_no_file_behind_it_is_stored() {
-        let uncovered = RunRequest {
-            images: vec![picture()],
-            ..Default::default()
-        };
-        assert_eq!(images_to_store(&uncovered).map(|i| i.len()), Some(1));
-
-        // A document attachment covers no picture.
-        let document = RunRequest {
-            images: vec![picture()],
-            attachments: vec![attachment("application/pdf")],
-            ..Default::default()
-        };
-        assert_eq!(images_to_store(&document).map(|i| i.len()), Some(1));
-    }
-
-    /// No pictures, nothing to store — the row keeps no `images` key at all.
-    #[test]
-    fn a_message_without_pictures_stores_none() {
-        assert!(images_to_store(&RunRequest::default()).is_none());
-    }
-}
 
 #[cfg(test)]
 mod objective_decision_tests {
@@ -5521,60 +4975,6 @@ mod objective_decision_tests {
 mod tests {
     use super::*;
 
-    fn progress() -> RunProgress {
-        RunProgress {
-            run_id: "r".into(),
-            iteration_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            tool_call_count: Arc::new(std::sync::atomic::AtomicU32::new(3)),
-            current_tool: Arc::new(std::sync::Mutex::new("os: exec".into())),
-        }
-    }
-
-    /// The live failure: a second request on a busy session must not become a
-    /// second worker. It is refused with a status line, and the session opens
-    /// again the moment the first turn's guard drops.
-    #[test]
-    fn one_turn_per_session_and_the_guard_reopens_it() {
-        let turns: ActiveTurns = Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let first = admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).expect("first turn admitted");
-        let second = admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new());
-        let status = match second {
-            Err(s) => s,
-            Ok(_) => panic!("a second turn was admitted on a busy session"),
-        };
-        assert!(status.contains("3 tool calls") && status.contains("running os: exec"), "{status}");
-        assert!(!status.contains('\u{2014}'), "no em dash in owner copy");
-        assert!(!status.contains("stop") && !status.contains("will answer"), "promises only what the code does: {status}");
-        assert!(session_is_busy(&turns, "agent:a:thread:t"));
-        let st = active_turn_status(&turns, "agent:a:thread:t").expect("status while busy");
-        assert_eq!((st.tool_calls, st.current_tool.as_str()), (3, "os: exec"));
-        assert!(active_turn_status(&turns, "agent:a:thread:other").is_none());
-        assert!(admit_turn(&turns, "agent:a:thread:other", progress(), CancellationToken::new()).is_ok(), "other sessions are unaffected");
-        drop(first);
-        assert!(!session_is_busy(&turns, "agent:a:thread:t"));
-        assert!(admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).is_ok(), "released when the guard drops");
-    }
-
-    /// The engine knows a case turn by its own session; the runner marks
-    /// the activity session under it. The live session under a key is the
-    /// key itself or an activity beneath it — never a key that merely
-    /// shares a prefix — and the wakes queued under that activity drain by
-    /// the turn's key.
-    #[test]
-    fn the_live_session_under_a_turn_key_is_its_activity_session() {
-        let turns: ActiveTurns = Default::default();
-        let activity = "agent:a:workflow:t1:capture::0";
-        let _guard = admit_turn(&turns, activity, progress(), CancellationToken::new()).unwrap();
-        assert_eq!(live_session_under(&turns, "agent:a:workflow:t1").as_deref(), Some(activity));
-        assert_eq!(live_session_under(&turns, activity).as_deref(), Some(activity), "the key itself");
-        assert_eq!(live_session_under(&turns, "agent:a:workflow:t"), None, "a shared prefix is not a session under it");
-        assert!(session_is_busy(&turns, "agent:a:workflow:t1"), "busy by the turn's key");
-        steering::push_wake(activity, steering::WakeEntry { wake_id: Some(7), content: "11am".into(), taint: Default::default() });
-        let drained = steering::drain_wakes("agent:a:workflow:t1");
-        assert_eq!(drained.iter().map(|w| w.wake_id).collect::<Vec<_>>(), [Some(7)]);
-        assert!(steering::drain_wakes(activity).is_empty(), "drained once");
-    }
-
     #[test]
     fn test_build_system_prompt() {
         let prompt = build_system_prompt("", "- favorite color: blue");
@@ -5589,24 +4989,6 @@ mod tests {
         assert!(!prompt.contains("Memory context"));
     }
 
-    /// A turn whose loop has ended is closing: a message arriving then waits
-    /// for the slot and starts the next turn instead of being queued into a
-    /// loop that will not read it.
-    #[test]
-    fn a_turn_whose_loop_ended_is_closing() {
-        let turns: ActiveTurns = Default::default();
-        let guard = admit_turn(&turns, "subagent:p:sa-1", progress(), CancellationToken::new()).unwrap();
-        assert!(!turn_is_closing(&turns, "subagent:p:sa-1"), "running");
-        guard.close();
-        assert!(turn_is_closing(&turns, "subagent:p:sa-1"), "loop ended");
-        assert!(session_is_busy(&turns, "subagent:p:sa-1"), "still holds the slot until its task ends");
-        drop(guard);
-        assert!(!session_is_busy(&turns, "subagent:p:sa-1"));
-        let cancel = CancellationToken::new();
-        let _g = admit_turn(&turns, "k", progress(), cancel.clone()).unwrap();
-        cancel.cancel();
-        assert!(turn_is_closing(&turns, "k"), "a stopped turn is closing too");
-    }
 }
 
 #[cfg(test)]

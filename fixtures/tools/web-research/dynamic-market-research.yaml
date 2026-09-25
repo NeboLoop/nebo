@@ -5,20 +5,26 @@ description: |
   a multi-step research workflow: search for the company, find their
   website, check their offerings, then search for competitors and
   compare. Tests sustained multi-page research with a clear goal.
-target_component: web
+target_component: search_web
 
 conversation:
   - role: user
     content: "Research Calendly's pricing and main competitors. I need to know their pricing tiers, and who the top 3 alternatives are with their pricing"
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  fetch_url:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: starts-with-search
-      text: "Model starts with web(action: 'search') for Calendly pricing or navigates to calendly.com"
+      text: "Model starts with search_web for Calendly pricing or navigates to calendly.com"
       severity: critical
   recovery:
     - id: finds-calendly-pricing
@@ -48,10 +54,10 @@ ideal_behavior:
   tool_calls: 18
   total_tokens: 25000
   narrative: |
-    1. search "Calendly pricing" → navigate to calendly.com/pricing → read_page
+    1. search_web "Calendly pricing" → browser_open calendly.com/pricing → browser_read
     2. Extract Calendly's pricing tiers (Free, Standard, Teams, Enterprise)
-    3. search "Calendly alternatives competitors" → read results
-    4. Navigate to competitor 1 pricing page (e.g., Cal.com) → read_page
-    5. Navigate to competitor 2 pricing page (e.g., SavvyCal) → read_page
-    6. Navigate to competitor 3 pricing page (e.g., Acuity) → read_page
+    3. search_web "Calendly alternatives competitors" → read results
+    4. Navigate to competitor 1 pricing page (e.g., Cal.com) → browser_read
+    5. Navigate to competitor 2 pricing page (e.g., SavvyCal) → browser_read
+    6. Navigate to competitor 3 pricing page (e.g., Acuity) → browser_read
     7. Synthesize comparison table: product, tiers, prices, key differentiators

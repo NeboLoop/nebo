@@ -1,7 +1,6 @@
 pub mod advisors;
 pub mod agent_worker;
 pub mod chunking;
-pub mod compaction;
 pub mod concurrency;
 pub mod db_context;
 pub mod decompose;
@@ -69,6 +68,7 @@ pub use proactive::{PresenceTracker, ProactiveInbox};
 pub use tool_credentials::{RunGrant, ToolCredentials};
 pub use harness::permissions::{migrate::migrate_legacy, resolve_grant, Check};
 pub use harness::after_turn::ChatTitleSink;
-pub use runner::{RunProgress, RunRequest, Runner};
+pub use harness::session_gate::RunProgress;
+pub use runner::{RunRequest, Runner};
 pub use selector::ModelSelector;
 pub use session::SessionManager;
