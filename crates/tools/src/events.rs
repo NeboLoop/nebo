@@ -62,7 +62,7 @@ pub fn is_company_event(name: &str) -> bool {
 }
 
 /// The ONE place an emit name becomes an event source. Every pathway that
-/// raises a seat's event — the emit tool, the graph executor, the sequential
+/// raises a seat's event — emit_event, the graph executor, the sequential
 /// executor, cron, a webhook, the API, a manual run — builds its source here
 /// and nowhere else.
 ///
