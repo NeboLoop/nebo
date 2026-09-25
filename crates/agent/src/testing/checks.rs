@@ -21,11 +21,14 @@ pub const MODE_VERIFIED: &str = "verified";
 pub const MODE_JUDGED: &str = "judged";
 
 /// Evaluate every `check`-bearing assertion of the fixture against a trace.
+/// The checks are bound to the trace's run first (`{{scratch}}`, `{{tag}}`),
+/// so they compare against the values that run was given.
 /// `Err` = malformed matcher (diagnostic; the caller must fail the run).
 pub fn evaluate_fixture_checks(
     fixture: &Fixture,
     trace: &Trace,
 ) -> Result<Vec<AssertionResult>, String> {
+    let fixture = &super::scratch::bind(fixture, &trace.run_id)?;
     let mut out = Vec::new();
     for assertion in fixture
         .prompt_assertions
@@ -392,6 +395,36 @@ mod tests {
             session_id: String::new(),
             turns: Vec::new(),
         }
+    }
+
+    /// Gate run 36099651233: read-file's `{{scratch}}` check compared the
+    /// run's real path against the unrendered template and failed 3/3.
+    #[test]
+    fn checks_compare_against_the_runs_own_scratch() {
+        let fixture: Fixture = serde_yaml::from_str(
+            r#"
+id: read-file
+name: t
+conversation:
+  - role: user
+    content: 'read {{scratch}}/notes.txt'
+prompt_assertions:
+  first_call:
+    - id: correct-path
+      text: reads the file
+      severity: critical
+      check: { first_call: true, tool: read_file, arg: path, equals: "{{scratch}}/notes.txt" }
+"#,
+        )
+        .expect("fixture");
+        let path = format!("{}/notes.txt", super::super::scratch::dir("read-file", "run-2"));
+        let mut trace = trace_with(vec![("read_file", serde_json::json!({ "path": path }))], 0);
+        trace.run_id = "run-2".into();
+        let results = evaluate_fixture_checks(&fixture, &trace).unwrap();
+        assert!(results[0].passed, "{}", results[0].evidence);
+        // Another run's directory is not this run's.
+        trace.run_id = "run-1".into();
+        assert!(!evaluate_fixture_checks(&fixture, &trace).unwrap()[0].passed);
     }
 
     fn check(yaml: &str) -> Check {
