@@ -1317,7 +1317,7 @@ fn typed_node_preamble(activity_type: &str) -> Option<&'static str> {
         ),
         "code" => Some(
             "This is a code activity: write and run code in the configured language \
-             using the os tool. Return the program's output as your summary.",
+             with write_file and run_command. Return the program's output as your summary.",
         ),
         "transform" => Some(
             "This is a data-transform activity: reshape the prior results/inputs as the \

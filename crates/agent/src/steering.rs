@@ -48,6 +48,9 @@ const STATE_CHANGING_ACTIONS: &[&str] = &[
     "create", "send", "schedule", "delete", "remove", "move", "rename", "edit", "write", "post",
     "upload", "book", "buy", "pay", "reply", "share", "cancel",
 ];
+/// Tools whose every call changes a file the owner sees, with the action
+/// word the confirmation names.
+const STATE_CHANGING_TOOLS: &[(&str, &str)] = &[("write_file", "write"), ("edit_file", "edit")];
 
 /// Lightweight context for reminder checks, built after tool results in run_loop.
 pub struct ReminderContext<'a> {
@@ -460,13 +463,14 @@ impl Reminder for SilenceBreaker {
 fn state_changing_action(tool_calls_json: &str) -> Option<String> {
     let calls: serde_json::Value = serde_json::from_str(tool_calls_json).ok()?;
     for c in calls.as_array()? {
+        let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("a tool");
         let action = c
             .get("input")
             .and_then(|i| i.get("action"))
             .and_then(|a| a.as_str())
+            .or_else(|| STATE_CHANGING_TOOLS.iter().find(|(t, _)| *t == name).map(|(_, a)| *a))
             .unwrap_or("");
         if STATE_CHANGING_ACTIONS.contains(&action) {
-            let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("a tool");
             return Some(format!("{action} via {name}"));
         }
     }
@@ -1718,7 +1722,7 @@ impl Reminder for ResearchDelegationNudge {
 }
 
 /// True if this assistant turn made EXACTLY ONE tool call and it was a read-type
-/// filesystem exploration (`os`/`system` read/glob/grep/list). This is the per-turn
+/// filesystem exploration (`read_file`, or a find/grep/ls command). This is the per-turn
 /// signal for the serial grind: many turns each doing one read. A healthy PARALLEL
 /// batch has ≥2 calls in the turn, so it returns false — that's the whole point of
 /// counting per-turn rather than by flat tool-name frequency.
@@ -1735,16 +1739,24 @@ fn is_serial_read_turn(tool_calls_json: &str) -> bool {
         return false;
     }
     let c = &arr[0];
-    let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
-    if name != "os" {
-        return false;
+    match c.get("name").and_then(|n| n.as_str()).unwrap_or("") {
+        "read_file" => true,
+        "run_command" => matches!(command_program(c.get("input")), "find" | "grep" | "rg" | "ls"),
+        _ => false,
     }
-    let action = c
-        .get("input")
-        .and_then(|i| i.get("action"))
-        .and_then(|a| a.as_str())
-        .unwrap_or("");
-    matches!(action, "read" | "glob" | "grep" | "list" | "ls")
+}
+
+/// The program a `run_command` call runs: its first word that is not an
+/// environment assignment, without its directory.
+fn command_program(input: Option<&serde_json::Value>) -> &str {
+    input
+        .and_then(|i| i.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .split_whitespace()
+        .find(|w| !w.contains('='))
+        .map(|w| w.rsplit('/').next().unwrap_or(w))
+        .unwrap_or("")
 }
 
 /// SerialReadGrind — a weak-model failure seen in production runs: reading a
@@ -1765,8 +1777,8 @@ const READ_ONLY_GRIND_TURNS: usize = 8;
 /// Assistant text this long inside the window counts as something produced.
 const READ_ONLY_GRIND_ANSWER_CHARS: usize = 200;
 
-/// Every call in the turn only looks: an `os` read/glob/grep/list, or a shell
-/// command whose program is in [`READ_ONLY_COMMANDS`]. The serial-read
+/// Every call in the turn only looks: a `read_file`, or a command whose
+/// program is in [`READ_ONLY_COMMANDS`]. The serial-read
 /// classifier above only knows the file actions; a model that varies its
 /// shell command every turn (cat, wc, xxd, grep) walks straight past it.
 fn is_read_only_turn(tool_calls_json: &str) -> bool {
@@ -1775,23 +1787,13 @@ fn is_read_only_turn(tool_calls_json: &str) -> bool {
     if arr.is_empty() {
         return false;
     }
-    arr.iter().all(|c| {
-        let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        if name != "os" {
-            return false;
+    arr.iter().all(|c| match c.get("name").and_then(|n| n.as_str()).unwrap_or("") {
+        "read_file" => true,
+        "run_command" => {
+            let program = command_program(c.get("input"));
+            !program.is_empty() && READ_ONLY_COMMANDS.contains(&program)
         }
-        let input = c.get("input");
-        let action = input.and_then(|i| i.get("action")).and_then(|a| a.as_str()).unwrap_or("");
-        if matches!(action, "read" | "glob" | "grep" | "list" | "ls") {
-            return true;
-        }
-        let command = input.and_then(|i| i.get("command")).and_then(|v| v.as_str()).unwrap_or("");
-        let program = command
-            .split_whitespace()
-            .find(|w| !w.contains('='))
-            .map(|w| w.rsplit('/').next().unwrap_or(w))
-            .unwrap_or("");
-        !program.is_empty() && READ_ONLY_COMMANDS.contains(&program)
+        _ => false,
     })
 }
 
@@ -1954,7 +1956,7 @@ mod tests {
     #[test]
     fn read_only_grind_fires_on_varied_looking_and_not_on_work() {
         let shell = |cmd: &str| ChatMessage {
-            tool_calls: Some(format!(r#"[{{"name":"os","input":{{"action":"exec","command":"{cmd}"}}}}]"#)),
+            tool_calls: Some(format!(r#"[{{"name":"run_command","input":{{"command":"{cmd}"}}}}]"#)),
             ..make_msg("assistant", "checking")
         };
         let mut messages = vec![make_msg("user", "poll the file")];
@@ -1967,7 +1969,7 @@ mod tests {
         // One write inside the window is work: no grind.
         let mut with_write = messages.clone();
         with_write[4] = ChatMessage {
-            tool_calls: Some(r#"[{"name":"os","input":{"action":"write","path":"/t/out.md","content":"x"}}]"#.into()),
+            tool_calls: Some(r#"[{"name":"write_file","input":{"path":"/t/out.md","content":"x"}}]"#.into()),
             ..make_msg("assistant", "writing")
         };
         let wctx = ReminderContext { messages: &with_write, ..base_rctx() };
@@ -1988,11 +1990,11 @@ mod tests {
     fn serial_read_grind_fires_on_one_at_a_time_reads() {
         let read = |path: &str| ChatMessage {
             tool_calls: Some(format!(
-                r#"[{{"name":"os","input":{{"action":"read","path":"{path}"}}}}]"#
+                r#"[{{"name":"read_file","input":{{"path":"{path}"}}}}]"#
             )),
             ..make_msg("assistant", "reading")
         };
-        // 6 turns, each a single os read → the grind. Fires.
+        // 6 turns, each a single read_file → the grind. Fires.
         let mut messages = Vec::new();
         for i in 0..6 {
             messages.push(make_msg("user", "go"));
@@ -2013,11 +2015,11 @@ mod tests {
         // exactly what we want the model to do, so it must not false-fire.
         let batched = ChatMessage {
             tool_calls: Some(
-                r#"[{"name":"os","input":{"action":"read","path":"/a"}},
-                    {"name":"os","input":{"action":"read","path":"/b"}},
-                    {"name":"os","input":{"action":"read","path":"/c"}},
-                    {"name":"os","input":{"action":"read","path":"/d"}},
-                    {"name":"os","input":{"action":"read","path":"/e"}}]"#
+                r#"[{"name":"read_file","input":{"path":"/a"}},
+                    {"name":"read_file","input":{"path":"/b"}},
+                    {"name":"read_file","input":{"path":"/c"}},
+                    {"name":"read_file","input":{"path":"/d"}},
+                    {"name":"read_file","input":{"path":"/e"}}]"#
                     .to_string(),
             ),
             ..make_msg("assistant", "batch")
@@ -2302,7 +2304,7 @@ mod tests {
 
         // A large result from a non-web tool is not counted as web content.
         let mut os_call = make_msg("assistant", "");
-        os_call.tool_calls = Some(r#"[{"id":"o1","name":"os","input":{"action":"read"}}]"#.into());
+        os_call.tool_calls = Some(r#"[{"id":"o1","name":"read_file","input":{"path":"/a"}}]"#.into());
         let os_res = ChatMessage {
             tool_results: Some(
                 serde_json::json!([{ "tool_call_id": "o1", "content": "y".repeat(5000), "is_error": false }]).to_string(),
@@ -2336,7 +2338,7 @@ mod tests {
             "fires after 3 discovery calls"
         );
         // Only one discovery call → no fire.
-        let few = calls_as_msgs(&[("find_tools", ""), ("web", "search"), ("os", "read")]);
+        let few = calls_as_msgs(&[("find_tools", ""), ("web", "search"), ("read_file", "")]);
         assert!(ResearchDelegationNudge.check(&rctx_tools(&few, &[], 3)).is_none());
     }
 
@@ -2368,7 +2370,7 @@ mod tests {
     #[test]
     fn test_skill_execution_nudge_preparation_loop() {
         let skill = r#"[{"name":"skill","input":{"action":"load","name":"pptx"}}]"#;
-        let reads = r#"[{"name":"os","input":{"action":"read","path":"a"}},{"name":"os","input":{"action":"read","path":"b"}}]"#;
+        let reads = r#"[{"name":"read_file","input":{"path":"a"}},{"name":"read_file","input":{"path":"b"}}]"#;
         let mut msgs = vec![
             make_msg("user", "make me a deck"),
             make_assistant_with_tools("", skill),
@@ -2389,7 +2391,7 @@ mod tests {
             "4 burned calls is under the stall threshold"
         );
         // A write after the skill load = producing → no fire.
-        let write = r#"[{"name":"os","input":{"action":"write","path":"deck.pptx"}}]"#;
+        let write = r#"[{"name":"write_file","input":{"path":"deck.pptx"}}]"#;
         msgs.push(make_assistant_with_tools("", write));
         assert!(SkillExecutionNudge.check(&rctx_tools(&msgs, &[], 7)).is_none());
         // A plugin invocation also counts as producing.

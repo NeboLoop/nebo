@@ -47,6 +47,12 @@ fn timeout_secs(input: &Value) -> u64 {
     ms.div_ceil(1000)
 }
 
+/// Where finding and searching happen, in the shell commands run in.
+#[cfg(not(windows))]
+const SEARCH_NOTE: &str = "- Find files with `find` and search contents with `grep` or `rg` here; keep searches bounded (a path, `-maxdepth`, `| head`).";
+#[cfg(windows)]
+const SEARCH_NOTE: &str = "- Commands run in PowerShell: find files with Get-ChildItem -Recurse and search contents with Select-String here; keep searches bounded (a path, `-Depth`, `| Select-Object -First 50`). `/tmp` and `~` paths work.";
+
 /// A command cut for a label.
 fn short(command: &str, n: usize) -> String {
     let t: String = command.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -67,13 +73,14 @@ impl DynTool for RunCommandTool {
     }
 
     fn description(&self) -> String {
-        "Runs a shell command and returns its output.\n\
+        format!(
+            "Runs a shell command and returns its output.\n\
          - Prefer absolute paths; shell state doesn't carry between calls.\n\
          - Use read_file, edit_file and write_file instead of cat, head, tail, sed, awk or echo.\n\
-         - Find files with `find` and search contents with `grep` or `rg` here; keep searches bounded (a path, `-maxdepth`, `| head`).\n\
+         {SEARCH_NOTE}\n\
          - The owner sees `description`, not the command.\n\
          - For long jobs set `background: true` and continue; don't sleep-poll."
-            .to_string()
+        )
     }
 
     fn schema(&self) -> Value {
@@ -151,6 +158,12 @@ impl DynTool for RunCommandTool {
             });
             if let Some(cwd) = str_arg(&input, "cwd") {
                 call["cwd"] = json!(cwd);
+            }
+            // A workflow's command step (the one context the engine trusts
+            // with plugin auth) is parsed by the next step, not read by a
+            // model: its output is stdout alone, and a failure carries stderr.
+            if ctx.trusted_plugin_env {
+                call["raw"] = json!(true);
             }
             let cwd = str_arg(&input, "cwd").map(str::to_string).or_else(|| ctx.cwd.clone());
             let result = self.0.shell.execute(ctx, call).await;

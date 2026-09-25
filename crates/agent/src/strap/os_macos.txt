@@ -1,2 +1,0 @@
-
-macOS notes: zsh shell, BSD coreutils. Home is /Users/<user>; `open <path-or-url>` opens files and URLs in their default app.

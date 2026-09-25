@@ -24,13 +24,12 @@
 //! ```yaml
 //! post_tool:
 //!   - name: cargo-test
-//!     tool: os            # optional filters; omitted = any
-//!     action: [write, edit]
+//!     tool: [write_file, edit_file]   # optional filters; omitted = any
 //!     command: cargo test -p web 2>&1 | tail -n 20
 //!     timeout_secs: 600   # default 600; the reference's tool-hook default
 //! pre_tool:
 //!   - name: no-force-push
-//!     tool: os
+//!     tool: run_command
 //!     command: 'jq -e ".input.command | test(\"push --force\") | not" >/dev/null || { echo "force push is off-limits" >&2; exit 2; }'
 //! ```
 //!
@@ -39,7 +38,8 @@
 //! stdout carrying `input` rewrites the call's arguments.
 //!
 //! No hooks file at all: the project's own check is inferred from the nearest
-//! workspace marker (`infer_hook`) and runs as a post hook on `os` write/edit,
+//! workspace marker (`infer_hook`) and runs as a post hook on write_file and
+//! edit_file,
 //! through this same pathway. A hooks file that exists, even one declaring
 //! `post_tool: []`, is the owner's explicit answer and disables inference.
 
@@ -90,9 +90,10 @@ pub struct HooksFile {
 pub struct Hook {
     pub name: String,
     pub command: String,
-    /// Tool name filter (e.g. "os"). Omitted = every tool.
-    #[serde(default)]
-    pub tool: Option<String>,
+    /// Tool name filter: one name or a list (e.g. `[write_file, edit_file]`).
+    /// Omitted = every tool.
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub tool: Vec<String>,
     /// Resource / action filters on the call's input (`resource`, `action`).
     #[serde(default, deserialize_with = "one_or_many")]
     pub resource: Vec<String>,
@@ -128,7 +129,7 @@ impl Hook {
     /// Does this hook apply to a call? Filters are ANDed; an empty filter
     /// matches everything.
     pub fn matches(&self, tool: &str, input: &serde_json::Value) -> bool {
-        if self.tool.as_deref().is_some_and(|t| t != tool) {
+        if !self.tool.is_empty() && !self.tool.iter().any(|t| t == tool) {
             return false;
         }
         let resource = tools::OsTool::resolved_resource(input);
@@ -190,9 +191,9 @@ pub fn infer_hook(dir: &Path, on_path: &dyn Fn(&str) -> bool) -> Option<Hook> {
     Some(Hook {
         name: format!("inferred-{tool}"),
         command: format!("{PIPEFAIL_PREFIX}{check}"),
-        tool: Some("os".into()),
+        tool: vec!["write_file".into(), "edit_file".into()],
         resource: Vec::new(),
-        action: vec!["write".into(), "edit".into()],
+        action: Vec::new(),
         timeout_secs: INFERRED_CHECK_TIMEOUT_SECS,
         inferred: true,
     })
@@ -498,7 +499,7 @@ mod tests {
     use super::*;
 
     fn hook(cmd: &str) -> Hook {
-        Hook { name: "t".into(), command: cmd.into(), tool: None, resource: vec![], action: vec![], timeout_secs: 5, inferred: false }
+        Hook { name: "t".into(), command: cmd.into(), tool: vec![], resource: vec![], action: vec![], timeout_secs: 5, inferred: false }
     }
 
     /// A project folder with a `.nebo/hooks.yaml` (and a `.git` so the walk
@@ -518,16 +519,16 @@ mod tests {
         dir
     }
 
-    fn post_payload(cwd: &str, input: serde_json::Value) -> Vec<u8> {
+    fn post_payload(tool: &str, cwd: &str, input: serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
-            tool_name: "os".into(), result: "Edited a.rs".into(), is_error: false, session_id: "s".into(),
+            tool_name: tool.into(), result: "Edited a.rs".into(), is_error: false, session_id: "s".into(),
             tool_use_id: "c1".into(), tool_input: input, cwd: cwd.into(), agent_id: None,
         }).unwrap()
     }
 
-    fn pre_payload(cwd: &str, input: serde_json::Value) -> Vec<u8> {
+    fn pre_payload(tool: &str, cwd: &str, input: serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&crate::hooks::ToolPreExecutePayload {
-            tool_name: "os".into(), input, session_id: "s".into(), tool_use_id: "c".into(), cwd: cwd.into(), agent_id: None,
+            tool_name: tool.into(), input, session_id: "s".into(), tool_use_id: "c".into(), cwd: cwd.into(), agent_id: None,
         }).unwrap()
     }
 
@@ -541,7 +542,7 @@ mod tests {
     async fn exit_two_reaches_the_model_and_sets_is_error() {
         let p = project("post_tool:\n  - name: t\n    command: \"echo 'FAILED: 1 test' >&2; exit 2\"\n");
         let caller = ShellHookCaller::new();
-        let (bytes, _) = caller.post(post_payload(p.path().to_str().unwrap(), serde_json::json!({"action": "edit"}))).await.unwrap();
+        let (bytes, _) = caller.post(post_payload("edit_file", p.path().to_str().unwrap(), serde_json::json!({"path": "a"}))).await.unwrap();
         let resp: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(resp.is_error);
         assert!(resp.result.starts_with("Edited a.rs"), "the tool's own result stays first");
@@ -554,7 +555,7 @@ mod tests {
     async fn exit_one_reaches_the_model_as_an_error_note() {
         let p = project("post_tool:\n  - name: t\n    command: \"echo boom >&2; echo 'test x ... FAILED'; exit 1\"\n");
         let caller = ShellHookCaller::new();
-        let (bytes, _) = caller.post(post_payload(p.path().to_str().unwrap(), serde_json::Value::Null)).await.unwrap();
+        let (bytes, _) = caller.post(post_payload("edit_file", p.path().to_str().unwrap(), serde_json::Value::Null)).await.unwrap();
         let resp: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(resp.is_error, "a non-zero exit is an error the model must see");
         assert!(resp.result.starts_with("Edited a.rs"), "the tool's own result stays first");
@@ -581,7 +582,7 @@ mod tests {
     async fn pre_hook_failure_is_a_note_not_a_block() {
         let p = project("pre_tool:\n  - name: lint\n    command: \"echo 'lint crashed' >&2; exit 1\"\n");
         let caller = ShellHookCaller::new();
-        let (bytes, handled) = caller.pre(pre_payload(p.path().to_str().unwrap(), serde_json::json!({"action": "edit", "path": "a"}))).await.unwrap();
+        let (bytes, handled) = caller.pre(pre_payload("edit_file", p.path().to_str().unwrap(), serde_json::json!({"path": "a"}))).await.unwrap();
         let resp: crate::hooks::ToolPreExecuteResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(!handled && !resp.blocked, "only exit 2 blocks");
         assert_eq!(resp.note.as_deref(), Some("[hook lint] exited 1:\nlint crashed"));
@@ -591,17 +592,17 @@ mod tests {
     async fn pre_tool_exit_two_is_a_refusal_and_exit_zero_json_rewrites_input() {
         let p = project(concat!(
             "pre_tool:\n",
-            "  - name: lock\n    tool: os\n    action: exec\n",
-            "    command: \"echo '{\\\"input\\\":{\\\"action\\\":\\\"exec\\\",\\\"command\\\":\\\"cargo build --locked\\\"}}'\"\n",
-            "  - name: deny\n    tool: os\n    action: delete\n    command: \"echo 'not here' >&2; exit 2\"\n",
+            "  - name: lock\n    tool: run_command\n",
+            "    command: \"echo '{\\\"input\\\":{\\\"command\\\":\\\"cargo build --locked\\\"}}'\"\n",
+            "  - name: deny\n    tool: write_file\n    command: \"echo 'not here' >&2; exit 2\"\n",
         ));
         let cwd = p.path().to_str().unwrap();
         let caller = ShellHookCaller::new();
-        let (bytes, handled) = caller.pre(pre_payload(cwd, serde_json::json!({"action": "exec", "command": "cargo build"}))).await.unwrap();
+        let (bytes, handled) = caller.pre(pre_payload("run_command", cwd, serde_json::json!({"command": "cargo build"}))).await.unwrap();
         let resp: crate::hooks::ToolPreExecuteResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(!handled && !resp.blocked);
         assert_eq!(resp.input.unwrap()["command"], "cargo build --locked");
-        let (bytes, handled) = caller.pre(pre_payload(cwd, serde_json::json!({"action": "delete", "command": ""}))).await.unwrap();
+        let (bytes, handled) = caller.pre(pre_payload("write_file", cwd, serde_json::json!({"path": "x", "content": ""}))).await.unwrap();
         let resp: crate::hooks::ToolPreExecuteResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(handled && resp.blocked);
         assert_eq!(resp.blocked_message.as_deref(), Some("[hook deny]: not here"));
@@ -623,17 +624,17 @@ mod tests {
             r.result
         };
         // run cwd in A, relative path: A's hook
-        let (bytes, _) = caller.post(post_payload(a.path().to_str().unwrap(), serde_json::json!({"action": "edit", "path": "src/lib.rs"}))).await.unwrap();
+        let (bytes, _) = caller.post(post_payload("edit_file", a.path().to_str().unwrap(), serde_json::json!({"path": "src/lib.rs"}))).await.unwrap();
         assert!(note(bytes).ends_with("[hook which]\nproject-A"));
         // run cwd still A, but the call's path is inside B: B's hook
         let in_b = b.path().join("src/main.rs");
-        let (bytes, _) = caller.post(post_payload(a.path().to_str().unwrap(), serde_json::json!({"action": "write", "path": in_b}))).await.unwrap();
+        let (bytes, _) = caller.post(post_payload("write_file", a.path().to_str().unwrap(), serde_json::json!({"path": in_b}))).await.unwrap();
         assert!(note(bytes).ends_with("[hook which]\nproject-B"));
         // a shell call with its own cwd in B
-        let (bytes, _) = caller.post(post_payload(a.path().to_str().unwrap(), serde_json::json!({"action": "exec", "cwd": b.path()}))).await.unwrap();
+        let (bytes, _) = caller.post(post_payload("run_command", a.path().to_str().unwrap(), serde_json::json!({"command": "make", "cwd": b.path()}))).await.unwrap();
         assert!(note(bytes).ends_with("[hook which]\nproject-B"));
         // a folder with no hooks file and no root marker: untouched result
-        let (bytes, _) = caller.post(post_payload(none.path().to_str().unwrap(), serde_json::json!({"action": "edit", "path": "x.rs"}))).await.unwrap();
+        let (bytes, _) = caller.post(post_payload("edit_file", none.path().to_str().unwrap(), serde_json::json!({"path": "x.rs"}))).await.unwrap();
         assert_eq!(note(bytes), "Edited a.rs");
     }
 
@@ -642,7 +643,7 @@ mod tests {
         let p = project("post_tool:\n  - name: which\n    command: echo one\n    timeout_secs: 99999\n");
         let caller = ShellHookCaller::new();
         let cwd = p.path().to_str().unwrap();
-        let (bytes, _) = caller.post(post_payload(cwd, serde_json::json!({"action": "edit", "path": "a"}))).await.unwrap();
+        let (bytes, _) = caller.post(post_payload("edit_file", cwd, serde_json::json!({"path": "a"}))).await.unwrap();
         let r: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(r.result.ends_with("one"));
         let (file, _) = caller.resolve(p.path()).unwrap();
@@ -650,7 +651,7 @@ mod tests {
         // Land the rewrite on a later mtime tick so the cache sees a change.
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(p.path().join(".nebo/hooks.yaml"), "post_tool:\n  - name: which\n    command: echo two\n").unwrap();
-        let (bytes, _) = caller.post(post_payload(cwd, serde_json::json!({"action": "edit", "path": "a"}))).await.unwrap();
+        let (bytes, _) = caller.post(post_payload("edit_file", cwd, serde_json::json!({"path": "a"}))).await.unwrap();
         let r: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(r.result.ends_with("two"), "{}", r.result);
     }
@@ -708,11 +709,11 @@ mod tests {
         // The shape every inferred hook shares.
         assert!(h.inferred);
         assert_eq!(h.timeout_secs, INFERRED_CHECK_TIMEOUT_SECS);
-        assert_eq!(h.tool.as_deref(), Some("os"));
-        assert_eq!(h.action, vec!["write".to_string(), "edit".to_string()]);
-        assert!(h.matches("os", &serde_json::json!({"action": "edit", "path": "a.rs"})));
-        assert!(!h.matches("os", &serde_json::json!({"action": "read", "path": "a.rs"})));
-        assert!(!h.matches("os", &serde_json::json!({"action": "exec", "command": "ls"})));
+        assert_eq!(h.tool, vec!["write_file".to_string(), "edit_file".to_string()]);
+        assert!(h.matches("edit_file", &serde_json::json!({"path": "a.rs"})));
+        assert!(h.matches("write_file", &serde_json::json!({"path": "a.rs"})));
+        assert!(!h.matches("read_file", &serde_json::json!({"path": "a.rs"})));
+        assert!(!h.matches("run_command", &serde_json::json!({"command": "ls"})));
     }
 
     #[test]
@@ -759,12 +760,12 @@ mod tests {
     #[test]
     fn payload_has_agent_id_only_inside_a_subagent() {
         let main = serde_json::to_value(crate::hooks::ToolPostExecutePayload {
-            tool_name: "os".into(), result: "r".into(), is_error: false, session_id: "s".into(),
+            tool_name: "edit_file".into(), result: "r".into(), is_error: false, session_id: "s".into(),
             tool_use_id: "c".into(), tool_input: serde_json::Value::Null, cwd: "/w".into(), agent_id: None,
         }).unwrap();
         assert!(main.get("agent_id").is_none());
         let sub = serde_json::to_value(crate::hooks::ToolPostExecutePayload {
-            tool_name: "os".into(), result: "r".into(), is_error: false, session_id: "subagent:p:t".into(),
+            tool_name: "edit_file".into(), result: "r".into(), is_error: false, session_id: "subagent:p:t".into(),
             tool_use_id: "c".into(), tool_input: serde_json::Value::Null, cwd: "/w".into(), agent_id: Some("sa-1".into()),
         }).unwrap();
         assert_eq!(sub["agent_id"], "sa-1");
@@ -777,15 +778,15 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src/deep")).unwrap();
         std::fs::write(
             dir.path().join(".nebo/hooks.yaml"),
-            "post_tool:\n  - name: fmt\n    tool: os\n    action: [write, edit]\n    command: cargo fmt\n",
+            "post_tool:\n  - name: fmt\n    tool: [write_file, edit_file]\n    command: cargo fmt\n",
         )
         .unwrap();
         let found = find_hooks_file(&dir.path().join("src/deep")).unwrap();
         let file = load(&found).unwrap();
         assert_eq!(file.post_tool[0].timeout_secs, DEFAULT_TIMEOUT_SECS);
         assert!(!file.post_tool[0].inferred, "a declared hook is never debounced");
-        assert!(file.post_tool[0].matches("os", &serde_json::json!({"action": "edit", "path": "a"})));
-        assert!(!file.post_tool[0].matches("os", &serde_json::json!({"action": "read", "path": "a"})));
+        assert!(file.post_tool[0].matches("edit_file", &serde_json::json!({"path": "a"})));
+        assert!(!file.post_tool[0].matches("read_file", &serde_json::json!({"path": "a"})));
         assert!(!file.post_tool[0].matches("web", &serde_json::json!({"action": "edit"})));
         // A git root stops the walk.
         std::fs::create_dir_all(dir.path().join("other/.git")).unwrap();
