@@ -24,6 +24,7 @@
 		getStoreProductSimilar,
 		submitStoreProductReview,
 		applyUpdate,
+		workOutAgentNeeds,
 	} from '$lib/api/nebo';
 	import { type AppItem, toAppItem, itemHref, gradients } from '$lib/types/marketplace';
 	import MediaGallery from '$lib/components/marketplace/MediaGallery.svelte';
@@ -73,6 +74,10 @@
 	// Uninstall is destructive — require an inline confirm before removing.
 	let confirmUninstall = $state(false);
 	let uninstalling = $state(false);
+
+	// The one line above Hire: what this employee will be able to do, read
+	// off its manifest. The Hire tap is the owner's consent to it.
+	let hireLine = $state('');
 
 	const itemId = $derived(itemIdProp || ($page.params.id ?? ''));
 	const installed = $derived(Boolean(skill?.installed) || installedLocal);
@@ -170,6 +175,11 @@
 			skill = null;
 		}
 		loading = false;
+		if (artifactType === 'agent' && skill?.typeConfig) {
+			workOutAgentNeeds({ name: skill.name ?? '', typeConfig: skill.typeConfig })
+				.then((res) => (hireLine = res.line))
+				.catch(() => {});
+		}
 		getStoreProductSimilar(itemId)
 			.then((res) => {
 				similarItems = (((res as { products?: any[] }).products) || []).map((a: any, i: number) => toAppItem(a, i));
@@ -396,6 +406,9 @@
 							</button>
 						{/if}
 					{:else}
+						{#if hireLine}
+							<p class="consent-line">{hireLine}</p>
+						{/if}
 						<button type="button" onclick={installProduct} disabled={installing} class="btn btn-primary rounded-xl h-11 disabled:opacity-50">
 							<Download class="w-4 h-4" />
 							{installing ? $t('marketplace.detail.installing') : $t('common.install')}

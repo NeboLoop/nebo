@@ -292,6 +292,37 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
     })
 }
 
+/// The owner's `/compact`, outside a turn: the conversation since the last
+/// boundary checkpointed on the provider's default model. The owner speaks
+/// next, so the boundary asks the model to carry on with nothing.
+pub async fn owner_compact(
+    sessions: &SessionManager,
+    provider: &dyn ai::Provider,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<Checkpoint, String> {
+    let conversation = sessions
+        .get_messages_since_checkpoint(session_id)
+        .map_err(|e| format!("could not load the conversation: {e}"))?;
+    let fork_of = ChatRequest::new(ai::RequestTrace {
+        agent_id: agent_id.to_string(),
+        ..ai::RequestTrace::new("checkpoint")
+    });
+    checkpoint(
+        &CheckpointContext {
+            sessions,
+            provider,
+            session_id,
+            conversation: &conversation,
+            fork_of: &fork_of,
+            hooks: &[],
+            restore: RestoreState::default(),
+        },
+        CheckpointReason::OwnerAsked,
+    )
+    .await
+}
+
 /// The summary call, forked from the step's request. Returns the reply and
 /// whether the oldest part had to be dropped to fit.
 async fn summarize(cx: &CheckpointContext<'_>) -> Result<(String, bool), String> {

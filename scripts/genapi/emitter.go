@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -28,6 +29,11 @@ func generateComponents(path string, structs map[string]*RustStruct, handlers ma
 			continue
 		}
 		s := structs[name]
+		// The permission system's types (rules, grants, targets) never reach
+		// the client: the owner's pages get sentences, never rule strings.
+		if strings.HasSuffix(filepath.ToSlash(s.Source), "crates/types/src/permissions.rs") {
+			continue
+		}
 		emitStruct(&b, s, structs)
 	}
 

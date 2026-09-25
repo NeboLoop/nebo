@@ -393,6 +393,8 @@ pub async fn install_store_product(
     // Use a synthetic session ID for the install
     let session_id = format!("store-install-{}", id);
     crate::codes::handle_code(&state, code_type, validated_code, &session_id).await;
+    // The owner's Hire tap is the consent to the line it showed.
+    crate::codes::grant_hire(&state, &id).await;
 
     // The marketplace product id equals the installed artifact/agent id, so the
     // frontend can address the agent directly instead of matching by name.
