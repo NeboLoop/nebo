@@ -335,7 +335,7 @@ pub struct RunRequest {
     /// Tool scope name from agent.json for SDK-driven tool filtering.
     pub tool_scope: Option<String>,
     /// Explicit tool allowlist for restricted runs (phone callers). Entries
-    /// are bare tool names ("skill") or `tool:resource` compounds
+    /// are bare tool names ("use_skill") or `tool:resource` compounds
     /// ("agent:memory"). Enforced at the runner gate AND the registry choke
     /// point via `ToolContext::whitelist_allows`, and the declared schema is
     /// filtered to match. `None` = every normal run, unrestricted.
@@ -892,7 +892,7 @@ impl Runner {
         // of its own (build_subagent_request never sets agent_id), and the
         // skills it preloads were named by the seat that spawned it. The ONE
         // extractor strips the `subagent:` wrappers and yields that seat, the
-        // same scope the sub-agent's own later skill(action: "load") calls use
+        // same scope the sub-agent's own later use_skill calls use
         // — without it a seat hands work to a helper and its own procedures go
         // along in name only.
         if !req.preload_skills.is_empty() {
@@ -2200,9 +2200,9 @@ async fn run_loop(
     let mut active_task = sessions.get_active_task(session_id).unwrap_or_default();
 
     // Skills follow a deferred pattern: NOT auto-loaded into system prompt.
-    // Model uses skill(action: "discover") to find skills and skill(action: "load") to
-    // activate them. Loaded skill content goes into message history (tool results) and
-    // unloads when messages are evicted by sliding window.
+    // The skill listing names them; the model loads one with use_skill, and
+    // its content goes into message history (tool results) and unloads when
+    // messages are evicted by sliding window.
     //
     // Exceptions: force_skill (explicit API activation) and agent-declared skills
     // (part of the job definition — always present for that agent).
@@ -2491,7 +2491,7 @@ async fn run_loop(
                 }
                 sk_lines.push(String::new());
                 sk_lines.push(
-                    "These skills are part of your configuration. Use skill(action: \"discover\", query: \"...\") to find one and skill(action: \"load\", name: \"...\") to read it."
+                    "These skills are part of your job. They are in the skill listing; load one with use_skill when the work calls for it."
                         .to_string(),
                 );
                 parts.push(sk_lines.join("\n"));
@@ -2517,13 +2517,18 @@ async fn run_loop(
         String::new()
     };
 
-    // Compact skill listing (name + capped description per enabled skill).
-    // Discovery metadata only — full bodies load on demand via skill(action: "load").
-    // Agent-scoped runs also see their own Learned skills in the index.
+    // The skill listing (name + one line per enabled skill), in the text
+    // the harness reminder path delivers; it rides in the system prompt until
+    // that path carries it. Full bodies load on demand through use_skill.
+    // Agent-scoped runs also see their own skills.
     let skill_catalog = match skill_loader {
         Some(loader) => {
             let scope = (!agent_id.is_empty()).then_some(agent_id);
-            loader.compact_catalog(scope).await
+            let now = loader.listing(scope).await;
+            crate::harness::events::LinedDelta::between(&Default::default(), &now)
+                .and_then(|d| crate::harness::events::attachment_for(&crate::harness::events::TurnEvent::SkillListing(d)))
+                .map(|a| a.text)
+                .unwrap_or_default()
         }
         None => String::new(),
     };
@@ -4537,7 +4542,7 @@ fn max_auto_continuations(work_tasks: &[steering::WorkTask]) -> usize {
 
 /// Convert database ChatMessages to ai::Messages for the provider.
 /// Detect a prompt that IS an explicit invocation of a declared tool —
-/// "use os(resource: ...)", "call web(...)", or the bare "skill(...)" — and
+/// "use os(resource: ...)", "call use_skill(...)", or the bare "read_file(...)" — and
 /// return the ToolChoice that forces that tool. Conservative on purpose: the
 /// whole trimmed prompt must be the invocation (optional leading verb, known
 /// tool name, parenthesized args to the end), so prose that merely mentions a
@@ -5175,11 +5180,11 @@ mod named_invocation_tests {
 
     #[test]
     fn explicit_invocations_force_the_tool() {
-        let tools = defs(&["os", "skill", "mcp__nebo_kb__memory_recall"]);
+        let tools = defs(&["os", "use_skill", "mcp__nebo_kb__memory_recall"]);
         for p in [
             r#"use os(resource: "app", action: "list")"#,
             r#"os(resource: "shell", action: "exec", command: "ls")"#,
-            r#"call skill(action: "list")"#,
+            r#"call use_skill(name: "invoicing")"#,
             r#"Use os(resource: "mail", action: "unread")"#,
         ] {
             match named_tool_invocation(p, &tools) {
@@ -5191,7 +5196,7 @@ mod named_invocation_tests {
 
     #[test]
     fn prose_and_unknown_tools_stay_auto() {
-        let tools = defs(&["os", "skill"]);
+        let tools = defs(&["os", "use_skill"]);
         for p in [
             r#"how do I use os(resource: "app") safely?"#, // prose prefix
             r#"use frobnicate(action: "x")"#,              // undeclared tool

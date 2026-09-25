@@ -122,7 +122,7 @@ impl ExecuteTool {
             return Err(format!(
                 "Skill '{}' requires configuration before use.\n\n\
                  Missing secrets:\n{}\n\n\
-                 Configure with: skill(action: \"configure\", name: \"{}\", key: \"SECRET_NAME\", value: \"your-key\")\n\
+                 Configure with: configure_skill(name: \"{}\", key: \"SECRET_NAME\", value: \"your-key\")\n\
                  Or set them in Settings → Skills → {}",
                 skill.name,
                 details.join("\n"),
@@ -506,7 +506,7 @@ impl DynTool for ExecuteTool {
                 Some(s) => s,
                 None => {
                     return ToolResult::error(format!(
-                        "No installed skill named '{}'. List them with skill(action: \"list\").",
+                        "No installed skill named '{}'. Installed skills are in the skill listing; find_skills searches them.",
                         skill_name
                     ));
                 }

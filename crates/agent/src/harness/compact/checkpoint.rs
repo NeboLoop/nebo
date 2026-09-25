@@ -679,20 +679,19 @@ mod tests {
     }
 
     /// Skills come back with the content their newest successful load
-    /// returned (an unloaded or failed one does not), the agreed goal while
+    /// returned (a failed one does not), the agreed goal while
     /// it is active, each piece of running work, and plan mode.
     #[tokio::test]
     async fn restore_reattaches_skills_goal_helpers() {
         let s = Setup::new();
         s.say("user", "Use the skills.");
         let load = |id: &str, name: &str, content: &str, is_error: bool| {
-            s.call(id, "skill", serde_json::json!({ "action": "load", "name": name }), content, is_error);
+            s.call(id, "use_skill", serde_json::json!({ "name": name }), content, is_error);
         };
         load("k1", "letters", "LETTERS v1", false);
         load("k2", "invoices", "INVOICES", false);
-        s.call("k3", "skill", serde_json::json!({ "action": "unload", "name": "invoices" }), "unloaded", false);
         load("k4", "broken", "no such skill", true);
-        s.call("k5", "skill", serde_json::json!({ "name": "letters" }), "LETTERS v2", false);
+        load("k5", "letters", "LETTERS v2", false);
         let goal = AgreedGoal {
             session_id: s.sid.clone(),
             condition: "the letter is sent".into(),
@@ -720,7 +719,8 @@ mod tests {
         let text = |k: &str| rows.iter().find(|m| kind(m) == k).unwrap().content.clone();
         let skills = text("invoked_skills");
         assert!(skills.contains("### letters\nLETTERS v2") && !skills.contains("LETTERS v1"), "the newest load");
-        assert!(!skills.contains("INVOICES") && !skills.contains("broken"), "unloaded and failed loads stay out");
+        assert!(skills.contains("### invoices\nINVOICES"), "every loaded skill");
+        assert!(!skills.contains("broken"), "a failed load stays out");
         assert!(text("goal_set").contains("the letter is sent"));
         assert!(text("running_work").contains("research the client [task-7]: reading page 3"));
         assert!(rows.iter().all(|m| !metadata(m).is_some_and(|v| v["attachment"].is_object()) || m.content.starts_with("<system-reminder>")));

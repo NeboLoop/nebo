@@ -2423,14 +2423,13 @@ async fn review_failed_workflow_run(
         .with_session(format!("agent:{}:workflow-review", agent_id), format!("wfreview-{}", uuid::Uuid::new_v4()));
     ctx.learned_write_agent = Some(agent_id.clone());
     ctx.learned_write_staged = staged;
-    ctx.tool_whitelist = Some(std::collections::HashSet::from(["skill".to_string()]));
+    ctx.tool_whitelist = Some(std::collections::HashSet::from(["save_skill".to_string()]));
 
     let input = serde_json::json!({
-        "action": "create",
         "name": name,
         "content": content,
     });
-    let result = registry.execute(&ctx, "skill", input).await;
+    let result = registry.execute(&ctx, "save_skill", input).await;
     if result.is_error {
         info!(agent = %agent_id, binding = %binding, result = %result.content.chars().take(160).collect::<String>(), "workflow lesson not saved");
     } else {

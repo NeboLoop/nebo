@@ -152,28 +152,20 @@ fn recent_file_reads(messages: &[ChatMessage]) -> Vec<String> {
         .collect()
 }
 
-/// Skills loaded and not unloaded since, newest first: (name, the content
-/// the load returned). A load that failed loaded nothing.
+/// Skills loaded, newest first, each once: (name, the content the load
+/// returned). A load that failed loaded nothing.
 fn loaded_skills(messages: &[ChatMessage]) -> Vec<(String, String)> {
     let results = results_by_call(messages);
     let mut decided = HashSet::new();
     let mut skills = Vec::new();
     for (id, name, input) in calls_newest_first(messages) {
         let skill = input.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        if name != "skill" || skill.is_empty() || decided.contains(skill) {
+        if name != tools::skill_tool::USE_SKILL || skill.is_empty() || decided.contains(skill) {
             continue;
         }
-        match input.get("action").and_then(|v| v.as_str()).unwrap_or("") {
-            "unload" => {
-                decided.insert(skill.to_string());
-            }
-            "" | "load" => {
-                if let Some((content, false)) = results.get(id.as_str()) {
-                    decided.insert(skill.to_string());
-                    skills.push((skill.to_string(), content.clone()));
-                }
-            }
-            _ => {}
+        if let Some((content, false)) = results.get(id.as_str()) {
+            decided.insert(skill.to_string());
+            skills.push((skill.to_string(), content.clone()));
         }
     }
     skills

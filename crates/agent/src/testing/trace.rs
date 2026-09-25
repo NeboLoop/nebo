@@ -264,7 +264,7 @@ impl std::fmt::Display for Verdict {
 pub fn compute_strap_hashes() -> HashMap<String, String> {
     let docs = [
         "system", "bot", "loop", "message", "event", "app",
-        "desktop", "organizer", "skill", "agent", "vm", "publisher", "emit",
+        "desktop", "organizer", "agent", "vm", "publisher", "emit",
     ];
     let mut hashes = HashMap::new();
     for name in &docs {
