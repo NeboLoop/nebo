@@ -245,3 +245,91 @@ async fn an_install_by_another_door_answers_the_install_card() {
     let _ = nebo.store().delete_installed_plugin(SLUG);
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
+
+/// An employee that names a plugin by its install code
+/// (`requires.plugins: ["PLUG-…"]`, as marketplace packages do) reaches the
+/// plugin's own `plugin__<slug>` tool: the install records the code it came
+/// from, and the job's tools name the real tool. A qualified name maps to
+/// the same tool; a code nothing here was installed from maps to none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plugin_required_by_its_code_is_its_own_tool() {
+    use tools::plugin_tools::{plugin_slug_of, plugin_tool_name};
+    const CODE: &str = "PLUG-C0DE-0001";
+    const SLUG: &str = "coded-ledger";
+    let nebo = session().await;
+    hub_offers_plugin(CODE, SLUG, "Coded Ledger");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(
+            &profile,
+            "NeboAI",
+            "neboai",
+            "proof-token",
+            None,
+            None,
+            0,
+            1,
+            Some("token"),
+            None,
+        )
+        .unwrap();
+    crate::codes::handle_code(
+        &nebo.state,
+        crate::codes::CodeType::Plugin,
+        CODE,
+        "agent:main:web",
+    )
+    .await;
+    assert!(
+        nebo.state.plugin_store.resolve(SLUG, "*").is_some(),
+        "the code installed the plugin"
+    );
+
+    assert_eq!(plugin_slug_of(nebo.store(), CODE).as_deref(), Some(SLUG));
+    assert_eq!(
+        plugin_slug_of(nebo.store(), &CODE.to_lowercase()).as_deref(),
+        Some(SLUG)
+    );
+    assert_eq!(
+        plugin_slug_of(nebo.store(), "@neboai/plugins/coded-ledger@^1").as_deref(),
+        Some(SLUG)
+    );
+    assert_eq!(plugin_slug_of(nebo.store(), "PLUG-NEVR-0000"), None);
+
+    let config =
+        napp::agent::parse_agent_config(&json!({ "requires": { "plugins": [CODE] } }).to_string())
+            .unwrap();
+    let seat = tools::ActiveAgent {
+        agent_id: "coded-seat".into(),
+        name: "Coded Seat".into(),
+        agent_md: String::new(),
+        config: Some(config),
+        channel_id: None,
+        degraded: None,
+        soul: None,
+        rules: None,
+    };
+    let job = agent::harness::prompt::inputs::job_tools(
+        &seat,
+        None,
+        &nebo.state.tools,
+        nebo.store(),
+        &std::collections::HashSet::new(),
+    )
+    .await;
+    let tool = plugin_tool_name(SLUG);
+    assert!(
+        job.contains(&format!("- {tool}")),
+        "the job names the real tool: {job}"
+    );
+    assert!(!job.contains(CODE), "{job}");
+    assert!(
+        nebo.state.tools.get_deferred_names().await.contains(&tool),
+        "and the tool is there to load"
+    );
+
+    let _ = nebo.state.plugin_store.remove(SLUG);
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.state.tools.refresh_plugin_tools().await;
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}

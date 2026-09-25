@@ -536,8 +536,14 @@ pub(crate) async fn prepare(
     });
     let job_tools = match agent.as_ref() {
         Some(a) => {
-            prompt::inputs::job_tools(a, req.seat.tool_scope.as_deref(), &h.tools, &withheld_tools)
-                .await
+            prompt::inputs::job_tools(
+                a,
+                req.seat.tool_scope.as_deref(),
+                &h.tools,
+                &h.store,
+                &withheld_tools,
+            )
+            .await
         }
         None => String::new(),
     };
@@ -546,7 +552,14 @@ pub(crate) async fn prepare(
         agent.as_ref().map(prompt::inputs::self_context).unwrap_or_default(),
         agent
             .as_ref()
-            .map(|a| prompt::inputs::plugin_context(a, req.seat.tool_scope.as_deref(), h.skill_loader.as_deref()))
+            .map(|a| {
+                prompt::inputs::plugin_context(
+                    a,
+                    req.seat.tool_scope.as_deref(),
+                    h.skill_loader.as_deref(),
+                    &h.store,
+                )
+            })
             .unwrap_or_default(),
         job_tools,
     ]

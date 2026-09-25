@@ -1405,7 +1405,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     let slug = slug_hint;
 
     // ONE plugin installer — resolve binary, download, install, register.
-    if let Err(e) = fetch_and_install_plugin(state, &api, &slug, &name).await {
+    if let Err(e) = fetch_and_install_plugin(state, &api, &slug, &name, Some(code)).await {
         state.hub.broadcast(
             "plugin_error",
             serde_json::json!({ "plugin": name, "error": e.to_string() }),
@@ -1496,11 +1496,15 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
 /// (`handle_plugin_code`) and the dependency cascade (`deps::install_plugin`) so
 /// their binary resolution and DB registration can't drift. Callers own their
 /// own surrounding concerns (progress broadcasts, child-dep handling, auth).
+/// `code` is the marketplace code it was installed from, when there is one
+/// (an update keeps the one recorded): an employee that names the plugin by
+/// that code reaches its tool.
 pub(crate) async fn fetch_and_install_plugin(
     state: &AppState,
     api: &NeboAIApi,
     slug: &str,
     name: &str,
+    code: Option<&str>,
 ) -> Result<(), NeboError> {
     let platform = napp::plugin::current_platform_key();
     let detail = api
@@ -1562,6 +1566,13 @@ pub(crate) async fn fetch_and_install_plugin(
         sig_status,
     ) {
         warn!(plugin = %slug, error = %e, "failed to upsert plugin into DB registry");
+    }
+    if let Some(code) = code
+        && let Err(e) = state
+            .store
+            .set_plugin_install_code(slug, &code.to_ascii_uppercase())
+    {
+        warn!(plugin = %slug, error = %e, "the plugin's install code was not recorded");
     }
     let _ = state.store.upsert_artifact_update_pref(slug, "plugin", &version);
 

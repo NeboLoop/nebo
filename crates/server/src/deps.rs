@@ -667,7 +667,7 @@ async fn install_plugin(
     // Install via the ONE shared plugin installer (resolves the binary via get_plugin,
     // downloads, installs, registers in the DB + tool/hooks). Same code path as the
     // standalone install, so the two can't drift on binary resolution again.
-    crate::codes::fetch_and_install_plugin(state, api, &slug, &name)
+    crate::codes::fetch_and_install_plugin(state, api, &slug, &name, Some(&code))
         .await
         .map_err(|e| e.to_string())?;
 

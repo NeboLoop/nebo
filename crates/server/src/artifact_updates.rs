@@ -586,7 +586,7 @@ pub(crate) async fn apply_plugin_update_pub(
         .ok()
         .and_then(|ps| ps.into_iter().find(|p| p.slug == slug).map(|p| p.name))
         .unwrap_or_else(|| slug.to_string());
-    crate::codes::fetch_and_install_plugin(state, api, slug, &name)
+    crate::codes::fetch_and_install_plugin(state, api, slug, &name, None)
         .await
         .map_err(|e| e.to_string())
 }

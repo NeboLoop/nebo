@@ -23,6 +23,42 @@ pub fn plugin_tool_name(slug: &str) -> String {
     format!("{PLUGIN_PREFIX}{slug}")
 }
 
+/// The installed plugin a `requires.plugins` entry names, as the slug of its
+/// `plugin__<slug>` tool: a slug as itself, a qualified marketplace name
+/// (`@org/plugins/<slug>@^1`) by its last segment, an install code
+/// (`PLUG-XXXX-XXXX`) by the plugin it installed here. `None` for a code no
+/// install here recorded.
+pub fn plugin_slug_of(store: &db::Store, reference: &str) -> Option<String> {
+    let reference = reference.trim();
+    if let Ok(Some(slug)) = store.plugin_slug_for_code(reference) {
+        return Some(slug);
+    }
+    if is_install_code(reference) {
+        return None;
+    }
+    let unversioned = match reference.strip_prefix('@') {
+        Some(rest) => rest
+            .split_once('@')
+            .map_or(reference, |(name, _)| &reference[..name.len() + 1]),
+        None => reference,
+    };
+    unversioned
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// A plugin install code's shape: `PLUG-XXXX-XXXX`.
+fn is_install_code(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    parts.len() == 3
+        && parts[0].eq_ignore_ascii_case("PLUG")
+        && parts[1..]
+            .iter()
+            .all(|g| g.len() == 4 && g.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
 /// The slug a `plugin__<slug>` tool name runs, or `None` for any other name.
 pub fn plugin_slug(tool_name: &str) -> Option<&str> {
     tool_name.strip_prefix(PLUGIN_PREFIX).filter(|s| !s.is_empty())

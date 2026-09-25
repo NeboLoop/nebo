@@ -1616,7 +1616,7 @@ pub async fn phone_answer(
     }
     if state.plugin_store.get_channel_def(SLUG).is_none() {
         let api = build_api_client(&state).map_err(to_error_response)?;
-        crate::codes::fetch_and_install_plugin(&state, &api, SLUG, "Phonecall")
+        crate::codes::fetch_and_install_plugin(&state, &api, SLUG, "Phonecall", None)
             .await
             .map_err(to_error_response)?;
         state

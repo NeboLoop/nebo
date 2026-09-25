@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::Store;
 use crate::models::{PluginRegistry, PluginSetting};
@@ -150,6 +150,29 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Record the marketplace code the plugin was installed from.
+    pub fn set_plugin_install_code(&self, slug: &str, code: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE plugin_registry SET install_code = ?1 WHERE slug = ?2",
+            params![code, slug],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The installed plugin a marketplace code installed.
+    pub fn plugin_slug_for_code(&self, code: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT slug FROM plugin_registry WHERE install_code = ?1 AND install_code != '' AND slug != ''",
+            params![code.to_ascii_uppercase()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
     }
 
     /// Delete an installed plugin from the registry.
