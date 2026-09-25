@@ -6,6 +6,9 @@ import (
 	"unicode"
 )
 
+// knownEnums are the Serialize enums emitted as unions (see enums.go).
+var knownEnums = map[string]bool{}
+
 // rustTypeToTS converts a Rust type string to its TypeScript equivalent.
 func rustTypeToTS(rustType string, structs map[string]*RustStruct) string {
 	rustType = strings.TrimSpace(rustType)
@@ -57,6 +60,8 @@ func rustTypeToTS(rustType string, structs map[string]*RustStruct) string {
 		return "void"
 	case "serde_json::Value", "Value":
 		return "unknown"
+	case "PathBuf", "std::path::PathBuf":
+		return "string"
 	}
 
 	// A path-qualified struct (`db::models::CronJob`) is the same interface as
@@ -66,8 +71,11 @@ func rustTypeToTS(rustType string, structs map[string]*RustStruct) string {
 		rustType = rustType[i+2:]
 	}
 
-	// If we know this struct, use its name.
+	// If we know this struct or enum, use its name.
 	if _, ok := structs[rustType]; ok {
+		return rustType
+	}
+	if knownEnums[rustType] {
 		return rustType
 	}
 

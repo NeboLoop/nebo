@@ -46,6 +46,12 @@ func main() {
 		}
 	}
 	fmt.Printf("  Found %d serializable structs\n", len(allStructs))
+	allEnums := make(map[string]*RustEnum)
+	for _, dir := range structDirs {
+		for _, e := range scanEnums(dir) {
+			allEnums[e.Name] = e
+		}
+	}
 
 	// ── 2. Parse routes ─────────────────────────────────────────────────
 	fmt.Println("Scanning routes...")
@@ -76,7 +82,7 @@ func main() {
 	// ── 6. Generate neboComponents.ts ───────────────────────────────────
 	fmt.Println("Generating neboComponents.ts...")
 	componentsPath := filepath.Join(outDir, "neboComponents.ts")
-	generateComponents(componentsPath, allStructs, handlers, wsEvents)
+	generateComponents(componentsPath, allStructs, allEnums, handlers, wsEvents)
 
 	// ── 7. Generate nebo.ts ─────────────────────────────────────────────
 	fmt.Println("Generating nebo.ts...")
