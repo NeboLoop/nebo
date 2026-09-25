@@ -27,7 +27,7 @@ pub struct EventSubscription {
     /// Inline workflow definition JSON (from agent.json binding).
     pub definition_json: Option<String>,
     /// Namespaced emit source for the last activity (e.g. "chief-of-staff.briefing.ready").
-    pub emit_source: Option<String>,
+    pub emit_sources: Vec<String>,
     /// Present when the binding declares `case`: the event is routed to the
     /// one case for the person it names instead of starting a run.
     pub case: Option<CaseRoute>,
@@ -206,7 +206,7 @@ impl EventDispatcher {
                                 "event",
                                 detail,
                                 &sub.agent_source,
-                                sub.emit_source.clone(),
+                                sub.emit_sources.clone(),
                             )
                             .await
                         {
@@ -484,7 +484,7 @@ mod tests {
             agent_source: "intake".into(),
             binding_name: "work-lead".into(),
             definition_json: Some(r#"{"activities":[{"id":"turn","intent":"work the lead"}]}"#.into()),
-            emit_source: None,
+            emit_sources: Vec::new(),
             case: Some(CaseRoute { key_path: "contactEmail,email,phone".into(), case_type: "lead".into(), default_wait_secs: 86_400 }),
         };
         let route = sub.case.clone().unwrap();
@@ -525,7 +525,7 @@ mod tests {
             agent_source: "agent-1".into(),
             binding_name: "auto-reply".into(),
             definition_json: None,
-            emit_source: None,
+            emit_sources: Vec::new(),
             case: None,
         };
 

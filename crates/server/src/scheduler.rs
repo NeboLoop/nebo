@@ -528,10 +528,11 @@ pub(crate) async fn execute_agent_workflow_task(
 
     let def_json = binding.to_workflow_json(binding_name);
     let inputs: serde_json::Value = serde_json::to_value(&binding.inputs).unwrap_or_default();
-    let emit_source = binding
+    let emit_sources: Vec<String> = binding
         .emit
-        .as_ref()
-        .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name));
+        .iter()
+        .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name))
+        .collect();
 
     match manager
         .run_inline(
@@ -540,7 +541,7 @@ pub(crate) async fn execute_agent_workflow_task(
             trigger,
             Some(binding_name.to_string()),
             agent_id,
-            emit_source,
+            emit_sources,
         )
         .await
     {

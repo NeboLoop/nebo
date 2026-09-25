@@ -586,7 +586,7 @@ pub(crate) mod tests {
             _trigger_type: &'a str,
             _trigger_detail: Option<String>,
             _agent_id: &'a str,
-            _emit_source: Option<String>,
+            _emit_sources: Vec<String>,
         ) -> Fut<'a, Result<String, String>> {
             Box::pin(async { Err("unused".to_string()) })
         }

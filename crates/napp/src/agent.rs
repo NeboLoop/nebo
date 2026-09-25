@@ -368,16 +368,34 @@ pub struct WorkflowBinding {
     /// Budget constraints for the entire workflow run.
     #[serde(default)]
     pub budget: AgentBudget,
-    /// Event name to emit on completion (e.g. "briefing.ready").
-    /// Namespaced by agent slug at runtime: "agent-name.briefing.ready".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub emit: Option<String>,
+    /// The events this workflow announces when it finishes (e.g.
+    /// "briefing.ready"), each namespaced by agent slug at runtime:
+    /// "agent-name.briefing.ready". Written as a list; read from a list or
+    /// from one string of comma-separated names (the form the app's editor
+    /// and the workflow tools write).
+    #[serde(default, deserialize_with = "event_names", skip_serializing_if = "Vec::is_empty")]
+    pub emit: Vec<String>,
     /// Present = this binding works CASES: one long-lived run per person or
     /// thing, keyed from the payload, with every later event for the same
     /// key routed into it instead of starting a fresh run. Absent (every
     /// existing binding) = today's behavior, a run per trigger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub case: Option<CaseConfig>,
+}
+
+/// `emit` as written: a list of event names, or one string of them.
+fn event_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Names {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Option::<Names>::deserialize(d)? {
+        None => Vec::new(),
+        Some(Names::One(s)) => types::strutil::name_list(&s),
+        Some(Names::Many(v)) => v.iter().flat_map(|n| types::strutil::name_list(n)).collect(),
+    })
 }
 
 /// How a binding names the thing it works and what a turn waits on when it
@@ -430,6 +448,12 @@ impl WorkflowBinding {
             "dependencies": { "skills": [], "workflows": [] },
         })
         .to_string()
+    }
+
+    /// `emit` as the one string the workflow's row stores: the names,
+    /// comma-separated (`types::strutil::name_list` reads it back).
+    pub fn emit_names(&self) -> Option<String> {
+        (!self.emit.is_empty()).then(|| self.emit.join(","))
     }
 
     /// Returns true if this binding has inline activities to execute.
@@ -1053,6 +1077,38 @@ mod tests {
         assert!(err.contains("reserved to laws"), "{err}");
         let json = r#"{"ceiling": {"ledger.payment.create": "always"}}"#;
         assert!(parse_agent_config(json).is_err());
+    }
+
+    /// A32: a workflow that declares the events it may emit as a list
+    /// (marketplace agents do: `"emit": ["conversion.dropoff.detected",
+    /// "report.ready"]`) loads with every event, and so does the comma list
+    /// the app's editor and the tools write. It was skipped at every start
+    /// with "invalid type: sequence, expected a string".
+    #[test]
+    fn a_workflow_declaring_several_events_loads_with_all_of_them() {
+        let json = r#"{"workflows": {
+            "funnel-scan": {
+                "trigger": {"type": "schedule", "cron": "0 8 * * 1-5"},
+                "emit": ["conversion.dropoff.detected", "report.ready"],
+                "activities": [{"id": "pull", "intent": "Pull the funnel", "steps": ["Read the inputs"]}]
+            },
+            "weekly": {
+                "trigger": {"type": "schedule", "cron": "0 8 * * 1"},
+                "emit": "test.completed, report.ready"
+            },
+            "one": {"trigger": {"type": "manual"}, "emit": "briefing.ready"},
+            "none": {"trigger": {"type": "manual"}}
+        }}"#;
+        let cfg = parse_agent_config(json).unwrap();
+        assert!(cfg.skipped_workflows.is_empty(), "nothing skipped: {:?}", cfg.skipped_workflows);
+        assert_eq!(cfg.workflows["funnel-scan"].emit, ["conversion.dropoff.detected", "report.ready"]);
+        assert_eq!(cfg.workflows["weekly"].emit, ["test.completed", "report.ready"]);
+        assert_eq!(cfg.workflows["one"].emit, ["briefing.ready"]);
+        assert!(cfg.workflows["none"].emit.is_empty());
+        // Written back as the list it is, and read again the same.
+        let back = serde_json::to_value(&cfg.workflows["funnel-scan"]).unwrap();
+        assert_eq!(back["emit"], serde_json::json!(["conversion.dropoff.detected", "report.ready"]));
+        assert!(serde_json::to_value(&cfg.workflows["none"]).unwrap().get("emit").is_none());
     }
 
     #[test]

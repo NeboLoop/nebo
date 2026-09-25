@@ -70,7 +70,7 @@ struct GraphCtx<'a> {
     cancel_token: Option<&'a CancellationToken>,
     skill_content: Option<&'a HashMap<String, String>>,
     event_bus: Option<&'a tools::EventBus>,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     /// Per-employee approval-checkpoint context (policy).
     checkpoint: Option<crate::engine::CheckpointCtx>,
@@ -167,7 +167,7 @@ pub(crate) async fn execute_graph(
     cancel_token: Option<&CancellationToken>,
     skill_content: Option<&HashMap<String, String>>,
     event_bus: Option<&tools::EventBus>,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     checkpoint: Option<&crate::engine::CheckpointCtx>,
     resume: Option<crate::engine::ResumeState>,
@@ -186,7 +186,7 @@ pub(crate) async fn execute_graph(
         cancel_token,
         skill_content,
         event_bus,
-        emit_source,
+        emit_sources,
         progress_tx,
         checkpoint,
         resume,
@@ -293,7 +293,7 @@ fn build_ctx<'a>(
     cancel_token: Option<&'a CancellationToken>,
     skill_content: Option<&'a HashMap<String, String>>,
     event_bus: Option<&'a tools::EventBus>,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     checkpoint: Option<&crate::engine::CheckpointCtx>,
     resume: Option<crate::engine::ResumeState>,
@@ -369,7 +369,7 @@ fn build_ctx<'a>(
         cancel_token,
         skill_content,
         event_bus,
-        emit_source,
+        emit_sources,
         progress_tx,
         checkpoint: checkpoint.cloned(),
         resume,
@@ -1421,10 +1421,10 @@ async fn run_llm_activity<'a>(
     let exit_tool_box: Box<dyn DynTool> = Box::new(tools::ExitTool::new());
     activity_tools.push(&exit_tool_box);
 
-    let activity_emit = if ctx.terminal_emit.contains(&activity.id) {
-        ctx.emit_source.as_deref()
+    let activity_emit: &[String] = if ctx.terminal_emit.contains(&activity.id) {
+        &ctx.emit_sources
     } else {
-        None
+        &[]
     };
 
     let started_at = chrono::Utc::now().timestamp();
@@ -2122,7 +2122,7 @@ mod walk_tests {
             None,
             None,
             None,
-            None,
+            Vec::new(),
             None,
             None,
             None,
@@ -2799,7 +2799,7 @@ mod walk_tests {
                 None,
                 None,
                 None,
-                None,
+                Vec::new(),
                 None,
                 None,
                 None,
@@ -2893,7 +2893,7 @@ mod walk_tests {
             None,
             None,
             None,
-            None,
+            Vec::new(),
             None,
             None,
             None,
@@ -3333,7 +3333,7 @@ mod walk_tests {
         let looper = ScriptedLoop::new(provider);
         let result = execute_graph(
             &def, "", "test-owner", false, &serde_json::json!({}), &store, decide, &looper, &[], None,
-            &run_id, None, None, None, None, None, None, None,
+            &run_id, None, None, None, Vec::new(), None, None, None,
         )
         .await;
         (result, store, run_id)
@@ -3521,7 +3521,7 @@ mod walk_tests {
                 None,
                 None,
                 None,
-                None,
+                Vec::new(),
                 None,
                 None,
                 None,

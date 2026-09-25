@@ -264,7 +264,7 @@ pub async fn execute_workflow(
     cancel_token: Option<&CancellationToken>,
     skill_content: Option<&HashMap<String, String>>,
     event_bus: Option<&tools::EventBus>,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     checkpoint: Option<&CheckpointCtx>,
     resume: Option<ResumeState>,
@@ -289,13 +289,12 @@ pub async fn execute_workflow(
         }
     };
 
-    // Resolve emit source: prefer explicit parameter, fall back to _emit key in inputs
-    let resolved_emit = emit_source.or_else(|| {
-        inputs
-            .get("_emit")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    });
+    // The events to announce: the binding's, else the _emit key in inputs.
+    let resolved_emit: Vec<String> = if emit_sources.is_empty() {
+        inputs.get("_emit").and_then(|v| v.as_str()).map(types::strutil::name_list).unwrap_or_default()
+    } else {
+        emit_sources
+    };
 
     // Explicit connections → deterministic graph execution (forks parallel,
     // joins barriered, condition/loop routing engine-evaluated). No
@@ -340,10 +339,10 @@ pub async fn execute_workflow(
 
     for (idx, activity) in def.activities.iter().enumerate() {
         let is_last = idx == activity_count - 1;
-        let activity_emit = if is_last {
-            resolved_emit.as_deref()
+        let activity_emit: &[String] = if is_last {
+            &resolved_emit
         } else {
-            None
+            &[]
         };
         // Check for cancellation before each activity
         if let Some(token) = cancel_token {
@@ -667,7 +666,7 @@ pub(crate) async fn execute_activity_with_retry(
     loop_impl: &dyn ActivityLoop,
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
-    emit_source: Option<&str>,
+    emit_sources: &[String],
     store: &Arc<Store>,
     agent_id: &str,
     run_id: &str,
@@ -708,7 +707,7 @@ pub(crate) async fn execute_activity_with_retry(
             loop_impl,
             tools,
             skill_content,
-            emit_source,
+            emit_sources,
             store,
             agent_id,
             run_id,
@@ -766,7 +765,7 @@ pub async fn execute_activity(
     loop_impl: &dyn ActivityLoop,
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
-    emit_source: Option<&str>,
+    emit_sources: &[String],
     store: &Arc<Store>,
     agent_id: &str,
     run_id: &str,
@@ -812,7 +811,7 @@ pub async fn execute_activity(
             prior_context,
             inputs,
             skill_content,
-            emit_source,
+            emit_sources,
             has_browser,
             &tool_names,
             agent_ctx.as_deref(),
@@ -875,7 +874,7 @@ pub async fn execute_activity(
         prior_context,
         inputs,
         skill_content,
-        emit_source,
+        emit_sources,
         has_browser,
         &tool_names,
         agent_ctx.as_deref(),
@@ -1273,7 +1272,7 @@ fn build_activity_prompt_no_steps(
     prior_context: &str,
     inputs: &serde_json::Value,
     skill_content: Option<&HashMap<String, String>>,
-    emit_source: Option<&str>,
+    emit_sources: &[String],
     has_browser: bool,
     tool_names: &[String],
     agent_context: Option<&str>,
@@ -1286,7 +1285,7 @@ fn build_activity_prompt_no_steps(
         prior_context,
         inputs,
         skill_content,
-        emit_source,
+        emit_sources,
         has_browser,
         tool_names,
         agent_context,
@@ -1386,7 +1385,7 @@ fn build_activity_prompt_with_context(
     prior_context: &str,
     inputs: &serde_json::Value,
     skill_content: Option<&HashMap<String, String>>,
-    emit_source: Option<&str>,
+    emit_sources: &[String],
     has_browser: bool,
     tool_names: &[String],
     agent_context: Option<&str>,
@@ -1526,7 +1525,7 @@ fn build_activity_prompt_with_context(
          because the engine reads the next wait from it.\n",
     );
     let has_emit_cmd = activity.cmds.iter().any(|c| c == "emit");
-    if has_emit_cmd && emit_source.is_none() {
+    if has_emit_cmd && emit_sources.is_empty() {
         prompt.push_str(
             "- emit_event(source: \"...\", payload: {...}) — call this to announce \
              your result to other workflows. Can be called multiple times, \
@@ -1548,11 +1547,23 @@ fn build_activity_prompt_with_context(
     }
 
     // Emit instruction — injected into last activity only when declared
-    if let Some(source) = emit_source {
-        prompt.push_str(&format!(
+    match emit_sources {
+        [] => {}
+        [source] => prompt.push_str(&format!(
             "\n## Output\nWhen you have completed your work, you MUST call the emit tool with:\n- source: \"{}\"\n- payload: your actual output or result (not a summary of what you did — the content itself)\n\nDo not say \"done\" or \"completed\". Call emit with the real output.\n",
             source
-        ));
+        )),
+        several => {
+            prompt.push_str(
+                "\n## Output\nWhen you have completed your work, call the emit tool once for each of these events that your result is:\n",
+            );
+            for source in several {
+                prompt.push_str(&format!("- source: \"{source}\"\n"));
+            }
+            prompt.push_str(
+                "Each call's payload is your actual output or result for that event (not a summary of what you did — the content itself).\n\nDo not say \"done\" or \"completed\". Call emit with the real output.\n",
+            );
+        }
     }
 
     prompt
@@ -1830,11 +1841,28 @@ mod engine_tests {
             "",
             &serde_json::json!({}),
             None,
-            None,
+            &[],
             false,
             &names,
             None,
         )
+    }
+
+    /// A32: the last activity of a workflow that declares several events is
+    /// told every one of them; one event keeps its single instruction.
+    #[test]
+    fn the_last_activity_is_told_every_event_it_announces() {
+        let activity: Activity =
+            serde_json::from_value(serde_json::json!({"id": "report", "intent": "Report the scan"})).unwrap();
+        let prompt = |sources: &[String]| {
+            build_activity_prompt_with_context(&activity, "", &serde_json::json!({}), None, sources, false, &[], None)
+        };
+        let several = prompt(&["lpo.conversion.dropoff.detected".to_string(), "lpo.report.ready".to_string()]);
+        assert!(several.contains("once for each of these events"), "{several}");
+        assert!(several.contains("- source: \"lpo.conversion.dropoff.detected\"\n- source: \"lpo.report.ready\"\n"), "{several}");
+        let one = prompt(&["lpo.report.ready".to_string()]);
+        assert!(one.contains("you MUST call the emit tool with:\n- source: \"lpo.report.ready\""), "{one}");
+        assert!(!prompt(&[]).contains("## Output"));
     }
 
     #[test]
@@ -1867,7 +1895,7 @@ mod engine_tests {
             "",
             &serde_json::json!({}),
             None,
-            None,
+            &[],
             false,
             &[],
             None,
@@ -1888,7 +1916,7 @@ mod engine_tests {
             "",
             &serde_json::json!({}),
             None,
-            None,
+            &[],
             false,
             &[],
             None,
