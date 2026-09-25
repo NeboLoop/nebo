@@ -976,7 +976,10 @@ impl Registry {
         // the tool future (a tool can park for minutes on an ask card while
         // plugin installs re-register tools).
         let threshold = crate::result_shape::threshold(tool.max_result_chars(&input));
-        let mut result = tool.execute_dyn(ctx, input).await;
+        let mut result = tool.execute_dyn(ctx, input.clone()).await;
+        if !result.is_error {
+            self.gate.ran(ctx, &call, &result).await;
+        }
         crate::result_shape::shape(
             name,
             &crate::result_shape::results_dir(&ctx.session_id),

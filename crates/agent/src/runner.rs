@@ -262,12 +262,6 @@ pub struct RunRequest {
     pub user_id: String,
     pub skip_memory_extract: bool,
     pub origin: Origin,
-    /// Allow an autonomous (comm-origin) run to REQUEST tool approval instead
-    /// of refusing gated tools — set only when the dispatching context can
-    /// relay the approval to the owner (personal-loop conversations). The
-    /// desktop's Interactive runs don't need this; it exists so a run whose
-    /// approvals reach the owner over comm isn't treated as unattended.
-    pub approval_relay: bool,
     /// The entry this run came through (chat, helper, workflow, schedule,
     /// heartbeat, coworker, voice, MCP). Recorded with every decision.
     pub door: types::permissions::Door,
@@ -435,11 +429,6 @@ pub struct Runner {
     agent_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
     ask_channels: Option<tools::AskChannels>,
-    /// Tool-approval channels (PERMISSIONS_SME §11). The runner inserts a
-    /// oneshot per tool_call_id, emits `approval_request`, and awaits the user's
-    /// ApprovalModal decision. Shares the map with the WS `approval_response`
-    /// handler. Set via `set_approval_channels`.
-    approval_channels: Option<tools::ApprovalChannels>,
     embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
     /// The typed-decision door (TypeSafe Jev through Janus). Present exactly
     /// when the Janus provider is; the judges use it instead of a chat turn.
@@ -470,7 +459,6 @@ impl Runner {
             tools,
             store,
             ask_channels: None,
-            approval_channels: None,
             selector: Arc::new(selector),
             concurrency,
             hooks,
@@ -529,13 +517,6 @@ impl Runner {
 
     pub fn set_ask_channels(mut self, channels: tools::AskChannels) -> Self {
         self.ask_channels = Some(channels);
-        self
-    }
-
-    /// Set the shared tool-approval channels (PERMISSIONS_SME §11) so the runner
-    /// can emit `approval_request` and await the user's ApprovalModal decision.
-    pub fn set_approval_channels(mut self, channels: tools::ApprovalChannels) -> Self {
-        self.approval_channels = Some(channels);
         self
     }
 
@@ -837,7 +818,6 @@ impl Runner {
         let prompt_mode = req.prompt_mode.clone();
         let progress = Some(progress);
         let ask_channels = self.ask_channels.clone();
-        let approval_channels = self.approval_channels.clone();
         let embedding_provider = self.embedding_provider.clone();
         let hybrid_searcher = self.hybrid_searcher.clone();
         let tool_scope = req.tool_scope.clone();
@@ -923,8 +903,6 @@ impl Runner {
                         prompt::PromptMode::Minimal,
                         progress.as_ref(),
                         ask_channels.as_ref(),
-                        approval_channels.as_ref(),
-                        req.approval_relay,
                         req.handoff_depth,
                         embedding_provider.as_ref(),
                         hybrid_searcher.as_ref(),
@@ -1027,8 +1005,6 @@ impl Runner {
                 prompt_mode.clone(),
                 progress.as_ref(),
                 ask_channels.as_ref(),
-                approval_channels.as_ref(),
-                req.approval_relay,
                 req.handoff_depth,
                 embedding_provider.as_ref(),
                 hybrid_searcher.as_ref(),
@@ -1223,8 +1199,6 @@ impl Runner {
                             prompt_mode_rf,
                             None,
                             None,
-                            None,
-                            false, // review forks never relay approvals
                             0,     // review forks never hand off
                             embedding_provider_rf.as_ref(),
                             hybrid_searcher_rf.as_ref(),
@@ -1473,8 +1447,6 @@ async fn run_loop(
     prompt_mode: prompt::PromptMode,
     progress: Option<&RunProgress>,
     ask_channels: Option<&tools::AskChannels>,
-    approval_channels: Option<&tools::ApprovalChannels>,
-    approval_relay: bool,
     handoff_depth: u8,
     embedding_provider: Option<&Arc<dyn ai::EmbeddingProvider>>,
     hybrid_searcher: Option<&Arc<dyn tools::HybridSearcher>>,
@@ -3289,8 +3261,6 @@ async fn run_loop(
                     hooks,
                     user_prompt,
                     iteration,
-                    approval_channels,
-                    approval_relay,
                     workflow_mode,
                     decide,
                     active_task: &active_task,

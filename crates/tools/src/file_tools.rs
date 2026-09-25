@@ -453,13 +453,20 @@ impl DynTool for EditFileTool {
     }
 }
 
-/// A write or an edit overwrites the file it names and publishes nothing.
+/// A write or an edit brings a new file into being, or replaces the one
+/// that was there, and publishes nothing. Named `file:<path>`, the way the
+/// employee's created ledger keeps it.
 fn overwrites(input: &Value) -> CallEffects {
-    CallEffects {
-        overwrites: str_arg(input, "path").map(crate::file_tool::expand_path).into_iter().collect(),
-        publishes: Knowable::No,
-        ..CallEffects::default()
+    let mut effects = CallEffects { publishes: Knowable::No, ..CallEffects::default() };
+    if let Some(path) = str_arg(input, "path").map(crate::file_tool::expand_path) {
+        let named = format!("file:{path}");
+        if std::path::Path::new(&path).exists() {
+            effects.overwrites.push(named);
+        } else {
+            effects.creates.push(named);
+        }
     }
+    effects
 }
 
 // ── write_file ─────────────────────────────────────────────────────
@@ -1067,7 +1074,15 @@ mod tests {
         let input = json!({"path": "/tmp/x.txt", "content": "y"});
         assert_eq!(write.rule_field(&input), Some(RuleField::Folder("/tmp/x.txt".into())));
         assert_eq!(write.capability(&input), Some("file"));
-        assert_eq!(write.effects(&input).overwrites, vec!["/tmp/x.txt".to_string()]);
+        // A write to a new path creates it; to an existing one replaces it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.txt").to_string_lossy().into_owned();
+        let named = format!("file:{path}");
+        let fx = write.effects(&json!({"path": path, "content": "y"}));
+        assert_eq!((fx.creates, fx.overwrites), (vec![named.clone()], vec![]));
+        std::fs::write(&path, "x").unwrap();
+        let fx = write.effects(&json!({"path": path, "content": "y"}));
+        assert_eq!((fx.creates, fx.overwrites), (vec![], vec![named]));
         assert!(!write.read_only(&input));
         assert!(ReadFileTool(m.clone()).read_only(&json!({"path": "/tmp/x"})));
         assert!(ListCheckpointsTool(m.clone()).read_only(&json!({})));

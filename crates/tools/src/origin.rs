@@ -180,6 +180,10 @@ pub struct ToolContext {
     /// started by an inbound payload). A catalog-gated operation asks, the
     /// same as for an untrusted origin.
     pub untrusted_input: bool,
+    /// The judgement's verdict for this call, when the tool round asked the
+    /// judges about it (a call whose outward effects the code could not
+    /// decide). `None`: no judge was asked; the code's answer stands.
+    pub judgement: Option<types::permissions::Verdict>,
     /// Dispatch-time tool whitelist for restricted internal runs (the
     /// self-improvement review fork). `Some` = only these tool names may
     /// execute; everything else is denied with a corrective error at the ONE

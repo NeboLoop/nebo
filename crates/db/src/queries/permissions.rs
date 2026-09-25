@@ -4,10 +4,14 @@
 //! only reads and writes rows.
 
 use rusqlite::{params, OptionalExtension};
-use types::permissions::{Effect, MoneyLimit, Mode, Rule, RuleError, RuleField, RuleKey, RuleSource, Scope, Writer};
+use types::permissions::{Effect, JudgementMode, MoneyLimit, Mode, Rule, RuleError, RuleField, RuleKey, RuleSource, Scope, Writer};
 use types::NeboError;
 
 use crate::Store;
+
+/// The activity row's columns, in `PermissionActivityRow` order.
+const ACTIVITY_COLUMNS: &str = "SELECT agent_id, session_key, door, tool, rule_key, activity, decision, why, ask_id, \
+     unreviewed, judgement, created_at";
 
 fn db_err(e: impl std::fmt::Display) -> NeboError {
     NeboError::Database(e.to_string())
@@ -78,6 +82,11 @@ pub struct PermissionActivityRow {
     /// The `Why` (or the ask case) as JSON.
     pub why: String,
     pub ask_id: Option<String>,
+    /// Neither judge could answer for this call: it ran unreviewed.
+    pub unreviewed: bool,
+    /// The judgement's verdict for a call the code could not decide, as
+    /// JSON (`{mode, verdict, by, reason}`); `None` when no judge was asked.
+    pub judgement: Option<String>,
     pub created_at: i64,
 }
 
@@ -365,8 +374,9 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO permission_activity
-               (agent_id, session_key, door, tool, rule_key, activity, decision, why, ask_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+               (agent_id, session_key, door, tool, rule_key, activity, decision, why, ask_id,
+                unreviewed, judgement, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 row.agent_id,
                 row.session_key,
@@ -377,6 +387,8 @@ impl Store {
                 row.decision,
                 row.why,
                 row.ask_id,
+                row.unreviewed as i64,
+                row.judgement,
                 row.created_at,
             ],
         )
@@ -391,41 +403,164 @@ impl Store {
         filter: &PermissionActivityFilter,
     ) -> Result<(Vec<PermissionActivityRow>, i64), NeboError> {
         let conditions = "(?1 IS NULL OR agent_id = ?1) AND (?2 IS NULL OR door = ?2) AND (?3 IS NULL OR decision = ?3)";
-        let conn = self.conn()?;
-        let total: i64 = conn
+        let total: i64 = self
+            .conn()?
             .query_row(
                 &format!("SELECT COUNT(*) FROM permission_activity WHERE {conditions}"),
                 params![filter.agent_id, filter.door, filter.decision],
                 |row| row.get(0),
             )
             .map_err(db_err)?;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT agent_id, session_key, door, tool, rule_key, activity, decision, why, ask_id, created_at
-                 FROM permission_activity WHERE {conditions} ORDER BY id DESC LIMIT ?4 OFFSET ?5"
-            ))
-            .map_err(db_err)?;
+        let rows = self.activity_rows(
+            &format!("{ACTIVITY_COLUMNS} FROM permission_activity WHERE {conditions} ORDER BY id DESC LIMIT ?4 OFFSET ?5"),
+            params![filter.agent_id, filter.door, filter.decision, filter.limit, filter.offset],
+        )?;
+        Ok((rows, total))
+    }
+
+    /// Unreviewed actions recorded at or after `since` through the given
+    /// doors, oldest first: what the daily digest lists.
+    pub fn unreviewed_permission_activity(
+        &self,
+        since: i64,
+        doors: &[&str],
+    ) -> Result<Vec<PermissionActivityRow>, NeboError> {
+        let doors = serde_json::to_string(doors).map_err(db_err)?;
+        self.activity_rows(
+            &format!(
+                "{ACTIVITY_COLUMNS} FROM permission_activity
+                 WHERE unreviewed = 1 AND created_at >= ?1
+                   AND door IN (SELECT value FROM json_each(?2))
+                 ORDER BY id"
+            ),
+            params![since, doors],
+        )
+    }
+
+    fn activity_rows(&self, sql: &str, args: impl rusqlite::Params) -> Result<Vec<PermissionActivityRow>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(sql).map_err(db_err)?;
         let rows = stmt
-            .query_map(
-                params![filter.agent_id, filter.door, filter.decision, filter.limit, filter.offset],
-                |row| {
-                    Ok(PermissionActivityRow {
-                        agent_id: row.get(0)?,
-                        session_key: row.get(1)?,
-                        door: row.get(2)?,
-                        tool: row.get(3)?,
-                        rule_key: row.get(4)?,
-                        activity: row.get(5)?,
-                        decision: row.get(6)?,
-                        why: row.get(7)?,
-                        ask_id: row.get(8)?,
-                        created_at: row.get(9)?,
-                    })
-                },
+            .query_map(args, |row| {
+                Ok(PermissionActivityRow {
+                    agent_id: row.get(0)?,
+                    session_key: row.get(1)?,
+                    door: row.get(2)?,
+                    tool: row.get(3)?,
+                    rule_key: row.get(4)?,
+                    activity: row.get(5)?,
+                    decision: row.get(6)?,
+                    why: row.get(7)?,
+                    ask_id: row.get(8)?,
+                    unreviewed: row.get::<_, i64>(9)? != 0,
+                    judgement: row.get(10)?,
+                    created_at: row.get(11)?,
+                })
+            })
+            .map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    }
+
+    /// Whether the judgement enforces its verdicts or only records them.
+    pub fn permission_judgement_mode(&self) -> Result<JudgementMode, NeboError> {
+        let conn = self.conn()?;
+        let raw: Option<String> = conn
+            .query_row("SELECT permission_judgement FROM settings WHERE id = 1", [], |r| r.get(0))
+            .optional()
+            .map_err(db_err)?;
+        Ok(raw.as_deref().and_then(JudgementMode::parse).unwrap_or_default())
+    }
+
+    pub fn set_permission_judgement_mode(&self, mode: JudgementMode) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)", []).map_err(db_err)?;
+        conn.execute(
+            "UPDATE settings SET permission_judgement = ?1, updated_at = unixepoch() WHERE id = 1",
+            params![mode.as_str()],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Record someone an employee works with: a person it sent to, or one
+    /// whose message was routed to it. The first sighting is kept.
+    pub fn add_employee_counterparty(&self, agent_id: &str, raw: &str, via: &str) -> Result<(), NeboError> {
+        let Some(address) = types::permissions::address_key(raw) else {
+            return Ok(());
+        };
+        let kind = if address.contains('@') {
+            "email"
+        } else if address.starts_with('+') {
+            "phone"
+        } else {
+            "other"
+        };
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO employee_counterparties (agent_id, address, kind, first_seen, via)
+             VALUES (?1, ?2, ?3, unixepoch(), ?4)",
+            params![agent_id, address, kind, via],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Which of `addresses` the employee already works with, as
+    /// [`types::permissions::address_key`] spells them.
+    pub fn known_counterparties(
+        &self,
+        agent_id: &str,
+        addresses: &[String],
+    ) -> Result<std::collections::HashSet<String>, NeboError> {
+        let keys: Vec<String> = addresses.iter().filter_map(|a| types::permissions::address_key(a)).collect();
+        if keys.is_empty() {
+            return Ok(Default::default());
+        }
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT address FROM employee_counterparties
+                 WHERE agent_id = ?1 AND address IN (SELECT value FROM json_each(?2))",
             )
             .map_err(db_err)?;
-        let rows = rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
-        Ok((rows, total))
+        let json = serde_json::to_string(&keys).map_err(db_err)?;
+        let rows = stmt.query_map(params![agent_id, json], |r| r.get::<_, String>(0)).map_err(db_err)?;
+        rows.collect::<Result<_, _>>().map_err(db_err)
+    }
+
+    /// Record something an employee brought into being (`kind:name`, as
+    /// the tool's effects name it).
+    pub fn add_employee_created(&self, agent_id: &str, target: &str) -> Result<(), NeboError> {
+        let kind = target.split_once(':').map(|(k, _)| k).unwrap_or("");
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO employee_created (agent_id, target_kind, target, created_at)
+             VALUES (?1, ?2, ?3, unixepoch())",
+            params![agent_id, kind, target],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Which of `targets` the employee created.
+    pub fn created_by(
+        &self,
+        agent_id: &str,
+        targets: &[String],
+    ) -> Result<std::collections::HashSet<String>, NeboError> {
+        if targets.is_empty() {
+            return Ok(Default::default());
+        }
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT target FROM employee_created
+                 WHERE agent_id = ?1 AND target IN (SELECT value FROM json_each(?2))",
+            )
+            .map_err(db_err)?;
+        let json = serde_json::to_string(targets).map_err(db_err)?;
+        let rows = stmt.query_map(params![agent_id, json], |r| r.get::<_, String>(0)).map_err(db_err)?;
+        rows.collect::<Result<_, _>>().map_err(db_err)
     }
 
     pub fn insert_permission_ask(&self, row: &PermissionAskRow) -> Result<(), NeboError> {

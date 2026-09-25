@@ -226,6 +226,15 @@ pub(crate) struct PluginCall {
     pub(crate) timeout: i64,
 }
 
+/// The id a typed operation's input or result names a record by.
+pub fn record_id(v: &serde_json::Value) -> Option<String> {
+    match v.get("id")? {
+        serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
 /// The `capability.resource.action` suffix a plugin binding matches on. A fully-
 /// qualified port (`department.role.capability.resource.action`) reduces to its
 /// last three segments; a bare operation is returned unchanged. This is what keeps

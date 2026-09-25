@@ -132,6 +132,10 @@ async fn a_template_binding_shapes_the_call() {
         &json!({ "operationPolicy": { "operations": { "ledger.invoice.send": "always" } } }),
     )
     .await;
+    // The customer it sends to is someone the seat already works with: a
+    // first message to a new person would ask (case 2), which is not what
+    // this proof is about.
+    nebo.state.store.add_employee_counterparty(&seat, "x@example.com", "sent").unwrap();
     let ctx = Nebo::ctx(&seat, Origin::User);
     let argv = |content: &str| -> Vec<String> {
         content.lines().map(str::to_string).filter(|l| !l.is_empty()).collect()

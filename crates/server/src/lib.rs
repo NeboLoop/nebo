@@ -1758,7 +1758,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(skill_loader.clone()),
     )
     .set_ask_channels(ask_channels.clone())
-    .set_approval_channels(approval_channels.clone())
     // Same adapter instance as the memory tool — one search pathway, one
     // TurboVec index cache — powering per-message prompt recall.
     .set_hybrid_searcher(hybrid_searcher);

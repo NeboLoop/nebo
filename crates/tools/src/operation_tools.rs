@@ -308,6 +308,17 @@ impl DynTool for OperationTool {
         });
         effects.counterparty = text_fields(input, COUNTERPARTY_FIELDS).into_iter().next();
         effects.recipients = text_fields(input, RECIPIENT_FIELDS);
+        // A customer send reaches only the people it names.
+        if crate::effects::is_customer_send(&self.operation) {
+            effects.publishes = types::permissions::Knowable::No;
+        }
+        // A delete names the record it removes the way the record's create
+        // is recorded (`Check::ran`): by the operation's resource and id.
+        if let Some((resource, "delete")) = crate::plugin_tool::port_suffix(&self.operation).rsplit_once('.')
+            && let Some(id) = crate::plugin_tool::record_id(input)
+        {
+            effects.deletes.push(format!("{resource}:{id}"));
+        }
         effects
     }
 
@@ -658,6 +669,17 @@ mod tests {
         assert_eq!(e.counterparty.as_deref(), Some("21"));
         assert_eq!(e.recipients, vec!["ap@example.com".to_string()]);
         assert_eq!(all[0].taint(&json()), None);
+    }
+
+    /// A customer send reaches only who it names; a delete names its record
+    /// the way its create is recorded.
+    #[test]
+    fn sends_name_their_reach_and_deletes_their_record() {
+        let send = &tools(vec![fixed("hub-sms", &["sms.message.send"])])[0];
+        let e = send.effects(&serde_json::json!({"to": "+1-555-0142", "text": "shipped"}));
+        assert_eq!((e.recipients, e.publishes), (vec!["+1-555-0142".to_string()], types::permissions::Knowable::No));
+        let delete = &tools(vec![fixed("ledgerly", &["accounting.ap.ledger.bill.delete"])])[0];
+        assert_eq!(delete.effects(&serde_json::json!({"id": 42})).deletes, vec!["ledger.bill:42"]);
     }
 
     /// Two providers of one operation: `provider` is required and picks one;

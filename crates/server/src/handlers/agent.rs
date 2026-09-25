@@ -124,7 +124,8 @@ pub async fn get_settings(State(state): State<AppState>) -> HandlerResult<serde_
         let mode = state.store.permission_mode(&types::permissions::Scope::Company).map_err(to_error_response)?;
         s.full_access = (mode == Some(types::permissions::Mode::FullAccess)) as i64;
     }
-    Ok(Json(serde_json::json!({"settings": settings})))
+    let judgement = state.store.permission_judgement_mode().map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({"settings": settings, "permissionJudgement": judgement.as_str()})))
 }
 
 /// PUT /api/v1/agent/settings
@@ -156,6 +157,17 @@ pub async fn update_settings(
             .map_err(to_error_response)?;
     }
 
+    // Automatic mode's judgement: "shadow" records its verdicts, "enforce"
+    // lets an ask verdict ask.
+    if let Some(raw) = body["permissionJudgement"].as_str() {
+        let mode = types::permissions::JudgementMode::parse(raw).ok_or_else(|| {
+            to_error_response(types::NeboError::Validation(format!(
+                "permissionJudgement must be \"shadow\" or \"enforce\", not {raw:?}"
+            )))
+        })?;
+        state.store.set_permission_judgement_mode(mode).map_err(to_error_response)?;
+    }
+
     // Loop-guardrail thresholds (Settings → Developer). Round-trip through the
     // typed config so junk fields are dropped and floors are enforced before
     // anything is persisted — the runner must never load a blob that blocks
@@ -174,7 +186,8 @@ pub async fn update_settings(
     }
 
     let settings = state.store.get_settings().map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({"settings": settings})))
+    let judgement = state.store.permission_judgement_mode().map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({"settings": settings, "permissionJudgement": judgement.as_str()})))
 }
 
 /// GET /api/v1/agent/profile

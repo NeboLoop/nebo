@@ -60,7 +60,6 @@ pub struct Harness {
     pub(crate) agent_registry: tools::AgentRegistry,
     pub(crate) skill_loader: Option<Arc<tools::skills::Loader>>,
     pub(crate) ask_channels: Option<tools::AskChannels>,
-    pub(crate) approval_channels: Option<tools::ApprovalChannels>,
     pub(crate) embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
     /// The hybrid search the memory tool uses: the turn's recall runs on it.
     pub(crate) hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
@@ -100,7 +99,6 @@ impl Harness {
             agent_registry,
             skill_loader,
             ask_channels: None,
-            approval_channels: None,
             embedding_provider: None,
             hybrid_searcher: None,
             title_sink: None,

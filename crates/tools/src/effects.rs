@@ -134,6 +134,14 @@ fn agent_of(ctx: &ToolContext) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The employee a send is made for: the run's grant, else the session's.
+fn employee_of(ctx: &ToolContext) -> String {
+    match &ctx.grant {
+        Some(g) => g.agent_id.clone(),
+        None => types::keyparser::extract_agent_id(&ctx.session_key),
+    }
+}
+
 /// The key one exact send has: same run, same operation, same input.
 pub fn send_key(run_ref: &str, operation: &str, input: &serde_json::Value) -> String {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -281,6 +289,14 @@ where
     match send().await {
         SendOutcome::Sent(msg, provider_ref) => {
             let _ = store.engine_effect_completed(id, provider_ref.as_deref(), Some(&msg), now);
+            // The people it wrote to are now people it works with: a later
+            // message to them is not speaking for the owner somewhere new.
+            let employee = employee_of(ctx);
+            for who in counterparty.split(',').filter(|s| !s.is_empty()) {
+                if let Err(e) = store.add_employee_counterparty(&employee, who, "sent") {
+                    tracing::warn!(error = %e, "counterparty not recorded");
+                }
+            }
             ToolResult::ok(msg)
         }
         SendOutcome::ConfirmedFailure(why) | SendOutcome::PreSendFailure(why) => {

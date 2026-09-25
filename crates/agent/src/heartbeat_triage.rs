@@ -48,13 +48,20 @@ use ai::{DecideClient, Decision, Question};
 use tracing::{debug, info};
 
 use crate::runner::truncate_str;
-pub use crate::tool_guardrail::Mode;
+/// What the env switch says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Off,
+    /// Decide and log; never act on it.
+    Shadow,
+    On,
+}
 
 // ── Thresholds: UNTUNED ──────────────────────────────────────────────────
 //
 // Set by hand before any shadow run. `NEBO_DECIDE_TRIAGE=shadow` logs both
 // Nouls on every decided fire; the shadow data sets these, the way the
-// memory gate and the tool guardrail had theirs set from their first
+// memory gate and the old tool guardrail had theirs set from their first
 // shadow runs. A Noul carries no separate confidence: the value is the
 // certainty.
 
@@ -131,14 +138,17 @@ const OUTCOME_CAP: usize = 300;
 
 /// What the env switch says. `NEBO_DECIDE_TRIAGE`: `0`/`false`/`off`/`no`
 /// turns triage off, `shadow` logs without acting, anything else (or unset)
-/// is on. Parsed by the same function as the tool guardrail's switch, with
-/// ON as this site's default.
+/// is on.
 pub fn mode() -> Mode {
     mode_from(std::env::var("NEBO_DECIDE_TRIAGE").ok().as_deref())
 }
 
 fn mode_from(value: Option<&str>) -> Mode {
-    crate::tool_guardrail::mode_from(value, Mode::On)
+    match value.map(|v| v.trim().to_ascii_lowercase()) {
+        Some(v) if v == "shadow" => Mode::Shadow,
+        Some(v) if matches!(v.as_str(), "0" | "false" | "off" | "no") => Mode::Off,
+        _ => Mode::On,
+    }
 }
 
 /// Cheap facts about what changed for one binding since its last real run,

@@ -61,6 +61,7 @@ pub fn spawn(
             // Cleanup expired snapshots
             snapshot_store.cleanup();
             nightly_backup(&store, &state).await;
+            permission_digest(&state);
             crate::backup_ship::commit_if_due(&store, &state).await;
         }
     });
@@ -577,9 +578,118 @@ async fn nightly_backup(store: &Arc<Store>, state: &AppState) {
     );
 }
 
+/// The doors of runs nobody watches as they happen: heartbeats, workflows,
+/// schedules, helpers and coworker requests.
+const UNATTENDED_DOORS: &[&str] = &["heartbeat", "workflow", "schedule", "helper", "coworker"];
+
+/// Once a day, the owner's Inbox lists yesterday's actions from unattended
+/// runs that ran unreviewed because the permission check couldn't run
+/// (both judges down). One item per day under a stable id; none when there
+/// is nothing to list.
+fn permission_digest(state: &AppState) {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST_DAY: AtomicI64 = AtomicI64::new(-1);
+    let today = now_secs() / 86_400;
+    let last = LAST_DAY.load(Ordering::Relaxed);
+    if last == today || LAST_DAY.compare_exchange(last, today, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+        return;
+    }
+    if let Some(item) = permission_digest_item(&state.store, today - 1) {
+        crate::codes::push_inbox(state, item);
+    }
+}
+
+/// The digest item for one UTC day (days since the epoch), or `None` when
+/// no unattended run acted unreviewed that day.
+pub(crate) fn permission_digest_item(store: &Store, day: i64) -> Option<serde_json::Value> {
+    let (start, end) = (day * 86_400, (day + 1) * 86_400);
+    let rows: Vec<_> = match store.unreviewed_permission_activity(start, UNATTENDED_DOORS) {
+        Ok(rows) => rows.into_iter().filter(|r| r.created_at < end).collect(),
+        Err(e) => {
+            warn!(error = %e, "permission digest: activity unreadable");
+            return None;
+        }
+    };
+    if rows.is_empty() {
+        return None;
+    }
+    let name_of = |agent_id: &str| match store.get_agent(agent_id) {
+        Ok(Some(a)) if !a.name.is_empty() => a.name,
+        _ => "Your assistant".to_string(),
+    };
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|r| format!("- {}: {} ({})", name_of(&r.agent_id), r.activity, r.door))
+        .collect();
+    let count = rows.len();
+    Some(serde_json::json!({
+        "id": format!("permission-digest:{day}"),
+        "type": "permission_digest",
+        "title": if count == 1 {
+            "1 action ran without a permission check".to_string()
+        } else {
+            format!("{count} actions ran without a permission check")
+        },
+        "body": format!(
+            "While no one was watching, {} because {}:\n{}",
+            if count == 1 { "this action ran" } else { "these actions ran" },
+            types::permissions::UNREVIEWED_REASON,
+            lines.join("\n")
+        ),
+    }))
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(agent_id: &str, door: &str, activity: &str, unreviewed: bool, at: i64) -> db::PermissionActivityRow {
+        db::PermissionActivityRow {
+            agent_id: agent_id.into(),
+            door: door.into(),
+            tool: "browser".into(),
+            rule_key: "browser_click".into(),
+            activity: activity.into(),
+            decision: "allow".into(),
+            why: "{}".into(),
+            unreviewed,
+            created_at: at,
+            ..Default::default()
+        }
+    }
+
+    /// Yesterday's unreviewed actions from unattended runs, in one item;
+    /// none when there are none. Chat actions and reviewed ones stay out.
+    #[test]
+    fn unreviewed_appears_in_the_daily_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&dir.path().join("d.db").to_string_lossy()).unwrap();
+        let day = 20_000;
+        let at = day * 86_400 + 3_600;
+        assert!(permission_digest_item(&store, day).is_none(), "nothing to list: no item");
+        for r in [
+            row("", "heartbeat", "submitting the signup form", true, at),
+            row("", "workflow", "posting the weekly update", true, at + 1),
+            row("", "chat", "sending a reply", true, at + 2),
+            row("", "heartbeat", "reading a page", false, at + 3),
+            row("", "schedule", "the next day", true, at + 86_400),
+        ] {
+            store.record_permission_activity(&r).unwrap();
+        }
+        let item = permission_digest_item(&store, day).unwrap();
+        assert_eq!(item["id"], format!("permission-digest:{day}"));
+        assert_eq!(item["type"], "permission_digest");
+        assert_eq!(item["title"], "2 actions ran without a permission check");
+        let body = item["body"].as_str().unwrap();
+        assert!(body.contains(types::permissions::UNREVIEWED_REASON), "{body}");
+        assert!(body.contains("submitting the signup form (heartbeat)") && body.contains("posting the weekly update"));
+        assert!(!body.contains("sending a reply") && !body.contains("reading a page") && !body.contains("the next day"));
+    }
 }

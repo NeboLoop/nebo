@@ -97,11 +97,6 @@ pub struct TurnContext {
 }
 
 impl TurnContext {
-    /// A helper's asks go up to whoever can answer them.
-    fn approval_relay(&self) -> bool {
-        matches!(self.request.mode, TurnMode::Helper { .. })
-    }
-
     fn plan_mode(&self) -> bool {
         self.grant.mode == Mode::Plan
     }
@@ -1335,8 +1330,6 @@ async fn tool_round(
             hooks: &h.hooks,
             user_prompt: "",
             iteration: st.step as usize,
-            approval_channels: h.approval_channels.as_ref(),
-            approval_relay: cx.approval_relay(),
             workflow_mode: cx.workflow(),
             decide: None,
             active_task: &no_objective,

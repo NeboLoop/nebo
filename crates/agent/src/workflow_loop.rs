@@ -22,7 +22,7 @@ use tracing::{info, warn};
 use crate::runner::{RunRequest, Runner, WorkflowMode, WorkflowPark};
 use workflow::{ActivityLoop, LoopOutcome, LoopTurn, WorkflowError};
 
-/// The step's task in words, for the tool guardrail: `(objective,
+/// The step's task in words, for the permission judgement: `(objective,
 /// instruction)`. The objective names the workflow, the activity (its label,
 /// else its id) with its intent, and the current step's instruction; the
 /// instruction is the work order the model was handed this turn — the
