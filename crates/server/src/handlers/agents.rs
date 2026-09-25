@@ -1740,7 +1740,7 @@ pub async fn process_agent_bindings(
             &trigger_config,
             desc,
             inputs_json.as_deref(),
-            binding.emit.as_deref(),
+            binding.emit_names().as_deref(),
             activities_json.as_deref(),
             connections_json.as_deref(),
             // Package content (install/activate) — owner rows are off limits.
@@ -2591,10 +2591,11 @@ pub async fn run_agent_workflow(
         }
     }
 
-    let emit_source = binding
+    let emit_sources: Vec<String> = binding
         .emit
-        .as_ref()
-        .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name));
+        .iter()
+        .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name))
+        .collect();
 
     let run_id = state
         .workflow_manager
@@ -2604,7 +2605,7 @@ pub async fn run_agent_workflow(
             "manual",
             Some(binding_name),
             &id,
-            emit_source,
+            emit_sources,
         )
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;

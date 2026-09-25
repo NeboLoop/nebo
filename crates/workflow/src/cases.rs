@@ -462,7 +462,7 @@ pub enum Webhook {
     Case(Routed),
     /// Run it as every webhook runs: the definition, the binding's inputs,
     /// the payload for the envelope, and the source it emits to.
-    Plain { def_json: String, inputs: serde_json::Value, payload: serde_json::Value, emit: Option<String> },
+    Plain { def_json: String, inputs: serde_json::Value, payload: serde_json::Value, emit: Vec<String> },
 }
 
 /// The webhook payload: JSON bodies as JSON, anything else as a string.

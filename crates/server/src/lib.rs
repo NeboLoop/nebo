@@ -3724,7 +3724,7 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
             &trigger_config,
             desc,
             inputs_json.as_deref(),
-            binding.emit.as_deref(),
+            binding.emit_names().as_deref(),
             activities_json.as_deref(),
             connections_json.as_deref(),
             // Package sync — owner-modified rows are off limits.
@@ -3903,9 +3903,10 @@ async fn run_webhook_workflow(
         payload,
         "webhook",
     );
-    let emit_source = emit
-        .as_ref()
-        .map(|emit_name| workflow::events::emit_source_for(agent_slug, emit_name));
+    let emit_sources: Vec<String> = emit
+        .iter()
+        .map(|emit_name| workflow::events::emit_source_for(agent_slug, emit_name))
+        .collect();
 
     match state
         .workflow_manager
@@ -3915,7 +3916,7 @@ async fn run_webhook_workflow(
             "webhook",
             Some(binding_name.to_string()),
             agent_id,
-            emit_source,
+            emit_sources,
         )
         .await
     {

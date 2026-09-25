@@ -925,8 +925,17 @@ impl Store {
                 })
             })
             .map_err(|e| NeboError::Database(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
+        let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| NeboError::Database(e.to_string()))?;
+        // A workflow may announce several events (stored comma-separated):
+        // one source per event.
+        Ok(rows
+            .into_iter()
+            .flat_map(|row| {
+                types::strutil::name_list(&row.emit)
+                    .into_iter()
+                    .map(move |emit| EmitSource { emit, ..row.clone() })
+            })
+            .collect())
     }
 
     pub fn delete_cron_jobs_by_prefix(&self, prefix: &str) -> Result<i64, NeboError> {
@@ -1141,6 +1150,17 @@ mod owner_modified_tests {
         let rows = s.list_agent_workflows("a1").unwrap();
         assert_eq!(rows[0].trigger_config, "0 0 9 * * * *");
         assert!(activities(&s).contains("pkg2"));
+    }
+
+    /// A32: a workflow announcing several events offers each one as a
+    /// source other workflows can listen to.
+    #[test]
+    fn every_announced_event_is_a_source() {
+        let s = store();
+        s.upsert_agent_workflow("a1", "funnel-scan", "schedule", "0 8 * * 1-5", None, None,
+            Some("conversion.dropoff.detected,report.ready"), None, None, false).unwrap();
+        let emits: Vec<String> = s.list_emit_sources().unwrap().into_iter().map(|e| e.emit).collect();
+        assert_eq!(emits, ["conversion.dropoff.detected", "report.ready"]);
     }
 }
 

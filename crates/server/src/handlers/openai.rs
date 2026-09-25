@@ -409,10 +409,11 @@ async fn run_workflow_model(state: &AppState, agent_id: &str, name: &str, req: &
     if let Some(obj) = inputs.as_object_mut() {
         obj.insert("text".into(), serde_json::Value::String(prompt));
     }
-    let emit_source = binding
+    let emit_sources: Vec<String> = binding
         .emit
-        .as_ref()
-        .map(|emit_name| workflow::events::emit_source_for(&agent.name, emit_name));
+        .iter()
+        .map(|emit_name| workflow::events::emit_source_for(&agent.name, emit_name))
+        .collect();
     // Listen before starting so a finish can't slip between the two; the
     // workflow manager announces every terminal state on the local event
     // bus. The final read of the row is the answer either way — the event
@@ -420,7 +421,7 @@ async fn run_workflow_model(state: &AppState, agent_id: &str, name: &str, req: &
     let mut events = state.hub.subscribe();
     let run_id = state
         .workflow_manager
-        .run_inline(def_json, inputs, "api", Some(name.to_string()), agent_id, emit_source)
+        .run_inline(def_json, inputs, "api", Some(name.to_string()), agent_id, emit_sources)
         .await
         .map_err(types::NeboError::Internal)?;
     let deadline = tokio::time::Instant::now() + WORKFLOW_WAIT;

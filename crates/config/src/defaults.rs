@@ -200,7 +200,6 @@ const ARTIFACT_TYPES: &[&str] = &["skills", "agents"];
 /// - `<data_dir>/nebo/{skills,agents}/`
 /// - `<data_dir>/user/{skills,agents}/`
 /// - `<data_dir>/data/`
-/// - `<data_dir>/files/large_inputs/`
 ///
 /// Bundled skills/agents are embedded in the binary and loaded from memory
 /// — no filesystem directory needed.
@@ -210,13 +209,6 @@ pub fn ensure_artifact_dirs() -> Result<(), NeboError> {
     // Ensure data/ for database
     fs::create_dir_all(data.join("data"))
         .map_err(|e| NeboError::DataDir(format!("failed to create data/ directory: {e}")))?;
-
-    // Ensure files/large_inputs directory for large input offloading
-    fs::create_dir_all(data.join("files").join("large_inputs")).map_err(|e| {
-        NeboError::DataDir(format!(
-            "failed to create files/large_inputs directory: {e}"
-        ))
-    })?;
 
     // Create nebo/, user/, and appdata/ subdirectories
     for namespace in &["nebo", "user", "appdata"] {

@@ -775,9 +775,6 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
     }
     conversation::persist_input(
         &h.sessions,
-        &h.providers,
-        &h.selector,
-        &req.seat.agent_id,
         session_id,
         InputRow {
             text,
@@ -788,7 +785,6 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
             coworker,
         },
     )
-    .await
 }
 
 /// The name of the employee a helper works for.

@@ -157,7 +157,7 @@ pub trait WorkflowManager: Send + Sync {
 
     /// Run an inline workflow from a JSON definition (no DB/filesystem lookup).
     /// Used by agent workers for inline workflow bindings defined in agent.json.
-    /// `emit_source` — if set, the last activity will be instructed to emit its output.
+    /// `emit_sources` — the events the last activity is instructed to announce its output as.
     fn run_inline<'a>(
         &'a self,
         definition_json: String,
@@ -165,7 +165,7 @@ pub trait WorkflowManager: Send + Sync {
         trigger_type: &'a str,
         trigger_detail: Option<String>,
         agent_id: &'a str,
-        emit_source: Option<String>,
+        emit_sources: Vec<String>,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
     /// Cancel a running workflow by run_id.
