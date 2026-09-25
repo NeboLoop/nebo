@@ -56,6 +56,16 @@ async fn grade_with_claude_code(prompt: &str, model: &str) -> Result<String, Str
         format!("failed to start `claude` CLI: {}. Is Claude Code installed?", e)
     })?;
 
+    // Read stderr alongside stdout: it is what says why the CLI failed, and
+    // a pipe nobody drains stalls the CLI once it fills.
+    let stderr_task = child.stderr.take().map(|mut stderr| {
+        tokio::spawn(async move {
+            let mut buf = String::new();
+            let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr, &mut buf).await;
+            buf
+        })
+    });
+
     if let Some(mut stdin) = child.stdin.take() {
         let content = prompt.to_string();
         tokio::spawn(async move {
@@ -65,6 +75,9 @@ async fn grade_with_claude_code(prompt: &str, model: &str) -> Result<String, Str
     }
 
     let mut result_text = String::new();
+    // The CLI's `result` event marks a failed session (login, usage limit)
+    // with `is_error`, and its text is the reason.
+    let mut result_is_error = false;
 
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
@@ -96,6 +109,12 @@ async fn grade_with_claude_code(prompt: &str, model: &str) -> Result<String, Str
                     }
                 }
                 "result" => {
+                    result_is_error =
+                        raw.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if result_is_error {
+                        result_text =
+                            raw.get("result").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    }
                     // Fallback: extract from result field if assistant message was missed
                     if result_text.is_empty() {
                         if let Some(text) = raw.get("result").and_then(|v| v.as_str()) {
@@ -114,8 +133,13 @@ async fn grade_with_claude_code(prompt: &str, model: &str) -> Result<String, Str
     }
 
     let status = child.wait().await.map_err(|e| format!("wait: {}", e))?;
-    if !status.success() {
-        return Err(format!("claude CLI exited with status {}", status));
+    let stderr = match stderr_task {
+        Some(task) => task.await.unwrap_or_default(),
+        None => String::new(),
+    };
+    if !status.success() || result_is_error {
+        let reason = result_is_error.then_some(result_text.as_str());
+        return Err(cli_failure(&status.to_string(), reason, &stderr));
     }
 
     if result_text.is_empty() {
@@ -123,6 +147,53 @@ async fn grade_with_claude_code(prompt: &str, model: &str) -> Result<String, Str
     }
 
     Ok(result_text)
+}
+
+/// Lines of the CLI's stderr carried in a grading error.
+const STDERR_TAIL_LINES: usize = 20;
+
+/// Why the judge failed, in the CLI's own words: its exit status, the reason
+/// its `result` event gave, and the last lines of its stderr, with anything
+/// that looks like a credential removed.
+fn cli_failure(status: &str, reason: Option<&str>, stderr: &str) -> String {
+    let mut msg = format!("claude CLI exited with status {}", status);
+    if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+        msg.push_str(&format!(": {}", scrub_secrets(reason)));
+    }
+    let lines: Vec<&str> =
+        stderr.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        msg.push_str(" (stderr empty)");
+    } else {
+        let tail = &lines[lines.len().saturating_sub(STDERR_TAIL_LINES)..];
+        msg.push_str(&format!("\n  stderr:\n    {}", scrub_secrets(&tail.join("\n    "))));
+    }
+    msg
+}
+
+/// Replace anything that looks like a credential with `[redacted]`: the value
+/// after `Bearer` or after a secret-named label (`token=`, `api_key:`), API
+/// and OAuth keys (`sk-…`), JWTs, and any long opaque run of token characters.
+fn scrub_secrets(text: &str) -> String {
+    type Patterns = Vec<(regex::Regex, &'static str)>;
+    static PATTERNS: std::sync::LazyLock<Patterns> = std::sync::LazyLock::new(|| {
+        [
+            (r"(?i)\b(bearer)(\s+)[^\s\x22',;]+", "$1$2[redacted]"),
+            (
+                r"(?i)\b(token|api[_-]?key|secret|password|authorization)(\s*[:=]\s*[\x22']?)[^\s\x22',;]+",
+                "$1$2[redacted]",
+            ),
+            (r"\bsk-[A-Za-z0-9_-]{8,}", "[redacted]"),
+            (r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)?", "[redacted]"),
+            (r"[A-Za-z0-9_+=-]{32,}", "[redacted]"),
+        ]
+        .into_iter()
+        .map(|(re, with)| (regex::Regex::new(re).expect("secret pattern"), with))
+        .collect()
+    });
+    PATTERNS
+        .iter()
+        .fold(text.to_string(), |out, (re, with)| re.replace_all(&out, *with).into_owned())
 }
 
 fn build_grader_prompt(trace: &Trace, fixture: &Fixture) -> String {
@@ -258,4 +329,52 @@ fn parse_grade_response(text: &str) -> Result<GradeResult, String> {
             warn!(raw_response = %text, "failed to parse grader response");
             format!("parse grader JSON: {} (raw: {}...)", e, &text[..text.len().min(200)])
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_judge_says_why_without_its_credentials() {
+        let stderr = (1..=25).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n")
+            + "\nAuthorization: Bearer abc.def.ghi"
+            + "\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-Zx9_secretsecret\n";
+        let msg = cli_failure(
+            "exit status: 1",
+            Some("Failed to authenticate. API Error: 401 OAuth access token is invalid."),
+            &stderr,
+        );
+        let head = "claude CLI exited with status exit status: 1: Failed to authenticate.";
+        assert!(msg.starts_with(head), "{msg}");
+        assert!(msg.contains("OAuth access token is invalid."), "the reason survives the scrub: {msg}");
+        let last_20 = !msg.contains("line 7\n") && msg.contains("line 8") && msg.contains("line 25");
+        assert!(last_20, "last 20 lines: {msg}");
+        for secret in ["abc.def.ghi", "sk-ant", "secretsecret"] {
+            assert!(!msg.contains(secret), "{secret} leaked: {msg}");
+        }
+    }
+
+    #[test]
+    fn silent_stderr_is_said_out_loud() {
+        assert_eq!(
+            cli_failure("exit status: 1", None, "\n \n"),
+            "claude CLI exited with status exit status: 1 (stderr empty)"
+        );
+    }
+
+    #[test]
+    fn scrub_removes_every_credential_shape() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
+        let cases = [
+            ("key sk-ant-api03-AAAAbbbb1234 rejected", "key [redacted] rejected"),
+            (&*format!("got {jwt} back"), "got [redacted] back"),
+            ("token=abc123 api_key: \"xyz\"", "token=[redacted] api_key: \"[redacted]\""),
+            ("id 0123456789abcdef0123456789abcdef!", "id [redacted]!"),
+            ("usage limit reached; resets 5am", "usage limit reached; resets 5am"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(scrub_secrets(input), want, "{input}");
+        }
+    }
 }
