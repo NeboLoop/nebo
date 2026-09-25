@@ -348,7 +348,7 @@ mod idempotency_tests {
         assert_eq!(count("SELECT COUNT(*) FROM engine_events WHERE kind = 'seen' AND idem_key = 'comm:sms-abc' AND delivered_at IS NOT NULL"), 1);
         // The fan-out keeps its parent link and states; tracking rows stay where they were.
         assert_eq!(one("SELECT state FROM engine_runs WHERE id = 'root'"), "done");
-        // The one loop's upgrade (0172) then fails the child the old
+        // The one loop's upgrade (0173) then fails the child the old
         // orchestrator never ran; both become helper rows.
         assert_eq!(one("SELECT state || ' ' || parent_run_id FROM engine_runs WHERE id = 'child'"), "failed root");
         assert_eq!(one("SELECT kind FROM engine_runs WHERE id = 'root'"), "helper");
@@ -436,7 +436,7 @@ mod idempotency_tests {
     fn the_one_loop_upgrade_deletes_stored_steering_and_retires_the_old_rows() {
         let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
         let conn = Connection::open(&path).unwrap();
-        run_migrations_to(&conn, 171).unwrap();
+        run_migrations_to(&conn, 172).unwrap();
         conn.execute_batch(
             r#"INSERT INTO chats (id, title) VALUES ('c', 'C');
              INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES
