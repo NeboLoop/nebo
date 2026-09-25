@@ -1004,6 +1004,30 @@ export interface Session {
 	activeChatId?: string
 }
 
+export interface SessionGoal {
+	sessionId: string
+	condition: string
+	source: string
+	status: string
+	turns: number
+	lastReason?: string
+	declined: string[]
+	createdAt: number
+	updatedAt: number
+}
+
+export interface SessionGoalResponse {
+	goal?: SessionGoalStatus
+}
+
+export interface SessionGoalStatus {
+	session_id: string
+	condition: string
+	turns: number
+	last_reason?: string
+	status: string
+}
+
 export interface Setting {
 	autoInstallDeps: boolean
 	autoApproveRead: boolean
