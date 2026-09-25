@@ -3075,7 +3075,7 @@
 		"allowedAlways": "Bundan sonra izinli",
 		"allowedOnce": "Bu kez izin verildi",
 		"declined": "Reddedildi",
-		"expired": "Süresi doldu, Hayır sayıldı",
+		"withdrawn": "Geri çekildi: ait olduğu iş sona erdi",
 		"failed": "Yanıtın gönderilemedi. Tekrar dene."
 	},
 	"permissions": {

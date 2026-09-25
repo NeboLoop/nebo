@@ -3,11 +3,17 @@
 //! Only that step waits. The ask is written and the model hears at once
 //! that the call is waiting, so it carries on with everything else. One
 //! card goes out everywhere (the Inbox, the phone, the open chat), and the
-//! first answer anywhere wins. The answer re-runs the stored call with the
-//! stored seat through the one check and reaches the employee as a
-//! notification; a workflow step parked on the ask is released instead.
-//! An ask nobody answers expires as a No. Nothing here ever approves on
-//! its own.
+//! first answer anywhere wins.
+//!
+//! Every ask is a durable wait in the engine (owner, 09-25): an engine run
+//! of kind `ask` waits on `answer` for `ask:<id>`, and the owner's answer is
+//! the signal that wakes it. The engine then hands the run to
+//! [`Asks::resume`], which applies the answer once: it re-runs the stored
+//! call with the stored seat through the one check and tells the employee,
+//! or releases the workflow step parked on the ask. An unanswered ask never
+//! expires and never counts as a No; the wait's timer brings it back to the
+//! owner as a reminder instead, at widening intervals, for as long as it is
+//! open. Nothing here ever approves on its own.
 
 use std::sync::{Arc, OnceLock};
 
@@ -18,8 +24,22 @@ use types::permissions::{AskCase, Door, Effect, Grant, MoneyLimit, Rule, RuleFie
 use super::{CheckCx, RuleSet};
 use crate::harness::delegation::notify::{AskOutcome, render_ask_outcome};
 
-/// How long an ask waits for the owner before it expires as a No.
-pub const EXPIRES_AFTER_SECS: i64 = 72 * 3600;
+/// How long an open ask waits before it comes back to the owner as a
+/// reminder, by how many reminders it has had: a day, then two, then four,
+/// then every week for as long as it is open.
+pub fn reminder_after(reminded: usize) -> i64 {
+    const DAY: i64 = 24 * 3600;
+    match reminded {
+        0 => DAY,
+        1 => 2 * DAY,
+        2 => 4 * DAY,
+        _ => 7 * DAY,
+    }
+}
+
+/// The event kind the owner's answer is signalled as, on the ask's wait key
+/// ([`db::ask_wait_key`]).
+pub const ANSWER_SIGNAL: &str = "answer";
 
 /// The owner's answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,8 +103,10 @@ impl AnsweredVia {
 pub enum AskStatus {
     Open,
     Answered { answer: Answer, via: Option<AnsweredVia> },
-    /// Unanswered past its time: a No.
-    Expired,
+    /// The work that waited on it ended without it (a parked workflow run
+    /// that is gone): nothing waits for an answer, so the card is cleared.
+    /// Never a No, and nothing ran.
+    Withdrawn,
 }
 
 /// The seat a parked call ran under, kept so the answer runs it exactly as
@@ -129,14 +151,13 @@ pub struct Ask {
     /// The workflow run parked on this ask.
     pub run_id: Option<String>,
     pub created_at: i64,
-    pub expires_at: i64,
 }
 
 impl Ask {
     fn from_row(row: db::PermissionAskRow) -> Option<Ask> {
         let status = match row.status.as_str() {
             "open" => AskStatus::Open,
-            "expired" => AskStatus::Expired,
+            "withdrawn" => AskStatus::Withdrawn,
             _ => AskStatus::Answered {
                 answer: Answer::parse(row.answer.as_deref()?)?,
                 via: row.answered_via.as_deref().and_then(AnsweredVia::parse),
@@ -155,7 +176,6 @@ impl Ask {
             status,
             run_id: row.run_id,
             created_at: row.created_at,
-            expires_at: row.expires_at,
         })
     }
 
@@ -209,6 +229,9 @@ impl Ask {
 pub trait AskSurfaces: Send + Sync {
     /// Show the card everywhere the owner might answer it.
     fn card(&self, ask: &Ask);
+    /// The ask is still open after a while: bring its card back to the
+    /// owner, in the Inbox and on the phone, as unread.
+    fn remind(&self, ask: &Ask);
     /// The ask is settled: clear the card everywhere.
     fn resolved(&self, ask: &Ask);
     /// Deliver a notification row to `session_key`: a busy session hears it
@@ -223,20 +246,15 @@ pub trait AskSurfaces: Send + Sync {
 pub enum AskError {
     #[error("no such ask")]
     NotFound,
-    /// Someone already answered it, somewhere else, or it expired.
+    /// Someone already answered it, somewhere else, or it was withdrawn.
     #[error("this was already answered")]
     Settled(Box<Ask>),
     #[error("{0}")]
     Store(String),
 }
 
-/// A settled ask and, when the call runs, the task running it.
-pub struct Settled {
-    pub ask: Ask,
-    pub resumed: Option<tokio::task::JoinHandle<()>>,
-}
-
-/// The asks: parking, the card, answers and expiry.
+/// The asks: parking, the card, answers, and what the engine does when an
+/// ask's wait wakes.
 pub struct Asks {
     store: Arc<db::Store>,
     surfaces: OnceLock<Arc<dyn AskSurfaces>>,
@@ -287,7 +305,6 @@ impl Asks {
             status: AskStatus::Open,
             run_id: None,
             created_at: now,
-            expires_at: now + EXPIRES_AFTER_SECS,
         };
         if let Err(e) = self.raise(&ask) {
             tracing::warn!(tool = %call.name(), error = %e, "ask not written");
@@ -295,7 +312,7 @@ impl Asks {
         ask.id
     }
 
-    /// Write `ask` and send its card.
+    /// Write `ask` with its wait in the engine, and send its card.
     fn raise(&self, ask: &Ask) -> Result<(), types::NeboError> {
         self.store.insert_permission_ask(&db::PermissionAskRow {
             id: ask.id.clone(),
@@ -310,9 +327,8 @@ impl Asks {
             seat: json(&ask.seat),
             status: "open".to_string(),
             created_at: ask.created_at,
-            expires_at: ask.expires_at,
             ..Default::default()
-        })?;
+        }, ask.created_at + reminder_after(0))?;
         if let Some(s) = self.surfaces() {
             s.card(ask);
         }
@@ -362,14 +378,13 @@ impl Asks {
             status: AskStatus::Open,
             run_id: None,
             created_at: now,
-            expires_at: now + EXPIRES_AFTER_SECS,
         };
         self.raise(&ask)?;
         Ok(ask.id)
     }
 
-    /// The ask the owner said no to (or let expire) for this same call in
-    /// this session, if any: it is refused without a card.
+    /// The ask the owner said no to for this same call in this session, if
+    /// any: it is refused without a card.
     pub(super) fn declined_before(&self, session_key: &str, t: &Target, input: &serde_json::Value) -> Option<String> {
         let rows = self.store.declined_permission_asks(session_key).ok()?;
         rows.into_iter().filter_map(Ask::from_row).find_map(|a| {
@@ -399,26 +414,97 @@ impl Asks {
     }
 
     /// The owner's answer. The first answer anywhere wins; a later one
-    /// gets [`AskError::Settled`]. "Allow always" writes the rule the case
-    /// names; "Allow always" and "This once" run the stored call through
-    /// the one check; "No" tells the employee and never runs it.
-    pub fn answer(
-        &self,
-        registry: &Arc<tools::Registry>,
-        id: &str,
-        answer: Answer,
-        via: AnsweredVia,
-    ) -> Result<Settled, AskError> {
+    /// gets [`AskError::Settled`]. The answer is recorded, the card cleared
+    /// everywhere, and the answer signalled to the ask's wait; the engine
+    /// wakes the run and [`Asks::resume`] applies it.
+    pub fn answer(&self, id: &str, answer: Answer, via: AnsweredVia) -> Result<Ask, AskError> {
         let mut ask = self.get(id)?.ok_or(AskError::NotFound)?;
         let now = chrono::Utc::now().timestamp();
         let won = self
             .store
-            .settle_permission_ask(id, "answered", answer.as_str(), Some(via.as_str()), now)
+            .settle_permission_ask(id, "answered", Some(answer.as_str()), Some(via.as_str()), now)
             .map_err(|e| AskError::Store(e.to_string()))?;
         if !won {
             return Err(AskError::Settled(Box::new(self.get(id)?.ok_or(AskError::NotFound)?)));
         }
         ask.status = AskStatus::Answered { answer, via: Some(via) };
+        if let Some(s) = self.surfaces() {
+            s.resolved(&ask);
+        }
+        let key = db::ask_wait_key(id);
+        self.store
+            .engine_enqueue_event(&db::NewEvent {
+                kind: ANSWER_SIGNAL,
+                target_type: "run",
+                target_id: &key,
+                payload: answer.as_str(),
+                channel: via.as_str(),
+                idem_key: &format!("{key}:answer"),
+                durable: true,
+                ..Default::default()
+            })
+            .map_err(|e| AskError::Store(e.to_string()))?;
+        Ok(ask)
+    }
+
+    /// The engine woke the ask's run: by the owner's answer, or by the
+    /// wait's timer. An answered ask is applied, once. An open one comes
+    /// back to the owner as a reminder and waits again until the next one;
+    /// an open one whose parked workflow run is gone is withdrawn. Returns
+    /// the task running an allowed call, when one runs here.
+    pub fn resume(&self, registry: &Arc<tools::Registry>, id: &str, now: i64) -> Result<Option<tokio::task::JoinHandle<()>>, AskError> {
+        let store_err = |e: types::NeboError| AskError::Store(e.to_string());
+        let Some(ask) = self.get(id)? else {
+            self.store.engine_close_run(id, "failed", now).map_err(store_err)?;
+            return Ok(None);
+        };
+        match ask.status {
+            AskStatus::Open => {
+                if let Some(run) = &ask.run_id
+                    && self.parked_run_is_gone(run)
+                {
+                    return self.withdraw(ask, now).map(|_| None);
+                }
+                if let Some(s) = self.surfaces() {
+                    s.remind(&ask);
+                }
+                let reminded = self.store.engine_waits_for_run(id).map_err(store_err)?.len();
+                let key = db::ask_wait_key(id);
+                self.store
+                    .engine_declare_wait(
+                        id,
+                        &db::NewWait {
+                            action: "resume",
+                            on_kind: ANSWER_SIGNAL,
+                            key: &key,
+                            deadline: Some(now + reminder_after(reminded)),
+                            parked: None,
+                            reason: &ask.sentence,
+                        },
+                        now,
+                    )
+                    .map_err(store_err)?;
+                // Answered while this reminder went out: its signal may have
+                // found no wait to wake. The answer is on the row; apply it.
+                match self.get(id)? {
+                    Some(answered) if answered.status != AskStatus::Open => self.apply(registry, answered, now),
+                    _ => Ok(None),
+                }
+            }
+            AskStatus::Answered { .. } | AskStatus::Withdrawn => self.apply(registry, ask, now),
+        }
+    }
+
+    /// Close the ask's run and act on how it was settled. Closing is the
+    /// claim: an ask whose run is already closed was applied before, so a
+    /// second wake does nothing.
+    fn apply(&self, registry: &Arc<tools::Registry>, ask: Ask, now: i64) -> Result<Option<tokio::task::JoinHandle<()>>, AskError> {
+        if !self.store.engine_finish_run(&ask.id, now).map_err(|e| AskError::Store(e.to_string()))? {
+            return Ok(None);
+        }
+        let AskStatus::Answered { answer, .. } = ask.status else {
+            return Ok(None);
+        };
         // An answer the card didn't offer counts as the one it did.
         let answer = match answer {
             Answer::AllowAlways if !ask.allow_always_offered(&self.store) => Answer::ThisOnce,
@@ -426,11 +512,8 @@ impl Asks {
         };
         if let AskCase::CreatedExtras { capabilities } = &ask.case {
             let allow = answer != Answer::No;
-            if let Err(e) = super::consent::answer_extras(&self.store, id, allow) {
-                tracing::warn!(ask = %id, error = %e, "extras not granted");
-            }
-            if let Some(s) = self.surfaces() {
-                s.resolved(&ask);
+            if let Err(e) = super::consent::answer_extras(&self.store, &ask.id, allow) {
+                tracing::warn!(ask = %ask.id, error = %e, "extras not granted");
             }
             let granted = format!("Granted: {}.", capabilities.join(", "));
             let outcome = if allow {
@@ -439,7 +522,7 @@ impl Asks {
                 AskOutcome::Declined
             };
             self.settle_without_running(&ask, outcome);
-            return Ok(Settled { ask, resumed: None });
+            return Ok(None);
         }
         let mut always = false;
         if answer == Answer::AllowAlways {
@@ -447,57 +530,46 @@ impl Asks {
             for rule in allow_always_rules(&self.store, &ask).unwrap_or_default() {
                 // A locked must-ask can't be loosened: it runs this once.
                 if let Err(e) = self.store.write_permission_rule(&rule, &Writer::Owner) {
-                    tracing::warn!(ask = %id, error = %e, "allow-always rule not written; runs once");
+                    tracing::warn!(ask = %ask.id, error = %e, "allow-always rule not written; runs once");
                     always = false;
                 }
             }
         }
-        if let Some(s) = self.surfaces() {
-            s.resolved(&ask);
-        }
-        let resumed = match answer {
+        Ok(match answer {
             Answer::No => {
                 self.settle_without_running(&ask, AskOutcome::Declined);
                 None
             }
-            Answer::AllowAlways | Answer::ThisOnce => self.run(registry, ask.clone(), always),
-        };
-        Ok(Settled { ask, resumed })
+            Answer::AllowAlways | Answer::ThisOnce => self.run(registry, ask, always),
+        })
     }
 
-    /// Expire every ask unanswered past its time as a No, and tell each
-    /// employee. Never approves. Returns how many expired.
-    pub fn expire_due(&self, now: i64) -> usize {
-        let due = match self.store.due_permission_asks(now) {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::warn!(error = %e, "expiry sweep: asks unreadable");
-                return 0;
-            }
-        };
-        let mut expired = 0;
-        for row in due {
-            let Some(mut ask) = Ask::from_row(row) else { continue };
-            match self.store.settle_permission_ask(&ask.id, "expired", Answer::No.as_str(), None, now) {
-                Ok(true) => {}
-                Ok(false) => continue,
-                Err(e) => {
-                    tracing::warn!(ask = %ask.id, error = %e, "expiry sweep: ask not settled");
-                    continue;
-                }
-            }
-            ask.status = AskStatus::Expired;
+    /// Whether the workflow run parked on an ask has ended, so nothing
+    /// waits for the answer any more.
+    fn parked_run_is_gone(&self, run_id: &str) -> bool {
+        match self.store.engine_get_run(run_id) {
+            Ok(Some(run)) => matches!(run.state.as_str(), "done" | "failed" | "cancelled"),
+            Ok(None) => true,
+            Err(_) => false,
+        }
+    }
+
+    /// Nothing waits for this ask any more: settle it as withdrawn, clear
+    /// its card everywhere and close its run. Nothing runs, and it is not a
+    /// No.
+    fn withdraw(&self, mut ask: Ask, now: i64) -> Result<(), AskError> {
+        let store_err = |e: types::NeboError| AskError::Store(e.to_string());
+        if self.store.settle_permission_ask(&ask.id, "withdrawn", None, None, now).map_err(store_err)? {
+            ask.status = AskStatus::Withdrawn;
             if let Some(s) = self.surfaces() {
                 s.resolved(&ask);
             }
-            self.settle_without_running(&ask, AskOutcome::Expired { hours: EXPIRES_AFTER_SECS / 3600 });
-            expired += 1;
         }
-        expired
+        self.store.engine_finish_run(&ask.id, now).map_err(store_err)?;
+        Ok(())
     }
 
-    /// A No or an expiry: the parked workflow run ends refused, or the
-    /// employee is told.
+    /// A No: the parked workflow run ends refused, or the employee is told.
     fn settle_without_running(&self, ask: &Ask, outcome: AskOutcome<'_>) {
         let Some(s) = self.surfaces() else { return };
         match &ask.run_id {
@@ -508,7 +580,8 @@ impl Asks {
 
     /// Run the allowed call. A parked workflow run is released and resumes
     /// at the call itself; any other run gets the call's result as a
-    /// notification.
+    /// notification. The ask's run was closed before this runs, so the call
+    /// runs at most once, even across a restart.
     fn run(&self, registry: &Arc<tools::Registry>, ask: Ask, always: bool) -> Option<tokio::task::JoinHandle<()>> {
         let surfaces = self.surfaces().cloned();
         if let Some(run) = &ask.run_id {
@@ -722,6 +795,7 @@ mod tests {
     #[derive(Default)]
     struct Seen {
         cards: Mutex<Vec<String>>,
+        reminded: Mutex<Vec<String>>,
         resolved: Mutex<Vec<(String, AskStatus)>>,
         notes: Mutex<Vec<(String, String)>>,
         released: Mutex<Vec<(String, bool)>>,
@@ -730,6 +804,9 @@ mod tests {
     impl AskSurfaces for Seen {
         fn card(&self, ask: &Ask) {
             self.cards.lock().unwrap().push(ask.id.clone());
+        }
+        fn remind(&self, ask: &Ask) {
+            self.reminded.lock().unwrap().push(ask.id.clone());
         }
         fn resolved(&self, ask: &Ask) {
             self.resolved.lock().unwrap().push((ask.id.clone(), ask.status));
@@ -847,12 +924,14 @@ mod tests {
             r.parked_ask.expect("parked")
         }
 
+        /// The owner answers, and the engine wakes the ask's run on the
+        /// answer: the asks apply it.
         async fn answer(&self, id: &str, a: Answer, via: AnsweredVia) -> Result<Ask, AskError> {
-            let settled = self.asks.answer(&self.reg, id, a, via)?;
-            if let Some(h) = settled.resumed {
+            let ask = self.asks.answer(id, a, via)?;
+            if let Some(h) = self.asks.resume(&self.reg, id, chrono::Utc::now().timestamp())? {
                 h.await.unwrap();
             }
-            Ok(settled.ask)
+            Ok(ask)
         }
     }
 
@@ -925,7 +1004,13 @@ mod tests {
         assert_eq!(ask.sentence, "text +15550142");
         assert_eq!(ask.reason(), "It's outside this employee's job.");
         assert!(ask.allow_always_offered(&r.store));
-        assert_eq!(ask.expires_at - ask.created_at, EXPIRES_AFTER_SECS);
+        // The ask is a wait in the engine: its run waits on the answer, and
+        // the wait's timer is the first reminder, a day out. No expiry.
+        let run = r.store.engine_get_run(&id).unwrap().expect("the ask's run");
+        assert_eq!((run.kind.as_str(), run.state.as_str()), ("ask", "waiting"));
+        let wait = r.store.engine_get_wait(run.current_wait_id.unwrap()).unwrap().unwrap();
+        assert_eq!((wait.on_kind.as_str(), wait.key.as_str()), (ANSWER_SIGNAL, format!("ask:{id}").as_str()));
+        assert_eq!(wait.deadline, Some(ask.created_at + 24 * 3600));
     }
 
     #[tokio::test]
@@ -1025,7 +1110,6 @@ mod tests {
             status: AskStatus::Open,
             run_id: None,
             created_at: 0,
-            expires_at: 0,
         };
         let rule = allow_always_rules(&store, &ask).unwrap().remove(0);
         assert_eq!(rule.field, Some(RuleField::Recipient("+15550142".into())));
@@ -1067,7 +1151,6 @@ mod tests {
             status: AskStatus::Open,
             run_id: None,
             created_at: 0,
-            expires_at: 0,
         }
     }
 
@@ -1233,8 +1316,9 @@ mod tests {
         let r = rig().await;
         let id = r.park("workflow:wf-1", Door::Workflow, "+15550142").await;
         r.store.link_permission_ask_run(&id, "run-1").unwrap();
-        let settled = r.asks.answer(&r.reg, &id, Answer::ThisOnce, AnsweredVia::Inbox).unwrap();
-        assert!(settled.resumed.is_none(), "the run resumes the call, not the answer");
+        r.asks.answer(&id, Answer::ThisOnce, AnsweredVia::Inbox).unwrap();
+        let resumed = r.asks.resume(&r.reg, &id, chrono::Utc::now().timestamp()).unwrap();
+        assert!(resumed.is_none(), "the run resumes the call, not the answer");
         assert_eq!(*r.seen.released.lock().unwrap(), vec![("run-1".to_string(), true)]);
         assert!(r.seen.notes().is_empty());
         assert_eq!(r.ran(1), 0);
@@ -1258,14 +1342,15 @@ mod tests {
         let ask = r.asks.get(&id).unwrap().expect("a readable ask");
         assert!(ask.allow_always_offered(&r.store) && !ask.this_once_offered());
         assert_eq!(ask.reason(), "It was made by another employee and needs more than that employee has.");
-        let settled = r.asks.answer(&r.reg, &id, Answer::AllowAlways, AnsweredVia::Mobile).unwrap();
-        assert!(settled.resumed.is_none(), "nothing to run");
+        r.asks.answer(&id, Answer::AllowAlways, AnsweredVia::Mobile).unwrap();
+        let resumed = r.asks.resume(&r.reg, &id, chrono::Utc::now().timestamp()).unwrap();
+        assert!(resumed.is_none(), "nothing to run");
         let job: Vec<_> = r.store.permission_rules("researcher").unwrap().into_iter().map(|x| x.key).collect();
         assert!(job.contains(&RuleKey::Capability("web".into())) && job.contains(&RuleKey::Capability("mail".into())), "{job:?}");
         assert!(r.seen.notes()[0].1.contains("Granted: web, mail."), "{}", r.seen.notes()[0].1);
         // No grants nothing.
         let no = r.asks.raise_extras(&creator, "scribe", vec!["web".into()], "Scribe will search the web".into(), "agent:office:web").unwrap();
-        r.asks.answer(&r.reg, &no, Answer::No, AnsweredVia::Chat).unwrap();
+        r.answer(&no, Answer::No, AnsweredVia::Chat).await.unwrap();
         assert!(r.store.permission_rules("scribe").unwrap().iter().all(|x| x.scope != Scope::Employee("scribe".into())));
     }
 
@@ -1280,36 +1365,82 @@ mod tests {
         assert_eq!(ask.reason(), "Only you can give an employee more room.");
     }
 
+    /// An ask nobody answers never expires and never counts as a No: each
+    /// time its wait's timer wakes it, the card comes back to the owner and
+    /// the ask waits again, a day, then two, then four days out. Four days
+    /// on it is still open, nothing ran and the employee was told nothing;
+    /// the answer then runs the call once.
     #[tokio::test]
-    async fn unanswered_ask_expires_as_no_after_72h() {
+    async fn an_unanswered_ask_stays_open_and_is_reminded_until_answered() {
         let r = rig().await;
         let id = r.park(KEY, Door::Heartbeat, "+15550142").await;
         let created = r.asks.get(&id).unwrap().unwrap().created_at;
-        assert_eq!(r.asks.expire_due(created + EXPIRES_AFTER_SECS - 60), 0, "not yet");
-        assert_eq!(r.asks.expire_due(created + EXPIRES_AFTER_SECS), 1);
-        assert_eq!(r.asks.expire_due(created + EXPIRES_AFTER_SECS + 60), 0, "once");
-        assert_eq!(r.asks.get(&id).unwrap().unwrap().status, AskStatus::Expired);
-        let told = r.seen.notes();
-        assert_eq!(told.len(), 1);
-        assert!(told[0].1.contains("no answer in 72 hours, so it counts as declined"), "{}", told[0].1);
-        assert!(matches!(r.answer(&id, Answer::ThisOnce, AnsweredVia::Mobile).await, Err(AskError::Settled(_))));
+        let deadline = |r: &Rig| {
+            let run = r.store.engine_get_run(&id).unwrap().unwrap();
+            r.store.engine_get_wait(run.current_wait_id.unwrap()).unwrap().unwrap().deadline.unwrap()
+        };
+        let day = 24 * 3600;
+        assert_eq!(deadline(&r), created + day);
+        for (at, next) in [(created + day, created + 3 * day), (created + 3 * day, created + 7 * day)] {
+            assert!(r.asks.resume(&r.reg, &id, at).unwrap().is_none());
+            assert_eq!(deadline(&r), next, "the next reminder");
+        }
+        assert_eq!(*r.seen.reminded.lock().unwrap(), vec![id.clone(), id.clone()], "reminded twice");
+        let four_days_on = r.asks.get(&id).unwrap().unwrap();
+        assert_eq!(four_days_on.status, AskStatus::Open, "four days on, still open");
+        assert_eq!(r.asks.open(Some(KEY)).unwrap().len(), 1);
+        assert_eq!(r.store.engine_get_run(&id).unwrap().unwrap().state, "waiting");
+        assert_eq!((r.ran(1), r.seen.notes().len()), (0, 0), "nothing ran, nobody was told no");
+
+        // The answer arrives: the call runs once and the employee hears it.
+        r.answer(&id, Answer::ThisOnce, AnsweredVia::Mobile).await.unwrap();
+        assert_eq!(r.ran(1), 1);
+        assert!(r.seen.notes()[0].1.contains("allowed, this once\nIt ran:\nDONE"), "{}", r.seen.notes()[0].1);
+        assert_eq!(r.store.engine_get_run(&id).unwrap().unwrap().state, "done");
+        // A second wake of the closed run applies nothing twice.
+        assert!(r.asks.resume(&r.reg, &id, created + 5 * day).unwrap().is_none());
+        assert_eq!((r.ran(1), r.seen.notes().len(), r.seen.reminded.lock().unwrap().len()), (1, 1, 2));
     }
 
+    /// An ask whose parked workflow run is gone is withdrawn at its next
+    /// wake: the card clears, nothing runs, nothing is released, and it is
+    /// not a No.
     #[tokio::test]
-    async fn expiry_never_approves() {
+    async fn an_ask_whose_parked_run_ended_is_withdrawn_not_declined() {
+        let r = rig().await;
+        let id = r.park("workflow:wf-9", Door::Workflow, "+15550142").await;
+        r.store
+            .engine_create_run(&db::NewRun { id: "run-9", kind: "workflow", session_key: "workflow:wf-9", agent_id: "emp", lane: "main", ..Default::default() })
+            .unwrap();
+        r.store.link_permission_ask_run(&id, "run-9").unwrap();
+        r.store.engine_set_run_state("run-9", "cancelled", 1, None).unwrap();
+        assert!(r.asks.resume(&r.reg, &id, chrono::Utc::now().timestamp()).unwrap().is_none());
+        let row = r.store.get_permission_ask(&id).unwrap().unwrap();
+        assert_eq!((row.status.as_str(), row.answer.as_deref()), ("withdrawn", None));
+        assert_eq!(r.asks.get(&id).unwrap().unwrap().status, AskStatus::Withdrawn);
+        assert_eq!(*r.seen.resolved.lock().unwrap(), vec![(id.clone(), AskStatus::Withdrawn)]);
+        assert!(r.seen.reminded.lock().unwrap().is_empty() && r.seen.released.lock().unwrap().is_empty());
+        assert_eq!(r.store.engine_get_run(&id).unwrap().unwrap().state, "done");
+        assert!(matches!(r.asks.answer(&id, Answer::ThisOnce, AnsweredVia::Inbox), Err(AskError::Settled(_))));
+        assert_eq!(r.ran(1), 0);
+    }
+
+    /// Answered while a reminder was going out: the answer's signal found no
+    /// wait to wake, and the reminder's resume applies it, once.
+    #[tokio::test]
+    async fn an_answer_that_lands_during_a_reminder_is_applied_once() {
         let r = rig().await;
         let id = r.park(KEY, Door::Heartbeat, "+15550142").await;
-        let wf = r.park("workflow:wf-1", Door::Workflow, "+15550142").await;
-        r.store.link_permission_ask_run(&wf, "run-1").unwrap();
-        assert_eq!(r.asks.expire_due(i64::MAX), 2);
-        assert_eq!(r.ran(1), 0, "nothing ran");
-        assert!(r.store.permission_rules("emp").unwrap().is_empty(), "nothing granted");
-        assert_eq!(*r.seen.released.lock().unwrap(), vec![("run-1".to_string(), false)]);
-        let row = r.store.get_permission_ask(&id).unwrap().unwrap();
-        assert_eq!((row.status.as_str(), row.answer.as_deref()), ("expired", Some("no")));
-        // The employee's next try is a plain refusal, never a repeat ask.
-        let again = r.reg.execute(&ctx(KEY, Door::Heartbeat), "text", text("+15550142")).await;
-        assert!(again.is_error && again.parked_ask.is_none(), "{}", again.content);
-        assert_eq!(r.seen.cards(), 2);
+        // The reminder timer woke the run: it is queued, not waiting.
+        let wait = r.store.engine_get_run(&id).unwrap().unwrap().current_wait_id.unwrap();
+        r.store.engine_resume_from_wait(wait, 0, 1).unwrap();
+        r.asks.answer(&id, Answer::ThisOnce, AnsweredVia::Chat).unwrap();
+        if let Some(h) = r.asks.resume(&r.reg, &id, chrono::Utc::now().timestamp()).unwrap() {
+            h.await.unwrap();
+        }
+        assert_eq!(r.ran(1), 1, "applied");
+        assert!(r.seen.reminded.lock().unwrap().is_empty(), "an answered ask is not a reminder");
+        assert!(r.asks.resume(&r.reg, &id, chrono::Utc::now().timestamp()).unwrap().is_none());
+        assert_eq!(r.ran(1), 1, "once");
     }
 }

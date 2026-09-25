@@ -3075,7 +3075,7 @@
 		"allowedAlways": "Diizinkan mulai sekarang",
 		"allowedOnce": "Diizinkan kali ini",
 		"declined": "Ditolak",
-		"expired": "Kedaluwarsa, dihitung sebagai Tidak",
+		"withdrawn": "Ditarik: pekerjaan yang terkait sudah berakhir",
 		"failed": "Jawabanmu tidak terkirim. Coba lagi."
 	},
 	"permissions": {

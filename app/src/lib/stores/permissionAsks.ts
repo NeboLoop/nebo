@@ -24,7 +24,8 @@ export function askRaised(card: PermissionAskCard): void {
   setApprovalStatus(askNotificationId(card.id), 'pending');
 }
 
-/** An ask was answered (here or anywhere else) or expired. */
+/** An ask was answered (here or anywhere else), or withdrawn because the
+ *  work it was for ended. */
 export function askSettled(card: PermissionAskCard): void {
   openAsks.update((list) => list.filter((a) => a.id !== card.id));
   setApprovalStatus(askNotificationId(card.id), askBandStatus(card.status));

@@ -40,4 +40,4 @@ fixtures:
   - ../fixtures/permissions/non-loopback-bind-without-key-401.yaml
   # Unattended: heartbeats park one step; asks never auto-approve (§4.5)
   - ../fixtures/permissions/heartbeat-ask-parks-only-that-step.yaml
-  - ../fixtures/permissions/ask-expires-as-no.yaml
+  - ../fixtures/permissions/ask-never-expires.yaml

@@ -1553,6 +1553,32 @@ impl Store {
         tx.commit().db_err("engine_close_run commit")
     }
 
+    /// Close a run that is still open as `done`, with its waits superseded,
+    /// in one statement's worth of work: true when this call closed it,
+    /// false when it was already closed. The close is the claim, so work
+    /// that must happen once per run happens only for the caller that got
+    /// true.
+    pub fn engine_finish_run(&self, run_id: &str, now: i64) -> Result<bool, NeboError> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).db_err("engine_finish_run tx")?;
+        let closed = tx
+            .execute(
+                "UPDATE engine_runs SET state = 'done', ended_at = ?2, current_wait_id = NULL
+                 WHERE id = ?1 AND state NOT IN ('done', 'failed', 'cancelled')",
+                params![run_id, now],
+            )
+            .db_err("engine_finish_run run")?;
+        if closed == 1 {
+            tx.execute(
+                "UPDATE engine_waits SET superseded_at = ?2 WHERE run_id = ?1 AND superseded_at IS NULL",
+                params![run_id, now],
+            )
+            .db_err("engine_finish_run waits")?;
+        }
+        tx.commit().db_err("engine_finish_run commit")?;
+        Ok(closed == 1)
+    }
+
     // ── effects ────────────────────────────────────────────────────────
 
     /// Pending BEFORE it acts. A repeat of the same idem_key returns the

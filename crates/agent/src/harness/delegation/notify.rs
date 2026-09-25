@@ -79,7 +79,6 @@ pub enum AskOutcome<'a> {
     /// The call ran; `always` when the owner allowed it from now on.
     Ran { always: bool, result: &'a str, is_error: bool },
     Declined,
-    Expired { hours: i64 },
 }
 
 /// The notification for a settled ask, in the one format. It answers only
@@ -94,10 +93,6 @@ pub fn render_ask_outcome(ask_id: &str, sentence: &str, outcome: &AskOutcome<'_>
         AskOutcome::Declined => format!(
             "ask {ask_id} \"{sentence}\": declined\nIt did not run. Don't ask again or try another \
              way to do it; plan around it and tell the owner what you did instead."
-        ),
-        AskOutcome::Expired { hours } => format!(
-            "ask {ask_id} \"{sentence}\": no answer in {hours} hours, so it counts as declined\nIt \
-             did not run. Don't retry it or try another way; plan around it and tell the owner."
         ),
     };
     format!(
@@ -191,9 +186,6 @@ mod tests {
         assert!(ran.contains("allows nothing else"));
         let no = render_ask_outcome("a1", "x", &AskOutcome::Declined);
         assert!(no.contains(": declined\nIt did not run. Don't ask again"));
-        let expired = render_ask_outcome("a1", "x", &AskOutcome::Expired { hours: 72 });
-        assert!(expired.contains("no answer in 72 hours, so it counts as declined"));
-        assert!(!expired.contains("allowed"));
     }
 
     /// Neither a notification nor a foreground report can pass for the

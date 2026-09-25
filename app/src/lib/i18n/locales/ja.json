@@ -3075,7 +3075,7 @@
 		"allowedAlways": "今後は許可",
 		"allowedOnce": "今回は許可",
 		"declined": "拒否しました",
-		"expired": "期限切れ（いいえ扱い）",
+		"withdrawn": "取り下げ済み（対象の作業が終了）",
 		"failed": "回答を送信できませんでした。もう一度お試しください。"
 	},
 	"permissions": {

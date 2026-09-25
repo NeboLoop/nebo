@@ -102,6 +102,12 @@ pub struct PermissionActivityFilter {
     pub offset: i64,
 }
 
+/// The key an ask's engine wait listens on, and the owner's answer is
+/// signalled to: `answer` on `ask:<id>`.
+pub fn ask_wait_key(ask_id: &str) -> String {
+    format!("ask:{ask_id}")
+}
+
 /// A parked call, as `permission_asks` keeps it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PermissionAskRow {
@@ -115,21 +121,21 @@ pub struct PermissionAskRow {
     pub target: String,
     pub call: String,
     pub seat: String,
-    /// open | answered | expired
+    /// open | answered | withdrawn (the work that waited on it ended
+    /// without it).
     pub status: String,
-    /// allow_always | this_once | no (an expired ask is a no).
+    /// allow_always | this_once | no
     pub answer: Option<String>,
     /// chat | inbox | mobile
     pub answered_via: Option<String>,
     pub created_at: i64,
-    pub expires_at: i64,
     pub answered_at: Option<i64>,
     /// The workflow run parked on this ask, when one is.
     pub run_id: Option<String>,
 }
 
 const ASK_COLUMNS: &str = "id, agent_id, session_key, chat_id, door, ask_case, sentence, target, call, seat,
-     status, answer, answered_via, created_at, expires_at, answered_at, run_id";
+     status, answer, answered_via, created_at, answered_at, run_id";
 
 fn row_to_ask(row: &rusqlite::Row<'_>) -> rusqlite::Result<PermissionAskRow> {
     Ok(PermissionAskRow {
@@ -147,9 +153,8 @@ fn row_to_ask(row: &rusqlite::Row<'_>) -> rusqlite::Result<PermissionAskRow> {
         answer: row.get(11)?,
         answered_via: row.get(12)?,
         created_at: row.get(13)?,
-        expires_at: row.get(14)?,
-        answered_at: row.get(15)?,
-        run_id: row.get(16)?,
+        answered_at: row.get(14)?,
+        run_id: row.get(15)?,
     })
 }
 
@@ -572,13 +577,19 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(db_err)
     }
 
-    pub fn insert_permission_ask(&self, row: &PermissionAskRow) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
+    /// Write an ask with its wait, in one transaction: the row the card is
+    /// read from, and the engine run of kind `ask` that waits on the owner's
+    /// answer (`answer` on `ask:<id>`), its first reminder due at
+    /// `remind_at` as the wait's timer. Nothing expires it; the answer is
+    /// the signal that wakes it.
+    pub fn insert_permission_ask(&self, row: &PermissionAskRow, remind_at: i64) -> Result<(), NeboError> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_err)?;
+        tx.execute(
             "INSERT INTO permission_asks
                (id, agent_id, session_key, chat_id, door, ask_case, sentence, target, call, seat,
-                status, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 row.id,
                 row.agent_id,
@@ -592,11 +603,31 @@ impl Store {
                 row.seat,
                 row.status,
                 row.created_at,
-                row.expires_at,
             ],
         )
         .map_err(db_err)?;
-        Ok(())
+        tx.execute(
+            "INSERT INTO engine_runs (id, kind, state, session_key, agent_id, lane, created_at)
+             VALUES (?1, 'ask', 'waiting', ?2, ?3, 'main', ?4)",
+            params![row.id, row.session_key, row.agent_id, row.created_at],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "INSERT INTO engine_waits (run_id, action, on_kind, key, deadline, reason, created_at)
+             VALUES (?1, 'resume', 'answer', ?2, ?3, ?4, ?5)",
+            params![row.id, ask_wait_key(&row.id), remind_at, row.sentence, row.created_at],
+        )
+        .map_err(db_err)?;
+        let wait_id = tx.last_insert_rowid();
+        tx.execute("UPDATE engine_runs SET current_wait_id = ?2 WHERE id = ?1", params![row.id, wait_id])
+            .map_err(db_err)?;
+        tx.execute(
+            "INSERT INTO engine_events (kind, target_type, target_id, payload, idem_key, retention, due_at)
+             VALUES ('timer', 'wait', ?1, ?2, ?3, 'transient', ?4)",
+            params![wait_id.to_string(), row.sentence, format!("wait:{wait_id}:deadline"), remind_at],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)
     }
 
     pub fn get_permission_ask(&self, id: &str) -> Result<Option<PermissionAskRow>, NeboError> {
@@ -606,13 +637,14 @@ impl Store {
             .map_err(db_err)
     }
 
-    /// Settle an open ask: the first answer wins. `status` is `answered`
-    /// or `expired`. False when the ask was already settled (or never was).
+    /// Settle an open ask: the first answer wins. `status` is `answered`, or
+    /// `withdrawn` (with no answer) when the work that waited on it ended.
+    /// False when the ask was already settled (or never was).
     pub fn settle_permission_ask(
         &self,
         id: &str,
         status: &str,
-        answer: &str,
+        answer: Option<&str>,
         via: Option<&str>,
         at: i64,
     ) -> Result<bool, NeboError> {
@@ -665,20 +697,7 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
     }
 
-    /// Open asks whose time is up at `now`.
-    pub fn due_permission_asks(&self, now: i64) -> Result<Vec<PermissionAskRow>, NeboError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {ASK_COLUMNS} FROM permission_asks
-                 WHERE status = 'open' AND expires_at <= ?1 ORDER BY expires_at, id"
-            ))
-            .map_err(db_err)?;
-        let rows = stmt.query_map(params![now], row_to_ask).map_err(db_err)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
-    }
-
-    /// The asks of one session the owner said no to, or that expired.
+    /// The asks of one session the owner said no to.
     pub fn declined_permission_asks(&self, session_key: &str) -> Result<Vec<PermissionAskRow>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn

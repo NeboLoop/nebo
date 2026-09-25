@@ -3075,7 +3075,7 @@
 		"allowedAlways": "Autorisé désormais",
 		"allowedOnce": "Autorisé cette fois",
 		"declined": "Refusé",
-		"expired": "Expiré, compté comme Non",
+		"withdrawn": "Retirée : le travail concerné est terminé",
 		"failed": "Impossible d'envoyer ta réponse. Réessaie."
 	},
 	"permissions": {

@@ -3075,7 +3075,7 @@
 		"allowedAlways": "从现在起允许",
 		"allowedOnce": "本次已允许",
 		"declined": "已拒绝",
-		"expired": "已过期，视为拒绝",
+		"withdrawn": "已撤回：相关工作已结束",
 		"failed": "无法发送你的回答。请重试。"
 	},
 	"permissions": {

@@ -49,7 +49,7 @@
   {:else if shown.status === 'declined'}
     <p class="permission-ask-settled">{$t('permissionAsk.declined')}</p>
   {:else}
-    <p class="permission-ask-settled">{$t('permissionAsk.expired')}</p>
+    <p class="permission-ask-settled">{$t('permissionAsk.withdrawn')}</p>
   {/if}
   {#if failed}
     <p class="permission-ask-error">{$t('permissionAsk.failed')}</p>

@@ -25,6 +25,7 @@ pub use workflow::cases::{open_case_for, settle_turn, signal_or_open, CaseBindin
 mod concurrency;
 mod finance;
 mod legal;
+mod longrun;
 mod marketing;
 mod operations;
 mod parity;
@@ -48,6 +49,7 @@ fn every_proof_is_a_fixture_in_the_engine_suite_and_every_fixture_proves_somethi
         ("concurrency", include_str!("concurrency.rs")),
         ("finance", include_str!("finance.rs")),
         ("legal", include_str!("legal.rs")),
+        ("longrun", include_str!("longrun.rs")),
         ("marketing", include_str!("marketing.rs")),
         ("operations", include_str!("operations.rs")),
         ("parity", include_str!("parity.rs")),

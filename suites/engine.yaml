@@ -77,6 +77,8 @@ fixtures:
   - ../fixtures/engine/platform/uc55-one-audit-history-per-case.yaml
   - ../fixtures/engine/platform/platform-a-persons-case-holder-is-the-only-one-who-writes-to-them.yaml
   - ../fixtures/engine/platform/uc56-a-case-moves-between-employees-with-its-history.yaml
+  # Long-running work (Batch E)
+  - ../fixtures/engine/longrun/e4-an-ask-waits-four-days-across-a-restart-and-the-answer-resumes-it.yaml
   # Parity with the seven replaced mechanisms
   - ../fixtures/engine/parity/parity-parity-scheduled-jobs.yaml
   - ../fixtures/engine/parity/parity-parity-heartbeats.yaml

@@ -99,7 +99,7 @@
     if (!r) return null;
     const s = $approvalStatuses[r];
     if (s === 'approved') return 'inbox.approved';
-    if (s === 'expired') return 'permissionAsk.expired';
+    if (s === 'withdrawn') return 'permissionAsk.withdrawn';
     if (s === 'denied' || s === 'rejected') return 'inbox.denied';
     if (s === 'conflict') return 'inbox.conflict';
     if (s === 'applied') return 'inbox.updated';
@@ -543,8 +543,8 @@
               </div>
             {:else if status === 'approved' || status === 'denied' || status === 'rejected'}
               <span class="badge {status === 'approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(status === 'approved' ? 'inbox.approved' : 'inbox.denied')}</span>
-            {:else if status === 'expired'}
-              <span class="badge badge-ghost text-base-content/60">{$t('permissionAsk.expired')}</span>
+            {:else if status === 'withdrawn'}
+              <span class="badge badge-ghost text-base-content/60">{$t('permissionAsk.withdrawn')}</span>
             {:else if status === 'conflict'}
               <span class="badge badge-warning badge-outline">{$t('inbox.conflict')}</span>
             {:else if status}

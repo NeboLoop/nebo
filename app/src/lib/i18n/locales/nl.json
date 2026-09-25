@@ -3075,7 +3075,7 @@
 		"allowedAlways": "Vanaf nu toegestaan",
 		"allowedOnce": "Deze keer toegestaan",
 		"declined": "Geweigerd",
-		"expired": "Verlopen, geteld als Nee",
+		"withdrawn": "Ingetrokken: het werk waarvoor het was is afgelopen",
 		"failed": "Je antwoord kon niet worden verzonden. Probeer het opnieuw."
 	},
 	"permissions": {

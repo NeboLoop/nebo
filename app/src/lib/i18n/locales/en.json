@@ -3093,7 +3093,7 @@
 		"allowedAlways": "Allowed from now on",
 		"allowedOnce": "Allowed this once",
 		"declined": "Declined",
-		"expired": "Expired, counted as No",
+		"withdrawn": "Withdrawn: the work it was for has ended",
 		"failed": "Could not send your answer. Try again."
 	},
 	"permissions": {

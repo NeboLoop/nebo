@@ -33,7 +33,7 @@ describe('unreadCount', () => {
 		expect(askBandStatus('open')).toBe('pending');
 		expect(askBandStatus('allowed')).toBe('approved');
 		expect(askBandStatus('declined')).toBe('denied');
-		expect(askBandStatus('expired')).toBe('expired');
+		expect(askBandStatus('withdrawn')).toBe('withdrawn');
 		expect(askNotificationId('ask-1')).toBe('permission-ask:ask-1');
 	});
 });

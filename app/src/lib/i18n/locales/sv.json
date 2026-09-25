@@ -3075,7 +3075,7 @@
 		"allowedAlways": "Tillåtet från och med nu",
 		"allowedOnce": "Tillåtet den här gången",
 		"declined": "Nekat",
-		"expired": "Utgånget, räknat som Nej",
+		"withdrawn": "Återkallad: arbetet den gällde har avslutats",
 		"failed": "Ditt svar kunde inte skickas. Försök igen."
 	},
 	"permissions": {

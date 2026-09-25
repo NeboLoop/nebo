@@ -14,6 +14,12 @@
 //!    a finished turn's declared wait becomes the parent's next wait;
 //! 4. reap: pending effects are surfaced, transient events past the TTL go.
 //!
+//! Every ask is a run of kind `ask` waiting on the owner's answer. The
+//! answer is the signal that wakes it; its wait's timer is the next
+//! reminder. A woken ask goes to the asks (`resume_asks`): an answer is
+//! applied once, an open ask is brought back to the owner and waits again.
+//! Nothing expires an ask.
+//!
 //! Schedules (cron jobs) are recurring timers: every enabled job holds ONE
 //! pending timer aimed at binding `cron:<id>`; a due timer becomes a run of
 //! kind `task` that `drive` executes; the next occurrence is armed from the
@@ -1210,6 +1216,8 @@ async fn drive(state: &AppState) {
         }
     }
 
+    resume_asks(store, &state.permission_asks, &state.tools, t);
+
     time_out_turns(state, t).await;
 
     // A turn the workflow ended, whose case has not heard it: the turn's
@@ -1221,6 +1229,22 @@ async fn drive(state: &AppState) {
             warn!(run = %turn.id, error = %e, "engine: settle failed");
         }
     }
+}
+
+/// Asks whose wait woke — the owner's answer arrived, or a reminder came
+/// due: each goes to the asks, which apply an answer once, or bring the card
+/// back to the owner and wait again. Returns the tasks running allowed
+/// calls. An ask that could not be read stays queued for the next tick.
+pub fn resume_asks(store: &Store, asks: &agent::harness::permissions::Asks, registry: &Arc<tools::Registry>, t: i64) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut running = Vec::new();
+    for run in store.engine_queued_runs_of_kind("ask", TURNS_PER_TICK).unwrap_or_default() {
+        match asks.resume(registry, &run.id, t) {
+            Ok(Some(task)) => running.push(task),
+            Ok(None) => {}
+            Err(e) => warn!(ask = %run.id, error = %e, "engine: ask not resumed; tried again next tick"),
+        }
+    }
+    running
 }
 
 // ── pre-flight: a binding's declared needs, before anything else ─────────

@@ -3075,7 +3075,7 @@
 		"allowedAlways": "從現在起允許",
 		"allowedOnce": "本次已允許",
 		"declined": "已拒絕",
-		"expired": "已過期，視為拒絕",
+		"withdrawn": "已撤回：相關工作已結束",
 		"failed": "無法送出你的回答。請再試一次。"
 	},
 	"permissions": {
