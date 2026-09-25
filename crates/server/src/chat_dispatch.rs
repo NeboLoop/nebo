@@ -465,7 +465,12 @@ fn remember_input(state: &AppState, config: &ChatConfig) {
             crate::reply_route::set(state, &config.session_key, &config.user_id, Some(&route));
         }
         (None, Origin::User) => crate::reply_route::set(state, &config.session_key, &config.user_id, None),
-        (None, _) => {}
+        (None, _) => {
+            if let Some(ctx) = &config.channel_ctx {
+                let route = crate::reply_route::ReplyRoute::Channel { channel_ctx: ctx.clone() };
+                crate::reply_route::set(state, &config.session_key, &config.user_id, Some(&route));
+            }
+        }
     }
     let seat = crate::reply_route::WakeSeat {
         origin: config.origin,

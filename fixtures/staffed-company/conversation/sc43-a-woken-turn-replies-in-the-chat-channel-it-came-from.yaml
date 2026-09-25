@@ -1,0 +1,8 @@
+id: sc43-a-woken-turn-replies-in-the-chat-channel-it-came-from
+name: "SC43 — A woken turn replies in the chat channel it came from"
+description: |
+  A helper started from a Slack thread finishes; the turn its notification wakes posts its
+  reply into that thread through the employee's bridge (B14; the route B13 gave loop and phone).
+target_component: staffed-company
+proof: staffed_proof::conversation::a_woken_turn_replies_in_the_chat_channel_it_came_from
+conversation: []

@@ -20,7 +20,7 @@ use crate::state::AppState;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ReplyRoute {
-    /// A loop, phone or channel conversation.
+    /// A loop or phone conversation.
     Comm {
         provider: String,
         topic: String,
@@ -32,6 +32,9 @@ pub(crate) enum ReplyRoute {
     /// A coworker's thread: the reply goes back to whoever messaged it, or
     /// into the team it was asked in.
     Coworker(CoworkerRoute),
+    /// A chat-channel conversation (Slack, Discord, Teams): the reply is
+    /// posted into it, in the thread it came from.
+    Channel { channel_ctx: tools::ChannelContext },
 }
 
 /// Who a coworker thread answers, and as whom its turns run.
@@ -91,7 +94,7 @@ impl ReplyRoute {
                 approval_relay: *approval_relay,
                 from_agent_id: from_agent_id.clone(),
             }),
-            ReplyRoute::Coworker(_) => None,
+            ReplyRoute::Coworker(_) | ReplyRoute::Channel { .. } => None,
         }
     }
 }
@@ -202,7 +205,10 @@ mod tests {
                 team_name: "Floor".into(),
             }),
         });
-        for r in [comm, cw] {
+        let channel = ReplyRoute::Channel {
+            channel_ctx: tools::ChannelContext { kind: "slack".into(), channel_id: "C1".into(), thread_ts: Some("1.2".into()) },
+        };
+        for r in [comm, cw, channel] {
             let back: ReplyRoute =
                 serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
             assert_eq!(back, r);
