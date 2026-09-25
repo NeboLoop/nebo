@@ -9,6 +9,8 @@
   import { teachStart, teachStop, getToolOutput } from '$lib/api/nebo';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
+  import ConsentChip from './ConsentChip.svelte';
+  import type { EmployeeConsentPayload } from './ConsentChip.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { renderMentionChips } from '$lib/mentions';
   import { downloadArtifact } from '$lib/chat/download';
@@ -615,6 +617,12 @@
   function coworkerEvents(tools: ToolMsg[] | undefined): CoworkerEventPayload[] {
     return (tools ?? [])
       .flatMap((t) => (t.payload?.kind === 'coworker_message' ? [t.payload as CoworkerEventPayload] : []));
+  }
+  // A drafted employee's consent line is the owner's to answer, never
+  // plumbing inside the collapsed tool group.
+  function consentLines(tools: ToolMsg[] | undefined): EmployeeConsentPayload[] {
+    return (tools ?? [])
+      .flatMap((t) => (t.payload?.kind === 'employee_consent' ? [t.payload as EmployeeConsentPayload] : []));
   }
   function nonCoworkerTools(tools: ToolMsg[] | undefined): ToolMsg[] {
     return (tools ?? []).filter((t) => t.payload?.kind !== 'coworker_message');
@@ -1790,6 +1798,9 @@
                 <span>{$t('chat.messagedCoworker')}</span>
                 <span class="font-medium text-base-content/80">{ev.to}</span>
               </a>
+            {/each}
+            {#each segs.flatMap((sg) => consentLines(sg.tools)) as consent, cIdx (cIdx)}
+              <ConsentChip {consent} />
             {/each}
           {#if turnAttachments.length}
             <div class="flex flex-wrap gap-2 mt-2">

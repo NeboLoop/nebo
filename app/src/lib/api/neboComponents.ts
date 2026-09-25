@@ -369,6 +369,13 @@ export interface ChatMessagesResponse {
 	pendingAsk?: PendingAsk
 }
 
+export interface ChatRecap {
+	chatId: string
+	turnId: string
+	text: string
+	createdAt: number
+}
+
 export interface ChatStreamResponse {
 	type: string
 	content?: string
@@ -1495,7 +1502,7 @@ export interface EnableAgentChannelResponse {
 }
 
 export interface GetAgentOperationsResponse {
-	default: unknown
+	default: string
 	configured: unknown
 	interfaces: unknown
 	available: unknown[]
@@ -2297,6 +2304,13 @@ export interface UserUpdatePermissionsResponse {
 
 export interface UserUpdateProfileResponse {
 	profile: unknown
+}
+
+export interface WorkOutAgentNeedsResponse {
+	line: string
+	items: string[]
+	accounts: string[]
+	draftId: string | null
 }
 
 // ── Common Types ───────────────────────────────────────────────────

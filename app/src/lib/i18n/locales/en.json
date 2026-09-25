@@ -391,7 +391,9 @@
 		"researchWriting": "writing the report",
 		"researchOtherDomains": "+ {n} other sites",
 		"researchVerified": "{n} claims verified against sources",
-		"historyLoadFailed": "Couldn't load this conversation. Check your connection and try again."
+		"historyLoadFailed": "Couldn't load this conversation. Check your connection and try again.",
+		"consentCreates": "Say yes and they're created with exactly this job.",
+		"consentAdds": "Say yes and this is added to their job."
 	},
 	"chatInput": {
 		"placeholder": "Reply...",
@@ -3030,7 +3032,13 @@
 		"placeholder": "e.g. Dispatch, Piper, Sam…",
 		"create": "Hire them",
 		"failed": "Couldn't create the employee. Try again.",
-		"marketplaceHint": "Want a pre-built expert instead? Browse the Marketplace."
+		"marketplaceHint": "Want a pre-built expert instead? Browse the Marketplace.",
+		"jobLabel": "Their job (optional)",
+		"jobPlaceholder": "What will they do? (optional)",
+		"working": "Working out what they'll need…",
+		"willDo": "{name} will:",
+		"thisEmployee": "This employee",
+		"removeItem": "Remove {item}"
 	},
 	"runLimit": {
 		"title": "Spending limit per run",

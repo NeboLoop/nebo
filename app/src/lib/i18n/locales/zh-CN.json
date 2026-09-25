@@ -384,7 +384,9 @@
 		"researchWriting": "正在撰写报告",
 		"researchOtherDomains": "+ 另外 {n} 个网站",
 		"researchVerified": "已对照来源核实 {n} 条论点",
-		"historyLoadFailed": "无法加载这段对话。请检查网络连接后重试。"
+		"historyLoadFailed": "无法加载这段对话。请检查网络连接后重试。",
+		"consentCreates": "回答“是”，就会按这份工作内容创建。",
+		"consentAdds": "回答“是”，就会把这项加入工作内容。"
 	},
 	"chatInput": {
 		"placeholder": "回复...",
@@ -3012,7 +3014,13 @@
 		"placeholder": "例如 Dispatch、Piper、Sam…",
 		"create": "雇佣他",
 		"failed": "未能创建该员工。请重试。",
-		"marketplaceHint": "想要一位现成的专家？去市场看看。"
+		"marketplaceHint": "想要一位现成的专家？去市场看看。",
+		"jobLabel": "工作内容（可选）",
+		"jobPlaceholder": "要做什么？（可选）",
+		"working": "正在确定需要哪些权限…",
+		"willDo": "{name}将会：",
+		"thisEmployee": "这位员工",
+		"removeItem": "移除{item}"
 	},
 	"runLimit": {
 		"title": "每次运行的花费上限",

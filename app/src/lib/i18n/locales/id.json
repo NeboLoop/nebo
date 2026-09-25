@@ -384,7 +384,9 @@
 		"researchWriting": "menulis laporan",
 		"researchOtherDomains": "+ {n} situs lain",
 		"researchVerified": "{n} klaim diverifikasi terhadap sumber",
-		"historyLoadFailed": "Tidak bisa memuat percakapan ini. Periksa koneksi Anda dan coba lagi."
+		"historyLoadFailed": "Tidak bisa memuat percakapan ini. Periksa koneksi Anda dan coba lagi.",
+		"consentCreates": "Katakan ya dan karyawan ini dibuat dengan pekerjaan persis ini.",
+		"consentAdds": "Katakan ya dan ini ditambahkan ke pekerjaannya."
 	},
 	"chatInput": {
 		"placeholder": "Balas...",
@@ -3012,7 +3014,13 @@
 		"placeholder": "mis. Dispatch, Piper, Sam…",
 		"create": "Rekrut dia",
 		"failed": "Tidak bisa membuat karyawan. Coba lagi.",
-		"marketplaceHint": "Mau ahli siap pakai saja? Jelajahi Marketplace."
+		"marketplaceHint": "Mau ahli siap pakai saja? Jelajahi Marketplace.",
+		"jobLabel": "Pekerjaannya (opsional)",
+		"jobPlaceholder": "Apa yang akan dikerjakan? (opsional)",
+		"working": "Mencari tahu apa yang dibutuhkan…",
+		"willDo": "{name} akan:",
+		"thisEmployee": "Karyawan ini",
+		"removeItem": "Hapus {item}"
 	},
 	"runLimit": {
 		"title": "Batas pengeluaran per eksekusi",

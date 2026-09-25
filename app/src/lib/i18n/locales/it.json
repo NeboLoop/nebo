@@ -384,7 +384,9 @@
 		"researchWriting": "scrive il rapporto",
 		"researchOtherDomains": "+ altri {n} siti",
 		"researchVerified": "{n} affermazioni verificate sulle fonti",
-		"historyLoadFailed": "Non è stato possibile caricare questa conversazione. Controlla la connessione e riprova."
+		"historyLoadFailed": "Non è stato possibile caricare questa conversazione. Controlla la connessione e riprova.",
+		"consentCreates": "Di' di sì e verrà creato con esattamente questo lavoro.",
+		"consentAdds": "Di' di sì e questo si aggiunge al suo lavoro."
 	},
 	"chatInput": {
 		"placeholder": "Rispondi...",
@@ -3012,7 +3014,13 @@
 		"placeholder": "per es. Dispatch, Piper, Sam…",
 		"create": "Assumilo",
 		"failed": "Non è stato possibile creare il dipendente. Riprova.",
-		"marketplaceHint": "Preferisci un esperto già pronto? Dai un'occhiata al Marketplace."
+		"marketplaceHint": "Preferisci un esperto già pronto? Dai un'occhiata al Marketplace.",
+		"jobLabel": "Il suo lavoro (facoltativo)",
+		"jobPlaceholder": "Cosa farà? (facoltativo)",
+		"working": "Stiamo capendo di cosa avrà bisogno…",
+		"willDo": "{name} potrà:",
+		"thisEmployee": "Questo dipendente",
+		"removeItem": "Rimuovi {item}"
 	},
 	"runLimit": {
 		"title": "Limite di spesa per esecuzione",
