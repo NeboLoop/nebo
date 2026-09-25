@@ -111,6 +111,14 @@
         detailRows: factRows(input?.input as Record<string, unknown> | undefined),
       };
     }
+    // A suggested agreed goal: the owner approves the end state itself.
+    if (tool === 'suggest_goal') {
+      return {
+        actionType: 'goal',
+        actionDetail: str(input?.condition) ?? '',
+        headline: $t('components.approvalGate.goalHeadline'),
+      };
+    }
     if (resource === 'shell' || action === 'exec') {
       return { actionType: 'shell_command', actionDetail: str(input?.command) ?? '' };
     }
