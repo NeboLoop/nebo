@@ -1086,17 +1086,6 @@ impl AgentTool {
                     ),
                 };
 
-                let stream_tx = match ctx.stream_tx {
-                    Some(ref tx) => tx.clone(),
-                    None => {
-                        return ToolResult::error(
-                            "Stream sender not available for progress events. \
-                             This usually means the request came from a non-streaming context. \
-                             Use action: \"spawn\" for individual tasks instead of spawn_parallel.",
-                        );
-                    }
-                };
-
                 for t in tasks {
                     if let Some(refusal) = self.names_an_employee(t) {
                         return ToolResult::error(refusal);
@@ -1144,7 +1133,7 @@ impl AgentTool {
                     .collect();
 
                 let task_count = requests.len();
-                match orch.spawn_parallel(requests, stream_tx).await {
+                match orch.spawn_parallel(requests).await {
                     Ok(result) => {
                         // The orchestrator marks each failed section "(FAILED)";
                         // counting those is the one source for the numbers here.
@@ -1235,7 +1224,7 @@ impl AgentTool {
                     }
                 };
 
-                match orch.cancel(task_id).await {
+                match orch.cancel(task_id, &ctx.session_key).await {
                     Ok(()) => ToolResult::ok(format!("Cancelled task: {}", task_id)),
                     Err(e) => ToolResult::error(format!("Failed to cancel: {}", e)),
                 }
@@ -1257,14 +1246,7 @@ impl AgentTool {
                     );
                 };
                 match orch
-                    .send(
-                        task_id,
-                        message,
-                        &ctx.session_key,
-                        ctx.run_taint.clone(),
-                        Some(ctx.cancel_token.clone()),
-                        ctx.stream_tx.clone(),
-                    )
+                    .send(task_id, message, crate::orchestrator::SpawnRequest::child_of(ctx))
                     .await
                 {
                     Ok(crate::orchestrator::FollowUp::Delivered { task_id }) => ToolResult::ok(format!(
@@ -1292,7 +1274,7 @@ impl AgentTool {
                 if task_id.is_empty() {
                     // List active sub-agents
                     if let Some(orch) = self.orchestrator.get() {
-                        let agents = orch.list_active().await;
+                        let agents = orch.list_active(&ctx.session_key).await;
                         if agents.is_empty() {
                             return ToolResult::ok(
                                 "No sub-agents currently running. Finished agents: use status with task_id, or list.",
@@ -1316,7 +1298,7 @@ impl AgentTool {
                 }
 
                 if let Some(orch) = self.orchestrator.get() {
-                    match orch.status(task_id).await {
+                    match orch.status(task_id, &ctx.session_key).await {
                         Ok(status) => return ToolResult::ok(status),
                         Err(_) => {} // Fall through to DB lookup
                     }
@@ -2961,7 +2943,6 @@ mod spawn_model_inheritance {
     use crate::orchestrator::{SpawnRequest, SpawnResult, SubAgentOrchestrator};
     use std::pin::Pin;
     use std::sync::Mutex;
-    use tokio_util::sync::CancellationToken;
 
     type Fut<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
@@ -2992,31 +2973,24 @@ mod spawn_model_inheritance {
             Box::pin(async { Ok(done()) })
         }
 
-        fn cancel(&self, _task_id: &str) -> Fut<'_, Result<(), String>> {
+        fn cancel(&self, _task_id: &str, _caller: &str) -> Fut<'_, Result<(), String>> {
             Box::pin(async { Ok(()) })
         }
-        fn status(&self, _task_id: &str) -> Fut<'_, Result<String, String>> {
+        fn status(&self, _task_id: &str, _caller: &str) -> Fut<'_, Result<String, String>> {
             Box::pin(async { Ok(String::new()) })
         }
         fn send(
             &self,
             _task_id: &str,
             _message: &str,
-            _from_session_key: &str,
-            _taint: Vec<types::provenance::ProvenanceClass>,
-            _parent_cancel: Option<CancellationToken>,
-            _parent_stream_tx: Option<tokio::sync::mpsc::Sender<ai::StreamEvent>>,
+            _parent: SpawnRequest,
         ) -> Fut<'_, Result<crate::orchestrator::FollowUp, String>> {
             Box::pin(async { Ok(crate::orchestrator::FollowUp::Continued(done())) })
         }
-        fn list_active(&self) -> Fut<'_, Vec<(String, String, String)>> {
+        fn list_active(&self, _caller: &str) -> Fut<'_, Vec<(String, String, String)>> {
             Box::pin(async { Vec::new() })
         }
-        fn spawn_parallel(
-            &self,
-            requests: Vec<SpawnRequest>,
-            _progress_tx: tokio::sync::mpsc::Sender<ai::StreamEvent>,
-        ) -> Fut<'_, Result<SpawnResult, String>> {
+        fn spawn_parallel(&self, requests: Vec<SpawnRequest>) -> Fut<'_, Result<SpawnResult, String>> {
             self.spawned.lock().unwrap().extend(requests);
             Box::pin(async { Ok(done()) })
         }

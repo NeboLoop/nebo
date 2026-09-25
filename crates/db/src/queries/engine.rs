@@ -777,6 +777,25 @@ impl Store {
         Ok(rows)
     }
 
+    /// Runs of one kind that no process has finished: queued, running,
+    /// waiting or interrupted. Oldest first.
+    pub fn engine_live_runs_of_kind(&self, kind: &str) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs
+                 WHERE kind = ?1 AND state IN ('queued', 'running', 'waiting', 'interrupted')
+                 ORDER BY created_at, id"
+            ))
+            .db_err("engine_live_runs_of_kind")?;
+        let rows = stmt
+            .query_map(params![kind], row_to_run)
+            .db_err("engine_live_runs_of_kind")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_live_runs_of_kind")?;
+        Ok(rows)
+    }
+
     /// Test-only: run one statement against the store (fixture setup that
     /// production code has no reason to do, such as backdating a row).
     #[doc(hidden)]

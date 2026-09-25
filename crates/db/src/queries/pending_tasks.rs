@@ -1,8 +1,8 @@
 //! Tasks. Two things wear the `PendingTask` shape:
 //!
-//! - Sub-agent and DAG tasks — durable work the orchestrator runs, retries
-//!   and recovers. These are ENGINE RUNS (kind `subagent` / `dag`); the
-//!   methods below read and write `engine_runs` and map to `PendingTask`.
+//! - Helpers: the harness's delegated work. These are ENGINE RUNS (kind
+//!   `helper`); the methods below read and write `engine_runs` and map to
+//!   `PendingTask`.
 //! - Checklist items (`task_type = 'tracking'`) — the runner's work-panel
 //!   list for a run's steps. Not durable execution; they live in
 //!   `pending_tasks`.
@@ -25,8 +25,8 @@ const TASK_SELECT: &str = "SELECT id, kind, state, session_key, lane, parent_run
         json_extract(inputs, '$.max_attempts') AS max_attempts
  FROM engine_runs";
 
-/// Engine run kinds that are orchestrator tasks.
-const TASK_KINDS: &str = "('subagent', 'dag')";
+/// Engine run kinds that are tasks.
+const TASK_KINDS: &str = "('helper')";
 
 fn engine_state(status: &str) -> &str {
     match status {

@@ -3,9 +3,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-
 use crate::ToolContext;
 
 /// The limits a sub-agent runs under: its parent run's, copied from the
@@ -15,13 +12,14 @@ use crate::ToolContext;
 /// `Default`.
 #[derive(Debug, Clone, Default)]
 pub struct ChildSeat {
+    /// Who the parent run serves: an owner's run starts its children as the
+    /// system; any other origin (an outside caller, a coworker, an MCP
+    /// client) stays what it was, with its limits.
+    pub origin: crate::Origin,
     /// The parent run's grant: the child's ceiling and the mode it runs in.
     /// `None` only when the parent ran without one; the child then runs
     /// under its employee's own grant.
     pub grant: Option<Arc<types::permissions::Grant>>,
-    /// A hard fence for the child: file writes and shell stay inside these.
-    /// The parent's fence, or an isolated child's own copy.
-    pub fence: Option<Vec<std::path::PathBuf>>,
     /// Restricted-run allowlist (outside callers, review fork).
     pub tool_allowlist: Option<HashSet<String>>,
     /// The denial text that goes with `tool_allowlist`.
@@ -30,32 +28,6 @@ pub struct ChildSeat {
     pub cwd: Option<String>,
     /// Classes of untrusted content the parent had touched when it spawned.
     pub taint: Vec<types::provenance::ProvenanceClass>,
-}
-
-impl ChildSeat {
-    /// Fence an isolated child to its own copy of `workspace`. A fenced
-    /// parent may only isolate a project inside its folders: the copy is
-    /// merged back into `workspace`, so isolating anything else would write
-    /// where the parent cannot.
-    pub fn isolate_to(&mut self, workspace: &str, copy: &str) -> Result<(), String> {
-        let strings = |v: &[std::path::PathBuf]| -> Vec<String> {
-            v.iter().map(|p| p.to_string_lossy().into_owned()).collect()
-        };
-        let folders = self.grant.as_ref().map(|g| g.folders()).unwrap_or_default();
-        let target = [workspace.to_string()];
-        if let Some(blocked) = crate::safeguard::outside_allowed("isolate", &target, &strings(&folders))
-            .or_else(|| {
-                self.fence
-                    .as_ref()
-                    .and_then(|f| crate::safeguard::outside_allowed("isolate", &target, &strings(f)))
-            })
-        {
-            return Err(blocked);
-        }
-        self.fence = Some(vec![std::path::PathBuf::from(copy)]);
-        self.cwd = Some(copy.to_string());
-        Ok(())
-    }
 }
 
 /// Request to spawn a single sub-agent or execute a DAG.
@@ -72,9 +44,6 @@ pub struct SpawnRequest {
     pub parent_session_key: String,
     pub user_id: String,
     pub wait: bool,
-    /// Parent's cancellation token — sub-agents derive a child token from this
-    /// so that cancelling the parent cascades to all children.
-    pub parent_cancel: Option<CancellationToken>,
     /// Maximum agentic loop iterations for this sub-agent (0 = default 100).
     pub max_iterations: usize,
     /// Skill names to pre-load into the sub-agent's context. Full SKILL.md
@@ -89,9 +58,6 @@ pub struct SpawnRequest {
     /// The corresponding STRAP doc is injected so the sub-agent knows the tool's
     /// resources, actions, and usage patterns.
     pub tools: Vec<String>,
-    /// Parent's stream sender — forwarded to sub-agents so that `AskRequest`
-    /// events reach the user's WebSocket (permission forwarding).
-    pub parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
     /// Parent run's agent-to-agent hop count — inherited so a sub-agent cannot
     /// restart the coworker chain cap at zero.
     pub handoff_depth: u8,
@@ -133,13 +99,11 @@ impl SpawnRequest {
             parent_session_key: ctx.session_key.clone(),
             user_id: ctx.user_id.clone(),
             wait: true,
-            parent_cancel: Some(ctx.cancel_token.clone()),
             skills,
-            parent_stream_tx: ctx.stream_tx.clone(),
             handoff_depth: ctx.handoff_depth,
             seat: ChildSeat {
+                origin: ctx.origin,
                 grant: ctx.grant.clone(),
-                fence: ctx.grant.as_ref().and_then(|g| g.fence.clone()),
                 tool_allowlist: ctx.tool_whitelist.clone(),
                 tool_denial_hint: ctx.whitelist_denial_hint.clone(),
                 cwd: ctx.cwd.clone(),
@@ -171,76 +135,77 @@ pub enum FollowUp {
     Continued(SpawnResult),
 }
 
-/// Trait implemented by agent::Orchestrator, consumed by tools::AgentTool.
-/// Uses Pin<Box<dyn Future>> for object safety (async_trait alternative).
+/// The helper tools' door onto the harness's helper registry
+/// (`agent::harness::delegation`). Every call names the conversation it
+/// comes from: a caller sees, stops and messages only the helpers it
+/// started. Uses `Pin<Box<dyn Future>>` for object safety.
 pub trait SubAgentOrchestrator: Send + Sync {
-    /// Spawn a single sub-agent.
+    /// Start one helper for the run `req` was built from
+    /// ([`SpawnRequest::child_of`]).
     fn spawn(
         &self,
         req: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
-    /// Decompose a complex task into a DAG and execute it.
+    /// Decompose a complex task into a graph of helpers and run it.
     ///
     /// `parent` is [`SpawnRequest::child_of`] the run that asked: every node
-    /// is built from it, so the DAG's children sit, run at the model, and are
-    /// limited exactly as a single spawn's would be. A node's own model, when
-    /// the decomposition names one, replaces the parent's.
+    /// is built from it, so the graph's helpers sit, run at the model, and
+    /// are limited exactly as a single spawn's would be. A node's own model,
+    /// when the decomposition names one, replaces the parent's.
     fn execute_dag(
         &self,
         prompt: &str,
         parent: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
-    /// Cancel a running sub-agent or DAG task.
+    /// Stop one of the helpers the conversation `caller` started.
     fn cancel(
         &self,
         task_id: &str,
+        caller: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
 
-    /// Get the status of a sub-agent task.
+    /// The status and output of one of the helpers `caller` started.
     fn status(
         &self,
         task_id: &str,
+        caller: &str,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>>;
 
-    /// Send a sub-agent a message. A running one hears it at its next step
-    /// and reports the way it was spawned to (`FollowUp::Delivered`); a
-    /// finished one keeps its session (everything it read and did), runs again
-    /// the way it was spawned with the message as its next turn, and answers
-    /// the same way (`FollowUp::Continued`). `from_session_key` and `taint`
-    /// are the sender's: a running child records where the message came from
-    /// and takes on its taint. Fails once a finished child's context has been
-    /// released.
+    /// Send one of the helpers `parent` started a message. A running one
+    /// hears it at its next step (`FollowUp::Delivered`); a finished one
+    /// keeps its session (everything it read and did) and runs again with
+    /// the message as its next input, reporting the way it was started
+    /// (`FollowUp::Continued`). `parent` is [`SpawnRequest::child_of`] the
+    /// sender's run: a continued helper runs under the sender's limits.
     fn send(
         &self,
         task_id: &str,
         message: &str,
-        from_session_key: &str,
-        taint: Vec<types::provenance::ProvenanceClass>,
-        parent_cancel: Option<CancellationToken>,
-        parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
+        parent: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<FollowUp, String>> + Send + '_>>;
 
-    /// List all active sub-agents: (task_id, description, status).
+    /// The helpers `caller` started that are still in hand:
+    /// (task_id, description, status).
     fn list_active(
         &self,
+        caller: &str,
     ) -> Pin<Box<dyn Future<Output = Vec<(String, String, String)>> + Send + '_>>;
 
-    /// Spawn multiple sub-agents in parallel and wait for all to complete.
-    /// Progress updates are sent via the progress_tx channel.
+    /// Start several helpers at once and wait for them (each one moves to
+    /// the background past the foreground budget, as a single one does).
     fn spawn_parallel(
         &self,
         requests: Vec<SpawnRequest>,
-        progress_tx: mpsc::Sender<ai::StreamEvent>,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
-    /// Recover incomplete tasks from a previous crash.
+    /// Settle helpers a restart interrupted.
     fn recover(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
-/// Late-binding handle for the orchestrator.
-/// Created empty before Runner exists, filled after Runner is built.
+/// Late-binding handle for the helper door: created empty with the tool
+/// registry, filled once the harness exists.
 pub type OrchestratorHandle = Arc<OnceLock<Box<dyn SubAgentOrchestrator>>>;
 
 /// Create a new empty orchestrator handle.
@@ -271,43 +236,21 @@ mod tests {
         Arc::new(g)
     }
 
-    /// Isolation narrows the fence to the child's own copy. A fenced parent
-    /// can only isolate a project inside its folders; an unfenced one
-    /// anything.
-    #[test]
-    fn isolation_narrows_and_never_widens_the_fence() {
-        let mut fenced = ChildSeat { grant: Some(folder_grant(&["/work/a"])), ..Default::default() };
-        fenced.isolate_to("/work/a/app", "/tmp/copy-1").expect("inside the fence");
-        assert_eq!(fenced.fence, Some(vec!["/tmp/copy-1".into()]));
-        assert_eq!(fenced.cwd.as_deref(), Some("/tmp/copy-1"));
-
-        let mut outside = ChildSeat { grant: Some(folder_grant(&["/work/a"])), ..Default::default() };
-        let refused = outside.isolate_to("/work/b", "/tmp/copy-2").unwrap_err();
-        assert!(refused.starts_with("BLOCKED"), "{refused}");
-        assert_eq!(outside.fence, None, "a refusal leaves the fence as it was");
-
-        let mut nested = ChildSeat { fence: Some(vec!["/tmp/copy-1".into()]), ..Default::default() };
-        assert!(nested.isolate_to("/work/a", "/tmp/copy-4").is_err(), "an isolated parent isolates only inside its copy");
-
-        let mut open = ChildSeat::default();
-        open.isolate_to("/anywhere", "/tmp/copy-3").unwrap();
-        assert_eq!(open.fence, Some(vec!["/tmp/copy-3".into()]));
-    }
-
     /// `child_of` reads every limit from the parent's context.
     #[test]
     fn child_of_copies_the_parents_limits() {
         let mut grant = (*folder_grant(&["/work/a"])).clone();
         grant.fence = Some(vec!["/tmp/copy".into()]);
         let ctx = ToolContext {
+            origin: crate::Origin::Caller,
             grant: Some(Arc::new(grant)),
             run_taint: vec![types::provenance::ProvenanceClass::Phone],
             tool_whitelist: Some(["os".to_string()].into_iter().collect()),
             ..Default::default()
         };
         let seat = SpawnRequest::child_of(&ctx).seat;
+        assert_eq!(seat.origin, crate::Origin::Caller);
         assert_eq!(seat.grant, ctx.grant);
-        assert_eq!(seat.fence, Some(vec!["/tmp/copy".into()]));
         assert_eq!(seat.taint, ctx.run_taint);
         assert_eq!(seat.tool_allowlist, ctx.tool_whitelist);
     }

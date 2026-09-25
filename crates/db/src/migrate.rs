@@ -339,7 +339,10 @@ mod idempotency_tests {
         assert_eq!(count("SELECT COUNT(*) FROM engine_events WHERE kind = 'seen' AND idem_key = 'comm:sms-abc' AND delivered_at IS NOT NULL"), 1);
         // The fan-out keeps its parent link and states; tracking rows stay where they were.
         assert_eq!(one("SELECT state FROM engine_runs WHERE id = 'root'"), "done");
-        assert_eq!(one("SELECT state || ' ' || parent_run_id FROM engine_runs WHERE id = 'child'"), "queued root");
+        // The one loop's upgrade (0172) then fails the child the old
+        // orchestrator never ran; both become helper rows.
+        assert_eq!(one("SELECT state || ' ' || parent_run_id FROM engine_runs WHERE id = 'child'"), "failed root");
+        assert_eq!(one("SELECT kind FROM engine_runs WHERE id = 'root'"), "helper");
         assert_eq!(count("SELECT COUNT(*) FROM pending_tasks"), 1, "only the tracking row remains");
         // The parked workflow is a waiting run with its approval as its live wait.
         assert_eq!(one("SELECT state FROM engine_runs WHERE id = 'wf-park'"), "waiting");
@@ -357,8 +360,7 @@ mod idempotency_tests {
         // The store opens the upgraded file and finds nothing more to do.
         let store = crate::Store::new(&path_s).unwrap();
         assert_eq!(store.engine_get_run("wf-park").unwrap().unwrap().state, "waiting");
-        let queued = store.engine_queued_runs("main", 10).unwrap();
-        assert_eq!(queued.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["child"], "the pending child is queued on its old lane, ready to run");
+        assert!(store.engine_queued_runs("main", 10).unwrap().is_empty(), "nothing waits on the old orchestrator");
     }
 
     /// Each rolling summary becomes one checkpoint boundary row in its
@@ -393,7 +395,7 @@ mod idempotency_tests {
             .unwrap();
         }
 
-        run_migrations(&conn).unwrap();
+        run_migrations_to(&conn, 168).unwrap();
 
         let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND trim(summary) != ''"), 0, "every summary moved");
@@ -416,6 +418,68 @@ mod idempotency_tests {
         assert_eq!(short.len(), 4, "every row stays after the boundary");
         assert!(short[0].content.contains("Owner asked for a haiku."));
         assert_eq!(store.get_chat_messages("long").unwrap().len(), 101, "the thread keeps every row");
+    }
+
+    /// The one loop's upgrade: the steering the old loop stored in threads
+    /// is deleted and everything else stays; the orchestrator's rows become
+    /// helper rows, a live one failed; the old session state columns go.
+    #[test]
+    fn the_one_loop_upgrade_deletes_stored_steering_and_retires_the_old_rows() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 171).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO chats (id, title) VALUES ('c', 'C');
+             INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES
+               ('owner', 'c', 'user', 'Send the invoices.', NULL, 1),
+               ('nudge', 'c', 'user', '  Continue — your previous response committed to more work that isn''t done yet: the invoices. Keep going and finish it.', NULL, 2),
+               ('stamped', 'c', 'user', 'keep going', '{"autoContinue":true}', 3),
+               ('budget', 'c', 'user', 'You''ve reached the maximum number of tool-calling iterations allowed. Please provide a final response summarizing what you''ve found and accomplished so far, without calling any more tools.', NULL, 4),
+               ('room', 'c', 'user', 'Team Ops', '{"roomBriefing":true}', 5),
+               ('queued', 'c', 'user', '<system-reminder>
+Team Ops
+</system-reminder>', '{"isMeta":true}', 6),
+               ('attachment', 'c', 'user', '<system-reminder>
+Date
+</system-reminder>', '{"attachment":{"kind":"date_changed"},"isMeta":true}', 7),
+               ('notification', 'c', 'user', '<system-reminder>
+[Notification: not a message from the owner]
+</system-reminder>', '{"notification":true,"isMeta":true}', 8),
+               ('boundary', 'c', 'user', 'This conversation continues', '{"checkpoint":true}', 9),
+               ('odd', 'c', 'user', '<system-reminder>not json</system-reminder>', 'not json', 10),
+               ('reply', 'c', 'assistant', '<system-reminder> quoted', '{"isMeta":true}', 11);
+             INSERT INTO sessions (id, name, active_chat_id, active_task, created_at, updated_at) VALUES ('s', 'agent:a:web', 'c', 'invoices', 1, 1);
+             INSERT INTO engine_runs (id, kind, state, session_key, lane) VALUES
+               ('live', 'subagent', 'running', 'subagent:agent:a:web:live', 'subagent'),
+               ('done', 'subagent', 'done', 'subagent:agent:a:web:done', 'subagent'),
+               ('job', 'dag', 'queued', 'agent:a:web', 'subagent'),
+               ('wf', 'workflow', 'running', 'agent:a:workflow:wf', 'main');"#,
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let ids: Vec<String> = conn
+            .prepare("SELECT id FROM chat_messages ORDER BY created_at")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(ids, ["owner", "attachment", "notification", "boundary", "odd", "reply"]);
+        let one = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(one("SELECT kind || ' ' || state FROM engine_runs WHERE id = 'live'"), "helper failed");
+        assert_eq!(one("SELECT kind || ' ' || state FROM engine_runs WHERE id = 'done'"), "helper done");
+        assert_eq!(one("SELECT kind || ' ' || state FROM engine_runs WHERE id = 'job'"), "helper failed");
+        assert_eq!(one("SELECT kind || ' ' || state FROM engine_runs WHERE id = 'wf'"), "workflow running", "other runs are untouched");
+        let gone: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('active_task', 'summary', 'last_summarized_count', 'work_tasks')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gone, 0, "the old loop's session columns are gone");
     }
 
     #[test]

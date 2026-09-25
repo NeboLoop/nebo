@@ -102,7 +102,6 @@ pub struct Session {
     pub name: Option<String>,
     pub scope: Option<String>,
     pub scope_id: Option<String>,
-    pub summary: Option<String>,
     pub token_count: Option<i64>,
     pub message_count: Option<i64>,
     pub last_compacted_at: Option<i64>,
@@ -120,9 +119,6 @@ pub struct Session {
     pub verbose_level: Option<String>,
     pub custom_label: Option<String>,
     pub last_embedded_message_id: Option<i64>,
-    pub active_task: Option<String>,
-    pub last_summarized_count: Option<i64>,
-    pub work_tasks: Option<String>,
     pub active_chat_id: Option<String>,
 }
 

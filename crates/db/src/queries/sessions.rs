@@ -143,16 +143,6 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    pub fn update_session_summary(&self, id: &str, summary: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE sessions SET summary = ?2, last_compacted_at = unixepoch(), updated_at = unixepoch() WHERE id = ?1",
-            params![id, summary],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
     pub fn update_session_stats(
         &self,
         id: &str,
@@ -196,9 +186,9 @@ impl Store {
     pub fn reset_session(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE sessions SET message_count = 0, token_count = 0, summary = NULL,
+            "UPDATE sessions SET message_count = 0, token_count = 0,
              last_compacted_at = NULL, compaction_count = 0, memory_flush_at = NULL,
-             memory_flush_compaction_count = NULL, active_task = NULL,
+             memory_flush_compaction_count = NULL,
              updated_at = unixepoch() WHERE id = ?1",
             params![id],
         )
@@ -275,36 +265,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_session_active_task(&self, id: &str) -> Result<String, NeboError> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT COALESCE(active_task, '') FROM sessions WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
-    pub fn set_session_active_task(&self, id: &str, active_task: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE sessions SET active_task = ?2, updated_at = unixepoch() WHERE id = ?1",
-            params![id, active_task],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    pub fn clear_session_active_task(&self, id: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE sessions SET active_task = NULL, updated_at = unixepoch() WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
     pub fn get_session_last_embedded_message_id(&self, id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
@@ -364,11 +324,7 @@ impl Store {
             "UPDATE sessions SET
                 message_count = 0,
                 token_count = 0,
-                summary = NULL,
                 last_compacted_at = NULL,
-                last_summarized_count = 0,
-                active_task = NULL,
-                work_tasks = NULL,
                 updated_at = unixepoch()
              WHERE id = ?1",
             params![id],
@@ -384,7 +340,6 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         name: row.get("name")?,
         scope: row.get("scope")?,
         scope_id: row.get("scope_id")?,
-        summary: row.get("summary")?,
         token_count: row.get("token_count")?,
         message_count: row.get("message_count")?,
         last_compacted_at: row.get("last_compacted_at")?,
@@ -402,9 +357,6 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         verbose_level: row.get("verbose_level")?,
         custom_label: row.get("custom_label")?,
         last_embedded_message_id: row.get("last_embedded_message_id")?,
-        active_task: row.get("active_task")?,
-        last_summarized_count: row.get("last_summarized_count")?,
-        work_tasks: row.get("work_tasks")?,
         active_chat_id: row.get("active_chat_id")?,
     })
 }
@@ -507,16 +459,12 @@ mod counter_tests {
             .unwrap();
         store.set_session_label("s1", Some("My label")).unwrap();
         store.update_session_stats("s1", 5000, 12).unwrap();
-        store.set_session_active_task("s1", "doing things").unwrap();
-        store.update_session_summary("s1", "old summary").unwrap();
 
         store.reset_session_counters("s1").unwrap();
 
         let s = store.get_session("s1").unwrap().unwrap();
         assert_eq!(s.message_count, Some(0));
         assert_eq!(s.token_count, Some(0));
-        assert_eq!(s.summary, None, "stale summary must not carry over");
-        assert_eq!(s.active_task, None);
         assert_eq!(s.last_compacted_at, None);
         // Preferences survive.
         assert_eq!(s.model_override.as_deref(), Some("model-x"));
