@@ -386,9 +386,21 @@ fn heard_nothing_since(h: &Harness, session_id: &str, seen: &[ChatMessage]) -> b
         .iter()
         .rev()
         .take_while(|m| last_seen != Some(m.id.as_str()))
-        .any(|m| m.role == "user" && (conversation::arrived_mid_turn(m).is_some() || super::delegation::notify::is_notification_row(m)))
+        .any(|m| m.role == "user" && (conversation::arrived_mid_turn(m).is_some() || queued_row(m)))
 }
 
+
+/// A notification or a platform prompt (a goal kickoff) written into a
+/// running turn.
+fn queued_row(msg: &ChatMessage) -> bool {
+    super::delegation::notify::is_notification_row(msg)
+        || msg
+            .metadata
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .and_then(|v| v.get("hiddenPrompt").and_then(|b| b.as_bool()))
+            == Some(true)
+}
 
 /// The next turn on the same session and seat: its input is already in the
 /// conversation.
@@ -1221,6 +1233,7 @@ async fn checkpoint(
             taint,
         })]
     };
+    let goal = goal::GoalStore::new(&h.sessions, &cx.session_id).active().ok().flatten();
     let outcome = compact::checkpoint::checkpoint(
         &compact::checkpoint::CheckpointContext {
             sessions: &h.sessions,
@@ -1230,7 +1243,7 @@ async fn checkpoint(
             fork_of,
             hooks: &hooks,
             restore: compact::restore::RestoreState {
-                goal: None,
+                goal: goal.as_ref(),
                 running: &[],
                 plan_mode: cx.plan_mode(),
             },
@@ -1398,19 +1411,41 @@ async fn tool_round(
 /// Turn end: `None` when every check lets the turn end, `Ok` to take
 /// another step, `Err` to end it with that exit.
 async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), TurnExit>> {
-    for check in turn_end::registry(&cx.request.mode) {
-        match check.check(cx, st).await {
+    let h = &cx.harness;
+    let goal = match (&cx.request.mode, &h.goal_observer) {
+        (TurnMode::Chat, Some(observer)) => Some(goal::GoalCheck {
+            sessions: h.sessions.clone(),
+            session_id: cx.session_id.clone(),
+            judge: goal::DoneJudge::for_providers(&h.providers.read().await),
+            trace: cx.trace("done_check"),
+            observer: observer.clone(),
+            check_ins: h.goal_check_ins.clone(),
+        }),
+        _ => None,
+    };
+    let checks = turn_end::registry(&cx.request.mode, turn_end::EndChecks { goal, workflow_contract: None });
+    if checks.is_empty() {
+        return None;
+    }
+    // The conversation the model just answered, the answer included.
+    let transcript =
+        conversation::convert_messages(&h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default());
+    let end = turn_end::TurnEnd {
+        transcript: &transcript,
+        step: st.step,
+        checks_this_turn: st.end_checks_this_turn,
+    };
+    for check in checks {
+        match check.check(&end).await {
             EndVerdict::Stop => {}
             EndVerdict::Exit(exit) => return Some(Err(exit)),
-            EndVerdict::Continue { reminder } => {
+            EndVerdict::Continue(event) => {
                 st.end_checks_this_turn += 1;
-                st.reminders.add(&TurnEvent::AppHook {
-                    label: check.name().to_string(),
-                    text: reminder.clone(),
-                });
+                let reason = events::attachment_for(&event).map(|a| a.text).unwrap_or_default();
+                st.reminders.add(&event);
                 st.transition = Transition::EndCheckContinue {
                     check: check.name(),
-                    reason: reminder,
+                    reason,
                 };
                 return Some(Ok(()));
             }
@@ -1524,13 +1559,15 @@ mod tests {
     struct Scripted {
         script: Mutex<VecDeque<Step>>,
         calls: Mutex<Vec<ChatRequest>>,
+        /// The done check's answers, in order.
+        verdicts: Mutex<VecDeque<&'static str>>,
     }
 
     impl Scripted {
         fn new(steps: Vec<Step>) -> Arc<Self> {
             Arc::new(Self {
                 script: Mutex::new(steps.into()),
-                calls: Default::default(),
+                ..Default::default()
             })
         }
 
@@ -1546,6 +1583,10 @@ mod tests {
         }
 
         async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            if req.trace.purpose == "done_check" {
+                let verdict = self.verdicts.lock().unwrap().pop_front().unwrap_or(r#"{"met": true, "reason": "done"}"#);
+                return Ok(events(vec![StreamEvent::text(verdict)], None));
+            }
             if req.trace.purpose == "owner_recap" {
                 return Ok(events(vec![StreamEvent::text(RECAP)], None));
             }
@@ -1985,5 +2026,41 @@ mod tests {
         let rows = stored(&h);
         assert_eq!(rows.iter().filter(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)).count(), 1);
         assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
+    }
+
+    struct Watch(Mutex<Vec<String>>);
+
+    impl goal::GoalObserver for Watch {
+        fn status(&self, goal: &goal::AgreedGoal) {
+            self.0.lock().unwrap().push(goal.status.as_str().to_string());
+        }
+        fn kickoff(&self, _goal: &goal::AgreedGoal, _prompt: String) {}
+        fn background(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    /// An agreed goal holds the turn open: an unmet check continues with the
+    /// check's reason as a row, and a met check ends the turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unmet_goal_continues_until_the_check_says_met() {
+        let model = Scripted::new(vec![Step::Say("Tests written."), Step::Say("All tests pass now.")]);
+        model.verdicts.lock().unwrap().extend([
+            r#"{"met": false, "reason": "the transcript shows \"2 failing\""}"#,
+            r#"{"met": true, "reason": "\"All tests pass now.\""}"#,
+        ]);
+        let mut h = harness(&model).await;
+        let watch = Arc::new(Watch(Mutex::new(Vec::new())));
+        h.goal_observer = Some(watch.clone());
+        let sid = h.sessions.get_or_create(KEY, "").unwrap().id;
+        goal::GoalStore::new(&h.sessions, &sid).set("all tests pass", goal::GoalSource::OwnerCommand).unwrap();
+
+        let events = run_turn(&h, owner("Fix the tests")).await;
+        assert_eq!(exit_of(&events), "goal_met");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "one continuation");
+        assert!(texts(&calls[1]).iter().any(|t| t.contains("The agreed goal isn't met yet") && t.contains("2 failing")));
+        assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "goal_check").count(), 1);
+        assert!(watch.0.lock().unwrap().iter().any(|s| s == "met"), "the owner is told");
     }
 }

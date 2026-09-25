@@ -67,6 +67,11 @@ pub struct Harness {
     pub(crate) title_sink: Option<Arc<dyn after_turn::ChatTitleSink>>,
     /// Owner-facing events outside a turn's stream (`turn_recap`).
     pub(crate) broadcast: Option<crate::agent_worker::NotifyFn>,
+    /// Where the agreed goal's status, kickoffs and running work are told;
+    /// without it no goal is checked.
+    pub(crate) goal_observer: Option<Arc<dyn goal::GoalObserver>>,
+    /// The goal check-ins waiting on background work, one per session.
+    pub(crate) goal_check_ins: goal::CheckIns,
     pub(crate) active_turns: ActiveTurns,
 }
 
@@ -100,6 +105,8 @@ impl Harness {
             hybrid_searcher: None,
             title_sink: None,
             broadcast: None,
+            goal_observer: None,
+            goal_check_ins: Default::default(),
             active_turns: Default::default(),
         }
     }

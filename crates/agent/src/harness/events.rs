@@ -44,7 +44,6 @@ pub enum TurnEvent {
         entered: bool,
     },
     GoalSet(String),
-    GoalCleared,
     /// The done check found the agreed goal unmet.
     GoalCheck {
         reason: String,
@@ -143,7 +142,6 @@ pub const NAMES: &[&str] = &[
     "task_reminder",
     "plan_mode",
     "goal_set",
-    "goal_cleared",
     "goal_check",
     "usage",
     "tools_available",
@@ -263,7 +261,6 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
                 non_empty(condition)?
             ),
         ),
-        TurnEvent::GoalCleared => ("goal_cleared", "The agreed goal was cleared.".to_string()),
         TurnEvent::GoalCheck { reason, condition } => (
             "goal_check",
             format!("The agreed goal isn't met yet: {}. Keep working toward: {}.", reason.trim(), condition.trim()),
@@ -742,7 +739,6 @@ mod tests {
             TurnEvent::TasksIdle(Vec::new()),
             TurnEvent::PlanMode { entered: true },
             TurnEvent::GoalSet("all tests pass".into()),
-            TurnEvent::GoalCleared,
             TurnEvent::GoalCheck {
                 reason: "\"2 failing\"".into(),
                 condition: "all tests pass".into(),
