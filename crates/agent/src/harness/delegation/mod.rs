@@ -400,9 +400,9 @@ impl State {
         self.helpers.values().any(|h| h.parent_key == key && h.running)
     }
 
-    /// Take a place for a helper launching in the tree `key` belongs to:
-    /// `None` when its running helpers and the launches in progress already
-    /// reach [`MAX_RUNNING`]. Counting and taking under one lock keeps
+    /// Take a place for a helper launching in the tree `key` belongs to, and
+    /// return the tree's top session; `Err` with the count when its running
+    /// helpers and the launches in progress already reach [`MAX_RUNNING`]. Counting and taking under one lock keeps
     /// several delegate calls of one response from all passing the count.
     fn take_place(&mut self, key: &str) -> Result<String, usize> {
         let root = root_of(key).to_string();
