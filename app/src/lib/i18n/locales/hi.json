@@ -324,7 +324,6 @@
 		"stepFailed": "{name} विफल रहे",
 		"workingWithTool": "{name} के साथ काम कर रहा है",
 		"moreCount": "+{count} और",
-		"largeInputNote": "बड़ा दस्तावेज़ · {chars} वर्ण · पूरा टेक्स्ट कर्मचारी के लिए रखा गया",
 		"enterToSubmit": "Enter से सबमिट · Esc से रद्द",
 		"saveAndSubmit": "सहेजें और सबमिट करें",
 		"editResend": "संपादित करें और पुनः भेजें",

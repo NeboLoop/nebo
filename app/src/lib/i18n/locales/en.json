@@ -329,7 +329,6 @@
 		"stepFailed": "{name} failed",
 		"workingWithTool": "working with {name}",
 		"moreCount": "+{count} more",
-		"largeInputNote": "Large document · {chars} characters · full text kept for the employee",
 		"enterToSubmit": "Enter to submit · Esc to cancel",
 		"saveAndSubmit": "Save & Submit",
 		"editResend": "Edit & resend",

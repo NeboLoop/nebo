@@ -9,8 +9,6 @@ use tracing::{debug, info, warn};
 
 use crate::memory;
 
-/// Estimated token-to-character ratio.
-
 /// How long `drain_extractions` waits for in-flight tasks before giving up.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -65,40 +63,6 @@ pub async fn drain_extractions() {
             DRAIN_TIMEOUT.as_secs()
         ),
     }
-}
-
-/// Check whether a pre-compaction memory flush should run.
-/// Returns true if the session has had new compactions and the message
-/// window is large enough to warrant extraction from all messages.
-pub fn should_run_memory_flush(
-    store: &Store,
-    session_id: &str,
-    auto_compact_tokens: usize,
-) -> bool {
-    let session = match store.get_session(session_id) {
-        Ok(Some(s)) => s,
-        _ => return false,
-    };
-
-    let compaction_count = session.compaction_count.unwrap_or(0);
-    let flush_compaction_count = session.memory_flush_compaction_count.unwrap_or(0);
-
-    // Must have had new compactions since last flush
-    if compaction_count <= flush_compaction_count {
-        return false;
-    }
-
-    // Estimate token usage from messages
-    let messages = match store.get_chat_messages(session_id) {
-        Ok(msgs) => msgs,
-        Err(_) => return false,
-    };
-
-    let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
-    let estimated_tokens = total_chars / crate::CHARS_PER_TOKEN;
-    let threshold = (auto_compact_tokens as f64 * 0.75) as usize;
-
-    estimated_tokens >= threshold
 }
 
 /// The pre-checkpoint memory flush, for session `session_id` only: the
@@ -218,25 +182,5 @@ mod tests {
         let slow_read = slow.read.lock().unwrap().clone();
         assert_eq!(slow_read.len(), 1, "A's flush ran once, for A");
         assert!(slow_read[0].contains("ALPHA") && !slow_read[0].contains("BRAVO"));
-    }
-
-    #[test]
-    fn test_chars_per_token() {
-        assert_eq!(crate::CHARS_PER_TOKEN, 4);
-    }
-
-    #[test]
-    fn test_threshold_calculation() {
-        let auto_compact_tokens = 80_000usize;
-        let threshold = (auto_compact_tokens as f64 * 0.75) as usize;
-        assert_eq!(threshold, 60_000);
-    }
-
-    #[test]
-    fn test_token_estimation() {
-        let text = "Hello world, this is a test message for token estimation.";
-        let estimated_tokens = text.len() / crate::CHARS_PER_TOKEN;
-        // 58 chars / 4 = 14 tokens
-        assert_eq!(estimated_tokens, 14);
     }
 }

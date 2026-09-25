@@ -324,7 +324,6 @@
 		"stepFailed": "{name}が失敗しました",
 		"workingWithTool": "{name}で作業中",
 		"moreCount": "+{count}件",
-		"largeInputNote": "大きなドキュメント · {chars}文字 · 全文を社員のために保持",
 		"enterToSubmit": "Enterで送信 · Escでキャンセル",
 		"saveAndSubmit": "保存して送信",
 		"editResend": "編集して再送信",

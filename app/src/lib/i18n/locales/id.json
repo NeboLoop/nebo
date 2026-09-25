@@ -324,7 +324,6 @@
 		"stepFailed": "{name} gagal",
 		"workingWithTool": "bekerja dengan {name}",
 		"moreCount": "+{count} lagi",
-		"largeInputNote": "Dokumen besar · {chars} karakter · teks lengkap disimpan untuk karyawan",
 		"enterToSubmit": "Enter untuk kirim · Esc untuk batal",
 		"saveAndSubmit": "Simpan & Kirim",
 		"editResend": "Edit & kirim ulang",
