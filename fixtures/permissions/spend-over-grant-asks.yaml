@@ -29,8 +29,6 @@ conversation:
     content: "Pay the Example Supplies invoice — it's $450, due today. Use ledger_bill_create."
 
 tool_config:
-  agent:
-    enabled: true
   message:
     enabled: true
 

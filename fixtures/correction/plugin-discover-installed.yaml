@@ -23,7 +23,7 @@ conversation:
 tool_config:
   plugin:
     enabled: true
-  agent:
+  create_employee:
     enabled: true
   use_skill:
     enabled: true

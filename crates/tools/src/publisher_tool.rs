@@ -58,7 +58,7 @@ impl PublisherTool {
         };
         let db_role = match db_role {
             Some(r) => r,
-            None => return ToolResult::error(format!("Agent '{}' not found locally. Use agent(resource: \"registry\", action: \"list\") to see names.", name)),
+            None => return ToolResult::error(format!("No employee named '{}' here. list_employees shows their names.", name)),
         };
 
         let agent_json = if db_role.frontmatter.is_empty() || db_role.frontmatter == "{}" {

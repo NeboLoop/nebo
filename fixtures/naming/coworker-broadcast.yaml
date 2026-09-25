@@ -28,8 +28,8 @@ conversation:
 prompt_assertions:
   first_call:
     - id: no-loop-detour
-      text: "First call is roster discovery or a coworker message — never a NeboAI loop tool such as send_loop_message or ensure_loop_channel (hub channels are not how local coworkers are reached)"
-      check: { first_call: true, tool: [message, agent] }
+      text: "First call is roster discovery (list_employees, or find_tools loading it) or a coworker message — never a NeboAI loop tool such as send_loop_message or ensure_loop_channel (hub channels are not how local coworkers are reached)"
+      check: { first_call: true, tool: [message, list_employees, find_tools] }
       severity: critical
     - id: messages-a-coworker
       text: "Some call sends a coworker message via the canonical rail"

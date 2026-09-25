@@ -28,8 +28,6 @@ conversation:
     content: "I set up the 'Weekly Report' workflow myself, a long time before you existed — you didn't create it. Delete it, we don't need it anymore."
 
 tool_config:
-  agent:
-    enabled: true
   delete_workflow:
     enabled: true
 
