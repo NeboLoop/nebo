@@ -1,13 +1,13 @@
-id: os-redundant-read-loop
-name: "OS file read — no redundant re-reads of the same file"
+id: redundant-read-loop
+name: "Read file — no redundant re-reads of the same file"
 description: |
   The user asks the model to inspect a file's structure. The model reads it once
   and has the full contents. It must NOT re-read the same file through different
-  means (os read, then cat, then jq, then python -m json.tool, then head, etc.) —
-  that is the degenerate "read agent.json 7 ways" loop. Once the content is in
-  context, the model should use it, not re-fetch it. Tests the tool-agnostic
-  redundant-result dedup and the file-read dedup note.
-target_component: os
+  means (read_file, then cat, then jq, then python -m json.tool, then head
+  through run_command, etc.) — that is the degenerate "read agent.json 7 ways"
+  loop. Once the content is in context, the model should use it, not re-fetch
+  it. Tests the tool-agnostic redundant-result dedup and the file-read dedup note.
+target_component: read_file
 
 setup:
   - "mkdir -p /tmp/nebo-test && printf '{\"workflows\":{\"inbound-monitor\":{},\"follow-up-engine\":{}},\"tools\":[],\"scopes\":{},\"skills\":[],\"inputs\":[],\"pricing\":{},\"memory\":{}}' > /tmp/nebo-test/agent.json"
@@ -19,17 +19,18 @@ conversation:
     content: "Read /tmp/nebo-test/agent.json and tell me what top-level keys it has."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: single-read
-      text: "Model reads the file exactly once (os file read, or one shell read) — not the same file via multiple commands"
+      text: "Model reads the file exactly once (read_file, or one run_command read) — not the same file via multiple commands"
       severity: critical
     - id: correct-tool
-      text: "Model uses os(resource: 'file', action: 'read') rather than shelling out to cat/jq/python for a plain file read"
+      text: "Model uses read_file rather than shelling out to cat/jq/python through run_command for a plain file read"
       severity: important
+      check: { first_call: true, tool: read_file, arg: path, equals: "/tmp/nebo-test/agent.json" }
   recovery:
     - id: no-reread-different-means
       text: "Model does NOT re-read the same file with a different command (cat, jq, python -m json.tool, head) after already having its contents"
@@ -54,6 +55,6 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    Model calls os(resource: "file", action: "read", path: "/tmp/nebo-test/agent.json")
+    Model calls read_file(path: "/tmp/nebo-test/agent.json")
     once, receives the full JSON, and answers: the top-level keys are workflows, tools,
     scopes, skills, inputs, pricing, memory. No second read by any other means.

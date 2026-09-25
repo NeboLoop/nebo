@@ -92,10 +92,6 @@ mod tests {
 
     #[test]
     fn os_calls_say_what_they_did() {
-        let (g, p) = OsTool::labels(&json!({"action":"exec","command":"cliclick c:1091,367 && sleep 1.5 && screencapture -x -R868,60,447,950 /tmp/a.jpg"}));
-        assert!(g.starts_with("running `cliclick c:1091,367"), "{g}");
-        assert!(p.starts_with("Ran `cliclick"), "{p}");
-        assert!(p.ends_with("…`"), "long commands are cut: {p}");
         let (_, p) = OsTool::labels(&json!({"action":"click","app":"Simulator","coordinate":[223,900]}));
         assert_eq!(p, "Clicked (223,900) in Simulator");
         let (_, p) = OsTool::labels(&json!({"action":"click","ref":"B2"}));
@@ -104,8 +100,6 @@ mod tests {
         assert_eq!(p, "Captured Simulator");
         let (_, p) = OsTool::labels(&json!({"action":"screenshot"}));
         assert_eq!(p, "Captured the screen");
-        let (_, p) = OsTool::labels(&json!({"action":"read","path":"/Users/x/files/sim-half.png"}));
-        assert_eq!(p, "Read sim-half.png");
         // Anything else keeps the STRAP signature wording.
         let (_, p) = OsTool::labels(&json!({"resource":"app","action":"list"}));
         assert!(p.contains("app"), "{p}");
@@ -143,13 +137,13 @@ mod tests {
     #[test]
     fn strap_signature_reads_as_verb_noun() {
         let (act, out) =
-            OsTool::labels(&json!({"resource": "file", "action": "read"}));
-        assert_eq!(act, "reading file");
-        assert_eq!(out, "Read file");
+            OsTool::labels(&json!({"resource": "reminders", "action": "read"}));
+        assert_eq!(act, "reading reminders");
+        assert_eq!(out, "Read reminders");
         let (act, out) =
-            OsTool::labels(&json!({"resource": "file", "action": "frobnicate"}));
-        assert_eq!(act, "running frobnicate on file");
-        assert_eq!(out, "Ran frobnicate on file");
+            OsTool::labels(&json!({"resource": "reminders", "action": "frobnicate"}));
+        assert_eq!(act, "running frobnicate on reminders");
+        assert_eq!(out, "Ran frobnicate on reminders");
     }
 
     /// A tool without words of its own is named as-is ("using send invoice")

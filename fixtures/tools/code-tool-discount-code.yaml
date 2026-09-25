@@ -17,7 +17,7 @@ conversation:
     content: "What's the discount code for the September open house? It's in /tmp/nebo-test/codes/promos.txt."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
   code:
     enabled: true
@@ -25,9 +25,9 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: reads-the-file
-      text: "The model reads promos.txt with os file read"
+      text: "The model reads promos.txt with read_file"
       severity: critical
-      check: { tool: os, arg: path, contains: "promos.txt" }
+      check: { tool: read_file, arg: path, contains: "promos.txt" }
   recovery:
     - id: no-code-tool
       text: "The model never calls the code tool (tree-sitter outline/symbols) for this request"
@@ -44,4 +44,4 @@ prompt_assertions:
 ideal_behavior:
   tool_calls: 1
   total_tokens: 3000
-  narrative: "read promos.txt → FALL25"
+  narrative: "read_file promos.txt → FALL25"

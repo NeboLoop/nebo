@@ -1,11 +1,11 @@
-id: os-outside-edit-preserved
+id: outside-edit-preserved
 name: "An outside edit between tool calls is kept, not reverted"
 description: |
   The model reads a file, then a detached background process rewrites one
   line while the model is doing something else. The next iteration's sweep
   tells the model what changed; its own later edit must build on the new
   content rather than writing the stale version back.
-target_component: os
+target_component: edit_file
 
 setup:
   - "rm -rf /tmp/nebo-test/outside && mkdir -p /tmp/nebo-test/outside && printf 'one\\ntwo\\nthree\\n' > /tmp/nebo-test/outside/a.txt"
@@ -14,10 +14,12 @@ teardown:
 
 conversation:
   - role: user
-    content: "Do these steps in order with the os tool. 1) Read /tmp/nebo-test/outside/a.txt. 2) Run this exact shell command, which starts a detached background job and returns at once: nohup sh -c 'sleep 4; printf \"one\\nTWO\\nthree\\n\" > /tmp/nebo-test/outside/a.txt' >/dev/null 2>&1 & 3) Run the shell command: sleep 8. 4) WITHOUT reading the file again, use a file edit (not the shell) to append one line to a.txt with the text 'second line is: X', where X is what you know the file's second line to be right now. 5) Only now read the file and show me its exact final content."
+    content: "Do these steps in order with the file and command tools. 1) Read /tmp/nebo-test/outside/a.txt with read_file. 2) Run this exact command with run_command, which starts a detached background job and returns at once: nohup sh -c 'sleep 4; printf \"one\\nTWO\\nthree\\n\" > /tmp/nebo-test/outside/a.txt' >/dev/null 2>&1 & 3) Run the command: sleep 8. 4) WITHOUT reading the file again, use edit_file (not run_command) to append one line to a.txt with the text 'second line is: X', where X is what you know the file's second line to be right now. 5) Only now read the file and show me its exact final content."
 
 tool_config:
-  os:
+  edit_file:
+    enabled: true
+  run_command:
     enabled: true
 
 prompt_assertions:
@@ -29,7 +31,7 @@ prompt_assertions:
       text: "The appended line reads 'second line is: TWO' (uppercase). The model did not read the file between the sleep and the edit, so the only way it could know TWO is the outside-edit note; 'two' lowercase means the note did not fire"
       severity: critical
     - id: no-stale-writeback
-      text: "No write or edit call sends the old line 'two' (lowercase) back into the file, and there is no file read between the sleep and the edit"
+      text: "No write_file or edit_file call sends the old line 'two' (lowercase) back into the file, and there is no read_file between the sleep and the edit"
       severity: critical
   cost:
     - id: bounded
@@ -41,5 +43,6 @@ ideal_behavior:
   tool_calls: 5
   total_tokens: 6000
   narrative: |
-    read → shell (detached job) → shell sleep 8 → edit appends 'four' onto the
-    CURRENT content, naming TWO from the outside-edit note → read → report.
+    read_file → run_command (detached job) → run_command sleep 8 → edit_file
+    appends the line onto the CURRENT content, naming TWO from the
+    outside-edit note → read_file → report.
