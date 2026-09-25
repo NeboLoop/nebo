@@ -206,7 +206,7 @@ pub enum AskError {
     NotFound,
     /// Someone already answered it, somewhere else, or it expired.
     #[error("this was already answered")]
-    Settled(Ask),
+    Settled(Box<Ask>),
     #[error("{0}")]
     Store(String),
 }
@@ -336,7 +336,7 @@ impl Asks {
             .settle_permission_ask(id, "answered", answer.as_str(), Some(via.as_str()), now)
             .map_err(|e| AskError::Store(e.to_string()))?;
         if !won {
-            return Err(AskError::Settled(self.get(id)?.ok_or(AskError::NotFound)?));
+            return Err(AskError::Settled(Box::new(self.get(id)?.ok_or(AskError::NotFound)?)));
         }
         ask.status = AskStatus::Answered { answer, via: Some(via) };
         let mut always = false;
