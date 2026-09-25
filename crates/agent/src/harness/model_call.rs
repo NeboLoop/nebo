@@ -37,10 +37,6 @@ const OVERFLOW_ESTIMATE_BUMP: usize = 20_000;
 // tool-call arguments make healthy streams go silent for minutes. TCP
 // keepalive surfaces dead sockets as read errors long before this fires.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-/// A first token this long in coming gets a status line, repeated at the
-/// same interval until it arrives, so a slow model is never minutes of
-/// silence (live 2026-09-03: 294 s with nothing shown).
-const SLOW_FIRST_TOKEN: Duration = Duration::from_secs(30);
 /// Max recovery attempts when output is truncated by token limit.
 const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
 /// Default output token cap for LLM requests.
@@ -67,10 +63,6 @@ pub fn model_refusal_notice(model: &str, detail: &str) -> String {
          Settings → General → Model and send this again.\n\nWhat the provider \
          said: {detail}"
     )
-}
-
-pub fn slow_first_token_notice(waited_secs: u64) -> String {
-    format!("Still waiting on the model, {waited_secs} seconds with no reply yet.")
 }
 
 /// Retry backoff: exponential 500ms × 2^(n−1) capped at 32s, plus 0–25% jitter.
@@ -470,7 +462,6 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
     let mut last_retry_after: Option<u64> = None;
     let mut stop_reason: Option<String> = None;
     let mut t_first_token: Option<std::time::Instant> = None;
-    let mut slow_notice_at = tokio::time::Instant::now() + SLOW_FIRST_TOKEN;
     // Track the order of content blocks (text vs tool) for correct rehydration.
     // Each entry is either "text" (coalesced) or a tool index.
     let mut block_order: Vec<(&'static str, Option<usize>)> = Vec::new();
@@ -498,21 +489,6 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                     }
                 }
                 return CallOutcome::Cancelled;
-            }
-            _ = tokio::time::sleep_until(slow_notice_at), if t_first_token.is_none() => {
-                let waited = t_stream_start.elapsed().as_secs();
-                if tx
-                    .send(StreamEvent::control_notice(
-                        slow_first_token_notice(waited),
-                        "slow_first_token",
-                    ))
-                    .await
-                    .is_err()
-                {
-                    debug!(session_id, "slow first token notice: receiver gone");
-                }
-                slow_notice_at += SLOW_FIRST_TOKEN;
-                continue;
             }
             ev = tokio::time::timeout(STREAM_IDLE_TIMEOUT, rx.recv()) => match ev {
                 Ok(Some(e)) => e,
@@ -988,11 +964,6 @@ pub(crate) fn lost_tool_calls(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn slow_first_token_notice_says_how_long() {
-        assert!(slow_first_token_notice(60).contains("60 seconds"));
-    }
 
     /// The live failure: "Nebo 1 Pro" resolved to a model that rejects the
     /// temperature every Nebo chat turn sends, so the owner's employee died

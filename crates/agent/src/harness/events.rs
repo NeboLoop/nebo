@@ -19,8 +19,9 @@ pub enum TurnEvent {
     /// The time a turn starts, for the owner (`sections::owner_now`).
     TurnTime(String),
     /// Where the owner's phone is, when the owner shares it with the
-    /// employee (`crate::phone_location`).
-    PhoneLocation(String),
+    /// employee (`crate::phone_location`); `None` withdraws the readings
+    /// the conversation heard, once nothing is shared with it any more.
+    PhoneLocation(Option<crate::phone_location::SharedPosition>),
     /// The channel's rules changed, or were never told: the replacement,
     /// whole (`told` says whether there was an earlier version).
     ChannelRulesChanged { rules: String, told: bool },
@@ -230,7 +231,17 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
     let (kind, text) = match e {
         TurnEvent::SessionSnapshot(_) => return None,
         TurnEvent::TurnTime(now) => ("time", non_empty(now)?),
-        TurnEvent::PhoneLocation(reading) => ("phone_location", non_empty(reading)?),
+        TurnEvent::PhoneLocation(position) => {
+            let (text, taken) = match position {
+                Some(p) => (non_empty(&p.text)?, p.taken.clone()),
+                None => (PHONE_LOCATION_WITHDRAWN.to_string(), String::new()),
+            };
+            return Some(Attachment {
+                kind: "phone_location",
+                text,
+                data: serde_json::Map::from_iter([("taken".to_string(), serde_json::json!(taken))]),
+            });
+        }
         TurnEvent::ChannelRulesChanged { rules, told } => {
             let lead = told.then_some("The channel's rules have changed; these replace the earlier ones:");
             return replacement_row("channel_rules", rules, lead);
@@ -544,6 +555,32 @@ pub fn session_fact_events(now: &SessionFacts, history: &[ChatMessage]) -> Vec<T
         out.push(TurnEvent::CoworkerAccessChanged(String::new()));
     }
     out
+}
+
+/// What the conversation is told when the owner's phone position stops
+/// being shared with the employee: sharing was turned off, or the phone
+/// stopped reporting.
+const PHONE_LOCATION_WITHDRAWN: &str = "The owner's phone location is not shared with you now: sharing was turned off \
+or the phone stopped reporting. Earlier readings in this conversation are withdrawn; don't use or repeat them.";
+
+/// The phone-position row this step needs: a reading the conversation has
+/// not heard, a withdrawal when what it heard is no longer shared, or none.
+/// `now` is what is shared with this turn's employee at this moment.
+pub fn phone_location_event(
+    now: Option<crate::phone_location::SharedPosition>,
+    history: &[ChatMessage],
+) -> Option<TurnEvent> {
+    let told = history
+        .iter()
+        .filter_map(attachment_fields)
+        .filter(|f| f.get("kind").and_then(|k| k.as_str()) == Some("phone_location"))
+        .last()
+        .map(|f| f.get("taken").and_then(|t| t.as_str()).unwrap_or_default().to_string());
+    match now {
+        Some(p) if told.as_deref() != Some(p.taken.as_str()) => Some(TurnEvent::PhoneLocation(Some(p))),
+        None if told.is_some_and(|t| !t.is_empty()) => Some(TurnEvent::PhoneLocation(None)),
+        _ => None,
+    }
 }
 
 fn non_empty(text: &str) -> Option<String> {
@@ -988,7 +1025,11 @@ mod tests {
                 status: "running".into(),
             },
             TurnEvent::TurnTime("It is 2:05 PM (America/Denver, UTC-06:00) on Thursday, September 24, 2026.".into()),
-            TurnEvent::PhoneLocation("The owner's phone is at 40.000000, -111.000000.".into()),
+            TurnEvent::PhoneLocation(Some(crate::phone_location::SharedPosition {
+                text: "The owner's phone is at 40.000000, -111.000000.".into(),
+                taken: "phone@1000".into(),
+            })),
+            TurnEvent::PhoneLocation(None),
             TurnEvent::ChannelRulesChanged {
                 rules: "# Channel rules\nNo markdown.".into(),
                 told: true,

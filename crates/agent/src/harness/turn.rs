@@ -700,13 +700,6 @@ pub(crate) async fn prepare(
 
     // The first step's events: when the turn starts, then its briefing.
     st.reminders.add(&TurnEvent::TurnTime(sections::owner_now(memory_timezone.as_deref())));
-    // The owner's phone position, for an employee the owner shares it with;
-    // never on a turn a stranger or another program started.
-    if req.seat.origin.is_trusted()
-        && let Some(reading) = h.phone_locations.reading_for(&req.seat.agent_id, chrono::Utc::now().timestamp())
-    {
-        st.reminders.add(&TurnEvent::PhoneLocation(reading));
-    }
     if let Some(briefing) = req.delivery.mention_briefing.as_deref() {
         st.reminders.add(&TurnEvent::RunBriefing(briefing.to_string()));
     }
@@ -1244,6 +1237,20 @@ async fn step_events(
         coworker_access: cx.coworker_access.clone(),
     };
     for event in events::session_fact_events(&facts, conversation) {
+        st.reminders.add(&event);
+    }
+    // The owner's phone position, read every step: a reading shared with
+    // this employee is told when it is new, and turning sharing off is told
+    // at the next step. Never shared into a turn a stranger or another
+    // program started.
+    let shared = cx
+        .request
+        .seat
+        .origin
+        .is_trusted()
+        .then(|| h.phone_locations.reading_for(&cx.request.seat.agent_id, chrono::Utc::now().timestamp()))
+        .flatten();
+    if let Some(event) = events::phone_location_event(shared, conversation) {
         st.reminders.add(&event);
     }
     let team: events::Listing = h
@@ -1817,6 +1824,8 @@ mod tests {
         /// Stream these calls, then hold the reply open until a tool starts
         /// (or half a second passes) before ending it.
         Held(Vec<(&'static str, serde_json::Value)>, Arc<Probe>),
+        /// The step, its first token this long in coming.
+        Slow(Box<Step>, std::time::Duration),
     }
 
     /// What the probe tools saw: each call's tool, and whether it started
@@ -1935,6 +1944,18 @@ mod tests {
                 });
                 return Ok(rx);
             }
+            if let Step::Slow(inner, delay) = step {
+                let (list, stop) = answer(*inner)?;
+                let (tx, rx) = mpsc::channel(list.len() + 1);
+                tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    let mut replay = events(list, stop);
+                    while let Some(e) = replay.recv().await {
+                        let _ = tx.send(e).await;
+                    }
+                });
+                return Ok(rx);
+            }
             let (list, stop) = answer(step)?;
             Ok(events(list, stop))
         }
@@ -1964,7 +1985,7 @@ mod tests {
                 }));
                 (list, stop)
             }
-            Step::During(..) | Step::Held(..) => unreachable!("answered in stream"),
+            Step::During(..) | Step::Held(..) | Step::Slow(..) => unreachable!("answered in stream"),
         })
     }
 
@@ -2235,6 +2256,22 @@ mod tests {
         let notices: Vec<&StreamEvent> =
             events.iter().filter(|e| e.event_type == ai::StreamEventType::ControlNotice).collect();
         assert!(notices.is_empty(), "a reconnect said something: {notices:?}");
+    }
+
+    /// A model slow to answer is not a stop: nothing on the turn's stream
+    /// reads as one, however long the first token takes, so no screen ends
+    /// the turn or saves a wait as how it ended. The owner sees the turn is
+    /// alive from the run's progress snapshot (A28).
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_model_is_not_a_stop() {
+        let model = Scripted::new(vec![Step::Slow(Box::new(Step::Say("Here it is.")), std::time::Duration::from_secs(95))]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Take your time")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert!(events.iter().any(|e| e.event_type == ai::StreamEventType::Text), "the reply arrived");
+        let notices: Vec<&StreamEvent> =
+            events.iter().filter(|e| e.event_type == ai::StreamEventType::ControlNotice).collect();
+        assert!(notices.is_empty(), "a slow model said something: {notices:?}");
     }
 
     /// The output cap cuts a reply: the call is taken again at the higher
@@ -2841,6 +2878,50 @@ mod tests {
         let heard = |c: &ChatRequest| texts(c).iter().any(|t| t.contains("40.760800, -111.891000"));
         assert!(!heard(&calls[0]), "a chat channel's turn never hears where the owner is");
         assert!(heard(&calls[1]), "the owner's turn does");
+    }
+
+    /// Turning location off reaches the conversation at once: the next step
+    /// of the running turn and every later turn are told the readings they
+    /// heard are withdrawn, and hear no new one. Sharing again tells the
+    /// new reading (A29).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn turning_location_off_withdraws_it_at_once() {
+        let model = Scripted::new(Vec::new());
+        let h = harness(&model).await;
+        let now = chrono::Utc::now().timestamp();
+        let reading = |revision: i64, agent_ids: Vec<String>, latitude: f64| crate::phone_location::PhoneReading {
+            account_id: "owner".into(),
+            device_id: "phone".into(),
+            revision,
+            agent_ids,
+            latitude: Some(latitude),
+            longitude: Some(-111.891),
+            accuracy_metres: Some(12.0),
+            taken_at: Some(now),
+        };
+        h.phone_locations().update(reading(1, vec!["assistant".into()], 40.7608), now).unwrap();
+        let locations = h.phone_locations.clone();
+        let revoke = reading(2, Vec::new(), 40.7608);
+        let off: Hook = Box::pin(async move { locations.update(revoke, now).unwrap() });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), off),
+            Step::Say("Done."),
+            Step::Say("Hello."),
+            Step::Say("Here."),
+        ]);
+        run_turn(&h, owner("Where am I?")).await;
+        run_turn(&h, owner("And now?")).await;
+        h.phone_locations().update(reading(3, vec!["assistant".into()], 40.5), now).unwrap();
+        run_turn(&h, owner("Now?")).await;
+
+        let calls = model.calls();
+        let told = |c: &ChatRequest, what: &str| texts(c).iter().filter(|t| t.contains(what)).count();
+        let withdrawn = "Earlier readings";
+        assert_eq!(told(&calls[0], "40.760800, -111.891000"), 1, "shared: the turn hears it");
+        assert_eq!(told(&calls[1], withdrawn), 1, "turned off mid-turn: the next step is told");
+        assert_eq!(told(&calls[2], withdrawn), 1, "a later turn is told once, not again");
+        assert_eq!(told(&calls[2], "40.500000"), 0, "and hears no reading");
+        assert_eq!(told(&calls[3], "40.500000, -111.891000"), 1, "shared again: the new reading");
     }
 
     /// An explore helper declares the same tools as every run, the helper
