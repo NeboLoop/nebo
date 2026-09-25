@@ -139,7 +139,8 @@ async fn missing_account_goes_to_the_inbox_needs_flow() {
     // Inbox needs flow (the binding's pre-flight), not as an ask.
     assert_eq!(employee_caps(&store, "keeper"), vec!["mail"]);
     assert!(matches!(decide_for(&store, "keeper", &call("mail")), Decision::Allow { .. }));
-    assert!(store.permission_activity("keeper", 10).unwrap().is_empty());
+    let keeper = db::PermissionActivityFilter { agent_id: Some("keeper".into()), limit: 10, ..Default::default() };
+    assert!(store.permission_activity(&keeper).unwrap().0.is_empty());
 }
 
 #[test]

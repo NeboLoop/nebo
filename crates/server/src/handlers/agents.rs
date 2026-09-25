@@ -4565,6 +4565,20 @@ pub async fn handle_available(
     Ok(Json(HandleAvailableResponse { available }))
 }
 
+/// The capabilities the company has connected: every interface its active
+/// plugins bind, with the plugins that bind it.
+pub fn connected_capabilities(state: &AppState) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut by_capability: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for slug in tools::plugin_tool::active_plugin_slugs(&state.plugin_store, &state.store) {
+        if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
+            for capability in agent::agent_worker::interfaces_of(&manifest.interface_bindings) {
+                by_capability.entry(capability).or_default().push(slug.clone());
+            }
+        }
+    }
+    by_capability
+}
+
 /// GET /api/v1/agents/{id}/operations — the per-employee Approvals view.
 ///
 /// Lists every gated operation this employee can reach, with its three-state
@@ -4609,18 +4623,7 @@ pub async fn get_agent_operations(
     // runtime performs itself and every seat can reach. An empty list is the
     // honest answer — nothing is connected yet — not a menu of things that
     // would fail on the first call.
-    let mut providers_by_capability: std::collections::BTreeMap<String, Vec<String>> =
-        std::collections::BTreeMap::new();
-    for slug in tools::plugin_tool::active_plugin_slugs(&state.plugin_store, &state.store) {
-        if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
-            for capability in agent::agent_worker::interfaces_of(&manifest.interface_bindings) {
-                providers_by_capability
-                    .entry(capability)
-                    .or_default()
-                    .push(slug.clone());
-            }
-        }
-    }
+    let mut providers_by_capability = connected_capabilities(&state);
     for op in tools::interface_catalog::gated_operations() {
         let capability = op.split('.').next().unwrap_or("");
         if tools::interface_catalog::is_builtin_capability(capability) {

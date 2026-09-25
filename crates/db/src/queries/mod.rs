@@ -49,7 +49,7 @@ pub use engine::{
     AgentChanges, EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,
 };
-pub use permissions::{PermissionActivityRow, PermissionAskRow, PermissionSpend};
+pub use permissions::{PermissionActivityFilter, PermissionActivityRow, PermissionAskRow, PermissionSpend};
 pub use run_usage::cost_microcents;
 pub use license_keys::LicenseKeyRow;
 pub use session_goals::SessionGoal;

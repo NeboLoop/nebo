@@ -14,7 +14,7 @@ pub use queries::agent_slug;
 pub use queries::{Assignment, NewAssignment};
 pub use queries::cron_ref;
 pub use queries::{EmployeeCeilingRow, EmployeeDraftRow};
-pub use queries::{PermissionActivityRow, PermissionAskRow, PermissionSpend};
+pub use queries::{PermissionActivityFilter, PermissionActivityRow, PermissionAskRow, PermissionSpend};
 pub use queries::{
     AgentChanges, EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,
