@@ -41,7 +41,7 @@ use super::tool_round::{self, RoundContext, RoundGuards, RoundOutcome, RunToolSc
 use super::tool_surface::{self, SurfaceInputs};
 use super::turn_end::{self, EndVerdict};
 use super::{Harness, HarnessError, TurnHandle, TurnInput, TurnMode, TurnRequest, compact, goal, reminders, usage};
-use crate::pruning::{self, ContextThresholds};
+use crate::pruning;
 use crate::runner::RunState;
 use crate::selector;
 
@@ -151,7 +151,12 @@ pub struct TurnState {
     /// forks them.
     last_call: Option<(ChatRequest, Arc<dyn ai::Provider>)>,
     persisted_renderings: HashSet<String>,
-    trim_spec: pruning::TrimSpec,
+    /// Stored calls whose tool was asked whether its result may be cleared,
+    /// and those it said may.
+    trim_checked: HashSet<String>,
+    clearable: compact::trim::Clearable,
+    /// When the turn checkpoints for itself, with its failure breaker.
+    trigger: compact::checkpoint::Trigger,
     round: RoundCarry,
 }
 
@@ -568,7 +573,9 @@ pub(crate) async fn prepare(
         checkpoints: 0,
         last_call: None,
         persisted_renderings: HashSet::new(),
-        trim_spec: pruning::TrimSpec::new(),
+        trim_checked: HashSet::new(),
+        clearable: compact::trim::Clearable::new(),
+        trigger: compact::checkpoint::Trigger::default(),
         round: RoundCarry::default(),
     };
     st.persisted_renderings = st.frozen_renderings.keys().cloned().collect();
@@ -753,8 +760,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             .extend(conversation::parent_taint(&conversation));
 
         // 3. Trim, and checkpoint past the threshold.
-        let thresholds = thresholds(cx, st, &surface.declared);
-        let window = trim(cx, st, &conversation, thresholds.warning).await;
+        let context_window = context_window(cx);
+        st.usage.system_overhead_tokens = overhead_tokens(cx, &surface.declared);
+        let window = trim(cx, st, &conversation).await;
         st.usage.last_request_estimate = pruning::estimate_total_tokens(&window);
         let window = conversation::sanitize_message_order(window);
 
@@ -762,8 +770,11 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let (provider_id, model_name, selected) = select_model(cx, &window);
         st.model = selected.clone();
         let request = build_request(cx, st, &window, surface.declared, &model_name);
-        if pruning::estimate_total_tokens(&window) > thresholds.auto_compact && st.checkpoints == 0 {
-            match checkpoint(cx, st, &conversation, &request, compact::checkpoint::CheckpointReason::Threshold).await {
+        let request_tokens =
+            st.usage.last_request_estimate + st.usage.system_overhead_tokens + st.usage.estimate_correction;
+        let max_output = usize::try_from(request.max_tokens).unwrap_or_default();
+        if st.trigger.due(request_tokens, context_window, max_output) {
+            match checkpoint(cx, st, &window, &request, compact::checkpoint::CheckpointReason::Threshold).await {
                 Ok(()) => continue,
                 Err(e) => warn!(session_id = sid, error = %e, "checkpoint failed; sending the conversation as it is"),
             }
@@ -827,7 +838,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 selected_provider_id: &provider_id,
                 selected_model: &selected,
                 model_override: &cx.model,
-                context_limit: thresholds.auto_compact,
+                context_limit: compact::checkpoint::Trigger::threshold(context_window, max_output),
                 tool_credential: issue_credential
                     .as_ref()
                     .map(|issue| issue as &(dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)),
@@ -840,10 +851,18 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let reply = match outcome {
             CallOutcome::Reply(reply) => reply,
             CallOutcome::Retry(RetryWhy::Overflow) => {
-                match checkpoint(cx, st, &conversation, &fork_of, compact::checkpoint::CheckpointReason::Overflow).await {
+                // The provider refused the window: checkpoint, unless the
+                // breaker has tripped; the model call gives up after its own
+                // overflow retries.
+                let outcome = if st.trigger.tripped() {
+                    Err("the checkpoint breaker has tripped".to_string())
+                } else {
+                    checkpoint(cx, st, &window, &fork_of, compact::checkpoint::CheckpointReason::Overflow).await
+                };
+                match outcome {
                     Ok(()) => st.transition = Transition::OverflowCheckpointed,
                     Err(e) => {
-                        warn!(session_id = sid, error = %e, "overflow checkpoint failed; trimming harder");
+                        warn!(session_id = sid, error = %e, "overflow checkpoint failed; retrying as it is");
                         st.transition = Transition::TransientRetry { attempt: st.call.overflow_retries as u8 };
                     }
                 }
@@ -1080,44 +1099,32 @@ async fn step_events(
     }
 }
 
-/// The context thresholds for this turn's model, tightened by the observed
-/// undercount of the local estimate.
-fn thresholds(cx: &TurnContext, st: &mut TurnState, declared: &[ai::ToolDefinition]) -> ContextThresholds {
-    let correction = st.usage.estimate_correction;
+/// The context window of the turn's model.
+fn context_window(cx: &TurnContext) -> usize {
     let h = &cx.harness;
-    let prompt_chars = cx.prompt.text().len();
-    let schema_chars: usize = declared.iter().map(|t| t.description.len() + t.input_schema.to_string().len()).sum();
-    st.usage.system_overhead_tokens = (prompt_chars + schema_chars) / crate::CHARS_PER_TOKEN;
-    let overhead = st.usage.system_overhead_tokens + 4_000;
-    st.usage
-        .thresholds
-        .get_or_insert_with(|| {
-            let model = if cx.model.is_empty() { h.selector.select(&[]) } else { cx.model.clone() };
-            let window = h
-                .selector
-                .get_model_info(&model)
-                .map(|m| m.context_window as usize)
-                .filter(|&w| w > 0)
-                .unwrap_or(DEFAULT_CONTEXT_WINDOW);
-            ContextThresholds::from_context_window(window, overhead)
-        })
-        .adjusted(correction)
+    let model = if cx.model.is_empty() { h.selector.select(&[]) } else { cx.model.clone() };
+    h.selector
+        .get_model_info(&model)
+        .map(|m| m.context_window as usize)
+        .filter(|&w| w > 0)
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW)
 }
 
-/// Old tool results trimmed to stubs, each rendering frozen the first time
-/// it is chosen and persisted for the chat.
-async fn trim(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage], budget: usize) -> Vec<ChatMessage> {
+/// The system prompt and the tool schemas, in tokens: what every request
+/// carries besides the conversation.
+fn overhead_tokens(cx: &TurnContext, declared: &[ai::ToolDefinition]) -> usize {
+    let schema_chars: usize = declared.iter().map(|t| t.description.len() + t.input_schema.to_string().len()).sum();
+    (cx.prompt.text().len() + schema_chars) / crate::CHARS_PER_TOKEN
+}
+
+/// The per-step trim: stale results the tool lets be cleared are cleared,
+/// each rendering frozen the first time it is chosen and persisted for the
+/// chat.
+async fn trim(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage]) -> Vec<ChatMessage> {
     let h = &cx.harness;
-    crate::runner::extend_trim_spec(&h.tools, conversation, &mut st.trim_spec).await;
-    let (working, _) = pruning::time_based_micro_compact(
-        conversation,
-        pruning::TIME_BASED_KEEP_RECENT,
-        pruning::TIME_BASED_GAP_THRESHOLD_SECS,
-        budget,
-        &mut st.frozen_renderings,
-        &st.trim_spec,
-    );
-    let (working, _) = pruning::micro_compact(&working, budget, &mut st.frozen_renderings, &st.trim_spec);
+    crate::runner::extend_clearable(&h.tools, conversation, &mut st.trim_checked, &mut st.clearable).await;
+    let now = chrono::Utc::now().timestamp();
+    let (working, _) = compact::trim::trim(conversation, now, &st.clearable, &mut st.frozen_renderings);
     let fresh: Vec<(String, String)> = st
         .frozen_renderings
         .iter()
@@ -1183,15 +1190,56 @@ fn build_request(
     }
 }
 
-/// Checkpoint the conversation (WP2.6 writes the boundary).
+/// Checkpoint the conversation: the pre-checkpoint memory flush, the
+/// summary forked from the step's request, the boundary row and the restore
+/// rows. The next step loads from the boundary and is told the session's
+/// facts again.
 async fn checkpoint(
     cx: &TurnContext,
     st: &mut TurnState,
-    _conversation: &[ChatMessage],
-    _fork_of: &ChatRequest,
+    conversation: &[ChatMessage],
+    fork_of: &ChatRequest,
     why: compact::checkpoint::CheckpointReason,
 ) -> Result<(), String> {
-    compact::checkpoint::checkpoint(cx, why).await?;
+    let h = &cx.harness;
+    let provider = match &st.last_call {
+        Some((_, provider)) => provider.clone(),
+        None => h.providers.read().await.first().cloned().ok_or("no provider to checkpoint with")?,
+    };
+    let taint: Vec<types::provenance::ProvenanceClass> =
+        cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied().collect();
+    let hooks: Vec<Box<dyn compact::checkpoint::PreCheckpointHook>> = if cx.seat.memory.writes_disabled {
+        Vec::new()
+    } else {
+        vec![Box::new(compact::checkpoint::MemoryFlush {
+            provider: provider.clone(),
+            store: h.store.clone(),
+            user_id: cx.seat.memory.user_id.clone(),
+            topics: cx.seat.memory_topics.clone(),
+            embedding: h.embedding_provider.clone(),
+            barred: taint.iter().any(|c| cx.seat.write_bar.contains(c)),
+            taint,
+        })]
+    };
+    let outcome = compact::checkpoint::checkpoint(
+        &compact::checkpoint::CheckpointContext {
+            sessions: &h.sessions,
+            provider: provider.as_ref(),
+            session_id: &cx.session_id,
+            conversation,
+            fork_of,
+            hooks: &hooks,
+            restore: compact::restore::RestoreState {
+                goal: None,
+                running: &[],
+                plan_mode: cx.plan_mode(),
+            },
+        },
+        why,
+    )
+    .await;
+    st.trigger.record(&outcome);
+    outcome?;
     st.checkpoints += 1;
     st.seen.clear();
     Ok(())
@@ -1464,6 +1512,8 @@ mod tests {
         Cut(&'static str),
         /// A dropped connection.
         Transient,
+        /// The provider says the request is over the window.
+        Overflow,
         /// The step, with what the call cost in microdollars.
         Paid(Box<Step>, i64),
         /// Run the hook while the call is in flight, then answer.
@@ -1526,6 +1576,7 @@ mod tests {
             ),
             Step::Cut(text) => (vec![StreamEvent::text(text)], Some("max_tokens")),
             Step::Transient => return Err(ai::ProviderError::Request("connection reset".into())),
+            Step::Overflow => return Err(ai::ProviderError::ContextOverflow),
             Step::Paid(inner, microdollars) => {
                 let (mut list, stop) = answer(*inner)?;
                 list.push(StreamEvent::usage(ai::UsageInfo {
@@ -1914,5 +1965,25 @@ mod tests {
         assert!(calls[0].tools.iter().any(|t| t.name == "echo"));
         let result = calls[1].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
         assert!(result.contains("only looks") && !result.contains("writer ran"), "{result}");
+    }
+
+    /// The provider refuses the window: the conversation is checkpointed and
+    /// the step is taken again from the boundary, with the session's facts
+    /// told again after it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn overflow_checkpoints_then_retries() {
+        let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Carried on.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("Start the report")).await;
+        let events = run_turn(&h, owner("Keep going")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3, "the refused call and its retry");
+        let retry = texts(&calls[2]);
+        assert!(retry[0].starts_with(compact::checkpoint::BOUNDARY_LEAD), "the retry opens on the boundary: {}", retry[0]);
+        assert!(!retry.iter().any(|t| t == "Start the report"), "history before the boundary is not sent");
+        let rows = stored(&h);
+        assert_eq!(rows.iter().filter(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)).count(), 1);
+        assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
     }
 }

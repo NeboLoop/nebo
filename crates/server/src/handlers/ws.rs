@@ -600,100 +600,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         .as_str()
                                         .unwrap_or("default")
                                         .to_string();
-
-                                    let state_clone = state.clone();
-                                    let skey = session_key.clone();
-                                    tokio::spawn(async move {
-                                        // Resolve frontend session key to internal session ID
-                                        let internal_sid = match state_clone.runner.sessions()
-                                            .resolve_session_id_by_key(&skey) {
-                                            Ok(id) => id,
-                                            Err(_) => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": false, "error": "session not found"
-                                                }));
-                                                return;
-                                            }
-                                        };
-
-                                        // 1. Get current messages
-                                        let messages = match state_clone.runner.sessions().get_messages(&internal_sid) {
-                                            Ok(msgs) => msgs,
-                                            Err(_) => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": false, "error": "failed to load messages"
-                                                }));
-                                                return;
-                                            }
-                                        };
-
-                                        if messages.len() < 4 {
-                                            state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                "session_id": skey, "success": false, "error": "conversation too short to compact"
-                                            }));
-                                            return;
-                                        }
-
-                                        // 2. Gather compounding inputs: rolling summary + active task
-                                        let existing_summary = state_clone.runner.sessions()
-                                            .get_summary(&internal_sid)
-                                            .unwrap_or_default();
-                                        let active_task = state_clone.runner.sessions()
-                                            .get_active_task(&internal_sid)
-                                            .unwrap_or_default();
-
-                                        // 3. Call the one compaction pathway (structured
-                                        // compounding checkpoint; folds prior summaries).
-                                        let providers = state_clone.runner.providers();
-                                        let providers = providers.read().await;
-                                        let provider = match providers.first() {
-                                            Some(p) => p.clone(),
-                                            None => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": false, "error": "no AI provider available"
-                                                }));
-                                                return;
-                                            }
-                                        };
-                                        drop(providers);
-
-                                        let summary = match agent::pruning::build_llm_summary(
-                                            ai::RequestTrace::new("compaction"),
-                                            provider.as_ref(),
-                                            &messages,
-                                            &existing_summary,
-                                            &active_task,
-                                            "",
-                                        )
-                                        .await
-                                        {
-                                            Ok(s) => s,
-                                            Err(e) => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": false, "error": format!("LLM error: {}", e)
-                                                }));
-                                                return;
-                                            }
-                                        };
-
-                                        // 4. Atomically replace the conversation with the summary.
-                                        // On failure the original conversation is left intact.
-                                        match state_clone.runner.sessions().compact_current_messages(
-                                            &internal_sid,
-                                            &format!("{}\n\n{}", agent::pruning::COMPACTION_MESSAGE_MARKER, summary),
-                                        ) {
-                                            Ok(()) => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": true, "summary_length": summary.len()
-                                                }));
-                                            }
-                                            Err(e) => {
-                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": skey, "success": false, "error": format!("failed to save summary: {}", e)
-                                                }));
-                                            }
-                                        }
-                                    });
+                                    tokio::spawn(compact_session(state.clone(), session_key, String::new()));
                                 }
                                 "list_active_runs" => {
                                     let runs = state.run_registry.list_top_level().await;
@@ -1244,142 +1151,12 @@ async fn handle_builtin_slash(
         }
 
         "/compact" => {
-            // Trigger session compaction using the existing session_compact pipeline.
             let session_key = if !agent_id.is_empty() {
                 types::keyparser::build_agent_session_key(agent_id, channel)
             } else {
                 session_id.to_string()
             };
-
-            let state_clone = state.clone();
-            let skey = session_key.clone();
-            let trace = ai::RequestTrace {
-                agent_id: agent_id.to_string(),
-                ..ai::RequestTrace::new("compaction")
-            };
-            tokio::spawn(async move {
-                let internal_sid = match state_clone.runner.sessions()
-                    .resolve_session_id_by_key(&skey) {
-                    Ok(id) => id,
-                    Err(_) => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": false, "error": "session not found"
-                        }));
-                        return;
-                    }
-                };
-
-                let messages = match state_clone.runner.sessions().get_messages(&internal_sid) {
-                    Ok(msgs) => msgs,
-                    Err(_) => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": false, "error": "failed to load messages"
-                        }));
-                        return;
-                    }
-                };
-
-                if messages.len() < 4 {
-                    state_clone.hub.broadcast("session_compact", serde_json::json!({
-                        "session_id": skey, "success": false, "error": "conversation too short to compact"
-                    }));
-                    return;
-                }
-
-                let mut transcript = String::new();
-                for msg in &messages {
-                    let role = match msg.role.as_str() {
-                        "user" => "User",
-                        "assistant" => "Assistant",
-                        _ => continue,
-                    };
-                    if !msg.content.is_empty() {
-                        transcript.push_str(&format!("{}: {}\n\n", role, msg.content));
-                    }
-                }
-
-                let providers = state_clone.runner.providers();
-                let providers = providers.read().await;
-                let provider = match providers.first() {
-                    Some(p) => p.clone(),
-                    None => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": false, "error": "no AI provider available"
-                        }));
-                        return;
-                    }
-                };
-                drop(providers);
-
-                let summary_prompt = format!(
-                    "Summarize this conversation concisely. Capture all key decisions, facts, requests, and context. \
-                     This summary will replace the full conversation so nothing important should be lost.\n\n---\n\n{}",
-                    transcript
-                );
-
-                let req = ai::ChatRequest {
-                    tool_credential: None,
-                    tool_choice: Default::default(),
-                    messages: vec![ai::Message {
-                        role: "user".into(),
-                        content: summary_prompt,
-                        ..Default::default()
-                    }],
-                    tools: vec![],
-                    max_tokens: 2000,
-                    temperature: 0.0,
-                    system: "You are a conversation summarizer. Produce a concise summary that preserves all important context.".into(),
-                    static_system: String::new(),
-                    model: String::new(),
-                    enable_thinking: false,
-                    metadata: None,
-                    cache_breakpoints: vec![],
-                    cancel_token: None,
-                    trace,
-                };
-
-                let mut rx = match provider.stream(&req).await {
-                    Ok(rx) => rx,
-                    Err(e) => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": false, "error": format!("LLM error: {}", e)
-                        }));
-                        return;
-                    }
-                };
-
-                let mut summary = String::new();
-                while let Some(event) = rx.recv().await {
-                    if event.event_type == ai::StreamEventType::Text {
-                        summary.push_str(&event.text);
-                    }
-                }
-
-                if summary.is_empty() {
-                    state_clone.hub.broadcast("session_compact", serde_json::json!({
-                        "session_id": skey, "success": false, "error": "empty summary generated"
-                    }));
-                    return;
-                }
-
-                // Atomically replace the conversation with the summary.
-                // On failure the original conversation is left intact.
-                match state_clone.runner.sessions().compact_current_messages(
-                    &internal_sid,
-                    &format!("**Conversation Summary**\n\n{}", summary),
-                ) {
-                    Ok(()) => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": true, "summary_length": summary.len()
-                        }));
-                    }
-                    Err(e) => {
-                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                            "session_id": skey, "success": false, "error": format!("failed to save summary: {}", e)
-                        }));
-                    }
-                }
-            });
+            tokio::spawn(compact_session(state.clone(), session_key, agent_id.to_string()));
             Some("Compacting conversation...".to_string())
         }
 
@@ -2673,5 +2450,30 @@ mod cancel_precedence_tests {
         let (outcome, session_id) = apply_cancel(&serde_json::Value::Null, &registry).await;
         assert_eq!(outcome, CancelOutcome::NoActiveRuns);
         assert_eq!(session_id, "default");
+    }
+}
+
+/// The owner's compact, from `/compact` or the `session_compact` message: the
+/// conversation checkpointed to a boundary row (`checkpoint(OwnerAsked)`),
+/// the result broadcast as `session_compact`.
+async fn compact_session(state: AppState, session_key: String, agent_id: String) {
+    let reply = |result: serde_json::Value| {
+        let mut data = serde_json::json!({ "session_id": session_key });
+        if let (Some(d), Some(r)) = (data.as_object_mut(), result.as_object()) {
+            d.extend(r.clone());
+        }
+        state.hub.broadcast("session_compact", data);
+    };
+    let Ok(session_id) = state.runner.sessions().resolve_session_id_by_key(&session_key) else {
+        return reply(serde_json::json!({ "success": false, "error": "session not found" }));
+    };
+    let Some(provider) = state.runner.providers().read().await.first().cloned() else {
+        return reply(serde_json::json!({ "success": false, "error": "no AI provider available" }));
+    };
+    match agent::harness::compact::checkpoint::owner_compact(state.runner.sessions(), provider.as_ref(), &session_id, &agent_id)
+        .await
+    {
+        Ok(c) => reply(serde_json::json!({ "success": true, "summary_length": c.summary.len() })),
+        Err(e) => reply(serde_json::json!({ "success": false, "error": e })),
     }
 }

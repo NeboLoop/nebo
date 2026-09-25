@@ -184,18 +184,15 @@ impl SessionManager {
     }
 
     /// The conversation the harness sends: the active chat from its latest
-    /// checkpoint boundary on (a row whose metadata carries
-    /// `"checkpoint": true`), with typed attachment rows and notification rows
-    /// kept, stored legacy steering dropped and tool results whose call is not loaded removed.
-    /// The sliding-window path keeps `get_messages` until the cutover deletes
-    /// it.
+    /// checkpoint boundary on (`harness::compact::checkpoint`), with typed
+    /// attachment rows and notification rows kept, stored legacy steering
+    /// dropped and tool results whose call is not loaded removed. The
+    /// sliding-window path keeps `get_messages` until the cutover deletes it.
     pub fn get_messages_since_checkpoint(&self, session_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
         let chat_id = self.resolve_chat_id(session_id);
-        let mut messages = self.store.get_chat_messages(&chat_id)?;
-        if let Some(boundary) = messages.iter().rposition(is_checkpoint_boundary) {
-            messages.drain(..boundary);
-        }
-        let messages = messages
+        let messages = self
+            .store
+            .get_chat_messages_since_checkpoint(&chat_id)?
             .into_iter()
             .filter(|m| {
                 !is_stored_steering(m)
@@ -392,27 +389,6 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Compact the current conversation as a projection: the rows stay, the
-    /// chat's floor moves, and the summary becomes the first visible message.
-    /// Stays in the same conversation; a failure leaves everything untouched.
-    pub fn compact_current_messages(
-        &self,
-        session_id: &str,
-        summary: &str,
-    ) -> Result<(), NeboError> {
-        // The deferred tools loaded so far ride on the boundary row, so they
-        // stay loaded after the rows that loaded them are compacted away.
-        let loaded = crate::harness::tool_surface::loaded_names(&self.get_messages(session_id)?);
-        let metadata = (!loaded.is_empty())
-            .then(|| serde_json::json!({ crate::harness::tool_surface::LOADED_TOOLS_KEY: loaded }).to_string());
-        let chat_id = self.resolve_chat_id(session_id);
-        let msg_id = uuid::Uuid::new_v4().to_string();
-        self.store
-            .compact_chat_history(&chat_id, &msg_id, summary, metadata.as_deref())?;
-        self.store.reset_session_counters(session_id)?;
-        Ok(())
-    }
-
     /// List sessions by scope.
     pub fn list_sessions(&self, scope: &str) -> Result<Vec<Session>, NeboError> {
         self.store.list_sessions_by_scope(scope)
@@ -492,15 +468,6 @@ fn is_stored_steering(msg: &ChatMessage) -> bool {
 fn sanitize_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let messages: Vec<ChatMessage> = messages.into_iter().filter(|m| !is_stored_steering(m)).collect();
     drop_orphan_results(messages)
-}
-
-/// A checkpoint boundary row: the conversation loads from the latest one on.
-fn is_checkpoint_boundary(msg: &ChatMessage) -> bool {
-    msg.metadata
-        .as_deref()
-        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-        .and_then(|v| v.get("checkpoint").and_then(|b| b.as_bool()))
-        == Some(true)
 }
 
 /// Tool results whose call is not in `messages` removed.

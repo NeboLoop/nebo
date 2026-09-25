@@ -15,6 +15,7 @@ use tools::{Origin, Registry};
 
 use crate::concurrency::ConcurrencyController;
 use crate::db_context;
+use crate::harness::compact::trim;
 use crate::harness::conversation::{
     InputRow, MidTurnFrom, convert_messages, mid_turn_message_landed, parent_taint, persist_input, record_interrupt, sanitize_message_order,
     unanswered_mid_turn_message,
@@ -1492,10 +1493,10 @@ pub(crate) fn desktop_evidence(result: &str) -> String {
     out.join("\n")
 }
 
-/// Add the trim facts of every stored tool call not yet in `spec`, read
-/// from its tool's spec (a call to a tool no longer registered gets the
-/// default).
-pub(crate) async fn extend_trim_spec(tools: &Registry, messages: &[ChatMessage], spec: &mut pruning::TrimSpec) {
+/// Add every stored tool call not yet `checked` whose tool says its result
+/// may be cleared once stale (`DynTool::cleared_when_stale`) to `clearable`.
+/// A call to a tool no longer registered is never cleared.
+pub(crate) async fn extend_clearable(tools: &Registry, messages: &[ChatMessage], checked: &mut HashSet<String>, clearable: &mut trim::Clearable) {
     for msg in messages.iter().filter(|m| m.role == "assistant") {
         let Some(calls) = msg
             .tool_calls
@@ -1505,17 +1506,14 @@ pub(crate) async fn extend_trim_spec(tools: &Registry, messages: &[ChatMessage],
             continue;
         };
         for call in calls {
-            if spec.contains_key(&call.id) {
+            if !checked.insert(call.id.clone()) {
                 continue;
             }
-            let trim = match tools.get(&call.name).await {
-                Some(tool) => pruning::Trim {
-                    priority: tool.trim_priority(),
-                    keeps_content: tool.keeps_content_when_trimmed(&call.input),
-                },
-                None => pruning::Trim::default(),
-            };
-            spec.insert(call.id, trim);
+            if let Some(tool) = tools.get(&call.name).await
+                && tool.cleared_when_stale(&call.input)
+            {
+                clearable.insert(call.id);
+            }
         }
     }
 }
@@ -1631,15 +1629,17 @@ async fn run_loop(
     // Reset per run on purpose: files legitimately change between turns.
     let mut read_ledger = crate::read_ledger::ReadLedger::default();
     // Frozen tool-result renderings: one rendering per tool_use_id per run,
-    // shared by both compaction paths (pruning::micro_compact and
-    // time_based_micro_compact) so the model's history never mutates mid-run.
+    // applied by the per-step trim (`trim::trim`) so the model's history
+    // never mutates mid-run.
     // FROZEN DECISIONS, per chat and persisted: the rendering a compacted tool
     // result was first shown as is its rendering forever, across runs and
     // restarts (the reference's `seenIds` + `replacements`, written to the
     // transcript). Loaded here, extended after each compaction pass below.
     let chat_id_for_renderings = store.resolve_session_chat_id(session_id);
-    // Each stored tool call's trim facts, by call id (see `extend_trim_spec`).
-    let mut trim_spec = pruning::TrimSpec::new();
+    // The stored tool calls whose results may be cleared once stale (see
+    // `extend_clearable`), and every call already asked.
+    let mut clearable = trim::Clearable::new();
+    let mut trim_checked: HashSet<String> = HashSet::new();
     let mut frozen_renderings: std::collections::HashMap<String, String> = store
         .get_chat_renderings(&chat_id_for_renderings)
         .unwrap_or_else(|e| {
@@ -2395,30 +2395,17 @@ async fn run_loop(
         // The window becomes a last resort instead of the first response.
 
         // What each stored call's tool says about trimming it.
-        extend_trim_spec(tools, &all_messages, &mut trim_spec).await;
+        extend_clearable(tools, &all_messages, &mut trim_checked, &mut clearable).await;
 
-        // Stage 1: Clear stale tool results (cache-cold session)
-        let (mut working, tb_saved) = pruning::time_based_micro_compact(
-            &all_messages,
-            pruning::TIME_BASED_KEEP_RECENT,
-            pruning::TIME_BASED_GAP_THRESHOLD_SECS,
-            thresholds.warning,
-            &mut frozen_renderings,
-            &trim_spec,
-        );
-        if tb_saved > 0 {
-            debug!(tokens_saved = tb_saved, "Stage 1: time-based micro-compact");
-        }
-
-        // Stage 2: Compress tool results with informative summaries
-        let (compacted, mc_saved) =
-            pruning::micro_compact(&working, thresholds.warning, &mut frozen_renderings, &trim_spec);
-        if mc_saved > 0 {
-            debug!(
-                tokens_saved = mc_saved,
-                "Stage 2: micro-compact tool results"
-            );
-            working = compacted;
+        // Stage 1: the per-step trim (stale results cleared, old screenshots
+        // dropped; frozen renderings applied).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let (mut working, trim_saved) = trim::trim(&all_messages, now, &clearable, &mut frozen_renderings);
+        if trim_saved > 0 {
+            debug!(tokens_saved = trim_saved, "Stage 1: per-step trim");
         }
 
         // Freeze any rendering decided this pass so the next run makes the
@@ -2441,7 +2428,7 @@ async fn run_loop(
             debug!(tokens_saved = ms_saved, "Stage 3: message summarization");
             working = summarized;
         }
-        if tb_saved + mc_saved + ms_saved > 0 {
+        if trim_saved + ms_saved > 0 {
             ctx_compaction_passes += 1;
         }
 

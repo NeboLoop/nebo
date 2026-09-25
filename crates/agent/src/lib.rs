@@ -1,7 +1,6 @@
 pub mod advisors;
 pub mod agent_worker;
 pub mod chunking;
-pub mod compaction;
 pub mod concurrency;
 pub mod db_context;
 pub mod decompose;

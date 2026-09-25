@@ -173,13 +173,6 @@ pub const PERSIST_THRESHOLD_CHARS: usize = 50_000;
 /// A tool's result threshold when it declares none of its own.
 pub const DEFAULT_MAX_RESULT_CHARS: usize = 100_000;
 
-/// Order in which aged tool results are trimmed: lowest first.
-pub const TRIM_FIRST: u8 = 0;
-/// Trimmed after [`TRIM_FIRST`]: large output that is rarely re-read.
-pub const TRIM_EARLY: u8 = 2;
-/// The default place in the trimming order.
-pub const TRIM_DEFAULT: u8 = 3;
-
 /// The tool interface: identity, the model-facing definition, and every
 /// attribute other code needs about a tool. Nothing outside a tool keys on
 /// its name: the loop, the permission check, provenance, trimming, labels
@@ -268,14 +261,12 @@ pub trait DynTool: Send + Sync {
     fn taint(&self, _input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
         None
     }
-    /// Place in the order aged results are trimmed (see [`TRIM_FIRST`]).
-    fn trim_priority(&self) -> u8 {
-        TRIM_DEFAULT
-    }
-    /// An aged result keeps a bounded slice of its content instead of a
-    /// stub: it is something read, which the work may still rely on.
-    fn keeps_content_when_trimmed(&self, input: &serde_json::Value) -> bool {
-        self.read_only(input)
+    /// The call's result can be got again (a file read or change, a
+    /// search, a command, a web search or fetch), so the per-step trim may
+    /// clear it once the conversation has gone stale
+    /// (`agent::harness::compact::trim`).
+    fn cleared_when_stale(&self, _input: &serde_json::Value) -> bool {
+        false
     }
     /// An image this call returns is media the owner asked for, attached to
     /// the reply, rather than the tool looking at the screen or a page.
@@ -1295,12 +1286,6 @@ impl DynTool for McpProxyTool {
         Some((self.integration_id.clone(), self.original_name.clone()))
     }
 
-    /// An MCP result is what the work asked the server for (Company Memory
-    /// included): trimming keeps it.
-    fn keeps_content_when_trimmed(&self, _input: &serde_json::Value) -> bool {
-        true
-    }
-
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a crate::origin::ToolContext,
@@ -2189,26 +2174,29 @@ mod tests {
     }
 
 
-    /// What an aged result keeps, and the taint a result brings in, are each
-    /// tool's own answers: memory recalls, skill loads, searches and file
-    /// reads keep their content; commands and task changes become stubs;
-    /// web content and mail are untrusted.
+    /// Which results a stale conversation clears, and the taint a result
+    /// brings in, are each tool's own answers: file reads and changes,
+    /// commands, web searches and fetches are cleared (Claude Code's set);
+    /// memory, skills, mail and calendar never are; web content and mail are
+    /// untrusted.
     #[tokio::test]
     async fn trimming_and_taint_are_each_tools_answer() {
         use serde_json::json;
         use types::provenance::ProvenanceClass;
         let (registry, _dir) = full_registry().await;
-        let keeps = |name: &'static str, input: serde_json::Value| {
+        let cleared = |name: &'static str, input: serde_json::Value| {
             let registry = registry.clone();
-            async move { registry.get(name).await.unwrap().keeps_content_when_trimmed(&input) }
+            async move { registry.get(name).await.unwrap().cleared_when_stale(&input) }
         };
-        assert!(keeps("agent", json!({"resource": "memory", "action": "recall"})).await);
-        assert!(!keeps("agent", json!({"resource": "task", "action": "create"})).await);
-        assert!(keeps("skill", json!({"action": "load", "name": "x"})).await);
-        assert!(keeps("web", json!({"action": "search", "query": "x"})).await);
-        assert!(keeps("os", json!({"action": "read", "path": "/tmp/x"})).await);
-        assert!(keeps("os", json!({"resource": "calendar", "action": "today"})).await);
-        assert!(!keeps("os", json!({"action": "exec", "command": "ls"})).await);
+        assert!(cleared("os", json!({"action": "read", "path": "/tmp/x"})).await);
+        assert!(cleared("os", json!({"resource": "file", "action": "write", "path": "/tmp/x"})).await);
+        assert!(cleared("os", json!({"action": "exec", "command": "ls"})).await);
+        assert!(cleared("web", json!({"action": "search", "query": "x"})).await);
+        assert!(cleared("web", json!({"action": "fetch", "url": "https://example.com"})).await);
+        assert!(!cleared("web", json!({"action": "click", "ref": "e1"})).await);
+        assert!(!cleared("os", json!({"resource": "calendar", "action": "today"})).await);
+        assert!(!cleared("agent", json!({"resource": "memory", "action": "recall"})).await);
+        assert!(!cleared("skill", json!({"action": "load", "name": "x"})).await);
         let taint = |name: &'static str, input: serde_json::Value| {
             let registry = registry.clone();
             async move { registry.get(name).await.unwrap().taint(&input) }
@@ -2218,8 +2206,6 @@ mod tests {
         assert_eq!(taint("os", json!({"resource": "mail", "action": "send", "to": "a@example.com"})).await, None);
         assert_eq!(taint("message", json!({"resource": "sms", "action": "read"})).await, Some(ProvenanceClass::Channel));
         assert_eq!(taint("os", json!({"action": "read", "path": "/tmp/x"})).await, None, "the owner's own files carry no taint");
-        assert_eq!(registry.get("web").await.unwrap().trim_priority(), TRIM_FIRST);
-        assert_eq!(registry.get("os").await.unwrap().trim_priority(), TRIM_EARLY);
     }
 
 

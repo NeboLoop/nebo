@@ -2807,11 +2807,6 @@ impl DynTool for AgentTool {
         }
     }
 
-    fn keeps_content_when_trimmed(&self, input: &serde_json::Value) -> bool {
-        let (resource, action) = Self::call_shape(input);
-        resource == "memory" && matches!(action, "recall" | "search" | "list")
-    }
-
     /// Pre-interface: it settles its own call shapes (see
     /// `DynTool::validates_input`).
     fn validates_input(&self) -> bool {

@@ -213,6 +213,37 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The conversation the model sees: the chat's rows from its latest
+    /// checkpoint boundary (a row whose metadata carries `"checkpoint": true`)
+    /// on, the boundary included; every row when there is none. Rows before
+    /// the boundary stay on disk and in the owner's thread.
+    pub fn get_chat_messages_since_checkpoint(&self, chat_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "WITH visible AS (
+                     SELECT rowid AS r, * FROM chat_messages
+                     WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
+                 ),
+                 boundary AS (
+                     SELECT created_at, r FROM visible
+                     WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.checkpoint') END = 1
+                     ORDER BY created_at DESC, r DESC LIMIT 1
+                 )
+                 SELECT v.* FROM visible v
+                 WHERE NOT EXISTS (SELECT 1 FROM boundary)
+                    OR v.created_at > (SELECT created_at FROM boundary)
+                    OR (v.created_at = (SELECT created_at FROM boundary) AND v.r >= (SELECT r FROM boundary))
+                 ORDER BY v.created_at ASC, v.r ASC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![chat_id], row_to_chat_message)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Get the most recent N messages for a chat. If `before` is provided, fetch messages older
     /// than that message ID (for "load more" pagination). Returns messages in ascending order.
     pub fn get_chat_messages_paginated(
@@ -1276,6 +1307,37 @@ mod tests {
         store.compact_chat_history("c1", "s2", "**Conversation Summary**\nsecond", None).unwrap();
         let visible = store.get_chat_messages("c1").unwrap();
         assert_eq!(visible.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["s2"]);
+    }
+
+    /// The model's conversation starts at the latest checkpoint boundary,
+    /// the boundary included; with none it is every row. The owner's thread
+    /// still reads every row.
+    #[test]
+    fn boundary_load_starts_at_latest_checkpoint() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        let ids = |rows: Vec<crate::models::ChatMessage>| rows.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        for (i, id) in ["m1", "m2"].iter().enumerate() {
+            store.create_chat_message(id, "c1", "user", id, None).unwrap();
+            set_created_at(&store, id, 100 + i as i64);
+        }
+        assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["m1", "m2"]);
+
+        let boundary = Some(r#"{"checkpoint":true}"#);
+        store.create_chat_message("b1", "c1", "user", "first summary", boundary).unwrap();
+        set_created_at(&store, "b1", 102);
+        store.create_chat_message("m3", "c1", "assistant", "m3", Some("not json")).unwrap();
+        set_created_at(&store, "m3", 103);
+        store.create_chat_message("b2", "c1", "user", "second summary", boundary).unwrap();
+        set_created_at(&store, "b2", 104);
+        // Same second as the boundary, written after it: loads.
+        store.create_chat_message("m4", "c1", "user", "m4", None).unwrap();
+        set_created_at(&store, "m4", 104);
+        store.create_chat_message("m5", "c1", "assistant", "m5", Some(r#"{"checkpoint":false}"#)).unwrap();
+        set_created_at(&store, "m5", 105);
+
+        assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["b2", "m4", "m5"]);
+        assert_eq!(store.get_chat_messages("c1").unwrap().len(), 7, "the thread keeps every row");
     }
 
     /// Frozen renderings round-trip and never overwrite.

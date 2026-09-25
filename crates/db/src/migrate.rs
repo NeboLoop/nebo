@@ -361,6 +361,63 @@ mod idempotency_tests {
         assert_eq!(queued.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["child"], "the pending child is queued on its old lane, ready to run");
     }
 
+    /// Each rolling summary becomes one checkpoint boundary row in its
+    /// session's active chat, placed before the last 80 visible rows (the
+    /// most the sliding window held) or before every row when there are
+    /// fewer, and the summary is cleared. The text is the boundary the
+    /// harness writes after `/compact` (`checkpoint::boundary_text`).
+    #[test]
+    fn a_rolling_summary_becomes_a_checkpoint_boundary() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 167).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chats (id, title) VALUES ('long', 'Long'), ('short', 'Short');
+             INSERT INTO sessions (id, name, active_chat_id, summary, created_at, updated_at) VALUES ('s-long', 'agent:a:web', 'long', 'Owner wants the Q3 report.', 1, 1);
+             INSERT INTO sessions (id, name, active_chat_id, summary, created_at, updated_at) VALUES ('s-short', 'agent:b:web', 'short', 'Owner asked for a haiku.', 1, 1);
+             INSERT INTO sessions (id, name, active_chat_id, summary, created_at, updated_at) VALUES ('s-none', 'agent:c:web', NULL, '  ', 1, 1);",
+        )
+        .unwrap();
+        for i in 0..100 {
+            conn.execute(
+                "INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES (?1, 'long', 'user', 'm', ?2)",
+                rusqlite::params![format!("l{i:03}"), 1_700_000_000 + i],
+            )
+            .unwrap();
+        }
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES (?1, 'short', 'user', 'm', ?2)",
+                rusqlite::params![format!("s{i}"), 1_700_000_000 + i],
+            )
+            .unwrap();
+        }
+
+        run_migrations(&conn).unwrap();
+
+        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND trim(summary) != ''"), 0, "every summary moved");
+        assert_eq!(count("SELECT COUNT(*) FROM chat_messages WHERE json_extract(metadata, '$.checkpoint') = 1"), 2, "one boundary per summary");
+        drop(conn);
+
+        let store = crate::Store::new(&path.to_string_lossy()).unwrap();
+        let long = store.get_chat_messages_since_checkpoint("long").unwrap();
+        assert_eq!(long.len(), 81, "the boundary and the 80 rows the window held");
+        assert_eq!(long[0].role, "user");
+        assert_eq!(
+            long[0].content,
+            "This conversation continues from an earlier part that was summarized:\n\nOwner wants the Q3 report.\n\n\
+             If you need a specific detail from before this summary (an exact snippet, an error message, something you \
+             wrote), the earlier conversation is still stored: search it with \
+             agent(resource: \"session\", action: \"query\", query: \"...\")."
+        );
+        assert_eq!(long[1].id, "l020");
+        let short = store.get_chat_messages_since_checkpoint("short").unwrap();
+        assert_eq!(short.len(), 4, "every row stays after the boundary");
+        assert!(short[0].content.contains("Owner asked for a haiku."));
+        assert_eq!(store.get_chat_messages("long").unwrap().len(), 101, "the thread keeps every row");
+    }
+
     #[test]
     fn run_migrations_twice_is_idempotent() {
         let dir = tempfile::tempdir().expect("tempdir");
