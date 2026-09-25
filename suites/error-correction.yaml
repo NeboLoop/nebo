@@ -14,10 +14,10 @@ fixtures:
   - ../fixtures/correction/empty-output.yaml
   - ../fixtures/correction/skill-miss-proceeds.yaml
   - ../fixtures/correction/work-name-in-definition.yaml
-  - ../fixtures/correction/agent-update-instructions.yaml
-  - ../fixtures/correction/agent-edit-user-created.yaml
+  - ../fixtures/correction/employee-update-instructions.yaml
+  - ../fixtures/correction/employee-edit-user-created.yaml
   - ../fixtures/correction/os-shell-session.yaml
-  - ../fixtures/correction/agent-update-description.yaml
+  - ../fixtures/correction/employee-update-description.yaml
   - ../fixtures/correction/plugin-discover-installed.yaml
   - ../fixtures/correction/event-reminder-shape.yaml
   - ../fixtures/correction/team-no-hub.yaml

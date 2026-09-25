@@ -1292,7 +1292,7 @@ impl PersonaTool {
     /// (a blank hire, or one created here without automations) has an empty
     /// column; that is an EMPTY config, not an invalid one. Read as `""` it
     /// fails validation with "EOF while parsing a value" and every update of
-    /// such an employee is refused (agent-update-description, 2026-09-17).
+    /// such an employee is refused (employee-update-description, 2026-09-17).
     fn stored_frontmatter(stored: &str) -> String {
         if stored.trim().is_empty() {
             "{}".to_string()
