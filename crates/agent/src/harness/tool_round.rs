@@ -58,6 +58,8 @@ pub(crate) struct RunToolScope<'a> {
     pub tool_denial_hint: &'a Option<String>,
     /// The tools whose definitions this step's request carried.
     pub declared_tools: &'a Arc<HashSet<String>>,
+    /// The employee's own tools the run's tool scope leaves out.
+    pub withheld_tools: &'a Arc<HashSet<String>>,
 }
 
 impl RunToolScope<'_> {
@@ -89,6 +91,7 @@ impl RunToolScope<'_> {
             tool_allowlist,
             tool_denial_hint,
             declared_tools,
+            withheld_tools,
         } = *self;
         let resolved_key = sessions
             .resolve_session_key(session_id)
@@ -143,6 +146,7 @@ impl RunToolScope<'_> {
                 .map(|r| r.skills_read.clone())
                 .unwrap_or_default(),
             declared_tools: Some(declared_tools.clone()),
+            withheld_tools: (!withheld_tools.is_empty()).then(|| withheld_tools.clone()),
             tool_call_id: String::new(),
         }
     }
@@ -959,8 +963,13 @@ async fn run_call(
             usage: None,
             rate_limit: None,
             // The call's wall-clock time rides in the widgets slot so the
-            // live timeline and the reloaded one show the same duration.
-            widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
+            // live timeline and the reloaded one show the same duration; a
+            // call parked on the owner names its ask, so the conversation
+            // the run came from can carry the card.
+            widgets: Some(match &result.parked_ask {
+                Some(ask) => serde_json::json!({ "duration_ms": duration_ms, "parked_ask": ask }),
+                None => serde_json::json!({ "duration_ms": duration_ms }),
+            }),
             provider_metadata: None,
             stop_reason: None,
             image_url: result.image_url.clone(),

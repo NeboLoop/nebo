@@ -206,7 +206,8 @@ fn deny(limit: &str, reason: String) -> Decision {
 }
 
 /// The hard limits, in order: the safeguard, the origin limits, the run's
-/// allowlist, credentials in an outbound call. `None`: none applies.
+/// allowlist, the tool scope's narrowing, credentials in an outbound call.
+/// `None`: none applies.
 pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
     if let Some(err) = tools::safeguard::check_safeguard(&t.key, cx.input) {
         return Some(deny("safeguard", err));
@@ -233,6 +234,22 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
                     t.tool
                 ),
             },
+        ));
+    }
+    // The tool scope's narrowing: the employee's own tools it leaves out.
+    if cx
+        .ctx
+        .withheld_tools
+        .as_ref()
+        .is_some_and(|w| w.contains(&t.tool))
+    {
+        return Some(deny(
+            "scope",
+            format!(
+                "'{}' isn't one of the tools for this conversation. Use the tools you were given, or say \
+                 plainly that you can't do that here.",
+                t.tool
+            ),
         ));
     }
     if let Some(d) = credentials(cx, t) {

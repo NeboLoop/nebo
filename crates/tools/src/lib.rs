@@ -137,7 +137,7 @@ pub use agent_tool::{
 };
 pub use app_tool::AppTool;
 pub use bot_tool::{
-    AdvisorDeliberator, CodeInstaller, HybridSearchResult, HybridSearcher,
+    AdvisorDeliberator, CodeInstaller, HybridSearchResult, HybridSearcher, InstalledBy,
     MemoryEmbedder,
 };
 pub use channel_bridge::{

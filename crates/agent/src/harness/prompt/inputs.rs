@@ -62,22 +62,38 @@ pub fn plugin_context(
     agent: &tools::ActiveAgent,
     tool_scope: Option<&str>,
     skill_loader: Option<&tools::skills::Loader>,
+    store: &db::Store,
 ) -> String {
+    let slugs = required_plugins(agent, tool_scope, store);
+    skill_loader
+        .map(|l| l.agent_plugin_context(&slugs))
+        .unwrap_or_default()
+}
+
+/// The installed plugins the employee's job requires (`requires.plugins`,
+/// the active tool scope's plugins included), as slugs, whether the job
+/// names each by slug, qualified name or install code.
+fn required_plugins(
+    agent: &tools::ActiveAgent,
+    tool_scope: Option<&str>,
+    store: &db::Store,
+) -> Vec<String> {
     let Some(cfg) = agent.config.as_ref() else {
-        return String::new();
+        return Vec::new();
     };
-    let mut required = cfg.requires.plugins.clone();
-    // Merge scope-specific plugins
-    if let Some(scope) = tool_scope.and_then(|name| cfg.scopes.get(name)) {
-        for p in &scope.plugins {
-            if !required.contains(p) {
-                required.push(p.clone());
-            }
+    let scope_plugins = tool_scope
+        .and_then(|s| cfg.scopes.get(s))
+        .map(|s| s.plugins.as_slice())
+        .unwrap_or_default();
+    let mut slugs = Vec::new();
+    for reference in cfg.requires.plugins.iter().chain(scope_plugins) {
+        if let Some(slug) = tools::plugin_tools::plugin_slug_of(store, reference)
+            && !slugs.contains(&slug)
+        {
+            slugs.push(slug);
         }
     }
-    skill_loader
-        .map(|l| l.agent_plugin_context(&required))
-        .unwrap_or_default()
+    slugs
 }
 
 /// The tools the employee's job uses: its `requires.tools`, its required
@@ -85,19 +101,25 @@ pub fn plugin_context(
 /// of the interfaces it binds and its own app tools. They are deferred like
 /// every tool outside the core set, so the declared tools are the same for
 /// every employee; this names them so the employee loads them with
-/// find_tools. Only tools registered and deferred now are named.
-pub async fn job_tools(agent: &tools::ActiveAgent, tool_scope: Option<&str>, registry: &tools::Registry) -> String {
+/// find_tools. Only tools registered and deferred now are named, and none
+/// the tool scope leaves out (`withheld`).
+pub async fn job_tools(
+    agent: &tools::ActiveAgent,
+    tool_scope: Option<&str>,
+    registry: &tools::Registry,
+    store: &db::Store,
+    withheld: &std::collections::HashSet<String>,
+) -> String {
     let mut names: std::collections::BTreeSet<String> = registry.agent_tool_names(&agent.agent_id).await.into_iter().collect();
     if let Some(cfg) = agent.config.as_ref() {
         names.extend(cfg.requires.tools.iter().cloned());
-        let scope_plugins = tool_scope.and_then(|s| cfg.scopes.get(s)).map(|s| s.plugins.as_slice()).unwrap_or_default();
-        for slug in cfg.requires.plugins.iter().chain(scope_plugins) {
-            names.insert(tools::plugin_tools::plugin_tool_name(slug));
+        for slug in required_plugins(agent, tool_scope, store) {
+            names.insert(tools::plugin_tools::plugin_tool_name(&slug));
         }
         names.extend(registry.operation_tools_for(&cfg.requires.interfaces).await);
     }
     let deferred = registry.get_deferred_names().await;
-    names.retain(|n| deferred.contains(n));
+    names.retain(|n| deferred.contains(n) && !withheld.contains(n));
     if names.is_empty() {
         return String::new();
     }

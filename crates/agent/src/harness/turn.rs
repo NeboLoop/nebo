@@ -96,6 +96,8 @@ pub struct TurnContext {
     /// A review fork's limits: it can only save skills, into its employee's
     /// learned tree.
     pub review_fork: Option<crate::review_fork::ReviewForkCtx>,
+    /// The employee's own tools the run's tool scope leaves out.
+    pub withheld_tools: Arc<HashSet<String>>,
 }
 
 impl TurnContext {
@@ -293,7 +295,10 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
     Ok(TurnHandle { events: rx, turn_id })
 }
 
-/// Whether the owner wrote this turn's input in their own chat.
+/// Whether the owner wrote this turn's input in their own chat: an owner
+/// chat turn from the owner's app, not a chat channel (Slack, Discord, a
+/// loop), a coworker, a visitor or a caller. Only such input is stored as
+/// the owner's word (a consent reads nothing else).
 fn owner_speaks(req: &TurnRequest) -> bool {
     matches!(req.mode, TurnMode::Chat)
         && matches!(req.input, TurnInput::Owner { .. })
@@ -320,9 +325,28 @@ fn resume_goal(h: &Harness, session_id: &str) {
 fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
     let written = match &req.input {
         TurnInput::Owner { text, .. } => {
-            let via = if req.delivery.channel.is_empty() { "chat" } else { &req.delivery.channel };
-            let meta = MidTurnFrom::Owner { via: via.to_string() }.metadata();
-            h.sessions.append_message(session_id, "user", text, None, None, Some(&meta)).map(|_| ())
+            let via = if req.delivery.channel.is_empty() {
+                "chat"
+            } else {
+                &req.delivery.channel
+            };
+            let mut meta = MidTurnFrom::Owner {
+                via: via.to_string(),
+            }
+            .value();
+            if owner_speaks(req) {
+                conversation::mark_owner(&mut meta);
+            }
+            h.sessions
+                .append_message(
+                    session_id,
+                    "user",
+                    text,
+                    None,
+                    None,
+                    Some(&meta.to_string()),
+                )
+                .map(|_| ())
         }
         TurnInput::Platform { text } => h
             .sessions
@@ -516,8 +540,21 @@ pub(crate) async fn prepare(
         }
         _ => prompt::Role::Employee,
     };
+    let withheld_tools = Arc::new(match agent.as_ref() {
+        Some(a) => tool_surface::scope_withheld(a, req.seat.tool_scope.as_deref(), &h.tools).await,
+        None => HashSet::new(),
+    });
     let job_tools = match agent.as_ref() {
-        Some(a) => prompt::inputs::job_tools(a, req.seat.tool_scope.as_deref(), &h.tools).await,
+        Some(a) => {
+            prompt::inputs::job_tools(
+                a,
+                req.seat.tool_scope.as_deref(),
+                &h.tools,
+                &h.store,
+                &withheld_tools,
+            )
+            .await
+        }
         None => String::new(),
     };
     let session_context = [
@@ -525,7 +562,14 @@ pub(crate) async fn prepare(
         agent.as_ref().map(prompt::inputs::self_context).unwrap_or_default(),
         agent
             .as_ref()
-            .map(|a| prompt::inputs::plugin_context(a, req.seat.tool_scope.as_deref(), h.skill_loader.as_deref()))
+            .map(|a| {
+                prompt::inputs::plugin_context(
+                    a,
+                    req.seat.tool_scope.as_deref(),
+                    h.skill_loader.as_deref(),
+                    &h.store,
+                )
+            })
             .unwrap_or_default(),
         job_tools,
     ]
@@ -652,6 +696,7 @@ pub(crate) async fn prepare(
         taint,
         after_turn,
         review_fork,
+        withheld_tools,
     };
     if cx.plan_mode() && !plan_mode_announced(&h.sessions, session_id) {
         st.reminders.add(&TurnEvent::PlanMode { entered: true });
@@ -690,7 +735,13 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
         &h.selector,
         &req.seat.agent_id,
         session_id,
-        InputRow { text, images, attachments, hidden },
+        InputRow {
+            text,
+            images,
+            attachments,
+            hidden,
+            by_owner: !hidden && owner_speaks(req),
+        },
     )
     .await
 }
@@ -779,6 +830,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             company_memory_sealed: cx.seat.company_memory_sealed,
             workflow: cx.workflow(),
             mode: &cx.request.mode,
+            withheld: &cx.withheld_tools,
         };
         let surface = tool_surface::surface(&h.tools, &h.store, &conversation, &surface_seat).await;
         st.loaded_tools = surface.loaded.clone();
@@ -851,6 +903,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             tool_allowlist: cx.request.seat.tool_allowlist.as_ref(),
             tool_denial_hint: &cx.request.seat.tool_denial_hint,
             declared_tools: &declared_names,
+            withheld_tools: &cx.withheld_tools,
         };
         let issue_credential = h.tool_credentials.as_ref().map(|credentials| {
             let tool_scope = &tool_scope;
@@ -2102,6 +2155,270 @@ mod tests {
         assert_eq!(calls.len(), 2, "heard inside the same turn");
         assert!(!texts(&calls[0]).iter().any(|t| t.contains("Also check the calendar")));
         assert!(texts(&calls[1]).iter().any(|t| t.contains("Also check the calendar")), "heard at the next step");
+    }
+
+    /// A message from someone who isn't the owner, as its door sends it.
+    fn from_elsewhere(
+        text: &str,
+        origin: tools::Origin,
+        door: types::permissions::Door,
+        channel: &str,
+    ) -> TurnRequest {
+        let mut req = owner(text);
+        req.seat.origin = origin;
+        req.seat.door = door;
+        req.delivery.channel = channel.into();
+        req
+    }
+
+    /// The owner's messages in the session's conversation, as a consent
+    /// reads them.
+    fn owner_words(h: &Harness) -> usize {
+        let sid = h.sessions.resolve_session_id_by_key(KEY).expect("session");
+        h.store
+            .owner_messages_after(&h.sessions.active_chat_id(&sid), 0)
+            .expect("rows")
+    }
+
+    /// A consent is the owner's own word: only input the owner typed in
+    /// their own app is stored as the owner's. A coworker's "yes", a Slack,
+    /// Discord or loop message, a visitor's, stored through the same one
+    /// path at a turn's start, never count.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_the_owners_own_input_is_stored_as_the_owners() {
+        use tools::Origin;
+        use types::permissions::Door;
+        let not_the_owner = [
+            from_elsewhere(
+                "yes",
+                Origin::Comm,
+                Door::Coworker { from: "ops".into() },
+                "coworker",
+            ),
+            from_elsewhere("yes", Origin::Comm, Door::Chat, "slack"),
+            from_elsewhere("yes", Origin::Comm, Door::Chat, "discord"),
+            from_elsewhere("yes", Origin::Comm, Door::Chat, "loop"),
+            from_elsewhere("yes", Origin::Visitor, Door::Chat, "web"),
+        ];
+        for req in not_the_owner {
+            let channel = req.delivery.channel.clone();
+            let model = Scripted::new(vec![Step::Say("Noted.")]);
+            let h = harness(&model).await;
+            run_turn(&h, req).await;
+            assert!(
+                stored(&h)
+                    .iter()
+                    .any(|m| m.role == "user" && m.content == "yes"),
+                "{channel}: stored"
+            );
+            assert_eq!(
+                owner_words(&h),
+                0,
+                "{channel}: a message that isn't the owner's is never the owner's word"
+            );
+        }
+        let model = Scripted::new(vec![Step::Say("Creating it.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("yes")).await;
+        assert_eq!(owner_words(&h), 1, "the owner's own message is");
+    }
+
+    /// The same holds for a message queued into a running turn: the owner's
+    /// counts, a channel's arriving at the same moment doesn't.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_queued_message_is_the_owners_only_when_the_owner_sent_it() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let h2 = h.clone();
+        let hook: Hook = Box::pin(async move {
+            let slack = from_elsewhere(
+                "yes from slack",
+                tools::Origin::Comm,
+                types::permissions::Door::Chat,
+                "slack",
+            );
+            let mut queued = h2.start_turn(slack).await.expect("queued");
+            while queued.events.recv().await.is_some() {}
+            let mut queued = h2
+                .start_turn(owner("yes from the owner"))
+                .await
+                .expect("queued");
+            while queued.events.recv().await.is_some() {}
+        });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook),
+            Step::Say("Done."),
+        ]);
+        run_turn(&h, owner("Echo something")).await;
+        let rows = stored(&h);
+        assert!(
+            rows.iter().any(|m| m.content == "yes from slack"),
+            "the channel's message was queued"
+        );
+        assert_eq!(
+            owner_words(&h),
+            2,
+            "the turn's own input and the owner's queued message; not the channel's"
+        );
+    }
+
+    /// A call parked on the owner names its ask on the tool-result event, so
+    /// the conversation the run came from can carry the card.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_parked_call_names_its_ask_on_the_result_event() {
+        let model = Scripted::new(vec![
+            Step::Call("echo", serde_json::json!({})),
+            Step::Say("Waiting on you."),
+        ]);
+        let h = harness(&model).await;
+        let rule = types::permissions::Rule {
+            id: "ask-echo".into(),
+            scope: types::permissions::Scope::Company,
+            key: types::permissions::RuleKey::Tool("echo".into()),
+            field: None,
+            effect: types::permissions::Effect::Ask,
+            money: None,
+            source: types::permissions::RuleSource::Owner,
+            locked: false,
+            created_at: 0,
+        };
+        h.store
+            .write_permission_rule(&rule, &types::permissions::Writer::Owner)
+            .unwrap();
+        let mut req = owner("Echo something");
+        req.seat.mode = Some(Mode::Automatic);
+        let events = run_turn(&h, req).await;
+        let result = events
+            .iter()
+            .find(|e| e.event_type == ai::StreamEventType::ToolResult)
+            .expect("the call's result event");
+        let ask = result
+            .widgets
+            .as_ref()
+            .and_then(|w| w["parked_ask"].as_str())
+            .expect("the parked ask is named");
+        assert_eq!(
+            h.store
+                .get_permission_ask(ask)
+                .unwrap()
+                .expect("the ask")
+                .status,
+            "open"
+        );
+    }
+
+    /// An employee with its own tools `quote` and `refund`, and a tool scope
+    /// `storefront` that lists only `quote`.
+    async fn scoped_employee(h: &Harness) {
+        for name in ["quote", "refund"] {
+            h.tools
+                .register_for_agent(
+                    "ops",
+                    Box::new(Echo {
+                        name,
+                        deferred: true,
+                        read_only: true,
+                    }),
+                )
+                .await;
+        }
+        let config =
+            napp::agent::parse_agent_config(r#"{"scopes": {"storefront": {"tools": ["quote"]}}}"#)
+                .unwrap();
+        h.agent_registry.write().await.insert(
+            "ops".into(),
+            tools::ActiveAgent {
+                agent_id: "ops".into(),
+                name: "Ops".into(),
+                agent_md: String::new(),
+                config: Some(config),
+                channel_id: None,
+                degraded: None,
+                soul: None,
+                rules: None,
+            },
+        );
+    }
+
+    fn scoped(text: &str, scope: Option<&str>) -> TurnRequest {
+        let mut req = owner(text);
+        req.seat.agent_id = "ops".into();
+        req.seat.tool_scope = scope.map(str::to_string);
+        req
+    }
+
+    /// The text every request of the model's calls carried.
+    fn request_text(model: &Scripted) -> String {
+        model
+            .calls()
+            .iter()
+            .flat_map(texts)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A tool scope's `tools` narrow the employee's own tools in its
+    /// conversations: one the scope leaves out is not listed, not named in
+    /// the job's tools, can't be loaded, and a call to it is refused. The
+    /// runtime's own tools stay.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tool_scope_narrows_the_employees_own_tools() {
+        let model = Scripted::new(vec![
+            Step::Call(
+                "find_tools",
+                serde_json::json!({ "query": "select:refund" }),
+            ),
+            Step::Call("refund", serde_json::json!({})),
+            Step::Say("I can't do that here."),
+        ]);
+        let h = harness(&model).await;
+        scoped_employee(&h).await;
+        run_turn(
+            &h,
+            scoped("Handle the storefront question", Some("storefront")),
+        )
+        .await;
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3);
+        let first = texts(&calls[0]).join("\n");
+        assert!(first.contains("quote"), "the scope's own tool is listed");
+        assert!(
+            !first.contains("refund"),
+            "the tool the scope leaves out is not listed or named"
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|c| c.tools.iter().all(|t| t.name != "refund")),
+            "never declared"
+        );
+        let results: Vec<String> = stored(&h)
+            .iter()
+            .filter(|m| m.role == "tool")
+            .filter_map(|m| m.tool_results.clone())
+            .collect();
+        assert!(
+            results[0].contains("No deferred tool matches"),
+            "it can't be loaded: {}",
+            results[0]
+        );
+        assert!(
+            results[1].contains("isn't one of the tools for this conversation"),
+            "the call is refused: {}",
+            results[1]
+        );
+        assert!(!results[1].contains("refund ran"));
+
+        // The same employee with no scope has both.
+        let model = Scripted::new(vec![Step::Say("Sure.")]);
+        let h = harness(&model).await;
+        scoped_employee(&h).await;
+        run_turn(&h, scoped("Handle the storefront question", None)).await;
+        let text = request_text(&model);
+        assert!(
+            text.contains("quote") && text.contains("refund"),
+            "no scope narrows nothing"
+        );
     }
 
     /// Input that lands during the last step was in no call: the next turn

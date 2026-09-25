@@ -176,6 +176,100 @@ async fn spend_inside_grant_runs_and_counts() {
     assert_eq!((spent.count, spent.cents), (1, 8_000));
 }
 
+/// The company's day figures count every employee's spend together: two
+/// employees with their own standing grants each spend 60% of the
+/// company's day; the second asks (as main refused it), and its card offers
+/// no "Allow always", since only the company layer moves the company's
+/// figures.
+#[tokio::test]
+async fn the_company_day_counts_every_employee() {
+    let (_d, store) = store();
+    let policy = tools::policy::CompanyPolicy {
+        daily: tools::policy::Bounds {
+            per_day_cents: Some(10_000),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    store.set_company_policy(&policy.to_json()).unwrap();
+    let grant = || {
+        Some(MoneyLimit {
+            per_day_cents: Some(10_000),
+            ..Default::default()
+        })
+    };
+    for clerk in ["clerk-a", "clerk-b"] {
+        allow(
+            &store,
+            clerk,
+            RuleKey::Operation("ledger.bill.create".into()),
+            grant(),
+        );
+    }
+    let (mut pay, ran) = Act::new("plugin", None);
+    pay.operation = Some("ledger.bill.create");
+    let reg = registry(&store, vec![pay]).await;
+    let first = reg
+        .execute(
+            &ctx(&store, "clerk-a"),
+            "plugin",
+            json!({ "amount_cents": 6_000 }),
+        )
+        .await;
+    assert_eq!(
+        first.content, "RAN",
+        "inside its grant and the company's day"
+    );
+    let second = reg
+        .execute(
+            &ctx(&store, "clerk-b"),
+            "plugin",
+            json!({ "amount_cents": 6_000 }),
+        )
+        .await;
+    assert_eq!(
+        asked(&store, &second),
+        AskCase::CompanyMoney {
+            cents: 6_000,
+            limit_cents: Some(10_000)
+        }
+    );
+    assert!(
+        second.content.contains("company may spend"),
+        "{}",
+        second.content
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+    let ask = super::super::Asks::new(store.clone())
+        .get(second.parked_ask.as_deref().unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(!ask.allow_always_offered(&store) && ask.this_once_offered());
+    // A company-wide figure per operation holds for every employee too.
+    let policy = tools::policy::CompanyPolicy {
+        daily: tools::policy::Bounds {
+            max_amount_cents: Some(1_000),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    store.set_company_policy(&policy.to_json()).unwrap();
+    let big = reg
+        .execute(
+            &ctx(&store, "clerk-a"),
+            "plugin",
+            json!({ "amount_cents": 2_000 }),
+        )
+        .await;
+    assert_eq!(
+        asked(&store, &big),
+        AskCase::CompanyMoney {
+            cents: 2_000,
+            limit_cents: Some(1_000)
+        }
+    );
+}
+
 // ── Case 2: speaking for the owner somewhere new ───────────────────────
 
 /// fixtures/permissions/first-message-to-new-recipient-asks.yaml: a text to

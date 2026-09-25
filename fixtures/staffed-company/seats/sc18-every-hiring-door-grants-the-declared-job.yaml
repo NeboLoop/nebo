@@ -1,0 +1,13 @@
+id: sc18-every-hiring-door-grants-the-declared-job
+name: "SC18 — Every hiring door grants the declared job; only the owner's act does"
+description: |
+  An employee hired from the marketplace holds the job its package declares
+  (`requires.interfaces`) whichever door hired it: a code the owner pastes in
+  their chat, the Hire tap, a hire on the owner's account (the hub's install
+  event), the hire card, the `hire_employee` tool in the owner's own run, a
+  collection, and the owner's create from a package. A code posted in a chat
+  channel, or the tool in a run that isn't the owner's, hires with no job.
+  A rehire keeps a capability the owner turned off, off.
+target_component: staffed-company
+proof: staffed_proof::seats::every_hiring_door_grants_the_declared_job
+conversation: []

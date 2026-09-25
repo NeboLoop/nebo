@@ -205,6 +205,33 @@ pub struct SurfaceInputs<'a> {
     pub workflow: Option<&'a crate::harness::WorkflowMode>,
     /// A helper's kind and depth take the helper tools off its surface.
     pub mode: &'a crate::harness::TurnMode,
+    /// The employee's own tools the active tool scope leaves out
+    /// ([`scope_withheld`]): neither declared nor listed.
+    pub withheld: &'a HashSet<String>,
+}
+
+/// The employee's own tools a tool scope leaves out. A scope that lists
+/// tools (`scopes.<name>.tools`) keeps only those of the employee's own
+/// tools for its conversations: the rest may not be loaded or called there.
+/// The runtime's tools are not the scope's to narrow. Empty when the run
+/// has no scope or the scope lists no tools.
+pub async fn scope_withheld(
+    agent: &tools::ActiveAgent,
+    tool_scope: Option<&str>,
+    registry: &tools::Registry,
+) -> HashSet<String> {
+    let Some(scope) = tool_scope.and_then(|s| agent.config.as_ref()?.scopes.get(s)) else {
+        return HashSet::new();
+    };
+    if scope.tools.is_empty() {
+        return HashSet::new();
+    }
+    registry
+        .agent_tool_names(&agent.agent_id)
+        .await
+        .into_iter()
+        .filter(|n| !scope.tools.contains(n))
+        .collect()
 }
 
 /// One step's tool surface.
@@ -256,6 +283,8 @@ pub async fn surface(
         declared.retain(|d| allowlist_admits(allowlist, &d.name));
         listed.retain(|n| allowlist_admits(allowlist, n));
     }
+    declared.retain(|d| !seat.withheld.contains(&d.name));
+    listed.retain(|n| !seat.withheld.contains(n));
     let announced: BTreeSet<String> =
         crate::harness::events::announced("tools_available", conversation).into_keys().collect();
     let listing = ListingDelta::between(&announced, &listed);

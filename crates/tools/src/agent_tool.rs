@@ -2145,7 +2145,11 @@ impl PersonaTool {
         ))
     }
 
-    pub(crate) async fn handle_install(&self, input: &serde_json::Value) -> ToolResult {
+    pub(crate) async fn handle_install(
+        &self,
+        ctx: &ToolContext,
+        input: &serde_json::Value,
+    ) -> ToolResult {
         let code = input["code"].as_str().unwrap_or("").trim();
         if code.is_empty() {
             return ToolResult::error(
@@ -2161,7 +2165,7 @@ impl PersonaTool {
         let installer = self.code_installer.read().unwrap().clone();
         match installer {
             Some(installer) => {
-                let text = installer.install(code).await;
+                let text = installer.install(code, crate::InstalledBy::of(ctx)).await;
                 // The installer trait returns one String for both outcomes; a
                 // failure must reach the model as an error, never as success text.
                 if install_text_is_failure(&text) {

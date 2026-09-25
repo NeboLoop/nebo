@@ -63,6 +63,18 @@ pub struct JanusUsage {
 }
 
 /// Shared application state passed to all handlers via Axum extractors.
+/// What a card relayed into the owner's loop or phone conversation waits
+/// on: the owner's next message there is its answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommApproval {
+    /// A card the run itself waits on (a goal suggestion): the reply goes to
+    /// its oneshot in `approval_channels`, as the desktop's modal answers.
+    Waiting(String),
+    /// A permission ask the run parked a call on (its id): the reply is the
+    /// owner's answer to the ask, through its one answer path.
+    Ask(String),
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
@@ -119,12 +131,11 @@ pub struct AppState {
     /// — without this, an agent question over comm blocks forever. A queue
     /// (not a single id) keeps stacked asks from overwriting each other.
     pub pending_comm_asks: Arc<Mutex<HashMap<String, VecDeque<String>>>>,
-    /// Approvals relayed to a loop conversation, keyed by session key →
-    /// request_id (tool_call id). The owner's NEXT inbound message in that
-    /// conversation resolves the pending approval ("approve"/"approve always"/
-    /// "deny") into `approval_channels` — the same oneshot the desktop
-    /// ApprovalModal uses. Without this a gated tool parks the run invisibly.
-    pub pending_comm_approvals: Arc<Mutex<HashMap<String, String>>>,
+    /// Approvals relayed to the owner's loop or phone conversation, keyed by
+    /// session key. The owner's NEXT inbound message in that conversation
+    /// answers it. Without this a run parks on a card the remote owner never
+    /// sees.
+    pub pending_comm_approvals: Arc<Mutex<HashMap<String, CommApproval>>>,
     /// Agent-triggered dispatch timestamps per loop channel (conversation_id →
     /// recent instants). Backstop rate limit so agent→agent mention chains
     /// can't melt a channel even if depth metadata is stripped.

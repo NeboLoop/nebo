@@ -116,6 +116,11 @@ pub enum MidTurnFrom {
 impl MidTurnFrom {
     /// The row metadata that marks a message as queued into a running turn.
     pub fn metadata(&self) -> String {
+        self.value().to_string()
+    }
+
+    /// [`Self::metadata`] as JSON, for a writer that adds to it.
+    pub fn value(&self) -> serde_json::Value {
         match self {
             Self::Owner { via } => serde_json::json!({ "arrivedMidTurn": true, "via": via }),
             Self::Parent { session_key, task_id, taint } => {
@@ -134,7 +139,6 @@ impl MidTurnFrom {
                 serde_json::json!({ "arrivedMidTurn": true, "from": "coworker", "coworker": from })
             }
         }
-        .to_string()
     }
 }
 
@@ -234,6 +238,14 @@ pub(crate) struct InputRow<'a> {
     /// A prompt the platform wrote: the model reads it, the owner's thread
     /// hides it.
     pub hidden: bool,
+    /// The owner wrote it in their own app: the row carries
+    /// [`db::OWNER_MARK`], the only mark a consent reads as the owner's word.
+    pub by_owner: bool,
+}
+
+/// Mark a user row's metadata as the owner's own words ([`db::OWNER_MARK`]).
+pub(crate) fn mark_owner(metadata: &mut serde_json::Value) {
+    metadata[db::OWNER_MARK] = serde_json::json!(true);
 }
 
 /// Store a turn's input as its user row. A large input is saved to a file
@@ -341,6 +353,17 @@ pub(crate) async fn persist_input(
             .unwrap_or_else(|| serde_json::json!({}));
         value["isMeta"] = serde_json::json!(true);
         value["hiddenPrompt"] = serde_json::json!(true);
+        Some(value.to_string())
+    } else {
+        metadata
+    };
+
+    let metadata = if input.by_owner {
+        let mut value: serde_json::Value = metadata
+            .as_deref()
+            .and_then(|m| serde_json::from_str(m).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        mark_owner(&mut value);
         Some(value.to_string())
     } else {
         metadata

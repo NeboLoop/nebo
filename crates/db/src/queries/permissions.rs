@@ -153,13 +153,22 @@ fn row_to_ask(row: &rusqlite::Row<'_>) -> rusqlite::Result<PermissionAskRow> {
     })
 }
 
-/// Today's spend against one key.
+/// Today's spend against one key, and the whole company's.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PermissionSpend {
     pub count: i64,
     pub cents: i64,
     pub counterparty_cents: i64,
+    /// Every employee's spend under a standing allow today, together.
+    pub company_count: i64,
+    pub company_cents: i64,
+    /// Every employee's spend to this counterparty today.
+    pub company_counterparty_cents: i64,
 }
+
+/// The `agent_id` and `key` of the company's running totals in
+/// `permission_spend`: every employee's spend, counted with each one's own.
+const COMPANY_SPEND: &str = "*";
 
 impl Store {
     /// The rules that decide for one employee: the company defaults and the
@@ -625,6 +634,22 @@ impl Store {
         Ok(())
     }
 
+    /// The ask a workflow run parked on, the latest when it parked more
+    /// than once.
+    pub fn permission_ask_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<PermissionAskRow>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            &format!("SELECT {ASK_COLUMNS} FROM permission_asks WHERE run_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 1"),
+            params![run_id],
+            row_to_ask,
+        )
+        .optional()
+        .map_err(db_err)
+    }
+
     /// The asks still waiting on the owner, oldest first; `session_key`
     /// narrows them to one session.
     pub fn open_permission_asks(&self, session_key: Option<&str>) -> Result<Vec<PermissionAskRow>, NeboError> {
@@ -667,7 +692,8 @@ impl Store {
     }
 
     /// Today's spend for an employee on one key: the key's own totals and,
-    /// when named, what went to one counterparty.
+    /// when named, what went to one counterparty; and the company's totals
+    /// across every employee.
     pub fn permission_spend(
         &self,
         agent_id: &str,
@@ -676,34 +702,42 @@ impl Store {
         counterparty: &str,
     ) -> Result<PermissionSpend, NeboError> {
         let conn = self.conn()?;
-        let (count, cents): (i64, i64) = conn
-            .query_row(
-                "SELECT count, cents FROM permission_spend
-                 WHERE agent_id = ?1 AND day = ?2 AND key = ?3 AND counterparty = ''",
-                params![agent_id, day, key],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(db_err)?
-            .unwrap_or((0, 0));
-        let counterparty_cents: i64 = if counterparty.is_empty() {
-            0
+        let totals =
+            |agent: &str, key: &str, counterparty: &str| -> Result<(i64, i64), NeboError> {
+                Ok(conn
+                    .query_row(
+                        "SELECT count, cents FROM permission_spend
+                     WHERE agent_id = ?1 AND day = ?2 AND key = ?3 AND counterparty = ?4",
+                        params![agent, day, key, counterparty],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(db_err)?
+                    .unwrap_or((0, 0)))
+            };
+        let (count, cents) = totals(agent_id, key, "")?;
+        let (company_count, company_cents) = totals(COMPANY_SPEND, COMPANY_SPEND, "")?;
+        let (counterparty_cents, company_counterparty_cents) = if counterparty.is_empty() {
+            (0, 0)
         } else {
-            conn.query_row(
-                "SELECT cents FROM permission_spend
-                 WHERE agent_id = ?1 AND day = ?2 AND key = ?3 AND counterparty = ?4",
-                params![agent_id, day, key, counterparty],
-                |row| row.get(0),
+            (
+                totals(agent_id, key, counterparty)?.1,
+                totals(COMPANY_SPEND, COMPANY_SPEND, counterparty)?.1,
             )
-            .optional()
-            .map_err(db_err)?
-            .unwrap_or(0)
         };
-        Ok(PermissionSpend { count, cents, counterparty_cents })
+        Ok(PermissionSpend {
+            count,
+            cents,
+            counterparty_cents,
+            company_count,
+            company_cents,
+            company_counterparty_cents,
+        })
     }
 
-    /// Count one action and its cents against the day, before it runs, so a
-    /// crash between the decision and the call can never under-count.
+    /// Count one action and its cents against the day — the employee's key
+    /// and the company's totals — before it runs, so a crash between the
+    /// decision and the call can never under-count.
     pub fn add_permission_spend(
         &self,
         agent_id: &str,
@@ -714,21 +748,20 @@ impl Store {
     ) -> Result<(), NeboError> {
         let mut conn = self.conn()?;
         let tx = conn.transaction().map_err(db_err)?;
-        tx.execute(
-            "INSERT INTO permission_spend (agent_id, day, key, counterparty, cents, count)
-             VALUES (?1, ?2, ?3, '', ?4, 1)
-             ON CONFLICT(agent_id, day, key, counterparty)
-             DO UPDATE SET count = count + 1, cents = cents + excluded.cents",
-            params![agent_id, day, key, cents],
-        )
-        .map_err(db_err)?;
+        let mut rows = vec![(agent_id, key, ""), (COMPANY_SPEND, COMPANY_SPEND, "")];
         if !counterparty.is_empty() {
+            rows.extend([
+                (agent_id, key, counterparty),
+                (COMPANY_SPEND, COMPANY_SPEND, counterparty),
+            ]);
+        }
+        for (agent, key, counterparty) in rows {
             tx.execute(
                 "INSERT INTO permission_spend (agent_id, day, key, counterparty, cents, count)
                  VALUES (?1, ?2, ?3, ?4, ?5, 1)
                  ON CONFLICT(agent_id, day, key, counterparty)
                  DO UPDATE SET count = count + 1, cents = cents + excluded.cents",
-                params![agent_id, day, key, counterparty, cents],
+                params![agent, day, key, counterparty, cents],
             )
             .map_err(db_err)?;
         }
@@ -842,10 +875,29 @@ mod tests {
     #[test]
     fn spend_counts_the_key_and_the_counterparty() {
         let (_d, store) = store();
-        store.add_permission_spend("a", "2026-09-24", "pay", "v1", 500).unwrap();
-        store.add_permission_spend("a", "2026-09-24", "pay", "v2", 700).unwrap();
-        let s = store.permission_spend("a", "2026-09-24", "pay", "v1").unwrap();
-        assert_eq!(s, PermissionSpend { count: 2, cents: 1200, counterparty_cents: 500 });
+        store
+            .add_permission_spend("a", "2026-09-24", "pay", "v1", 500)
+            .unwrap();
+        store
+            .add_permission_spend("a", "2026-09-24", "pay", "v2", 700)
+            .unwrap();
+        store
+            .add_permission_spend("b", "2026-09-24", "refund", "v1", 300)
+            .unwrap();
+        let s = store
+            .permission_spend("a", "2026-09-24", "pay", "v1")
+            .unwrap();
+        assert_eq!(
+            s,
+            PermissionSpend {
+                count: 2,
+                cents: 1200,
+                counterparty_cents: 500,
+                company_count: 3,
+                company_cents: 1500,
+                company_counterparty_cents: 800,
+            }
+        );
         assert_eq!(store.permission_spend("a", "2026-09-25", "pay", "").unwrap(), PermissionSpend::default());
     }
 

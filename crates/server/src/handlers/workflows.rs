@@ -86,7 +86,10 @@ pub async fn create_workflow(
     let deps = crate::deps::extract_workflow_deps(&_def);
     let cascade = if !deps.is_empty() {
         let mut visited = std::collections::HashSet::new();
-        Some(crate::deps::resolve_cascade(&state, deps, &mut visited).await)
+        Some(
+            crate::deps::resolve_cascade(&state, deps, &mut visited, tools::InstalledBy::Owner)
+                .await,
+        )
     } else {
         None
     };

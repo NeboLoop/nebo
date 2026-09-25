@@ -570,6 +570,68 @@ pub fn hub_offers_plugin(code: &str, slug: &str, name: &str) {
         .insert(code.to_string(), HubPlugin { slug: slug.to_string(), name: name.to_string() });
 }
 
+/// An employee the hub stand-in lists: redeemable by `code`, its package
+/// served at `GET /agents/{slug}` (its `agent.json` as `typeConfig`).
+#[derive(Clone)]
+struct HubAgent {
+    id: String,
+    name: String,
+    agent_json: Value,
+}
+
+impl HubAgent {
+    /// The slug the install derives from the name to fetch the package.
+    fn slug(&self) -> String {
+        self.name.to_lowercase().replace(' ', "-")
+    }
+}
+
+/// A collection the stand-in lists: redeemable by `code`, its items the
+/// employees under their own codes.
+#[derive(Clone)]
+struct HubCollection {
+    id: String,
+    name: String,
+    items: Vec<String>,
+}
+
+fn hub_agents() -> &'static Mutex<std::collections::HashMap<String, HubAgent>> {
+    static AGENTS: OnceLock<Mutex<std::collections::HashMap<String, HubAgent>>> = OnceLock::new();
+    AGENTS.get_or_init(Default::default)
+}
+
+fn hub_collections() -> &'static Mutex<std::collections::HashMap<String, HubCollection>> {
+    static COLLECTIONS: OnceLock<Mutex<std::collections::HashMap<String, HubCollection>>> = OnceLock::new();
+    COLLECTIONS.get_or_init(Default::default)
+}
+
+/// The hub stand-in lists an employee under `code` with id `id`, for every
+/// door that hires from the marketplace: the redeem, the package, and the
+/// detail by id the Hire tap and the account's install event read.
+pub fn hub_offers_agent(code: &str, id: &str, name: &str, agent_json: Value) {
+    hub_agents()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(code.to_string(), HubAgent { id: id.to_string(), name: name.to_string(), agent_json });
+}
+
+/// The hub stand-in lists a collection of the employees under `items` (their codes).
+pub fn hub_offers_collection(code: &str, id: &str, name: &str, items: &[&str]) {
+    hub_collections().lock().unwrap_or_else(|e| e.into_inner()).insert(
+        code.to_string(),
+        HubCollection { id: id.to_string(), name: name.to_string(), items: items.iter().map(|c| c.to_string()).collect() },
+    );
+}
+
+fn hub_agent_where(pred: impl Fn(&str, &HubAgent) -> bool) -> Option<(String, HubAgent)> {
+    hub_agents()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(code, a)| pred(code, a))
+        .map(|(code, a)| (code.clone(), a.clone()))
+}
+
 fn hub_plugin_by_slug(slug: &str) -> Option<HubPlugin> {
     hub_plugins()
         .lock()
@@ -611,14 +673,53 @@ fn hub_stand_in() -> String {
 
     let redeem = |axum::Json(body): axum::Json<Value>| async move {
         let code = body["code"].as_str().unwrap_or("").to_string();
-        let found = hub_plugins().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned();
-        match found {
-            Some(p) => Ok(axum::Json(json!({
+        let artifact = |id: String, name: String, slug: String, kind: &str| {
+            axum::Json(json!({
                 "status": "installed",
-                "artifact": { "id": format!("artifact-{}", p.slug), "name": p.name, "slug": p.slug, "type": "plugin", "code": code },
-            }))),
+                "artifact": { "id": id, "name": name, "slug": slug, "type": kind, "code": code },
+            }))
+        };
+        if let Some(p) = hub_plugins().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned() {
+            return Ok(artifact(format!("artifact-{}", p.slug), p.name, p.slug, "plugin"));
+        }
+        if let Some((_, a)) = hub_agent_where(|c, _| c == code) {
+            return Ok(artifact(a.id.clone(), a.name.clone(), a.slug(), "agent"));
+        }
+        match hub_collections().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned() {
+            Some(c) => Ok(artifact(c.id, c.name.clone(), c.name.to_lowercase(), "collection")),
             None => Err(StatusCode::NOT_FOUND),
         }
+    };
+    let agent_package = |UrlPath(slug): UrlPath<String>| async move {
+        let (_, a) = hub_agent_where(|_, a| a.slug() == slug).ok_or(StatusCode::NOT_FOUND)?;
+        Ok::<_, StatusCode>(axum::Json(json!({
+            "id": a.id, "slug": a.slug(), "name": a.name, "version": "1.0.0",
+            "description": format!("{}, hired in the proof.", a.name),
+            "contentMd": format!("---\nname: {}\ndescription: {}, hired in the proof.\n---\n\n# {}\n", a.name, a.name, a.name),
+            "typeConfig": a.agent_json,
+        })))
+    };
+    let artifact_detail = |UrlPath(id): UrlPath<String>| async move {
+        let (code, a) = hub_agent_where(|_, a| a.id == id).ok_or(StatusCode::NOT_FOUND)?;
+        Ok::<_, StatusCode>(axum::Json(json!({
+            "id": a.id, "name": a.name, "slug": a.slug(), "type": "agent", "code": code, "version": "1.0.0",
+        })))
+    };
+    let collection = |UrlPath(id): UrlPath<String>| async move {
+        let c = hub_collections()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .find(|c| c.id == id)
+            .cloned()
+            .ok_or(StatusCode::NOT_FOUND)?;
+        let items: Vec<Value> = c
+            .items
+            .iter()
+            .filter_map(|code| hub_agent_where(|c, _| c == code))
+            .map(|(code, a)| json!({ "code": code, "type": "agent", "name": a.name }))
+            .collect();
+        Ok::<_, StatusCode>(axum::Json(json!({ "id": c.id, "name": c.name, "items": items })))
     };
     let detail = |UrlPath(slug): UrlPath<String>| async move {
         let p = hub_plugin_by_slug(&slug).ok_or(StatusCode::NOT_FOUND)?;
@@ -638,6 +739,9 @@ fn hub_stand_in() -> String {
     };
     let app = axum::Router::new()
         .route("/api/v1/codes/redeem", post(redeem))
+        .route("/api/v1/agents/{slug}", get(agent_package))
+        .route("/api/v1/skills/{id}", get(artifact_detail))
+        .route("/api/v1/collections/{id}", get(collection))
         .route("/api/v1/plugins/{slug}", get(detail))
         .route("/napp/{slug}", get(download));
 

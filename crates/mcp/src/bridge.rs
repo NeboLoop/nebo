@@ -21,10 +21,13 @@ pub trait ProxyToolRegistry: Send + Sync {
     fn register_proxy(&self, name: &str, tool: &McpToolDef, integration_id: &str);
     fn unregister_proxy(&self, name: &str);
     /// Called after a connect finishes registering a server's tools — the ONE
-    /// hook where the server's tools get their default permission rule (they
-    /// ask until the owner says otherwise). `server_slug` is the tool-name
-    /// prefix (`mcp__<server_slug>__<tool>`).
-    fn tools_synced(&self, integration_id: &str, server_slug: &str);
+    /// hook where the server's tools get their permission rules: the
+    /// server's default (they ask until the owner says otherwise), and an
+    /// ask on each tool the server never offered before while its default
+    /// allows. `server_slug` is the tool-name prefix
+    /// (`mcp__<server_slug>__<tool>`); `tools` pairs each tool's own name
+    /// with its proxy name.
+    fn tools_synced(&self, integration_id: &str, server_slug: &str, tools: &[(String, String)]);
 }
 
 /// Launch spec for a local stdio MCP server, parsed from an integration's
@@ -128,7 +131,13 @@ impl Bridge {
 
         // Every connect IS the tool sync (startup reconnect, settings connect,
         // OAuth callback, refresh): the server's tools get their default rule.
-        self.registry.tools_synced(integration_id, &server_slug(server_type));
+        let synced: Vec<(String, String)> = original_names
+            .iter()
+            .cloned()
+            .zip(tool_names.iter().cloned())
+            .collect();
+        self.registry
+            .tools_synced(integration_id, &server_slug(server_type), &synced);
 
         let mut conns = self.connections.lock().await;
         conns.insert(

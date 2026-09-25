@@ -309,3 +309,344 @@ async fn the_catalogue_is_the_gate() {
     // A capability the seat does not bind is not on its view either.
     assert!(operation_row(&nebo, &seat, "mail.message.send").await.is_none());
 }
+
+/// The phone as it shipped answers a parked workflow run by its run id
+/// (`GET`/`POST /agents/workflow-runs/{run}/approval`, on its
+/// `wf-approval:` Inbox rows). The run now parks on an ask; those two
+/// routes read and answer that ask through its one answer path: Approve is
+/// "This once", Deny is "No", the first answer anywhere wins, and a run
+/// with no ask is unknown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_shipped_phone_answers_a_parked_runs_ask() {
+    use types::permissions::{Rule, RuleKey, Scope, Writer};
+    let nebo = session().await;
+    let seat = nebo
+        .hire("Phone Approvals", json!({ "workflows": {} }))
+        .await;
+    // A step of the run parks on an ask: the employee's ask rule on a read.
+    let rule = Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope: Scope::Employee(seat.clone()),
+        key: RuleKey::Tool("list_employees".into()),
+        field: None,
+        effect: Effect::Ask,
+        money: None,
+        source: RuleSource::Owner,
+        locked: false,
+        created_at: 0,
+    };
+    nebo.store()
+        .write_permission_rule(&rule, &Writer::Owner)
+        .unwrap();
+    let park = |run: &'static str| {
+        let nebo = &nebo;
+        let seat = seat.clone();
+        async move {
+            let r = nebo
+                .tool(
+                    &Nebo::ctx(&seat, Origin::Workflow),
+                    "list_employees",
+                    json!({}),
+                )
+                .await;
+            let ask = r
+                .parked_ask
+                .clone()
+                .unwrap_or_else(|| panic!("the step parked: {}", r.content));
+            nebo.store().link_permission_ask_run(&ask, run).unwrap();
+            ask
+        }
+    };
+    let status = |run: &str| format!("/agents/workflow-runs/{run}/approval");
+
+    let approved = park("run-phone-approve").await;
+    assert_eq!(
+        nebo.get_ok(&status("run-phone-approve")).await["status"],
+        "pending"
+    );
+    let out = nebo
+        .post_ok(&status("run-phone-approve"), &json!({ "approved": true }))
+        .await;
+    assert_eq!(
+        (out["status"].as_str(), out["runId"].as_str()),
+        (Some("approved"), Some("run-phone-approve"))
+    );
+    let card = nebo.get_ok(&format!("/permissions/asks/{approved}")).await;
+    assert_eq!(
+        (card["status"].as_str(), card["answer"].as_str()),
+        (Some("allowed"), Some("this_once")),
+        "{card}"
+    );
+    // The first answer wins: a late Deny reads the Approve.
+    let late = nebo
+        .post_ok(&status("run-phone-approve"), &json!({ "approved": false }))
+        .await;
+    assert_eq!(late["status"], "approved");
+
+    let denied = park("run-phone-deny").await;
+    let out = nebo
+        .post_ok(&status("run-phone-deny"), &json!({ "approved": false }))
+        .await;
+    assert_eq!(out["status"], "denied");
+    let card = nebo.get_ok(&format!("/permissions/asks/{denied}")).await;
+    assert_eq!(card["answer"], "no", "{card}");
+    assert_eq!(
+        nebo.get_ok(&status("run-phone-deny")).await["status"],
+        "denied"
+    );
+
+    // A run that never parked.
+    assert_eq!(
+        nebo.get_ok(&status("run-phone-none")).await["status"],
+        "unknown"
+    );
+    let (code, _) = nebo
+        .post(&status("run-phone-none"), &json!({ "approved": true }))
+        .await;
+    assert_eq!(code, 404);
+
+    nebo.store()
+        .remove_permission_rule(&rule.id, &Writer::Owner)
+        .unwrap();
+    let _ = nebo.delete(&format!("/agents/{seat}")).await;
+}
+
+/// The phone's per-employee default (Always / Ask me first / Blocked) is
+/// the employee's mode, both ways: what it sets reloads as it was set, the
+/// permission check decides by it, and re-sending the default in force with
+/// an override (as the screen does with every edit) never moves the mode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_phones_default_is_the_employees_mode() {
+    use types::permissions::Mode;
+    const OP: &str = "mail.message.send";
+    /// Save the Approvals screen the way the phone does: the policy as a
+    /// JSON string.
+    async fn save(nebo: &Nebo, seat: &str, default: &str, operations: Value) {
+        let policy = json!({ "default": default, "operations": operations }).to_string();
+        nebo.put_ok(
+            &format!("/entity-config/agent/{seat}"),
+            &json!({ "operationPolicy": policy }),
+        )
+        .await;
+    }
+    /// The screen as it reloads: its default and the operation's setting.
+    async fn reload(nebo: &Nebo, seat: &str) -> (String, String) {
+        let v = nebo.get_ok(&format!("/agents/{seat}/operations")).await;
+        let row = v["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["operation"] == OP)
+            .unwrap_or_else(|| panic!("no {OP} row: {v}"))
+            .clone();
+        (
+            v["default"].as_str().unwrap().to_string(),
+            row["effective"].as_str().unwrap().to_string(),
+        )
+    }
+
+    let nebo = session().await;
+    let seat = nebo
+        .hire(
+            "Phone Default",
+            json!({ "requires": { "interfaces": ["mail"] }, "workflows": {} }),
+        )
+        .await;
+    let mode = || agent::harness::permissions::rules::mode_of(nebo.store(), &seat).unwrap();
+    let modes = [
+        ("automatic", Mode::Automatic),
+        ("ask", Mode::Ask),
+        ("plan", Mode::Plan),
+        ("full_access", Mode::FullAccess),
+    ];
+    // Every state the phone offers, saved from every mode the employee can
+    // be in: it reloads as saved, and the permission check decides by it.
+    for (from, from_mode) in modes {
+        for (default, becomes) in [
+            ("always", None),
+            ("approval", Some(Mode::Ask)),
+            ("blocked", Some(Mode::Plan)),
+        ] {
+            nebo.put_ok(
+                &format!("/agents/{seat}/permissions"),
+                &json!({ "mode": from }),
+            )
+            .await;
+            assert_eq!(mode(), from_mode);
+            save(&nebo, &seat, default, json!({})).await;
+            let (shown, effective) = reload(&nebo, &seat).await;
+            assert_eq!(
+                shown, default,
+                "{default} saved in {from} reloads as {default}"
+            );
+            let now = mode();
+            match becomes {
+                Some(m) => assert_eq!(now, m, "{default} saved in {from}"),
+                // Always keeps a mode that already runs the job (Automatic,
+                // Full Access); from Ask or Plan it is Automatic.
+                None if matches!(from_mode, Mode::Automatic | Mode::FullAccess) => {
+                    assert_eq!(now, from_mode, "always saved in {from}")
+                }
+                None => assert_eq!(now, Mode::Automatic, "always saved in {from}"),
+            }
+            let decided = nebo.decide(&seat, OP, Origin::User, None);
+            match default {
+                "blocked" => {
+                    assert_eq!(effective, "blocked", "{from}");
+                    assert!(
+                        matches!(decided, Decision::Deny { .. }),
+                        "blocked in {from}: {decided:?}"
+                    );
+                }
+                "approval" => {
+                    assert_eq!(effective, "approval", "{from}");
+                    assert!(
+                        matches!(decided, Decision::Ask { .. }),
+                        "approval in {from}: {decided:?}"
+                    );
+                }
+                _ => {
+                    assert_eq!(effective, "always", "{from}");
+                    assert!(
+                        !matches!(decided, Decision::Deny { .. } | Decision::Ask { .. }),
+                        "always in {from}: {decided:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    // Full Access stays when the phone saves an override with the default
+    // in force, and an ask rule asks in Full Access too.
+    nebo.put_ok(
+        &format!("/agents/{seat}/permissions"),
+        &json!({ "mode": "full_access" }),
+    )
+    .await;
+    save(&nebo, &seat, "always", json!({ OP: "approval" })).await;
+    assert_eq!(mode(), Mode::FullAccess);
+    assert_eq!(reload(&nebo, &seat).await.1, "approval");
+
+    let _ = nebo.delete(&format!("/agents/{seat}")).await;
+}
+
+/// One ask, every surface: a call parked on the owner in a run that came
+/// from the owner's loop or phone conversation carries the ask's card into
+/// that conversation too, as main relayed its approvals, and the owner's
+/// next message there answers it through the ask's one answer path. A reply
+/// that isn't an answer is a No; an ask answered elsewhere first leaves the
+/// reply an ordinary message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ask_reaches_the_owners_conversation_and_their_reply_answers_it() {
+    use types::permissions::{Rule, RuleKey, Scope, Writer};
+    let nebo = session().await;
+    let seat = nebo.hire("Phone Relay", json!({ "workflows": {} })).await;
+    let rule = Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope: Scope::Employee(seat.clone()),
+        key: RuleKey::Tool("list_employees".into()),
+        field: None,
+        effect: Effect::Ask,
+        money: None,
+        source: RuleSource::Owner,
+        locked: false,
+        created_at: 0,
+    };
+    nebo.store()
+        .write_permission_rule(&rule, &Writer::Owner)
+        .unwrap();
+    let cfg = crate::chat_dispatch::CommReplyConfig {
+        provider: "neboai".into(),
+        topic: "owner".into(),
+        conversation_id: "conv-phone".into(),
+        handoff_depth: 0,
+        approval_relay: true,
+        from_agent_id: seat.clone(),
+    };
+    let none = std::collections::HashMap::new();
+    // Each round is its own conversation: a No in one is remembered there.
+    let (n, seat_id, cfg_ref) = (&*nebo, seat.as_str(), &cfg);
+    let park = move |round: &'static str| async move {
+        let (nebo, seat, cfg) = (n, seat_id, cfg_ref);
+        let session_key = format!("agent:{seat}:neboai-personal-{round}");
+        let ctx = tools::ToolContext::new(Origin::User).with_session(session_key.clone(), "s1");
+        let ctx = tools::ToolContext {
+            grant: Some(std::sync::Arc::new(agent::resolve_grant(
+                nebo.store(),
+                seat,
+                None,
+            ))),
+            ..ctx
+        };
+        let r = nebo.tool(&ctx, "list_employees", json!({})).await;
+        let ask = r
+            .parked_ask
+            .clone()
+            .unwrap_or_else(|| panic!("the call parked: {}", r.content));
+        let sent = crate::chat_dispatch::relay_ask(
+            &nebo.state,
+            cfg,
+            &session_key,
+            &ask,
+            &None,
+            &None,
+            "Phone Relay",
+        )
+        .await
+        .expect("the card went to the conversation");
+        (session_key, ask, sent)
+    };
+    let card = |id: &str| {
+        let ask = nebo.state.permission_asks.get(id).unwrap().unwrap();
+        crate::handlers::permissions::card(&nebo.state, &ask)
+    };
+
+    // The card, as a message in the owner's conversation.
+    let (session_key, ask, (text, meta)) = park("answered").await;
+    assert!(text.starts_with("Phone Relay wants your OK:"), "{text}");
+    assert!(
+        text.ends_with("Reply Allow always, This once, or No."),
+        "{text}"
+    );
+    assert_eq!(
+        (meta["kind"].as_str(), meta["ask_id"].as_str()),
+        ("ask", ask.as_str())
+    );
+    // The owner's reply there answers it.
+    assert!(crate::try_handle_comm_control(&nebo.state, &session_key, "This once", &none).await);
+    let settled = card(&ask);
+    assert_eq!(
+        (settled.status.as_str(), settled.answer.as_deref()),
+        ("allowed", Some("this_once"))
+    );
+
+    // A reply that isn't an answer is a No.
+    let (session_key, ask, _) = park("unclear").await;
+    assert!(
+        crate::try_handle_comm_control(&nebo.state, &session_key, "what is this for?", &none).await
+    );
+    assert_eq!(card(&ask).answer.as_deref(), Some("no"));
+
+    // Answered in the Inbox first: the reply is an ordinary message.
+    let (session_key, ask, _) = park("elsewhere").await;
+    nebo.post_ok(
+        &format!("/permissions/asks/{ask}/answer"),
+        &json!({ "answer": "no", "via": "inbox" }),
+    )
+    .await;
+    assert!(!crate::try_handle_comm_control(&nebo.state, &session_key, "yes", &none).await);
+    assert!(
+        nebo.state
+            .pending_comm_approvals
+            .lock()
+            .await
+            .get(&session_key)
+            .is_none(),
+        "nothing left waiting"
+    );
+
+    nebo.store()
+        .remove_permission_rule(&rule.id, &Writer::Owner)
+        .unwrap();
+    let _ = nebo.delete(&format!("/agents/{seat}")).await;
+}

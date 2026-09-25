@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::Store;
 use crate::models::{McpCredentialFull, McpIntegration, McpIntegrationOAuth, McpOAuthConfig};
@@ -383,6 +383,34 @@ impl Store {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(NeboError::Database(e.to_string())),
         }
+    }
+
+    /// The tools (their own names) the server offered at its last sync.
+    pub fn get_mcp_known_tools(&self, id: &str) -> Result<Vec<String>, NeboError> {
+        let conn = self.conn()?;
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT known_tools FROM mcp_integrations WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default())
+    }
+
+    /// Record the tools the server offers now.
+    pub fn set_mcp_known_tools(&self, id: &str, tools: &[String]) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let json = serde_json::to_string(tools).map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "UPDATE mcp_integrations SET known_tools = ?1 WHERE id = ?2",
+            params![json, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
     }
 
     pub fn set_mcp_connection_status(

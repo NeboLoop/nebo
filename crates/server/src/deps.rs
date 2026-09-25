@@ -101,12 +101,13 @@ pub async fn resolve_cascade(
     state: &AppState,
     deps: Vec<DepRef>,
     visited: &mut HashSet<String>,
+    by: tools::InstalledBy,
 ) -> CascadeResult {
     // Counted as local install work so the hub's `tool_installed` echo of a
     // dep we redeem here waits for it (codes::InFlightCodes::settle).
     let _cascade = state.codes_in_flight.cascade_begin();
     announce_cascade_start(state, &deps);
-    resolve_cascade_inner(state, deps, visited).await
+    resolve_cascade_inner(state, deps, visited, by).await
 }
 
 /// Tell the UI how many top-level dependencies are about to be processed, so the
@@ -122,6 +123,7 @@ fn resolve_cascade_inner<'a>(
     state: &'a AppState,
     deps: Vec<DepRef>,
     visited: &'a mut HashSet<String>,
+    by: tools::InstalledBy,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CascadeResult> + Send + 'a>> {
     Box::pin(async move {
         let mut results = Vec::new();
@@ -189,7 +191,7 @@ fn resolve_cascade_inner<'a>(
                     "slug": dep.slug,
                 }),
             );
-            match install_dep(state, &dep).await {
+            match install_dep(state, &dep, by).await {
                 Ok(child_deps) => {
                     state.hub.broadcast(
                         "dep_installed",
@@ -203,7 +205,7 @@ fn resolve_cascade_inner<'a>(
                     installed_count += 1;
 
                     // Recurse into child deps
-                    let child_result = resolve_cascade_inner(state, child_deps, visited).await;
+                    let child_result = resolve_cascade_inner(state, child_deps, visited, by).await;
                     installed_count += child_result.installed_count;
                     failed_count += child_result.failed_count;
 
@@ -442,14 +444,18 @@ fn has_napp_files(dir: &std::path::Path) -> bool {
 
 // ── Install Dispatch ────────────────────────────────────────────────
 
-async fn install_dep(state: &AppState, dep: &DepRef) -> Result<Vec<DepRef>, String> {
+async fn install_dep(
+    state: &AppState,
+    dep: &DepRef,
+    by: tools::InstalledBy,
+) -> Result<Vec<DepRef>, String> {
     let api = build_api_client(state).map_err(|e| e.to_string())?;
 
     match dep.dep_type {
         DepType::Skill => install_skill(state, &api, &dep.reference).await,
         DepType::Workflow => install_workflow(state, &api, &dep.reference).await,
         DepType::Plugin => install_plugin(state, &api, &dep.reference).await,
-        DepType::Agent => install_agent(state, &api, &dep.reference).await,
+        DepType::Agent => install_agent(state, &api, &dep.reference, by).await,
     }
 }
 
@@ -525,12 +531,14 @@ async fn resolve_marketplace_code(
 }
 
 /// Install an agent dependency via the same redeem→persist pathway used for the
-/// top-level agent install (no parallel installer). Returns the new agent's own
-/// dependencies so the cascade can recurse.
+/// top-level agent install (no parallel installer), and hire it by the same
+/// act as the install it came with. Returns the new agent's own dependencies
+/// so the cascade can recurse.
 async fn install_agent(
     state: &AppState,
     api: &NeboAIApi,
     reference: &str,
+    by: tools::InstalledBy,
 ) -> Result<Vec<DepRef>, String> {
     let code = resolve_marketplace_code(api, "agent", reference).await?;
     let resp = api
@@ -553,6 +561,7 @@ async fn install_agent(
     // install (codes.rs handle_agent_code) uses, so the cascade can't drift from it.
     // The agent installs Paused; its triggers register when it's activated.
     crate::codes::finalize_agent_install(state, &artifact_id, &name).await;
+    crate::codes::hire(state, &artifact_id, by).await;
 
     // Recurse into the agent's own dependencies.
     if let Ok(Some(agent)) = state.store.get_agent(&artifact_id) {
@@ -658,7 +667,7 @@ async fn install_plugin(
     // Install via the ONE shared plugin installer (resolves the binary via get_plugin,
     // downloads, installs, registers in the DB + tool/hooks). Same code path as the
     // standalone install, so the two can't drift on binary resolution again.
-    crate::codes::fetch_and_install_plugin(state, api, &slug, &name)
+    crate::codes::fetch_and_install_plugin(state, api, &slug, &name, Some(&code))
         .await
         .map_err(|e| e.to_string())?;
 
@@ -883,7 +892,8 @@ pub async fn approve_deps(
     Json(body): Json<ApproveRequest>,
 ) -> HandlerResult<serde_json::Value> {
     let mut visited = HashSet::new();
-    let result = resolve_cascade(&state, body.deps, &mut visited).await;
+    // The owner's retry in the install modal.
+    let result = resolve_cascade(&state, body.deps, &mut visited, tools::InstalledBy::Owner).await;
     Ok(Json(serde_json::json!(result)))
 }
 

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
 use comm::api::NeboAIApi;
+use tools::InstalledBy;
 use types::NeboError;
 
 use crate::state::AppState;
@@ -169,6 +170,33 @@ impl Drop for CascadeGuard<'_> {
     }
 }
 
+/// Install a code through its type's handler. Every door comes here:
+/// [`handle_code`] (the owner's app, a hire on the owner's account),
+/// [`handle_code_text`] (chat channels and the install tools) and
+/// [`submit_code`] (the REST door the app's hire cards use). `by` says
+/// whose act it is, which decides whether a hired employee gets its job.
+async fn install(
+    state: &AppState,
+    code_type: CodeType,
+    code: &str,
+    by: InstalledBy,
+) -> Result<CodeHandlerResult, NeboError> {
+    match code_type {
+        CodeType::Nebo => handle_nebo_code(state, code).await,
+        CodeType::Skill => handle_skill_code(state, code, by).await,
+        CodeType::Work => handle_work_code(state, code, by).await,
+        CodeType::Agent => handle_agent_code(state, code, by).await,
+        CodeType::Loop => handle_loop_code(state, code).await,
+        CodeType::Plugin => handle_plugin_code(state, code).await,
+        CodeType::App => handle_app_code(state, code, by).await,
+        CodeType::Collection => handle_collection_code(state, code, by).await,
+        CodeType::Connection => handle_connection_code(state, code).await,
+    }
+}
+
+/// Install a code the owner entered in their own app (pasted in chat, a
+/// store tap) or hired on their account (the hub's install event), and
+/// report it to the app.
 pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, session_id: &str) {
     let Some(_in_flight) = state.codes_in_flight.begin(code) else {
         info!(code, session_id, "code is already being handled; the first run reports the result");
@@ -199,17 +227,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         }),
     );
 
-    let result = match code_type {
-        CodeType::Nebo => handle_nebo_code(state, code).await,
-        CodeType::Skill => handle_skill_code(state, code).await,
-        CodeType::Work => handle_work_code(state, code).await,
-        CodeType::Agent => handle_agent_code(state, code).await,
-        CodeType::Loop => handle_loop_code(state, code).await,
-        CodeType::Plugin => handle_plugin_code(state, code).await,
-        CodeType::App => handle_app_code(state, code).await,
-        CodeType::Collection => handle_collection_code(state, code).await,
-        CodeType::Connection => handle_connection_code(state, code).await,
-    };
+    let result = install(state, code_type, code, InstalledBy::Owner).await;
 
     match result {
         Ok(r) => {
@@ -256,11 +274,19 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
     );
 }
 
-/// Handle a detected code and return a text response (for channel bridges).
+/// Handle a detected code and return a text response (for channel bridges
+/// and the install tools).
 ///
 /// Same logic as `handle_code` but returns the result as a string instead
-/// of broadcasting WebSocket events. Used by Slack, Telegram, etc.
-pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str) -> String {
+/// of broadcasting WebSocket events. Used by Slack, Telegram, etc. (`by` is
+/// [`InstalledBy::Other`]: a channel is not the owner's own app) and by the
+/// `hire_employee` and `install_skill` tools, which say whose run called them.
+pub async fn handle_code_text(
+    state: &AppState,
+    code_type: CodeType,
+    code: &str,
+    by: InstalledBy,
+) -> String {
     let Some(_in_flight) = state.codes_in_flight.begin(code) else {
         return format!("{code} is already being installed.");
     };
@@ -289,17 +315,7 @@ pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str)
         }),
     );
 
-    let result = match code_type {
-        CodeType::Nebo => handle_nebo_code(state, code).await,
-        CodeType::Skill => handle_skill_code(state, code).await,
-        CodeType::Work => handle_work_code(state, code).await,
-        CodeType::Agent => handle_agent_code(state, code).await,
-        CodeType::Loop => handle_loop_code(state, code).await,
-        CodeType::Plugin => handle_plugin_code(state, code).await,
-        CodeType::App => handle_app_code(state, code).await,
-        CodeType::Collection => handle_collection_code(state, code).await,
-        CodeType::Connection => handle_connection_code(state, code).await,
-    };
+    let result = install(state, code_type, code, by).await;
 
     match result {
         Ok(r) => {
@@ -340,7 +356,11 @@ async fn handle_nebo_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     })
 }
 
-async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_skill_code(
+    state: &AppState,
+    code: &str,
+    by: InstalledBy,
+) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
     // Try to redeem code — may fail if already redeemed (re-install)
@@ -427,7 +447,7 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                     let deps = crate::deps::extract_skill_deps(&skill);
                     if !deps.is_empty() {
                         let mut visited = std::collections::HashSet::new();
-                        crate::deps::resolve_cascade(&state_clone, deps, &mut visited).await;
+                        crate::deps::resolve_cascade(&state_clone, deps, &mut visited, by).await;
                     }
                 }
             }
@@ -441,7 +461,11 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     })
 }
 
-async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_work_code(
+    state: &AppState,
+    code: &str,
+    by: InstalledBy,
+) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
     // Try to redeem code — may fail if already redeemed (re-install)
@@ -512,7 +536,7 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
                 let deps = crate::deps::extract_workflow_deps(&def);
                 if !deps.is_empty() {
                     let mut visited = std::collections::HashSet::new();
-                    crate::deps::resolve_cascade(&state_clone, deps, &mut visited).await;
+                    crate::deps::resolve_cascade(&state_clone, deps, &mut visited, by).await;
                 }
             }
         }
@@ -534,6 +558,7 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
 async fn handle_collection_code(
     state: &AppState,
     code: &str,
+    by: InstalledBy,
 ) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
@@ -619,7 +644,7 @@ async fn handle_collection_code(
 
     // Install every item via the canonical installer.
     let mut visited = std::collections::HashSet::new();
-    let result = crate::deps::resolve_cascade(state, deps, &mut visited).await;
+    let result = crate::deps::resolve_cascade(state, deps, &mut visited, by).await;
 
     // Apps install through the agent path; detect & persist their app-specific
     // paths so they show up and launch as apps (the cascade only does the agent part).
@@ -866,8 +891,10 @@ async fn declared_needs(
 /// The owner's consent to an employee's declared needs (`requires.
 /// interfaces`, its plugins, its watches), read off its manifest with no
 /// model call and granted as standing allow rules for that employee. With
-/// no `before` it is a hire (the Hire tap, or the owner's own create from a
-/// package) and grants every declared need; with the declaration as it was
+/// no `before` it is a hire ([`hire`]: every door a package arrives through
+/// by the owner's act, and the owner's own create from a package) and grants
+/// every declared need the employee holds no rule on yet, so a reinstall or
+/// a rehire never undoes what the owner set; with the declaration as it was
 /// before the owner edited it, it grants only what the edit adds. An account
 /// a capability needs and no plugin binds yet reaches the owner through the
 /// Inbox needs flow (the binding's pre-flight), never as an ask.
@@ -878,7 +905,32 @@ pub(crate) async fn grant_declared(state: &AppState, agent_id: &str, before: Opt
     let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
     let declared = declared_needs(&agent.name, &config, &installed, &reader).await;
     let (needs, source) = match before {
-        None => (declared, types::permissions::RuleSource::Hire { package: agent_id.to_string() }),
+        None => {
+            let own = state
+                .store
+                .permission_rules_in(&types::permissions::Scope::Employee(agent_id.to_string()))
+                .unwrap_or_default();
+            let unset = |c: &String| {
+                !own.iter().any(|r| {
+                    r.field.is_none() && r.key == types::permissions::RuleKey::Capability(c.clone())
+                })
+            };
+            let needs = tools::needs::Needs {
+                capabilities: declared
+                    .capabilities
+                    .iter()
+                    .filter(|c| unset(c))
+                    .cloned()
+                    .collect(),
+                accounts: declared.accounts.clone(),
+            };
+            (
+                needs,
+                types::permissions::RuleSource::Hire {
+                    package: agent_id.to_string(),
+                },
+            )
+        }
         Some(before) => {
             let was = declared_needs(&agent.name, before, &installed, &reader).await;
             (tools::needs::added(&was, &declared), types::permissions::RuleSource::JobEdit)
@@ -890,6 +942,23 @@ pub(crate) async fn grant_declared(state: &AppState, agent_id: &str, before: Opt
     match agent::harness::permissions::consent::grant_job(&state.store, agent_id, &needs, source) {
         Ok(rules) => tracing::info!(agent = agent_id, granted = rules.len(), "the owner's consent granted the declared needs"),
         Err(e) => tracing::warn!(agent = agent_id, error = %e, "the declared needs were not granted"),
+    }
+}
+
+/// A package arrived as a hire: the one grant, for every door an employee
+/// is hired through (a code in the owner's app, the Hire tap, a hire on the
+/// owner's account, the hire tools, a hire card, a collection). Only the
+/// owner's own act grants the job the package declares; an employee brought
+/// in by anyone else holds no job and asks before it acts.
+pub(crate) async fn hire(state: &AppState, agent_id: &str, by: InstalledBy) {
+    match by {
+        InstalledBy::Owner => grant_declared(state, agent_id, None).await,
+        InstalledBy::Other => {
+            info!(
+                agent = agent_id,
+                "hired by an act that isn't the owner's; no job granted, it asks first"
+            )
+        }
     }
 }
 
@@ -987,7 +1056,11 @@ pub(crate) fn seed_learning_mode(store: &db::Store, agent_id: &str) -> bool {
     }
 }
 
-async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_agent_code(
+    state: &AppState,
+    code: &str,
+    by: InstalledBy,
+) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
     // Try to redeem code — may fail if already redeemed (re-install)
@@ -1091,6 +1164,7 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     // re-materialize of the same workflow rows is an idempotent upsert.
     if persist_result.is_some() {
         finalize_agent_install(state, &artifact_id, &artifact_name).await;
+        hire(state, &artifact_id, by).await;
     }
 
     // Cascade: resolve agent deps (plugins, skills) in background — don't block code_result
@@ -1129,7 +1203,7 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 let bg_name = artifact_name.clone();
                 tokio::spawn(async move {
                     let mut visited = std::collections::HashSet::new();
-                    crate::deps::resolve_cascade(&bg_state, deps, &mut visited).await;
+                    crate::deps::resolve_cascade(&bg_state, deps, &mut visited, by).await;
                     info!(agent = %bg_name, "cascade: background dep resolution complete");
                 });
             }
@@ -1331,7 +1405,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     let slug = slug_hint;
 
     // ONE plugin installer — resolve binary, download, install, register.
-    if let Err(e) = fetch_and_install_plugin(state, &api, &slug, &name).await {
+    if let Err(e) = fetch_and_install_plugin(state, &api, &slug, &name, Some(code)).await {
         state.hub.broadcast(
             "plugin_error",
             serde_json::json!({ "plugin": name, "error": e.to_string() }),
@@ -1422,11 +1496,15 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
 /// (`handle_plugin_code`) and the dependency cascade (`deps::install_plugin`) so
 /// their binary resolution and DB registration can't drift. Callers own their
 /// own surrounding concerns (progress broadcasts, child-dep handling, auth).
+/// `code` is the marketplace code it was installed from, when there is one
+/// (an update keeps the one recorded): an employee that names the plugin by
+/// that code reaches its tool.
 pub(crate) async fn fetch_and_install_plugin(
     state: &AppState,
     api: &NeboAIApi,
     slug: &str,
     name: &str,
+    code: Option<&str>,
 ) -> Result<(), NeboError> {
     let platform = napp::plugin::current_platform_key();
     let detail = api
@@ -1488,6 +1566,13 @@ pub(crate) async fn fetch_and_install_plugin(
         sig_status,
     ) {
         warn!(plugin = %slug, error = %e, "failed to upsert plugin into DB registry");
+    }
+    if let Some(code) = code
+        && let Err(e) = state
+            .store
+            .set_plugin_install_code(slug, &code.to_ascii_uppercase())
+    {
+        warn!(plugin = %slug, error = %e, "the plugin's install code was not recorded");
     }
     let _ = state.store.upsert_artifact_update_pref(slug, "plugin", &version);
 
@@ -1604,9 +1689,13 @@ pub(crate) async fn reconcile_app_fields(state: &AppState) {
     }
 }
 
-async fn handle_app_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_app_code(
+    state: &AppState,
+    code: &str,
+    by: InstalledBy,
+) -> Result<CodeHandlerResult, NeboError> {
     // Apps use the same install flow as agents — they ARE agents with artifact_type="app"
-    let result = handle_agent_code(state, code).await?;
+    let result = handle_agent_code(state, code, by).await?;
 
     // Detect & persist app-specific paths (ui/, bin/) so it's recognised as an app.
     reconcile_app_fields(state).await;
@@ -1656,17 +1745,7 @@ pub async fn submit_code(
         )
     })?;
 
-    let result = match code_type {
-        CodeType::Nebo => handle_nebo_code(&state, validated_code).await,
-        CodeType::Skill => handle_skill_code(&state, validated_code).await,
-        CodeType::Work => handle_work_code(&state, validated_code).await,
-        CodeType::Agent => handle_agent_code(&state, validated_code).await,
-        CodeType::Loop => handle_loop_code(&state, validated_code).await,
-        CodeType::Plugin => handle_plugin_code(&state, validated_code).await,
-        CodeType::App => handle_app_code(&state, validated_code).await,
-        CodeType::Collection => handle_collection_code(&state, validated_code).await,
-        CodeType::Connection => handle_connection_code(&state, validated_code).await,
-    };
+    let result = install(&state, code_type, validated_code, InstalledBy::Owner).await;
 
     match result {
         Ok(r) => Ok(axum::response::Json(serde_json::json!({
