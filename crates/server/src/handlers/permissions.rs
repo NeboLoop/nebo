@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use agent::harness::permissions::{Answer, AnsweredVia, Ask, AskError, AskStatus};
 use types::NeboError;
 
-use super::ApiResult;
+use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
 
 /// One ask as the owner sees it: who wants to do what, why it asked, and
@@ -70,12 +70,12 @@ fn employee_name(state: &AppState, agent_id: &str) -> String {
         .unwrap_or_else(|| "Nebo".to_string())
 }
 
-fn ask_error(e: AskError) -> NeboError {
-    match e {
+fn ask_error(e: AskError) -> (axum::http::StatusCode, Json<types::api::ErrorResponse>) {
+    to_error_response(match e {
         AskError::NotFound => NeboError::NotFound,
         AskError::Settled(_) => NeboError::Validation("this was already answered".into()),
         AskError::Store(msg) => NeboError::Database(msg),
-    }
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,7 +95,7 @@ pub struct PermissionAsksResponse {
 pub async fn list_permission_asks(
     State(state): State<AppState>,
     Query(q): Query<ListAsksQuery>,
-) -> ApiResult<PermissionAsksResponse> {
+) -> HandlerResult<PermissionAsksResponse> {
     let asks = state.permission_asks.open(q.session.as_deref()).map_err(ask_error)?;
     Ok(Json(PermissionAsksResponse { asks: asks.iter().map(|a| card(&state, a)).collect() }))
 }
@@ -104,8 +104,8 @@ pub async fn list_permission_asks(
 pub async fn get_permission_ask(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ApiResult<PermissionAskCard> {
-    let ask = state.permission_asks.get(&id).map_err(ask_error)?.ok_or(NeboError::NotFound)?;
+) -> HandlerResult<PermissionAskCard> {
+    let ask = state.permission_asks.get(&id).map_err(ask_error)?.ok_or_else(|| ask_error(AskError::NotFound))?;
     Ok(Json(card(&state, &ask)))
 }
 
@@ -123,14 +123,13 @@ pub async fn answer_permission_ask(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<AnswerAskBody>,
-) -> ApiResult<PermissionAskCard> {
-    let answer = Answer::parse(&body.answer)
-        .ok_or_else(|| NeboError::Validation("answer must be allow_always, this_once or no".into()))?;
-    let via = AnsweredVia::parse(&body.via)
-        .ok_or_else(|| NeboError::Validation("via must be chat, inbox or mobile".into()))?;
+) -> HandlerResult<PermissionAskCard> {
+    let invalid = |msg: &str| to_error_response(NeboError::Validation(msg.to_string()));
+    let answer = Answer::parse(&body.answer).ok_or_else(|| invalid("answer must be allow_always, this_once or no"))?;
+    let via = AnsweredVia::parse(&body.via).ok_or_else(|| invalid("via must be chat, inbox or mobile"))?;
     match state.permission_asks.answer(&state.tools, &id, answer, via) {
         Ok(settled) => Ok(Json(card(&state, &settled.ask))),
         Err(AskError::Settled(ask)) => Ok(Json(card(&state, &ask))),
-        Err(e) => Err(ask_error(e).into()),
+        Err(e) => Err(ask_error(e)),
     }
 }
