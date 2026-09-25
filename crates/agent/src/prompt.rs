@@ -8,13 +8,6 @@
 pub const CACHE_BOUNDARY: &str =
     "\n<!-- CACHE_BOUNDARY -->\n[--- cache boundary: content below changes per-turn ---]\n";
 
-#[cfg(target_os = "windows")]
-const STRAP_OS: &str = concat!(include_str!("strap/os_shared.txt"), include_str!("strap/os_windows.txt"));
-#[cfg(target_os = "linux")]
-const STRAP_OS: &str = concat!(include_str!("strap/os_shared.txt"), include_str!("strap/os_linux.txt"));
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-const STRAP_OS: &str = concat!(include_str!("strap/os_shared.txt"), include_str!("strap/os_macos.txt"));
-
 const STRAP_AGENT: &str = include_str!("strap/agent.txt");
 const STRAP_CODE: &str = include_str!("strap/code.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
@@ -43,7 +36,6 @@ const STRAP_ORGANIZER: &str = include_str!("strap/organizer.txt");
 /// Get STRAP doc for a core tool (injected when the tool is active).
 pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
     match tool_name {
-        "os" => Some(STRAP_OS),
         "agent" => Some(STRAP_AGENT),
         "code" => Some(STRAP_CODE),
         "message" => Some(STRAP_MESSAGE),

@@ -485,7 +485,7 @@ mod tests {
         }
         /// A shell command: `run_command`, the Shell capability.
         fn shell() -> Self {
-            Self { name: "os", operation: None, key: "run_command", capability: Some("shell") }
+            Self { name: "run_command", operation: None, key: "run_command", capability: Some("shell") }
         }
     }
     impl DynTool for Probe {
@@ -577,13 +577,13 @@ mod tests {
     #[tokio::test]
     async fn an_outside_client_is_an_mcp_client() {
         let (_d, _store, registry) = setup(Probe::shell(), vec![company(RuleKey::Capability("shell".into()), Effect::Allow)]).await;
-        let r = call_tool(&registry, None, "os", shell_call()).await;
+        let r = call_tool(&registry, None, "run_command", shell_call()).await;
         assert!(r.is_error, "shell ran for an MCP client: {}", r.content);
         assert!(r.content.contains("not permitted"), "{}", r.content);
     }
 
     fn shell_call() -> serde_json::Value {
-        serde_json::json!({ "resource": "shell", "action": "exec", "command": "true" })
+        serde_json::json!({ "command": "true", "description": "Do nothing" })
     }
 
     /// A chat run on the CLI provider, as the runner issues it: the owner's
@@ -614,7 +614,7 @@ mod tests {
     async fn a_cli_provider_run_calls_as_its_run() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Allow);
-        let r = call_tool(&registry, Some(&run), "os", shell_call()).await;
+        let r = call_tool(&registry, Some(&run), "run_command", shell_call()).await;
         assert!(!r.is_error, "the run's own shell call was refused: {}", r.content);
         assert_eq!(r.content, "RAN");
     }
@@ -624,7 +624,7 @@ mod tests {
     async fn a_cli_provider_run_keeps_its_employees_rules() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Deny);
-        let r = call_tool(&registry, Some(&run), "os", shell_call()).await;
+        let r = call_tool(&registry, Some(&run), "run_command", shell_call()).await;
         assert!(r.is_error, "{}", r.content);
         assert!(r.content.contains("permission is off"), "{}", r.content);
     }
@@ -635,7 +635,7 @@ mod tests {
     async fn a_cli_provider_runs_ask_parks_for_the_owner() {
         let (_d, store, registry) = setup(Probe::shell(), vec![]).await;
         let run = cli_run(&store, Effect::Ask);
-        let r = call_tool(&registry, Some(&run), "os", shell_call()).await;
+        let r = call_tool(&registry, Some(&run), "run_command", shell_call()).await;
         assert_ne!(r.content, "RAN", "an asked call ran");
         let ask = r.parked_ask.as_deref().expect("the call parked");
         assert_eq!(store.get_permission_ask(ask).unwrap().map(|a| a.status).as_deref(), Some("open"));

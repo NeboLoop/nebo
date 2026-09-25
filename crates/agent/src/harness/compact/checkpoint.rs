@@ -526,7 +526,7 @@ mod tests {
         fn read(&self, id: &str, name: &str, content: &str) -> String {
             let path = self.dir.path().join(name).to_string_lossy().to_string();
             std::fs::write(&path, content).unwrap();
-            self.call(id, "os", serde_json::json!({ "action": "read", "path": path }), content, false);
+            self.call(id, "read_file", serde_json::json!({ "path": path }), content, false);
             path
         }
 
@@ -684,8 +684,8 @@ mod tests {
         for (i, path) in paths.iter().enumerate() {
             std::fs::write(path, format!("fresh {}\n{}", i + 1, "x".repeat(44_000))).unwrap();
         }
-        s.call("r8", "os", serde_json::json!({ "resource": "file", "action": "read", "path": "relative.txt" }), "r", false);
-        s.call("r9", "os", serde_json::json!({ "action": "read", "path": "/nonexistent/gone.txt" }), "g", false);
+        s.call("r8", "read_file", serde_json::json!({ "path": "relative.txt" }), "r", false);
+        s.call("r9", "read_file", serde_json::json!({ "path": "/nonexistent/gone.txt" }), "g", false);
         let provider = Scripted::new(vec![Reply::Say("summary".into())]);
 
         let done = s

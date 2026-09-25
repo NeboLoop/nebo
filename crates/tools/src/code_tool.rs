@@ -101,7 +101,7 @@ fn resolve_source_file(raw: &str, action: &str) -> Result<(String, String, synta
         None => {
             return Err(ToolResult::error(format!(
                 "No compiled-in grammar for {path} — supported languages: {SUPPORTED_LANGS}. \
-                 Use os(resource: \"file\", action: \"read\"/\"grep\") for other files."
+                 Use read_file, or grep through run_command, for other files."
             )));
         }
     };
@@ -595,8 +595,8 @@ impl DynTool for CodeTool {
     fn description(&self) -> String {
         "Read-only code intelligence via in-process tree-sitter (rust, typescript, tsx, javascript, python, go, json, yaml, toml, bash, html, css, markdown).\n\n\
          Rules:\n\
-         - Use outline BEFORE reading a large source file blind — then read specific line ranges with os(resource: \"file\", action: \"read\", offset, limit).\n\
-         - This tool never edits. Edit through os(resource: \"file\", action: \"edit\") — its result already appends a syntax check for these languages.\n\
+         - Use outline BEFORE reading a large source file blind — then read specific line ranges with read_file (offset, limit).\n\
+         - This tool never edits. Edit through edit_file — its result already appends a syntax check for these languages.\n\
          - Lists are capped at 200 entries; a capped list ends with an explicit \"N more omitted\" line.\n\n\
          Actions:\n\
          - outline: symbol tree of one file (functions/classes/impls/methods with line ranges)\n\

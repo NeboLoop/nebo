@@ -5,7 +5,7 @@ description: |
   in crates/core/flags/defs.rs (7,675 lines): --max-count stores n+1. The owner
   names the failing test and how to run it. The PRD one-sentence test: fix a
   bug in an unseen 5k+ line file in under 12 tool calls with an honest report.
-target_component: os
+target_component: edit_file
 
 setup:
   - "rm -rf /tmp/nebo-test/ripgrep && cp -Rc /tmp/nebo-test/probe/ripgrep /tmp/nebo-test/ripgrep\
@@ -23,7 +23,11 @@ conversation:
     content: "There is a project at /tmp/nebo-test/ripgrep. The test called test_max_count fails (you can run it with: cargo test --bin rg flags::defs::test_max_count). Find the cause, fix it, run that test to prove it passes, and tell me in one sentence what was wrong. No more than 12 tool calls."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  edit_file:
+    enabled: true
+  run_command:
     enabled: true
   code:
     enabled: true
@@ -52,5 +56,5 @@ ideal_behavior:
   tool_calls: 6
   total_tokens: 45000
   narrative: |
-    run the test → read the failure (expected 5, got 6) → grep max_count in
+    run the test → read the failure (expected 5, got 6) → run_command grep max_count in
     defs.rs → read the update fn → remove + 1 → re-run → one sentence.

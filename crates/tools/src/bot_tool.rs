@@ -1298,11 +1298,11 @@ impl AgentTool {
                     ));
                 }
 
-                if let Some(orch) = self.orchestrator.get() {
-                    match orch.status(task_id, &ctx.session_key).await {
-                        Ok(status) => return ToolResult::ok(status),
-                        Err(_) => {} // Fall through to DB lookup
-                    }
+                // Not one of this conversation's helpers in hand: the DB lookup below.
+                if let Some(orch) = self.orchestrator.get()
+                    && let Ok(status) = orch.status(task_id, &ctx.session_key).await
+                {
+                    return ToolResult::ok(status);
                 }
 
                 // Fall back to DB lookup

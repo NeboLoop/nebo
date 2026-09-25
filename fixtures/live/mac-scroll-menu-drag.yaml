@@ -15,10 +15,12 @@ teardown:
 
 conversation:
   - role: user
-    content: "Three things with the computer control tools, then report each result. (1) TextEdit has /tmp/nebo-live-scroll.txt open (300 lines). Capture TextEdit, then scroll its document down with os(resource: \"input\", action: \"scroll\", app: \"TextEdit\", direction: \"down\", until: \"line 250\") and tell me whether line 250 is on screen. (2) Choose Edit > Select All in TextEdit with os(resource: \"menu\", action: \"click\", app: \"TextEdit\", name: \"Edit > Select All\"). Do not save anything. (3) A Finder window shows the folder nebo-drag, containing note.txt and a folder named inbox. Capture Finder, then drag note.txt onto the inbox folder by ref (ref for note.txt, to_ref for inbox). Finally run os(resource: \"shell\", action: \"exec\", command: \"ls -R /tmp/nebo-drag\") and tell me where note.txt ended up."
+    content: "Three things with the computer control tools, then report each result. (1) TextEdit has /tmp/nebo-live-scroll.txt open (300 lines). Capture TextEdit, then scroll its document down with os(resource: \"input\", action: \"scroll\", app: \"TextEdit\", direction: \"down\", until: \"line 250\") and tell me whether line 250 is on screen. (2) Choose Edit > Select All in TextEdit with os(resource: \"menu\", action: \"click\", app: \"TextEdit\", name: \"Edit > Select All\"). Do not save anything. (3) A Finder window shows the folder nebo-drag, containing note.txt and a folder named inbox. Capture Finder, then drag note.txt onto the inbox folder by ref (ref for note.txt, to_ref for inbox). Finally call run_command(command: \"ls -R /tmp/nebo-drag\", description: \"List the drag folder\") and tell me where note.txt ended up."
 
 tool_config:
   os:
+    enabled: true
+  run_command:
     enabled: true
 
 prompt_assertions:

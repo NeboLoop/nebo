@@ -356,7 +356,7 @@ fn eval_scenarios() -> Vec<Scenario> {
         Scenario {
             name: "no_file_creation",
             prompt: "Give me a summary of the top 5 news stories today.",
-            checks: vec![Check::NoToolCallNamed("os".into())],
+            checks: vec![Check::NoToolCallNamed("write_file".into())],
             timeout_secs: 60,
             tags: &["identity"],
         },

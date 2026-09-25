@@ -29,7 +29,7 @@ conversation:
 tool_config:
   agent:
     enabled: true
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:

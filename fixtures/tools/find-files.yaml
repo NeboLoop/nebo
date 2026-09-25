@@ -1,0 +1,46 @@
+id: find-files
+name: "Find files — find through run_command"
+description: |
+  The user asks the agent to find files matching a pattern. There is no glob
+  tool: finding files goes through run_command with find (or rg --files / ls).
+  The model must call run_command with a find-style command and a short
+  description — NOT hallucinate "glob" or "find" as a standalone tool.
+target_component: run_command
+
+conversation:
+  - role: user
+    content: "Find all .json files in the current directory."
+
+tool_config:
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'run_command', not 'glob', 'find', 'bash', or 'os'"
+      severity: critical
+      check: { first_call: true, tool: run_command }
+    - id: find-command
+      text: "The command uses find, grep or rg to locate the .json files"
+      severity: critical
+      check: { first_call: true, tool: run_command, arg: command, matches: "\\b(find|grep|rg)\\b" }
+    - id: json-pattern
+      text: "The command targets .json files (e.g. find . -name '*.json')"
+      severity: important
+      check: { first_call: true, tool: run_command, arg: command, contains: "json" }
+    - id: has-description
+      text: "The call carries a short plain-words description of what the command does"
+      severity: important
+      check: { first_call: true, tool: run_command, arg: description, exists: true }
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single run_command(command: "find . -name '*.json'", description: "Find
+    JSON files in this folder") call. Model reports the matching files.

@@ -400,7 +400,7 @@ pub fn render_created(cp: &Checkpoint) -> String {
         ));
     }
     out.push_str(&format!(
-        "Restore with os(resource: \"file\", action: \"restore\", checkpoint: \"{}\")",
+        "Restore with restore_checkpoint(checkpoint: \"{}\")",
         cp.id
     ));
     out

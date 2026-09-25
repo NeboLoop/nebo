@@ -116,7 +116,8 @@ fn one_employee_many_things_at_once() {
         assert_eq!(w.arrive(&b, "email", &email, json!({"email": email, "message": "again"}), &format!("again{p}")), Routed::Signaled { case_id: case.clone() });
     }
     let live = |k: &str| Some(format!("{k}:run::0"));
-    let r = tick(&w.s, w.t, &live, &no_steer);
+    let written = |_: &str, _: &EngineEvent| true;
+    let r = tick(&w.s, w.t, &live, &written);
     assert_eq!((r.steered, r.children_started), (20, 0), "twenty steered into twenty running turns");
     for case in &cases {
         assert_eq!(w.s.engine_children(case).unwrap().len(), 1, "one turn per case, still");

@@ -13,7 +13,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use ai::RequestTrace;
-use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use workflow::{ActivityLoop, LoopOutcome, LoopTurn, WorkflowError};
 
@@ -333,7 +332,7 @@ impl ActivityLoop for WorkflowTurns {
             }) as ParkFn
         });
 
-        let cancel = turn.cancel.clone().unwrap_or_else(CancellationToken::new);
+        let cancel = turn.cancel.clone().unwrap_or_default();
         let (objective, instruction) = step_task(turn.workflow_name, turn.activity, turn.step_index, &turn.seed_messages);
         let req = TurnRequest {
             session_key: key,

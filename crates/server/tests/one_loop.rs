@@ -150,8 +150,7 @@ async fn a_chat_message_runs_a_turn_through_the_one_loop() {
         .find(|m| m["role"] == "system")
         .and_then(|m| m["content"].as_str())
         .expect("a system prompt");
-    assert!(system.contains("<!-- CACHE_BOUNDARY -->"), "the harness's prompt, fixed part then the employee");
-    assert!(system.contains("# How this works"), "{system}");
+    assert!(system.contains("# How this works") && system.contains("# Helpers"), "the harness's prompt: {system}");
     let said: Vec<&str> = messages.iter().filter(|m| m["role"] == "user").filter_map(|m| m["content"].as_str()).collect();
     assert!(said.iter().any(|m| m.contains(OWNER)), "the owner's words: {said:?}");
     assert!(said.iter().any(|m| m.contains("<system-reminder>")), "the session's facts ride as attachment rows: {said:?}");
