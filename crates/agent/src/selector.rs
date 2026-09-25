@@ -12,6 +12,11 @@ struct CooldownState {
     cooldown_until: Instant,
 }
 
+/// The window assumed for a model whose own is not known: Claude Code's
+/// `MODEL_CONTEXT_WINDOW_DEFAULT` (src/utils/context.ts:9,97), and the 200k
+/// every Janus pool reports.
+pub const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
+
 /// Model information for routing decisions.
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
@@ -250,11 +255,23 @@ impl ModelSelector {
     /// Get model info by "provider/model" ID.
     pub fn get_model_info(&self, model_id: &str) -> Option<ModelInfo> {
         let (provider_id, model_name) = parse_model_id(model_id);
-        if let Some(models) = self.config.provider_models.get(provider_id) {
-            models.iter().find(|m| m.id == model_name).cloned()
-        } else {
-            None
-        }
+        let runtime = self.runtime_models.read().unwrap();
+        runtime
+            .get(provider_id)
+            .and_then(|models| models.iter().find(|m| m.id == model_name))
+            .or_else(|| self.config.provider_models.get(provider_id)?.iter().find(|m| m.id == model_name))
+            .cloned()
+    }
+
+    /// The context window of `model_id` ("provider/model"): what the provider
+    /// reported for it (Janus's `/v1/models` `context_window`, synced into the
+    /// runtime models) or the catalog's number for a direct provider, else
+    /// [`DEFAULT_CONTEXT_WINDOW`].
+    pub fn context_window(&self, model_id: &str) -> usize {
+        self.get_model_info(model_id)
+            .and_then(|m| usize::try_from(m.context_window).ok())
+            .filter(|&w| w > 0)
+            .unwrap_or(DEFAULT_CONTEXT_WINDOW)
     }
 
     /// Whether `model_id` ("provider/model") thinks: its catalog or synced
@@ -412,6 +429,46 @@ mod tests {
         let (p, m) = parse_model_id("gpt-4o");
         assert_eq!(p, "");
         assert_eq!(m, "gpt-4o");
+    }
+
+    fn info(id: &str, context_window: i32) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            context_window,
+            input_price: 0.0,
+            output_price: 0.0,
+            cached_input_price: 0.0,
+            capabilities: vec![],
+            kind: vec![],
+            preferred: false,
+            active: true,
+        }
+    }
+
+    /// A Janus speed's window is the one Janus reported at the model sync,
+    /// injected at runtime: nothing in the catalog knows it.
+    #[test]
+    fn a_synced_janus_window_is_the_models_window() {
+        let mut config = ModelRoutingConfig::default();
+        config.provider_models.insert("janus".into(), vec![info("nebo-1", 0)]);
+        config.provider_models.insert("anthropic".into(), vec![info("claude-opus-4-6", 1_000_000)]);
+        let selector = ModelSelector::new(config);
+        selector.inject_provider_models("janus", vec![info("nebo-1", 200_000), info("nebo-1-pro", 131_072)]);
+        assert_eq!(selector.get_model_info("janus/nebo-1-pro").map(|m| m.context_window), Some(131_072));
+        assert_eq!(selector.context_window("janus/nebo-1-pro"), 131_072);
+        assert_eq!(selector.context_window("janus/nebo-1"), 200_000, "the synced row wins over the boot floor");
+        assert_eq!(selector.context_window("anthropic/claude-opus-4-6"), 1_000_000, "a direct provider keeps its catalog value");
+    }
+
+    /// A model whose window nothing reported gets Claude Code's 200k default.
+    #[test]
+    fn an_unknown_window_is_the_one_default() {
+        let selector = ModelSelector::new(ModelRoutingConfig::default());
+        selector.inject_provider_models("ollama", vec![info("llama", 0)]);
+        assert_eq!(selector.context_window("ollama/llama"), DEFAULT_CONTEXT_WINDOW);
+        assert_eq!(selector.context_window("janus/never-heard-of-it"), DEFAULT_CONTEXT_WINDOW);
+        assert_eq!(DEFAULT_CONTEXT_WINDOW, 200_000);
     }
 
     #[test]

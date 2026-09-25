@@ -48,8 +48,6 @@ use crate::selector;
 /// Steps one turn takes before it ends with `MaxSteps` (Claude Code's
 /// max-turns option).
 pub const DEFAULT_MAX_STEPS: u32 = 100;
-/// Context window assumed for a model that reports none.
-const DEFAULT_CONTEXT_WINDOW: usize = 80_000;
 
 /// What one turn runs with, fixed for the turn.
 pub struct TurnContext {
@@ -892,7 +890,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             .extend(conversation::received_taint(&conversation));
 
         // 3. Trim; past the threshold, clear old results, else checkpoint.
-        let context_window = context_window(cx, &st.model);
+        let context_window = cx.harness.selector.context_window(&st.model);
         st.usage.system_overhead_tokens = overhead_tokens(&surface.declared);
         let window = trim(st, &conversation);
         st.usage.last_request_estimate = pruning::estimate_total_tokens(&window);
@@ -1331,16 +1329,6 @@ async fn step_events(
     }
 }
 
-/// The context window of the turn's model.
-fn context_window(cx: &TurnContext, model: &str) -> usize {
-    cx.harness
-        .selector
-        .get_model_info(model)
-        .map(|m| m.context_window as usize)
-        .filter(|&w| w > 0)
-        .unwrap_or(DEFAULT_CONTEXT_WINDOW)
-}
-
 /// The system prompt and the tool schemas, in tokens: what every request
 /// carries besides the conversation.
 fn overhead_tokens(declared: &[ai::ToolDefinition]) -> usize {
@@ -1636,7 +1624,7 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
         (TurnMode::Chat, Some(observer)) => Some(goal::GoalCheck {
             sessions: h.sessions.clone(),
             session_id: cx.session_id.clone(),
-            judge: goal::DoneJudge::for_providers(&h.providers.read().await),
+            judge: goal::DoneJudge::for_providers(&h.providers.read().await, &h.selector),
             trace: cx.trace("done_check"),
             observer,
             check_ins: h.goal_check_ins.clone(),
