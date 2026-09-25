@@ -106,6 +106,14 @@ impl DynTool for RunCommandTool {
         str_arg(input, "command").map(|c| RuleField::CommandPrefix(c.to_string()))
     }
 
+    /// A command that only reads, by Claude Code's classifier
+    /// (`BashTool.isReadOnly`, `src/tools/BashTool/BashTool.tsx:434-440`):
+    /// it runs alongside other reads, Plan mode and the explore and plan
+    /// helpers may run it, and Ask mode doesn't ask.
+    fn read_only(&self, input: &Value) -> bool {
+        str_arg(input, "command").is_some_and(crate::policy::is_read_only)
+    }
+
     fn capability(&self, _input: &Value) -> Option<&'static str> {
         Some("shell")
     }
@@ -512,6 +520,17 @@ mod tests {
 
     fn helpers() -> Helpers {
         Helpers { orchestrator: crate::orchestrator::new_handle(), store: None, runs: None, workflows: Default::default() }
+    }
+
+    /// D2: a command that only reads is a read-only call (Plan mode and the
+    /// explore helper may run it, Ask mode doesn't ask); anything else isn't.
+    #[test]
+    fn run_command_is_read_only_when_its_command_only_reads() {
+        let tool = RunCommandTool(machine());
+        assert!(tool.read_only(&json!({"command": "ls -la", "description": "List"})));
+        assert!(tool.read_only(&json!({"command": "git status && git diff --stat", "description": "Check"})));
+        assert!(!tool.read_only(&json!({"command": "rm -rf build", "description": "Clean"})));
+        assert!(!tool.read_only(&json!({"description": "No command"})));
     }
 
     /// A background command's whole life through the command tools: start,
