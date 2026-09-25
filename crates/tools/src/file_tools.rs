@@ -95,7 +95,7 @@ impl Machine {
         }
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let (rewritten, newly) = crate::plan::apply(&content, &results, &now);
-        let write = self.file.write_document(&ctx.session_key, &path, &rewritten);
+        let write = self.file.write_document(&ctx.session_key, &path, &content, &rewritten);
         if write.is_error {
             return write;
         }

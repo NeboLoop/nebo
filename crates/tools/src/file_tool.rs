@@ -253,10 +253,17 @@ impl FileTool {
         crate::diagnostics_feed::clear_delivered(path);
     }
 
-    /// Write a document through the ONE write pathway (Work panel, versions,
-    /// overwrite advisory). Used by `plan_check` on OsTool, which rewrites the
-    /// plan it just verified.
-    pub fn write_document(&self, session: &str, path: &str, content: &str) -> ToolResult {
+    /// Rewrite a document the caller read as `read` through the ONE write
+    /// pathway (Work panel, versions). Used by `check_plan`, which rewrites
+    /// the plan it just verified: the rewrite stands on that read, so it is
+    /// refused when the file changed since.
+    pub fn write_document(&self, session: &str, path: &str, read: &str, content: &str) -> ToolResult {
+        if std::fs::read_to_string(path).ok().as_deref() != Some(read) {
+            return ToolResult::error(format!(
+                "Error: {path} changed on disk while its steps were checked. Read it again, then check it."
+            ));
+        }
+        self.record_read(session, path);
         let write = FileInput {
             action: "write".into(),
             path: path.to_string(),
@@ -329,62 +336,27 @@ impl FileTool {
         }
     }
 
-    /// Overwrite advisory: a warning to attach to the result when the target
-    /// exists and was not read this session, or changed on disk since that read.
+    /// Why an edit or a whole-file write of an existing file is refused: this
+    /// session has not read it, or it changed on disk since that read in a way
+    /// the session has not been shown. A change whose bytes match the read
+    /// (a touch) is not a change. `None` lets the call through.
     ///
-    /// A WARNING, never a block. This used to hard-error, and a blocked model
-    /// does not give up on the write — it wants the file to exist, so it routes
-    /// around the guard through the shell heredoc, where it gets no staleness
-    /// protection at all. The block converted a supervised write into an
-    /// unsupervised one. A warning rides on the write the model was going to
-    /// make anyway, and names what it may have just clobbered so it can go look.
-    fn overwrite_warning(&self, session: &str, path: &str, verb: &str) -> Option<String> {
-        let guard = self.read_state.lock().ok()?; // poisoned lock: no advisory
-        match guard.get(&Self::read_state_key(session, path)) {
-            None => {
-                // Captured before the write lands: the size and mtime of what is
-                // about to be replaced are the only evidence of it.
-                let meta = std::fs::metadata(path).ok();
-                let old_size = meta
-                    .as_ref()
-                    .map(|m| format!("{} bytes", m.len()))
-                    .unwrap_or_else(|| "size unknown".to_string());
-                let old_mtime = current_mtime_ms(path)
-                    .map(fmt_ms_rfc3339)
-                    .unwrap_or_else(|| "mtime unknown".to_string());
-                let effect = if verb == "edit" {
-                    "Only the matched text was replaced; re-read to see the rest of the file."
-                } else {
-                    "Its previous content is gone; re-read if it mattered."
-                };
-                Some(format!(
-                    "Warning: {path} already existed ({old_size}, modified {old_mtime}) and this \
-                     tool has no record of reading it this session (shell reads are not \
-                     recorded). {effect}"
-                ))
-            }
-            Some(entry) => {
-                // Warn only when the file is demonstrably newer than the recorded
-                // read. If we can't stat it, stay quiet — don't alarm on our own
-                // bookkeeping.
-                if let Some(cur) = current_mtime_ms(path).filter(|cur| *cur > entry.mtime_ms) {
-                    // An edit replaces one string; the outside change is still on
-                    // disk. Only a write replaced the whole file. Saying "overwrote"
-                    // for an edit sent models re-applying changes that were there.
-                    let effect = if verb == "edit" {
-                        "Your edit replaced only the matched text; the other change is still there"
-                    } else {
-                        "Your write replaced the whole file, including that change"
-                    };
-                    Some(format!(
-                        "Warning: {path} changed on disk (modified {} ms after your read). {effect}. Re-read before editing further.",
-                        cur - entry.mtime_ms
-                    ))
-                } else {
-                    None
-                }
-            }
+    /// Claude Code refuses both ("File has not been read yet…", "File has been
+    /// modified since read…": FileEditTool.ts:275-310, FileWriteTool.ts:196-218).
+    fn unread_or_stale(&self, session: &str, path: &str, verb: &str) -> Option<String> {
+        let read = self.read_state.lock().ok()?.get(&Self::read_state_key(session, path)).cloned();
+        let Some(read) = read else {
+            return Some(format!(
+                "Error: {path} has not been read in this conversation. Read it with read_file first, then {verb} it."
+            ));
+        };
+        let now = snapshot(path)?;
+        if now.mtime_ms > read.mtime_ms && (read.content.is_none() || now.content != read.content) {
+            return Some(format!(
+                "Error: {path} changed on disk since you read it (the owner, a formatter or another program changed it). Read it again, then {verb} it."
+            ));
         }
+        None
     }
 
     fn handle_read(&self, ctx: &ToolContext, input: &FileInput) -> ToolResult {
@@ -698,18 +670,18 @@ impl FileTool {
 
         let path = expand_path(&input.path);
 
-        // Overwrite advisory, captured BEFORE the write clobbers the evidence.
-        // Creating a new file, or appending, needs no advisory.
+        // Replacing an existing file needs a current read of it. Creating a
+        // new file, or appending, does not.
         let prior_len = if !input.append {
             std::fs::metadata(&path).ok().map(|m| m.len())
         } else {
             None
         };
-        let overwrite_note = if !input.append && prior_len.is_some() {
-            self.overwrite_warning(session, &path, "write")
-        } else {
-            None
-        };
+        if prior_len.is_some()
+            && let Some(refusal) = self.unread_or_stale(session, &path, "write")
+        {
+            return ToolResult::error(refusal);
+        }
 
         // Create parent directories
         if let Some(parent) = Path::new(&path).parent() {
@@ -784,10 +756,6 @@ impl FileTool {
                     msg.push('\n');
                     msg.push_str(&note);
                 }
-                if let Some(note) = overwrite_note {
-                    msg.push_str("\n\n");
-                    msg.push_str(&note);
-                }
                 // Raw JSX in a .html with no transpiler renders blank in every browser.
                 // Redirect to the canonical pathway: write a .jsx, then convert to html
                 // (Nebo's SWC engine produces a self-contained, renderable page).
@@ -835,12 +803,6 @@ impl FileTool {
             return ToolResult::error(format!("Error: {}", e));
         }
 
-        // Overwrite advisory (warn, never block — see overwrite_warning). Edit is
-        // additionally self-guarding: old_string must match the CURRENT on-disk
-        // content read below, so a surgical edit cannot land on text the model
-        // has never seen the way a whole-file write can.
-        let overwrite_note = self.overwrite_warning(session, &path, "edit");
-
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -851,6 +813,9 @@ impl FileTool {
             }
             Err(e) => return ToolResult::error(format!("Error reading file: {}", e)),
         };
+        if let Some(refusal) = self.unread_or_stale(session, &path, "edit") {
+            return ToolResult::error(refusal);
+        }
 
         // Exact match first; otherwise curly quotes read as straight ones (the
         // model types ' and " where the document has ’ and “), and the file's
@@ -901,10 +866,6 @@ impl FileTool {
         // diagnostics after it when a server is up.
         if let Some(note) = syntax_note(&path, &new_content, self.lsp.as_ref()) {
             msg.push('\n');
-            msg.push_str(&note);
-        }
-        if let Some(note) = overwrite_note {
-            msg.push_str("\n\n");
             msg.push_str(&note);
         }
         let result = ToolResult::ok(msg);
@@ -1711,18 +1672,6 @@ fn fmt_ms_rfc3339(ms: i64) -> String {
     }
 }
 
-/// Current on-disk modification time of `path` in milliseconds since the epoch, or
-/// `None` if it can't be determined. Used by the read-before-edit staleness guard.
-fn current_mtime_ms(path: &str) -> Option<i64> {
-    std::fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_millis() as i64)
-}
-
 
 /// One file as this session last saw it. `content` is `None` past
 /// [`MAX_TRACKED_CONTENT_BYTES`]: the change is still reported, without lines.
@@ -2067,9 +2016,9 @@ mod tests {
     }
 
     /// A restore rewrites files the agent itself asked to put back; the read
-    /// ledger must follow, or the very next edit is warned about its own change.
+    /// ledger must follow, or the very next edit is refused over its own change.
     #[test]
-    fn restore_refreshes_read_state_so_the_next_edit_has_no_overwrite_warning() {
+    fn restore_refreshes_read_state_so_the_next_edit_is_not_refused() {
         let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         // SAFETY: serialized by the crate-wide lock; checkpoints go under NEBO_HOME.
@@ -2092,8 +2041,7 @@ mod tests {
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n");
         let e = t.execute(&c, serde_json::json!({"action": "edit", "path": p, "old_string": "one", "new_string": "three"}));
-        assert!(!e.is_error, "{}", e.content);
-        assert!(!e.content.contains("Warning"), "no overwrite warning after a restore:\n{}", e.content);
+        assert!(!e.is_error, "no refusal after a restore: {}", e.content);
         unsafe { std::env::remove_var("NEBO_HOME") };
     }
 
@@ -2476,12 +2424,9 @@ mod tests {
         );
     }
 
-    // ── Overwrite advisory: warn, never block ───────────────────────
-    // A hard block here taught the model to route the write through a shell
-    // heredoc, where it got no staleness protection at all. The write goes
-    // through; the warning rides on the result.
+    // ── Read before edit: an unread or stale file is refused ─────────
     #[test]
-    fn edit_without_prior_read_succeeds_with_warning() {
+    fn edit_without_prior_read_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("e.txt");
         fs::write(&path, "alpha\n").unwrap();
@@ -2490,13 +2435,9 @@ mod tests {
             &ctx(),
             json!({"action":"edit","path": path.to_str().unwrap(),"old_string":"alpha","new_string":"beta"}),
         );
-        assert!(!r.is_error, "{}", r.content);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "beta\n");
-        assert!(
-            r.content.contains("Warning") && r.content.contains("no record of reading it"),
-            "the edit lands, the advisory rides along: {}",
-            r.content
-        );
+        assert!(r.is_error, "an unread edit is refused: {}", r.content);
+        assert!(r.content.contains("has not been read"), "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\n", "the file is untouched");
     }
 
     #[test]
@@ -2516,7 +2457,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_edit_succeeds_with_warning() {
+    fn stale_edit_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("e.txt");
         fs::write(&path, "alpha\n").unwrap();
@@ -2530,9 +2471,35 @@ mod tests {
             &ctx(),
             json!({"action":"edit","path": p,"old_string":"alpha","new_string":"beta"}),
         );
+        assert!(r.is_error, "a stale edit is refused: {}", r.content);
+        assert!(r.content.contains("changed on disk since you read it"), "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "alpha changed\n", "the outside change stands");
+        // Read again and the edit goes through.
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"alpha","new_string":"beta"}),
+        );
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(fs::read_to_string(&path).unwrap(), "beta changed\n");
-        assert!(r.content.contains("changed on disk"), "{}", r.content);
+    }
+
+    /// A touch that left the bytes alone is not a change.
+    #[test]
+    fn a_touch_since_the_read_is_not_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.txt");
+        fs::write(&path, "alpha\n").unwrap();
+        let tool = FileTool::new();
+        let p = path.to_str().unwrap();
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&path, "alpha\n").unwrap();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"alpha","new_string":"beta"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
     }
 
     #[test]
@@ -2568,7 +2535,7 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_existing_without_read_succeeds_with_warning() {
+    fn overwrite_existing_without_read_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("exists.txt");
         fs::write(&path, "old\n").unwrap();
@@ -2577,13 +2544,42 @@ mod tests {
             &ctx(),
             json!({"action":"write","path": path.to_str().unwrap(),"content":"new\n"}),
         );
+        assert!(r.is_error, "an unread overwrite is refused: {}", r.content);
+        assert!(r.content.contains("has not been read"), "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old\n", "the file is untouched");
+    }
+
+    #[test]
+    fn stale_overwrite_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exists.txt");
+        fs::write(&path, "old\n").unwrap();
+        let tool = FileTool::new();
+        let p = path.to_str().unwrap();
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&path, "theirs\n").unwrap();
+        let r = tool.execute(&ctx(), json!({"action":"write","path": p,"content":"new\n"}));
+        assert!(r.is_error, "a stale overwrite is refused: {}", r.content);
+        assert!(r.content.contains("changed on disk since you read it"), "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theirs\n");
+    }
+
+    /// A rewrite of a document stands on the caller's read of it: it lands
+    /// when the file is as read, and is refused when it changed since.
+    #[test]
+    fn a_document_rewrite_stands_on_its_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("PLAN.md");
+        fs::write(&path, "v1\n").unwrap();
+        let p = path.to_str().unwrap();
+        let tool = FileTool::new();
+        let r = tool.write_document("s", p, "v1\n", "v2\n");
         assert!(!r.is_error, "{}", r.content);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
-        assert!(
-            r.content.contains("Warning") && r.content.contains("no record of reading it"),
-            "{}",
-            r.content
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "v2\n");
+        let r = tool.write_document("s", p, "v1\n", "v3\n");
+        assert!(r.is_error, "the file is no longer as read: {}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "v2\n");
     }
 
     #[test]
@@ -2998,20 +2994,6 @@ mod tests {
         );
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.starts_with(&format!("Edited {}: replaced 1 occurrence at line 3", p)), "{}", r.content);
-    }
-
-    /// Overwriting a file this session never read names what was replaced.
-    #[test]
-    fn unread_overwrite_warning_states_size_and_mtime() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("u.txt");
-        fs::write(&path, "previous\n").unwrap();
-        let p = path.to_str().unwrap();
-        let tool = FileTool::new();
-        let r = tool.execute(&ctx(), json!({"action":"write","path": p,"content":"new\n"}));
-        assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.contains("already existed (9 bytes, modified 20"), "{}", r.content);
-        assert!(r.content.contains("shell reads are not recorded"), "{}", r.content);
     }
 }
 
