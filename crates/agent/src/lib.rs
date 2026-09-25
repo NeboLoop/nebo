@@ -20,6 +20,7 @@ pub mod memory;
 pub const CHARS_PER_TOKEN: usize = 4;
 pub mod memory_flush;
 pub mod personality;
+pub mod phone_location;
 pub mod review_fork;
 pub mod proactive;
 pub mod prompt;

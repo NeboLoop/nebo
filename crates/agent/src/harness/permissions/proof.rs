@@ -60,7 +60,7 @@ struct NoModel;
 
 #[async_trait::async_trait]
 impl DescriptionReader for NoModel {
-    async fn capabilities_in(&self, _d: &str, _v: &[CapabilityTerm]) -> Vec<String> {
+    async fn capabilities_in(&self, _d: &str, _v: &[CapabilityTerm], _a: &str) -> Vec<String> {
         panic!("a package's needs are read off its manifest, never by a model");
     }
 }
@@ -70,7 +70,7 @@ struct Reads(&'static [&'static str]);
 
 #[async_trait::async_trait]
 impl DescriptionReader for Reads {
-    async fn capabilities_in(&self, _d: &str, _v: &[CapabilityTerm]) -> Vec<String> {
+    async fn capabilities_in(&self, _d: &str, _v: &[CapabilityTerm], _a: &str) -> Vec<String> {
         self.0.iter().map(|s| s.to_string()).collect()
     }
 }
@@ -91,6 +91,7 @@ async fn hire_one_line_grants_the_job() {
     let declared = DeclaredNeeds::of(&config);
     let src = JobSource {
         name: "Receptionist",
+        agent_id: "",
         description: "Answers calls, runs errands on the web, and anything else that comes up.",
         skills: &[],
         plugins: &[],
@@ -131,6 +132,7 @@ async fn builder_removed_capability_not_granted() {
     let (_d, store) = store();
     let src = JobSource {
         name: "Lead Finder",
+        agent_id: "",
         description: "Researches new leads online, emails them, and books intro calls.",
         skills: &[],
         plugins: &[],

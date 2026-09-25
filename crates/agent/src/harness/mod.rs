@@ -76,6 +76,8 @@ pub struct Harness {
     /// The goal check-ins waiting on background work, one per session.
     pub(crate) goal_check_ins: goal::CheckIns,
     pub(crate) active_turns: ActiveTurns,
+    /// The owner's phone position, for the employees it is shared with.
+    pub(crate) phone_locations: Arc<crate::phone_location::PhoneLocations>,
 }
 
 impl Harness {
@@ -108,6 +110,7 @@ impl Harness {
             outlets: Default::default(),
             goal_check_ins: Default::default(),
             active_turns: Default::default(),
+            phone_locations: Default::default(),
         }
     }
 
@@ -150,6 +153,11 @@ impl Harness {
 
     pub fn sessions(&self) -> &SessionManager {
         &self.sessions
+    }
+
+    /// Where the owner's phone reports its position (`PUT /phone/location`).
+    pub fn phone_locations(&self) -> &crate::phone_location::PhoneLocations {
+        &self.phone_locations
     }
 
     pub fn store(&self) -> &Arc<db::Store> {

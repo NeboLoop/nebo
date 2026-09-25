@@ -241,6 +241,10 @@ impl DeclaredNeeds {
 /// Everything a job's needs are worked out from.
 pub struct JobSource<'a> {
     pub name: &'a str,
+    /// The employee the description is read for, named on the reading's
+    /// model call: the one whose job this is, or, for a new one, the
+    /// employee creating it. Empty when the owner drafts a new employee.
+    pub agent_id: &'a str,
     pub description: &'a str,
     /// What the skills it is given declare they use: capability terms or
     /// plugin names.
@@ -299,7 +303,8 @@ impl Needs {
 /// only terms of `vocabulary`.
 #[async_trait::async_trait]
 pub trait DescriptionReader: Send + Sync {
-    async fn capabilities_in(&self, description: &str, vocabulary: &[CapabilityTerm]) -> Vec<String>;
+    /// `agent_id`: the employee the reading is for (`JobSource::agent_id`).
+    async fn capabilities_in(&self, description: &str, vocabulary: &[CapabilityTerm], agent_id: &str) -> Vec<String>;
 }
 
 /// The one step that works out a job's needs, for hire, the builder, chat
@@ -327,7 +332,7 @@ pub async fn work_out_needs(src: &JobSource<'_>, reader: &dyn DescriptionReader)
         }
         None => {
             if !src.description.trim().is_empty() {
-                let read = reader.capabilities_in(src.description, &vocabulary).await;
+                let read = reader.capabilities_in(src.description, &vocabulary, src.agent_id).await;
                 capabilities.extend(read.into_iter().filter(|k| known(k)));
             }
         }
@@ -508,7 +513,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl DescriptionReader for Reader {
-        async fn capabilities_in(&self, _d: &str, _v: &[CapabilityTerm]) -> Vec<String> {
+        async fn capabilities_in(&self, _d: &str, _v: &[CapabilityTerm], _a: &str) -> Vec<String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.answer.iter().map(|s| s.to_string()).collect()
         }
@@ -521,6 +526,7 @@ mod tests {
     fn source<'a>(description: &'a str, declared: Option<&'a DeclaredNeeds>) -> JobSource<'a> {
         JobSource {
             name: "Receptionist",
+            agent_id: "",
             description,
             skills: &[],
             plugins: &[],
@@ -586,6 +592,7 @@ mod tests {
         let plugins = vec!["@acme/plugins/acme-books@^1".to_string()];
         let src = JobSource {
             name: "Clerk",
+            agent_id: "",
             description: "",
             skills: &skills,
             plugins: &plugins,

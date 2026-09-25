@@ -214,8 +214,8 @@ impl Consent {
 
 #[async_trait::async_trait]
 impl DescriptionReader for Consent {
-    async fn capabilities_in(&self, description: &str, vocabulary: &[CapabilityTerm]) -> Vec<String> {
-        self.reader.capabilities_in(description, vocabulary).await
+    async fn capabilities_in(&self, description: &str, vocabulary: &[CapabilityTerm], agent_id: &str) -> Vec<String> {
+        self.reader.capabilities_in(description, vocabulary, agent_id).await
     }
 }
 
@@ -285,7 +285,7 @@ impl AuxReader {
         Self { providers }
     }
 
-    async fn ask(&self, prompt: String) -> Option<String> {
+    async fn ask(&self, prompt: String, agent_id: &str) -> Option<String> {
         let (provider, model) = {
             let providers = self.providers.read().await;
             match crate::harness::model_call::resolve_aux(&config::ModelsConfig::load(), &providers) {
@@ -306,7 +306,10 @@ impl AuxReader {
             metadata: None,
             cache_breakpoints: vec![],
             cancel_token: None,
-            trace: ai::RequestTrace::new("job_needs"),
+            trace: ai::RequestTrace {
+                agent_id: agent_id.to_string(),
+                ..ai::RequestTrace::new("job_needs")
+            },
         };
         let mut rx = provider.stream(&req).await.ok()?;
         let mut text = String::new();
@@ -339,10 +342,10 @@ fn parse_capabilities(text: &str) -> Vec<String> {
 
 #[async_trait::async_trait]
 impl DescriptionReader for AuxReader {
-    async fn capabilities_in(&self, description: &str, vocabulary: &[CapabilityTerm]) -> Vec<String> {
+    async fn capabilities_in(&self, description: &str, vocabulary: &[CapabilityTerm], agent_id: &str) -> Vec<String> {
         let list: String = vocabulary.iter().map(|t| format!("- {}: {}\n", t.key, t.words)).collect();
         let prompt = format!("Capabilities:\n{list}\nJob description:\n{description}");
-        match tokio::time::timeout(Self::DEADLINE, self.ask(prompt)).await {
+        match tokio::time::timeout(Self::DEADLINE, self.ask(prompt, agent_id)).await {
             Ok(Some(text)) => parse_capabilities(&text),
             Ok(None) => {
                 tracing::warn!("job needs: the description reader got no answer; the description adds nothing");

@@ -50,16 +50,6 @@ const ESCALATED_MAX_OUTPUT_TOKENS: i32 = 65_536;
 /// Empty replies retried before the turn gives up with "(empty)".
 pub(crate) const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
 
-/// Status for a retry the owner would otherwise never see. With partial
-/// text on screen the retry resumes it; before any text it is a fresh try.
-pub fn retry_notice(had_partial: bool, retry: usize) -> String {
-    if had_partial {
-        "Connection dropped mid-response, reconnecting to resume where it left off.".to_string()
-    } else {
-        format!("The model connection dropped before it replied; retry {retry} starting.")
-    }
-}
-
 /// What the owner reads when the model he picked refuses the request outright.
 /// The raw upstream text ("Parameter 'temperature'=0.699… is not supported for
 /// …") tells him nothing he can act on, so lead with the decision he can
@@ -399,18 +389,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 if st.transient_retries > MAX_TRANSIENT_RETRIES {
                     return CallOutcome::Failed(format!("Too many transient errors: {}", e));
                 }
-                // The owner sees the retry, not a silent gap (voice said
-                // "on it" and went quiet for five minutes, 2026-09-03).
-                if tx
-                    .send(StreamEvent::control_notice(
-                        retry_notice(false, st.transient_retries),
-                        "stream_reconnecting",
-                    ))
-                    .await
-                    .is_err()
-                {
-                    debug!(session_id, "retry notice: receiver gone");
-                }
+                // A reconnect is silent: the turn goes on, and the owner's
+                // screen still shows it working.
                 // Try next provider on transient error — but never
                 // silently fall from CLI to Janus (burns Nebo credits).
                 let prov_lock = providers.read().await;
@@ -787,17 +767,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         // tool calls are NOT saved — an assistant tool_use with no tool
         // result is an invalid sequence for every provider.
         // Called only on the branches that actually retry; the
-        // non-retryable fall-through persists via the normal save.
-        // The user watched this text stream and then freeze mid-sentence.
-        // Without a status line the dead bubble reads as the model giving
-        // up; with one, the retry reads as what it is — a reconnect.
-        let had_partial = !assistant_content.is_empty();
-        let reconnect_notice = |retry: usize| {
-            tx.send(StreamEvent::control_notice(
-                retry_notice(had_partial, retry),
-                "stream_reconnecting",
-            ))
-        };
+        // non-retryable fall-through persists via the normal save. The
+        // retry itself is silent: the turn goes on and resumes in place.
         // Returns whether the stream was cut mid-reply: the retry is then a
         // resume, and the caller says so on the next call.
         let save_partial = || {
@@ -824,9 +795,6 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             st.transient_retries += 1;
             if st.transient_retries <= MAX_TRANSIENT_RETRIES {
                 let why = save_partial();
-                if reconnect_notice(st.transient_retries).await.is_err() {
-                    debug!(session_id, "retry notice: receiver gone");
-                }
                 let prov_count = providers.read().await.len();
                 if prov_count > 1 {
                     st.provider_idx += 1;
@@ -868,9 +836,6 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 "retryable stream error, trying next provider"
             );
             let why = save_partial();
-            if reconnect_notice(st.retryable_retries).await.is_err() {
-                debug!(session_id, "retry notice: receiver gone");
-            }
             let prov_count = providers.read().await.len();
             if prov_count > 1 {
                 st.provider_idx += 1;
@@ -1022,10 +987,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn retry_notice_says_which_kind_of_retry() {
-        assert!(retry_notice(true, 1).contains("resume"));
-        let fresh = retry_notice(false, 3);
-        assert!(fresh.contains("retry 3") && !fresh.contains("resume"));
+    fn slow_first_token_notice_says_how_long() {
         assert!(slow_first_token_notice(60).contains("60 seconds"));
     }
 

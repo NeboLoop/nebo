@@ -13,9 +13,8 @@
 //!   watch trigger itself uses at start, with its reason
 //!   ([`agent::agent_worker::capability_degraded_reason`]);
 //! - the employee's `requires.plugins`: each plugin installed and not
-//!   switched off, named the way install names it
-//!   ([`crate::deps::extract_simple_name`]). A marketplace code cannot be
-//!   named offline and is not checked.
+//!   switched off, whether named by slug, qualified name or install code
+//!   ([`required_plugin`], the reading the job's tools use).
 //!
 //! Not checked: the employee's `requires.interfaces`. It lists every
 //! capability the seat may use (its approvals vocabulary), not what one
@@ -28,12 +27,21 @@ use tracing::{debug, info, warn};
 use db::EngineRun;
 use db::Store;
 
+/// The plugin a `requires.plugins` entry names, as the need names it: the
+/// installed plugin's slug ([`tools::plugin_tools::plugin_slug_of`], the one
+/// reading of a job's plugin reference), or for an install code nothing here
+/// was installed from, the code, which no installed plugin matches.
+pub(crate) fn required_plugin(store: &Store, reference: &str) -> String {
+    tools::plugin_tools::plugin_slug_of(store, reference).unwrap_or_else(|| reference.trim().to_string())
+}
+
 /// What the binding declares it needs that is not present now, as its
 /// record should say it, or None when every need is present. `installed` is
 /// every installed plugin with the interfaces it binds
 /// ([`agent::agent_worker::installed_interfaces`]); `enabled` the installed
 /// plugins that are not switched off.
 pub(crate) fn unmet_need(
+    store: &Store,
     config: &napp::agent::AgentConfig,
     binding: &napp::agent::WorkflowBinding,
     installed: &[(String, Vec<String>)],
@@ -50,14 +58,14 @@ pub(crate) fn unmet_need(
         }
     }
     for reference in &config.requires.plugins {
-        if crate::codes::detect_code(reference).is_some() {
-            continue;
+        let name = required_plugin(store, reference);
+        if !installed.iter().any(|(slug, _)| *slug == name) {
+            return Some(match crate::codes::detect_code(&name) {
+                Some(_) => format!("needs the plugin from code {name}"),
+                None => format!("needs the {name} plugin"),
+            });
         }
-        let name = crate::deps::extract_simple_name(reference);
-        if !installed.iter().any(|(slug, _)| slug == name) {
-            return Some(format!("needs the {name} plugin"));
-        }
-        if !enabled.iter().any(|slug| slug == name) {
+        if !enabled.iter().any(|slug| *slug == name) {
             return Some(format!("needs the {name} plugin turned on"));
         }
     }
@@ -111,7 +119,7 @@ pub(crate) fn unmet_need_now(
         )
         .cloned()
         .collect();
-    unmet_need(&config, binding, &installed, &enabled)
+    unmet_need(store, &config, binding, &installed, &enabled)
 }
 
 /// Act on one fire's pre-flight. `unmet` None: the fire runs, and a need
@@ -293,55 +301,86 @@ mod tests {
 
     #[test]
     fn a_watched_capability_needs_an_installed_plugin_that_binds_it() {
+        let s = store();
         let c = config(WATCHING);
         let b = &c.workflows["answer"];
         let none = [plugin("sheets", &["spreadsheet"])];
         assert_eq!(
-            unmet_need(&c, b, &none, &["sheets".into()]).as_deref(),
+            unmet_need(&s, &c, b, &none, &["sheets".into()]).as_deref(),
             Some("needs a telephony plugin")
         );
         let one = [
             plugin("sheets", &["spreadsheet"]),
             plugin("voiceline", &["telephony"]),
         ];
-        assert_eq!(unmet_need(&c, b, &one, &[]), None);
+        assert_eq!(unmet_need(&s, &c, b, &one, &[]), None);
         // A watch on a plugin named outright is that plugin's own business.
         let by_slug =
             config(&WATCHING.replace(r#""plugin":"telephony""#, r#""plugin":"voiceline""#));
         assert_eq!(
-            unmet_need(&by_slug, &by_slug.workflows["answer"], &one, &[]),
+            unmet_need(&s, &by_slug, &by_slug.workflows["answer"], &one, &[]),
             None
         );
     }
 
     #[test]
-    fn a_required_plugin_must_be_installed_and_turned_on_and_a_code_is_not_checked() {
-        let c = config(REQUIRING);
+    fn a_required_plugin_must_be_installed_and_turned_on() {
+        let s = store();
+        let c = config(&REQUIRING.replace(r#","PLUG-PJ3Z-ECFV""#, ""));
         let b = &c.workflows["sweep"];
         assert_eq!(
-            unmet_need(&c, b, &[], &[]).as_deref(),
+            unmet_need(&s, &c, b, &[], &[]).as_deref(),
             Some("needs the ledgerly plugin")
         );
         let installed = [plugin("ledgerly", &[])];
         assert_eq!(
-            unmet_need(&c, b, &installed, &[]).as_deref(),
+            unmet_need(&s, &c, b, &installed, &[]).as_deref(),
             Some("needs the ledgerly plugin turned on")
         );
-        assert_eq!(unmet_need(&c, b, &installed, &["ledgerly".into()]), None);
+        assert_eq!(unmet_need(&s, &c, b, &installed, &["ledgerly".into()]), None);
+    }
+
+    /// A plugin required by its install code is the plugin that code
+    /// installed here, held like one named by slug; a code nothing here was
+    /// installed from is a need.
+    #[test]
+    fn a_plugin_required_by_its_install_code_is_checked() {
+        let s = store();
+        let c = config(REQUIRING);
+        let b = &c.workflows["sweep"];
+        let ledgerly = plugin("ledgerly", &[]);
+        assert_eq!(
+            unmet_need(&s, &c, b, &[ledgerly.clone()], &["ledgerly".into()]).as_deref(),
+            Some("needs the plugin from code PLUG-PJ3Z-ECFV")
+        );
+        s.upsert_installed_plugin("coded-books", "Coded Books", "1.0.0", "", "", "", "")
+            .unwrap();
+        s.set_plugin_install_code("coded-books", "PLUG-PJ3Z-ECFV").unwrap();
+        let both = [ledgerly, plugin("coded-books", &[])];
+        assert_eq!(
+            unmet_need(&s, &c, b, &both, &["ledgerly".into()]).as_deref(),
+            Some("needs the coded-books plugin turned on")
+        );
+        assert_eq!(
+            unmet_need(&s, &c, b, &both, &["ledgerly".into(), "coded-books".into()]),
+            None
+        );
+        assert_eq!(required_plugin(&s, "PLUG-PJ3Z-ECFV"), "coded-books", "the engine's needs list names it too");
     }
 
     #[test]
     fn a_binding_that_declares_nothing_passes() {
+        let s = store();
         let c = config(NOTHING);
         assert_eq!(
-            unmet_need(&c, &c.workflows["sweep"], &[], &[]),
+            unmet_need(&s, &c, &c.workflows["sweep"], &[], &[]),
             None,
             "requires.interfaces does not hold a binding"
         );
         let bare = config(
             r#"{"workflows":{"sweep":{"trigger":{"type":"schedule","cron":"0 0 9 * * *"}}}}"#,
         );
-        assert_eq!(unmet_need(&bare, &bare.workflows["sweep"], &[], &[]), None);
+        assert_eq!(unmet_need(&s, &bare, &bare.workflows["sweep"], &[], &[]), None);
     }
 
     fn store() -> Store {

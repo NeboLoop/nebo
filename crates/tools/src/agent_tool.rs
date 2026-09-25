@@ -1012,11 +1012,18 @@ impl PersonaTool {
         (text.join("\n\n"), terms, plugins, workflows)
     }
 
-    /// The one needs step, for a create or update call.
-    async fn work_out(consent: &dyn crate::needs::JobConsent, name: &str, input: &serde_json::Value) -> crate::needs::Needs {
+    /// The one needs step, for a create or update call. `agent_id`: the
+    /// employee the job is for, or for a new one the employee creating it.
+    async fn work_out(
+        consent: &dyn crate::needs::JobConsent,
+        agent_id: &str,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> crate::needs::Needs {
         let (description, terms, plugins, workflows) = Self::job_parts(input);
         let src = crate::needs::JobSource {
             name,
+            agent_id,
             description: &description,
             skills: &terms,
             plugins: &plugins,
@@ -1025,6 +1032,14 @@ impl PersonaTool {
             installed: &[],
         };
         crate::needs::work_out_needs(&src, consent).await
+    }
+
+    /// The employee whose run this call is: the one creating or editing.
+    fn creator_of(ctx: &ToolContext) -> String {
+        match &ctx.grant {
+            Some(g) => g.agent_id.clone(),
+            None => types::keyparser::extract_agent_id(&ctx.session_key),
+        }
     }
 
     /// Keep a draft of `input`, shown in this call's chat; its id and line.
@@ -1037,10 +1052,7 @@ impl PersonaTool {
         input: &serde_json::Value,
         needs: &crate::needs::Needs,
     ) -> Result<(String, String), String> {
-        let creator_id = match &ctx.grant {
-            Some(g) => g.agent_id.clone(),
-            None => types::keyparser::extract_agent_id(&ctx.session_key),
-        };
+        let creator_id = Self::creator_of(ctx);
         let chat_id =
             if ctx.session_id.is_empty() { String::new() } else { self.store.resolve_session_chat_id(&ctx.session_id) };
         crate::needs::save_draft(
@@ -1135,7 +1147,7 @@ impl PersonaTool {
             ));
         }
         let display = Self::display_name(name);
-        let needs = Self::work_out(consent.as_ref(), &display, input).await;
+        let needs = Self::work_out(consent.as_ref(), &Self::creator_of(ctx), &display, input).await;
         let (draft_id, line) = match self.draft(ctx, "create", "", &display, input, &needs) {
             Ok(d) => d,
             Err(e) => return ToolResult::error(e),
@@ -1194,7 +1206,7 @@ impl PersonaTool {
             return self.handle_update(input).await;
         };
         let before = consent.job_of(&agent.id);
-        let after = Self::work_out(consent.as_ref(), &agent.name, input).await;
+        let after = Self::work_out(consent.as_ref(), &agent.id, &agent.name, input).await;
         let new = crate::needs::added(&before, &after);
         if new.is_empty() {
             return self.handle_update(input).await;

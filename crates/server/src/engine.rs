@@ -1339,8 +1339,8 @@ pub(crate) fn triage_binding(store: &Store, run: &EngineRun, entity: Option<(Str
 
 /// What an employee declares its binding may need, as triage's
 /// `which_need` options: its `requires.interfaces`, its `requires.plugins`
-/// (named the way install names them; a marketplace code cannot be named
-/// offline), and the binding's watch plugin. Each name once.
+/// (by slug, qualified name or install code: [`crate::preflight::required_plugin`]),
+/// and the binding's watch plugin. Each name once.
 fn declared_needs(store: &Store, agent_id: &str, binding_name: &str) -> Vec<agent::heartbeat_triage::Declared> {
     use agent::heartbeat_triage::Declared;
     let Some(config) = store
@@ -1358,9 +1358,7 @@ fn declared_needs(store: &Store, agent_id: &str, binding_name: &str) -> Vec<agen
         }
     };
     for reference in &config.requires.plugins {
-        if crate::codes::detect_code(reference).is_none() {
-            add(Declared::Plugin(crate::deps::extract_simple_name(reference).to_string()));
-        }
+        add(Declared::Plugin(crate::preflight::required_plugin(store, reference)));
     }
     if let Some(napp::agent::AgentTrigger::Watch { plugin, .. }) = config.workflows.get(binding_name).map(|b| &b.trigger) {
         add(Declared::Capability(plugin.clone()));
@@ -1670,6 +1668,20 @@ mod tests {
             base_inputs: serde_json::json!({"tone": "warm"}),
             default_wait_secs: 3 * 86_400,
         }
+    }
+
+    /// Triage's needs list names a plugin required by its install code as
+    /// the plugin the code installed here, like one named by slug.
+    #[test]
+    fn the_needs_list_names_a_plugin_required_by_its_code() {
+        let s = store();
+        s.conn_exec_for_test(
+            r#"INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '{"requires":{"plugins":["@acme/plugins/ledgerly","PLUG-PJ3Z-ECFV"]},"workflows":{"sweep":{"trigger":{"type":"heartbeat","interval":"30m"},"activities":[{"id":"a","intent":"sweep"}]}}}', 0)"#,
+        );
+        s.upsert_installed_plugin("coded-books", "Coded Books", "1.0.0", "", "", "", "").unwrap();
+        s.set_plugin_install_code("coded-books", "PLUG-PJ3Z-ECFV").unwrap();
+        let names: Vec<String> = declared_needs(&s, "emp", "sweep").iter().map(|d| d.name().to_string()).collect();
+        assert_eq!(names, ["ledgerly", "coded-books"]);
     }
 
     #[test]

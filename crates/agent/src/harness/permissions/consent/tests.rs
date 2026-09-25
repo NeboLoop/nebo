@@ -73,7 +73,7 @@ struct Fixed(Vec<&'static str>);
 
 #[async_trait::async_trait]
 impl DescriptionReader for Fixed {
-    async fn capabilities_in(&self, _d: &str, _v: &[CapabilityTerm]) -> Vec<String> {
+    async fn capabilities_in(&self, _d: &str, _v: &[CapabilityTerm], _a: &str) -> Vec<String> {
         self.0.iter().map(|s| s.to_string()).collect()
     }
 }
@@ -83,7 +83,7 @@ struct NeverAsked;
 
 #[async_trait::async_trait]
 impl DescriptionReader for NeverAsked {
-    async fn capabilities_in(&self, _d: &str, _v: &[CapabilityTerm]) -> Vec<String> {
+    async fn capabilities_in(&self, _d: &str, _v: &[CapabilityTerm], _a: &str) -> Vec<String> {
         panic!("a package's needs never reach a model");
     }
 }
@@ -153,6 +153,7 @@ async fn a_bound_interface_is_inside_the_job() {
     let declared = DeclaredNeeds { interfaces: vec!["ledger".into()], plugins: vec![], watches: vec![] };
     let src = JobSource {
         name: "Bookkeeper",
+        agent_id: "",
         description: "",
         skills: &[],
         plugins: &[],
@@ -185,6 +186,7 @@ async fn missing_account_goes_to_the_inbox_needs_flow() {
     let declared = DeclaredNeeds { interfaces: vec!["mail".into()], plugins: vec![], watches: vec!["mail".into()] };
     let src = JobSource {
         name: "Inbox Keeper",
+        agent_id: "",
         description: "",
         skills: &[],
         plugins: &[],
@@ -509,4 +511,46 @@ fn the_readers_answer_and_the_job_read_back() {
     let consent = Consent::new(Arc::new(Asks::new(store.clone())), Arc::new(Fixed(vec![])));
     grant_job(&store, "a", &needs(&["web"]), RuleSource::Owner).unwrap();
     assert_eq!(JobConsent::job_of(&consent, "a"), needs(&["web"]));
+}
+
+/// Records the description reader's request and answers with one key.
+struct JobReaderProbe(std::sync::Mutex<Vec<ai::ChatRequest>>);
+
+#[async_trait::async_trait]
+impl ai::Provider for JobReaderProbe {
+    fn id(&self) -> &str {
+        "job-reader-probe"
+    }
+    async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+        self.0.lock().unwrap().push(req.clone());
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        tx.try_send(ai::StreamEvent::text(r#"{"capabilities": ["mail"]}"#)).unwrap();
+        tx.try_send(ai::StreamEvent::done()).unwrap();
+        Ok(rx)
+    }
+}
+
+/// The reading of a job description names the employee it is for on its
+/// model call, so Janus attributes it (`X-Agent-ID`).
+#[tokio::test]
+async fn reading_a_job_names_the_employee_it_is_for() {
+    let probe = Arc::new(JobReaderProbe(Default::default()));
+    let providers = Arc::new(tokio::sync::RwLock::new(vec![probe.clone() as Arc<dyn ai::Provider>]));
+    let reader = AuxReader::new(providers);
+    let src = JobSource {
+        name: "Clerk",
+        agent_id: "clerk-7",
+        description: "Chases unpaid invoices by email",
+        skills: &[],
+        plugins: &[],
+        workflows: &[],
+        declared: None,
+        installed: &[],
+    };
+    let needs = tools::needs::work_out_needs(&src, &reader).await;
+    assert!(needs.capabilities.contains("mail"), "the reading was used: {needs:?}");
+    let sent = probe.0.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].trace.purpose, "job_needs");
+    assert_eq!(sent[0].trace.agent_id, "clerk-7");
 }
