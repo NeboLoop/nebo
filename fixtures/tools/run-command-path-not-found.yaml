@@ -1,13 +1,13 @@
-id: os-shell-path-not-found
-name: "OS shell — path not found recovery"
+id: run-command-path-not-found
+name: "Read file — path not found recovery"
 description: |
   The user asks to read a file that doesn't exist. The model should get a
   clear error and recover gracefully — no retries, no hallucinated content.
   This is the degenerate loop generator: model retries the same failing
-  command, burning tokens and polluting context.
+  call, burning tokens and polluting context.
 # The first error is the test itself: the fixture makes it happen.
 induced_errors: 1
-target_component: os
+target_component: read_file
 
 setup:
   - "rm -f {{scratch}}/nebo-test-nonexistent-xyz.txt"
@@ -19,7 +19,7 @@ conversation:
     content: "Can you read the file at {{scratch}}/nebo-test-nonexistent-xyz.txt and summarize it for me?"
 
 tool_config:
-  os:
+  read_file:
     enabled: true
     response_budget:
       max_chars: 500
@@ -28,8 +28,9 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: uses-file-read
-      text: "Model uses os(resource: 'file', action: 'read') not shell cat"
+      text: "Model uses read_file, not cat through run_command"
       severity: critical
+      check: { first_call: true, tool: read_file }
     - id: no-hallucination
       text: "Model does not invent file contents when the file doesn't exist"
       severity: critical
@@ -38,7 +39,7 @@ prompt_assertions:
       text: "Model does not retry the same read after getting file-not-found"
       severity: critical
     - id: no-shell-fallback
-      text: "Model does not try shell cat as a fallback after file read fails"
+      text: "Model does not try cat through run_command as a fallback after read_file fails"
       severity: important
     - id: graceful-response
       text: "Model tells the user the file wasn't found and offers to help"
@@ -52,4 +53,4 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 2000
   narrative: |
-    Single file read, get error, tell user. No retries.
+    Single read_file, get error, tell user. No retries.

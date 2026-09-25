@@ -13,11 +13,13 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import {
     notifications, unreadCount, hasMore, loadNotifications, loadMore, markAsRead, markAllRead, removeNotification, type Notification,
-    approvalStatuses, setApprovalStatus, ensureApprovalStatuses,
+    approvalStatuses, setApprovalStatus, ensureApprovalStatuses, approvalRef as idApprovalRef,
   } from '$lib/stores/notifications';
+  import { openAsks } from '$lib/stores/permissionAsks';
+  import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
 
   import Hand from 'lucide-svelte/icons/hand';
-  import { applyUpdate, getLearning, getRun, resolveLearning, resolveWorkflowApproval, revertLearning } from '$lib/api/nebo';
+  import { applyUpdate, getLearning, getRun, resolveLearning, revertLearning } from '$lib/api/nebo';
   import type { GetRunResponse, PendingTask } from '$lib/api/neboComponents';
 
   let copied = $state(false);
@@ -62,21 +64,17 @@
   };
 
   // ── Approvals: a pending decision is a task, not mail. Pending approvals
-  // live in a pinned band above the chronological stream with inline
-  // Approve/Deny; once resolved they fall back into the stream with a status
-  // chip. Three kinds share the ONE band: `wf-approval:<run_id>` (workflow
-  // suspensions), `learn:<pending_id>` (staged self-improvement writes), and
-  // `artifact-update:<type>:<artifact_id>:<version>` (pending updates —
-  // Update-now calls the same applyUpdate endpoint Settings → Updates uses).
-  type ApprovalRef = { kind: 'workflow' | 'learning' | 'update'; id: string };
-  const approvalRef = (n: Notification): ApprovalRef | null =>
-    n.id.startsWith('wf-approval:')
-      ? { kind: 'workflow', id: n.id.slice('wf-approval:'.length) }
-      : n.id.startsWith('learn:')
-        ? { kind: 'learning', id: n.id.slice('learn:'.length) }
-        : n.id.startsWith('artifact-update:')
-          ? { kind: 'update', id: n.id.split(':')[2] ?? '' }
-          : null;
+  // live in a pinned band above the chronological stream; once resolved they
+  // fall back into the stream with a status chip. Three kinds share the ONE
+  // band: `permission-ask:<ask_id>` (a step of an employee's work waiting on
+  // the owner — it shows the one ask card), `learn:<pending_id>` (staged
+  // self-improvement writes), and `artifact-update:<type>:<artifact_id>:<version>`
+  // (pending updates — Update-now calls the same applyUpdate endpoint
+  // Settings → Updates uses).
+  const approvalRef = (n: Notification) => idApprovalRef(n.id);
+  /** The open ask card behind an ask row, once the asks have loaded. */
+  const askCard = (n: Notification) =>
+    approvalRef(n)?.kind === 'ask' ? $openAsks.find((a) => `permission-ask:${a.id}` === n.id) ?? null : null;
 
   // Status/deciding maps are keyed by the full notification id (unique across kinds).
   // The status map lives in the notifications store: the sidebar badge counts
@@ -101,6 +99,7 @@
     if (!r) return null;
     const s = $approvalStatuses[r];
     if (s === 'approved') return 'inbox.approved';
+    if (s === 'expired') return 'permissionAsk.expired';
     if (s === 'denied' || s === 'rejected') return 'inbox.denied';
     if (s === 'conflict') return 'inbox.conflict';
     if (s === 'applied') return 'inbox.updated';
@@ -133,10 +132,8 @@
     if (!ref || deciding[n.id]) return;
     deciding = { ...deciding, [n.id]: true };
     try {
-      let status = approved ? 'approved' : ref.kind === 'workflow' ? 'denied' : 'rejected';
-      if (ref.kind === 'workflow') {
-        await resolveWorkflowApproval(ref.id, { approved });
-      } else if (ref.kind === 'learning') {
+      let status = approved ? 'approved' : 'rejected';
+      if (ref.kind === 'learning') {
         // Approve may come back 'conflict' (skill changed since staging).
         const r = await resolveLearning(ref.id, { approved });
         status = (r as { status?: string }).status ?? status;
@@ -409,7 +406,12 @@
             {$t('inbox.needsApproval')}
           </div>
           {#each pendingApprovals as n (n.id)}
-            {@render row(n, true)}
+            {@const card = askCard(n)}
+            {#if card}
+              <div class="px-3 py-2"><PermissionAskCard ask={card} via="inbox" /></div>
+            {:else if approvalRef(n)?.kind !== 'ask'}
+              {@render row(n, true)}
+            {/if}
           {/each}
         </div>
       {/if}
@@ -532,13 +534,17 @@
         {@const status = $approvalStatuses[runId]}
         <div class="shrink-0 border-t border-base-content/10 bg-base-100">
           <div class="max-w-2xl mx-auto px-6 py-3">
-            {#if status === 'pending'}
+            {#if status === 'pending' && askCard(selected)}
+              <PermissionAskCard ask={askCard(selected)!} via="inbox" />
+            {:else if status === 'pending' && approvalRef(selected)?.kind !== 'ask'}
               <div class="flex items-center gap-2">
                 <button class="btn btn-sm btn-success" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, true)}>{$t('inbox.approve')}</button>
                 <button class="btn btn-sm btn-ghost border border-base-content/15" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, false)}>{$t('inbox.deny')}</button>
               </div>
             {:else if status === 'approved' || status === 'denied' || status === 'rejected'}
               <span class="badge {status === 'approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(status === 'approved' ? 'inbox.approved' : 'inbox.denied')}</span>
+            {:else if status === 'expired'}
+              <span class="badge badge-ghost text-base-content/60">{$t('permissionAsk.expired')}</span>
             {:else if status === 'conflict'}
               <span class="badge badge-warning badge-outline">{$t('inbox.conflict')}</span>
             {:else if status}

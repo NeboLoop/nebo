@@ -61,7 +61,7 @@ const ROWS: &[Row] = &[
     row("os", &["shell"], &["list", "info"], "list_processes", &[]),
     row("os", &["shell"], &["poll", "log"], "read_output", &[("session_id", "task_id")]),
     row("os", &["shell"], &["kill"], "stop_task", &[("session_id", "task_id")]),
-    row("os", &["shell"], &["write"], "send_input", &[("session_id", "task_id")]),
+    row("os", &["shell"], &["write"], "send_input", &[("session_id", "task_id"), ("data", "text")]),
     row("os", &["file"], &["share", "present", "send"], "share_file", &[]),
     row("os", &["file"], &["convert"], "convert_file", &[]),
     row("os", &["file"], &["checkpoint"], "checkpoint_files", &[]),

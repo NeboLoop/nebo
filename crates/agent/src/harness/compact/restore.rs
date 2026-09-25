@@ -142,11 +142,7 @@ fn recent_file_reads(messages: &[ChatMessage]) -> Vec<String> {
     let mut seen = HashSet::new();
     calls_newest_first(messages)
         .into_iter()
-        .filter(|(_, name, input)| {
-            name == "os"
-                && tools::OsTool::resolved_resource(input) == "file"
-                && input.get("action").and_then(|v| v.as_str()) == Some("read")
-        })
+        .filter(|(_, name, _)| name == "read_file")
         .filter_map(|(_, _, input)| input.get("path").and_then(|v| v.as_str()).map(str::to_string))
         .filter(|p| std::path::Path::new(p).is_absolute() && seen.insert(p.clone()))
         .collect()

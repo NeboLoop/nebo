@@ -2193,10 +2193,10 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
             if let Err(e) = refresh_license_keys(&st).await {
                 warn!(error = %e, "license key refresh failed");
             }
-            // Backfill the owner's web inbox with any still-parked approvals —
+            // Backfill the owner's web inbox with any still-open asks —
             // pushes are best-effort, so reconnect is the reconcile point. The
             // upsert is idempotent on the item id.
-            reconcile_owner_inbox(&st);
+            crate::permission_asks::reconcile_inbox(&st);
             // Same self-heal for the app mirror: covers apps that arrived
             // outside the install-code path (hand-dropped dirs, restored
             // volumes) — boot's field sync runs pre-AppState and can't push.
@@ -2205,41 +2205,6 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     }
 
     Ok(())
-}
-
-/// Re-push every parked workflow approval to the owner's web inbox. Called on
-/// NeboAI connect; idempotent (the hub upserts on the item id), so a missed
-/// best-effort push heals here.
-pub(crate) fn reconcile_owner_inbox(state: &AppState) {
-    let suspensions = match state.store.list_workflow_suspensions() {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(error = %e, "owner inbox reconcile: failed to list suspensions");
-            return;
-        }
-    };
-    for (run_id, agent_id, binding_name, display, _created_at) in suspensions {
-        let approval_path = format!("/api/v1/agents/workflow-runs/{}/approval", run_id);
-        push_inbox(
-            state,
-            serde_json::json!({
-                "id": format!("wf-approval:{}", run_id),
-                "type": "approval",
-                "title": format!("{} needs your approval", binding_name),
-                "body": display,
-                "link": format!("/{}/runs/{}", agent_id, run_id),
-                "actions": {
-                    "buttons": [
-                        {"label": "Approve", "style": "primary", "method": "POST",
-                         "path": approval_path, "body": {"approved": true}},
-                        {"label": "Deny", "style": "danger", "method": "POST",
-                         "path": approval_path, "body": {"approved": false}},
-                    ],
-                    "status": {"method": "GET", "path": approval_path},
-                },
-            }),
-        );
-    }
 }
 
 /// Sync the bot's display name to NeboAI from the local agent profile.

@@ -157,7 +157,7 @@ fn employee_made_employee_capped_at_creator_with_one_card() {
         )
         .unwrap();
     let creator = resolve_grant(&store, "office", None);
-    let g = create_under_creator(&store, &creator, "researcher", "Lead Researcher", &needs(&["web", "mail"]), "d1", "agent:office:web")
+    let g = create_under_creator(&Asks::new(store.clone()), &creator, "researcher", "Lead Researcher", &needs(&["web", "mail"]), "d1", "agent:office:web")
         .unwrap();
     assert_eq!(g.granted, needs(&["mail"]));
     assert_eq!(g.extras, needs(&["web"]));
@@ -240,7 +240,7 @@ fn chat(reads: Vec<&'static str>) -> Chat {
     let cell: tools::needs::JobConsentCell = Arc::new(std::sync::RwLock::new(None));
     let persona = tools::agent_tool::PersonaTool::new(store.clone(), Default::default(), loader)
         .with_job_consent(cell.clone());
-    *cell.write().unwrap() = Some(Arc::new(Consent::new(store.clone(), Arc::new(Fixed(reads)))));
+    *cell.write().unwrap() = Some(Arc::new(Consent::new(Arc::new(Asks::new(store.clone())), Arc::new(Fixed(reads)))));
     store.create_chat("chat-s1", "Owner chat").unwrap();
     let ctx = ToolContext {
         origin: Origin::User,
@@ -373,7 +373,7 @@ fn the_readers_answer_and_the_job_read_back() {
     assert!(parse_capabilities("no json here").is_empty());
     // The job the create tool diffs an edit against is the owner's rules.
     let (_d, store) = store();
-    let consent = Consent::new(store.clone(), Arc::new(Fixed(vec![])));
+    let consent = Consent::new(Arc::new(Asks::new(store.clone())), Arc::new(Fixed(vec![])));
     grant_job(&store, "a", &needs(&["web"]), RuleSource::Owner).unwrap();
     assert_eq!(JobConsent::job_of(&consent, "a"), needs(&["web"]));
 }

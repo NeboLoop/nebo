@@ -32,7 +32,7 @@ conversation:
     content: "Can you take a look at the notes in {{scratch}}/notes and help me get on top of them?"
 
 tool_config:
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
@@ -46,7 +46,7 @@ prompt_assertions:
     - id: reads-the-notes
       text: "The employee reads the notes"
       severity: important
-      check: { tool: os, arg: path, contains: "notes" }
+      check: { tool: read_file, arg: path, contains: "notes" }
   cost:
     - id: bounded
       text: "At most 8 calls"

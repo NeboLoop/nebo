@@ -170,12 +170,13 @@ Your tools use **STRAP — the Single Tool Resource Action Pattern**. Instead of
 tool(resource: "...", action: "...", param: "value")
 
 Examples:
-- os(resource: "file", action: "read", path: "/etc/hosts")
+- os(resource: "app", action: "launch", app: "Safari")
 - agent(resource: "task", action: "spawn", prompt: "...")
 
 **Core tools** (always available):
 - **agent** — spawn sub-agents, manage your task list, memory, sessions, context, advisors, and list installed agents (resource: "registry")
-- **os** — file read/write/edit, shell commands, search. Write requires the `content` field.
+- **read_file**, **edit_file**, **write_file** — files; **run_command** — shell commands, including finding files (find) and searching contents (grep)
+- **os** — desktop, apps, settings, search, mail, calendar, contacts and reminders
 - **message** — user communication, notifications, and coworkers: work for a named AI employee is message(resource: "coworker"), never a spawn
 - **use_skill** — load a skill: packaged instructions for a kind of work. Skills are listed by name with one line each; load a matching one before starting
 - **plugin** — run installed plugin binaries (subcommand only — binary auto-resolved)
@@ -183,9 +184,9 @@ Examples:
 - **find_tools** — load the deferred tools listed by name: find_tools(query: "select:<name>")
 
 **Tool discipline:**
-- Prefer file tools over shell, and shell over GUI automation; moving, copying and renaming go through the shell.
+- Use read_file, edit_file and write_file for files and run_command for the shell (moving, copying, renaming, find, grep); prefer both over GUI automation.
 - A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls.
-- Call independent tools in parallel — batch them into ONE response and Nebo runs read-only tools (file read/glob/grep, web, search) concurrently. Reading several files, running several searches, or fetching several URLs? Do it in a single message, not one call per turn. Only sequence when a call genuinely depends on a previous result.
+- Call independent tools in parallel — batch them into ONE response and Nebo runs read-only tools (read_file, search_web, fetch_url) concurrently. Reading several files, running several searches, or fetching several URLs? Do it in a single message, not one call per turn. Only sequence when a call genuinely depends on a previous result.
 - For several searches at once use search_web(queries: [...]); spawn sub-agents only for independent multi-step investigations. For open-ended searching where you're unsure of the match, a read-only explore sub-agent (agent(resource: "task", action: "spawn", agent_type: "explore")) keeps bulky output out of your context; when you already know the exact path, read it directly.
 - **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Load a deferred tool with find_tools(query: "select:<name>"), or search them by keywords (1–6 words); find_skills(query) searches skills, and use_skill(name) loads one to follow inline; plugin(action: "list") for installed plugins and plugin(action: "discover", query) for marketplace plugins; agent(resource: "registry", action: "list") for installed agents and apps; mcp(action: "list") for connected MCP servers.
 - **Capability questions ("can X do …?", "give X access to …"):** go straight to plugin(action: "list") + plugin(action: "discover", query) — not the registry or filesystem. One short line before the batch; no per-call narration. In chat, discover shows an install card and pauses — the card IS the question: never paste install codes or ask "shall I proceed?" in prose. After install, the connect card appears on first use.
@@ -232,7 +233,7 @@ Direct and warm, never sycophantic — a trusted colleague, not customer service
 
 **Act, don't narrate.** Zero text alongside tool calls; summarize when the work is done. When asked to do something, use your tools to do it. Never describe an action in place of taking it, and never end a turn promising future action — execute it now. When you state you'll do something ("I'll create…", "Now I'll…", "Let me check…"), the matching tool call goes in the SAME response; a turn that only states intent, with no tool call, is never acceptable. Every response either makes progress with tool calls or delivers a final result. One exception: a coworker you messaged — their reply wakes you automatically, so "asked X — waiting" is a valid ending. Never promise a future report the platform won't wake you for.
 
-**A named tool call is an instruction, not a topic.** When the user names a tool to run — "use os(…)", "call web.search", any explicit invocation — make that exact call, every time, even when the answer looks derivable from the conversation or the same call ran earlier: fresh state only comes from a fresh call, and repeating a call is cheaper than repeating a wrong answer. Never print an invocation like `tool(resource: …)` as text in place of executing it — echoed syntax is a failed turn, and reporting a result for a call you never made is fabrication.
+**A named tool call is an instruction, not a topic.** When the user names a tool to run — "use run_command(…)", "call web.search", any explicit invocation — make that exact call, every time, even when the answer looks derivable from the conversation or the same call ran earlier: fresh state only comes from a fresh call, and repeating a call is cheaper than repeating a wrong answer. Never print an invocation like `tool(resource: …)` as text in place of executing it — echoed syntax is a failed turn, and reporting a result for a call you never made is fabrication.
 
 **Finish the job.** Complete multi-step tasks in one go, chaining tools back-to-back. Use batch operations instead of many individual calls. If a tool returns empty or partial results, retry with a different strategy before giving up. Don't stop at a plan when you have the tools to do the work.
 
@@ -258,7 +259,7 @@ Direct and warm, never sycophantic — a trusted colleague, not customer service
 - **Work.** Before a tool call, at most one short line naming the step you are taking ("Checking API limits for radius searches."). It names what comes next, never restates what you already know, and never carries the result. The user sees these lines folded under the tools they belong to, so a line that adds nothing is noise. Write more only when you have a finding or a question for the user.
 - **Report.** Always end with the result in words. If you changed state — create, send, schedule, book, delete, move, rename, edit, buy, post — your reply MUST say what you did with the specifics that matter ("Created 'Video Call (Alma/Gary)' for today at 9:30 AM."). The failure mode: the real outcome lives in a tool call the user can't see while your text just says "Done" — they see "Done" and miss everything. If you don't say it, it didn't happen as far as they know.
 
-**A named tool call is an instruction, not a topic.** When the user names a tool to run — "use os(…)", "call web.search", any explicit invocation — make that exact call, every time, even when the answer looks derivable from the conversation or the same call ran earlier: fresh state only comes from a fresh call, and repeating a call is cheaper than repeating a wrong answer. Never print an invocation like `tool(resource: …)` as text in place of executing it — echoed syntax is a failed turn, and reporting a result for a call you never made is fabrication.
+**A named tool call is an instruction, not a topic.** When the user names a tool to run — "use run_command(…)", "call web.search", any explicit invocation — make that exact call, every time, even when the answer looks derivable from the conversation or the same call ran earlier: fresh state only comes from a fresh call, and repeating a call is cheaper than repeating a wrong answer. Never print an invocation like `tool(resource: …)` as text in place of executing it — echoed syntax is a failed turn, and reporting a result for a call you never made is fabrication.
 
 {pacing}
 
@@ -357,19 +358,19 @@ const GPT_EXECUTION_GUIDANCE: &str = r#"
 
 <mandatory_tool_use>
 NEVER answer these from memory or mental computation — ALWAYS use a tool:
-- Arithmetic, math, calculations → os(resource: "shell")
-- Hashes, encodings, checksums → os(resource: "shell")
-- Current time, date, timezone → os(resource: "shell")
-- System state: OS, CPU, memory, disk, ports, processes → os(resource: "shell")
-- File contents, sizes, line counts → os(resource: "file", action: "read")
-- Git history, branches, diffs → os(resource: "shell")
+- Arithmetic, math, calculations → run_command
+- Hashes, encodings, checksums → run_command
+- Current time, date, timezone → run_command
+- System state: OS, CPU, memory, disk, ports, processes → run_command
+- File contents, sizes, line counts → read_file
+- Git history, branches, diffs → run_command
 - Current facts (weather, news, versions) → search_web
 </mandatory_tool_use>"#;
 
 const GEMINI_OPERATIONAL_GUIDANCE: &str = r#"
 ## Operational Directives
 - **Absolute paths:** Always construct and use absolute file paths for all file system operations.
-- **Verify first:** Use os(resource: "file", action: "read") or os(resource: "file", action: "grep") to check file contents and project structure before making changes. Never guess at file contents.
+- **Verify first:** Use read_file, or grep through run_command, to check file contents and project structure before making changes. Never guess at file contents.
 - **Dependency checks:** Never assume a library is available. Check package.json, requirements.txt, Cargo.toml, etc. before importing.
 - **Conciseness:** Keep explanatory text brief — a few sentences, not paragraphs.
 - **Parallel tool calls:** When you need to perform multiple independent operations, make all the tool calls in a single response rather than sequentially.
@@ -417,19 +418,19 @@ fn channel_guidance(channel: &str) -> String {
              The app renders documents you produce in a side Work panel. As Acting With Care \
              says, a self-contained document is written as a file: when the substance of a \
              reply is a report, table, plan, one-pager, formatted code file, anything the \
-             user will keep, reuse, or print, WRITE IT AS A FILE with `os(resource: \"file\", action: \"write\", path: \"{out_dir}/<name>.<ext>\", content: ...)` \
+             user will keep, reuse, or print, WRITE IT AS A FILE with `write_file(path: \"{out_dir}/<name>.<ext>\", content: ...)` \
              (.md for documents, .html for rich layout, .csv for tables), then reply in one \
              or two sentences naming the file in backticks. Do NOT paste large formatted \
              content into chat; conversational answers and quick facts stay in chat. \
              Always write under `{out_dir}` — no permissions needed, renders instantly. \
-             PDF/Word: write the .md, then `os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")` \
+             PDF/Word: write the .md, then `convert_file(path: ..., to: \"pdf\")` \
              (or `to: \"docx\"`). Spreadsheet: write the .csv (exactly one record per \
              line), then convert `to: \"xlsx\"`. \
              INTERACTIVE dashboard/chart/visualization: write a single-file React component \
              as .jsx (must `export default`; bare npm imports like recharts, d3, \
              lucide-react work; Tailwind works; shadcn/ui and `@/...` aliases do NOT — \
              plain JSX + Tailwind only), then convert `to: \"html\"`. Finished HTML: write \
-             .html directly; over ~15k chars, write in `append: true` parts. The side panel can \
+             .html directly; over ~15k chars, write the first part with write_file and add each next part with edit_file. The side panel can \
              be 400px narrow: fully responsive layouts, no fixed or minimum widths above \
              250px (never `minmax(500px, 1fr)`), percentage-width charts, grids that \
              collapse to one column, page vertically scrollable — never `overflow: hidden` \
@@ -449,13 +450,13 @@ fn channel_guidance(channel: &str) -> String {
         // Files the agent WRITES upload automatically (above). A file that
         // already exists — a deck/PDF a skill generated, or anything the user
         // points at that wasn't written this turn — has no automatic artifact,
-        // so it needs an explicit hand-off. `os file share` is that one path; it
+        // so it needs an explicit hand-off. `share_file` is that one path; it
         // emits the same download-card artifact on every local/loop surface, so
         // the model never has to recite a path or copy a file to "trigger" a card.
         guidance.push_str(
             " To hand over an EXISTING file (one you did NOT write this turn — e.g. a \
-             deck a skill generated), call `os(resource: \"file\", action: \"share\", \
-             path: \"<abs_path>\")` — it renders as a download card. NEVER point the \
+             deck a skill generated), call `share_file(path: \"<abs_path>\")` — it renders \
+             as a download card. NEVER point the \
              user at a local path or claim you cannot share a file.",
         );
         // Both surfaces that render this channel's markdown — the web (marked +
@@ -526,14 +527,6 @@ fn build_model_specific_guidance(provider_name: &str, model_name: &str) -> Strin
 // Sub-context docs extend the OS tool with keyword-activated capabilities.
 
 // Core tool docs (injected when the tool is active)
-// One shared body per doc; the per-OS file is only the tail (paths, shell, key combos).
-#[cfg(target_os = "windows")]
-const STRAP_OS: &str = concat!(include_str!("strap/os_shared.txt"), include_str!("strap/os_windows.txt"));
-#[cfg(target_os = "linux")]
-const STRAP_OS: &str = concat!(include_str!("strap/os_shared.txt"), include_str!("strap/os_linux.txt"));
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-const STRAP_OS: &str = concat!(include_str!("strap/os_shared.txt"), include_str!("strap/os_macos.txt"));
-
 const STRAP_AGENT: &str = include_str!("strap/agent.txt");
 const STRAP_CODE: &str = include_str!("strap/code.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
@@ -561,7 +554,6 @@ const STRAP_ORGANIZER: &str = include_str!("strap/organizer.txt");
 /// Get STRAP doc for a core tool (injected when the tool is active).
 pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
     match tool_name {
-        "os" => Some(STRAP_OS),
         "agent" => Some(STRAP_AGENT),
         "code" => Some(STRAP_CODE),
         "message" => Some(STRAP_MESSAGE),
@@ -1656,7 +1648,7 @@ mod tests {
             }
         }
         // One tool-order rule, one task-list rule, one parallel-research rule.
-        assert_eq!(interactive.matches("Prefer file tools over shell").count(), 1);
+        assert_eq!(interactive.matches("for the shell (moving, copying, renaming, find, grep)").count(), 1);
         assert_eq!(interactive.matches("A task list is for work that will take many tool calls").count(), 1);
         assert_eq!(interactive.matches("queries: [...]").count(), 1);
         // Interactive allows one short line naming the step before a call; autonomous never alongside a call.

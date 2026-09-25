@@ -15,6 +15,7 @@ import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
 import { getWebSocketClient } from './client';
 import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
+import { askRaised, askSettled, loadOpenAsks } from '$lib/stores/permissionAsks';
 import { addToast, removeToast } from '$lib/stores/toast';
 import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
 import { logger } from '$lib/monitoring';
@@ -41,6 +42,12 @@ export function attachWebSocketListeners(): void {
 
   // Bootstrap existing notifications (auth is ready at this point)
   loadNotifications();
+  void loadOpenAsks().catch(() => log.debug('Asks API unavailable'));
+
+  // --- Permission asks: one card everywhere; the first answer anywhere
+  // clears it everywhere. ---
+  unsubs.push(ws.on('permission_ask', (data: any) => askRaised(data)));
+  unsubs.push(ws.on('permission_ask_resolved', (data: any) => askSettled(data)));
 
   // --- Notifications: store + toast ---
   unsubs.push(

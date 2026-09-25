@@ -18,7 +18,7 @@ use types::permissions::{
     Writer,
 };
 
-use super::RuleSet;
+use super::{Asks, RuleSet};
 
 /// Grant `needs` to `agent_id` as standing allow rules: the owner's consent
 /// (hire, creation, a job edit), named by `source`.
@@ -104,7 +104,7 @@ fn holds(creator: &Grant, capability: &str) -> bool {
 /// needs its creator holds become its rules, it works under its creator's
 /// grant from now on, and the rest goes to the owner as one card.
 pub fn create_under_creator(
-    store: &db::Store,
+    asks: &Asks,
     creator: &Grant,
     agent_id: &str,
     name: &str,
@@ -112,6 +112,7 @@ pub fn create_under_creator(
     draft_id: &str,
     session_key: &str,
 ) -> Result<Granted, RuleError> {
+    let store: &db::Store = asks.store();
     let store_err = |e: types::NeboError| RuleError::Store(e.to_string());
     let (held, beyond): (Vec<&String>, Vec<&String>) = needs.capabilities.iter().partition(|c| holds(creator, c));
     let by = Writer::Creator { creator_id: creator.agent_id.clone() };
@@ -121,7 +122,7 @@ pub fn create_under_creator(
     let card = if extras.is_empty() {
         None
     } else {
-        Some(raise_extras_card(store, creator, agent_id, name, &extras, session_key).map_err(store_err)?)
+        Some(raise_extras_card(asks, creator, agent_id, name, &extras, session_key).map_err(store_err)?)
     };
     store
         .set_employee_ceiling(&db::EmployeeCeilingRow {
@@ -136,34 +137,22 @@ pub fn create_under_creator(
 }
 
 /// The one card for needs only the owner can give: it lists them all, and
-/// its answer is [`answer_extras`].
+/// its answer is [`answer_extras`]. It goes out through the one ask card.
 pub fn raise_extras_card(
-    store: &db::Store,
+    asks: &Asks,
     asker: &Grant,
     agent_id: &str,
     name: &str,
     extras: &Needs,
     session_key: &str,
 ) -> Result<String, types::NeboError> {
-    let id = uuid::Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().timestamp();
-    let case = AskCase::CreatedExtras { capabilities: extras.capabilities.iter().cloned().collect() };
-    store.insert_permission_ask(&db::PermissionAskRow {
-        id: id.clone(),
-        agent_id: agent_id.to_string(),
-        session_key: session_key.to_string(),
-        chat_id: None,
-        door: serde_json::to_string(&types::permissions::Door::Chat).unwrap_or_default(),
-        ask_case: serde_json::to_string(&case).unwrap_or_default(),
-        sentence: tools::needs::consent_line(name, extras),
-        target: serde_json::json!({ "agent_id": agent_id, "capabilities": extras.capabilities }).to_string(),
-        call: "{}".to_string(),
-        seat: serde_json::to_string(asker).unwrap_or_default(),
-        status: "open".to_string(),
-        created_at: now,
-        expires_at: now + super::ask::EXPIRES_AFTER_SECS,
-    })?;
-    Ok(id)
+    asks.raise_extras(
+        asker,
+        agent_id,
+        extras.capabilities.iter().cloned().collect(),
+        tools::needs::consent_line(name, extras),
+        session_key,
+    )
 }
 
 /// The owner's answer to an extras card. Allow grants the extras as the
@@ -211,12 +200,14 @@ fn run_grant(store: &db::Store, ctx: &ToolContext) -> Grant {
 /// tool: the description reader, the owner's consent and the grant.
 pub struct Consent {
     store: Arc<db::Store>,
+    asks: Arc<Asks>,
     reader: Arc<dyn DescriptionReader>,
 }
 
 impl Consent {
-    pub fn new(store: Arc<db::Store>, reader: Arc<dyn DescriptionReader>) -> Self {
-        Self { store, reader }
+    /// `asks` carries the extras card to the owner.
+    pub fn new(asks: Arc<Asks>, reader: Arc<dyn DescriptionReader>) -> Self {
+        Self { store: asks.store().clone(), asks, reader }
     }
 }
 
@@ -249,7 +240,7 @@ impl JobConsent for Consent {
         let asker = run_grant(&self.store, ctx);
         if job.created {
             return create_under_creator(
-                &self.store,
+                &self.asks,
                 &asker,
                 job.agent_id,
                 job.name,
@@ -263,7 +254,7 @@ impl JobConsent for Consent {
         if job.needs.is_empty() {
             return Ok(Granted::default());
         }
-        let card = raise_extras_card(&self.store, &asker, job.agent_id, job.name, job.needs, &ctx.session_key)
+        let card = raise_extras_card(&self.asks, &asker, job.agent_id, job.name, job.needs, &ctx.session_key)
             .map_err(|e| e.to_string())?;
         Ok(Granted { extras: job.needs.clone(), card: Some(card), ..Granted::default() })
     }

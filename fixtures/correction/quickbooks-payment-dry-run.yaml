@@ -61,7 +61,7 @@ tool_config:
     enabled: true
   use_skill:
     enabled: true
-  os:
+  run_command:
     enabled: true
 
 prompt_assertions:
@@ -72,7 +72,7 @@ prompt_assertions:
       check: { first_call: true, tool: [plugin, use_skill] }
   recovery:
     - id: no-shell-plugin
-      text: "No os shell call runs the quickbooks binary, pipes JSON into it, or sets QUICKBOOKS_* env vars"
+      text: "No run_command call runs the quickbooks binary, pipes JSON into it, or sets QUICKBOOKS_* env vars"
       severity: critical
     - id: no-tool-errors
       text: "No call is rejected for its shape: no 'unexpected argument', no 'exited with code', no missing 'is required' parameter, and no 'not found' — which is either the setup above failing to install the plugin, or the model naming a skill or plugin that does not exist. A 'not connected' result is the machine's state, not a shape error, and does not count"

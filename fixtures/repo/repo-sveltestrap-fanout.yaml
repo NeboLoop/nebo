@@ -15,10 +15,12 @@ teardown:
 
 conversation:
   - role: user
-    content: "In the project at /tmp/nebo-test/sveltestrap (a git repo), restyle seven components in parallel with worktree isolation, one sub-agent per component: Alert, Badge, Button, Card, Col, Container, Dropdown. Each sub-agent edits only src/<Name>/<Name>.svelte and adds the CSS class nb-restyled to that component's root element class list, changing nothing else. Give each sub-agent the os tool. When they are done, tell me what the merge section said."
+    content: "In the project at /tmp/nebo-test/sveltestrap (a git repo), restyle seven components in parallel with worktree isolation, one sub-agent per component: Alert, Badge, Button, Card, Col, Container, Dropdown. Each sub-agent edits only src/<Name>/<Name>.svelte and adds the CSS class nb-restyled to that component's root element class list, changing nothing else. Give each sub-agent the read_file and edit_file tools. When they are done, tell me what the merge section said."
 
 tool_config:
-  os:
+  read_file:
+    enabled: true
+  edit_file:
     enabled: true
   agent:
     enabled: true
@@ -31,7 +33,7 @@ prompt_assertions:
       check: { tool: agent, arg: isolate, equals: worktree }
   recovery:
     - id: seven-tasks
-      text: "The spawn_parallel call carries exactly seven tasks, one per named component, each with the os tool"
+      text: "The spawn_parallel call carries exactly seven tasks, one per named component, each with the read_file and edit_file tools"
       severity: critical
     - id: merge-reported
       text: "The final answer quotes a merge section listing the seven tasks as merged with no conflicts"

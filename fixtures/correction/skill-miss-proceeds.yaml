@@ -21,7 +21,7 @@ tool_config:
     enabled: true
   find_skills:
     enabled: true
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
@@ -30,7 +30,7 @@ prompt_assertions:
       text: "Model does NOT tell the user the task cannot be done or that the capability is unavailable"
       severity: critical
     - id: proceeds-with-builtins
-      text: "After finding no such skill, the model reads the file with the os tool and totals it (270), or asks one clarifying question and then does so"
+      text: "After finding no such skill, the model reads the file with read_file and totals it (270), or asks one clarifying question and then does so"
       severity: critical
     - id: mentions-skill-honestly
       text: "Model may mention that no 'quarterly-summary' skill is installed, but does so in one sentence and still delivers the total"
@@ -46,5 +46,5 @@ ideal_behavior:
   total_tokens: 2500
   narrative: |
     The listing has no quarterly-summary (at most one use_skill or
-    find_skills miss), then a file read, then "270. There is no
+    find_skills miss), then read_file, then "270. There is no
     quarterly-summary skill installed, so I read the file directly."

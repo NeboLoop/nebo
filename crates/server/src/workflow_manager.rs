@@ -1742,8 +1742,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                     }
                     Err(workflow::WorkflowError::AwaitingApproval { operation, display }) => {
                         // Not a failure: the run is parked (engine persisted the
-                        // suspension + awaiting_approval status). Tell the owner
-                        // in chat + Inbox; the approval endpoint resumes/denies.
+                        // suspension + awaiting_approval status) on an ask whose
+                        // one card is already with the owner; its answer
+                        // resumes or ends the run.
                         post_automation_message(
                             &store,
                             &hub,
@@ -1752,15 +1753,6 @@ impl WorkflowManager for WorkflowManagerImpl {
                                 "**Automation paused for your approval** — {} ({}): {}",
                                 binding_name, trigger, display
                             ),
-                        );
-                        notify_workflow_approval(
-                            &store,
-                            &hub,
-                            &neboai_api_url,
-                            &agent_id_owned,
-                            &run_id_clone,
-                            &binding_name,
-                            &display,
                         );
                         hub.broadcast(
                             "workflow_run_awaiting_approval",
@@ -1973,60 +1965,6 @@ fn record_failure_should_notify(
 }
 
 /// Create an in-app notification for a workflow run failure, deep-linked to the run.
-/// Owner notification for a run parked at the approval checkpoint. Same
-/// Inbox + broadcast pathway as failure notifications; type "approval" so the
-/// Inbox can render Approve/Deny affordances against the approval endpoint.
-fn notify_workflow_approval(
-    store: &db::Store,
-    hub: &ClientHub,
-    api_url: &str,
-    agent_id: &str,
-    run_id: &str,
-    binding_name: &str,
-    display: &str,
-) {
-    let notif_id = format!("wf-approval:{}", run_id);
-    let title = format!("{} needs your approval", binding_name);
-    let action_url = format!("/{}/runs/{}", agent_id, run_id);
-    tools::owner_notify::emit(
-        store,
-        Some(&|ev, payload| hub.broadcast(ev, payload)),
-        &tools::owner_notify::OwnerNotification {
-            id: &notif_id,
-            kind: "approval",
-            title: &title,
-            body: Some(display),
-            action_url: Some(&action_url),
-            agent_id: Some(agent_id),
-            loud: false,
-        },
-    );
-    // Mirror to the owner's unified inbox at neboai.com/app. The item is
-    // self-describing: the buttons carry tunnel-relative resolve calls, so
-    // the hub renders and proxies them without learning bot route shapes.
-    let approval_path = format!("/api/v1/agents/workflow-runs/{}/approval", run_id);
-    crate::codes::push_inbox_via(
-        store,
-        api_url,
-        serde_json::json!({
-            "id": notif_id,
-            "type": "approval",
-            "title": title,
-            "body": display,
-            "link": action_url,
-            "actions": {
-                "buttons": [
-                    {"label": "Approve", "style": "primary", "method": "POST",
-                     "path": approval_path, "body": {"approved": true}},
-                    {"label": "Deny", "style": "danger", "method": "POST",
-                     "path": approval_path, "body": {"approved": false}},
-                ],
-                "status": {"method": "GET", "path": approval_path},
-            },
-        }),
-    );
-}
-
 /// Owner notification that an employee cannot do a duty until the owner
 /// supplies something (`crate::preflight::NeedNotice`). Same Inbox +
 /// broadcast pathway as failure notifications, mirrored to the owner's web

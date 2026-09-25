@@ -13,10 +13,12 @@ teardown:
 
 conversation:
   - role: user
-    content: "Spawn one sub-agent (wait for it) with the os tool and tell it to write exactly the line 'hello' to /tmp/nebo-test/send/note.txt. When it is done, do NOT spawn another sub-agent: use the send action on that same sub-agent's task_id with this exact message: 'Change the file you just wrote so its entire content is exactly the two words: hello again' Then read the file yourself and tell me its final content."
+    content: "Spawn one sub-agent (wait for it) with the write_file tool and tell it to write exactly the line 'hello' to /tmp/nebo-test/send/note.txt. When it is done, do NOT spawn another sub-agent: use the send action on that same sub-agent's task_id with this exact message: 'Change the file you just wrote so its entire content is exactly the two words: hello again' Then read the file yourself and tell me its final content."
 
 tool_config:
-  os:
+  write_file:
+    enabled: true
+  read_file:
     enabled: true
   agent:
     enabled: true
@@ -24,7 +26,7 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: spawn-first
-      text: "The first call is agent task spawn (wait true or omitted) with the os tool passed"
+      text: "The first call is agent task spawn (wait true or omitted) with the write_file tool passed"
       severity: critical
       check: { tool: agent, arg: action, equals: spawn }
   recovery:
@@ -44,4 +46,4 @@ ideal_behavior:
   tool_calls: 3
   total_tokens: 9000
   narrative: |
-    spawn(wait, tools: [os]) → send(task_id, follow-up) → os file read → report.
+    spawn(wait, tools: [write_file]) → send(task_id, follow-up) → read_file → report.

@@ -28,15 +28,15 @@ conversation:
     content: "What did you find so far? Report only what you already have."
 
 tool_config:
-  os:
+  read_file:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: read-first
-      text: "The first call is an os file read of {{scratch}}/part1.txt"
+      text: "The first call is read_file of {{scratch}}/part1.txt"
       severity: critical
-      check: { first_call: true, tool: os }
+      check: { first_call: true, tool: read_file, arg: path, contains: "part1.txt" }
   recovery:
     - id: stop-stops
       text: "After the stop, the second turn makes NO tool call: the read chain is not resumed"
