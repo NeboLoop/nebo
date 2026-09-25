@@ -339,6 +339,7 @@ impl Store {
                     "SELECT * FROM chat_messages WHERE chat_id = ?1
                      AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
                      AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
+                     AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
                  ORDER BY created_at DESC, id DESC LIMIT ?4",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -354,6 +355,7 @@ impl Store {
             let mut stmt = conn
                 .prepare(
                     "SELECT * FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
+                     AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')
                  ORDER BY created_at DESC, id DESC LIMIT ?2",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -363,6 +365,10 @@ impl Store {
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| NeboError::Database(e.to_string()))?
         };
+        // Nebo's own rows (`isMeta`: session facts, listings, hidden prompts)
+        // are never shown, so they are left out here rather than dropped after
+        // paging: counted against the budget, a turn's attachment rows filled
+        // the page and the owner saw only its last few messages.
         // msgs is newest-first — accumulate budget and truncate.
         // The budget is measured in CONVERSATIONAL TEXT (message content) only.
         // Tool calls/results are collapsed in the UI ("Used N tools") and do NOT
@@ -1519,6 +1525,34 @@ mod tests {
             .map(|m| m.id)
             .collect();
         assert_eq!(older, vec!["m1", "m2"], "before-cursor page, ascending");
+    }
+
+    /// A turn's attachment rows (`isMeta`) never cost the page its budget:
+    /// with nine large hidden rows after the conversation, the first page
+    /// still carries the owner's messages before them.
+    #[test]
+    fn hidden_rows_do_not_fill_the_page() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        for (id, ts) in [("m1", 100), ("m2", 200), ("m3", 300)] {
+            store.create_chat_message(id, "c1", "user", id, None).unwrap();
+            set_created_at(&store, id, ts);
+        }
+        let listing = "x".repeat(5_000);
+        for i in 0..9 {
+            let id = format!("meta{i}");
+            store
+                .create_chat_message(&id, "c1", "user", &listing, Some(r#"{"isMeta":true}"#))
+                .unwrap();
+            set_created_at(&store, &id, 400 + i);
+        }
+        let page: Vec<String> = store
+            .get_chat_messages_budgeted("c1", 12_000, None)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(page, vec!["m1", "m2", "m3"]);
     }
 
     /// `has_chat_messages_before` answers what a page can still load: rows
