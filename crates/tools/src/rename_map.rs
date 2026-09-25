@@ -476,6 +476,8 @@ pub const RENAMES: &[Rename] = &[
     flat("event", "resume", "set_schedule_paused", &[]),
     flat("event", "run", "run_schedule_now", &[]),
     flat("event", "history", "schedule_history", &[]),
+    // A coworker message (tools WP9): send_message to the employee.
+    Rename { tool: "message", resource: Some("coworker"), action: Some("send"), to: "send_message", params: &[("text", "message")] },
     // The `team` tool (tools WP9). A team post is send_message to the team.
     flat("team", "create", "create_team", &[("agents", "members")]),
     flat("team", "update", "update_team", &[("agents", "members")]),

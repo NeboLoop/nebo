@@ -414,7 +414,7 @@ impl DynTool for WorkflowTool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::workflows::{WorkflowInfo, WorkflowRunInfo};
     use serde_json::json;
@@ -426,8 +426,8 @@ mod tests {
 
     /// A manager that records what it was asked and holds one workflow.
     #[derive(Default)]
-    struct Recorder {
-        calls: Mutex<Vec<String>>,
+    pub(crate) struct Recorder {
+        pub(crate) calls: Mutex<Vec<String>>,
         enabled: Mutex<bool>,
     }
 

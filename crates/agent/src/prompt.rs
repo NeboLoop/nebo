@@ -176,7 +176,7 @@ Examples:
 - **ask_owner** — ask the owner one question and wait for the answer
 - **read_file**, **edit_file**, **write_file** — files; **run_command** — shell commands, including finding files (find) and searching contents (grep)
 - **os** — desktop, apps, settings, search, mail, calendar, contacts and reminders
-- **message** — coworkers and SMS: work for a named AI employee is message(resource: "coworker"), never a helper
+- **message** — SMS. Work for a named AI employee is send_message(to: "<name>"), never a helper; so is a post to a team
 - **use_skill** — load a skill: packaged instructions for a kind of work. Skills are listed by name with one line each; load a matching one before starting
 - **find_tools** — load the deferred tools listed by name: find_tools(query: "select:<name>")
 

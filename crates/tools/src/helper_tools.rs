@@ -1,6 +1,6 @@
 //! Helpers: `delegate` starts one, `send_message` talks to a running or
-//! finished one, and `orchestrate` runs a decomposed job as a dependency
-//! graph of helpers. Behaviour stays in the orchestrator; these are its
+//! finished one — or, by the kind of `to`, to a coworker or a team — and
+//! `orchestrate` runs a decomposed job as a dependency graph of helpers. Behaviour stays in the orchestrator; these are its
 //! interface. Reading a helper's output and stopping it are `read_output`
 //! and `stop_task`, shared with background commands (`command_tools`).
 
@@ -9,24 +9,59 @@ use std::sync::Arc;
 use db::Store;
 use serde_json::{Value, json};
 
+use crate::coworker::CoworkerRailCell;
 use crate::orchestrator::{FollowUp, OrchestratorHandle, SpawnRequest, SubAgentOrchestrator};
+use crate::team_tool::Teams;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
 /// The helper types a delegate call may name.
 const HELPER_TYPES: [&str; 3] = ["general", "explore", "plan"];
 
-/// What a helper tool needs.
+/// What a helper tool needs. `send_message` also reaches coworkers (the
+/// coworker rail) and teams (the one [`Teams`] core).
 pub struct Helpers {
     store: Arc<Store>,
     orchestrator: OrchestratorHandle,
+    teams: Arc<Teams>,
+    rail: CoworkerRailCell,
+}
+
+/// Who a `send_message` goes to, by the kind of `to`.
+enum Recipient {
+    Team(String),
+    Coworker(String),
+    Helper,
 }
 
 impl Helpers {
-    pub fn new(store: Arc<Store>, orchestrator: OrchestratorHandle) -> Self {
+    pub fn new(store: Arc<Store>, orchestrator: OrchestratorHandle, teams: Arc<Teams>, rail: CoworkerRailCell) -> Self {
         Self {
             store,
             orchestrator,
+            teams,
+            rail,
+        }
+    }
+
+    /// A team on this Nebo (by name or id), else an installed employee (by
+    /// name, handle or id), else a helper's id.
+    fn recipient(&self, to: &str) -> Recipient {
+        if let Ok(team) = crate::team::resolve_team(&self.store, to) {
+            return Recipient::Team(team.name);
+        }
+        match crate::team::resolve_agent(&self.store, to) {
+            Some(a) => Recipient::Coworker(a.name),
+            None => Recipient::Helper,
+        }
+    }
+
+    /// Who a `send_message` goes to, as the owner reads it.
+    fn recipient_label(&self, input: &Value) -> String {
+        match self.recipient(input["to"].as_str().unwrap_or("").trim()) {
+            Recipient::Team(name) => format!("the {name} team"),
+            Recipient::Coworker(name) => name,
+            Recipient::Helper => "a helper".to_string(),
         }
     }
 
@@ -64,8 +99,8 @@ impl Helpers {
         let who = employee_named_in_prompt(input["prompt"].as_str().unwrap_or(""), &names)?;
         Some(format!(
             "A helper is an anonymous extra pair of hands; \"{who}\" is an employee. Work for an \
-             employee is a message: message(resource: \"coworker\", action: \"send\", to: \"{who}\", \
-             text: \"<what you need>\"). Not started."
+             employee is a message: send_message(to: \"{who}\", message: \"<what you need>\"). \
+             Not started."
         ))
     }
 
@@ -166,6 +201,11 @@ impl Helpers {
     async fn send_message(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let to = input["to"].as_str().unwrap_or("").trim();
         let message = input["message"].as_str().unwrap_or("").trim();
+        match self.recipient(to) {
+            Recipient::Team(team) => return self.teams.post(ctx, &team, message, &input["mention"]).await,
+            Recipient::Coworker(name) => return self.to_coworker(ctx, &name, message, input["wait"].as_bool().unwrap_or(true)).await,
+            Recipient::Helper => {}
+        }
         let orch = match self.orchestrator() {
             Ok(o) => o,
             Err(e) => return ToolResult::error(e),
@@ -196,6 +236,50 @@ impl Helpers {
                 r.task_id,
                 r.error.unwrap_or_default()
             )),
+            Err(e) => ToolResult::error(e),
+        }
+    }
+}
+
+impl Helpers {
+    /// A message into a coworker's own session — their persona, memory,
+    /// connected accounts and permissions — through the coworker rail.
+    async fn to_coworker(&self, ctx: &ToolContext, to: &str, text: &str, wait: bool) -> ToolResult {
+        let rail = self.rail.read().unwrap().clone();
+        let Some(rail) = rail else {
+            return ToolResult::error(
+                "Coworker messaging is not available in this environment (no coworker rail wired; \
+                 use send_loop_message for bots on the NeboAI hub).",
+            );
+        };
+        match crate::coworker::deliver(&rail, ctx, to, text, wait).await {
+            Ok(delivery) => {
+                // Structured payload → the chat renders a first-class
+                // "Messaged {name}" event (clickable through to the coworker
+                // thread) instead of a bare tool chip.
+                let payload = json!({
+                    "kind": "coworker_message",
+                    "to": delivery.to_name,
+                    "toAgentId": delivery.to_agent_id,
+                    "threadKey": delivery.thread_key,
+                    "text": text,
+                    "reply": delivery.reply.clone(),
+                });
+                match delivery.reply {
+                    Some(ref reply) => ToolResult::ok(format!(
+                        "Message delivered to {}. Their reply:\n\n{}",
+                        delivery.to_name, reply
+                    ))
+                    .with_payload(payload),
+                    None => ToolResult::ok(format!(
+                        "Message delivered to {} — they are handling it in their own session; \
+                         their reply reaches you when it comes. Until then, report this as \
+                         \"asked {} — waiting\", never as done.",
+                        delivery.to_name, delivery.to_name
+                    ))
+                    .with_payload(payload),
+                }
+            }
             Err(e) => ToolResult::error(e),
         }
     }
@@ -271,9 +355,11 @@ impl DynTool for HelperTool {
             HelperOp::Orchestrate => "Breaks a large job into steps that depend on each other and runs each step as a helper, in order, handing each step what the earlier ones found. Returns the combined result.\n\
                  - For independent pieces, several delegate calls are faster."
                 .to_string(),
-            HelperOp::SendMessage => "Sends a message to a helper you started, by its id.\n\
-                 - A running helper sees it at its next step: add to or correct its task mid-work.\n\
-                 - A finished helper continues with it as its next turn, keeping its context and the files it read."
+            HelperOp::SendMessage => "Sends a message to a helper you started (by its id), a coworker (another employee on this Nebo, by name) or a team (by name).\n\
+                 - A running helper sees it at its next step; a finished one continues with it, keeping its context.\n\
+                 - A coworker gets it in their own session and answers with their own tools and permissions. `wait: false` doesn't wait for the reply; it reaches you when it comes.\n\
+                 - A team's lead answers and hands steps to teammates; `mention` asks named members to act, and @everyone in the message asks the whole team.\n\
+                 - Work for a named employee is a message to them, never a helper. Bots on the NeboAI hub are send_loop_message."
                 .to_string(),
         }
     }
@@ -301,8 +387,10 @@ impl DynTool for HelperTool {
             HelperOp::SendMessage => json!({
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "The helper's id, from delegate." },
-                    "message": { "type": "string", "description": "What to tell it." }
+                    "to": { "type": "string", "description": "A helper's id (from delegate), a coworker's name, or a team's name." },
+                    "message": { "type": "string", "description": "What to tell them." },
+                    "wait": { "type": "boolean", "default": true, "description": "To a coworker: wait for their reply (default). false sends it and carries on." },
+                    "mention": { "type": "array", "items": { "type": "string" }, "description": "To a team: the members asked to act, by name." }
                 },
                 "required": ["to", "message"]
             }),
@@ -313,7 +401,7 @@ impl DynTool for HelperTool {
         match self.op {
             HelperOp::Delegate => "start a helper on separate work",
             HelperOp::Orchestrate => "run dependent steps as helpers",
-            HelperOp::SendMessage => "message a running or finished helper",
+            HelperOp::SendMessage => "message a helper coworker or team",
         }
     }
 
@@ -330,9 +418,22 @@ impl DynTool for HelperTool {
         self.op == HelperOp::Delegate
     }
 
-    /// Helpers are the employee's own work.
+    /// Helpers are the employee's own work; a coworker or a team acts on
+    /// the message with its own permissions.
     fn effects(&self, _input: &Value) -> types::permissions::CallEffects {
         types::permissions::CallEffects::none()
+    }
+
+    /// A message to a coworker or a team names who it goes to: what a
+    /// recipient rule matches. A helper is the employee's own.
+    fn rule_field(&self, input: &Value) -> Option<types::permissions::RuleField> {
+        if self.op != HelperOp::SendMessage {
+            return None;
+        }
+        match self.helpers.recipient(input["to"].as_str().unwrap_or("").trim()) {
+            Recipient::Team(name) | Recipient::Coworker(name) => Some(types::permissions::RuleField::Recipient(name)),
+            Recipient::Helper => None,
+        }
     }
 
     fn validate_input(&self, input: &Value) -> Result<(), String> {
@@ -353,7 +454,7 @@ impl DynTool for HelperTool {
         match self.op {
             HelperOp::Delegate => format!("starting a helper: {desc}"),
             HelperOp::Orchestrate => "running a multi-step job".to_string(),
-            HelperOp::SendMessage => "messaging a helper".to_string(),
+            HelperOp::SendMessage => format!("messaging {}", self.helpers.recipient_label(input)),
         }
     }
 
@@ -362,7 +463,7 @@ impl DynTool for HelperTool {
         match self.op {
             HelperOp::Delegate => format!("Started a helper: {desc}"),
             HelperOp::Orchestrate => "Ran a multi-step job".to_string(),
-            HelperOp::SendMessage => "Messaged a helper".to_string(),
+            HelperOp::SendMessage => format!("Messaged {}", self.helpers.recipient_label(input)),
         }
     }
 
@@ -476,9 +577,42 @@ mod tests {
         }
     }
 
+    /// Records what reached the coworker rail.
+    #[derive(Default)]
+    struct Rail {
+        sent: Mutex<Vec<(String, String)>>,
+        posts: Mutex<Vec<(String, String, Vec<String>)>>,
+    }
+
+    impl crate::coworker::CoworkerRail for Rail {
+        fn send(&self, msg: crate::coworker::CoworkerMessage) -> Fut<'_, Result<crate::coworker::CoworkerDelivery, String>> {
+            self.sent.lock().unwrap().push((msg.to.clone(), msg.text.clone()));
+            Box::pin(async move {
+                Ok(crate::coworker::CoworkerDelivery {
+                    to_agent_id: "bk".into(),
+                    to_name: msg.to,
+                    thread_key: "agent:bk:coworker".into(),
+                    reply: Some("on it".into()),
+                })
+            })
+        }
+        fn post_team(&self, post: crate::coworker::TeamPost) -> Fut<'_, Result<crate::coworker::TeamPostReceipt, String>> {
+            self.posts.lock().unwrap().push((post.team_id.clone(), post.text.clone(), post.mention.clone()));
+            Box::pin(async move {
+                Ok(crate::coworker::TeamPostReceipt {
+                    team_id: post.team_id,
+                    team_name: "Back Office".into(),
+                    message_id: "m1".into(),
+                    asked: vec!["Bookkeeper".into()],
+                })
+            })
+        }
+    }
+
     struct Rig {
         tools: Vec<Box<dyn DynTool>>,
         rec: Arc<Recorder>,
+        rail: Arc<Rail>,
         store: Arc<Store>,
         _dir: tempfile::TempDir,
     }
@@ -490,10 +624,15 @@ mod tests {
             let rec = Arc::new(Recorder::default());
             let handle = crate::orchestrator::new_handle();
             let _ = handle.set(Box::new(rec.clone()));
-            let tools = Helpers::new(store.clone(), handle).tools();
+            let rail = Arc::new(Rail::default());
+            let cell = crate::coworker::new_rail_cell();
+            *cell.write().unwrap() = Some(rail.clone() as Arc<dyn crate::coworker::CoworkerRail>);
+            let teams = Arc::new(Teams::new(Some(store.clone()), None, None, cell.clone()));
+            let tools = Helpers::new(store.clone(), handle, teams, cell).tools();
             Self {
                 tools,
                 rec,
+                rail,
                 store,
                 _dir: dir,
             }
@@ -657,5 +796,36 @@ mod tests {
             employee_named_in_prompt("Compare nebo-cli flags", &names),
             None
         );
+    }
+
+    /// One send tool, three kinds of `to`: a team's name posts into the
+    /// team (with the members asked by name), an employee's name reaches
+    /// the coworker in their own session, anything else is a helper's id.
+    #[tokio::test]
+    async fn send_message_routes_by_the_kind_of_to() {
+        let rig = Rig::new();
+        for (id, name) in [("bk", "Bookkeeper"), ("ea", "Executive Assistant")] {
+            rig.store.create_agent(id, None, name, "d", "# agent", "", None, None).unwrap();
+        }
+        rig.store
+            .create_team("t-1", "Back Office", "Books", &[db::TeamMember::local("bk"), db::TeamMember::local("ea")], "bk", None)
+            .unwrap();
+
+        let team = rig.call("send_message", json!({"to": "Back Office", "message": "close the month", "mention": ["Bookkeeper"]})).await;
+        assert!(!team.is_error && team.content.contains("Posted to team \"Back Office\""), "{}", team.content);
+        assert_eq!(rig.rail.posts.lock().unwrap()[0], ("t-1".to_string(), "close the month".to_string(), vec!["bk".to_string()]));
+
+        let coworker = rig.call("send_message", json!({"to": "Bookkeeper", "message": "send the invoice"})).await;
+        assert!(!coworker.is_error && coworker.content.contains("Their reply:\n\non it"), "{}", coworker.content);
+        assert_eq!(rig.rail.sent.lock().unwrap()[0], ("Bookkeeper".to_string(), "send the invoice".to_string()));
+
+        let helper = rig.call("send_message", json!({"to": "h1", "message": "also the edge cases"})).await;
+        assert!(!helper.is_error, "{}", helper.content);
+        assert_eq!(rig.rec.sent.lock().unwrap().len(), 1, "only the helper id reached the orchestrator");
+
+        let send = rig.tools.iter().find(|t| t.name() == "send_message").unwrap();
+        assert_eq!(send.rule_field(&json!({"to": "Bookkeeper"})), Some(types::permissions::RuleField::Recipient("Bookkeeper".into())));
+        assert_eq!(send.rule_field(&json!({"to": "h1"})), None);
+        assert_eq!(send.activity(&json!({"to": "Back Office"})), "messaging the Back Office team");
     }
 }

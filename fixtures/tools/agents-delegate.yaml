@@ -3,23 +3,24 @@ name: "Coworker routing — work for a named employee is a message"
 description: |
   The user asks a named employee to do something. The old agent delegate
   action was removed, and the delegate tool starts a blank helper, never a
-  named employee: work for a named coworker goes through message(resource:
-  "coworker", action: "send"), which runs it in that employee's own session
-  with its own memory and permissions. The employee exists (setup creates
+  named employee: work for a named coworker goes through send_message(to:
+  <employee>), which runs it in that employee's own session with its own
+  memory and permissions. send_message is deferred, so loading it with
+  find_tools first is expected (tools WP9; the cost check is 2 for that). The employee exists (setup creates
   it), so the first call must succeed; a run that ends with "not installed"
   has misnamed it. The cost check is one call, and it is an equality, not a
   ceiling: `tool_calls` fails a trace whose count differs from the number in
   either direction. Raised to 2 on 2026-09-21 on the reading that a tagged,
   opaque employee name costs a lookup first, it measured 0 of 3 on the next
   gate run (35631082325) — the three traces are 1, 3 and 1 calls, and no run
-  makes a lookup of any kind: all three send message(resource: "coworker",
-  action: "send", to: "chief-of-staff-<tag>") as their very first call. The
+  makes a lookup of any kind: all three sent the coworker message to
+  "chief-of-staff-<tag>" as their very first call. The
   2/3 that a number of 1 had scored was those one-call runs passing, and
   moving the number to 2 could only lose them. Run 2's extra two calls come
   after the coworker replies that it has nothing to report — an agent memory
   search and an os listing — not from resolving the name. So the honest
   number is 1.
-target_component: message
+target_component: send_message
 setup:
   - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"chief-of-staff-{{tag}}\"}' > /dev/null"
 teardown:
@@ -29,26 +30,19 @@ conversation:
     content: "Ask the chief-of-staff-{{tag}} agent to draft my weekly report."
 
 tool_config:
-  message:
+  send_message:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: correct-tool
-      text: "Model's first call is the message tool"
+      text: "Model messages the employee with send_message (loaded with find_tools first)"
       severity: critical
-      check: { first_call: true, tool: message }
-    - id: correct-resource
-      text: "The call targets the coworker resource: resource: 'coworker' given explicitly, or omitted with a `to` naming an employee, which the message tool resolves to coworker"
-      severity: critical
-    - id: correct-action
-      text: "Model uses action: 'send'"
-      severity: critical
-      check: { first_call: true, arg: action, equals: "send" }
+      check: { tool: send_message }
     - id: has-name
       text: "Model addresses chief-of-staff-{{tag}}"
       severity: critical
-      check: { first_call: true, arg: to, contains: "chief" }
+      check: { tool: send_message, arg: to, contains: "chief" }
   recovery:
     - id: no-spawn
       text: "Model does not start a blank helper (delegate) for a named employee's work"
@@ -59,9 +53,9 @@ prompt_assertions:
       check: { max_errors: 0 }
   cost:
     - id: single-call
-      text: "Task completes in exactly 1 tool call — `tool_calls` is an equality, so a trace with more calls or fewer fails it"
+      text: "Task completes in at most 2 tool calls: the find_tools load and one send_message — the tagged name needs no lookup"
       severity: important
-      check: { tool_calls: 1 }
+      check: { max_tool_calls: 2 }
 ideal_behavior:
-  tool_calls: 1
-  narrative: "One message(resource: coworker, action: send, to: chief-of-staff-{{tag}}, text: ...) call — the tagged name needs no lookup — then a one-line confirmation."
+  tool_calls: 2
+  narrative: "find_tools(query: \"select:send_message\") → send_message(to: chief-of-staff-{{tag}}, message: ...) — the tagged name needs no lookup — then a one-line confirmation."
