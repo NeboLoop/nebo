@@ -84,8 +84,6 @@ pub async fn run_live(
         let all_tool_names: Vec<String> = vec![
             "os".into(),
             "agent".into(),
-            "event".into(),
-            "loop".into(),
             "message".into(),
         ];
         let strap_section =

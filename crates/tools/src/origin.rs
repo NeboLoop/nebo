@@ -159,7 +159,7 @@ pub struct ToolContext {
     pub session_id: String,
     pub user_id: String,
     /// Agent-to-agent handoff depth of the run this tool executes in (0 = not
-    /// a handoff). The loop tool stamps it on outbound sends so receiving bots
+    /// a handoff). send_loop_message stamps it on outbound sends so receiving bots
     /// enforce the depth cap on tool-authored messages too.
     pub handoff_depth: u8,
     /// The seat's permissions for this run: its mode, the company's and the

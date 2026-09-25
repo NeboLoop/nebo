@@ -1,11 +1,10 @@
-//! `team` tool — teams of AI employees on THIS Nebo. Resource-less: create,
-//! list, send, messages, members. Everything works with no hub; a hub loop
-//! only adds a mirror. The `loop` tool's `workroom` / `create` and its
-//! channel actions on a team id are aliases over these same methods.
+//! The team tools — teams of AI employees on THIS Nebo: create, update,
+//! list, members and messages, one purpose each over one [`Teams`] core.
+//! Posting into a team is `send_message` to the team, through the same core.
+//! Everything works with no hub; a hub loop only adds a mirror.
 
 use std::sync::Arc;
 
-use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 use crate::team;
@@ -16,7 +15,9 @@ use comm::CommPlugin;
 /// the primary employee.
 const PRIMARY_AGENT_ID: &str = "assistant";
 
-pub struct TeamTool {
+/// The teams on this Nebo: the one core every team tool and the team route
+/// of `send_message` share.
+pub struct Teams {
     store: Option<Arc<db::Store>>,
     /// Hub plugin, for the optional mirror only.
     comm: Option<Arc<dyn CommPlugin>>,
@@ -26,7 +27,7 @@ pub struct TeamTool {
     rail: crate::coworker::CoworkerRailCell,
 }
 
-impl TeamTool {
+impl Teams {
     pub fn new(
         store: Option<Arc<db::Store>>,
         comm: Option<Arc<dyn CommPlugin>>,
@@ -62,7 +63,7 @@ impl TeamTool {
         }
     }
 
-    /// `agents` / `mention`: a string (comma-separated) or an array of
+    /// `members` / `mention`: a string (comma-separated) or an array of
     /// employee names, handles, or ids.
     fn labels(value: &serde_json::Value) -> Vec<String> {
         match value {
@@ -95,7 +96,7 @@ impl TeamTool {
             .join(", ")
     }
 
-    /// One line per team for `list` answers (shared with the loop tool).
+    /// One line per team for list answers (shared with the NeboAI loop tools).
     pub fn describe(store: &db::Store, team: &db::Team) -> String {
         let mut line = format!("- {} (id: {})", team.name, team.id);
         if !team.mission.is_empty() {
@@ -114,13 +115,6 @@ impl TeamTool {
             Err(r) => return r,
         };
         let name = input["name"].as_str().unwrap_or("").trim();
-        if name.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "team create",
-                "name",
-                team::CREATE_USAGE,
-            ));
-        }
         let mission = input["mission"].as_str().unwrap_or("");
 
         // The primary employee is the platform, not a teammate: when it
@@ -131,7 +125,7 @@ impl TeamTool {
         let mut organizer = if caller == PRIMARY_AGENT_ID { String::new() } else { caller };
         let mut member_ids: Vec<String> = Vec::new();
         let mut unknown: Vec<String> = Vec::new();
-        for label in Self::labels(&input["agents"]) {
+        for label in Self::labels(&input["members"]) {
             match team::resolve_agent(store, &label) {
                 Some(a) => {
                     if !member_ids.contains(&a.id) {
@@ -194,14 +188,14 @@ impl TeamTool {
                 };
                 ToolResult::ok(format!(
                     "Team \"{}\" exists (id: {}). Members: {}.{} It works locally on this Nebo. \
-                     Start the work by posting the first ask: team(action: \"send\", team: \"{}\", \
-                     text: \"...\") — the lead answers and hands steps to teammates by mention; add \
+                     Start the work by posting the first ask: send_message(to: \"{}\", \
+                     message: \"...\") — the lead answers and hands steps to teammates by mention; add \
                      mention: [\"Member Name\"] to ask specific members, or write @everyone in the \
-                     text to ask the whole team.{}",
+                     message to ask the whole team.{}",
                     t.name, t.id, members, mirror, t.name,
                     if t.organizer_agent_id.is_empty() {
                         " This team has no lead yet, so every member answers an owner post; set one \
-                         with team(action: \"update\", team: \"...\", lead: \"Employee Name\")."
+                         with update_team(team: \"...\", lead: \"Employee Name\")."
                     } else {
                         ""
                     }
@@ -229,50 +223,39 @@ impl TeamTool {
         }
         let lines: Vec<String> = teams.iter().map(|t| Self::describe(store, t)).collect();
         ToolResult::ok(format!(
-            "{} team(s) on this Nebo\n{}\nPost with team(action: \"send\", team: \"<name>\", text: \"...\").",
+            "{} team(s) on this Nebo\n{}\nPost with send_message(to: \"<team name>\", message: \"...\").",
             teams.len(),
             lines.join("\n")
         ))
     }
 
-    pub async fn send(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+    /// Post `text` into the team `label` names (name or id). `mention`
+    /// (names, a string or an array) asks those members to act.
+    pub async fn post(
+        &self,
+        ctx: &ToolContext,
+        label: &str,
+        text: &str,
+        mention: &serde_json::Value,
+    ) -> ToolResult {
         let store = match self.store() {
             Ok(s) => s,
             Err(r) => return r,
         };
-        let label = input["team"]
-            .as_str()
-            .or_else(|| input["team_id"].as_str())
-            .or_else(|| input["channel_id"].as_str())
-            .unwrap_or("");
-        if label.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "team send",
-                "team",
-                "team(action: \"send\", team: \"Operations\", text: \"...\", mention: [\"Executive Assistant\"])",
-            ));
-        }
-        let text = input["text"].as_str().unwrap_or("").trim();
-        if text.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "team send",
-                "text",
-                "team(action: \"send\", team: \"Operations\", text: \"...\")",
-            ));
-        }
+        let text = text.trim();
         let t = match team::resolve_team(store, label) {
             Ok(t) => t,
             Err(e) => return ToolResult::error(e),
         };
 
         // `mention`: members asked to act, resolved against the team roster.
-        let mut mention: Vec<String> = Vec::new();
+        let mut asked: Vec<String> = Vec::new();
         let mut unresolved: Vec<String> = Vec::new();
-        for m in Self::labels(&input["mention"]) {
+        for m in Self::labels(mention) {
             match team::resolve_agent(store, &m) {
                 Some(a) if t.members.iter().any(|m| m.agent_id == a.id) => {
-                    if !mention.contains(&a.id) {
-                        mention.push(a.id);
+                    if !asked.contains(&a.id) {
+                        asked.push(a.id);
                     }
                 }
                 _ => unresolved.push(m),
@@ -302,7 +285,7 @@ impl TeamTool {
             team_id: t.id.clone(),
             from_agent_id: Self::caller_agent_id(store, ctx),
             text: text.to_string(),
-            mention,
+            mention: asked,
             handoff_depth: ctx.handoff_depth,
             provenance: ctx.run_taint.clone(),
             is_reply: false,
@@ -339,18 +322,7 @@ impl TeamTool {
             Ok(s) => s,
             Err(r) => return r,
         };
-        let label = input["team"]
-            .as_str()
-            .or_else(|| input["team_id"].as_str())
-            .or_else(|| input["channel_id"].as_str())
-            .unwrap_or("");
-        if label.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "team messages",
-                "team",
-                "team(action: \"messages\", team: \"Operations\", limit: 20)",
-            ));
-        }
+        let label = input["team"].as_str().unwrap_or("");
         let t = match team::resolve_team(store, label) {
             Ok(t) => t,
             Err(e) => return ToolResult::error(e),
@@ -358,7 +330,7 @@ impl TeamTool {
         let limit = input["limit"].as_u64().unwrap_or(50) as usize;
         match store.list_team_messages(&t.id, limit) {
             Ok(msgs) if msgs.is_empty() => ToolResult::ok(format!(
-                "No messages in team \"{}\" yet. Post the first one with team(action: \"send\", team: \"{}\", text: \"...\").",
+                "No messages in team \"{}\" yet. Post the first one with send_message(to: \"{}\", message: \"...\").",
                 t.name, t.name
             )),
             Ok(msgs) => {
@@ -389,22 +361,15 @@ impl TeamTool {
             Ok(s) => s,
             Err(r) => return r,
         };
-        let label = input["team"].as_str().or_else(|| input["team_id"].as_str()).unwrap_or("");
-        if label.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "team update",
-                "team",
-                "team(action: \"update\", team: \"Operations\", lead: \"Executive Assistant\")",
-            ));
-        }
+        let label = input["team"].as_str().unwrap_or("");
         let t = match team::resolve_team(store, label) {
             Ok(t) => t,
             Err(e) => return ToolResult::error(e),
         };
         let mut unknown: Vec<String> = Vec::new();
-        let members: Option<Vec<String>> = if input["agents"].is_array() {
+        let members: Option<Vec<String>> = if input["members"].is_array() {
             let mut ids: Vec<String> = Vec::new();
-            for l in Self::labels(&input["agents"]) {
+            for l in Self::labels(&input["members"]) {
                 match team::resolve_agent(store, &l) {
                     Some(a) => {
                         if !ids.contains(&a.id) {
@@ -491,18 +456,7 @@ impl TeamTool {
             Ok(s) => s,
             Err(r) => return r,
         };
-        let label = input["team"]
-            .as_str()
-            .or_else(|| input["team_id"].as_str())
-            .or_else(|| input["channel_id"].as_str())
-            .unwrap_or("");
-        if label.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "team members",
-                "team",
-                "team(action: \"members\", team: \"Operations\")",
-            ));
-        }
+        let label = input["team"].as_str().unwrap_or("");
         let t = match team::resolve_team(store, label) {
             Ok(t) => t,
             Err(e) => return ToolResult::error(e),
@@ -516,89 +470,151 @@ impl TeamTool {
     }
 }
 
+/// One tool of the team family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Create,
+    Update,
+    List,
+    Members,
+    Messages,
+}
+
+const KINDS: &[Kind] = &[Kind::Create, Kind::Update, Kind::List, Kind::Members, Kind::Messages];
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Create => "create_team",
+            Kind::Update => "update_team",
+            Kind::List => "list_teams",
+            Kind::Members => "team_members",
+            Kind::Messages => "team_messages",
+        }
+    }
+
+    fn search_hint(self) -> &'static str {
+        match self {
+            Kind::Create => "make a team of employees",
+            Kind::Update => "change a team's lead members mission",
+            Kind::List => "list the teams of employees",
+            Kind::Members => "who is on a team",
+            Kind::Messages => "read a team's conversation",
+        }
+    }
+
+    fn description(self) -> String {
+        match self {
+            Kind::Create => "Creates a team: employees on this Nebo who share a mission and one conversation. It needs no hub.\n\
+                - `members`: at least one employee besides you (you join the team you create).\n\
+                - `lead` answers the owner and hands steps to teammates by mention; without one the owner leads and every member answers.\n\
+                - Post the first ask with send_message to the team's name."
+                .to_string(),
+            Kind::Update => "Changes a team's name, mission, members or lead. Fields left out keep their value; `members` is the full new list; lead: \"owner\" makes the team owner-led."
+                .to_string(),
+            Kind::List => "Lists the teams on this Nebo with their missions, leads and members.".to_string(),
+            Kind::Members => "Lists who is on a team, and which member leads it.".to_string(),
+            Kind::Messages => "Reads a team's conversation, most recent last.".to_string(),
+        }
+    }
+
+    fn schema(self) -> serde_json::Value {
+        let team = serde_json::json!({ "type": "string", "description": "The team's name or id." });
+        let names = |what: &str| serde_json::json!({ "type": "array", "items": { "type": "string" }, "description": what });
+        let lead = serde_json::json!({ "type": "string", "description": "The employee who leads the team." });
+        match self {
+            Kind::Create => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "The team's name." },
+                    "members": names("Employee names to bring into the team: at least one besides you."),
+                    "mission": { "type": "string", "description": "What the team exists to accomplish." },
+                    "lead": lead
+                },
+                "required": ["name", "members"]
+            }),
+            Kind::Update => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "team": team,
+                    "name": { "type": "string", "description": "A new name." },
+                    "mission": { "type": "string", "description": "A new mission." },
+                    "members": names("The full new member list, by employee name."),
+                    "lead": { "type": "string", "description": "The employee who leads the team, or \"owner\" to make it owner-led." }
+                },
+                "required": ["team"]
+            }),
+            Kind::List => serde_json::json!({ "type": "object", "properties": {} }),
+            Kind::Members => serde_json::json!({
+                "type": "object",
+                "properties": { "team": team },
+                "required": ["team"]
+            }),
+            Kind::Messages => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "team": team,
+                    "limit": { "type": "integer", "description": "How many recent messages (default 50)." }
+                },
+                "required": ["team"]
+            }),
+        }
+    }
+
+    fn read_only(self) -> bool {
+        matches!(self, Kind::List | Kind::Members | Kind::Messages)
+    }
+
+    fn labels(self, input: &serde_json::Value) -> (String, String) {
+        let named = |key: &str| input[key].as_str().unwrap_or("").trim().to_string();
+        match self {
+            Kind::Create => (format!("creating the {} team", named("name")), format!("Created the {} team", named("name"))),
+            Kind::Update => (format!("updating the {} team", named("team")), format!("Updated the {} team", named("team"))),
+            Kind::List => ("checking the teams".into(), "Checked the teams".into()),
+            Kind::Members => (format!("checking who is on {}", named("team")), format!("Checked who is on {}", named("team"))),
+            Kind::Messages => (format!("reading the {} team", named("team")), format!("Read the {} team", named("team"))),
+        }
+    }
+}
+
+/// One team tool over the shared [`Teams`] core.
+pub struct TeamTool {
+    teams: Arc<Teams>,
+    kind: Kind,
+}
+
+/// Every team tool, sharing one core.
+pub fn tools(teams: Arc<Teams>) -> Vec<TeamTool> {
+    KINDS.iter().map(|&kind| TeamTool { teams: teams.clone(), kind }).collect()
+}
+
 impl DynTool for TeamTool {
     fn name(&self) -> &str {
-        "team"
+        self.kind.name()
     }
 
     fn description(&self) -> String {
-        format!(
-            "Teams — groups of AI employees on THIS Nebo that share one mission and one conversation. \
-             Teams work locally: no hub, no NeboAI connection needed. Every member reads every post; \
-             the LEAD answers the owner and hands steps to teammates by mention; members you mention \
-             are asked to act; @everyone in the text asks the whole team once.\n\
-             USE THIS when: the user wants a team, a group of employees working together on a mission, or asks what teams exist.\n\n\
-             - {create} — Create a team. `agents` is REQUIRED: at least one coworker besides you (you are always a member). Add lead: \"Employee Name\" to name who runs the room; without one the owner leads and every member answers. Returns the team id and members.\n\
-             - team(action: \"update\", team: \"Operations\", lead: \"Executive Assistant\") — Change the lead (also name, mission, agents); lead: \"owner\" makes it owner-led\n\
-             - team(action: \"list\") — The teams on this Nebo with their missions, leads and members\n\
-             - team(action: \"send\", team: \"Operations\", text: \"...\") — Post to the team; the lead answers, or every member once if the team has no lead\n\
-             - team(action: \"send\", team: \"Operations\", text: \"...\", mention: [\"Executive Assistant\"]) — Ask specific members to act\n\
-             - team(action: \"messages\", team: \"Operations\", limit: 20) — Read the team's conversation\n\
-             - team(action: \"members\", team: \"Operations\") — Who is in the team\n\n\
-             `team` takes the team's name or id. To reach ONE coworker outside any team, use message(resource: \"coworker\").",
-            create = team::CREATE_USAGE
-        )
+        self.kind.description()
     }
 
     fn schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "REQUIRED. What to do.",
-                    "enum": ["create", "update", "list", "send", "messages", "members"]
-                },
-                "name": { "type": "string", "description": "Team name (create; update to rename)" },
-                "mission": { "type": "string", "description": "What the team exists to accomplish (create, update)" },
-                "agents": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "REQUIRED for create: employee names to bring into the team — at least one besides yourself. A team with nobody to work with is refused. On update: the full new member list."
-                },
-                "lead": { "type": "string", "description": "Employee name that leads the team — answers the owner and delegates by mention (create, update). \"owner\" on update makes the team owner-led." },
-                "team": { "type": "string", "description": "Team name or id (update, send, messages, members)" },
-                "text": { "type": "string", "description": "Post text (send)" },
-                "mention": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Members asked to act on this post (send). Without it, every member may answer once."
-                },
-                "limit": { "type": "integer", "description": "Max messages to return (messages)" }
-            },
-            "required": ["action"]
-        })
+        self.kind.schema()
     }
-
 
     fn search_hint(&self) -> &str {
-        "teams of employees members posts"
+        self.kind.search_hint()
     }
 
-    fn should_defer(&self) -> bool {
-        false
+    fn read_only(&self, _input: &serde_json::Value) -> bool {
+        self.kind.read_only()
     }
 
-    fn read_only(&self, input: &serde_json::Value) -> bool {
-        matches!(input.get("action").and_then(|v| v.as_str()), Some("list" | "messages" | "members"))
+    fn activity(&self, input: &serde_json::Value) -> String {
+        self.kind.labels(input).0
     }
 
-    fn rule_key(&self, input: &serde_json::Value) -> String {
-        match input.get("action").and_then(|v| v.as_str()).unwrap_or("") {
-            "create" => "create_team",
-            "update" => "update_team",
-            "send" => "send_message",
-            "messages" => "team_messages",
-            "members" => "team_members",
-            _ => "list_teams",
-        }
-        .to_string()
-    }
-
-    /// Pre-interface: it settles its own call shapes (see
-    /// `DynTool::validates_input`).
-    fn validates_input(&self) -> bool {
-        false
+    fn outcome(&self, input: &serde_json::Value) -> String {
+        self.kind.labels(input).1
     }
 
     fn execute_dyn<'a>(
@@ -607,21 +623,12 @@ impl DynTool for TeamTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            let action = input["action"].as_str().unwrap_or("").trim();
-            match action {
-                "create" => self.create(&input, ctx).await,
-                "update" | "edit" => self.update(&input),
-                "list" => self.list(),
-                "send" | "post" => self.send(&input, ctx).await,
-                "messages" | "history" => self.messages(&input),
-                "members" => self.members(&input),
-                "" => ToolResult::error(
-                    "Action is required. Available: create, update, list, send, messages, members",
-                ),
-                other => ToolResult::error(format!(
-                    "Unknown team action: {}. Available: create, update, list, send, messages, members",
-                    other
-                )),
+            match self.kind {
+                Kind::Create => self.teams.create(&input, ctx).await,
+                Kind::Update => self.teams.update(&input),
+                Kind::List => self.teams.list(),
+                Kind::Members => self.teams.members(&input),
+                Kind::Messages => self.teams.messages(&input),
             }
         })
     }
@@ -630,6 +637,7 @@ impl DynTool for TeamTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn store() -> Arc<db::Store> {
         let path = std::env::temp_dir().join(format!("nebo-team-tool-test-{}.db", uuid::Uuid::new_v4()));
@@ -642,6 +650,23 @@ mod tests {
             .expect("create agent");
     }
 
+    struct Rig(Vec<TeamTool>);
+
+    impl Rig {
+        fn new(s: &Arc<db::Store>, comm: Option<Arc<dyn CommPlugin>>) -> Self {
+            Rig(tools(Arc::new(Teams::new(Some(s.clone()), comm, None, crate::coworker::new_rail_cell()))))
+        }
+
+        async fn call(&self, ctx: &ToolContext, name: &str, input: serde_json::Value) -> ToolResult {
+            let tool = self.0.iter().find(|t| t.name() == name).expect("a team tool");
+            tool.execute_dyn(ctx, input).await
+        }
+    }
+
+    fn as_employee(id: &str) -> ToolContext {
+        ToolContext { session_key: format!("agent:{id}:web"), ..ToolContext::default() }
+    }
+
     /// The create path with NO comm plugin: the team exists, with the caller
     /// as organizer plus the named coworkers, and no hub channel.
     #[tokio::test]
@@ -649,54 +674,43 @@ mod tests {
         let s = store();
         install(&s, "chief", "Chief of Staff");
         install(&s, "ea", "Executive Assistant");
-        let tool = TeamTool::new(Some(s.clone()), None, None, crate::coworker::new_rail_cell());
-        let ctx = ToolContext {
-            session_key: "agent:chief:web".to_string(),
-            ..ToolContext::default()
-        };
-        let res = tool
-            .execute_dyn(
-                &ctx,
-                serde_json::json!({
-                    "action": "create",
-                    "name": "Operations",
-                    "mission": "Keep the office running",
-                    "agents": ["Executive Assistant"]
-                }),
-            )
+        let rig = Rig::new(&s, None);
+        let ctx = as_employee("chief");
+        let res = rig
+            .call(&ctx, "create_team", json!({"name": "Operations", "mission": "Keep the office running", "members": ["Executive Assistant"]}))
             .await;
         assert!(!res.is_error, "{}", res.content);
         assert!(res.content.contains("Team \"Operations\" exists"), "{}", res.content);
+        assert!(res.content.contains("send_message(to: \"Operations\""), "{}", res.content);
         let teams = s.list_teams().unwrap();
         assert_eq!(teams.len(), 1);
         let ids: Vec<&str> = teams[0].members.iter().map(|m| m.agent_id.as_str()).collect();
         assert_eq!(ids, vec!["chief", "ea"]);
         assert_eq!(teams[0].hub_channel_id, None);
 
-        let listed = tool.execute_dyn(&ctx, serde_json::json!({"action": "list"})).await;
+        let listed = rig.call(&ctx, "list_teams", json!({})).await;
         assert!(listed.content.contains("Operations"), "{}", listed.content);
         assert!(listed.content.contains("Chief of Staff (lead"), "{}", listed.content);
+        let members = rig.call(&ctx, "team_members", json!({"team": "Operations"})).await;
+        assert!(members.content.contains("2 member(s)") && members.content.contains("Executive Assistant"), "{}", members.content);
+        let messages = rig.call(&ctx, "team_messages", json!({"team": "Operations"})).await;
+        assert!(messages.content.contains("No messages in team \"Operations\" yet"), "{}", messages.content);
     }
 
     /// The primary creates a team on the owner's behalf and names the lead;
-    /// later the lead can be changed through update, by name.
+    /// later the lead can be changed through update_team, by name.
     #[tokio::test]
     async fn primary_names_a_lead_and_can_change_it() {
         let s = store();
         install(&s, "ea", "Executive Assistant");
         install(&s, "bk", "Bookkeeper");
-        let tool = TeamTool::new(Some(s.clone()), None, None, crate::coworker::new_rail_cell());
-        let ctx = ToolContext {
-            session_key: format!("agent:{PRIMARY_AGENT_ID}:web"),
-            ..ToolContext::default()
-        };
-        let res = tool
-            .execute_dyn(
+        let rig = Rig::new(&s, None);
+        let ctx = as_employee(PRIMARY_AGENT_ID);
+        let res = rig
+            .call(
                 &ctx,
-                serde_json::json!({
-                    "action": "create", "name": "Back Office", "mission": "Books and calendar",
-                    "agents": ["Executive Assistant", "Bookkeeper"], "lead": "Bookkeeper"
-                }),
+                "create_team",
+                json!({"name": "Back Office", "mission": "Books and calendar", "members": ["Executive Assistant", "Bookkeeper"], "lead": "Bookkeeper"}),
             )
             .await;
         assert!(!res.is_error, "{}", res.content);
@@ -704,15 +718,11 @@ mod tests {
         assert_eq!(t.organizer_agent_id, "bk");
         assert!(!res.content.contains("no lead yet"), "{}", res.content);
 
-        let res = tool
-            .execute_dyn(&ctx, serde_json::json!({ "action": "update", "team": "Back Office", "lead": "Executive Assistant" }))
-            .await;
+        let res = rig.call(&ctx, "update_team", json!({"team": "Back Office", "lead": "Executive Assistant"})).await;
         assert!(!res.is_error, "{}", res.content);
         assert_eq!(s.list_teams().unwrap()[0].organizer_agent_id, "ea");
 
-        let res = tool
-            .execute_dyn(&ctx, serde_json::json!({ "action": "update", "team": "Back Office", "lead": "Nobody Here" }))
-            .await;
+        let res = rig.call(&ctx, "update_team", json!({"team": "Back Office", "lead": "Nobody Here"})).await;
         assert!(res.is_error && res.content.contains("NOT changed"), "{}", res.content);
         assert_eq!(s.list_teams().unwrap()[0].organizer_agent_id, "ea");
     }
@@ -725,17 +735,8 @@ mod tests {
         install(&s, "ea", "Executive Assistant");
         let comm: Arc<dyn CommPlugin> = Arc::new(comm::LoopbackPlugin::new());
         comm.connect(std::collections::HashMap::new()).await.unwrap();
-        let tool = TeamTool::new(Some(s.clone()), Some(comm), None, crate::coworker::new_rail_cell());
-        let ctx = ToolContext {
-            session_key: "agent:chief:web".to_string(),
-            ..ToolContext::default()
-        };
-        let res = tool
-            .execute_dyn(
-                &ctx,
-                serde_json::json!({"action": "create", "name": "Sales", "agents": ["ea"]}),
-            )
-            .await;
+        let rig = Rig::new(&s, Some(comm));
+        let res = rig.call(&as_employee("chief"), "create_team", json!({"name": "Sales", "members": ["ea"]})).await;
         assert!(!res.is_error, "{}", res.content);
         assert_eq!(s.list_teams().unwrap()[0].hub_channel_id, None);
     }
@@ -746,28 +747,26 @@ mod tests {
     async fn create_refuses_solo_and_unknown_members() {
         let s = store();
         install(&s, "chief", "Chief of Staff");
-        let tool = TeamTool::new(Some(s.clone()), None, None, crate::coworker::new_rail_cell());
-        let ctx = ToolContext {
-            session_key: "agent:chief:web".to_string(),
-            ..ToolContext::default()
-        };
-        let solo = tool
-            .execute_dyn(&ctx, serde_json::json!({"action": "create", "name": "Solo"}))
-            .await;
+        let rig = Rig::new(&s, None);
+        let ctx = as_employee("chief");
+        let solo = rig.call(&ctx, "create_team", json!({"name": "Solo", "members": []})).await;
         assert!(solo.is_error);
-        assert!(solo.content.contains("at least two employees"), "{}", solo.content);
+        assert!(solo.content.contains("at least two employees") && solo.content.contains("create_team("), "{}", solo.content);
 
-        let unknown = tool
-            .execute_dyn(
-                &ctx,
-                serde_json::json!({"action": "create", "name": "Ops", "agents": ["Nobody"]}),
-            )
-            .await;
+        let unknown = rig.call(&ctx, "create_team", json!({"name": "Ops", "members": ["Nobody"]})).await;
         assert!(unknown.is_error);
         assert!(unknown.content.contains("No employee named \"Nobody\""), "{}", unknown.content);
         assert!(s.list_teams().unwrap().is_empty());
 
-        let empty = tool.execute_dyn(&ctx, serde_json::json!({"action": "list"})).await;
+        let empty = rig.call(&ctx, "list_teams", json!({})).await;
         assert_eq!(empty.content, team::no_teams_hint());
+    }
+
+    #[test]
+    fn reads_are_read_only_and_changes_are_not() {
+        let rig = Rig::new(&store(), None);
+        for t in &rig.0 {
+            assert_eq!(t.read_only(&json!({})), matches!(t.name(), "list_teams" | "team_members" | "team_messages"), "{}", t.name());
+        }
     }
 }

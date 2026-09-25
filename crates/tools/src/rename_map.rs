@@ -80,7 +80,97 @@ pub const RENAMES: &[Rename] = &[
     skill(Some("secrets"), "configure_skill"),
     skill(Some("rate"), "rate_skill"),
     skill(Some("reviews"), "read_skill_reviews"),
+    // The `event` tool (tools WP9): one tool per scheduling job. A pause and
+    // a resume both become set_schedule_paused (`paused: true` / `false`).
+    flat("event", "create", "create_schedule", &[("schedule", "cron")]),
+    flat("event", "list", "list_schedules", &[]),
+    flat("event", "delete", "delete_schedule", &[]),
+    flat("event", "pause", "set_schedule_paused", &[]),
+    flat("event", "resume", "set_schedule_paused", &[]),
+    flat("event", "run", "run_schedule_now", &[]),
+    flat("event", "history", "schedule_history", &[]),
+    // The `team` tool (tools WP9). A team post is send_message to the team.
+    flat("team", "create", "create_team", &[("agents", "members")]),
+    flat("team", "update", "update_team", &[("agents", "members")]),
+    flat("team", "edit", "update_team", &[("agents", "members")]),
+    flat("team", "list", "list_teams", &[]),
+    flat("team", "send", "send_message", TEAM_POST),
+    flat("team", "post", "send_message", TEAM_POST),
+    flat("team", "messages", "team_messages", &[]),
+    flat("team", "history", "team_messages", &[]),
+    flat("team", "members", "team_members", &[]),
+    // The `loop` tool (tools WP9): the NeboAI hub, one tool per job. A
+    // direct message and a channel post are one send_loop_message; the old
+    // `group` resource is a loop; a `workroom` is a team.
+    hub("dm", "send", "send_loop_message", &[]),
+    hub("dm", "share", "share_to_loop", &[]),
+    hub("channel", "send", "send_loop_message", &[]),
+    hub("channel", "share", "share_to_loop", &[]),
+    hub("channel", "ensure", "ensure_loop_channel", &[]),
+    hub("channel", "list", "list_loop_channels", &[]),
+    hub("channel", "messages", "read_loop_channel", &[]),
+    hub("channel", "members", "loop_channel_members", &[]),
+    hub("loop", "list", "list_loops", &[]),
+    hub("loop", "get", "get_loop", &[]),
+    hub("loop", "members", "loop_members", &[]),
+    hub("group", "list", "list_loops", &[]),
+    hub("group", "get", "get_loop", &[]),
+    hub("group", "members", "loop_members", &[]),
+    hub("topic", "subscribe", "subscribe_topic", &[]),
+    hub("topic", "unsubscribe", "unsubscribe_topic", &[]),
+    hub("topic", "status", "topic_status", &[]),
+    hub("workroom", "create", "create_team", &[("agents", "members")]),
+    hub("workroom", "ensure", "create_team", &[("agents", "members")]),
+    hub("workroom", "list", "list_teams", &[]),
+    hub("workroom", "send", "send_message", TEAM_POST),
+    hub("workroom", "messages", "team_messages", &[]),
+    hub("workroom", "members", "team_members", &[]),
+    // The `work` tool (tools WP9). Its lifecycle actions took no resource;
+    // the calls on one workflow named it in `resource`, which is now the
+    // `workflow` parameter. `agent` is now `employee`. Enabling is a state
+    // (`enabled: true` / `false`), not a toggle.
+    flat("work", "list", "list_workflows", EMPLOYEE),
+    flat("work", "install", "install_workflow", &[]),
+    flat("work", "uninstall", "uninstall_workflow", &[]),
+    flat("work", "create", "create_workflow", EMPLOYEE),
+    flat("work", "update", "update_workflow", EMPLOYEE),
+    flat("work", "edit", "update_workflow", EMPLOYEE),
+    flat("work", "delete", "delete_workflow", EMPLOYEE),
+    flat("work", "cancel", "stop_task", &[("id", "task_id")]),
+    flat("work", "run", "run_workflow", ON_WORKFLOW),
+    flat("work", "status", "workflow_status", ON_WORKFLOW),
+    flat("work", "runs", "list_workflow_runs", ON_WORKFLOW),
+    flat("work", "toggle", "set_workflow_enabled", ON_WORKFLOW),
+    // The `emit` tool (tools WP9).
+    Rename { tool: "emit", resource: None, action: None, to: "emit_event", params: &[] },
 ];
+
+/// A team post's parameters as send_message takes them.
+const TEAM_POST: &[(&str, &str)] = &[("team", "to"), ("text", "message")];
+/// The employee whose workflows a call manages.
+const EMPLOYEE: &[(&str, &str)] = &[("agent", "employee")];
+/// A call on one workflow: the workflow and the employee it belongs to.
+const ON_WORKFLOW: &[(&str, &str)] = &[("resource", "workflow"), ("agent", "employee")];
+
+/// A retired `tool(action)` shape of a tool with no resources.
+const fn flat(
+    tool: &'static str,
+    action: &'static str,
+    to: &'static str,
+    params: &'static [(&'static str, &'static str)],
+) -> Rename {
+    Rename { tool, resource: None, action: Some(action), to, params }
+}
+
+/// A retired `loop(resource, action)` shape.
+const fn hub(
+    resource: &'static str,
+    action: &'static str,
+    to: &'static str,
+    params: &'static [(&'static str, &'static str)],
+) -> Rename {
+    Rename { tool: "loop", resource: Some(resource), action: Some(action), to, params }
+}
 
 /// A retired `skill(action)` shape.
 const fn skill(action: Option<&'static str>, to: &'static str) -> Rename {

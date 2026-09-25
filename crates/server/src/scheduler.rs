@@ -231,7 +231,7 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
 }
 
 /// Fire a cron job whose originating channel context was captured at
-/// `event(create)` time. Runs the agent with the same `ChannelContext` the
+/// `create_schedule` time. Runs the agent with the same `ChannelContext` the
 /// inbound message would have carried, then writes the response to the
 /// channel-plugin bridge as an `op: "post"` so it lands in the originating
 /// thread.

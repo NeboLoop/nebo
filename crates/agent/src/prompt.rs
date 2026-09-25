@@ -171,13 +171,11 @@ tool(resource: "...", action: "...", param: "value")
 
 Examples:
 - os(resource: "file", action: "read", path: "/etc/hosts")
-- event(action: "create", name: "call-back", at: "in 3 hours", task_type: "agent", prompt: "Remind the user to call back")
 - agent(resource: "task", action: "spawn", prompt: "...")
 
 **Core tools** (always available):
 - **agent** — spawn sub-agents, manage your task list, memory, sessions, context, advisors, and list installed agents (resource: "registry")
 - **os** — file read/write/edit, shell commands, search. Write requires the `content` field.
-- **event** — scheduling, reminders, alarms
 - **message** — user communication, notifications, and coworkers: work for a named AI employee is message(resource: "coworker"), never a spawn
 - **use_skill** — load a skill: packaged instructions for a kind of work. Skills are listed by name with one line each; load a matching one before starting
 - **plugin** — run installed plugin binaries (subcommand only — binary auto-resolved)
@@ -538,16 +536,12 @@ const STRAP_OS: &str = concat!(include_str!("strap/os_shared.txt"), include_str!
 
 const STRAP_AGENT: &str = include_str!("strap/agent.txt");
 const STRAP_CODE: &str = include_str!("strap/code.txt");
-const STRAP_EVENT: &str = include_str!("strap/event.txt");
-const STRAP_LOOP: &str = include_str!("strap/loop.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
-const STRAP_WORK: &str = include_str!("strap/work.txt");
 const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
 const STRAP_MCP: &str = include_str!("strap/mcp.txt");
 const STRAP_PLUGIN: &str = include_str!("strap/plugin.txt");
 const STRAP_VM: &str = include_str!("strap/vm.txt");
 const STRAP_PUBLISHER: &str = include_str!("strap/publisher.txt");
-const STRAP_EMIT: &str = include_str!("strap/emit.txt");
 
 // OS sub-context docs (keyword-activated, extend the OS tool)
 #[cfg(target_os = "windows")]
@@ -570,16 +564,12 @@ pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
         "os" => Some(STRAP_OS),
         "agent" => Some(STRAP_AGENT),
         "code" => Some(STRAP_CODE),
-        "event" => Some(STRAP_EVENT),
-        "loop" => Some(STRAP_LOOP),
         "message" => Some(STRAP_MESSAGE),
-        "work" => Some(STRAP_WORK),
         "execute" => Some(STRAP_EXECUTE),
         "mcp" => Some(STRAP_MCP),
         "plugin" => Some(STRAP_PLUGIN),
         "vm" => Some(STRAP_VM),
         "publisher" => Some(STRAP_PUBLISHER),
-        "emit" => Some(STRAP_EMIT),
         _ => None,
     }
 }
