@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "এই দফার প্রসঙ্গ: {files}টি ফাইল {times} বার আবার পড়া হয়েছে, {passes}টি সংকোচন পাস।",
+		"goalLine": "লক্ষ্য: {condition} ({turns} দফা)",
+		"goalLastCheck": "শেষ যাচাই: {reason}",
+		"goalPaused": "বিরতিতে আছে। আপনার পরের বার্তা আবার শুরু করবে।",
 		"resumedActivity": "এখনও কাজ করছেন: {tool}",
 		"waitingForYou": "আপনার অপেক্ষায়",
 		"subagentStep": "{op} · ধাপ {n}",
@@ -2463,6 +2466,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "একটি ধাপের {n}টি কাজের জন্য আপনার অনুমোদন দরকার",
+			"goalHeadline": "এই লক্ষ্যে একমত? যাচাই নিশ্চিত না করা পর্যন্ত কাজ চলবে।",
 			"yourAgent": "আপনার এজেন্ট"
 		},
 		"approvalModal": {
