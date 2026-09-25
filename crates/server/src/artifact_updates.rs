@@ -281,7 +281,7 @@ async fn check_plugin(
     }
 
     let platform = current_platform();
-    match api.get_plugin(&plugin.slug, &platform).await {
+    match api.get_plugin::<napp::plugin::PluginManifest>(&plugin.slug, &platform).await {
         Ok(manifest) => {
             let remote = &manifest.version;
             if remote.is_empty() {

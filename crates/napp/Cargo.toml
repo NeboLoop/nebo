@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true }
 types = { workspace = true }
+comm = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

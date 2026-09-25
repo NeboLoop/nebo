@@ -517,6 +517,8 @@ pub struct RedeemCodeRequest {
     pub purpose: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bot_id: String,
+    /// What the bot runs: "nebo", "openclaw" or "hermes".
+    pub runtime: String,
 }
 
 /// Returned by POST /api/v1/bots/connect/redeem.

@@ -29,6 +29,9 @@ pub struct ConnectPayload {
     /// The machine's hostname (".local" stripped) — "which computer is this?".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
+    /// What the bot runs: "nebo", "openclaw" or "hermes".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
     /// This client ACKs deliveries, so its subscriber offset actually tracks
     /// what it has processed. The gateway only backfills an agent space for
     /// clients that set this: replaying to a client that never acks would
@@ -262,6 +265,7 @@ mod tests {
             agent_color: Some("violet".into()),
             platform: Some("linux".into()),
             hostname: Some("devbox".into()),
+            runtime: Some("nebo".into()),
             acks_offsets: true,
             instance_id: Some("8f0c7d1e-0000-4000-8000-000000000001".into()),
             lease_epoch: 4,
@@ -274,6 +278,7 @@ mod tests {
         assert!(json.contains("\"agentHandle\":\"atlas\""));
         assert!(json.contains("\"agentColor\":\"violet\""));
         assert!(json.contains("\"acksOffsets\":true"));
+        assert!(json.contains("\"runtime\":\"nebo\""));
         let p2: ConnectPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(p2.bot_id.as_deref(), Some("bot-123"));
         assert_eq!(p2.agent_name.as_deref(), Some("Atlas"));

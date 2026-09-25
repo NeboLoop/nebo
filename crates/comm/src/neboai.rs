@@ -401,6 +401,7 @@ impl CommPlugin for NeboAIPlugin {
                 .cloned(),
             platform: config.get("platform").filter(|v| !v.is_empty()).cloned(),
             hostname: config.get("hostname").filter(|v| !v.is_empty()).cloned(),
+            runtime: config.get("runtime").filter(|v| !v.is_empty()).cloned(),
             // The read loop acks every delivery it dispatches, so the gateway
             // may safely backfill this connection's agent spaces.
             acks_offsets: true,
