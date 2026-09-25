@@ -29,7 +29,7 @@ pub fn is_simple_command(cmd: &str) -> bool {
 /// Derive the allowlist pattern to store for an "Approve Always" on a shell
 /// command, or `None` if the command must never be allowlisted: not simple
 /// (compound), an interpreter/wrapper, or a path-based invocation (`./x`,
-/// `/abs/x`). Pairs with [`command_matches`] (same shape).
+/// `/abs/x`). Pairs with [`Subcommand::covered_by`] (same shape).
 pub fn command_prefix(cmd: &str) -> Option<String> {
     let cmd = cmd.trim();
     if !is_simple_command(cmd) {
@@ -49,30 +49,173 @@ pub fn command_prefix(cmd: &str) -> Option<String> {
     Some(first.to_string())
 }
 
-/// Does `cmd` match any stored allowlist `pattern` (exact / first-word /
-/// two-word)? Only simple commands can match — a compound command always
-/// re-asks even if its leading binary is allowlisted.
-pub fn command_matches(patterns: &[String], cmd: &str) -> bool {
-    let cmd = cmd.trim();
-    if !is_simple_command(cmd) {
-        return false;
+/// One command a shell call runs, as the permission rules judge it: its
+/// words with quoting removed and run-only wrappers (`nohup`, `timeout 5`,
+/// `env`, …) stripped. A `None` word is only known when the call runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subcommand {
+    assigns: bool,
+    words: Vec<Option<String>>,
+}
+
+/// Shells whose `-c` argument is itself a script.
+const SCRIPT_SHELLS: &[&str] = &["bash", "sh", "zsh", "dash", "ksh"];
+
+/// How deep `bash -c "bash -c '…'"` / `eval` nesting is read before the
+/// rest counts as unreadable.
+const MAX_SCRIPT_DEPTH: usize = 8;
+
+impl Subcommand {
+    /// A command that can't be read: it may be anything.
+    fn unknown() -> Self {
+        Subcommand { assigns: false, words: vec![None] }
     }
-    if patterns.iter().any(|p| p == cmd) {
-        return true;
-    }
-    let parts: Vec<&str> = cmd.split_whitespace().collect();
-    if let Some(&first) = parts.first() {
-        if patterns.iter().any(|p| p == first) {
-            return true;
+
+    /// Whether the rule prefix `pattern` — one word, two words, or an exact
+    /// command — covers this command. An allow (`allow`) is strict: an
+    /// unknown word or a variable prefix (`PATH=… ls`) never matches it. A
+    /// deny or ask reads an unknown word as anything, so it covers the call.
+    pub fn covered_by(&self, pattern: &str, allow: bool) -> bool {
+        let pattern: Vec<&str> = pattern.split_whitespace().collect();
+        if pattern.is_empty() || (allow && self.assigns) {
+            return false;
         }
-        if parts.len() > 1 {
-            let two = format!("{} {}", first, parts[1]);
-            if patterns.iter().any(|p| p == &two) {
-                return true;
+        for (i, p) in pattern.iter().enumerate() {
+            match self.words.get(i) {
+                Some(Some(w)) if w == p => {}
+                Some(None) => return !allow,
+                _ => return false,
             }
         }
+        let rest = &self.words[pattern.len()..];
+        pattern.len() <= 2 || rest.is_empty() || (!allow && rest.iter().all(Option::is_none))
     }
-    false
+}
+
+/// Every command a shell call runs: each one of a compound command (`&&`,
+/// `||`, `;`, `|`, newlines), the ones in subshells, `$(…)`, backticks and
+/// redirect targets, and the scripts `bash -c` / `sh -c` / `eval` run. A
+/// script that doesn't parse is one unknown command (see
+/// [`Subcommand::covered_by`]); one that runs nothing is one empty command,
+/// which no command rule covers.
+pub fn subcommands(cmd: &str) -> Vec<Subcommand> {
+    let mut out = Vec::new();
+    collect_subcommands(cmd, 0, &mut out);
+    if out.is_empty() {
+        out.push(Subcommand { assigns: false, words: Vec::new() });
+    }
+    out
+}
+
+fn collect_subcommands(script: &str, depth: usize, out: &mut Vec<Subcommand>) {
+    let parsed = if depth < MAX_SCRIPT_DEPTH { syntax::shell_commands(script) } else { None };
+    let Some(commands) = parsed else {
+        out.push(Subcommand::unknown());
+        return;
+    };
+    for command in commands {
+        let mut sub = Subcommand { assigns: command.assigns, words: command.words };
+        unwrap_wrappers(&mut sub);
+        match inline_script(&sub.words) {
+            Some(Some(inner)) => collect_subcommands(&inner, depth + 1, out),
+            Some(None) => out.push(Subcommand::unknown()),
+            None => {}
+        }
+        out.push(sub);
+    }
+}
+
+/// Strip the wrappers that only run the command after them (`nohup rm x` runs
+/// `rm x`). A wrapper whose flags it can't read makes the command unknown.
+fn unwrap_wrappers(sub: &mut Subcommand) {
+    loop {
+        let Some(Some(name)) = sub.words.first() else { return };
+        let name = name.clone();
+        let args = sub.words[1..].to_vec();
+        let arg = |i: usize| args.get(i).cloned().flatten();
+        let flag = |i: usize| arg(i).filter(|a| a.starts_with('-') && a != "--");
+        let mut i = 0;
+        match name.as_str() {
+            "time" | "nohup" | "command" | "builtin" | "stdbuf" => {
+                while flag(i).is_some() {
+                    i += 1;
+                }
+            }
+            "exec" | "timeout" | "nice" => {
+                while let Some(a) = flag(i) {
+                    let valued = matches!(a.as_str(), "-a" | "-k" | "-s" | "-n" | "--kill-after" | "--signal");
+                    i += if valued { 2 } else { 1 };
+                }
+            }
+            "env" => {
+                while let Some(a) = flag(i).or_else(|| arg(i).filter(|a| a.contains('='))) {
+                    if a.starts_with("-S") || a.starts_with("--split-string") {
+                        // Its argument is itself a command line.
+                        *sub = Subcommand::unknown();
+                        return;
+                    }
+                    sub.assigns |= a.contains('=') && !a.starts_with('-');
+                    i += if matches!(a.as_str(), "-u" | "-C" | "-S") { 2 } else { 1 };
+                }
+            }
+            _ => return,
+        }
+        if arg(i).as_deref() == Some("--") {
+            i += 1;
+        }
+        if i >= args.len() {
+            // The wrapper alone (`time`, `env`): it is the command.
+            return;
+        }
+        if name == "timeout" {
+            let duration = |d: &str| d.trim_end_matches(['s', 'm', 'h', 'd']).parse::<f64>().is_ok();
+            if !arg(i).is_some_and(|d| duration(&d)) {
+                *sub = Subcommand::unknown();
+                return;
+            }
+            i += 1;
+        }
+        if args[..i].iter().any(Option::is_none) {
+            *sub = Subcommand::unknown();
+            return;
+        }
+        sub.words = args[i..].to_vec();
+    }
+}
+
+/// The script a command runs from a string: `bash -c '…'` and the like, or
+/// `eval …`. `Some(None)` when that script is only known when it runs.
+fn inline_script(words: &[Option<String>]) -> Option<Option<String>> {
+    let Some(Some(name)) = words.first() else { return None };
+    if name == "eval" {
+        let args = &words[1..];
+        if args.is_empty() {
+            return None;
+        }
+        return Some(args.iter().cloned().collect::<Option<Vec<_>>>().map(|a| a.join(" ")));
+    }
+    if !SCRIPT_SHELLS.contains(&name.as_str()) {
+        return None;
+    }
+    let mut has_c = false;
+    let mut i = 1;
+    while let Some(word) = words.get(i) {
+        let Some(a) = word else { return Some(None) };
+        if a == "--" || !(a.starts_with('-') || a.starts_with('+')) {
+            if a == "--" {
+                i += 1;
+            }
+            break;
+        }
+        if !a.starts_with("--") && a[1..].contains('c') {
+            has_c = true;
+        }
+        i += if matches!(a.as_str(), "-o" | "+o" | "--rcfile" | "--init-file") { 2 } else { 1 };
+    }
+    if !has_c {
+        return None;
+    }
+    words.get(i).cloned()
 }
 
 /// Check if a command appears dangerous.
@@ -306,6 +449,69 @@ impl CompanyPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(cmd: &str) -> Vec<(bool, Vec<Option<String>>)> {
+        subcommands(cmd).into_iter().map(|s| (s.assigns, s.words)).collect()
+    }
+
+    fn lit(ws: &[&str]) -> Vec<Option<String>> {
+        ws.iter().map(|w| Some(w.to_string())).collect()
+    }
+
+    #[test]
+    fn a_shell_call_splits_into_every_command_it_runs() {
+        let plain = |ws: &[&[&str]]| ws.iter().map(|w| (false, lit(w))).collect::<Vec<_>>();
+        let cases: &[(&str, Vec<(bool, Vec<Option<String>>)>)] = &[
+            ("ls && rm -rf x", plain(&[&["ls"], &["rm", "-rf", "x"]])),
+            ("ls || rm x", plain(&[&["ls"], &["rm", "x"]])),
+            ("ls; rm x", plain(&[&["ls"], &["rm", "x"]])),
+            ("ls | rm x", plain(&[&["ls"], &["rm", "x"]])),
+            ("ls\nrm x", plain(&[&["ls"], &["rm", "x"]])),
+            ("(cd a; rm b)", plain(&[&["cd", "a"], &["rm", "b"]])),
+            ("echo \"a && b\"", plain(&[&["echo", "a && b"]])),
+            ("echo 'a; rm b'", plain(&[&["echo", "a; rm b"]])),
+            ("'r'm x", plain(&[&["rm", "x"]])),
+            ("r\\m x", plain(&[&["rm", "x"]])),
+            ("rm x > out.txt 2>&1", plain(&[&["rm", "x"]])),
+            ("bash -c 'ls && rm -rf x'", plain(&[&["ls"], &["rm", "-rf", "x"], &["bash", "-c", "ls && rm -rf x"]])),
+            ("sh -ec \"rm x\"", plain(&[&["rm", "x"], &["sh", "-ec", "rm x"]])),
+            ("eval rm x", plain(&[&["rm", "x"], &["eval", "rm", "x"]])),
+            ("nohup timeout -s KILL 5 nice -n 3 rm x", plain(&[&["rm", "x"]])),
+            ("time", plain(&[&["time"]])),
+            ("", plain(&[&[]])),
+            ("FOO=1 rm x", vec![(true, lit(&["rm", "x"]))]),
+            ("env A=1 rm x", vec![(true, lit(&["rm", "x"]))]),
+        ];
+        for (cmd, want) in cases {
+            assert_eq!(&words(cmd), want, "{cmd:?}");
+        }
+        // Substitutions and backticks run their own commands; the outer word
+        // is only known when it runs.
+        assert_eq!(words("echo $(rm y)"), vec![(false, vec![Some("echo".into()), None]), (false, lit(&["rm", "y"]))]);
+        assert_eq!(words("echo `rm y`"), vec![(false, vec![Some("echo".into()), None]), (false, lit(&["rm", "y"]))]);
+        assert_eq!(words("ls > $(rm z)"), vec![(false, lit(&["ls"])), (false, lit(&["rm", "z"]))]);
+        // What can't be read is one unknown command.
+        for cmd in ["ls &&", "bash -c \"$X\"", "eval \"$X\"", "timeout -k $K 5 rm x", "env -S 'rm x'"] {
+            assert_eq!(words(cmd)[0], (false, vec![None]), "{cmd:?}");
+        }
+        assert_eq!(words("$CMD x"), vec![(false, vec![None, Some("x".into())])]);
+    }
+
+    #[test]
+    fn an_allow_is_strict_and_a_deny_reads_the_unknown_as_anything() {
+        let sub = |ws: Vec<Option<String>>, assigns| Subcommand { assigns, words: ws };
+        let git_push = sub(lit(&["git", "push", "origin"]), false);
+        assert!(git_push.covered_by("git", true) && git_push.covered_by("git push", true));
+        assert!(!git_push.covered_by("git pull", false));
+        assert!(git_push.covered_by("git push origin", true), "exact");
+        assert!(!sub(lit(&["ls"]), true).covered_by("ls", true), "a variable prefix never meets an allow");
+        assert!(sub(lit(&["rm", "x"]), true).covered_by("rm", false));
+        let dynamic = sub(vec![Some("git".into()), None], false);
+        assert!(dynamic.covered_by("git push", false) && !dynamic.covered_by("git push", true));
+        assert!(Subcommand::unknown().covered_by("rm -rf /", false));
+        assert!(!Subcommand::unknown().covered_by("ls", true));
+        assert!(!sub(Vec::new(), false).covered_by("rm", false), "an empty command runs nothing");
+    }
 
     #[test]
     fn destructive_git_is_named_and_the_safe_forms_pass() {
