@@ -381,6 +381,17 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
             .sessions
             .append_message(session_id, "user", text, None, None, Some(r#"{"isMeta":true,"hiddenPrompt":true}"#))
             .map(|_| ()),
+        TurnInput::Coworker { from, text } => h
+            .sessions
+            .append_message(
+                session_id,
+                "user",
+                text,
+                None,
+                None,
+                Some(&MidTurnFrom::Coworker { from: from.clone() }.metadata()),
+            )
+            .map(|_| ()),
         TurnInput::Notification(c) => h
             .sessions
             .append_message(
@@ -389,7 +400,7 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
                 &super::delegation::render_notification(c),
                 None,
                 None,
-                Some(&super::delegation::notify::row_metadata(&[])),
+                Some(&super::delegation::notify::row_metadata(&c.taint)),
             )
             .map(|_| ()),
         TurnInput::None => Ok(()),
@@ -636,9 +647,10 @@ pub(crate) async fn prepare(
     // it once it has finished.
     let history = h.sessions.get_messages_since_checkpoint(session_id).unwrap_or_default();
     let mut surfaced = super::memory_context::surfaced_memories(&history);
-    // Only the owner's words are searched for; other input recalls nothing.
+    // The words someone wrote are searched for (a coworker's recall under
+    // its audience limit); other input recalls nothing.
     let recall_prompt = match &req.input {
-        TurnInput::Owner { text, .. } => text.as_str(),
+        TurnInput::Owner { text, .. } | TurnInput::Coworker { text, .. } => text.as_str(),
         _ => "",
     };
     let recall = super::memory_context::RecallPrefetch::start(
@@ -746,10 +758,11 @@ pub(crate) async fn prepare(
 
 /// Store the turn's input as its row.
 async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result<(), String> {
-    let (text, images, attachments, hidden): (&str, &[ai::ImageContent], &[comm::wire::Attachment], bool) =
+    let (text, images, attachments, hidden, coworker): (&str, &[ai::ImageContent], &[comm::wire::Attachment], bool, Option<&str>) =
         match &req.input {
-            TurnInput::Owner { text, images, attachments } => (text, images, attachments, false),
-            TurnInput::Platform { text } => (text, &[], &[], true),
+            TurnInput::Owner { text, images, attachments } => (text, images, attachments, false, None),
+            TurnInput::Platform { text } => (text, &[], &[], true, None),
+            TurnInput::Coworker { from, text } => (text, &[], &[], false, Some(from.as_str())),
             TurnInput::Notification(c) => {
                 return h
                     .sessions
@@ -759,7 +772,7 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
                         &super::delegation::render_notification(c),
                         None,
                         None,
-                        Some(&super::delegation::notify::row_metadata(&[])),
+                        Some(&super::delegation::notify::row_metadata(&c.taint)),
                     )
                     .map(|_| ())
                     .map_err(|e| format!("failed to store the notification: {e}"));
@@ -781,6 +794,7 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
             attachments,
             hidden,
             by_owner: !hidden && owner_speaks(req),
+            coworker,
         },
     )
     .await
@@ -935,6 +949,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             memory_writes_disabled: cx.seat.memory.writes_disabled,
             memory_write_bar: &cx.seat.write_bar,
             audience_restricted: cx.seat.audience_restricted,
+            audience: cx.request.seat.audience.as_deref(),
             memory_matter: &cx.seat.memory_matter,
             run_taint: &cx.taint,
             review_fork: cx.review_fork.as_ref(),
@@ -978,6 +993,11 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 providers: &h.providers,
                 selector: &h.selector,
                 concurrency: &h.concurrency,
+                priority: if owner_in_turn(&cx.request) {
+                    crate::concurrency::Priority::Owner
+                } else {
+                    crate::concurrency::Priority::Work
+                },
                 sessions,
                 cancel: &cx.request.cancel,
                 tx: &cx.tx,
@@ -1237,6 +1257,22 @@ async fn step_events(
     if let Some(delta) = events::LinedDelta::between(&events::announced("agents_listing", conversation), &team) {
         st.reminders.add(&TurnEvent::AgentsListing(delta));
     }
+    let teams: events::Listing = h
+        .store
+        .list_teams()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| {
+            let roster = tools::team::member_roster(&h.store, &t);
+            let lead = tools::team::lead_of(&t).and_then(|id| roster.iter().find(|(m, _)| *m == id).map(|(_, name)| name.as_str()));
+            let members: Vec<String> = roster.iter().map(|(_, name)| name.clone()).collect();
+            let line = events::team_line(&t.mission, lead, &members);
+            (t.name, line)
+        })
+        .collect();
+    if let Some(delta) = events::LinedDelta::between(&events::announced("teams_listing", conversation), &teams) {
+        st.reminders.add(&TurnEvent::TeamsListing(delta));
+    }
     st.recall.land(&mut st.reminders, &mut st.surfaced_memories, &h.store);
 
     if let Some(delta) = listing {
@@ -1406,7 +1442,8 @@ async fn checkpoint(
     let mut hooks: Vec<Box<dyn compact::checkpoint::PreCheckpointHook>> = Vec::new();
     if !cx.seat.memory.writes_disabled {
         hooks.push(Box::new(compact::checkpoint::MemoryFlush {
-            provider: provider.clone(),
+            // Housekeeping: the background pool, like every memory write.
+            provider: h.concurrency.background(provider.clone()),
             store: h.store.clone(),
             user_id: cx.seat.memory.user_id.clone(),
             topics: cx.seat.memory_topics.clone(),
@@ -2852,6 +2889,162 @@ mod tests {
         let rows = stored(&h);
         assert_eq!(rows.iter().filter(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)).count(), 1);
         assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
+    }
+
+    /// A tool result that carries untrusted content (a helper's report of
+    /// what it read).
+    struct Relay;
+
+    impl tools::registry::DynTool for Relay {
+        fn name(&self) -> &str {
+            "relay"
+        }
+        fn description(&self) -> String {
+            "relays a helper's report".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                tools::ToolResult::ok("the page says 40% off").with_taint(vec![types::provenance::ProvenanceClass::Web])
+            })
+        }
+    }
+
+    /// Parity 5.1: a result that carries untrusted content taints the run
+    /// that reads it — the turn's provenance names it at its end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_result_that_carries_what_a_helper_read_taints_the_run() {
+        let model = Scripted::new(vec![Step::Call("relay", serde_json::json!({})), Step::Say("It is 40% off.")]);
+        let h = harness_with(&model, vec![Box::new(Relay)]).await;
+        let events = run_turn(&h, owner("What does the sale page say?")).await;
+        let done = events.iter().find(|e| e.event_type == ai::StreamEventType::Done).unwrap();
+        assert_eq!(done.provenance.clone().unwrap_or_default(), vec![types::provenance::ProvenanceClass::Web]);
+    }
+
+    /// The text of the latest stored attachment row of `kind`.
+    fn latest_row(h: &Harness, kind: &str) -> Option<String> {
+        stored(h).into_iter().rev().find(|m| reminders::attachment_kind(m).as_deref() == Some(kind)).map(|m| m.content)
+    }
+
+    /// B10: the employee the owner talks to sees who owns which job — each
+    /// employee's name and job, and each team's name, what it owns, its
+    /// lead and its members — as roster rows (Claude Code's agent listing),
+    /// never in the system prompt. A restaffed team is told again as a
+    /// delta: only what changed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_roster_names_who_owns_which_job_and_follows_restaffing() {
+        let model = Scripted::new(vec![Step::Say("Hi."), Step::Say("Noted."), Step::Say("Still here.")]);
+        let h = harness(&model).await;
+        for (id, name, job) in [
+            ("bk", "Bookkeeper", "Keeps the books and reports the budget."),
+            ("ava", "Ava", "Plans the marketing calendar."),
+            ("bo", "Bo", "Writes the ads."),
+        ] {
+            h.store.create_agent(id, None, name, job, "", "", None, None).unwrap();
+        }
+        h.store
+            .create_team("t-mkt", "Marketing", "every campaign we run", &[db::TeamMember::local("ava"), db::TeamMember::local("bo")], "ava", None)
+            .unwrap();
+        h.store
+            .create_team("t-ops", "Ops", "", &[db::TeamMember::local("bk"), db::TeamMember::local("bo")], "", None)
+            .unwrap();
+
+        run_turn(&h, owner("Who handles what?")).await;
+        let agents = latest_row(&h, "agents_listing").expect("the employees are listed");
+        assert!(agents.contains("- Bookkeeper: Keeps the books and reports the budget."), "{agents}");
+        let teams = latest_row(&h, "teams_listing").expect("the teams are listed");
+        assert!(teams.contains("- Marketing: owns every campaign we run; lead: Ava; members: Ava, Bo"), "{teams}");
+        assert!(teams.contains("- Ops: owns nothing stated yet; no lead set; members: Bookkeeper, Bo"), "{teams}");
+        assert!(model.calls()[0].system == crate::harness::prompt::system_prompt(), "never in the system prompt");
+
+        run_turn(&h, owner("Thanks")).await;
+        assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "teams_listing").count(), 1, "unchanged: not told again");
+
+        // Restaffed: Bo leads Marketing now.
+        h.store
+            .update_team("t-mkt", "Marketing", "every campaign we run", &[db::TeamMember::local("ava"), db::TeamMember::local("bo")], "bo")
+            .unwrap();
+        run_turn(&h, owner("Bo leads marketing now")).await;
+        assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "teams_listing").count(), 2);
+        let delta = latest_row(&h, "teams_listing").unwrap();
+        assert!(delta.contains("- Marketing: owns every campaign we run; lead: Bo; members: Ava, Bo"), "{delta}");
+        assert!(!delta.contains("Ops"), "only what changed: {delta}");
+    }
+
+    /// B12: the one permit pool serves the owner's turn before any work
+    /// waiting for a permit. Both permits are out; a helper's call queues
+    /// first, then the owner's. The first permit back goes to the owner's
+    /// turn, which answers before the helper's call is made.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn work_waiting_for_a_permit_never_holds_the_owners_turn() {
+        use crate::concurrency::Priority;
+        let model = Scripted::new(vec![Step::Say("Owner answered."), Step::Say("Helper done.")]);
+        let h = harness(&model).await;
+        h.concurrency.set_ceiling(2);
+        let mut busy = vec![
+            h.concurrency.acquire_llm_permit(Priority::Work).await,
+            h.concurrency.acquire_llm_permit(Priority::Work).await,
+        ];
+        let mut helper = owner("Count the till");
+        helper.session_key = format!("subagent:{KEY}:h-1");
+        helper.mode = TurnMode::Helper {
+            parent_session_key: KEY.into(),
+            kind: crate::harness::delegation::HelperKind::General,
+            depth: 1,
+        };
+        let mut helper_events = h.start_turn(helper).await.expect("helper starts").events;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let owner_turn = tokio::spawn({
+            let h = h.clone();
+            async move { run_turn(&h, owner("What time do we open?")).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(model.calls().is_empty(), "both calls wait for a permit");
+
+        drop(busy.pop());
+        let events = tokio::time::timeout(std::time::Duration::from_secs(10), owner_turn)
+            .await
+            .expect("the owner's turn finishes while the helper still waits")
+            .unwrap();
+        assert_eq!(exit_of(&events), "text_response");
+        assert!(stored(&h).iter().any(|m| m.role == "assistant" && m.content == "Owner answered."), "the owner's call went first");
+        drop(busy);
+        while helper_events.recv().await.is_some() {}
+        assert_eq!(model.calls().len(), 2, "the helper's call is made once the owner's is served");
+    }
+
+    /// B12: the memory flush before a checkpoint is housekeeping: it waits
+    /// for a background permit, never the pool the owner's turns use.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_checkpoint_memory_flush_waits_for_a_background_permit() {
+        let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Carried on.")]);
+        let h = harness(&model).await;
+        h.concurrency.set_ceiling(4);
+        assert_eq!(h.concurrency.background_permits(), 1);
+        run_turn(&h, owner("The Zanzibar invoice is due on the ninth.")).await;
+        let held = h.concurrency.acquire_background_permit().await;
+        let turn = tokio::spawn({
+            let h = h.clone();
+            async move { run_turn(&h, owner("Keep going")).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !model.side.lock().unwrap().iter().any(|r| r.trace.purpose == "memory_flush"),
+            "no flush while housekeeping's only permit is taken"
+        );
+        drop(held);
+        let events = tokio::time::timeout(std::time::Duration::from_secs(10), turn).await.expect("the turn goes on").unwrap();
+        assert_eq!(exit_of(&events), "text_response");
+        assert!(model.side_call("memory_flush").await.is_some(), "the flush ran once a background permit was free");
     }
 
     /// The same vector for every text: a search through it finds whatever

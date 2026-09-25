@@ -88,6 +88,7 @@ impl HelperDoor {
                 task_id,
                 success: true,
                 error: None,
+                taint: Vec::new(),
             },
             Launch::Finished(c) => finished(c),
         })
@@ -132,7 +133,7 @@ fn parent_turn(req: &SpawnRequest) -> TurnRequest {
             ceiling: None,
             cwd,
             seed_taint: req.seat.taint.clone(),
-            audience: None,
+            audience: req.seat.audience.clone(),
             tool_allowlist: req.seat.tool_allowlist.clone(),
             tool_denial_hint: req.seat.tool_denial_hint.clone(),
             handoff_depth: req.handoff_depth,
@@ -163,6 +164,7 @@ fn finished(c: Completion) -> SpawnResult {
         success: error.is_none(),
         output: notify::render_foreground(&c),
         error,
+        taint: c.taint.clone(),
     }
 }
 
@@ -178,7 +180,7 @@ impl SubAgentOrchestrator for HelperDoor {
         let started = self.helpers.start_work(&parent_turn(&req), &req.description, work);
         Box::pin(async move {
             let (task_id, output) = started?;
-            Ok(SpawnResult { task_id, success: true, output, error: None })
+            Ok(SpawnResult { task_id, success: true, output, error: None, taint: Vec::new() })
         })
     }
 
@@ -214,6 +216,7 @@ impl SubAgentOrchestrator for HelperDoor {
                     success: true,
                     output: said,
                     error: None,
+                    taint: Vec::new(),
                 })
             })
         })
@@ -263,7 +266,7 @@ mod tests {
     struct Recording(Arc<Recorder>);
 
     fn done() -> SpawnResult {
-        SpawnResult { task_id: "h1".into(), success: true, output: "done".into(), error: None }
+        SpawnResult { task_id: "h1".into(), success: true, output: "done".into(), error: None, taint: Vec::new() }
     }
 
     impl SubAgentOrchestrator for Recording {
@@ -404,6 +407,51 @@ mod tests {
                     "{path}: shell came back on"
                 );
                 assert_limited_like(&child, &ctx, path);
+            }
+        }
+    }
+
+    /// Parity 5.3: a helper started in a coworker's run answers for that
+    /// run, so it keeps the audience and the memory restriction it implies,
+    /// on every path a helper starts.
+    #[tokio::test]
+    async fn a_helper_started_in_a_coworker_run_keeps_its_audience() {
+        let rec = Arc::new(Recorder::default());
+        let (_dir, tools) = helper_tools(&rec);
+        let ctx = ToolContext {
+            origin: tools::Origin::Comm,
+            audience: Some("scout".into()),
+            audience_restricted: true,
+            ..limited_parent()
+        };
+        for (path, name, input) in [
+            ("foreground", "delegate", serde_json::json!({"description": "a", "prompt": "a", "background": false})),
+            ("background", "delegate", serde_json::json!({"description": "a", "prompt": "a"})),
+            ("send", "send_message", serde_json::json!({"to": "h1", "message": "and the edge cases"})),
+        ] {
+            call(&tools, &ctx, name, input).await;
+            let reqs = std::mem::take(&mut *rec.0.lock().unwrap());
+            assert!(!reqs.is_empty(), "{path}: nothing reached the helper door");
+            for req in reqs {
+                let child = child_of(&req);
+                assert_eq!(child.seat.audience.as_deref(), Some("scout"), "{path}: the audience was dropped");
+                assert_eq!(child.seat.origin, tools::Origin::Comm, "{path}: a coworker's helper stays a coworker's");
+                let dir = tempfile::tempdir().unwrap();
+                let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+                let seat = crate::harness::seat::resolve_seat(
+                    &store,
+                    &child.session_key,
+                    crate::harness::seat::SeatInputs {
+                        agent: None,
+                        agent_id: &child.seat.agent_id,
+                        user_id: &child.seat.user_id,
+                        session_id: "s-child",
+                        origin: child.seat.origin,
+                        channel: "coworker",
+                        audience: child.seat.audience.as_deref(),
+                    },
+                );
+                assert!(seat.audience_restricted, "{path}: the helper recalls what its parent may not");
             }
         }
     }

@@ -1,12 +1,15 @@
-//! Where a woken turn's reply goes: the conversation the session's work
-//! came from (hub check O3, Batch B13).
+//! Where a woken turn's reply goes, and as whom it runs: the conversation
+//! the session's work came from (hub check O3, Batch B13; parity 5.2).
 //!
 //! A turn the owner starts replies where the owner wrote; a coworker's turn
 //! replies to whoever messaged it. A turn woken by a notification (a helper's
 //! result, a coworker's reply, an answered ask) has no input of its own to
-//! say where that is, so every session keeps its route, and the wake rail
-//! hands it to the woken turn. It is durable (the session row), because a
-//! wake survives a restart.
+//! say where that is, or who it is with, so every session keeps its route
+//! and its seat, and the wake rail hands both to the woken turn: it
+//! continues that conversation as the same party, with the same limits
+//! (Claude Code runs a notification with the owning agent's attribution,
+//! 2.1.280 m0342 `turnAttribution: "inherit"`). Both are durable (the
+//! session row), because a wake survives a restart.
 
 use serde::{Deserialize, Serialize};
 
@@ -93,36 +96,79 @@ impl ReplyRoute {
     }
 }
 
+/// Who a session's conversation is with: the seat its last input ran in,
+/// which a turn woken there runs in too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WakeSeat {
+    pub origin: tools::Origin,
+    pub door: types::permissions::Door,
+    /// The coworker the conversation replies to.
+    pub audience: Option<String>,
+    /// The restricted-run allowlist (an outside caller's, a visitor's).
+    pub tool_allowlist: Option<std::collections::BTreeSet<String>>,
+    /// The chat channel the conversation is in (Slack, Discord…).
+    pub channel_ctx: Option<tools::ChannelContext>,
+}
+
+impl WakeSeat {
+    /// The seat of a session no input ever reached (a scheduled run's):
+    /// the system's own unattended work.
+    pub(crate) fn system() -> Self {
+        Self {
+            origin: tools::Origin::System,
+            door: types::permissions::Door::Chat,
+            audience: None,
+            tool_allowlist: None,
+            channel_ctx: None,
+        }
+    }
+}
+
+const ROUTE: &str = "replyRoute";
+const SEAT: &str = "wakeSeat";
+
 /// Record `route` for session `session_key` of `user_id` (`None` clears it).
 pub(crate) fn set(state: &AppState, session_key: &str, user_id: &str, route: Option<&ReplyRoute>) {
+    write(state, session_key, user_id, ROUTE, route.map(|r| serde_json::to_string(r).unwrap_or_default()));
+}
+
+/// Record the seat of the input session `session_key` just received.
+pub(crate) fn set_seat(state: &AppState, session_key: &str, user_id: &str, seat: &WakeSeat) {
+    write(state, session_key, user_id, SEAT, Some(serde_json::to_string(seat).unwrap_or_default()));
+}
+
+fn write(state: &AppState, session_key: &str, user_id: &str, field: &str, json: Option<String>) {
     let sessions = state.harness.sessions();
     let written = sessions
         .get_or_create(session_key, user_id)
         .map_err(|e| e.to_string())
-        .and_then(|s| {
-            let json = route.map(|r| serde_json::to_string(r).unwrap_or_default());
-            state
-                .store
-                .set_session_reply_route(&s.id, json.as_deref())
-                .map_err(|e| e.to_string())
-        });
+        .and_then(|s| state.store.set_session_meta(&s.id, field, json.as_deref()).map_err(|e| e.to_string()));
     if let Err(e) = written {
-        tracing::warn!(session = %session_key, error = %e, "reply route not recorded: a woken turn here replies in the app only");
+        tracing::warn!(session = %session_key, field, error = %e, "not recorded: a woken turn here has only the defaults");
     }
 }
 
 /// The route session `session_key` keeps, if any.
 pub(crate) fn of(state: &AppState, session_key: &str) -> Option<ReplyRoute> {
+    read(state, session_key, ROUTE)
+}
+
+/// The seat session `session_key` keeps, if any.
+pub(crate) fn seat_of(state: &AppState, session_key: &str) -> Option<WakeSeat> {
+    read(state, session_key, SEAT)
+}
+
+fn read<T: serde::de::DeserializeOwned>(state: &AppState, session_key: &str, field: &str) -> Option<T> {
     let id = state
         .harness
         .sessions()
         .resolve_session_id_by_key(session_key)
         .ok()?;
-    let json = state.store.session_reply_route(&id).ok()??;
+    let json = state.store.session_meta(&id, field).ok()??;
     match serde_json::from_str(&json) {
-        Ok(route) => Some(route),
+        Ok(value) => Some(value),
         Err(e) => {
-            tracing::warn!(session = %session_key, error = %e, "unreadable reply route");
+            tracing::warn!(session = %session_key, field, error = %e, "unreadable session record");
             None
         }
     }
@@ -161,5 +207,14 @@ mod tests {
                 serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
             assert_eq!(back, r);
         }
+        let seat = WakeSeat {
+            origin: tools::Origin::Comm,
+            door: types::permissions::Door::Coworker { from: "bk".into() },
+            audience: Some("bk".into()),
+            tool_allowlist: Some(["read_calendar".to_string()].into()),
+            channel_ctx: Some(tools::ChannelContext { kind: "slack".into(), channel_id: "C1".into(), thread_ts: None }),
+        };
+        let back: WakeSeat = serde_json::from_str(&serde_json::to_string(&seat).unwrap()).unwrap();
+        assert_eq!(back, seat);
     }
 }

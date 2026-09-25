@@ -135,8 +135,8 @@ impl Helpers {
         // The harness words what happened: the launch receipt, or the
         // finished helper's report with how to continue it.
         match orch.spawn(req).await {
-            Ok(r) if r.success => ToolResult::ok(r.output),
-            Ok(r) => ToolResult::error(r.output),
+            Ok(r) if r.success => ToolResult::ok(r.output).with_taint(r.taint),
+            Ok(r) => ToolResult::error(r.output).with_taint(r.taint),
             Err(e) => ToolResult::error(format!("Couldn't start the helper: {e}")),
         }
     }
@@ -425,6 +425,7 @@ mod tests {
             success: true,
             output: output.into(),
             error: None,
+            taint: Vec::new(),
         }
     }
 
@@ -432,10 +433,16 @@ mod tests {
         fn spawn(&self, req: SpawnRequest) -> Fut<'_, Result<SpawnResult, String>> {
             // A prompt with "slow" in it outlasts the foreground budget.
             let background = !req.wait || req.prompt.contains("slow");
+            let read_the_web = req.prompt.contains("web page");
             self.spawned.lock().unwrap().push(req);
             Box::pin(async move {
                 Ok(if background {
                     done(RECEIPT)
+                } else if read_the_web {
+                    SpawnResult {
+                        taint: vec![types::provenance::ProvenanceClass::Web],
+                        ..done("helper h1 \"read the page\": done\nthe page says 40% off")
+                    }
                 } else {
                     done("helper h1 \"map the repo\": done\nthe report\n\nTo continue it, use send_message to h1.")
                 })
@@ -605,6 +612,19 @@ mod tests {
         let spawned = rig.rec.spawned.lock().unwrap();
         assert!(spawned[0].wait);
         assert_eq!(spawned[0].agent_type, "explore");
+    }
+
+    /// Parity 5.1: a finished helper's report carries what it read. The
+    /// result the parent reads is marked with it, so the parent's run takes
+    /// the helper's taint.
+    #[tokio::test]
+    async fn a_foreground_helpers_report_carries_what_it_read() {
+        let rig = Rig::new();
+        let r = rig
+            .call("delegate", json!({"description": "read the page", "prompt": "Read the sale web page.", "background": false}))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.taint, vec![types::provenance::ProvenanceClass::Web]);
     }
 
     /// An isolated helper gets its own copy, and runs in the background like

@@ -325,6 +325,7 @@ impl<'a> Rig<'a> {
             seed_taint: vec![],
             tool_allowlist: None,
             hidden_prompt: false,
+            coworker: None,
             audience: None,
             cwd: None,
             model_override: None,
@@ -769,5 +770,336 @@ async fn a_woken_turn_replies_where_the_work_came_from() {
         "the woken turn's report reaches the loop conversation",
         || rig.loop_.all(CONV).contains("REPORT R1-RESULT"),
     )
+    .await;
+}
+
+/// E15 (owner rule 2026-09-15): the employee the owner talks to directs a
+/// team without naming anyone. The lead answers, alone, and the reply
+/// comes back to the poster as a notification; the other member only reads
+/// the post. A team with no lead refuses such a post, with the reason, and
+/// nothing is recorded or sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_it() {
+    let nebo = session().await;
+    let assistant = nebo.hire("Proof E15 Assistant", json!({ "workflows": {} })).await;
+    let lead = nebo.hire("Proof E15 Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof E15 Member", json!({ "workflows": {} })).await;
+    let members = [db::TeamMember::local(&lead), db::TeamMember::local(&member)];
+    nebo.store()
+        .create_team("proof-team-e15", "Proof Marketing Team", "every campaign", &members, &lead, None)
+        .unwrap();
+    nebo.store()
+        .create_team("proof-team-e15-open", "Proof Sales Team", "every deal", &members, "", None)
+        .unwrap();
+    let member_ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| {
+            (t.opener().contains("MARK-E15") && t.says("You are Proof E15 Lead."))
+                .then(|| Step::say("E15-LEAD-RESULT: here is what fits the budget."))
+        }),
+        Box::new({
+            let member_ran = member_ran.clone();
+            move |t| {
+                (t.opener().contains("MARK-E15") && t.says("You are Proof E15 Member.")).then(|| {
+                    member_ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Step::say("E15-MEMBER-RESULT")
+                })
+            }
+        }),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    let poster = format!("agent:{assistant}:web");
+    rig.open_session(&poster);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(poster.clone(), "s1");
+    let posted = nebo
+        .tool(
+            &ctx,
+            "send_message",
+            json!({"to": "Proof Marketing Team", "message": "MARK-E15 what can we afford to run?"}),
+        )
+        .await;
+    assert!(!posted.is_error, "{}", posted.content);
+    assert!(posted.content.contains("Proof E15 Lead"), "the lead was asked: {}", posted.content);
+    rig.until(30, "the lead's answer comes back to the poster", || {
+        rig.notifications(&poster).join("\n").contains("E15-LEAD-RESULT")
+    })
+    .await;
+    assert_eq!(member_ran.load(std::sync::atomic::Ordering::SeqCst), 0, "the member only read the post");
+
+    let before = nebo.store().list_team_messages("proof-team-e15-open", 50).unwrap().len();
+    let refused = nebo
+        .tool(
+            &ctx,
+            "send_message",
+            json!({"to": "Proof Sales Team", "message": "MARK-E15 who takes the Rivera deal?"}),
+        )
+        .await;
+    assert!(refused.is_error, "{}", refused.content);
+    assert!(refused.content.contains("has no lead") && refused.content.contains("NOT sent"), "{}", refused.content);
+    assert_eq!(
+        nebo.store().list_team_messages("proof-team-e15-open", 50).unwrap().len(),
+        before,
+        "nothing was recorded"
+    );
+}
+
+/// Parity 1.9: the owner's next message answers the question card that is
+/// open in the conversation, as typing answers Claude Code's
+/// AskUserQuestion. The parked call gets the message as its answer and the
+/// turn goes on; it is never queued behind a card nobody will click.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_next_message_answers_the_open_question() {
+    let nebo = session().await;
+    const OWNER: &str = "agent:proof-q:web";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !t.opener().contains("OWNER-Q") {
+            return None;
+        }
+        if t.has_tool_results() {
+            let answered = t
+                .since_last_answer()
+                .iter()
+                .filter_map(|m| m.tool_results.as_ref())
+                .any(|r| r.to_string().contains("teal, please"));
+            return Some(Step::say(if answered { "ANSWER-Q teal it is." } else { "ANSWER-Q no answer." }));
+        }
+        t.new_text().contains("OWNER-Q").then(|| {
+            Step::call(vec![(
+                "ask_owner",
+                json!({"question": "Which color for the banner?", "options": ["blue", "green"]}),
+            )])
+        })
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.owner_writes(OWNER, "", None, "OWNER-Q make the sale banner").await;
+    rig.until(20, "the question is open on the conversation", || {
+        futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_some()
+    })
+    .await;
+
+    rig.owner_writes(OWNER, "", None, "teal, please").await;
+    rig.until(20, "the turn goes on with the owner's message as the answer", || {
+        rig.thread(OWNER).iter().any(|m| m.role == "assistant" && m.content.contains("ANSWER-Q"))
+    })
+    .await;
+    let said: Vec<String> = rig.thread(OWNER).into_iter().filter(|m| m.role == "assistant").map(|m| m.content).collect();
+    assert!(said.iter().any(|c| c.contains("ANSWER-Q teal it is.")), "{said:?}");
+    assert!(
+        futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_none(),
+        "the card is closed"
+    );
+}
+
+/// Parity 5.4: a coworker's message is a coworker's. The employee reads it
+/// as a colleague's — in its own thread, and when a second message lands
+/// while it is still working on the first — never as the owner's, and the
+/// row it is stored as says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coworkers_message_is_read_as_a_coworkers() {
+    let nebo = session().await;
+    let sender = nebo.hire("Proof 54 Buyer", json!({ "workflows": {} })).await;
+    let clerk = nebo.hire("Proof 54 Clerk", json!({ "workflows": {} })).await;
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !t.opener().contains("MARK-C54") {
+            return None;
+        }
+        // A row that lands while a call is in flight is stored before that
+        // call's answer: read the whole thread.
+        if t.says("MARK-C54-SECOND") && t.answered("FIRST-DONE") && !t.answered("HEARD-AS") {
+            let who = if t.says("Your coworker Proof 54 Buyer sent you a message while you were working") {
+                "HEARD-AS-COWORKER"
+            } else {
+                "HEARD-AS-OTHER"
+            };
+            return Some(Step::say(who));
+        }
+        (!t.answered("FIRST-DONE")).then(|| Step::held("c54", "FIRST-DONE"))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    let from = format!("agent:{sender}:web");
+    rig.open_session(&from);
+    let ctx = tools::ToolContext::new(Origin::User).with_session(from.clone(), "s1");
+    let first = nebo
+        .tool(&ctx, "send_message", json!({"to": "Proof 54 Clerk", "message": "MARK-C54 file the invoice"}))
+        .await;
+    assert!(!first.is_error, "{}", first.content);
+    rig.until(20, "the clerk works on the first message", || rig.company.calls_naming("MARK-C54") > 0)
+        .await;
+    let second = nebo
+        .tool(&ctx, "send_message", json!({"to": "Proof 54 Clerk", "message": "MARK-C54-SECOND and the receipt"}))
+        .await;
+    assert!(!second.is_error, "{}", second.content);
+    rig.company.open("c54");
+    let thread = format!("agent:{clerk}:coworker:{sender}");
+    rig.until(30, "the second message is heard", || {
+        rig.thread(&thread).iter().any(|m| m.role == "assistant" && m.content.starts_with("HEARD-AS"))
+    })
+    .await;
+    let rows = rig.thread(&thread);
+    assert!(
+        rows.iter().any(|m| m.role == "assistant" && m.content == "HEARD-AS-COWORKER"),
+        "read as a colleague's: {:?}",
+        rows.iter().map(|m| m.content.clone()).collect::<Vec<_>>()
+    );
+    for text in ["MARK-C54 file the invoice", "MARK-C54-SECOND and the receipt"] {
+        let row = rows.iter().find(|m| m.role == "user" && m.content.contains(text)).expect("stored");
+        let meta: Value = serde_json::from_str(row.metadata.as_deref().unwrap_or("{}")).unwrap();
+        assert_eq!(meta["from"], "coworker", "{text}: stored as the coworker's: {meta}");
+        assert_eq!(meta["coworker"], "Proof 54 Buyer", "{text}: {meta}");
+        assert!(meta.get(db::OWNER_MARK).is_none(), "{text}: never the owner's word");
+    }
+}
+
+/// Parity 5.2: a turn woken by a notification continues the conversation
+/// it belongs to, as the same party. A helper started from a chat channel
+/// (a Slack channel: someone who is not the owner) reports back; the woken
+/// turn keeps the channel's limits — files stay off — instead of running
+/// as the system.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_woken_turn_keeps_the_seat_of_the_conversation_it_continues() {
+    let nebo = session().await;
+    const CHANNEL: &str = "proof:slack:c52";
+    let rules: Vec<Rule> = vec![
+        worker("MARK-52H", "h52", "H52-RESULT"),
+        Box::new(|t| {
+            if !t.opener().contains("MARK-52 ") {
+                return None;
+            }
+            if t.has_tool_results() {
+                return Some(Step::say(if t.says("H52-RESULT") { "REPORT-52" } else { "Started." }));
+            }
+            if t.new_text().contains("MARK-52 ") {
+                return Some(Step::call(vec![(
+                    "delegate",
+                    json!({"description": "price it", "prompt": "MARK-52H price the order"}),
+                )]));
+            }
+            (t.says("H52-RESULT") && !t.answered("REPORT-52"))
+                .then(|| Step::call(vec![("read_file", json!({"path": "proof-52-notes.txt"}))]))
+        }),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    let config = crate::chat_dispatch::ChatConfig {
+        session_key: CHANNEL.to_string(),
+        prompt: "MARK-52 price the Rivera order".to_string(),
+        user_id: String::new(),
+        channel: "slack".to_string(),
+        origin: Origin::Comm,
+        door: types::permissions::Door::Chat,
+        agent_id: String::new(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        lane: types::constants::lanes::COMM.to_string(),
+        comm_reply: None,
+        entity_config: None,
+        images: vec![],
+        attachments: vec![],
+        entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context: None,
+        tool_scope: None,
+        plan_mode: false,
+        channel_ctx: Some(tools::ChannelContext {
+            kind: "slack".into(),
+            channel_id: "C52".into(),
+            thread_ts: None,
+        }),
+        handoff_depth: 0,
+        seed_taint: vec![types::provenance::ProvenanceClass::Channel],
+        tool_allowlist: None,
+        hidden_prompt: false,
+        coworker: None,
+        audience: None,
+        cwd: None,
+        model_override: None,
+    };
+    crate::chat_dispatch::run_chat(&nebo.state, config).await;
+    rig.until(20, "the channel's first turn ends", || {
+        rig.thread(CHANNEL).iter().any(|m| m.role == "assistant" && m.content == "Started.")
+    })
+    .await;
+    rig.company.open("h52");
+    rig.until(30, "the woken turn reports", || {
+        rig.thread(CHANNEL).iter().any(|m| m.role == "assistant" && m.content == "REPORT-52")
+    })
+    .await;
+    let results: String = rig
+        .thread(CHANNEL)
+        .iter()
+        .filter_map(|m| m.tool_results.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        results.contains("not permitted when called from a chat channel"),
+        "the woken turn is still the channel's: {results}"
+    );
+}
+
+/// Parity 5.5: an update for a helper that has finished and been let go —
+/// a coworker's late reply, redelivered at boot or at a run's end — goes to
+/// the helper's parent, which is told. It never wakes the helper's own
+/// session as a chat turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_update_for_a_finished_helper_tells_its_parent() {
+    let nebo = session().await;
+    const PARENT: &str = "agent:proof-55:web";
+    let helper = format!("subagent:{PARENT}:h-55gone");
+    let rig = Rig::new(&nebo, vec![]).await;
+    rig.open_session(PARENT);
+    rig.open_session(&helper);
+    nebo.store()
+        .engine_enqueue_wake(&helper, "coworker_reply", "[Reply from Proof Clerk]\nCW55-RESULT: filed.", "[\"coworker\"]", 1)
+        .unwrap();
+    crate::wake::recover_pending_wakes(&nebo.state).await;
+    rig.until(20, "the parent is told", || {
+        rig.notifications(PARENT).iter().any(|n| n.contains("CW55-RESULT"))
+    })
+    .await;
+    assert!(
+        rig.thread(&helper).iter().all(|m| m.role != "assistant"),
+        "the finished helper's session never ran a turn: {:?}",
+        rig.thread(&helper).iter().map(|m| (m.role.clone(), m.content.clone())).collect::<Vec<_>>()
+    );
+    let taint: Vec<types::provenance::ProvenanceClass> = rig
+        .thread(PARENT)
+        .iter()
+        .flat_map(agent::harness::delegation::notify::row_taint)
+        .collect();
+    assert_eq!(taint, vec![types::provenance::ProvenanceClass::Coworker], "it carries its taint to the parent");
+}
+
+/// An assignment's outcome reaches the employee that assigned it when the
+/// case closes, not at the end of some later run or at the next boot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_assignment_outcome_reaches_the_assigner_when_it_happens() {
+    let nebo = session().await;
+    const ASSIGNER: &str = "agent:proof-gm:web";
+    let rig = Rig::new(&nebo, vec![]).await;
+    rig.open_session(ASSIGNER);
+    let id = format!("asg-{}", uuid::Uuid::new_v4().simple());
+    nebo.store()
+        .create_assignment(&db::NewAssignment {
+            id: &id,
+            assigner_agent_id: "proof-gm",
+            assigner_session_key: ASSIGNER,
+            assignee_agent_id: "proof-bk",
+            subject: "Close the books",
+            done_means: "Reports posted",
+            due: None,
+            parent_run_id: None,
+            case_key: &format!("assignment:{id}"),
+        })
+        .unwrap();
+    let inputs = json!({"_assignment": {
+        "id": id,
+        "subject": "Close the books",
+        "assignee_agent_id": "proof-bk",
+        "assigner_agent_id": "proof-gm",
+        "assigner_session_key": ASSIGNER,
+    }});
+    workflow::cases::settle_assignment(nebo.store(), &inputs, "done", "ASG-RESULT: reports posted", chrono::Utc::now().timestamp())
+        .unwrap();
+    rig.until(20, "the assigner is told", || {
+        rig.notifications(ASSIGNER).iter().any(|n| n.contains("ASG-RESULT"))
+    })
     .await;
 }

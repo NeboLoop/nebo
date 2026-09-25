@@ -1180,16 +1180,14 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
     };
     if let Some(t) = team.as_ref() {
         // The speaker is the same member a typed post that names nobody goes
-        // to — the ONE lead rule (`team::lead_for_unaddressed`). A typed post
-        // with no lead fans out to everyone once; a call needs one voice, so
-        // without a lead it refuses rather than picking a member. The lead
-        // is always on this computer (`tools::team` never records another);
-        // the local check only keeps a row written before that rule honest.
-        let lead = crate::team::lead_for_unaddressed(
-            &t.organizer_agent_id,
-            &tools::team::member_ids(t),
-        )
-        .filter(|id| t.members.iter().any(|m| m.agent_id == *id && m.is_local()));
+        // to — the ONE lead rule (`tools::team::lead_of`). A call needs one
+        // voice, so without a lead it refuses rather than picking a member.
+        // The lead is always on this computer (`tools::team` never records
+        // another); the local check only keeps a row written before that
+        // rule honest.
+        let lead = tools::team::lead_of(t)
+            .filter(|id| t.members.iter().any(|m| m.agent_id == *id && m.is_local()))
+            .map(str::to_string);
         let Some(lead) = lead else {
             let msg = serde_json::json!({
                 "type": "Error",

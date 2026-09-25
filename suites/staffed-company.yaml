@@ -38,3 +38,9 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc33-one-employee-works-three-conversations-at-once.yaml
   - ../fixtures/staffed-company/conversation/sc34-a-question-up-the-line-never-waits.yaml
   - ../fixtures/staffed-company/conversation/sc35-a-woken-turn-replies-where-the-work-came-from.yaml
+  - ../fixtures/staffed-company/conversation/sc36-an-employees-team-post-goes-to-the-lead.yaml
+  - ../fixtures/staffed-company/conversation/sc37-the-owners-next-message-answers-the-open-question.yaml
+  - ../fixtures/staffed-company/conversation/sc38-a-coworkers-message-is-read-as-a-coworkers.yaml
+  - ../fixtures/staffed-company/conversation/sc39-a-woken-turn-keeps-the-seat-of-the-conversation-it-continues.yaml
+  - ../fixtures/staffed-company/conversation/sc40-an-update-for-a-finished-helper-tells-its-parent.yaml
+  - ../fixtures/staffed-company/conversation/sc41-an-assignment-outcome-reaches-the-assigner-when-it-happens.yaml

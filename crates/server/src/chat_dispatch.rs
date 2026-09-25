@@ -232,6 +232,10 @@ pub struct ChatConfig {
     /// platform-authored prompts like the christening self-introduction. The
     /// model sees it; the transcript never does.
     pub hidden_prompt: bool,
+    /// The coworker whose message the prompt is (display name): the input is
+    /// theirs — a colleague's information, never the owner's word. Set by
+    /// the coworker rail only.
+    pub coworker: Option<String>,
     /// Recall-for-audience: the agent id this run replies to (coworker rail
     /// only). `None` for owner-initiated runs.
     pub audience: Option<String>,
@@ -387,6 +391,8 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
         TurnInput::None
     } else if config.hidden_prompt {
         TurnInput::Platform { text: config.prompt.clone() }
+    } else if let Some(from) = &config.coworker {
+        TurnInput::Coworker { from: from.clone(), text: config.prompt.clone() }
     } else {
         TurnInput::Owner {
             text: config.prompt.clone(),
@@ -444,20 +450,49 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
     }
 }
 
-pub async fn run_chat(state: &AppState, config: ChatConfig) {
-    // New input says where this session's work comes from: a loop or phone
-    // conversation, or the owner in the app. A turn a notification wakes
-    // later replies there (`reply_route`).
-    if !config.prompt.is_empty() {
-        match (&config.comm_reply, config.origin) {
-            (Some(cr), _) => {
-                let route = crate::reply_route::ReplyRoute::comm(cr);
-                crate::reply_route::set(state, &config.session_key, &config.user_id, Some(&route));
-            }
-            (None, Origin::User) => crate::reply_route::set(state, &config.session_key, &config.user_id, None),
-            (None, _) => {}
-        }
+/// New input says where this session's work comes from and who it is
+/// with: a loop or phone conversation, the owner in the app, a chat channel,
+/// a coworker. A turn a notification wakes later replies there and runs as
+/// the same party (`reply_route`). A prompt the platform wrote says neither.
+/// Both run entrypoints call it.
+fn remember_input(state: &AppState, config: &ChatConfig) {
+    if config.prompt.is_empty() || config.hidden_prompt {
+        return;
     }
+    match (&config.comm_reply, config.origin) {
+        (Some(cr), _) => {
+            let route = crate::reply_route::ReplyRoute::comm(cr);
+            crate::reply_route::set(state, &config.session_key, &config.user_id, Some(&route));
+        }
+        (None, Origin::User) => crate::reply_route::set(state, &config.session_key, &config.user_id, None),
+        (None, _) => {}
+    }
+    let seat = crate::reply_route::WakeSeat {
+        origin: config.origin,
+        door: config.door.clone(),
+        audience: config.audience.clone(),
+        tool_allowlist: config.tool_allowlist.as_ref().map(|l| l.iter().cloned().collect()),
+        channel_ctx: config.channel_ctx.clone(),
+    };
+    crate::reply_route::set_seat(state, &config.session_key, &config.user_id, &seat);
+}
+
+pub async fn run_chat(state: &AppState, config: ChatConfig) {
+    // The owner's message answers the question open in this conversation,
+    // as typing answers Claude Code's AskUserQuestion: the parked call gets
+    // it as the answer and the turn goes on. It starts no turn of its own.
+    let owner_writes = config.origin == Origin::User
+        && config.audience.is_none()
+        && !config.hidden_prompt
+        && !config.prompt.trim().is_empty();
+    if owner_writes
+        && let Some(ask) = state.run_registry.pending_ask_for_session(&config.session_key).await
+        && answer_ask(state, &ask.request_id, config.prompt.clone()).await
+    {
+        info!(session = %config.session_key, "the owner's message answered the open question");
+        return;
+    }
+    remember_input(state, &config);
     let hub = state.hub.clone();
     let workroom_store = state.store.clone();
     let loopback_state = state.clone();
@@ -1638,6 +1673,7 @@ pub async fn run_chat_events(
     let harness = state.harness.clone();
     let cleanup_tools = state.tools.clone();
 
+    remember_input(state, &config);
     let sid = config.session_key.clone();
     let cancel_token = config.cancel_token.clone();
     let lane = config.lane.clone();

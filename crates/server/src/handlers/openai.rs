@@ -380,6 +380,7 @@ async fn start_employee_run(
             seed_taint: vec![types::provenance::ProvenanceClass::Channel],
             tool_allowlist: Some(allowlist_for(key)),
             hidden_prompt: false,
+            coworker: None,
             audience: None,
             cwd: None,
             model_override: None,

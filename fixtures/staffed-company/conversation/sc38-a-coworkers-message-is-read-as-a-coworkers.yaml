@@ -1,0 +1,9 @@
+id: sc38-a-coworkers-message-is-read-as-a-coworkers
+name: "SC38 — A coworker's message is read as a coworker's"
+description: |
+  A coworker's message is stored and read as a colleague's: in the employee's own thread, and
+  when a second one lands while the first is being worked on, it is framed as the coworker's,
+  never "the owner sent this message" (parity 5.4).
+target_component: staffed-company
+proof: staffed_proof::conversation::a_coworkers_message_is_read_as_a_coworkers
+conversation: []

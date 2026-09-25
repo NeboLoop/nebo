@@ -153,6 +153,7 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
         seed_taint: vec![],
         tool_allowlist: None,
         hidden_prompt: true,
+        coworker: None,
         audience: None,
         cwd: None,
         model_override: None,

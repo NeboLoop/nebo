@@ -142,7 +142,7 @@ pub const SKIP_SENTINEL: &str = "__skip__";
 /// Propagated as env vars `NEBO_CHANNEL_KIND`, `NEBO_CHANNEL_ID`,
 /// `NEBO_THREAD_TS` when the plugin tool invokes a plugin binary.
 /// See `docs/publishers-guide/channel-plugins.md`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChannelContext {
     /// Plugin slug / channel kind — "slack", "discord", "teams", etc.
     pub kind: String,
@@ -330,6 +330,10 @@ pub struct ToolContext {
     /// (working style) only — non-tacit reads are refused with an
     /// "isn't shared with their role" correction. `false` for owner runs.
     pub audience_restricted: bool,
+    /// The coworker this run replies to, if any (the seat's audience). A
+    /// helper this run starts replies through it, so it keeps the audience
+    /// and the recall restriction it implies.
+    pub audience: Option<String>,
     /// The tools whose definitions the model was sent on this step. A call
     /// to a deferred tool outside it that fails validation is told to load
     /// the tool first. `None` for callers that are not a model's step.

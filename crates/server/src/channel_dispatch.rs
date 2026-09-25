@@ -127,6 +127,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 seed_taint: vec![types::provenance::ProvenanceClass::Channel],
                 tool_allowlist: None,
                 hidden_prompt: false,
+                coworker: None,
                 audience: None,
                 cwd: None,
                 model_override: None,

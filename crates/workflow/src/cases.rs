@@ -1015,10 +1015,20 @@ pub fn assignment_state_for(status: &str) -> &'static str {
     }
 }
 
+static WAKE_BELL: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>> = std::sync::OnceLock::new();
+
+/// The server installs the wake rail's bell once at boot, so code that only
+/// holds a store can have a session's pending wakes delivered now. A wake is
+/// durable before the bell rings; with no bell (a unit test) it is delivered
+/// at the next boot sweep.
+pub fn install_wake_bell(bell: tokio::sync::mpsc::UnboundedSender<String>) {
+    let _ = WAKE_BELL.set(bell);
+}
+
 /// Settle the assignment a closing case carried: the row closes once, the
-/// assigner is woken with the outcome, and `assignment.<state>` goes out as
-/// a company event with the assignee as producer. A case that carries no
-/// assignment is untouched.
+/// assigner is woken with the outcome — now, through the wake rail — and
+/// `assignment.<state>` goes out as a company event with the assignee as
+/// producer. A case that carries no assignment is untouched.
 pub fn settle_assignment(store: &Store, case_inputs: &serde_json::Value, status: &str, summary: &str, t: i64) -> Result<(), NeboError> {
     let a = &case_inputs["_assignment"];
     let Some(id) = a["id"].as_str().filter(|s| !s.is_empty()) else {
@@ -1039,8 +1049,11 @@ pub fn settle_assignment(store: &Store, case_inputs: &serde_json::Value, status:
         "assigner_agent_id": a["assigner_agent_id"],
     });
     let name = format!("assignment.{state}");
-    if let Some(session) = a["assigner_session_key"].as_str().filter(|s| !s.is_empty()) {
-        let _ = store.engine_enqueue_wake(session, &name, &payload.to_string(), "[]", 0);
+    if let Some(session) = a["assigner_session_key"].as_str().filter(|s| !s.is_empty())
+        && store.engine_enqueue_wake(session, &name, &payload.to_string(), "[]", 0).is_ok()
+        && let Some(bell) = WAKE_BELL.get()
+    {
+        let _ = bell.send(session.to_string());
     }
     let producer = store.get_agent(assignee).ok().flatten().map(|ag| db::agent_slug(&ag.name)).unwrap_or_else(|| assignee.to_string());
     crate::events::emit_company_event(&name, payload, &producer);

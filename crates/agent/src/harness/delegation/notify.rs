@@ -153,6 +153,7 @@ mod tests {
             status,
             result: "Three errors, all from the nightly job.".into(),
             usage: ai::UsageInfo::default(),
+            taint: Vec::new(),
         }
     }
 

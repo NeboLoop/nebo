@@ -1,0 +1,9 @@
+id: sc36-an-employees-team-post-goes-to-the-lead
+name: "SC36 — An employee's team post goes to the lead; a team with no lead refuses it"
+description: |
+  The employee the owner talks to posts to a team without naming anyone: the lead answers,
+  alone, and the reply comes back as a notification. A team with no lead refuses the post,
+  with the reason, and records nothing (owner rule 2026-09-15; fix plan E15).
+target_component: staffed-company
+proof: staffed_proof::conversation::an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_it
+conversation: []

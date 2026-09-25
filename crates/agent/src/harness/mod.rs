@@ -287,6 +287,10 @@ pub enum TurnInput {
     /// A prompt the platform writes and the owner never sees (christening,
     /// a voice task).
     Platform { text: String },
+    /// A coworker's message (a team post included): a colleague's
+    /// information, never the owner's word, stored and queued as theirs.
+    /// `from` is the sender's name.
+    Coworker { from: String, text: String },
     /// A helper, coworker or workflow result woke an idle session.
     Notification(delegation::Completion),
     /// A workflow seed or a resume: the conversation already holds the input.

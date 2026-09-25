@@ -89,6 +89,11 @@ pub struct ToolResult {
     /// The ask's id, so a workflow activity can suspend on the same ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parked_ask: Option<String>,
+    /// Untrusted content the result carries beyond its tool's own class —
+    /// a helper's report of what it read. The run that reads the result has
+    /// read that content, and takes its taint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub taint: Vec<types::provenance::ProvenanceClass>,
 }
 
 impl ToolResult {
@@ -142,6 +147,12 @@ impl ToolResult {
     /// Attach a structured rendering payload for the app UI (builder).
     pub fn with_payload(mut self, payload: serde_json::Value) -> Self {
         self.payload = Some(payload);
+        self
+    }
+
+    /// The untrusted content the result carries (builder).
+    pub fn with_taint(mut self, taint: Vec<types::provenance::ProvenanceClass>) -> Self {
+        self.taint = taint;
         self
     }
 }

@@ -1,0 +1,7 @@
+id: sc39-a-woken-turn-keeps-the-seat-of-the-conversation-it-continues
+name: "SC39 — A woken turn keeps the seat of the conversation it continues"
+description: |
+  A helper started from a chat channel reports back; the turn its notification wakes keeps the channel's limits (files stay off) instead of running as the system (parity 5.2).
+target_component: staffed-company
+proof: staffed_proof::conversation::a_woken_turn_keeps_the_seat_of_the_conversation_it_continues
+conversation: []
