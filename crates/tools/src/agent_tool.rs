@@ -237,7 +237,7 @@ impl PersonaTool {
         format!(
             "'{action}' is not a registry action. To read one employee use info (name); to change it use update; \
              to list them use list. All actions: {REGISTRY_ACTIONS}. There is no delegate: work for a named coworker \
-             is a message, message(resource: \"coworker\", action: \"send\", to: \"<employee>\", text: \"<what you need>\"); \
+             is a message, send_message(to: \"<employee>\", message: \"<what you need>\"); \
              anonymous extra hands for your own work are a helper: delegate(description, prompt)."
         )
     }
@@ -4010,7 +4010,7 @@ mod tests {
     fn an_unknown_registry_action_points_delegation_at_the_coworker_message() {
         let text = PersonaTool::unknown_action("delegate");
         assert!(text.starts_with("'delegate' is not a registry action"), "{text}");
-        assert!(text.contains("message(resource: \"coworker\", action: \"send\""), "{text}");
+        assert!(text.contains("send_message(to: \"<employee>\""), "{text}");
         assert!(text.contains(REGISTRY_ACTIONS), "{text}");
     }
 

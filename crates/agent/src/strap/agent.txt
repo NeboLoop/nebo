@@ -1,6 +1,6 @@
 ### agent: Self-Management, Cognition & Agent Registry
 USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, asking the user a question (direct chat only), OR listing and managing installed agents.
-Work for a NAMED coworker (another AI employee on this computer) is a MESSAGE, never a task spawn: message(resource: "coworker", action: "send", to: "<name>", text: "..."). A spawned sub-agent is blank, with no coworker's identity, plugins, or skills.
+Work for a NAMED coworker (another AI employee on this computer) is a MESSAGE, never a task spawn: send_message(to: "<name>", message: "..."). A spawned sub-agent is blank, with no coworker's identity, plugins, or skills.
 
 **Sub-agents (parallel work):**
 Spawn sub-agents for independent work. Two modes:

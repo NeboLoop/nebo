@@ -6,14 +6,15 @@ description: |
   the model concluded coworkers were unreachable — while the coworker message
   rail sat unused. The loop tool's description steered it wrong ("Use loop
   for bot-to-bot communication"). This pins the corrected routing: local
-  coworkers are message(resource: 'coworker'), no channel required.
+  coworkers are send_message(to: <name>), no channel required. send_message
+  is deferred: loading it with find_tools first is expected.
 
   SAFETY: the ask names the two disposable coworkers explicitly. An unbounded
   "introduce yourself to the other bots" on a live roster broadcast a false
   "I'm in charge" claim to every REAL employee (who replied, and whose
   sessions then needed manual cleanup). Eval sessions are isolated; coworker
   messages are not — never point this fixture's model at an open roster.
-target_component: message
+target_component: send_message
 
 setup:
   - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"ops-manager\"}' > /dev/null"
@@ -29,23 +30,19 @@ prompt_assertions:
   first_call:
     - id: no-loop-detour
       text: "First call is roster discovery or a coworker message — never a NeboAI loop tool such as send_loop_message or ensure_loop_channel (hub channels are not how local coworkers are reached)"
-      check: { first_call: true, tool: [message, agent] }
+      check: { first_call: true, tool: [find_tools, send_message, message, agent, list_employees] }
       severity: critical
     - id: messages-a-coworker
-      text: "Some call sends a coworker message via the canonical rail"
-      check: { tool: message, arg: resource, equals: "coworker" }
-      severity: critical
-    - id: send-action
-      text: "The coworker message uses action: 'send'"
-      check: { tool: message, arg: action, equals: "send" }
+      text: "Some call sends a coworker message with send_message"
+      check: { tool: send_message }
       severity: critical
     - id: targets-named-coworker
       text: "A message goes to one of the named test coworkers (never the wider roster)"
-      check: { tool: message, arg: to, matches: "(?i)ops-manager|front-desk" }
+      check: { tool: send_message, arg: to, matches: "(?i)ops-manager|front-desk" }
       severity: critical
   cost:
     - id: bounded-calls
-      text: "Roster lookup plus one message per coworker — at most 6 calls"
+      text: "A find_tools load, roster lookup and one message per coworker — at most 6 calls"
       check: { max_tool_calls: 6 }
       severity: important
 

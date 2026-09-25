@@ -180,7 +180,7 @@ Examples:
 - **agent** — installed employees and hiring (resource: "registry")
 - **read_file**, **edit_file**, **write_file** — files; **run_command** — shell commands, including finding files (find) and searching contents (grep)
 - **os** — desktop, apps, settings, search, mail, calendar, contacts and reminders
-- **message** — coworkers and SMS: work for a named AI employee is message(resource: "coworker"), never a helper
+- **message** — SMS. Work for a named AI employee is send_message(to: "<name>"), never a helper; so is a post to a team
 - **use_skill** — load a skill: packaged instructions for a kind of work. Skills are listed by name with one line each; load a matching one before starting
 - **plugin** — run installed plugin binaries (subcommand only — binary auto-resolved)
 - **mcp** — list connected MCP servers: mcp(action: "list"). Each server's tools appear as their own `mcp__<server>__<tool>` tools — call those directly (find them with find_tools).
