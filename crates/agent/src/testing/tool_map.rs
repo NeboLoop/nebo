@@ -94,6 +94,19 @@ const ROWS: &[Row] = &[
     row("agent", &["research"], &["deep_research"], "deep_research", &[]),
     row("agent", &["research"], &["research"], "quick_research", &[]),
     row("agent", &["research"], &["submit_findings"], "submit_findings", &[]),
+    // agent: employees (the registry)
+    row("agent", &["registry"], &["list"], "list_employees", &[]),
+    row("agent", &["registry"], &["info"], "get_employee", &[]),
+    row("agent", &["registry"], &["discover"], "find_employees", &[]),
+    row("agent", &["registry"], &["install"], "hire_employee", &[]),
+    row("agent", &["registry"], &["create"], "create_employee", &[]),
+    row("agent", &["registry"], &["update"], "update_employee", &[("prompt", "instructions")]),
+    row("agent", &["registry"], &["delete"], "delete_employee", &[]),
+    row("agent", &["registry"], &["activate", "deactivate"], "set_employee_active", &[]),
+    row("agent", &["registry"], &["setup"], "setup_employee", &[]),
+    row("agent", &["registry"], &["repair"], "repair_employee", &[]),
+    row("agent", &["registry"], &["reload"], "reload_employee", &[]),
+    row("agent", &["registry"], &["stats"], "employee_stats", &[]),
     // skills
     row("skill", &[], &["load"], "use_skill", &[]),
     row("skill", &[], &["discover", "browse"], "find_skills", &[]),
@@ -275,6 +288,11 @@ mod tests {
         // list is a task action unless the resource says memory
         assert_eq!(translate("agent", &json!({"action": "list"})).unwrap().0, "list_tasks");
         assert_eq!(translate("agent", &json!({"resource": "memory", "action": "list"})).unwrap().0, "recall");
+        // ...and an employee action unless the resource says registry
+        assert_eq!(translate("agent", &json!({"resource": "registry", "action": "list"})).unwrap().0, "list_employees");
+        assert_eq!(translate("agent", &json!({"action": "discover", "query": "bookkeeper"})).unwrap().0, "find_employees");
+        let (tool, args) = translate("agent", &json!({"resource": "registry", "action": "update", "name": "x", "prompt": "p"})).unwrap();
+        assert_eq!((tool.as_str(), &args), ("update_employee", &json!({"name": "x", "instructions": "p"})));
     }
 
     #[test]

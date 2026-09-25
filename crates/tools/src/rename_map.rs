@@ -63,6 +63,22 @@ pub const RENAMES: &[Rename] = &[
     web("browser", "browser_batch", "browser_batch", &[("actions", "steps")]),
     web("browser", "webmcp_list", "browser_page_tools", &[]),
     web("browser", "webmcp_call", "browser_call_page_tool", &[]),
+    // The `agent` tool's employee registry (tools WP3): one tool per action.
+    // activate and deactivate both become set_employee_active (active: true
+    // or false).
+    employee("list", "list_employees", &[]),
+    employee("info", "get_employee", &[]),
+    employee("discover", "find_employees", &[]),
+    employee("install", "hire_employee", &[]),
+    employee("create", "create_employee", &[]),
+    employee("update", "update_employee", &[("prompt", "instructions")]),
+    employee("delete", "delete_employee", &[]),
+    employee("activate", "set_employee_active", &[]),
+    employee("deactivate", "set_employee_active", &[]),
+    employee("setup", "setup_employee", &[]),
+    employee("repair", "repair_employee", &[]),
+    employee("reload", "reload_employee", &[]),
+    employee("stats", "employee_stats", &[]),
 ];
 
 /// A retired `web(resource, action)` shape.
@@ -73,6 +89,15 @@ const fn web(
     params: &'static [(&'static str, &'static str)],
 ) -> Rename {
     Rename { tool: "web", resource: Some(resource), action: Some(action), to, params }
+}
+
+/// A retired `agent(resource: "registry", action)` shape.
+const fn employee(
+    action: &'static str,
+    to: &'static str,
+    params: &'static [(&'static str, &'static str)],
+) -> Rename {
+    Rename { tool: "agent", resource: Some("registry"), action: Some(action), to, params }
 }
 
 #[cfg(test)]
