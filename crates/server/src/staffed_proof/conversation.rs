@@ -1034,6 +1034,107 @@ async fn a_woken_turn_keeps_the_seat_of_the_conversation_it_continues() {
     );
 }
 
+/// A stand-in chat-channel bridge (a Slack sidecar) for employee `agent_id`:
+/// every op Nebo writes to it, until the returned receiver is dropped.
+async fn bridge(nebo: &Nebo, agent_id: &str, plugin: &str) -> tokio::sync::mpsc::Receiver<Value> {
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
+    nebo.state.channel_bridges.write().await.insert(
+        tools::channel_bridge_key(agent_id, plugin),
+        tools::ChannelBridgeHandle {
+            stdin_tx: tx,
+            agent_id: agent_id.to_string(),
+            plugin_slug: plugin.to_string(),
+            pending_ops: tools::new_pending_ops(),
+        },
+    );
+    rx
+}
+
+/// A34: a Slack message that arrives while that conversation's turn is
+/// running goes into the running turn silently, as in the app. Nothing is
+/// posted for it (no "busy" line); the running turn hears it and its reply
+/// answers both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_channel_message_during_a_running_turn_joins_it_silently() {
+    use agent::ChannelDispatcher;
+    let nebo = session().await;
+    const CHANNEL: &str = "proof:slack:c34";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !t.opener().contains("MARK-34A") {
+            return None;
+        }
+        // The queued message lands while the first call is out, so it is
+        // stored before that call's answer: read the whole thread.
+        if t.says("MARK-34B") && t.answered("FIRST-34") && !t.answered("HEARD-34B") {
+            return Some(Step::say("HEARD-34B"));
+        }
+        (!t.answered("FIRST-34")).then(|| Step::held("g34", "FIRST-34"))
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    let ctx = tools::ChannelContext { kind: "slack".into(), channel_id: "C34".into(), thread_ts: None };
+    let dispatcher = std::sync::Arc::new(crate::channel_dispatch::ChannelDispatchImpl::new(nebo.state.clone()));
+    let first = {
+        let (d, ctx) = (dispatcher.clone(), ctx.clone());
+        tokio::spawn(async move { d.dispatch("", CHANNEL, ctx, "MARK-34A price the Rivera order").await })
+    };
+    rig.until(20, "the first turn is running", || nebo.state.harness.is_session_busy(CHANNEL)).await;
+    let second = dispatcher
+        .dispatch("", CHANNEL, ctx, "MARK-34B and the Chen order")
+        .await
+        .expect("the second dispatch");
+    assert_eq!(second, None, "nothing is posted for a message the running turn takes");
+    rig.company.open("g34");
+    let reply = first.await.unwrap().expect("the first dispatch").expect("the running turn's reply");
+    assert!(reply.contains("HEARD-34B"), "the running turn answered the second message: {reply}");
+}
+
+/// B14: a turn woken by a helper's result in a Slack conversation posts
+/// its reply into that conversation (its thread), as a loop or phone turn
+/// replies to its own (B13).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_woken_turn_replies_in_the_chat_channel_it_came_from() {
+    use agent::ChannelDispatcher;
+    let nebo = session().await;
+    const CHANNEL: &str = "proof:slack:c14";
+    let rules: Vec<Rule> = vec![
+        worker("MARK-14H", "h14", "H14-RESULT"),
+        Box::new(|t| {
+            if !t.opener().contains("MARK-14 ") {
+                return None;
+            }
+            if t.has_tool_results() {
+                return Some(Step::say("Started."));
+            }
+            if t.new_text().contains("MARK-14 ") {
+                return Some(Step::call(vec![(
+                    "delegate",
+                    json!({"description": "price it", "prompt": "MARK-14H price the order"}),
+                )]));
+            }
+            let results = t.unreported_results();
+            (!results.is_empty()).then(|| Step::say(format!("REPORT {}", results.join(" "))))
+        }),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    let mut ops = bridge(&nebo, "", "slack").await;
+    let ctx = tools::ChannelContext { kind: "slack".into(), channel_id: "C14".into(), thread_ts: Some("14.1".into()) };
+    let reply = crate::channel_dispatch::ChannelDispatchImpl::new(nebo.state.clone())
+        .dispatch("", CHANNEL, ctx, "MARK-14 price the Rivera order")
+        .await
+        .expect("the dispatch");
+    assert_eq!(reply.as_deref(), Some("Started."));
+    rig.company.open("h14");
+    let op = tokio::time::timeout(Duration::from_secs(30), ops.recv())
+        .await
+        .expect("the woken turn posts into the channel")
+        .expect("an op");
+    assert_eq!(op["op"], "post", "{op}");
+    assert_eq!(op["channel"], "C14", "{op}");
+    assert_eq!(op["thread_ts"], "14.1", "in the thread it came from: {op}");
+    assert!(op["text"].as_str().unwrap_or("").contains("REPORT H14-RESULT"), "{op}");
+    nebo.state.channel_bridges.write().await.remove(&tools::channel_bridge_key("", "slack"));
+}
+
 /// Parity 5.5: an update for a helper that has finished and been let go —
 /// a coworker's late reply, redelivered at boot or at a run's end — goes to
 /// the helper's parent, which is told. It never wakes the helper's own

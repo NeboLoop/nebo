@@ -37,6 +37,9 @@ pub type NotifyFn = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 /// `ToolContext.channel`, which the plugin tool turns into env vars.
 pub trait ChannelDispatcher: Send + Sync {
     /// Send a message to an agent and return the complete response text.
+    /// `None` when the message went into the turn already running in that
+    /// conversation: that turn hears it and its reply answers it, so
+    /// nothing is posted for it (and it is not sent again).
     ///
     /// - `agent_id`: target agent
     /// - `session_key`: conversation session (e.g., "agent:brief:slack:C123")
@@ -49,7 +52,7 @@ pub trait ChannelDispatcher: Send + Sync {
         session_key: &'a str,
         channel_ctx: tools::ChannelContext,
         prompt: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send + 'a>>;
 }
 
 /// A single autonomous agent worker. Owns all trigger tasks for one agent.
@@ -2386,7 +2389,16 @@ async fn channel_loop(
                                     let result = dispatch.dispatch(&agent, &session_key, channel_ctx.clone(), &text).await;
                                     let elapsed_ms = started.elapsed().as_millis();
                                     match result {
-                                        Ok(r) if !r.is_empty() => {
+                                        Ok(None) => {
+                                            info!(
+                                                agent = %agent,
+                                                channel = %ch,
+                                                session = %session_key,
+                                                "channel dispatch: joined the running turn; its reply answers"
+                                            );
+                                            return;
+                                        }
+                                        Ok(Some(r)) if !r.is_empty() => {
                                             info!(
                                                 agent = %agent,
                                                 channel = %ch,
@@ -2406,7 +2418,7 @@ async fn channel_loop(
                                             response = Some(r);
                                             break;
                                         }
-                                        Ok(_) => {
+                                        Ok(Some(_)) => {
                                             warn!(
                                                 agent = %agent,
                                                 channel = %ch,
@@ -2945,9 +2957,9 @@ async fn shared_channel_loop(
                             tokio::spawn(async move {
                                 match dispatch.dispatch(&target_id, &session_key, channel_ctx, &text).await {
                                     Ok(response) => {
-                                        if response.is_empty() {
+                                        let Some(response) = response.filter(|r| !r.is_empty()) else {
                                             return;
-                                        }
+                                        };
                                         let mut reply = serde_json::Map::new();
                                         reply.insert(
                                             "op".into(),

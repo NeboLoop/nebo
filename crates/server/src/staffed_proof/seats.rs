@@ -405,7 +405,7 @@ async fn every_hiring_door_grants_the_declared_job() {
         .expect("the channel's reply");
     assert!(
         nebo.store().get_agent(&channelled).unwrap().is_some(),
-        "installed: {reply}"
+        "installed: {reply:?}"
     );
     assert!(
         granted(&channelled).is_empty(),
