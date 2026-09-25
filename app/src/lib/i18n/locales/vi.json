@@ -324,7 +324,6 @@
 		"stepFailed": "{name} thất bại",
 		"workingWithTool": "đang làm việc với {name}",
 		"moreCount": "+{count} nữa",
-		"largeInputNote": "Tài liệu lớn · {chars} ký tự · toàn văn đã lưu cho nhân viên",
 		"enterToSubmit": "Enter để gửi · Esc để hủy",
 		"saveAndSubmit": "Lưu & Gửi",
 		"editResend": "Chỉnh sửa & gửi lại",

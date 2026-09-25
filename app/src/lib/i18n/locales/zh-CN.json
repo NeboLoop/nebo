@@ -324,7 +324,6 @@
 		"stepFailed": "{name} 失败",
 		"workingWithTool": "正在使用 {name}",
 		"moreCount": "+{count} 项",
-		"largeInputNote": "大型文档 · {chars} 个字符 · 已为员工保留全文",
 		"enterToSubmit": "Enter 提交 · Esc 取消",
 		"saveAndSubmit": "保存并提交",
 		"editResend": "编辑并重新发送",

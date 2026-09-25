@@ -324,7 +324,6 @@
 		"stepFailed": "{name} falhou",
 		"workingWithTool": "a trabalhar com {name}",
 		"moreCount": "+{count} mais",
-		"largeInputNote": "Documento grande · {chars} caracteres · texto completo guardado para o funcionário",
 		"enterToSubmit": "Enter para submeter · Esc para cancelar",
 		"saveAndSubmit": "Guardar e submeter",
 		"editResend": "Editar e reenviar",

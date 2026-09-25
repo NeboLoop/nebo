@@ -324,7 +324,6 @@
 		"stepFailed": "{name} נכשל",
 		"workingWithTool": "עובד עם {name}",
 		"moreCount": "+{count} נוספים",
-		"largeInputNote": "מסמך גדול · {chars} תווים · הטקסט המלא נשמר עבור העובד",
 		"enterToSubmit": "Enter לשליחה · Esc לביטול",
 		"saveAndSubmit": "שמור ושלח",
 		"editResend": "ערוך ושלח מחדש",

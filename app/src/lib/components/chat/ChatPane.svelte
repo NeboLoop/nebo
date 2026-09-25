@@ -666,22 +666,11 @@
     editText = '';
   }
 
-  // The large-input pipeline replaces a huge pasted prompt with a pointer +
-  // summary FOR THE MODEL — but that replacement was stored as the user's
-  // message, so the transcript showed internal plumbing ("can be read with
-  // os(resource: ...)"). Render it as a clean note + the summary instead.
   // Attachment pointer notes ("[Attached: x.md (13 KB) — saved at /path...]",
   // audio variants) are appended to the prompt FOR THE MODEL — the transcript
   // already renders the real attachment chips, so the pointer text is
   // plumbing duplicated into the human view. Strip it from display only;
   // the stored content (the model's context) is untouched.
-
-  const LARGE_INPUT_RE = /^\[This message contained a large [\s\S]*?\((\d+) characters[\s\S]*?Here is a summary:\]\s*/;
-  function parseLargeInput(content: string): { chars: string; summary: string } | null {
-    const m = content.match(LARGE_INPUT_RE);
-    if (!m) return null;
-    return { chars: Number(m[1]).toLocaleString(), summary: content.slice(m[0].length) };
-  }
 
   function handleEditKeydown(e: KeyboardEvent, idx: number) {
     if (e.key === 'Escape') {
@@ -1642,12 +1631,6 @@
             <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 {fromOwner ? 'rounded-br-sm' : 'rounded-bl-sm'} prose prose-sm max-w-none {msg.pending ? 'italic text-base-content/60' : ''} [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
               {#if tp}
                 {@html renderMarkdown(tp.text)}
-              {:else if parseLargeInput(msg.content)}
-                {@const li = parseLargeInput(msg.content)!}
-                <div class="not-prose mb-2 text-xs text-base-content/50">
-                  {$t('chat.largeInputNote', { values: { chars: li.chars } })}
-                </div>
-                {@html renderMarkdown(li.summary)}
               {:else}
                 {@html renderMarkdown(stripAttachmentNotes(msg.content))}
               {/if}

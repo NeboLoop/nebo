@@ -324,7 +324,6 @@
 		"stepFailed": "{name} başarısız oldu",
 		"workingWithTool": "{name} ile çalışıyor",
 		"moreCount": "+{count} daha",
-		"largeInputNote": "Büyük belge · {chars} karakter · tam metin çalışan için saklandı",
 		"enterToSubmit": "Göndermek için Enter · İptal için Esc",
 		"saveAndSubmit": "Kaydet ve Gönder",
 		"editResend": "Düzenle ve yeniden gönder",

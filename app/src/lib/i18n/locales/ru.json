@@ -324,7 +324,6 @@
 		"stepFailed": "{name} не справился",
 		"workingWithTool": "работаю с {name}",
 		"moreCount": "+{count} ещё",
-		"largeInputNote": "Большой документ · символов: {chars} · полный текст сохранён для сотрудника",
 		"enterToSubmit": "Enter — отправить · Esc — отменить",
 		"saveAndSubmit": "Сохранить и отправить",
 		"editResend": "Изменить и отправить снова",

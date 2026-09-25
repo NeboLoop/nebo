@@ -36,7 +36,7 @@
             - button "Activate Cloud Shell (G then S)" [ref=f8e406] [cursor=pointer]
             - button "Open notifications" [ref=f8e412] [cursor=pointer]
             - button "Settings and utilities" [ref=f8e419] [cursor=pointer]
-          - 'button "Account: Alma Tuck (alma.tuck@gmail.com)" [ref=f8e425]'
+          - 'button "Account: Example Owner (owner@example.com)" [ref=f8e425]'
     - generic [ref=f8e70]:
       - navigation "Breadcrumb" [ref=f8e75]:
         - link "Google Auth Platform" [ref=f8e78] [cursor=pointer]:
@@ -123,7 +123,7 @@
                         - generic [ref=f8e307]:
                           - combobox "User support email" [expanded] [ref=f8e308]
                           - listbox "Options" [ref=f8e433]:
-                            - option "alma.tuck@gmail.com" [active] [ref=f8e434]
+                            - option "owner@example.com" [active] [ref=f8e434]
                             - group "Google Groups managed by you" [ref=f8e437]:
                               - option "No groups" [disabled] [ref=f8e439]
                       - generic [ref=f8e316]:

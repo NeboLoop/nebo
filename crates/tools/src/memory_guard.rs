@@ -336,7 +336,7 @@ mod tests {
             ("event-date", "2026-04-14", "time-fragment"),
             (
                 "input-file-path",
-                "/Users/almatuck/Library/Application Support/Nebo/files/large_inputs/x.txt",
+                "/Users/example/Library/Application Support/Nebo/files/large_inputs/x.txt",
                 "path",
             ),
             ("temp-file", "/tmp/nebo-tool-results/abc.txt", "path"),
