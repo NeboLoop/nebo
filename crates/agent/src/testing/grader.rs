@@ -14,7 +14,7 @@ pub async fn grade(
     _server: &str,
     grader_model: &str,
 ) -> Result<GradeResult, String> {
-    let grader_prompt = build_grader_prompt(trace, fixture);
+    let grader_prompt = build_grader_prompt(trace, fixture)?;
     let result_text = grade_with_claude_code(&grader_prompt, grader_model).await?;
     parse_grade_response(&result_text)
 }
@@ -125,7 +125,11 @@ async fn grade_with_claude_code(prompt: &str, model: &str) -> Result<String, Str
     Ok(result_text)
 }
 
-fn build_grader_prompt(trace: &Trace, fixture: &Fixture) -> String {
+/// The judge reads the fixture bound to the trace's run (`{{scratch}}`,
+/// `{{tag}}`), the same binding the program checks use, so it compares the
+/// transcript against the values that run was given.
+fn build_grader_prompt(trace: &Trace, fixture: &Fixture) -> Result<String, String> {
+    let fixture = &super::scratch::bind(fixture, &trace.run_id)?;
     let trace_json = serde_json::to_string_pretty(trace).unwrap_or_default();
 
     // Prose-only assertions. Check-bearing ones are program-verified before
@@ -146,7 +150,7 @@ fn build_grader_prompt(trace: &Trace, fixture: &Fixture) -> String {
         .next()
         .unwrap_or_else(|| "500 chars".to_string());
 
-    format!(
+    Ok(format!(
         r#"You are evaluating an AI agent's tool usage in a controlled test.
 
 Your job is to assess TWO things:
@@ -227,7 +231,7 @@ Respond with ONLY valid JSON (no markdown fences, no explanation outside JSON):
         trace = trace_json,
         budget = budget_text,
         assertions = assertions_text,
-    )
+    ))
 }
 
 fn parse_grade_response(text: &str) -> Result<GradeResult, String> {
@@ -258,4 +262,37 @@ fn parse_grade_response(text: &str) -> Result<GradeResult, String> {
             warn!(raw_response = %text, "failed to parse grader response");
             format!("parse grader JSON: {} (raw: {}...)", e, &text[..text.len().min(200)])
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Gate run 36099651233: the judge was handed `{{scratch}}` unfilled while
+    /// the transcript carried the run's real path.
+    #[test]
+    fn the_judge_reads_the_runs_own_scratch() {
+        let fixture: Fixture = serde_yaml::from_str(
+            r#"
+id: read-file
+name: t
+description: 'The user asks for {{scratch}}/notes.txt'
+conversation:
+  - role: user
+    content: 'read {{scratch}}/notes.txt'
+prompt_assertions:
+  first_call:
+    - id: reports-contents
+      text: reports what {{scratch}}/notes.txt says
+      severity: critical
+"#,
+        )
+        .expect("fixture");
+        let trace = Trace::failed("read-file", "run-2", None, "unused");
+        let prompt = build_grader_prompt(&trace, &fixture).unwrap();
+        let dir = super::super::scratch::dir("read-file", "run-2");
+        assert!(!prompt.contains("{{scratch}}"), "{prompt}");
+        assert!(prompt.contains(&format!("The user asks for {dir}/notes.txt")), "{prompt}");
+        assert!(prompt.contains(&format!("reports what {dir}/notes.txt says")), "{prompt}");
+    }
 }

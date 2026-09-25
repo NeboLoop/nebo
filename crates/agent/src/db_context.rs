@@ -104,14 +104,15 @@ pub fn load_db_context(
 pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     let mut sections: Vec<String> = Vec::new();
 
-    // 1. Agent identity
-    if let Some(ref agent) = ctx.agent {
-        let personality = agent
+    // 1. The personality the owner chose. Who the employee is belongs to the
+    // system prompt's identity section; with no personality set, nothing here.
+    if let Some(personality) = ctx.agent.as_ref().and_then(|agent| {
+        agent
             .custom_personality
             .as_deref()
             .filter(|s| !s.is_empty())
             .or_else(|| personality_preset_prompt(agent.personality_preset.as_deref()))
-            .unwrap_or("You are a capable AI employee.");
+    }) {
         sections.push(format!("# Identity\n{}", personality));
     }
 
@@ -965,6 +966,48 @@ mod tests {
         assert!(result.contains("robot"));
         assert!(result.contains("Communication Style"));
         assert!(result.contains("warm"));
+    }
+
+    /// The employee-memory row opened with "# Identity — You are a capable
+    /// AI employee." for every owner who never chose a personality (the
+    /// default preset, `balanced`, has no text), repeating the system
+    /// prompt's identity section.
+    #[test]
+    fn no_chosen_personality_means_no_identity_block() {
+        let agent = AgentProfile {
+            id: 1,
+            name: "TestBot".to_string(),
+            personality_preset: Some("balanced".to_string()),
+            custom_personality: None,
+            voice_style: None,
+            response_length: None,
+            emoji_usage: None,
+            formality: None,
+            proactivity: None,
+            created_at: 0,
+            updated_at: 0,
+            emoji: None,
+            creature: None,
+            vibe: None,
+            avatar: None,
+            agent_rules: None,
+            tool_notes: None,
+            role: None,
+            quiet_hours_start: "22:00".to_string(),
+            quiet_hours_end: "08:00".to_string(),
+        };
+        let ctx = DBContext {
+            agent: Some(agent),
+            user: None,
+            preferences: None,
+            personality_directive: None,
+            tacit_memories: vec![],
+            plugin_accounts: vec![],
+        };
+        let result = format_for_system_prompt(&ctx, "TestBot");
+        assert!(!result.contains("# Identity"), "{result}");
+        assert!(!result.contains("capable AI employee"), "{result}");
+        assert!(result.contains("Memory Quick Reference"), "{result}");
     }
 
     #[test]
