@@ -27,7 +27,7 @@ use crate::types::*;
 /// but makes HTTP requests directly with reqwest to avoid reqwest-eventsource's
 /// automatic SSE reconnection (which causes infinite retries on 502 from Janus).
 pub struct OpenAIProvider {
-    api_key: String,
+    api_key: ApiKey,
     model: String,
     base_url: String,
     provider_id: String,
@@ -40,9 +40,9 @@ pub struct OpenAIProvider {
 }
 
 impl OpenAIProvider {
-    pub fn new(api_key: String, model: String) -> Self {
+    pub fn new(api_key: impl Into<ApiKey>, model: String) -> Self {
         Self {
-            api_key,
+            api_key: api_key.into(),
             model,
             base_url: "https://api.openai.com/v1".to_string(),
             provider_id: "openai".to_string(),
@@ -53,9 +53,9 @@ impl OpenAIProvider {
     }
 
     /// Create with a custom base URL for OpenAI-compatible APIs.
-    pub fn with_base_url(api_key: String, model: String, base_url: String) -> Self {
+    pub fn with_base_url(api_key: impl Into<ApiKey>, model: String, base_url: String) -> Self {
         Self {
-            api_key,
+            api_key: api_key.into(),
             model,
             base_url,
             provider_id: "openai".to_string(),
@@ -803,10 +803,11 @@ impl Provider for OpenAIProvider {
 
         let url = format!("{}/chat/completions", self.base_url);
         let mut headers = reqwest::header::HeaderMap::new();
-        if !self.api_key.is_empty() {
+        let api_key = self.api_key.current();
+        if !api_key.is_empty() {
             headers.insert(
                 reqwest::header::AUTHORIZATION,
-                format!("Bearer {}", self.api_key)
+                format!("Bearer {}", api_key)
                     .parse()
                     .expect("valid auth header"),
             );
@@ -1502,5 +1503,54 @@ mod tests {
         assert!(head.contains("x-purpose: memory_extract"), "{head}");
         assert!(head.contains("x-agent-id: agent-1"), "{head}");
         assert!(!head.contains("x-run-id"), "empty ids stay off the wire: {head}");
+    }
+
+    // The hub rotates the NeboAI token on every comms connect, so a Janus
+    // provider built once must present the token current at each request,
+    // never the one it was built with.
+    #[tokio::test]
+    async fn live_key_presents_the_token_rotated_after_construction() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let mut heads = Vec::new();
+            for _ in 0..2 {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 16384];
+                let n = sock.read(&mut buf).await.unwrap();
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: [DONE]\n\n";
+                sock.write_all(resp.as_bytes()).await.unwrap();
+                heads.push(String::from_utf8_lossy(&buf[..n]).to_lowercase());
+            }
+            heads
+        });
+
+        let token = std::sync::Arc::new(std::sync::Mutex::new("token-at-build".to_string()));
+        let live = token.clone();
+        let provider = OpenAIProvider::with_base_url(
+            ApiKey::live(move || live.lock().unwrap().clone()),
+            "m".into(),
+            format!("http://{addr}"),
+        );
+        let req = ChatRequest {
+            messages: vec![Message {
+                role: "user".into(),
+                content: "hi".into(),
+                ..Default::default()
+            }],
+            ..ChatRequest::new(RequestTrace::new("chat"))
+        };
+
+        let mut rx = provider.stream(&req).await.unwrap();
+        while rx.recv().await.is_some() {}
+        *token.lock().unwrap() = "token-rotated".to_string();
+        let mut rx = provider.stream(&req).await.unwrap();
+        while rx.recv().await.is_some() {}
+
+        let heads = server.await.unwrap();
+        assert!(heads[0].contains("authorization: bearer token-at-build"), "{}", heads[0]);
+        assert!(heads[1].contains("authorization: bearer token-rotated"), "{}", heads[1]);
+        assert!(!heads[1].contains("token-at-build"), "{}", heads[1]);
     }
 }

@@ -163,18 +163,10 @@ pub use workflows::{WorkTool, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 pub(crate) fn build_neboai_api(store: &db::Store) -> Result<comm::api::NeboAIApi, String> {
     let bot_id = config::read_bot_id()
         .ok_or_else(|| "This Nebo is not paired with NeboAI (no bot_id configured). Ask the owner to pair it in Settings > NeboAI.".to_string())?;
-    let profiles = store
-        .list_active_auth_profiles_by_provider("neboai")
-        .map_err(|e| format!("failed to query auth profiles: {}", e))?;
-    let profile = profiles
-        .first()
+    let token = auth::neboai_token(store)
         .ok_or_else(|| "This Nebo is not paired with NeboAI (no active neboai auth profile). Ask the owner to pair it in Settings > NeboAI.".to_string())?;
     let cfg = config::Config::default();
-    Ok(comm::api::NeboAIApi::new(
-        cfg.neboai.api_url,
-        bot_id,
-        profile.api_key.clone(),
-    ))
+    Ok(comm::api::NeboAIApi::new(cfg.neboai.api_url, bot_id, token))
 }
 
 // ── Post-Install Artifact Persistence ──────────────────────────────

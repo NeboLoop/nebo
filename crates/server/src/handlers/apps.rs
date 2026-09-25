@@ -605,8 +605,7 @@ pub async fn proxy_to_sidecar(
     // First-party NeboAI apps (`requires.neboai: true`) reuse the owner's own
     // NeboAI sign-in: no separate consent, the app is just who Nebo is.
     let neboai_token = if declaration.pointer("/requires/neboai").and_then(|v| v.as_bool()) == Some(true) {
-        state.store.list_all_active_auth_profiles_by_provider("neboai").unwrap_or_default()
-            .first().map(|p| p.api_key.clone()).unwrap_or_default()
+        crate::codes::neboai_token(&state).unwrap_or_default()
     } else { String::new() };
     // Credential-bearing sidecar requests must come from the app UI (or the
     // native protocol proxy, which has no browser Origin), never a foreign page.

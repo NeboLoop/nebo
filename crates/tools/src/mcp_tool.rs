@@ -93,14 +93,12 @@ pub async fn resolve_mcp_token(
     }
     if integration.auth_type == "neboai" {
         // Platform-authenticated server (e.g. the Nebo KB): bearer is this
-        // Nebo's own NeboAI token, read live from the auth profile — never a
+        // Nebo's own NeboAI token, resolved live (`auth::neboai_token`) — never a
         // stored copy, because the token rotates on every comms reconnect and
         // a copy would go stale. No profile = not paired with NeboAI yet.
-        return match store.list_all_active_auth_profiles_by_provider("neboai") {
-            Ok(profiles) if !profiles.is_empty() => {
-                TokenResolution::Ready(Some(profiles[0].api_key.clone()))
-            }
-            _ => TokenResolution::NeedsReauth,
+        return match auth::neboai_token(store) {
+            Some(token) => TokenResolution::Ready(Some(token)),
+            None => TokenResolution::NeedsReauth,
         };
     }
     if integration.auth_type != "oauth" {

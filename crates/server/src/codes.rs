@@ -1757,19 +1757,10 @@ async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
 pub(crate) fn build_api_client(state: &AppState) -> Result<NeboAIApi, NeboError> {
     let bot_id =
         config::read_bot_id().ok_or_else(|| NeboError::Internal("no bot_id configured".into()))?;
-    let profiles = state
-        .store
-        .list_all_active_auth_profiles_by_provider("neboai")
-        .unwrap_or_default();
-    let profile = profiles
-        .first()
-        .ok_or_else(|| NeboError::Internal("not connected to NeboAI".into()))?;
+    let token =
+        neboai_token(state).ok_or_else(|| NeboError::Internal("not connected to NeboAI".into()))?;
     let api_server = state.config.neboai.api_url.clone();
-    Ok(NeboAIApi::new(
-        api_server,
-        bot_id,
-        profile.api_key.clone(),
-    ))
+    Ok(NeboAIApi::new(api_server, bot_id, token))
 }
 
 /// Push a single chat's (possibly newly-generated) title to its NeboLoop
@@ -1964,36 +1955,12 @@ fn host_label() -> String {
 }
 
 pub(crate) fn neboai_token(state: &AppState) -> Option<String> {
-    neboai_token_from(&state.store)
-}
-
-/// Store-level variant for callers without an AppState (workflow manager).
-/// Honors the rotated-token cache — the DB copy goes stale after rotation.
-pub(crate) fn neboai_token_from(store: &db::Store) -> Option<String> {
-    let profiles = store
-        .list_all_active_auth_profiles_by_provider("neboai")
-        .unwrap_or_default();
-    let mut token = profiles.first().map(|p| p.api_key.clone())?;
-    if token.is_empty() {
-        return None;
-    }
-    if let Ok(dir) = config::data_dir() {
-        let cache_path = dir.join("neboai_token.cache");
-        if let Ok(cached) = std::fs::read_to_string(&cache_path) {
-            let cached = cached.trim().to_string();
-            if !cached.is_empty() && cached != token {
-                info!("neboai: using cached rotated token (differs from DB)");
-                token = cached;
-            }
-        }
-    }
-    Some(token)
+    auth::neboai_token(&state.store)
 }
 
 /// Fire-and-forget push of a durable inbox item (or a `resolved: true` delta)
 /// to the owner's unified inbox at neboai.com/app. Uses `neboai_token()` —
-/// rotated-cache aware, unlike `build_api_client` whose DB token goes stale
-/// after rotation — and spawns so a hub outage never blocks or breaks local
+/// rotated-cache aware — and spawns so a hub outage never blocks or breaks local
 /// notification creation. Silently a no-op when not connected to NeboAI.
 pub(crate) fn push_inbox(state: &AppState, item: serde_json::Value) {
     push_inbox_via(&state.store, &state.config.neboai.api_url, item);
@@ -2004,7 +1971,7 @@ pub(crate) fn push_inbox_via(store: &db::Store, api_url: &str, item: serde_json:
     let Some(bot_id) = config::read_bot_id() else {
         return;
     };
-    let Some(token) = neboai_token_from(store) else {
+    let Some(token) = auth::neboai_token(store) else {
         return;
     };
     let api_server = api_url.to_string();
@@ -2028,7 +1995,7 @@ pub(crate) fn push_artifact_via(store: &db::Store, api_url: &str, artifact: serd
     let Some(bot_id) = config::read_bot_id() else {
         return;
     };
-    let Some(token) = neboai_token_from(store) else {
+    let Some(token) = auth::neboai_token(store) else {
         return;
     };
     let api_server = api_url.to_string();

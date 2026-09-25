@@ -6,6 +6,31 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// The bearer an HTTP provider presents, resolved on every request. A fixed
+/// key (a user's own OpenAI key) converts from `String`; a key that rotates
+/// (the NeboAI token Janus takes, which the hub rotates on every comms
+/// connect) is `ApiKey::live`, so a provider built once never presents a
+/// token that has since been rotated out.
+#[derive(Clone)]
+pub struct ApiKey(Arc<dyn Fn() -> String + Send + Sync>);
+
+impl ApiKey {
+    pub fn live(resolve: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        Self(Arc::new(resolve))
+    }
+
+    /// The key to present right now.
+    pub fn current(&self) -> String {
+        (self.0)()
+    }
+}
+
+impl From<String> for ApiKey {
+    fn from(key: String) -> Self {
+        Self::live(move || key.clone())
+    }
+}
+
 /// Rate limit metadata extracted from provider response headers.
 #[derive(Debug, Clone, Default)]
 pub struct RateLimitMeta {

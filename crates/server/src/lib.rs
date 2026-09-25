@@ -236,7 +236,7 @@ fn seed_models_from_catalog(store: &db::Store, models_cfg: &config::ModelsConfig
 /// too, so a merge upstream disappears everywhere at once. Rows seeded from
 /// models.yaml (the boot floor) are never removed. No account = nothing to do.
 pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize, String> {
-    let Some(token) = crate::codes::neboai_token_from(store) else {
+    let Some(token) = auth::neboai_token(store) else {
         return Ok(0);
     };
     #[derive(serde::Deserialize)]
@@ -384,13 +384,8 @@ fn build_embedding_provider(
                 if is_janus {
                     let janus_url = &cfg.neboai.janus_url;
                     let bot_id = config::read_bot_id().unwrap_or_default();
-                    let api_key = if profile.api_key.is_empty() {
-                        bot_id.clone()
-                    } else {
-                        profile.api_key.clone()
-                    };
                     let ep = ai::OpenAIEmbeddingProvider::with_base_url(
-                        api_key,
+                        janus_api_key(store.clone()),
                         format!("{}/v1", janus_url),
                     )
                     .with_model("neboloop/nebo-embed-small".into(), 1536)
@@ -406,24 +401,34 @@ fn build_embedding_provider(
     None
 }
 
+/// The bearer every Janus client presents, resolved on each request through
+/// the ONE resolver (`auth::neboai_token`): the hub rotates the token on every
+/// comms connect, so a client built once must never keep the token it was
+/// built with. With no NeboAI token, the bot id (Janus's X-Bot-ID fallback).
+pub(crate) fn janus_api_key(store: Arc<db::Store>) -> ai::ApiKey {
+    ai::ApiKey::live(move || {
+        auth::neboai_token(&store).unwrap_or_else(|| config::read_bot_id().unwrap_or_default())
+    })
+}
+
 /// Build AI providers from auth_profiles in the database.
 /// Config is needed for NeboAI's Janus URL (not stored in auth_profile).
 /// The typed-decision door (TypeSafe Jev through Janus `/v1/systemone`).
 /// The bearer is the NeboAI token, resolved on every call through the ONE
-/// resolver the comms and tunnel paths use (`codes::neboai_token_from`, which
+/// resolver the comms and tunnel paths use (`auth::neboai_token`, which
 /// honors the rotated-token cache), so a rotation or a login after boot needs
 /// no rebuild. Janus rejects a bare bot id as a bearer.
 pub fn build_decide_client(store: Arc<db::Store>, cfg: &Config) -> Arc<ai::DecideClient> {
     Arc::new(ai::DecideClient::new(&cfg.neboai.janus_url, move || {
         Some(ai::Bearer {
-            token: codes::neboai_token_from(&store)?,
+            token: auth::neboai_token(&store)?,
             bot_id: config::read_bot_id(),
         })
     }))
 }
 
 pub fn build_providers(
-    store: &db::Store,
+    store: &Arc<db::Store>,
     cfg: &Config,
     cli_statuses: Option<&config::AllCliStatuses>,
 ) -> Vec<Arc<dyn ai::Provider>> {
@@ -534,12 +539,6 @@ pub fn build_providers(
                         let janus_url = &cfg.neboai.janus_url;
                         let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
                         let bot_id = config::read_bot_id().unwrap_or_default();
-                        // Janus authenticates via X-Bot-ID header; api_key (OAuth token) is optional
-                        let api_key = if profile.api_key.is_empty() {
-                            bot_id.clone()
-                        } else {
-                            profile.api_key.clone()
-                        };
                         info!(
                             model = %model,
                             janus_url = %janus_url,
@@ -547,7 +546,7 @@ pub fn build_providers(
                             "loaded Janus provider via NeboAI"
                         );
                         let mut p = ai::OpenAIProvider::with_base_url(
-                            api_key,
+                            janus_api_key(store.clone()),
                             model,
                             format!("{}/v1", janus_url),
                         );
@@ -776,7 +775,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // below can fire a timer or send.
     let lease = comm::lease::process();
     lease.set_fenced(tools::server_mode());
-    if cfg.is_neboai_enabled() && codes::neboai_token_from(&store).is_some() {
+    if cfg.is_neboai_enabled() && auth::neboai_token(&store).is_some() {
         lease.claim();
     }
     info!(instance = %lease.instance_id(), fenced = tools::server_mode(), "bot lease: this process's instance");
@@ -1164,13 +1163,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // sign-in — read live on every launch because the token rotates.
     {
         let store = store.clone();
-        plugin_store.set_neboai_token_source(Arc::new(move || {
-            store
-                .list_all_active_auth_profiles_by_provider("neboai")
-                .ok()?
-                .first()
-                .map(|p| p.api_key.clone())
-        }));
+        plugin_store.set_neboai_token_source(Arc::new(move || auth::neboai_token(&store)));
     }
 
     // Recover plugin installs interrupted mid-swap by a prior crash/hot-reload
@@ -5895,14 +5888,11 @@ fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, St
         ));
     }
 
-    let janus = active().find(|p| p.provider == "neboai")?;
-    let api_key = if janus.api_key.is_empty() {
-        config::read_bot_id().unwrap_or_default()
-    } else {
-        janus.api_key.clone()
-    };
+    if !active().any(|p| p.provider == "neboai") {
+        return None;
+    }
     Some((
-        api_key,
+        janus_api_key(state.store.clone()).current(),
         format!("{}/v1", state.config.neboai.janus_url),
         DEFAULT_STT_MODEL.to_string(),
     ))
