@@ -76,10 +76,10 @@ impl WorkflowManager for RecordingManager {
     fn toggle<'a>(&'a self, _: &'a str) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>> {
         unreachable_fut("toggle")
     }
-    fn create<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>> {
+    fn create<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: tools::SaveOptions) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>> {
         unreachable_fut("create")
     }
-    fn update<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>> {
+    fn update<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: tools::SaveOptions) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>> {
         unreachable_fut("update")
     }
     fn delete<'a>(&'a self, _: &'a str, _: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {

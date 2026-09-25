@@ -20,6 +20,9 @@ pub const TEAM_CREATED_EVENT: &str = "team_created";
 pub const TEAM_MESSAGE_EVENT: &str = "team_message";
 /// WS event after a team's name, mission, or members change; carries the team.
 pub const TEAM_UPDATED_EVENT: &str = "team_updated";
+/// WS event when a team is removed: the owner's delete, or a temporary team
+/// disbanding once its outcome reached the owner. Carries `teamId`.
+pub const TEAM_REMOVED_EVENT: &str = "team_removed";
 /// WS event when a member starts working on a post ("X is working").
 pub const TEAM_ACTIVITY_EVENT: &str = "team_activity";
 

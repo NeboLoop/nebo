@@ -1,7 +1,7 @@
 mod manager;
 mod work_tool;
 
-pub use manager::{WorkflowInfo, WorkflowManager, WorkflowRunInfo};
+pub use manager::{Lifetime, SaveOptions, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 pub use work_tool::{WorkflowTool, tools};
 #[cfg(test)]
 pub(crate) use work_tool::tests::Recorder as TestManager;

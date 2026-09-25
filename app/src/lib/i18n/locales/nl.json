@@ -184,7 +184,16 @@
 		"showAll": "Alle {n} tonen",
 		"showFewer": "Minder tonen",
 		"noEmployeesMatch": "Op dit moment geen medewerkers in die staat.",
-		"barHover": "{done} klaar, {skipped} niets te doen, {waiting} wachtten op jou, {stopped} gestopt"
+		"barHover": "{done} klaar, {skipped} niets te doen, {waiting} wachtten op jou, {stopped} gestopt",
+		"inProgress": "Werk in uitvoering",
+		"inProgressSub": "Gemaakt voor één klus; verdwijnt zodra je de uitkomst hebt",
+		"temporaryWorkflow": "Tijdelijke workflow",
+		"temporaryTeam": "Tijdelijk team",
+		"temporaryStatus": {
+			"starting": "Start",
+			"working": "Aan het werk",
+			"waiting": "Wacht"
+		}
 	},
 	"nav": {
 		"home": "Nebo Home",

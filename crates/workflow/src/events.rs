@@ -229,6 +229,16 @@ impl EventDispatcher {
                                 );
                             }
                         }
+                        // Temporary work fires once (owner, 09-25): once its
+                        // one run has started it stops listening.
+                        if store
+                            .temporary_work(db::TemporaryKind::Workflow, &sub.agent_source, &sub.binding_name)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|w| w.run_id.is_some())
+                        {
+                            self.unsubscribe_binding(&sub.agent_source, &sub.binding_name).await;
+                        }
                     } else {
                         warn!(
                             agent = %sub.agent_source,

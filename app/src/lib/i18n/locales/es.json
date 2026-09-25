@@ -184,7 +184,16 @@
 		"showAll": "Ver los {n}",
 		"showFewer": "Ver menos",
 		"noEmployeesMatch": "Ningún empleado en ese estado ahora mismo.",
-		"barHover": "{done} hechas, {skipped} sin nada que hacer, {waiting} te esperaron, {stopped} detenidas"
+		"barHover": "{done} hechas, {skipped} sin nada que hacer, {waiting} te esperaron, {stopped} detenidas",
+		"inProgress": "Trabajo en curso",
+		"inProgressSub": "Hecho para un solo trabajo; desaparece cuando tienes el resultado",
+		"temporaryWorkflow": "Flujo de trabajo temporal",
+		"temporaryTeam": "Equipo temporal",
+		"temporaryStatus": {
+			"starting": "Empezando",
+			"working": "Trabajando",
+			"waiting": "Esperando"
+		}
 	},
 	"nav": {
 		"home": "Inicio de Nebo",

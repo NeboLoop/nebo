@@ -184,7 +184,16 @@
 		"showAll": "הצג את כל {n}",
 		"showFewer": "הצג פחות",
 		"noEmployeesMatch": "אין עובדים במצב הזה כרגע.",
-		"barHover": "{done} הושלמו, {skipped} ללא מה לעשות, {waiting} המתינו לך, {stopped} הופסקו"
+		"barHover": "{done} הושלמו, {skipped} ללא מה לעשות, {waiting} המתינו לך, {stopped} הופסקו",
+		"inProgress": "עבודה בתהליך",
+		"inProgressSub": "נוצר למשימה אחת; נעלם כשהתוצאה מגיעה אליך",
+		"temporaryWorkflow": "תהליך עבודה זמני",
+		"temporaryTeam": "צוות זמני",
+		"temporaryStatus": {
+			"starting": "מתחיל",
+			"working": "עובד",
+			"waiting": "ממתין"
+		}
 	},
 	"nav": {
 		"home": "דף הבית של Nebo",

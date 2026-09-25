@@ -184,7 +184,16 @@
 		"showAll": "Tunjuk semua {n}",
 		"showFewer": "Tunjuk lebih sedikit",
 		"noEmployeesMatch": "Tiada pekerja dalam keadaan itu sekarang.",
-		"barHover": "{done} selesai, {skipped} tiada kerja, {waiting} menunggu anda, {stopped} dihentikan"
+		"barHover": "{done} selesai, {skipped} tiada kerja, {waiting} menunggu anda, {stopped} dihentikan",
+		"inProgress": "Kerja sedang berjalan",
+		"inProgressSub": "Dibuat untuk satu kerja; hilang sebaik sahaja anda menerima hasilnya",
+		"temporaryWorkflow": "Aliran kerja sementara",
+		"temporaryTeam": "Pasukan sementara",
+		"temporaryStatus": {
+			"starting": "Bermula",
+			"working": "Bekerja",
+			"waiting": "Menunggu"
+		}
 	},
 	"nav": {
 		"home": "Laman Utama Nebo",

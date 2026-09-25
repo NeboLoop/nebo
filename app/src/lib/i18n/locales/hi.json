@@ -184,7 +184,16 @@
 		"showAll": "सभी {n} दिखाएँ",
 		"showFewer": "कम दिखाएँ",
 		"noEmployeesMatch": "अभी इस स्थिति में कोई कर्मचारी नहीं है।",
-		"barHover": "{done} पूरे हुए, {skipped} में कोई काम नहीं था, {waiting} ने आपकी प्रतीक्षा की, {stopped} रोके गए"
+		"barHover": "{done} पूरे हुए, {skipped} में कोई काम नहीं था, {waiting} ने आपकी प्रतीक्षा की, {stopped} रोके गए",
+		"inProgress": "चल रहा काम",
+		"inProgressSub": "एक काम के लिए बना; नतीजा मिलते ही हट जाता है",
+		"temporaryWorkflow": "अस्थायी वर्कफ़्लो",
+		"temporaryTeam": "अस्थायी टीम",
+		"temporaryStatus": {
+			"starting": "शुरू हो रहा है",
+			"working": "काम कर रहा है",
+			"waiting": "इंतज़ार कर रहा है"
+		}
 	},
 	"nav": {
 		"home": "Nebo होम",

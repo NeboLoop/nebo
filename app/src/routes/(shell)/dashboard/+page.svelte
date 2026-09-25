@@ -120,7 +120,7 @@
     // employee paused or resumed. Never the per-token stream or the per-tool
     // event: while a chat runs those arrive every second, and each reload is
     // dozens of queries the server does not need while it is running the chat.
-    for (const ev of ['chat_created', 'subagent_start', 'subagent_complete', 'chat_complete', 'chat_error', 'chat_cancelled', 'ask_request', 'approval_request', 'permission_ask', 'permission_ask_resolved', 'agent_activated', 'agent_deactivated', 'workflow_run_started', 'workflow_activity_update', 'workflow_run_completed', 'workflow_run_failed', 'workflow_run_exited']) {
+    for (const ev of ['chat_created', 'subagent_start', 'subagent_complete', 'chat_complete', 'chat_error', 'chat_cancelled', 'ask_request', 'approval_request', 'permission_ask', 'permission_ask_resolved', 'agent_activated', 'agent_deactivated', 'workflow_run_started', 'workflow_activity_update', 'workflow_run_completed', 'workflow_run_failed', 'workflow_run_exited', 'agent_workflow_created', 'agent_workflow_deleted', 'team_created', 'team_removed']) {
       unsubs.push(ws.on(ev, scheduleLoad));
     }
     // The five-second progress snapshot lists every live run. It only earns a
@@ -407,6 +407,30 @@
           </section>
           {/if}
         {/each}
+
+        <!-- Work in progress: temporary workflows and teams, made for one
+             piece of work and gone once its outcome has reached the owner. -->
+        {#if data.temporaryWork.length > 0}
+          <section class="min-w-0">
+            <div class="flex items-baseline gap-3 mb-3">
+              <h2 class="text-[15px] font-semibold">{$t('dashboard.inProgress')}</h2>
+              <span class="text-xs text-base-content/50">{$t('dashboard.inProgressSub')}</span>
+            </div>
+            <div class="flex flex-col gap-2">
+              {#each data.temporaryWork as w (w.kind + w.name)}
+                <div class="rounded-2xl border border-base-300 bg-base-100 px-4 py-3 flex flex-wrap items-center gap-3">
+                  {#if w.agentName}<AgentAvatar name={w.agentName} color={colors[w.agentId]} size="sm" />{/if}
+                  <div class="min-w-0 flex-1">
+                    <div class="text-[13px] font-semibold truncate">{w.name}</div>
+                    <div class="text-xs text-base-content/60 truncate">{w.kind === 'team' ? $t('dashboard.temporaryTeam') : $t('dashboard.temporaryWorkflow')}{#if w.agentName} · {w.agentName}{/if} · {w.waitingOn}</div>
+                  </div>
+                  <span class="badge badge-sm {w.status === 'waiting' ? 'badge-warning badge-outline' : w.status === 'working' ? 'badge-success badge-outline' : 'badge-ghost'}">{$t(`dashboard.temporaryStatus.${w.status}`)}</span>
+                  <span class="text-xs text-base-content/50 font-mono tabular-nums">{formatRelative(w.since * 1000, 'short')}</span>
+                </div>
+              {/each}
+            </div>
+          </section>
+        {/if}
 
         <!-- Employees -->
         <section class="min-w-0">

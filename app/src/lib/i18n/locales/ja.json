@@ -184,7 +184,16 @@
 		"showAll": "{n}件すべて表示",
 		"showFewer": "表示を減らす",
 		"noEmployeesMatch": "現在その状態の社員はいません。",
-		"barHover": "完了{done}件、対応不要{skipped}件、あなた待ち{waiting}件、停止{stopped}件"
+		"barHover": "完了{done}件、対応不要{skipped}件、あなた待ち{waiting}件、停止{stopped}件",
+		"inProgress": "進行中の仕事",
+		"inProgressSub": "一つの仕事のために作成。結果が届くと消えます",
+		"temporaryWorkflow": "一時的なワークフロー",
+		"temporaryTeam": "一時的なチーム",
+		"temporaryStatus": {
+			"starting": "開始中",
+			"working": "作業中",
+			"waiting": "待機中"
+		}
 	},
 	"nav": {
 		"home": "Nebo ホーム",

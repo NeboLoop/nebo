@@ -364,10 +364,18 @@ pub async fn remove_team(
     State(state): State<AppState>,
     Path(team_id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    state.store.delete_team(&team_id).map_err(to_error_response)?;
+    disband(&state, &team_id).map_err(|e| to_error_response(types::NeboError::Database(e)))?;
     Ok(Json(serde_json::json!({
         "message": "Team removed"
     })))
+}
+
+/// Remove a team: the owner's delete, and a temporary team's end once its
+/// outcome reached the owner. Its thread stays (see `remove_team`).
+pub(crate) fn disband(state: &AppState, team_id: &str) -> Result<(), String> {
+    state.store.delete_team(team_id).map_err(|e| format!("delete team: {e}"))?;
+    state.hub.broadcast(tools::team::TEAM_REMOVED_EVENT, serde_json::json!({ "teamId": team_id }));
+    Ok(())
 }
 
 #[cfg(test)]

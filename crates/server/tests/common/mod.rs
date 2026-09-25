@@ -6,6 +6,8 @@
 //! suite needs reads as dead code in the other.
 #![allow(dead_code)]
 
+pub mod model;
+
 use std::path::PathBuf;
 use std::time::Duration;
 

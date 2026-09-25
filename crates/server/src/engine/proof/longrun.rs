@@ -162,3 +162,38 @@ async fn e4_an_ask_waits_four_days_across_a_restart_and_the_answer_resumes_it() 
     p.tick(at(12 * DAY)).await;
     assert_eq!((ran.load(Ordering::SeqCst), p.reminded()), (1, 1));
 }
+
+/// E13 — A temporary workflow's outcome reaches the owner, once, before it
+/// is deleted. Its one run has ended: the outcome is written to the owner's
+/// Inbox and the session that started the work is told, with the run named
+/// so the same work can be saved. Delivering it again (a crash between the
+/// report and the delete) repeats nothing. Must never: a temporary workflow
+/// deleted before its outcome is written, or an outcome told twice.
+#[test]
+fn e13_a_temporary_workflows_outcome_reaches_the_owner_once_before_it_goes() {
+    let w = World::new();
+    let chat = "agent:ops:web";
+    w.s.mark_temporary(db::TemporaryKind::Workflow, "ops", "budget-check", chat).unwrap();
+    w.s.engine_create_run(&NewRun { id: "run-b", kind: "workflow", session_key: "agent:ops:workflow:run-b", agent_id: "ops", lane: "main", ..Default::default() }).unwrap();
+    assert_eq!(w.s.claim_temporary_run(db::TemporaryKind::Workflow, "ops", "budget-check", "run-b").unwrap(), db::TemporaryClaim::Claimed);
+    assert!(w.s.ended_temporary_work().unwrap().is_empty(), "still running: nothing to finish");
+
+    w.s.engine_set_run_result("run-b", "BUDGET-RESULT: $1,200 a month", None).unwrap();
+    w.s.engine_set_run_state("run-b", "done", w.t, None).unwrap();
+    let ended = w.s.ended_temporary_work().unwrap();
+    assert_eq!(ended.len(), 1, "its one run ended: it is finished next");
+    let (work, run) = &ended[0];
+    for _ in 0..2 {
+        crate::engine::report_temporary_outcome(&w.s, work, run, None).unwrap();
+    }
+
+    let user = w.s.ensure_local_user_id().unwrap();
+    let inbox = w.s.get_notification("temporary:run-b", &user).unwrap().expect("the outcome is in the Inbox");
+    assert_eq!(inbox.title, "The budget check workflow finished");
+    assert_eq!(inbox.body.as_deref(), Some("BUDGET-RESULT: $1,200 a month"));
+    let (told, _) = w.s.engine_claim_session_events(chat, w.t).unwrap();
+    assert_eq!(told.len(), 1, "told once: {told:?}");
+    assert_eq!(told[0].kind, crate::engine::TEMPORARY_WORK_ENDED);
+    assert!(told[0].payload.contains("(run run-b)") && told[0].payload.contains("from_run: \"run-b\""), "{}", told[0].payload);
+    assert!(told[0].payload.contains("BUDGET-RESULT"), "{}", told[0].payload);
+}

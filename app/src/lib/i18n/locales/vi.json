@@ -184,7 +184,16 @@
 		"showAll": "Hiện tất cả {n}",
 		"showFewer": "Hiện bớt",
 		"noEmployeesMatch": "Hiện không có nhân viên nào ở trạng thái đó.",
-		"barHover": "{done} hoàn tất, {skipped} không có việc, {waiting} đang chờ bạn, {stopped} đã dừng"
+		"barHover": "{done} hoàn tất, {skipped} không có việc, {waiting} đang chờ bạn, {stopped} đã dừng",
+		"inProgress": "Công việc đang làm",
+		"inProgressSub": "Tạo cho một việc; biến mất khi bạn nhận được kết quả",
+		"temporaryWorkflow": "Quy trình tạm thời",
+		"temporaryTeam": "Nhóm tạm thời",
+		"temporaryStatus": {
+			"starting": "Đang bắt đầu",
+			"working": "Đang làm",
+			"waiting": "Đang chờ"
+		}
 	},
 	"nav": {
 		"home": "Trang chủ Nebo",
