@@ -237,7 +237,6 @@
 		"working": "工作中"
 	},
 	"chat": {
-		"contextStats": "本回合的脈絡：{files} 個檔案被重讀了 {times} 次，壓縮 {passes} 輪。",
 		"goalLine": "目標：{condition}（{turns} 輪）",
 		"goalLastCheck": "上次檢查：{reason}",
 		"goalPaused": "已暫停。你的下一則訊息會恢復它。",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "指向包含應用程式資訊清單的資料夾",
 		"sideloadPoint2": "Nebo 會探索並以開發模式載入應用程式",
 		"sideloadPoint3": "應用程式的變更會自動熱重載",
-		"sideloadPoint4": "側載的應用程式在沙箱環境中執行",
-		"guardrails": "迴圈防護",
-		"guardrailsDesc": "當員工反覆做同一件事卻毫無進展時，用來讓它停下的門檻值。預設值是安全的 — 除非清楚自己在調什麼，否則別改。",
-		"sameActionLimit": "重複上限",
-		"sameActionLimitDesc": "每回合中同一個工具動作可以無效重複的次數，超過後會引導模型換個做法",
-		"identicalArgsBlockAfter": "相同呼叫封鎖",
-		"identicalArgsBlockAfterDesc": "完全相同的呼叫（同一工具、同樣參數）可以無效重複的次數，超過後會被封鎖",
-		"hardStop": "觸發重複上限時直接停止",
-		"hardStopDesc": "達到重複上限時結束本回合，而不是引導模型換個做法",
-		"guardrailsSaved": "防護設定已儲存",
-		"guardrailsSaveFailed": "防護設定儲存失敗",
-		"resetDefaults": "還原預設值",
-		"save": "儲存"
+		"sideloadPoint4": "側載的應用程式在沙箱環境中執行"
 	},
 	"settingsHeartbeat": {
 		"title": "心跳",

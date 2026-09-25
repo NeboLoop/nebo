@@ -9,8 +9,6 @@ mcp__google_calendar__list_events: MCP <uuid>/list_events failed: tools/call lis
 message: Missing required parameter '<x>' for send action.
 message: No employee named '<x>' is installed. list_employees shows the roster — coworker messages go to installed employees only.
 os: BLOCKED: sudo is not permitted. Nebo must never run commands with elevated privileges. This is a hard safety limit that cannot be overridden. Ask the owner to m
-os: Blocked: os has been called <n> times with identical arguments and has not made progress — it errored or returned what you already had. Retrying it unchanged wi
-os: Blocked: os has been called <n> times with identical arguments and returned the same thing each time, or errored each time. Calling it the same way again, or th
 os: Command exited with code <n>
 os: Command killed after <n>s (its timeout): `<cmd>`
 os: Command timed out after <n>s: `<cmd>`

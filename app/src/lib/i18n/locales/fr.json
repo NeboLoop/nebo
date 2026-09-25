@@ -237,7 +237,6 @@
 		"working": "Au travail"
 	},
 	"chat": {
-		"contextStats": "Contexte de ce tour : {files} fichiers relus {times} fois, {passes} passes de compactage.",
 		"goalLine": "Objectif : {condition} ({turns} tours)",
 		"goalLastCheck": "dernière vérification : {reason}",
 		"goalPaused": "En pause. Votre prochain message le relance.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Indiquez un dossier contenant le manifeste de votre app",
 		"sideloadPoint2": "Nebo découvre et charge l'app en mode développement",
 		"sideloadPoint3": "Les modifications de votre app sont rechargées à chaud automatiquement",
-		"sideloadPoint4": "Les apps chargées localement s'exécutent dans un environnement isolé",
-		"guardrails": "Protections de la boucle",
-		"guardrailsDesc": "Des seuils qui arrêtent un employé quand il répète la même action sans avancer. Les valeurs par défaut sont sûres — ne les changez que si vous savez ce que vous réglez.",
-		"sameActionLimit": "Limite de spirale",
-		"sameActionLimitDesc": "Répétitions improductives d'une action d'outil par tour avant que le modèle en soit détourné",
-		"identicalArgsBlockAfter": "Blocage d'appel identique",
-		"identicalArgsBlockAfterDesc": "Répétitions improductives d'un appel exact (même outil, mêmes arguments) avant qu'il soit bloqué",
-		"hardStop": "Arrêt net en cas de spirale",
-		"hardStopDesc": "Terminer le tour quand la limite de spirale se déclenche, au lieu d'inciter le modèle à changer d'approche",
-		"guardrailsSaved": "Protections enregistrées",
-		"guardrailsSaveFailed": "Impossible d'enregistrer les protections",
-		"resetDefaults": "Rétablir les valeurs par défaut",
-		"save": "Enregistrer"
+		"sideloadPoint4": "Les apps chargées localement s'exécutent dans un environnement isolé"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

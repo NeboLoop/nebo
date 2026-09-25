@@ -7,8 +7,8 @@ description: |
   binary through the shell with cat | quickbooks payment create --json,
   which has no account context and 401s. No guard fired because each
   failing verb counted separately. The plugin now hints the body shape on a
-  400, the shell redirects plugin binaries to the plugin's own tool
-  (plugin__quickbooks), and the spiral counter is keyed on the plugin. This
+  400 and the shell redirects plugin binaries to the plugin's own tool
+  (plugin__quickbooks). This
   fixture pins the clean path: a dry-run payment request built in one or
   two plugin__quickbooks calls with the JSON passed through args, never the
   shell, and nothing posted.

@@ -159,7 +159,7 @@ pub(crate) async fn finish_turn(
 /// The reply-text fragment of a stream event: `Some` ONLY for `Text` events.
 /// This is the ONE gate for what accumulates into user-visible reply text
 /// (desktop `full_response`, comm buffers, channel replies). `ControlNotice`
-/// (spiral backstop, circuit breaker, terminal tool error) and every other
+/// (step or spending limit, terminal tool error) and every other
 /// event type return `None` — run-control status must never render as
 /// assistant prose (the spiral instruction leaked verbatim into a customer
 /// Slack channel when it was emitted as Text).
@@ -635,7 +635,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             agent::guardrails::Next::Stalled => {
                                 let notice = agent::guardrails::stall_notice();
                                 tracing::warn!(session_id = %sid, "run stalled: no event for {}s", agent::guardrails::RUN_IDLE_LIMIT.as_secs());
-                                control_stop = Some((agent::guardrails::Exit::Stalled.label(), notice.clone()));
+                                control_stop = Some((agent::guardrails::STALLED.to_string(), notice.clone()));
                                 hub.broadcast("chat_error", ws_payload!("error": &notice,));
                                 cancel_token.cancel();
                                 break;
@@ -943,17 +943,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "error": event.error.unwrap_or_default(),
                                 ),
                             );
-                        }
-                        StreamEventType::ContextStats => {
-                            if let Some(ref stats) = event.widgets {
-                                let mut payload = ws_payload!();
-                                if let (Some(obj), Some(src)) = (payload.as_object_mut(), stats.as_object()) {
-                                    for (k, v) in src {
-                                        obj.insert(k.clone(), v.clone());
-                                    }
-                                }
-                                hub.broadcast("context_stats", payload);
-                            }
                         }
                         StreamEventType::Usage => {
                             if let Some(ref usage) = event.usage {
@@ -1654,7 +1643,7 @@ pub async fn run_chat_events(
                             if tx
                                 .send(ai::StreamEvent::control_notice(
                                     agent::guardrails::stall_notice(),
-                                    agent::guardrails::Exit::Stalled.label(),
+                                    agent::guardrails::STALLED,
                                 ))
                                 .await
                                 .is_err()
@@ -2312,12 +2301,12 @@ mod tests {
             reply_fragment(&ai::StreamEvent::text("real content")),
             Some("real content")
         );
-        // ControlNotice (spiral backstop / circuit breaker / terminal error)
+        // ControlNotice (step limit / spending limit / terminal error)
         // must never reach reply accumulators — this is the Slack-leak guard.
         assert_eq!(
             reply_fragment(&ai::StreamEvent::control_notice(
-                "Stopped: 'web(search)' was called 8 times this turn without progress.",
-                "repeated_tool_calls",
+                "Stopped after 100 steps, the most one turn takes.",
+                "max_steps",
             )),
             None
         );

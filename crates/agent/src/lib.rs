@@ -25,7 +25,6 @@ pub mod review_fork;
 pub mod proactive;
 pub mod prompt;
 pub mod pruning;
-pub mod read_ledger;
 pub mod worktree;
 pub mod shell_hooks;
 pub mod research;
