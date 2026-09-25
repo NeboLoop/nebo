@@ -350,6 +350,10 @@ pub(crate) fn caller_floor_allowlist() -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// What a call-tree intent's workflow grant lets the caller do with that
+/// workflow: run it and follow its runs.
+const CALLER_WORKFLOW_TOOLS: [&str; 3] = ["run_workflow", "workflow_status", "list_workflow_runs"];
+
 /// One intent branch of a resolved call tree: what the line's owner said
 /// this line handles, and the exact tool surface that intent may touch.
 #[derive(Clone)]
@@ -435,9 +439,10 @@ fn resolve_call_tree(state: &AppState, agent_id: &str, line: &str) -> Option<Cal
             continue;
         }
         // The intent's tool surface: the caller floor plus exactly what the
-        // owner granted — tools (tool:resource), sibling workflows (via the
-        // work tool, resource-scoped), plugins (slug-scoped), MCP servers
-        // (prefix-scoped). Owner-declared, per line, enforced server-side.
+        // owner granted — tools (by name, or tool:subject), sibling
+        // workflows (running one and reading its runs, scoped to that
+        // workflow), plugins (slug-scoped), MCP servers (prefix-scoped).
+        // Owner-declared, per line, enforced server-side.
         // Grant params live flat on the intent node (tools/workflows/
         // plugins/mcp), each a comma-separated string (the builder's form
         // fields) or an array (the AI architect) — one shape, two spellings.
@@ -463,7 +468,9 @@ fn resolve_call_tree(state: &AppState, agent_id: &str, line: &str) -> Option<Cal
             allowlist.insert(t);
         }
         for w in grant_values("workflows") {
-            allowlist.insert(format!("work:{w}"));
+            for tool in CALLER_WORKFLOW_TOOLS {
+                allowlist.insert(format!("{tool}:{w}"));
+            }
         }
         for p in grant_values("plugins") {
             allowlist.insert(tools::plugin_tools::plugin_tool_name(&p));

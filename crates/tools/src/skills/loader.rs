@@ -961,7 +961,7 @@ impl Loader {
 
         format!(
             "## Agent Required Plugins\n\
-             This agent depends on these plugins. Their skills are listed by name in the plugin tool; use_skill(name: \"<skill name>\") loads a plugin's usage, and find_skills(query: \"<slug> <task>\") finds the one for a job.\n\n\
+             This agent depends on these plugins. Each one's tool, plugin__<slug>, lists its skills by name; use_skill(name: \"<skill name>\") loads a plugin's usage, and find_skills(query: \"<slug> <task>\") finds the one for a job.\n\n\
              {}\n",
             lines.join("\n")
         )

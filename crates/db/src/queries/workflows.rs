@@ -906,6 +906,18 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Replace the call a run's live approval wait resumes with.
+    pub fn set_workflow_suspension_call(&self, run_id: &str, pending_tool: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE engine_waits SET parked = json_set(parked, '$.pending_tool', ?2)
+             WHERE run_id = ?1 AND on_kind = 'approval' AND superseded_at IS NULL",
+            params![run_id, pending_tool],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// The approval was resolved (resume or deny): the wait is released.
     /// The caller sets the run's next state.
     pub fn delete_workflow_suspension(&self, run_id: &str) -> Result<(), NeboError> {

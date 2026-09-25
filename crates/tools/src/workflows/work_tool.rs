@@ -429,6 +429,12 @@ impl DynTool for WorkflowTool {
         workflow_effects(self.kind, input)
     }
 
+    /// The workflow the call acts on: what a restricted run's
+    /// `run_workflow:<workflow>` grant admits.
+    fn subject(&self, input: &serde_json::Value) -> Option<String> {
+        Some(str_field(input, "workflow")).filter(|w| !w.is_empty()).map(str::to_string)
+    }
+
     /// Never alongside other calls, reads included: a run's status changes
     /// between calls, and a concurrency-safe call is held to the
     /// identical-read ceiling, which would end a turn waiting on a run.

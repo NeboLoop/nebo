@@ -54,7 +54,7 @@ const SCREEN_KEYS: &[&str] = &[
 
 /// Convert the old settings once. Returns `None` when it already ran.
 pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, types::NeboError> {
-    if store.permission_migration_done(MIGRATION)? {
+    if store.upgrade_conversion_done(MIGRATION)? {
         return Ok(None);
     }
     let mut w = Writes { store, report: MigrationReport::default() };
@@ -247,7 +247,7 @@ pub fn migrate_legacy(store: &db::Store) -> Result<Option<MigrationReport>, type
     }
 
     let report = w.report;
-    store.record_permission_migration(MIGRATION, &serde_json::to_string(&report).unwrap_or_default())?;
+    store.record_upgrade_conversion(MIGRATION, &serde_json::to_string(&report).unwrap_or_default())?;
     tracing::info!(rules = report.rules, mode = ?report.company_mode, unreadable = report.unreadable.len(), "permissions: old settings converted to rules");
     Ok(Some(report))
 }

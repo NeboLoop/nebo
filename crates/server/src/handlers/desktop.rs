@@ -87,7 +87,7 @@ pub async fn teach_stop(
          click-and-keystroke timeline of exactly what they did — then confirm the visual \
          context by viewing 5-6 spread keyframes from frames/ (there are {keyframes}; do \
          NOT read them all, and do not use sub-agents). Then save it as a learned skill \
-         with the skill tool — name it after the class of task, write out the steps you'd \
+         with save_skill — name it after the class of task, write out the steps you'd \
          follow to repeat it on your computer, and note which inputs varied. Open your \
          reply by thanking them briefly and saying what you learned, then ask whether you \
          should run this on a schedule or only when they ask. Do not mention this \

@@ -2,14 +2,12 @@
 USE THIS when: user wants to send a text, notification, or alert to someone.
 To talk to, hand work to, or introduce yourself to another AI employee on this computer, or to post to a team, use send_message(to: "<name>", message: "..."): no loop, channel, or workspace needed. Multiple coworkers = one send each.
 
-- message(resource: owner, action: notify, text: "Task complete!") — Notify the owner via companion chat
 - message(resource: sms, action: send, phone: "+15551234567", text: "Hello!") — Send SMS (macOS)
 - message(resource: sms, action: conversations) — List SMS conversations
 - message(resource: sms, action: read, phone: "+15551234567") — Read SMS messages
 - message(resource: sms, action: search, query: "meeting") — Search SMS messages
-- message(resource: notify, action: send, title: "Alert", text: "Something happened") — System notification
-- message(resource: notify, action: alert, title: "Warning", text: "...") — Show alert dialog
-- message(resource: notify, action: dnd_status) — Check Do Not Disturb status
+
+To tell the owner something: message_owner(message: "Task complete!"). A system notification is push_notification(title: "Alert", message: "Something happened"), with urgent: true when it needs them now; check_dnd() says whether Do Not Disturb is on.
 
 For text-to-speech: use os(resource: "tts", action: "speak", text: "Hello")
 Use message for outbound delivery to humans; coworkers and teams are send_message.

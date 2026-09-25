@@ -21,7 +21,7 @@ Use this skill when the user says:
 - "What are the best practices for [topic]?"
 
 **Do NOT use for:**
-- Simple lookups answerable in 1-2 searches (just use the `web` tool directly)
+- Simple lookups answerable in 1-2 searches (just use `search_web` and `fetch_url` directly)
 - Debugging code or technical troubleshooting
 - Quick fact-checks or definitions
 - Time-sensitive queries needing an immediate one-line answer

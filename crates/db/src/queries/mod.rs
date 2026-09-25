@@ -40,6 +40,7 @@ mod users;
 pub(crate) mod work;
 mod workflows;
 mod teams;
+mod upgrade;
 
 pub use agents::agent_slug;
 pub use assignments::{Assignment, NewAssignment};
@@ -54,5 +55,6 @@ pub use run_usage::cost_microcents;
 pub use license_keys::LicenseKeyRow;
 pub use session_goals::SessionGoal;
 pub use plugin_account_profiles::PluginAccountProfile;
+pub use upgrade::{ToolNamingCell, tool_naming_places};
 pub use work::WorkDocumentListing;
 pub use teams::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};
