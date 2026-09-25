@@ -844,8 +844,10 @@ impl PluginRunner {
                     ));
                 }
                 result.push_str(&format!(
-                    "\nAn employee's automation watches one of these with a watch trigger: \
-                     {{\"plugin\": \"{slug}\", \"event\": \"<event-name>\"}}."
+                    "\nAn employee can run on these through a watch trigger in its agent.json \
+                     (create_employee with agent_json):\n  \
+                       {{\"workflows\": {{\"<name>\": {{\"trigger\": {{\"type\": \"watch\", \"plugin\": \"{}\", \"event\": \"<event-name>\"}}, \"activities\": [...]}}}}}}",
+                    slug
                 ));
                 ToolResult::ok(result)
             }

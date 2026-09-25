@@ -21,7 +21,7 @@ Any of these, in any wording:
 - "help me get set up" when the answer is people, not settings
 
 If they name one role ("hire a bookkeeper"), skip the interview: call
-`agent(resource: "registry", action: "discover", query: "bookkeeper")` and let
+`find_employees(query: "bookkeeper")` and let
 the hire card do the rest.
 
 ## Employees before tools — always
@@ -29,8 +29,8 @@ the hire card do the rest.
 An employee is the hire. A tool (plugin) is something an employee uses. When
 the user asks who can help, search employees:
 
-    agent(resource: "registry", action: "discover", department: "accounting")
-    agent(resource: "registry", action: "discover", query: "returns", department: "customer-support")
+    find_employees(department: "accounting")
+    find_employees(query: "returns", department: "customer-support")
 
 Never answer a staffing question with `find_plugins`. If a hire
 later needs a connection (a mailbox, a store, a ledger), its connect card
@@ -82,7 +82,7 @@ these?" (Let them drop rows.)
 
 On yes: for each employee in turn, call
 
-    agent(resource: "registry", action: "discover", query: "<exact name>")
+    find_employees(query: "<exact name>")
 
 The hire card appears; when it resumes with "hired", move to the next. One
 card at a time. Do not paste install codes into chat, ever.

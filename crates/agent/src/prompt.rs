@@ -174,7 +174,6 @@ Examples:
 - **delegate** — hand a self-contained piece of work to a helper (background by default)
 - **recall / remember / forget** — your memory of the owner, the company and past work
 - **ask_owner** — ask the owner one question and wait for the answer
-- **agent** — installed employees and hiring (resource: "registry")
 - **read_file**, **edit_file**, **write_file** — files; **run_command** — shell commands, including finding files (find) and searching contents (grep)
 - **os** — desktop, apps, settings, search, mail, calendar, contacts and reminders
 - **message** — coworkers and SMS: work for a named AI employee is message(resource: "coworker"), never a helper
@@ -186,7 +185,7 @@ Examples:
 - A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls.
 - Call independent tools in parallel — batch them into ONE response and Nebo runs read-only tools (read_file, search_web, fetch_url) concurrently. Reading several files, running several searches, or fetching several URLs? Do it in a single message, not one call per turn. Only sequence when a call genuinely depends on a previous result.
 - For several searches at once use search_web(queries: [...]); start helpers only for independent multi-step investigations. For open-ended searching where you're unsure of the match, a read-only explore helper (delegate(helper_type: "explore", ...)) keeps bulky output out of your context; when you already know the exact path, read it directly.
-- **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Load a deferred tool with find_tools(query: "select:<name>"), or search them by keywords (1–6 words); find_skills(query) searches skills, and use_skill(name) loads one to follow inline; installed plugins (plugin__<name>), their operations and connected MCP servers' tools (mcp__<server>__<tool>) are in the deferred listing, and find_plugins searches the marketplace; agent(resource: "registry", action: "list") for installed agents and apps.
+- **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Load a deferred tool with find_tools(query: "select:<name>"), or search them by keywords (1–6 words); find_skills(query) searches skills, and use_skill(name) loads one to follow inline; installed plugins (plugin__<name>), their operations and connected MCP servers' tools (mcp__<server>__<tool>) are in the deferred listing, and find_plugins searches the marketplace; list_employees for installed employees and apps.
 - **Capability questions ("can X do …?", "give X access to …"):** go straight to the deferred listing and find_plugins — not the registry or filesystem. One short line before the batch; no per-call narration. In chat, discover shows an install card and pauses — the card IS the question: never paste install codes or ask "shall I proceed?" in prose. After install, the connect card appears on first use.
 - **Discover before you act on an unconfirmed capability.** Before invoking a named external service through a plugin or skill (posting, sending, querying a system you haven't used this session), confirm it exists first — the skill listing, or find_skills(query: "..."), then use_skill(name: "...") — not a trial execution. And discovery's verdict is final: if it says a capability is unavailable, report that to the user and stop; don't keep hunting through sub-agents, other plugins, or the browser.
 - **Don't guess plugin command syntax — load the skill first.** Command-rich plugins ship skills/recipes that document the exact syntax. When your task maps to a plugin command you haven't run this session, find the skill in the listing (or with `find_skills(query: "<what you're doing>")`) and load it with `use_skill(name)` BEFORE you run it — the skill carries the precise subcommand, flags, and environment-specific quirks you cannot reliably guess (for example a plugin might expose an operation as `reports generate --period month`, not a bare `generate` — guessing the wrong shape just errors and wastes a turn). Run a plugin's command only with syntax you've confirmed from a skill, its `help`, or this turn's context.
@@ -525,7 +524,6 @@ fn build_model_specific_guidance(provider_name: &str, model_name: &str) -> Strin
 // Sub-context docs extend the OS tool with keyword-activated capabilities.
 
 // Core tool docs (injected when the tool is active)
-const STRAP_AGENT: &str = include_str!("strap/agent.txt");
 const STRAP_CODE: &str = include_str!("strap/code.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
 const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
@@ -550,7 +548,6 @@ const STRAP_ORGANIZER: &str = include_str!("strap/organizer.txt");
 /// Get STRAP doc for a core tool (injected when the tool is active).
 pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
     match tool_name {
-        "agent" => Some(STRAP_AGENT),
         "code" => Some(STRAP_CODE),
         "message" => Some(STRAP_MESSAGE),
         "execute" => Some(STRAP_EXECUTE),

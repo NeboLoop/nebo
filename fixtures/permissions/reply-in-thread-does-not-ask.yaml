@@ -32,8 +32,6 @@ conversation:
     content: "Reply and tell them it shipped this morning with tracking number 1Z999AA10123456784."
 
 tool_config:
-  agent:
-    enabled: true
   message:
     enabled: true
 

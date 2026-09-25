@@ -163,7 +163,7 @@ pub enum FollowUp {
     Continued(SpawnResult),
 }
 
-/// Trait implemented by agent::Orchestrator, consumed by tools::AgentTool.
+/// Trait implemented by agent::Orchestrator, consumed by the helper tools.
 /// Uses Pin<Box<dyn Future>> for object safety (async_trait alternative).
 pub trait SubAgentOrchestrator: Send + Sync {
     /// Spawn a single sub-agent.

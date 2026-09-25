@@ -1205,7 +1205,8 @@ impl Registry {
             self.register(tool).await;
         }
 
-        // Agent tool: employees (the registry) — always registered (core)
+        // The employee tools (deferred): the roster, hiring, and making,
+        // changing and removing employees.
         {
             let agent_reg = active_agent.unwrap_or_else(|| {
                 std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
@@ -1226,7 +1227,9 @@ impl Registry {
                 crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader)
                     .with_code_installer(self.code_installer.clone())
                     .with_job_consent(self.job_consent.clone());
-            self.register(Box::new(crate::bot_tool::AgentTool::new(persona))).await;
+            for tool in crate::employee_tools::tools(persona) {
+                self.register(Box::new(tool)).await;
+            }
         }
 
         // The schedule tools (reminders and recurring jobs).
@@ -2047,8 +2050,8 @@ mod tests {
     /// The tools that still carry several jobs behind `action`/`resource`.
     /// Each tool package removes its names; nothing is ever added.
     const PRE_INTERFACE_TOOLS: &[&str] = &[
-        "a2ui", "agent", "authority", "code", "execute", "exit", "message", "notebook", "os",
-        "pack", "publisher", "rules", "vm",
+        "a2ui", "authority", "code", "execute", "exit", "message", "notebook", "os", "pack",
+        "publisher", "rules", "vm",
     ];
 
     /// The enum-dispatch surfaces the interface allows (device surfaces).
@@ -2105,7 +2108,7 @@ mod tests {
 
     #[test]
     fn the_pre_interface_list_is_closed_and_the_allowed_surfaces_are_the_device_ones() {
-        assert_eq!(PRE_INTERFACE_TOOLS.len(), 13, "packages only remove names from this list");
+        assert_eq!(PRE_INTERFACE_TOOLS.len(), 12, "packages only remove names from this list");
         assert!(ENUM_SURFACES.iter().all(|(t, _)| is_tool_name(t)));
     }
 
@@ -2121,13 +2124,14 @@ mod tests {
     /// on Linux (os 9,609). WP4 swapped skill (3,102) for use_skill (585):
     /// −2,517. Tools WP2 moved helpers, memory and asking off agent and
     /// message (agent 6,005 · message 2,657 · delegate 1,702 · remember
-    /// 1,039 · recall 701 · ask_owner 618 · forget 336). WP6 deleted the mcp
-    /// tool and deferred the plugin family (−685). Each package that lands lowers
+    /// 1,039 · recall 701 · ask_owner 618 · forget 336). Tools WP3 deferred
+    /// the employee family and deleted agent: −6,005. WP6 deleted the mcp
+    /// tool and deferred the plugin family (−657). Each package that lands lowers
     /// the numbers; they never rise.
     #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 26_482;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 20_505;
     #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 26_934;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 20_957;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2158,7 +2162,7 @@ mod tests {
         assert_eq!(
             core,
             [
-                "agent", "ask_owner", "delegate", "edit_file", "find_tools", "forget", "message", "os",
+                "ask_owner", "delegate", "edit_file", "find_tools", "forget", "message", "os",
                 "read_file", "recall", "remember", "run_command", "use_skill", "write_file"
             ]
         );
@@ -2185,7 +2189,8 @@ mod tests {
             ("read_file", serde_json::json!({"path": "/tmp/x"})),
             ("read_output", serde_json::json!({"task_id": "bg-1a2b3c4d"})),
             ("stop_task", serde_json::json!({"task_id": "sa-1"})),
-            ("agent", serde_json::json!({"resource": "registry", "action": "discover"})),
+            ("find_employees", serde_json::json!({"query": "bookkeeper"})),
+            ("update_employee", serde_json::json!({"name": "x", "description": "d"})),
             ("remember", serde_json::json!({"key": "k", "value": "v"})),
             ("delegate", serde_json::json!({"description": "d", "prompt": "p"})),
             ("use_skill", serde_json::json!({"name": "x"})),

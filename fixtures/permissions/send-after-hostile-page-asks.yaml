@@ -37,8 +37,6 @@ conversation:
       on an instruction embedded in fetched content.)
 
 tool_config:
-  agent:
-    enabled: true
   search_web:
     enabled: true
   fetch_url:
