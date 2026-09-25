@@ -1,0 +1,105 @@
+id: correction-quickbooks-payment-dry-run
+name: "Correction — recording a QuickBooks payment goes through the plugin, JSON in args, no shell"
+description: |
+  Replayed from the CFO's live thread on 2026-09-06. Asked to mark paid
+  invoices as paid, the model spent fifty-seven iterations guessing at the
+  plugin's --line JSON from the command line, then ran the quickbooks
+  binary through the shell with cat | quickbooks payment create --json,
+  which has no account context and 401s. No guard fired because each
+  failing verb counted separately. The plugin now hints the body shape on a
+  400, the shell redirects plugin binaries to the plugin's own tool
+  (plugin__quickbooks, deferred and loaded with find_tools), and the spiral
+  counter is keyed on the plugin. This fixture pins the clean path: a
+  dry-run payment request built in one or two plugin__quickbooks calls with the JSON
+  passed through args, never the shell, and nothing posted.
+
+  Setup installs quickbooks through the one install pathway (the store
+  product's install code) and teardown removes it, the way
+  correction-plugin-discover-installed does. Until 2026-09-21 this fixture
+  claimed a machine with the plugin installed and made none, so on the
+  gate's fresh bot every run passed vacuously: the plugin listing came
+  back "No plugins installed", the marketplace search found it, and the run ended two calls in without ever reaching the
+  payment path this fixture exists to pin.
+
+  Installing is as far as a gate machine can go. The second precondition —
+  a connected QuickBooks company — is a real merchant's OAuth grant, and the
+  CI bot has none, so every verb past `doctor` answers "No quickbooks
+  account is connected for this agent". That is the machine's state, not a
+  wrong turn, and max_errors: 0 would therefore be a light that can never go
+  green here. The check now pins the error SHAPES this fixture is about —
+  the "unexpected argument" and "exited with code" the CLI-guessing spiral
+  produced, the "is required" / "is missing" of a missing parameter, the
+  "No such tool" / "No skill named" of a guessed name, and the "not found"
+  that says the setup above did not take — and leaves the not-connected
+  result alone. What the gate proves is the call shape: the first call is
+  plugin__quickbooks (or find_tools loading it) with the command at the top level, no shell, inside the
+  ceiling. The request body itself (--dry-run, the Line JSON through args)
+  is judged by dry-run-only and shape, which need a connected company and so
+  only carry weight on a machine that has one.
+
+  Measured over 8 live runs against a real install (2026-09-21): 5 clean, at
+  1, 1, 2, 3 and 3 calls. Two runs opened on a skill load (use_skill) with an
+  invented name — "quickbooks" and "quickbooks-processor" — because
+  installing the plugin also installs its 28 quickbooks-* skills, which is
+  the machine a customer has; both are first-call misses this fixture is
+  right to fail. One ran to 6 calls reading three skills before it checked
+  the connection. So this fixture will not be green every run, and the
+  failures are the model's, not the harness's. Do not raise `bounded` to
+  swallow them: 4 calls is the right ceiling on a machine that is connected
+  (5 in the new harness, which loads plugin__quickbooks with find_tools first).
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: plugin__quickbooks
+
+setup:
+  - "python3 -c \"import json,urllib.request as u; s='${NEBO_TEST_SERVER:-localhost:27895}'; ps=json.load(u.urlopen('http://'+s+'/api/v1/store/products?type=plugin&q=quickbooks'))['products']; p=[x for x in ps if x.get('slug')=='quickbooks'][0]; u.urlopen(u.Request('http://'+s+'/api/v1/store/products/'+p['id']+'/install', method='POST'), timeout=180).read()\""
+teardown:
+  - "curl -s -X DELETE http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/plugins/quickbooks > /dev/null"
+
+conversation:
+  - role: user
+    content: "Without posting anything, show me the exact QuickBooks payment request you would send to apply $1,518.24 against invoice id 11302 for its customer. Use the plugin's dry run."
+
+tool_config:
+  plugin__quickbooks:
+    enabled: true
+  use_skill:
+    enabled: true
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: plugin-first
+      text: "The first call is plugin__quickbooks (a query for the invoice's customer, or the payment call), one of its skills through use_skill, or find_tools loading plugin__quickbooks — the plugin's tool says a plugin's usage is its skills, and reading quickbooks-payment before acting is the pathway, not a detour. Never the shell."
+      severity: critical
+      check: { first_call: true, tool: [plugin__quickbooks, use_skill, find_tools] }
+  recovery:
+    - id: no-shell-plugin
+      text: "No run_command call runs the quickbooks binary, pipes JSON into it, or sets QUICKBOOKS_* env vars"
+      severity: critical
+    - id: no-tool-errors
+      text: "No call is rejected for its shape: no 'unexpected argument', no 'exited with code', no missing 'is required' / 'is missing' parameter, no 'No such tool' or 'No skill named', and no 'not found' — which is either the setup above failing to install the plugin, or the model naming a skill or plugin that does not exist. A 'not connected' result is the machine's state, not a shape error, and does not count"
+      severity: critical
+      check:
+        no_error_contains:
+          - "unexpected argument"
+          - "exited with code"
+          - "is required"
+          - "not found"
+          - "is missing"
+          - "No such tool"
+          - "No skill named"
+    - id: bounded
+      text: "At most 5 tool calls (4 on the plugin, plus the find_tools call that loads plugin__quickbooks). Critical on a connected machine; on the gate bot (no merchant grant, 2026-09-23: 8 calls reading skills and probing before doctor said not connected) it is the model's cost to report, not the light that blocks a merge — the shape checks above are what the gate proves here."
+      severity: important
+      check: { max_tool_calls: 5 }
+    - id: dry-run-only
+      text: "The payment create call carries --dry-run and the reply says nothing was posted"
+      severity: critical
+    - id: shape
+      text: "The reply shows a Line with Amount 1518.24 and a LinkedTxn of TxnId 11302, TxnType Invoice"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 3
+  narrative: "Load plugin__quickbooks with find_tools, one query for invoice 11302's CustomerRef, then one payment create --dry-run with --customer-ref, --total-amt 1518.24 and the line JSON in args, then a short reply showing the request and saying it was not sent."

@@ -1,0 +1,54 @@
+id: os-file-read
+name: "OS file read — correct tool routing"
+description: |
+  The user asks the agent to read a file. The model must use
+  read_file(path) — NOT hallucinate "read", "file", "bash", or fall back to
+  run_command with cat. This is the highest-volume tool call in the system.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: read_file
+
+setup:
+  - "echo 'hello from nebo config' > {{scratch}}/nebo-config.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Read the file at {{scratch}}/nebo-config.txt and tell me what it says."
+
+tool_config:
+  read_file:
+    enabled: true
+    response_budget:
+      max_chars: 500
+      rationale: "File contents should be returned concisely"
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'read_file', not 'read', 'file', 'bash', 'shell', 'system', 'run_command' or 'os'"
+      severity: critical
+    - id: correct-resource
+      text: "The call targets the file itself: read_file with a path. FAIL only on a wrong route like run_command (a shell cat) for the read."
+      severity: critical
+    - id: correct-action
+      text: "Model reads the file (read_file), not writes or edits it"
+      severity: critical
+    - id: correct-path
+      text: "Model passes path: '{{scratch}}/nebo-config.txt' exactly"
+      severity: critical
+  recovery:
+    - id: no-shell-fallback
+      text: "Model does NOT fall back to run_command(command: 'cat {{scratch}}/nebo-config.txt') after a successful read_file"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in exactly 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single read_file(path: "{{scratch}}/nebo-config.txt") call.
+    Model reads the response and reports the contents to the user.

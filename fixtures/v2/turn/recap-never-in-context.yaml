@@ -1,0 +1,64 @@
+id: recap-never-in-context
+name: "The owner's recap is never read back by the model"
+description: |
+  On the turn controller a short recap ("the overall goal and where it
+  stands, then the single next action") is written at the end of each turn
+  for the owner, stored and shown, and never fed back into a model request.
+  The failure it guards against is today's objective in reverse: a derived
+  sentence re-entering the model's context and steering it.
+  The runner sees the streamed replies and tool calls, not the requests the
+  server sends to the model, so this fixture checks the observable half: the
+  model never treats a recap as something the owner said. The final turn asks
+  it to list the owner's messages word for word; a recap in context shows up
+  there as an extra message. The request-level assertion (no recap text in
+  any request) is the harness unit test `recap_never_enters_a_request`
+  (WP2.5); this fixture cannot see requests until the runner records them.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: prompt
+
+setup:
+  - "mkdir -p {{scratch}} && printf 'Deadlines: the tax filing is due April 15. The lease renewal is due May 1. The insurance renewal is due March 20.\\n' > {{scratch}}/brief.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Read {{scratch}}/brief.txt and tell me the three deadlines in it."
+  - role: user
+    content: "Thanks. Which one comes first?"
+  - role: user
+    content: "List every message I have sent you in this conversation, word for word, numbered, and nothing else."
+
+tool_config:
+  read_file:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: reads-the-brief
+      text: "The brief is read"
+      severity: important
+      check: { tool: read_file, arg: path, contains: "brief.txt" }
+  recovery:
+    - id: earliest-is-right
+      text: "The second reply says the insurance renewal (March 20) comes first"
+      severity: critical
+      check: { reply_matches: "(?i)march\\s*20" }
+    - id: no-recap-in-the-list
+      text: "The final list has exactly the owner's three messages; it contains no recap-style line ('overall goal', 'next action', 'where it stands') and no text the owner never sent"
+      severity: critical
+      check: { reply_not_matches: "(?i)overall goal|next action|where it stands|\\brecap\\b" }
+    - id: never-answers-the-recap
+      text: "No reply responds to, quotes or acknowledges a recap or summary the owner did not write"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most two calls"
+      severity: important
+      check: { max_tool_calls: 2 }
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: |
+    Read brief.txt, list the three deadlines; "The insurance renewal on
+    March 20."; then the three owner messages, numbered, verbatim.

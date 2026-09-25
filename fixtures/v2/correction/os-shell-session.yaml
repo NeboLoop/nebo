@@ -1,0 +1,66 @@
+id: correction-os-shell-session
+name: "Correction - a background session is managed through os shell poll/log/kill"
+description: |
+  A background command's start result tells the model to poll it with
+  os(resource: "shell", action: "poll", session_id: ...). Until 2026-09-05
+  the os tool stamped resource "shell" on every call and the shell tool then
+  routed anything with that resource to exec, so poll, log, write, kill, list
+  and info all answered "exec requires command". Every background job was a
+  dead end. This fixture pins the whole session lifecycle through os with
+  zero error results: start in the background, poll, read the log, kill.
+  On the rewrite the lifecycle is run_command with background: true (the
+  result gives a task id like bg-1a2b3c4d), read_output(task_id) for the
+  status and everything printed so far (poll and log are one tool), and
+  stop_task(task_id) to end it. read_output and stop_task are deferred, so
+  loading them with one find_tools call first is the expected path.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: run_command
+
+conversation:
+  - role: user
+    content: "Start this in the background: `sh -c 'for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 120'`. Then poll it once, read its full log, and kill it. Tell me the session id and what the log said."
+
+tool_config:
+  run_command:
+    enabled: true
+  read_output:
+    enabled: true
+  stop_task:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-in-background
+      text: "The first call is run_command with background: true"
+      severity: critical
+      check: { first_call: true, tool: run_command, arg: background, equals: true }
+  recovery:
+    - id: no-tool-errors
+      text: "Every call the model makes is accepted: no 'exec requires command', missing-parameter, unknown-action, or deferred-tool-not-loaded error in any tool result"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: polls-the-session
+      text: "The model polls the task with read_output(task_id: <the id from the start result>) and the result reports the task's status"
+      severity: critical
+    - id: reads-the-log
+      text: "The model reads everything the task printed with read_output and the same task_id"
+      severity: critical
+    - id: kills-the-session
+      text: "The model stops the task with stop_task and the same task_id, and the result confirms it"
+      severity: critical
+    - id: bounded
+      text: "At most 7 tool calls (find_tools to load read_output and stop_task counts as one)"
+      severity: important
+      check: { max_tool_calls: 7 }
+    - id: honest-report
+      text: "The final response names the task id from the start result and quotes what the output contained (tick lines, or that there was no output yet); it does not claim run_command is broken or that background output is unavailable"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 4
+  total_tokens: 5000
+  narrative: |
+    run_command with background: true returns a task id like bg-1a2b3c4d,
+    find_tools "select:read_output,stop_task", read_output(task_id) shows
+    "running" and the tick lines, stop_task(task_id) confirms it stopped,
+    then two lines: the id and the tick lines the output held.

@@ -1,0 +1,45 @@
+id: agent-spawn-parallel
+name: "Helper batch — parallel independent research"
+description: |
+  Two independent research tasks. The delegate contract says independent
+  pieces are several delegate calls in ONE response — one helper per task,
+  running concurrently, results collected together. Serial delegation across
+  turns or doing both itself wastes wall-clock.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: delegate
+
+conversation:
+  - role: user
+    content: "Research two things for me at the same time: (1) what CRM systems realtors most commonly use, and (2) what typical transaction-coordination fees look like in the US. Keep the two summaries separate."
+
+tool_config:
+  delegate:
+    enabled: true
+  search_web:
+    enabled: true
+  fetch_url:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: parallel-action
+      text: "Model starts one helper per topic with delegate, all delegate calls in one response"
+      severity: critical
+    - id: two-tasks
+      text: "There are exactly 2 delegate calls, one per research topic"
+      severity: critical
+    - id: born-blind-web
+      text: "Each delegate prompt carries what its helper needs on its own: its whole topic (CRM systems for one, transaction-coordination fees for the other) and what to report back"
+      severity: critical
+  recovery:
+    - id: two-summaries
+      text: "Final answer contains two clearly separated summaries matching the two requests"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 8000
+  narrative: |
+    Two delegate calls in one response — delegate(description: "research realtor CRMs",
+    prompt: "...CRM...") and delegate(description: "research TC fees",
+    prompt: "...fees...") — then a two-part answer once both helpers report.
