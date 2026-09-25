@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::domain::DomainInput;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ResourceKind, ToolResult};
 
@@ -20,21 +19,6 @@ const VISITED_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 /// A web result longer than this is persisted by the registry and
 /// previewed (the one spill path).
 const MAX_RESULT_CHARS: usize = 50_000;
-
-/// Browser actions that change the page or send something.
-const WEB_SIDE_EFFECT_ACTIONS: &[&str] = &[
-    "click",
-    "fill",
-    "fill_form",
-    "type",
-    "select",
-    "press",
-    "drag",
-    "evaluate",
-    "file_upload",
-    "webmcp_call",
-    "browser_batch",
-];
 
 /// Janus `/v1/extract` failure cooldown duration. The extract tier runs on
 /// every HTML GET with a 20s timeout, so when Janus is degraded EVERY fetch
@@ -64,8 +48,10 @@ struct VisitedPage {
     payload: Option<serde_json::Value>,
 }
 
-/// WebTool consolidates web operations: HTTP fetch, search, and browser automation.
-pub struct WebTool {
+/// What the web and browser tools share: the HTTP clients, the search tiers,
+/// the browser, and the visited-page cache siblings reuse. Each tool of the
+/// family ([`WebTool`]) is one purpose over this core.
+pub struct WebCore {
     client: reqwest::Client,
     /// Non-redirecting client used only for model-supplied URLs (`handle_http`):
     /// redirects are followed manually in `fetch_checked` so every hop gets the
@@ -111,7 +97,7 @@ struct JanusSearchConfig {
     bot_id: String,
 }
 
-impl WebTool {
+impl WebCore {
     pub fn new() -> Self {
         const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
         let client = reqwest::Client::builder()
@@ -229,24 +215,6 @@ impl WebTool {
         }
     }
 
-    fn infer_resource(&self, action: &str) -> &str {
-        if HTTP_VERB_ACTIONS.contains(&action) {
-            return "http";
-        }
-        match action {
-            "fetch" | "sanitize" => "http",
-            "search" => "search",
-            "navigate" | "read_page" | "click" | "fill" | "type" | "screenshot"
-            | "evaluate" | "list_tabs" | "new_tab" | "close_tab" | "history"
-            | "scroll" | "hover" | "select" | "press" | "wait" | "drag" | "status"
-            | "read_console_messages" | "read_network_requests" | "resize_window"
-            | "file_upload" | "find" | "fill_form" | "browser_batch"
-            | "webmcp_list" | "webmcp_call" => "browser",
-            "console" => "devtools",
-            _ => "",
-        }
-    }
-
     /// Fetch a model-supplied URL with the SSRF guard applied to EVERY hop:
     /// redirects are followed manually (limit 5, matching the previous auto
     /// policy) so a public URL can't redirect into a private address unchecked.
@@ -326,108 +294,10 @@ impl WebTool {
         Err(format!("Too many redirects for {} (limit 5)", url))
     }
 
-    async fn handle_http(&self, input: &serde_json::Value, _session_id: &str) -> ToolResult {
-        let action = input
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("fetch");
-        let url = match input.get("url").and_then(|v| v.as_str()) {
-            Some(u) => u,
-            None => {
-                return ToolResult::error(crate::errors::missing_param(
-                    action,
-                    "url",
-                    &format!("web(action: \"{action}\", url: \"https://example.com\")"),
-                ))
-            }
-        };
-
-        // Sanitize action: fetch HTML, extract visible text, chunk for LLM context
-        if action == "sanitize" {
-            // Tier 0: Janus clean extract (server-side fetch + extraction to
-            // clean markdown, no LLM summarization). ANY failure falls through
-            // silently to the local fetch + sanitize chain — the same graceful
-            // degradation the search tiers use.
-            let mut extracted = None;
-            let mut status = 200u16;
-            // The extract service does the fetch server-side; there is no
-            // HTTP status to report from here, and the header must not
-            // invent one.
-            let mut via_extract = false;
-            if self.janus_search.is_some() {
-                match self.extract_via_janus(url).await {
-                    Ok(content) if !content.trim().is_empty() => {
-                        via_extract = true;
-                        extracted = Some(content)
-                    }
-                    Ok(_) => tracing::debug!(url, "janus extract returned empty content, using local extraction"),
-                    Err(e) => tracing::debug!(url, error = %e, "janus extract failed, using local extraction"),
-                }
-            }
-            let clean = match extracted {
-                Some(content) => content,
-                None => {
-                    let resp = match self
-                        .fetch_checked(
-                            reqwest::Method::GET,
-                            url,
-                            reqwest::header::HeaderMap::new(),
-                            None,
-                        )
-                        .await
-                    {
-                        Ok(r) => r,
-                        Err(e) => return ToolResult::error(e),
-                    };
-                    status = resp.status().as_u16();
-                    let html = match resp.text().await {
-                        Ok(t) => t,
-                        Err(e) => {
-                            return ToolResult::error(format!(
-                                "Failed to read response body from {} (status {}): {}",
-                                url, status, e
-                            ))
-                        }
-                    };
-                    sanitize_html(&html)
-                }
-            };
-            let max_chars = input
-                .get("chunk_size")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(4000) as usize;
-            let chunks = chunk_text(&clean, max_chars);
-            let total = chunks.len();
-            let chunk_idx = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let header = if via_extract {
-                format!("HTTP {} (via extract service)", url)
-            } else {
-                format!("HTTP {} — Status: {}", url, status)
-            };
-            if total == 0 {
-                return ToolResult::ok(format!(
-                    "{}\n\n(page returned no visible text; pages that need JavaScript return nothing here: use browser navigate + read_page)",
-                    header
-                ))
-                .with_http_status(status);
-            }
-            let idx = chunk_idx.min(total - 1);
-            return ToolResult::ok(format!(
-                "{}\n{}\n\n{}",
-                header,
-                chunk_header(idx, total, max_chars, chunk_idx),
-                chunks[idx]
-            ))
-            .with_http_status(status);
-        }
-
-        let method = match resolve_http_method(
-            action,
-            input.get("method").and_then(|v| v.as_str()).filter(|m| !m.is_empty()),
-        ) {
-            Ok(m) => m,
-            Err(e) => return ToolResult::error(e),
-        };
+    /// One HTTP request to a model-supplied URL. HTML comes back as its
+    /// visible text; any other body as-is, windowed by `offset` past 50 KB.
+    async fn handle_http(&self, method: reqwest::Method, input: &serde_json::Value) -> ToolResult {
+        let url = input.get("url").and_then(|v| v.as_str()).unwrap_or_default();
         let method_str = method.as_str().to_string();
 
         // Add custom headers
@@ -464,10 +334,10 @@ impl WebTool {
                             // Rendered page: return VISIBLE TEXT, not a wall of raw
                             // HTML/markup/scripts. Tier 0 is the Janus clean extract
                             // (clean markdown, no LLM summarization); ANY failure falls
-                            // through silently to local `sanitize_html` (same extractor
-                            // the `sanitize` action uses) — the same graceful degradation
-                            // as search. For the full page use read_page after navigate;
-                            // for structured data fetch a JSON/API endpoint (raw below).
+                            // through silently to local `sanitize_html` — the same
+                            // graceful degradation as search. For the rendered page use
+                            // browser_open + browser_read; for structured data fetch a
+                            // JSON/API endpoint (raw below).
                             // A long page is persisted and previewed by the registry.
                             if self.janus_search.is_some() && method_str == "GET" {
                                 match self.extract_via_janus(url).await {
@@ -533,53 +403,47 @@ impl WebTool {
         // batch parallel tool calls). Each query reuses the same single-flight
         // dedupe + visited cache as a lone search; results merge into one
         // response with one combined `search_results` payload.
-        if let Some(arr) = input.get("queries").and_then(|v| v.as_array()) {
-            let queries: Vec<String> = arr
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(|q| q.trim().to_string())
-                .filter(|q| !q.is_empty())
-                .take(8)
-                .collect();
-            if queries.len() > 1 {
-                let futs = queries.iter().map(|q| self.search_single(q, session_id, group_key));
-                let results = futures::future::join_all(futs).await;
-                let mut texts = Vec::with_capacity(results.len());
-                let mut groups = Vec::new();
-                for r in &results {
-                    texts.push(r.content.clone());
-                    if let Some(g) = r
-                        .payload
-                        .as_ref()
-                        .and_then(|p| p.get("groups"))
-                        .and_then(|g| g.as_array())
-                    {
-                        groups.extend(g.iter().cloned());
-                    }
+        let queries: Vec<String> = input
+            .get("queries")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .map(|q| q.trim().to_string())
+            .filter(|q| !q.is_empty())
+            .take(MAX_SEARCH_QUERIES)
+            .collect();
+        if queries.len() > 1 {
+            let futs = queries.iter().map(|q| self.search_single(q, session_id, group_key));
+            let results = futures::future::join_all(futs).await;
+            let mut texts = Vec::with_capacity(results.len());
+            let mut groups = Vec::new();
+            for r in &results {
+                texts.push(r.content.clone());
+                if let Some(g) = r
+                    .payload
+                    .as_ref()
+                    .and_then(|p| p.get("groups"))
+                    .and_then(|g| g.as_array())
+                {
+                    groups.extend(g.iter().cloned());
                 }
-                let joined = texts.join("\n\n———\n\n");
-                let mut merged = if results.iter().all(|r| r.is_error) {
-                    ToolResult::error(joined)
-                } else {
-                    ToolResult::ok(joined)
-                };
-                if !groups.is_empty() {
-                    merged = merged
-                        .with_payload(serde_json::json!({"kind": "search_results", "groups": groups}));
-                }
-                return merged;
             }
-            if let Some(q) = queries.first() {
-                return self.search_single(q, session_id, group_key).await;
+            let joined = texts.join("\n\n———\n\n");
+            let mut merged = if results.iter().all(|r| r.is_error) {
+                ToolResult::error(joined)
+            } else {
+                ToolResult::ok(joined)
+            };
+            if !groups.is_empty() {
+                merged = merged
+                    .with_payload(serde_json::json!({"kind": "search_results", "groups": groups}));
             }
+            return merged;
         }
-        match input.get("query").and_then(|v| v.as_str()) {
+        match queries.first() {
             Some(q) => self.search_single(q, session_id, group_key).await,
-            None => ToolResult::error(crate::errors::missing_param(
-                "search",
-                "query (or queries)",
-                "web(action: \"search\", queries: [\"angle one\", \"angle two\"]) — or a single query: web(action: \"search\", query: \"rust async tutorial\")",
-            )),
+            None => ToolResult::error(NO_QUERY),
         }
     }
 
@@ -1365,14 +1229,15 @@ impl WebTool {
         }
     }
 
-    async fn handle_browser(&self, input: &serde_json::Value, session_id: &str, group_key: &str) -> ToolResult {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    /// One browser step: `action` is the extension's action and `input`
+    /// carries its arguments in the extension's own names.
+    async fn handle_browser(&self, action: &str, input: &serde_json::Value, session_id: &str, group_key: &str) -> ToolResult {
 
         let manager = match &self.browser {
             Some(m) => m,
             None => {
                 return ToolResult::error(
-                    "Browser automation is not available. Use web(action: \"fetch\", url: \"...\") for HTTP requests instead.",
+                    "Browser automation is not available here. Use fetch_url to read a page.",
                 );
             }
         };
@@ -1393,11 +1258,11 @@ impl WebTool {
             let onoff = |b: bool| if b { "connected" } else { "not connected" };
             let status = if ext_connected {
                 format!(
-                    "Browser extension: connected (will be used). Built-in browser: {}. Use read_page to see the current page.",
+                    "Browser extension: connected (will be used). Built-in browser: {}. Use browser_read to see the current page.",
                     if cdp { "available" } else { "not available" }
                 )
             } else if cdp {
-                "Browser extension: not connected. Built-in browser: available (will be used). Use read_page to see the current page.".to_string()
+                "Browser extension: not connected. Built-in browser: available (will be used). Use browser_read to see the current page.".to_string()
             } else {
                 format!(
                     "Browser extension: {}. Built-in browser: not available. No browser backend; connect the Nebo Chrome/Brave extension.",
@@ -1420,8 +1285,8 @@ impl WebTool {
             };
             return ToolResult::error(format!(
                 "Browser automation isn't available on this cloud bot. Use \
-                 web(action: \"fetch\", url: ...) instead — it returns the page's \
-                 extracted text — or web(action: \"search\", query: ...).{computer_hint}"
+                 fetch_url instead — it returns the page's extracted text — or \
+                 search_web.{computer_hint}"
             ));
         }
 
@@ -1437,7 +1302,7 @@ impl WebTool {
                 if !executor.wait_for_connection(grace).await {
                     self.broadcast_extension_disconnected("reconnecting", session_id);
                     return ToolResult::error(
-                        "Browser extension dropped in the last 3s and has not reconnected; wait 3s (web(action: wait, ms: 3000)) then retry once. If it fails again, tell the user to reopen the extension.",
+                        "Browser extension dropped in the last 3s and has not reconnected; wait 3s (browser_act with action wait, ms 3000) then retry once. If it fails again, tell the user to reopen the extension.",
                     );
                 }
             } else {
@@ -1458,8 +1323,8 @@ impl WebTool {
                     return ToolResult::error(format!(
                         "Not navigated: {url} is a .{ext} file the browser cannot display (opening it \
                          only triggers a download). To read the file's contents use \
-                         web(action: fetch, url: \"{url}\") which returns the extracted text; for \
-                         the surrounding page, navigate to the article's landing page instead."
+                         fetch_url with url \"{url}\", which returns the extracted text; for \
+                         the surrounding page, open the article's landing page instead."
                     ));
                 }
                 // Skip re-navigating to a URL visited recently (by a sibling OR earlier this
@@ -1506,76 +1371,6 @@ impl WebTool {
         result
     }
 
-    /// Handle devtools actions via the Chrome extension (CDP bridge).
-    async fn handle_devtools(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-
-        let manager = match &self.browser {
-            Some(m) => m,
-            None => {
-                return ToolResult::error(
-                    "DevTools requires browser extension. Use web(action: \"status\") to check connection.",
-                );
-            }
-        };
-
-        let executor = match manager.executor() {
-            Some(e) => e,
-            None => {
-                return ToolResult::error("Browser automation not configured.");
-            }
-        };
-
-        if !executor.is_connected() {
-            self.broadcast_extension_disconnected("not_connected", session_id);
-            return ToolResult::error("Browser extension not connected.");
-        }
-
-        // Forward devtools actions to the extension's actual tool names
-        let tool_name = match action {
-            "console" => "read_console_messages",
-            _ => {
-                return ToolResult::error(format!(
-                    "Unknown devtools action '{}'. Available: console",
-                    action
-                ));
-            }
-        };
-
-        // Translate devtools-style params to extension tool params
-        let args = match action {
-            "console" => {
-                let mut a = serde_json::Map::new();
-                // Map "filter" to "pattern" for backward compat
-                if let Some(v) = input.get("filter") {
-                    a.insert("pattern".to_string(), v.clone());
-                }
-                if let Some(v) = input.get("pattern") {
-                    a.insert("pattern".to_string(), v.clone());
-                }
-                if let Some(v) = input.get("onlyErrors") {
-                    a.insert("onlyErrors".to_string(), v.clone());
-                }
-                if let Some(v) = input.get("clear") {
-                    a.insert("clear".to_string(), v.clone());
-                }
-                if let Some(v) = input.get("limit") {
-                    a.insert("limit".to_string(), v.clone());
-                }
-                serde_json::Value::Object(a)
-            }
-            _ => build_extension_args(action, input),
-        };
-        match executor.execute(tool_name, &args, Some(session_id)).await {
-            Ok(result) => {
-                let text =
-                    serde_json::to_string_pretty(&result).unwrap_or_else(|_| format!("{}", result));
-                ToolResult::ok(text)
-            }
-            Err(e) => ToolResult::error(format!("DevTools action failed: {}", e)),
-        }
-    }
-
     /// Handle browser actions via the Chrome extension (native messaging).
     async fn handle_browser_via_extension(
         &self,
@@ -1607,7 +1402,7 @@ impl WebTool {
                     Some(t) => t,
                     None => {
                         return ToolResult::error(format!(
-                            "browser_batch: unsupported action '{}'. Use individual tool calls for tab/console/network actions.",
+                            "browser_batch can't run the step '{}'.",
                             sub_action
                         ));
                     }
@@ -1685,8 +1480,7 @@ impl WebTool {
                 Some(f) if !f.is_empty() => f,
                 _ => {
                     return ToolResult::error(
-                        "fill_form requires a non-empty 'fields' array. Each field: {ref, value}.\n\
-                         Example: web(action: \"fill_form\", fields: [{ref: \"ref_3\", value: \"John\"}])"
+                        "browser_fill_form needs a non-empty `fields` array. Each field: {ref, value}."
                     );
                 }
             };
@@ -1782,15 +1576,14 @@ impl WebTool {
             let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
             if url.is_empty() || url == "about:blank" {
                 return ToolResult::error(format!(
-                    "new_tab requires a URL (got '{}'). Use navigate to change the current tab, \
-                     or new_tab with a specific URL.",
+                    "browser_new_tab needs a URL (got '{}'). Use browser_open to change the current tab.",
                     url
                 ));
             }
         }
         if action == "status" {
             return ToolResult::ok(
-                "Extension connected: true\nUse read_page to see the current page.".to_string(),
+                "Extension connected: true\nUse browser_read to see the current page.".to_string(),
             );
         }
 
@@ -1799,10 +1592,7 @@ impl WebTool {
             Some(t) => t,
             None => {
                 return ToolResult::error(format!(
-                    "Browser action '{}' is not supported. Available: navigate, read_page, click, \
-                     hover, fill, type, select, screenshot, scroll, press, drag, wait, evaluate, \
-                     list_tabs, new_tab, close_tab, history, find, file_upload, \
-                     fill_form, browser_batch",
+                    "The browser has no step called '{}'.",
                     action
                 ));
             }
@@ -1843,7 +1633,7 @@ impl WebTool {
         if tool_name.starts_with("webmcp_") && !executor.extension_connected() {
             return ToolResult::error(
                 "Site tools (WebMCP) need the Nebo Chrome extension connected; the built-in browser \
-                 cannot list or call them. Use read_page and the page controls, or connect the extension.",
+                 cannot list or call them. Use browser_read and the page controls, or connect the extension.",
             );
         }
         let result = executor.execute(tool_name, &args, session_id).await;
@@ -1958,7 +1748,7 @@ impl WebTool {
                 // what changed without needing a separate read_page call.
                 const SNAPSHOT_ACTIONS: &[&str] = &[
                     "navigate", "click", "double_click", "triple_click", "right_click",
-                    "type", "fill", "form_input", "select", "press",
+                    "type", "form_input", "select", "press",
                     "scroll", "scroll_to", "drag", "hover", "file_upload",
                     "go_back", "go_forward",
                 ];
@@ -2014,8 +1804,8 @@ impl WebTool {
                                 text_result.push_str(&format!(
                                     "\n\nNote: this is navigation #{} to {} in this session. \
                                      If you are not making progress, try a different approach: \
-                                     use web(action: search) to find an alternative source, or \
-                                     web(action: wait, ms: 3000) before read_page if content is loading slowly.",
+                                     use search_web to find an alternative source, or \
+                                     browser_act wait (ms 3000) before browser_read if content is loading slowly.",
                                     count, origin_label
                                 ));
                             }
@@ -2043,378 +1833,659 @@ impl WebTool {
     }
 }
 
-/// A web call's owner-facing lines: fetches and navigations name the site,
-/// so a run that read four pages doesn't read as four searches.
-pub(crate) fn web_labels(input: &serde_json::Value) -> (String, String) {
-    let action = input.get("action").and_then(|v| v.as_str());
-    let host = input
-        .get("url")
-        .and_then(|v| v.as_str())
-        .and_then(|u| url::Url::parse(u).ok())
-        .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()));
-    let site = host.as_deref().unwrap_or("a page");
-    match action {
-        Some("search") | None => ("searching the web".to_string(), "Searched the web".to_string()),
-        Some("fetch") => (format!("reading {site}"), format!("Read {site}")),
-        Some("navigate") => (format!("opening {site}"), format!("Opened {site}")),
-        Some("read_page") => ("reading the page".to_string(), "Read the page".to_string()),
-        Some(a) => {
-            let a = a.replace('_', " ");
-            (format!("{a} (web)"), format!("Web: {a}"))
+/// Most queries one `search_web` call runs together.
+const MAX_SEARCH_QUERIES: usize = 8;
+
+/// A `search_web` call whose queries are all blank.
+const NO_QUERY: &str = "search_web needs at least one non-empty query in `queries`.";
+
+/// The `browser_act` actions and the arguments each one needs.
+const ACT_ACTIONS: &[&str] =
+    &["click", "hover", "type", "press", "scroll", "drag", "select", "wait", "screenshot"];
+
+/// One tool of the web and browser family. Each is one purpose over the
+/// shared [`WebCore`]; the browser tools turn their input into one step of
+/// the browser's own vocabulary (`navigate`, `read_page`, …).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    SearchWeb,
+    FetchUrl,
+    HttpRequest,
+    BrowserOpen,
+    BrowserRead,
+    BrowserFind,
+    BrowserAct,
+    BrowserFillForm,
+    BrowserRunJs,
+    BrowserListTabs,
+    BrowserNewTab,
+    BrowserCloseTab,
+    BrowserConsole,
+    BrowserNetwork,
+    BrowserUpload,
+    BrowserResize,
+    BrowserHistory,
+    BrowserStatus,
+    BrowserBatch,
+    BrowserPageTools,
+    BrowserCallPageTool,
+}
+
+const KINDS: &[Kind] = &[
+    Kind::SearchWeb,
+    Kind::FetchUrl,
+    Kind::HttpRequest,
+    Kind::BrowserOpen,
+    Kind::BrowserRead,
+    Kind::BrowserFind,
+    Kind::BrowserAct,
+    Kind::BrowserFillForm,
+    Kind::BrowserRunJs,
+    Kind::BrowserListTabs,
+    Kind::BrowserNewTab,
+    Kind::BrowserCloseTab,
+    Kind::BrowserConsole,
+    Kind::BrowserNetwork,
+    Kind::BrowserUpload,
+    Kind::BrowserResize,
+    Kind::BrowserHistory,
+    Kind::BrowserStatus,
+    Kind::BrowserBatch,
+    Kind::BrowserPageTools,
+    Kind::BrowserCallPageTool,
+];
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::SearchWeb => "search_web",
+            Kind::FetchUrl => "fetch_url",
+            Kind::HttpRequest => "http_request",
+            Kind::BrowserOpen => "browser_open",
+            Kind::BrowserRead => "browser_read",
+            Kind::BrowserFind => "browser_find",
+            Kind::BrowserAct => "browser_act",
+            Kind::BrowserFillForm => "browser_fill_form",
+            Kind::BrowserRunJs => "browser_run_js",
+            Kind::BrowserListTabs => "browser_list_tabs",
+            Kind::BrowserNewTab => "browser_new_tab",
+            Kind::BrowserCloseTab => "browser_close_tab",
+            Kind::BrowserConsole => "browser_console",
+            Kind::BrowserNetwork => "browser_network",
+            Kind::BrowserUpload => "browser_upload",
+            Kind::BrowserResize => "browser_resize",
+            Kind::BrowserHistory => "browser_history",
+            Kind::BrowserStatus => "browser_status",
+            Kind::BrowserBatch => "browser_batch",
+            Kind::BrowserPageTools => "browser_page_tools",
+            Kind::BrowserCallPageTool => "browser_call_page_tool",
+        }
+    }
+
+    fn is_browser(self) -> bool {
+        !matches!(self, Kind::SearchWeb | Kind::FetchUrl | Kind::HttpRequest)
+    }
+
+    /// The steps `browser_batch` can chain: the browser's single-step tools.
+    fn batchable(self) -> bool {
+        self.is_browser()
+            && !matches!(
+                self,
+                Kind::BrowserBatch | Kind::BrowserFillForm | Kind::BrowserHistory | Kind::BrowserStatus
+            )
+    }
+
+    fn search_hint(self) -> &'static str {
+        match self {
+            Kind::SearchWeb => "search the web for current information",
+            Kind::FetchUrl => "read a web page or URL as text",
+            Kind::HttpRequest => "call an API with method headers body",
+            Kind::BrowserOpen => "open a website in the browser",
+            Kind::BrowserRead => "read the browser page elements",
+            Kind::BrowserFind => "find an element on the page",
+            Kind::BrowserAct => "click type scroll press keys on page",
+            Kind::BrowserFillForm => "fill in a web form",
+            Kind::BrowserRunJs => "run javascript in the page",
+            Kind::BrowserListTabs => "list open browser tabs",
+            Kind::BrowserNewTab => "open a new browser tab",
+            Kind::BrowserCloseTab => "close a browser tab",
+            Kind::BrowserConsole => "read browser console messages errors",
+            Kind::BrowserNetwork => "read the page's network requests",
+            Kind::BrowserUpload => "upload a file to a web page",
+            Kind::BrowserResize => "resize the browser window",
+            Kind::BrowserHistory => "go back or forward in browser",
+            Kind::BrowserStatus => "check the browser connection",
+            Kind::BrowserBatch => "run several browser steps at once",
+            Kind::BrowserPageTools => "list the tools a page offers",
+            Kind::BrowserCallPageTool => "call a tool the page offers",
+        }
+    }
+
+    fn description(self) -> String {
+        match self {
+            Kind::SearchWeb => "Searches the web and returns results with titles, links and snippets.\n\
+                - Use it for anything current or outside what you know: news, prices, versions, people's roles.\n\
+                - Pass several distinct short queries at once (up to 8); they run together. A few keywords each, no chains of site: filters.\n\
+                - Snippets are short: read a promising result with fetch_url.\n\
+                - Cite the pages you used, with their links, in your answer."
+                .to_string(),
+            Kind::FetchUrl => "Fetches a URL and returns its content as text.\n\
+                - A web page comes back as its readable text, not markup; JSON and other text formats come back as they are.\n\
+                - Read-only (GET). To send data or headers, use http_request.\n\
+                - A page that needs JavaScript or a sign-in comes back empty or partial: open it with browser_open.\n\
+                - A large non-HTML response comes back in windows; pass the `offset` its note gives to read the next one."
+                .to_string(),
+            Kind::HttpRequest => "Sends an HTTP request with a method, headers and a body, for calling APIs.\n\
+                - POST, PUT, PATCH and DELETE change things on the server: send them only when the task calls for it. They run one at a time.\n\
+                - To read a page, use fetch_url.\n\
+                - Returns the status and the response body (a web page as its text)."
+                .to_string(),
+            Kind::BrowserOpen => "Opens a URL in this conversation's browser tab and returns the page's interactive elements with refs, and a screenshot.\n\
+                - Use the browser for pages that need JavaScript, a sign-in or interaction; to just read a page, fetch_url is faster.\n\
+                - A URL loaded in the last few minutes returns that load; pass fresh: true to reload it.\n\
+                - Don't put a search in the URL: open the site and use its search box.\n\
+                - If the page is a sign-in form, tell the owner; never enter credentials."
+                .to_string(),
+            Kind::BrowserRead => "Reads the current page as an accessibility tree, with a ref (ref_1, ref_2, …) on each element for browser_act and browser_fill_form.\n\
+                - filter: \"interactive\" lists only the controls.\n\
+                - On a large page, lower `depth` or read one part with `ref_id`.\n\
+                - It covers what has loaded; scroll with browser_act to load more."
+                .to_string(),
+            Kind::BrowserFind => "Finds elements on the current page from a plain description (\"the checkout button\", \"the search box\") and returns their refs."
+                .to_string(),
+            Kind::BrowserAct => format!(
+                "Uses the mouse and keyboard on the current page.\n\
+                - Aim at an element by `ref` (from browser_read or browser_find) or by `coordinate` [x, y].\n\
+                - click (button, click_count, modifiers) · hover · type (`text` into the focused field) · press (`key` such as Enter, Tab or {SELECT_ALL_KEY}; repeat) · scroll (direction, amount; or a ref to bring into view) · drag (start_coordinate to coordinate) · select (ref, value) · wait (ms, up to 10000) · screenshot.\n\
+                - Every action but wait and screenshot returns the page's interactive elements afterwards, so you rarely need browser_read in between.\n\
+                - To replace a field's text: click it, press {SELECT_ALL_KEY}, then type.\n\
+                - Don't click file upload buttons (they open a system dialog): use browser_upload."
+            ),
+            Kind::BrowserFillForm => "Fills several form fields in one call.\n\
+                - Each field is {ref, value}: text for inputs, true/false for checkboxes, the option's value or text for selects.\n\
+                - Stops at the first field that fails and says which fields were filled.\n\
+                - It doesn't submit the form: click its button with browser_act."
+                .to_string(),
+            Kind::BrowserRunJs => "Runs JavaScript in the current page and returns the value of the last expression.\n\
+                - For data the page holds that browser_read doesn't show, or a page action the controls can't reach."
+                .to_string(),
+            Kind::BrowserListTabs => "Lists this conversation's browser tabs with their ids, titles and URLs.".to_string(),
+            Kind::BrowserNewTab => "Opens a URL in a new browser tab.\n\
+                - Only when you need two pages at once; browser_open changes the current tab."
+                .to_string(),
+            Kind::BrowserCloseTab => "Closes a browser tab: the one `tab_id` names (from browser_list_tabs), or this conversation's tab.\n\
+                - Close tabs you opened once you're done with them."
+                .to_string(),
+            Kind::BrowserConsole => "Reads the current page's console messages (logs, warnings, errors).\n\
+                - Pass a `pattern` to keep to the messages you need; only_errors for errors and exceptions."
+                .to_string(),
+            Kind::BrowserNetwork => "Reads the network requests the current page made (URL, method, status).\n\
+                - url_pattern keeps to requests whose URL contains it."
+                .to_string(),
+            Kind::BrowserUpload => "Attaches files to a file input on the current page.\n\
+                - `ref` is the file input (or its upload button) from browser_read; `paths` are absolute paths of files the owner shared or you made."
+                .to_string(),
+            Kind::BrowserResize => "Resizes the browser window, e.g. to see a page's mobile layout.".to_string(),
+            Kind::BrowserHistory => "Goes back or forward in the current tab's history and returns the page's interactive elements."
+                .to_string(),
+            Kind::BrowserStatus => "Says whether a browser is connected (the owner's Chrome extension or the built-in browser) and which one will be used."
+                .to_string(),
+            Kind::BrowserBatch => "Runs several browser steps in one call, in order, stopping at the first error.\n\
+                - Each step is {name, input}: a browser tool's name and exactly the input you'd give that tool on its own (browser_open, browser_act, browser_read, browser_find, browser_run_js, …).\n\
+                - Use it whenever you can predict two or more steps ahead: open a page, click a field, type, press Enter.\n\
+                - Returns the last step's output and the page's interactive elements."
+                .to_string(),
+            Kind::BrowserPageTools => "Lists the tools the current page offers to agents (WebMCP), if any.\n\
+                - When a site offers a tool for the job, call it with browser_call_page_tool rather than clicking through the page."
+                .to_string(),
+            Kind::BrowserCallPageTool => "Calls one of the tools the current page offers (listed by browser_page_tools) with its arguments.".to_string(),
+        }
+    }
+
+    fn schema(self) -> serde_json::Value {
+        use serde_json::json;
+        let url = json!({"type": "string", "description": "The full URL, starting with http:// or https://."});
+        match self {
+            Kind::SearchWeb => json!({
+                "type": "object",
+                "properties": {
+                    "queries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": MAX_SEARCH_QUERIES,
+                        "description": "One or more short keyword queries, each a distinct angle on the question. They run together."
+                    }
+                },
+                "required": ["queries"]
+            }),
+            Kind::FetchUrl => json!({
+                "type": "object",
+                "properties": {
+                    "url": url,
+                    "offset": {"type": "integer", "minimum": 0, "description": "For a large non-HTML response: the byte offset to read from, as the previous window's note gives it."}
+                },
+                "required": ["url"]
+            }),
+            Kind::HttpRequest => json!({
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string", "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]},
+                    "url": url,
+                    "headers": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Request headers, name to value."},
+                    "body": {"type": "string", "description": "The request body, e.g. JSON text."}
+                },
+                "required": ["method", "url"]
+            }),
+            Kind::BrowserOpen => json!({
+                "type": "object",
+                "properties": {
+                    "url": url,
+                    "fresh": {"type": "boolean", "description": "Load the page again even if it was loaded in the last few minutes."},
+                    "force": {"type": "boolean", "description": "Leave the current page even if it asks to stay (unsaved changes)."}
+                },
+                "required": ["url"]
+            }),
+            Kind::BrowserRead => json!({
+                "type": "object",
+                "properties": {
+                    "filter": {"type": "string", "enum": ["all", "interactive"], "description": "\"interactive\" lists only the controls. Default all."},
+                    "depth": {"type": "integer", "minimum": 1, "description": "How deep to read the tree (default 15). Lower it for a large page."},
+                    "ref_id": {"type": "string", "description": "Read only this element and what it contains."},
+                    "max_chars": {"type": "integer", "minimum": 1, "description": "Most characters to return."}
+                }
+            }),
+            Kind::BrowserFind => json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to find, in plain words."}
+                },
+                "required": ["query"]
+            }),
+            Kind::BrowserAct => json!({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ACT_ACTIONS},
+                    "ref": {"type": "string", "description": "The element's ref from browser_read or browser_find."},
+                    "coordinate": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[x, y] in the page's viewport, instead of a ref. For drag, where to drop."},
+                    "text": {"type": "string", "description": "For type: the text."},
+                    "key": {"type": "string", "description": "For press: a key or chord, e.g. Enter, Escape, cmd+a."},
+                    "repeat": {"type": "integer", "minimum": 1, "maximum": 100, "description": "For press: how many times."},
+                    "value": {"type": "string", "description": "For select: the option's value or text."},
+                    "button": {"type": "string", "enum": ["left", "right"], "description": "For click. Default left."},
+                    "click_count": {"type": "integer", "minimum": 1, "maximum": 3, "description": "For click: 2 double-clicks, 3 triple-clicks."},
+                    "modifiers": {"type": "string", "description": "For click: keys held down, e.g. cmd or ctrl+shift."},
+                    "direction": {"type": "string", "enum": ["up", "down", "left", "right"], "description": "For scroll."},
+                    "amount": {"type": "integer", "minimum": 1, "description": "For scroll: ticks of 100px (default 3)."},
+                    "start_coordinate": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "For drag: [x, y] to drag from."},
+                    "ms": {"type": "integer", "minimum": 0, "maximum": 10000, "description": "For wait: milliseconds."}
+                },
+                "required": ["action"]
+            }),
+            Kind::BrowserFillForm => json!({
+                "type": "object",
+                "properties": {
+                    "fields": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "ref": {"type": "string"},
+                                "value": {"type": ["string", "boolean", "number"]}
+                            },
+                            "required": ["ref", "value"]
+                        }
+                    }
+                },
+                "required": ["fields"]
+            }),
+            Kind::BrowserRunJs => json!({
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string", "description": "JavaScript; the value of the last expression is returned."}
+                },
+                "required": ["expression"]
+            }),
+            Kind::BrowserListTabs | Kind::BrowserStatus | Kind::BrowserPageTools => {
+                json!({"type": "object", "properties": {}})
+            }
+            Kind::BrowserNewTab => json!({
+                "type": "object",
+                "properties": {"url": url},
+                "required": ["url"]
+            }),
+            Kind::BrowserCloseTab => json!({
+                "type": "object",
+                "properties": {
+                    "tab_id": {"type": "integer", "description": "The tab to close, from browser_list_tabs. Default: this conversation's tab."}
+                }
+            }),
+            Kind::BrowserConsole => json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "A regular expression the messages must match."},
+                    "only_errors": {"type": "boolean", "description": "Only errors and exceptions."},
+                    "clear": {"type": "boolean", "description": "Clear the messages after reading them."},
+                    "limit": {"type": "integer", "minimum": 1, "description": "Most messages to return (default 100)."}
+                }
+            }),
+            Kind::BrowserNetwork => json!({
+                "type": "object",
+                "properties": {
+                    "url_pattern": {"type": "string", "description": "Only requests whose URL contains this."},
+                    "clear": {"type": "boolean", "description": "Clear the requests after reading them."},
+                    "limit": {"type": "integer", "minimum": 1, "description": "Most requests to return (default 100)."}
+                }
+            }),
+            Kind::BrowserUpload => json!({
+                "type": "object",
+                "properties": {
+                    "ref": {"type": "string", "description": "The file input's ref."},
+                    "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "Absolute paths of the files."}
+                },
+                "required": ["ref", "paths"]
+            }),
+            Kind::BrowserResize => json!({
+                "type": "object",
+                "properties": {
+                    "width": {"type": "integer", "minimum": 1},
+                    "height": {"type": "integer", "minimum": 1}
+                },
+                "required": ["width", "height"]
+            }),
+            Kind::BrowserHistory => json!({
+                "type": "object",
+                "properties": {
+                    "direction": {"type": "string", "enum": ["back", "forward"]}
+                },
+                "required": ["direction"]
+            }),
+            Kind::BrowserBatch => json!({
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "A browser tool, e.g. browser_open, browser_act, browser_read."},
+                                "input": {"type": "object", "description": "That tool's input, as you'd pass it on its own."}
+                            },
+                            "required": ["name", "input"]
+                        }
+                    }
+                },
+                "required": ["steps"]
+            }),
+            Kind::BrowserCallPageTool => json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The page tool's name, as browser_page_tools lists it."},
+                    "args": {"type": "object", "description": "Its arguments, matching its input schema."}
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    /// Searches, fetches (GET, HEAD) and page reads only look. Everything
+    /// else sends something or changes the page.
+    fn read_only(self, input: &serde_json::Value) -> bool {
+        match self {
+            Kind::SearchWeb
+            | Kind::FetchUrl
+            | Kind::BrowserRead
+            | Kind::BrowserFind
+            | Kind::BrowserListTabs
+            | Kind::BrowserConsole
+            | Kind::BrowserNetwork
+            | Kind::BrowserStatus
+            | Kind::BrowserPageTools => true,
+            Kind::HttpRequest => matches!(str_field(input, "method"), Some("GET" | "HEAD")),
+            Kind::BrowserAct => matches!(str_field(input, "action"), Some("wait" | "screenshot")),
+            _ => false,
+        }
+    }
+
+    /// Checks past the schema: what one call needs that its schema can't
+    /// say (an action's own arguments, a batch's steps, a usable URL).
+    fn validate(self, input: &serde_json::Value) -> Result<(), String> {
+        match self {
+            Kind::SearchWeb => {
+                let any = input["queries"]
+                    .as_array()
+                    .is_some_and(|qs| qs.iter().any(|q| q.as_str().is_some_and(|q| !q.trim().is_empty())));
+                if any { Ok(()) } else { Err(NO_QUERY.to_string()) }
+            }
+            Kind::FetchUrl | Kind::HttpRequest | Kind::BrowserOpen | Kind::BrowserNewTab => {
+                let raw = str_field(input, "url").unwrap_or_default();
+                match url::Url::parse(raw) {
+                    Ok(u) if matches!(u.scheme(), "http" | "https") => Ok(()),
+                    _ => Err(format!("`url` must be a full http:// or https:// URL, got \"{raw}\".")),
+                }
+            }
+            Kind::BrowserAct => {
+                let action = str_field(input, "action").unwrap_or_default();
+                let has = |k: &str| input.get(k).is_some_and(|v| !v.is_null());
+                let missing = match action {
+                    "click" | "hover" if !has("ref") && !has("coordinate") => Some("`ref` or `coordinate`"),
+                    "type" if !has("text") => Some("`text`"),
+                    "press" if !has("key") => Some("`key`"),
+                    "select" if !has("ref") || !has("value") => Some("`ref` and `value`"),
+                    "drag" if !has("start_coordinate") || !has("coordinate") => {
+                        Some("`start_coordinate` and `coordinate`")
+                    }
+                    _ => None,
+                };
+                match missing {
+                    Some(what) => Err(format!("browser_act {action} needs {what}.")),
+                    None => Ok(()),
+                }
+            }
+            Kind::BrowserBatch => {
+                for (i, step) in input["steps"].as_array().into_iter().flatten().enumerate() {
+                    let name = str_field(step, "name").unwrap_or_default();
+                    let Some(kind) = KINDS.iter().copied().find(|k| k.name() == name) else {
+                        return Err(format!("Step {}: there is no browser tool called \"{name}\".", i + 1));
+                    };
+                    if !kind.batchable() {
+                        return Err(format!("Step {}: {name} can't run inside browser_batch; call it on its own.", i + 1));
+                    }
+                    let step_input = &step["input"];
+                    if let Some(validator) = crate::input_schema::compile(name, &kind.schema()) {
+                        let issues = crate::input_schema::issues(&validator, step_input);
+                        if !issues.is_empty() {
+                            return Err(format!("Step {} ({name}): {}", i + 1, issues.join("; ")));
+                        }
+                    }
+                    kind.validate(step_input).map_err(|e| format!("Step {} ({name}): {e}", i + 1))?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The browser step this call is: the browser's action and its
+    /// arguments, named as the browser names them. `None` for the tools
+    /// that aren't the browser's.
+    fn browser_step(self, input: &serde_json::Value) -> Option<(&'static str, serde_json::Value)> {
+        let pick = |pairs: &[(&str, &str)]| {
+            let mut args = serde_json::Map::new();
+            for (ours, theirs) in pairs {
+                if let Some(v) = input.get(*ours).filter(|v| !v.is_null()) {
+                    args.insert((*theirs).to_string(), v.clone());
+                }
+            }
+            serde_json::Value::Object(args)
+        };
+        Some(match self {
+            Kind::BrowserOpen => ("navigate", pick(&[("url", "url"), ("fresh", "fresh"), ("force", "force")])),
+            Kind::BrowserRead => (
+                "read_page",
+                pick(&[("filter", "filter"), ("depth", "depth"), ("ref_id", "refId"), ("max_chars", "maxChars")]),
+            ),
+            Kind::BrowserFind => ("find", pick(&[("query", "query")])),
+            Kind::BrowserAct => {
+                let action = str_field(input, "action")?;
+                let action = ACT_ACTIONS.iter().copied().find(|a| *a == action)?;
+                let mut args = input.clone();
+                if let Some(obj) = args.as_object_mut() {
+                    obj.remove("action");
+                }
+                (action, args)
+            }
+            Kind::BrowserFillForm => ("fill_form", pick(&[("fields", "fields")])),
+            Kind::BrowserRunJs => ("evaluate", pick(&[("expression", "expression")])),
+            Kind::BrowserListTabs => ("list_tabs", serde_json::json!({})),
+            Kind::BrowserNewTab => ("new_tab", pick(&[("url", "url")])),
+            Kind::BrowserCloseTab => ("close_tab", pick(&[("tab_id", "tabId")])),
+            Kind::BrowserConsole => (
+                "read_console_messages",
+                pick(&[("pattern", "pattern"), ("only_errors", "onlyErrors"), ("clear", "clear"), ("limit", "limit")]),
+            ),
+            Kind::BrowserNetwork => (
+                "read_network_requests",
+                pick(&[("url_pattern", "urlPattern"), ("clear", "clear"), ("limit", "limit")]),
+            ),
+            Kind::BrowserUpload => ("file_upload", pick(&[("paths", "paths"), ("ref", "ref")])),
+            Kind::BrowserResize => ("resize_window", pick(&[("width", "width"), ("height", "height")])),
+            Kind::BrowserHistory => ("history", pick(&[("direction", "direction")])),
+            Kind::BrowserStatus => ("status", serde_json::json!({})),
+            Kind::BrowserBatch => {
+                let steps: Vec<serde_json::Value> = input["steps"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|step| {
+                        let name = str_field(step, "name")?;
+                        let kind = KINDS.iter().copied().find(|k| k.name() == name)?;
+                        let (action, mut args) = kind.browser_step(&step["input"])?;
+                        args.as_object_mut()?.insert("action".into(), action.into());
+                        Some(args)
+                    })
+                    .collect();
+                ("browser_batch", serde_json::json!({ "actions": steps }))
+            }
+            Kind::BrowserPageTools => ("webmcp_list", serde_json::json!({})),
+            Kind::BrowserCallPageTool => ("webmcp_call", pick(&[("name", "name"), ("args", "args")])),
+            Kind::SearchWeb | Kind::FetchUrl | Kind::HttpRequest => return None,
+        })
+    }
+
+    /// The owner-facing lines: reads and opens name the site, so a run
+    /// that read four pages doesn't read as four searches.
+    fn labels(self, input: &serde_json::Value) -> (String, String) {
+        let site = str_field(input, "url")
+            .and_then(|u| url::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()))
+            .unwrap_or_else(|| "a page".to_string());
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        match self {
+            Kind::SearchWeb => pair("searching the web", "Searched the web"),
+            Kind::FetchUrl => (format!("reading {site}"), format!("Read {site}")),
+            Kind::HttpRequest => match str_field(input, "method") {
+                Some("GET" | "HEAD") | None => (format!("reading {site}"), format!("Read {site}")),
+                Some(m) => (format!("sending {m} to {site}"), format!("Sent {m} to {site}")),
+            },
+            Kind::BrowserOpen => (format!("opening {site}"), format!("Opened {site}")),
+            Kind::BrowserRead => pair("reading the page", "Read the page"),
+            Kind::BrowserFind => pair("finding on the page", "Found on the page"),
+            Kind::BrowserAct => match str_field(input, "action").unwrap_or_default() {
+                "click" => pair("clicking on the page", "Clicked on the page"),
+                "hover" => pair("pointing at the page", "Pointed at the page"),
+                "type" => pair("typing on the page", "Typed on the page"),
+                "press" => pair("pressing keys", "Pressed keys"),
+                "scroll" => pair("scrolling the page", "Scrolled the page"),
+                "drag" => pair("dragging on the page", "Dragged on the page"),
+                "select" => pair("choosing an option", "Chose an option"),
+                "wait" => pair("waiting for the page", "Waited for the page"),
+                _ => pair("taking a screenshot", "Took a screenshot"),
+            },
+            Kind::BrowserFillForm => pair("filling in a form", "Filled in a form"),
+            Kind::BrowserRunJs => pair("running a script on the page", "Ran a script on the page"),
+            Kind::BrowserListTabs => pair("listing browser tabs", "Listed browser tabs"),
+            Kind::BrowserNewTab => (format!("opening {site} in a new tab"), format!("Opened {site} in a new tab")),
+            Kind::BrowserCloseTab => pair("closing a tab", "Closed a tab"),
+            Kind::BrowserConsole => pair("reading the page's console", "Read the page's console"),
+            Kind::BrowserNetwork => pair("reading the page's requests", "Read the page's requests"),
+            Kind::BrowserUpload => pair("uploading files", "Uploaded files"),
+            Kind::BrowserResize => pair("resizing the browser", "Resized the browser"),
+            Kind::BrowserHistory => match str_field(input, "direction") {
+                Some("forward") => pair("going forward", "Went forward"),
+                _ => pair("going back", "Went back"),
+            },
+            Kind::BrowserStatus => pair("checking the browser", "Checked the browser"),
+            Kind::BrowserBatch => pair("working in the browser", "Worked in the browser"),
+            Kind::BrowserPageTools => pair("listing the page's tools", "Listed the page's tools"),
+            Kind::BrowserCallPageTool => {
+                let tool = str_field(input, "name").unwrap_or("a").replace('_', " ");
+                (format!("using the page's {tool} tool"), format!("Used the page's {tool} tool"))
+            }
         }
     }
 }
 
+fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    input.get(key).and_then(|v| v.as_str())
+}
+
+/// One web or browser tool (see [`Kind`] for the family).
+pub struct WebTool {
+    core: Arc<WebCore>,
+    kind: Kind,
+}
+
+/// Every tool of the web and browser family, sharing one core.
+pub fn tools(core: WebCore) -> Vec<WebTool> {
+    let core = Arc::new(core);
+    KINDS.iter().map(|&kind| WebTool { core: core.clone(), kind }).collect()
+}
+
 impl DynTool for WebTool {
     fn name(&self) -> &str {
-        "web"
+        self.kind.name()
     }
 
     fn description(&self) -> String {
-        format!(
-        "Web operations — HTTP requests, search, and browser automation.\n\n\
-         Use this when the user mentions a URL, asks to look something up, browse, search the web, fetch a page, or interact with a website.\n\n\
-         Decision: API/static HTML → fetch/search. Rendered page or user sessions → browser actions.\n\n\
-         ## HTTP & Search\n\
-         - web(resource: \"http\", action: \"fetch\", url: \"https://...\") — GET; or name the verb as the action: get, post, put, delete, head, patch\n\
-         - web(resource: \"http\", action: \"post\", url: \"https://...\", body: \"...\", headers: {{...}}) — sends a POST\n\
-         - web(resource: \"http\", action: \"sanitize\", url: \"https://...\") — fetch HTML, extract text\n\
-         - web(action: \"search\", queries: [\"angle one\", \"angle two\", ...]) — CONCURRENT multi-angle search in ONE call. For any research-shaped question, send 3-6 distinct queries covering different facets instead of searching one at a time.\n\
-         - web(action: \"search\", query: \"...\") — single web search\n\n\
-         ## Browser — Controls the user's real Chrome browser\n\
-         Every mutation action (click, type, fill, press, scroll, etc.) returns a page snapshot automatically — \
-         you do NOT need to call read_page after actions. The snapshot shows interactive elements with refs.\n\n\
-         Actions: navigate, read_page, click, hover, fill, type, select, screenshot, scroll, press, drag, \
-         wait, evaluate, history, find, file_upload, fill_form, browser_batch\n\n\
-         Site tools (WebMCP): webmcp_list shows tools the current page exposes to agents; \
-         webmcp_call(name, args) runs one — prefer these over clicking through a site that offers them.\n\n\
-         Batching: browser_batch chains 2+ predictable steps in one round trip. fill_form fills multiple \
-         form fields at once. USE THESE for multi-step sequences.\n\n\
-         ## Rules\n\
-         - read_page FIRST before interacting — see what's on screen\n\
-         - Scroll down to find content below the fold — read_page only shows the viewport\n\
-         - For text inputs: click → press(key: {SELECT_ALL_KEY}) → type. fill is for dropdowns/checkboxes only\n\
-         - NEVER navigate with search query params (triggers anti-bot). Navigate to the site, find the search box, type your query\n\
-         - Do NOT click file upload buttons. Use file_upload(ref) instead\n\
-         - After search results appear, extract data from results BEFORE visiting individual pages\n\
-         - When you have enough info, STOP and respond. Don't keep browsing to be thorough\n\
-         - Do NOT retry failing searches with rephrased variations of the same query — vary the approach entirely or report what you have"
-        )
+        self.kind.description()
     }
 
     fn schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "resource": {
-                    "type": "string",
-                    "description": "REQUIRED. The web resource category — determines which actions are available.",
-                    "enum": ["http", "search", "browser", "devtools"]
-                },
-                "action": {
-                    "type": "string",
-                    "description": "The operation to perform on the selected resource.",
-                    "enum": ["fetch", "sanitize",
-                             "get", "post", "put", "delete", "head", "patch",
-                             "search",
-                             "navigate", "read_page", "click", "hover", "fill",
-                             "type", "select", "screenshot", "scroll", "press",
-                             "drag", "wait", "evaluate",
-                             "list_tabs", "new_tab", "close_tab",
-                             "history", "find", "file_upload",
-                             "fill_form", "browser_batch",
-                             "webmcp_list", "webmcp_call",
-                             "read_console_messages", "read_network_requests", "resize_window",
-                             "status", "console"]
-                },
-                "url": {
-                    "type": "string",
-                    "description": "URL for HTTP request or browser navigation"
-                },
-                "method": {
-                    "type": "string",
-                    "description": "HTTP method (GET, POST, PUT, DELETE, HEAD, PATCH)"
-                },
-                "headers": {
-                    "type": "object",
-                    "description": "HTTP headers as key-value pairs"
-                },
-                "body": {
-                    "type": "string",
-                    "description": "HTTP request body"
-                },
-                "name": {
-                    "type": "string",
-                    "description": "For webmcp_call: the site tool to run, as listed by webmcp_list"
-                },
-                "args": {
-                    "type": "object",
-                    "description": "For webmcp_call: the tool's arguments, matching its inputSchema"
-                },
-                "query": {
-                    "type": "string",
-                    "description": "For search: write ONE short keyword query (≤ ~10 words). Do NOT chain \
-                        `site:` operators or paste lists of domains — search engines reject long queries and \
-                        return nothing. To dig deeper, run a NEW query with different keywords, not more filters. \
-                        For find: a natural-language description of the element(s) to locate."
-                },
-                "queries": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "For search: MULTIPLE short keyword queries run CONCURRENTLY in one call \
-                        (max 8). Prefer this for research — 3-6 distinct angles on the question (news, \
-                        technical, comparison, recent-year) beat sequential single searches."
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "For sanitize: chunk number (0-based). For large non-HTML fetch: byte offset."
-                },
-                "ref": {
-                    "type": "string",
-                    "description": "Element reference from read_page output (e.g. ref_1, ref_2)"
-                },
-                "selector": {
-                    "type": "string",
-                    "description": "CSS selector for browser operations"
-                },
-                "value": {
-                    "type": ["string", "boolean", "number"],
-                    "description": "Value for fill/select operations. For checkboxes use true/false, for selects use option value or text, for other inputs use string/number."
-                },
-                "text": {
-                    "type": "string",
-                    "description": "Text to type character by character"
-                },
-                "key": {
-                    "type": "string",
-                    "description": "Key name for press (Enter, Tab, Escape, etc.)"
-                },
-                "filter": {
-                    "type": "string",
-                    "description": "Filter mode for read_page: all (default) or interactive",
-                    "enum": ["all", "interactive"]
-                },
-                "click_count": {
-                    "type": "integer",
-                    "description": "For click: number of clicks (1=single, 2=double, 3=triple). Default 1."
-                },
-                "button": {
-                    "type": "string",
-                    "description": "For click: mouse button. Default left.",
-                    "enum": ["left", "right"]
-                },
-                "direction": {
-                    "type": "string",
-                    "description": "For scroll: up/down/left/right. For history: back/forward.",
-                    "enum": ["up", "down", "left", "right", "back", "forward"]
-                },
-                "fields": {
-                    "type": "array",
-                    "description": "For fill_form: array of fields to fill. Each field: {ref, value}. Text inputs use click+type, selects/checkboxes use fill.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "ref": { "type": "string" },
-                            "value": { "type": ["string", "boolean", "number"] }
-                        },
-                        "required": ["ref", "value"]
-                    }
-                },
-                "expression": {
-                    "type": "string",
-                    "description": "JavaScript expression for evaluate"
-                },
-                "depth": {
-                    "type": "integer",
-                    "description": "Max tree depth for read_page (default 15). Use smaller values for large pages."
-                },
-                "maxChars": {
-                    "type": "integer",
-                    "description": "Max output characters for read_page. Omit for no limit."
-                },
-                "refId": {
-                    "type": "string",
-                    "description": "Element ref to read subtree from (e.g. ref_3). For read_page only."
-                },
-                "ms": {
-                    "type": "integer",
-                    "description": "Milliseconds to wait (for wait action, max 10000)"
-                },
-                "amount": {
-                    "type": "integer",
-                    "description": "Scroll amount in ticks (default 3, 100px per tick)"
-                },
-                "coordinate": {
-                    "type": "array",
-                    "items": { "type": "number" },
-                    "description": "[x, y] coordinates for click/scroll actions (alternative to ref)"
-                },
-                "modifiers": {
-                    "type": "string",
-                    "description": "Modifier keys for click: ctrl, shift, alt, cmd. Combine with + (e.g. ctrl+shift)"
-                },
-                "repeat": {
-                    "type": "integer",
-                    "description": "Number of times to repeat key sequence (for press, default 1, max 100)"
-                },
-                "start_coordinate": {
-                    "type": "array",
-                    "items": { "type": "number" },
-                    "description": "[x, y] start coordinates for drag action"
-                },
-                "chunk_size": {
-                    "type": "integer",
-                    "description": "Max characters per chunk for sanitize (default 4000)"
-                },
-                "onlyErrors": {
-                    "type": "boolean",
-                    "description": "For read_console_messages: only return error/exception messages (default false)"
-                },
-                "clear": {
-                    "type": "boolean",
-                    "description": "For read_console_messages/read_network_requests: clear after reading (default false)"
-                },
-                "pattern": {
-                    "type": "string",
-                    "description": "For read_console_messages: regex pattern to filter messages"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "For read_console_messages/read_network_requests: max results (default 100)"
-                },
-                "urlPattern": {
-                    "type": "string",
-                    "description": "For read_network_requests: URL substring to filter requests"
-                },
-                "width": {
-                    "type": "number",
-                    "description": "For resize_window: target window width in pixels"
-                },
-                "height": {
-                    "type": "number",
-                    "description": "For resize_window: target window height in pixels"
-                },
-                "paths": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "For file_upload: absolute file paths to upload"
-                },
-                "force": {
-                    "type": "boolean",
-                    "description": "For navigate: force navigation past 'Leave site?' dialogs (default false)"
-                },
-                "fresh": {
-                    "type": "boolean",
-                    "description": "For navigate: skip the recently-visited cache and load the page fresh (default false)"
-                },
-                "actions": {
-                    "type": "array",
-                    "description": "For browser_batch: list of actions to execute sequentially in one round trip. Each item is an object with 'action' plus that action's normal params. Stops on first error.",
-                    "items": {
-                        "type": "object"
-                    }
-                }
-            },
-            "required": ["resource", "action"]
-        })
-    }
-
-
-    fn resource_permit(&self, input: &serde_json::Value) -> Option<ResourceKind> {
-        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-        let resource = if resource.is_empty() {
-            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            self.infer_resource(action)
-        } else {
-            resource
-        };
-        match resource {
-            "browser" | "devtools" => Some(ResourceKind::Browser),
-            // http, search are parallelizable
-            _ => None,
-        }
+        self.kind.schema()
     }
 
     fn search_hint(&self) -> &str {
-        "search the web fetch pages browse sites"
+        self.kind.search_hint()
     }
 
-    fn should_defer(&self) -> bool {
-        false
-    }
-
-    /// Searches, fetches and page reads look; clicks, typing and a request
-    /// that is not a GET/HEAD send something.
     fn read_only(&self, input: &serde_json::Value) -> bool {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        if WEB_SIDE_EFFECT_ACTIONS.contains(&action) {
-            return false;
-        }
-        let method = input
-            .get("method")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_ascii_uppercase();
-        method.is_empty() || method == "GET" || method == "HEAD"
+        self.kind.read_only(input)
     }
 
-    /// Every web call may run beside the others: the browser is per
-    /// session, so calls never contend.
-    fn concurrency_safe(&self, _input: &serde_json::Value) -> bool {
-        true
+    /// Only reads run beside other calls: a POST, PUT, PATCH or DELETE, and
+    /// every step that changes the page, runs alone and in order.
+    fn concurrency_safe(&self, input: &serde_json::Value) -> bool {
+        self.kind.read_only(input)
     }
 
-    fn rule_key(&self, input: &serde_json::Value) -> String {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let method = input.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
-        match action {
-            "search" | "" => "search_web",
-            "fetch" | "sanitize" | "get"
-                if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD") =>
-            {
-                "fetch_url"
-            }
-            a if a == "fetch" || HTTP_VERB_ACTIONS.contains(&a) => "http_request",
-            "navigate" => "browser_open",
-            "read_page" | "snapshot" => "browser_read",
-            "find" => "browser_find",
-            "fill" | "fill_form" => "browser_fill_form",
-            "evaluate" | "console" => "browser_run_js",
-            "list_tabs" => "browser_list_tabs",
-            "new_tab" => "browser_new_tab",
-            "close_tab" => "browser_close_tab",
-            "read_console_messages" => "browser_console",
-            "read_network_requests" => "browser_network",
-            "file_upload" => "browser_upload",
-            "resize_window" => "browser_resize",
-            "history" => "browser_history",
-            "status" => "browser_status",
-            "browser_batch" => "browser_batch",
-            "webmcp_list" => "browser_page_tools",
-            "webmcp_call" => "browser_call_page_tool",
-            _ => "browser_act",
-        }
-        .to_string()
-    }
-
+    /// The site a URL-taking call goes to: what a domain rule matches.
     fn rule_field(&self, input: &serde_json::Value) -> Option<types::permissions::RuleField> {
-        let url = input.get("url").and_then(|v| v.as_str())?;
-        let host = url::Url::parse(url).ok()?.host_str()?.to_string();
+        let host = url::Url::parse(str_field(input, "url")?).ok()?.host_str()?.to_string();
         Some(types::permissions::RuleField::Domain(host))
     }
 
+    /// The web job. The browser tools belong to it too: the persisted
+    /// capability keys have no separate browser key, and a rule on
+    /// `browser_*` covers the browser alone.
     fn capability(&self, _input: &serde_json::Value) -> Option<&'static str> {
         Some("web")
     }
 
-    fn effects(&self, input: &serde_json::Value) -> types::permissions::CallEffects {
-        if self.read_only(input) {
-            types::permissions::CallEffects::none()
-        } else {
-            // Whether a form submit or a POST publishes can't be read off the
-            // input.
-            types::permissions::CallEffects::unknown()
-        }
+    fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
+        self.kind.validate(input)
     }
 
     fn max_result_chars(&self, _input: &serde_json::Value) -> Option<usize> {
@@ -2425,49 +2496,41 @@ impl DynTool for WebTool {
         Some(types::provenance::ProvenanceClass::Web)
     }
 
-    /// Web searches and fetches; the browser's own steps are not.
-    fn cleared_when_stale(&self, input: &serde_json::Value) -> bool {
-        matches!(input.get("action").and_then(|v| v.as_str()).unwrap_or(""), "search" | "fetch")
+    /// Searches and fetches can be run again; the browser's steps can't.
+    fn cleared_when_stale(&self, _input: &serde_json::Value) -> bool {
+        matches!(self.kind, Kind::SearchWeb | Kind::FetchUrl)
     }
 
-    /// The browser screenshots itself after every navigate, click, type
-    /// and scroll: the model's eyes. Only a screenshot the model took is
-    /// media for the owner.
+    /// The browser screenshots itself after opening a page: the model's
+    /// eyes. Only a screenshot the model asked for is media for the owner.
     fn emits_image(&self, input: &serde_json::Value) -> bool {
-        input.get("action").and_then(|v| v.as_str()) == Some("screenshot")
+        self.kind == Kind::BrowserAct && str_field(input, "action") == Some("screenshot")
     }
 
-    fn execution_timeout(&self, input: &serde_json::Value) -> Option<std::time::Duration> {
+    /// The browser is one page per session: its steps take the browser permit.
+    fn resource_permit(&self, _input: &serde_json::Value) -> Option<ResourceKind> {
+        self.kind.is_browser().then_some(ResourceKind::Browser)
+    }
+
+    fn execution_timeout(&self, _input: &serde_json::Value) -> Option<std::time::Duration> {
         // A search chains engines with per-hop timeouts and a 40 s follower
         // wait; a fetch has its own 20–30 s client timeouts. Neither belongs
         // on the runner's 300 s default: a call that long is a hang, not
         // work, and one kept a turn busy for two minutes while the owner
-        // typed "stop" (2026-09-18). Browser actions keep the default.
-        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-        let resource = if resource.is_empty() {
-            self.infer_resource(input.get("action").and_then(|v| v.as_str()).unwrap_or(""))
-        } else {
-            resource
-        };
-        match resource {
-            "search" => Some(std::time::Duration::from_secs(45)),
-            "http" => Some(std::time::Duration::from_secs(60)),
+        // typed "stop" (2026-09-18). Browser steps keep the default.
+        match self.kind {
+            Kind::SearchWeb => Some(std::time::Duration::from_secs(45)),
+            Kind::FetchUrl | Kind::HttpRequest => Some(std::time::Duration::from_secs(60)),
             _ => None,
         }
     }
 
     fn activity(&self, input: &serde_json::Value) -> String {
-        web_labels(input).0
+        self.kind.labels(input).0
     }
 
     fn outcome(&self, input: &serde_json::Value) -> String {
-        web_labels(input).1
-    }
-
-    /// Pre-interface: it settles its own call shapes (see
-    /// `DynTool::validates_input`).
-    fn validates_input(&self) -> bool {
-        false
+        self.kind.labels(input).1
     }
 
     fn execute_dyn<'a>(
@@ -2476,93 +2539,39 @@ impl DynTool for WebTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
-                Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
-            };
-
-            let mut input = input;
-            let resource = {
-                let corrected = crate::domain::auto_correct_resource(
-                    &domain_input,
-                    &mut input,
-                    &["http", "search", "browser", "devtools"],
-                );
-                if corrected.is_empty() {
-                    self.infer_resource(&domain_input.action).to_string()
-                } else {
-                    corrected
-                }
-            };
-
-            if resource.is_empty() {
-                return ToolResult::error(
-                    "Resource is required. Available: http, search, browser, devtools",
-                );
-            }
-
             let session_id = &ctx.session_id;
-            let session_key = &ctx.session_key;
-            let group_key = Self::session_group_key(session_key);
-            tracing::info!(session_id = %session_id, resource = %resource, group = %group_key, "web_tool session scoping");
+            let group_key = WebCore::session_group_key(&ctx.session_key);
 
-            // Signal the extension to show visual indicators for this agent's tab group
-            if matches!(resource.as_str(), "browser" | "search" | "devtools") {
-                if let Some(ref mgr) = self.browser {
-                    if let Some(executor) = mgr.executor() {
-                        executor
-                            .send_command("show_indicators", Some(session_id))
-                            .await;
-                    }
-                }
+            // The extension shows this session's tab group while it works
+            // (a search may run in the browser too).
+            if (self.kind.is_browser() || self.kind == Kind::SearchWeb)
+                && let Some(executor) = self.core.browser.as_ref().and_then(|m| m.executor())
+            {
+                executor.send_command("show_indicators", Some(session_id)).await;
             }
 
-            match resource.as_str() {
-                "http" => self.handle_http(&input, session_id).await,
-                "search" => self.handle_search(&input, session_id, &group_key).await,
-                "browser" => self.handle_browser(&input, session_id, &group_key).await,
-                "devtools" => self.handle_devtools(&input, session_id).await,
-                other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: http, search, browser, devtools",
-                    other
-                )),
+            match self.kind {
+                Kind::SearchWeb => self.core.handle_search(&input, session_id, &group_key).await,
+                Kind::FetchUrl => self.core.handle_http(reqwest::Method::GET, &input).await,
+                Kind::HttpRequest => {
+                    let method = str_field(&input, "method").unwrap_or("GET");
+                    let m = match method {
+                        "GET" => reqwest::Method::GET,
+                        "HEAD" => reqwest::Method::HEAD,
+                        "POST" => reqwest::Method::POST,
+                        "PUT" => reqwest::Method::PUT,
+                        "PATCH" => reqwest::Method::PATCH,
+                        "DELETE" => reqwest::Method::DELETE,
+                        other => return ToolResult::error(format!("Unsupported HTTP method: {other}")),
+                    };
+                    self.core.handle_http(m, &input).await
+                }
+                kind => match kind.browser_step(&input) {
+                    Some((action, args)) => self.core.handle_browser(action, &args, session_id, &group_key).await,
+                    None => ToolResult::error(format!("{} is not a browser step.", kind.name())),
+                },
             }
         })
-    }
-}
-
-/// The HTTP verbs accepted as actions: `web(action: "post", url, body)` is
-/// a POST. Listed in the schema's action enum and inferred to `http`.
-const HTTP_VERB_ACTIONS: &[&str] = &["get", "post", "put", "delete", "head", "patch"];
-
-/// The method of an http call. A verb action names it; `fetch` takes it
-/// from `method` (default GET). A verb action next to a different `method`
-/// is a contradiction, not a tie-break: the error says so instead of
-/// picking one. Until 2026-09-05 the verb came only from `method`, and
-/// `action: "post"` sent a GET.
-fn resolve_http_method(action: &str, method: Option<&str>) -> Result<reqwest::Method, String> {
-    let from_action = HTTP_VERB_ACTIONS
-        .contains(&action)
-        .then(|| action.to_uppercase());
-    let from_param = method.map(str::to_uppercase);
-    let name = match (from_action, from_param) {
-        (Some(a), Some(m)) if a != m => {
-            return Err(format!(
-                "action \"{action}\" is a {a} request but method says {m}; pass one of them"
-            ))
-        }
-        (Some(a), _) => a,
-        (None, Some(m)) => m,
-        (None, None) => "GET".to_string(),
-    };
-    match name.as_str() {
-        "GET" => Ok(reqwest::Method::GET),
-        "POST" => Ok(reqwest::Method::POST),
-        "PUT" => Ok(reqwest::Method::PUT),
-        "DELETE" => Ok(reqwest::Method::DELETE),
-        "HEAD" => Ok(reqwest::Method::HEAD),
-        "PATCH" => Ok(reqwest::Method::PATCH),
-        _ => Err(format!("Unsupported HTTP method: {name}")),
     }
 }
 
@@ -2613,7 +2622,7 @@ async fn auto_snapshot(
                 .unwrap_or("");
             if !snapshot_text.is_empty() {
                 let truncated = truncate_snapshot(snapshot_text, max_chars);
-                text_result.push_str("\n\n## Page Snapshot (interactive elements only; use read_page for text)\n");
+                text_result.push_str("\n\n## Page Snapshot (interactive elements only; use browser_read for text)\n");
                 text_result.push_str(&truncated);
             }
         }
@@ -2631,7 +2640,6 @@ fn map_action_to_tool(action: &str) -> Option<&'static str> {
         "navigate" => Some("navigate"),
         "click" => Some("click"),
         "hover" => Some("hover"),
-        "fill" => Some("form_input"),
         "type" => Some("type"),
         "select" => Some("select"),
         "screenshot" => Some("screenshot"),
@@ -2665,7 +2673,6 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
         "new_tab" => vec!["url"],
         "click" => vec!["ref", "selector", "coordinate", "modifiers", "click_count", "button"],
         "hover" => vec!["ref", "coordinate"],
-        "fill" => vec!["ref", "selector", "value"],
         "type" => vec!["text"],
         "select" => vec!["ref", "selector", "value"],
         "scroll" => vec!["direction", "amount", "coordinate", "ref"],
@@ -2706,8 +2713,8 @@ fn truncate_snapshot(text: &str, max_chars: usize) -> String {
     let clean = &text[..last_newline];
     let omitted = text.len() - last_newline;
     format!(
-        "{}\n\n[...{} more bytes of this snapshot omitted (limit {}). Call read_page for the \
-         full page or read_page with refId: <ref> for one section.]",
+        "{}\n\n[...{} more bytes of this snapshot omitted (limit {}). Call browser_read for the \
+         full page or browser_read with ref_id for one section.]",
         clean, omitted, max_chars
     )
 }
@@ -2798,14 +2805,14 @@ fn detect_error_page(content: &str) -> Option<String> {
         let matched = m.trim_start_matches("title: \"");
         return Some(format!(
             "Note: page title suggests an error page (title starts with \"{}\"). \
-             If so, try web(action: \"search\") for a working URL.",
+             If so, try search_web for a working URL.",
             matched
         ));
     }
     if let Some(m) = BODY_MARKERS.iter().find(|m| content_lower.contains(*m)) {
         return Some(format!(
             "Note: page text suggests an error page (contains \"{}\"). \
-             If so, try web(action: \"search\") for a working URL.",
+             If so, try search_web for a working URL.",
             m
         ));
     }
@@ -2816,22 +2823,22 @@ fn detect_error_page(content: &str) -> Option<String> {
 fn friendly_browser_error(action: &str, raw_error: &str) -> String {
     let suggestion = if raw_error.contains("Timeout") || raw_error.contains("timeout") {
         format!(
-            "Timed out waiting for {}. Call read_page once to see the current state; if the page is present, do not retry the same action.",
+            "Timed out waiting for {}. Call browser_read once to see the current state; if the page is present, do not retry the same action.",
             action
         )
     } else if raw_error.contains("not found")
         || raw_error.contains("No element")
         || raw_error.contains("no element")
     {
-        "Element not found on page. Use read_page to get current page elements and their refs.".to_string()
+        "Element not found on page. Use browser_read to get current page elements and their refs.".to_string()
     } else if raw_error.contains("not connected") || raw_error.contains("disconnected") {
-        "Browser disconnected. Check web(action: \"status\") and retry.".to_string()
+        "Browser disconnected. Check browser_status and retry.".to_string()
     } else if raw_error.contains("intercept") || raw_error.contains("overlay") {
         "Click was intercepted by an overlay/popup. Try closing it first, or click a different element.".to_string()
     } else if raw_error.contains("navigation") || raw_error.contains("net::ERR") {
         "Navigation failed. net::ERR_NAME_NOT_RESOLVED = bad host; net::ERR_CONNECTION_REFUSED = site down; do not retry the same URL.".to_string()
     } else {
-        "Try read_page to see current page state and adjust your approach.".to_string()
+        "Try browser_read to see current page state and adjust your approach.".to_string()
     };
     // The browser side sometimes already appends the same recovery text;
     // do not print it twice.
@@ -3107,7 +3114,7 @@ fn format_search_results(query: &str, results: &[SearchResult], tier: &str) -> T
     );
     if with_snippets == 0 {
         out.push_str(
-            "\n\n(this search source returned titles only, no snippets; use web read_page or fetch on a result URL to read it)",
+            "\n\n(this search source returned titles only, no snippets; use fetch_url or browser_open on a result URL to read it)",
         );
     }
     ToolResult::ok(out).with_payload(payload)
@@ -3125,30 +3132,6 @@ fn search_source_label(tier: &str) -> String {
         }
         t => t.to_string(),
     }
-}
-
-/// Header line for one chunk of a sanitized page. `requested` is the offset
-/// the caller asked for; when it lies past the end the last chunk is shown
-/// and the header says so.
-fn chunk_header(idx: usize, total: usize, max_chars: usize, requested: usize) -> String {
-    let mut h = format!(
-        "Chunk {} of {} (offset: {}; next: offset {}; chunks are up to {} chars)",
-        idx + 1,
-        total,
-        idx,
-        idx + 1,
-        max_chars
-    );
-    if idx + 1 >= total {
-        h.push_str(" (last chunk)");
-    }
-    if requested > idx {
-        h.push_str(&format!(
-            " Requested offset {} is past the end; showing the last chunk.",
-            requested
-        ));
-    }
-    h
 }
 
 /// Header line for a byte window of a large non-HTML body.
@@ -3469,27 +3452,6 @@ fn sanitize_html(html: &str) -> String {
         .join("\n")
 }
 
-/// Chunk text into LLM-friendly segments by line boundaries.
-fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
-    let max_chars = if max_chars == 0 { 4000 } else { max_chars };
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    for line in text.lines() {
-        if current.len() + line.len() + 1 > max_chars && !current.is_empty() {
-            chunks.push(current.clone());
-            current.clear();
-        }
-        if !current.is_empty() {
-            current.push('\n');
-        }
-        current.push_str(line);
-    }
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-    chunks
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3705,7 +3667,7 @@ link "Create account" [ref_5]"#;
 
     #[test]
     fn record_visited_evicts_expired_entries() {
-        let tool = WebTool::new();
+        let tool = WebCore::new();
         tool.record_visited("group-a", "nav:https://a.com", "page a", false, "s1", None);
 
         // Manually age the entry past the TTL. checked_sub: backdating an
@@ -3833,25 +3795,13 @@ link "Create account" [ref_5]"#;
             "payload must flag missing previews, got: {}",
             out.content
         );
-        assert!(out.content.contains("read_page"));
+        assert!(out.content.contains("fetch_url"));
     }
 }
 
 #[cfg(test)]
 mod wording_tests {
     use super::*;
-
-    #[test]
-    fn chunk_header_states_position_and_next_offset() {
-        assert_eq!(
-            chunk_header(0, 3, 4000, 0),
-            "Chunk 1 of 3 (offset: 0; next: offset 1; chunks are up to 4000 chars)"
-        );
-        let last = chunk_header(2, 3, 4000, 9);
-        assert!(last.contains("Chunk 3 of 3"), "{last}");
-        assert!(last.contains("(last chunk)"), "{last}");
-        assert!(last.contains("Requested offset 9 is past the end; showing the last chunk."), "{last}");
-    }
 
     #[test]
     fn bytes_window_header_names_next_offset_and_end() {
@@ -3883,56 +3833,6 @@ mod wording_tests {
         assert_eq!(dup.matches("do not retry the same URL").count(), 1, "{dup}");
     }
 
-    /// A verb action is the method; fetch takes it from `method`; a verb
-    /// action and a different `method` is refused rather than tie-broken.
-    #[test]
-    fn http_method_resolution_table() {
-        use reqwest::Method;
-        let cases: &[(&str, Option<&str>, Method)] = &[
-            ("post", None, Method::POST),
-            ("get", None, Method::GET),
-            ("put", None, Method::PUT),
-            ("delete", None, Method::DELETE),
-            ("head", None, Method::HEAD),
-            ("patch", None, Method::PATCH),
-            ("post", Some("post"), Method::POST),
-            ("fetch", None, Method::GET),
-            ("fetch", Some("put"), Method::PUT),
-            ("fetch", Some("DELETE"), Method::DELETE),
-        ];
-        for (action, method, want) in cases {
-            assert_eq!(resolve_http_method(action, *method).unwrap(), *want, "{action} {method:?}");
-        }
-        let err = resolve_http_method("post", Some("GET")).unwrap_err();
-        assert!(err.contains("action \"post\" is a POST request but method says GET"), "{err}");
-        let err = resolve_http_method("fetch", Some("TRACE")).unwrap_err();
-        assert!(err.contains("Unsupported HTTP method: TRACE"), "{err}");
-    }
-
-    /// The verbs route to the http handler with no resource, and the schema
-    /// lists them; a POST to a private address reaches the URL guard, which
-    /// proves the call was dispatched rather than refused for a missing
-    /// resource.
-    #[tokio::test]
-    async fn verb_actions_infer_the_http_resource() {
-        let tool = WebTool::new();
-        for verb in HTTP_VERB_ACTIONS {
-            assert_eq!(tool.infer_resource(verb), "http", "{verb}");
-        }
-        let actions = tool.schema()["properties"]["action"]["enum"].clone();
-        let actions: Vec<&str> = actions.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-        for verb in HTTP_VERB_ACTIONS {
-            assert!(actions.contains(verb), "schema enum is missing {verb}");
-        }
-        let ctx = ToolContext::default();
-        let r = tool
-            .execute_dyn(&ctx, serde_json::json!({"action": "post", "url": "http://127.0.0.1:9/x", "body": "{}"}))
-            .await;
-        assert!(r.is_error);
-        assert!(!r.content.contains("Resource is required"), "{}", r.content);
-        assert!(r.content.starts_with("Cannot fetch http://127.0.0.1:9/x"), "{}", r.content);
-    }
-
     #[test]
     fn private_url_error_names_the_url() {
         let e = private_url_error("http://127.0.0.1:8080/x");
@@ -3945,5 +3845,168 @@ mod wording_tests {
         assert_eq!(search_source_label("janus"), "the platform search API");
         assert_eq!(search_source_label("search-brave"), "your search API key (brave)");
         assert_eq!(search_source_label("cdp-human"), "the browser");
+    }
+}
+
+#[cfg(test)]
+mod interface_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn tool(name: &str) -> WebTool {
+        tools(WebCore::new()).into_iter().find(|t| t.name() == name).unwrap()
+    }
+
+    /// Reads run together; every write runs alone. A web POST, PUT, PATCH
+    /// or DELETE is never concurrency-safe, and neither is any step that
+    /// changes the page.
+    #[test]
+    fn only_reads_are_concurrency_safe() {
+        for t in tools(WebCore::new()) {
+            for input in [json!({}), json!({"method": "POST"}), json!({"action": "click"}), json!({"action": "screenshot"})] {
+                assert_eq!(t.concurrency_safe(&input), t.read_only(&input), "{} {input}", t.name());
+            }
+        }
+        let http = tool("http_request");
+        for m in ["POST", "PUT", "PATCH", "DELETE"] {
+            assert!(!http.concurrency_safe(&json!({"method": m, "url": "https://example.com"})), "{m}");
+        }
+        for m in ["GET", "HEAD"] {
+            assert!(http.concurrency_safe(&json!({"method": m, "url": "https://example.com"})), "{m}");
+        }
+        assert!(tool("search_web").concurrency_safe(&json!({"queries": ["x"]})));
+        assert!(tool("fetch_url").concurrency_safe(&json!({"url": "https://example.com"})));
+        assert!(tool("browser_read").concurrency_safe(&json!({})));
+        for (name, input) in [
+            ("browser_open", json!({"url": "https://example.com"})),
+            ("browser_act", json!({"action": "type", "text": "x"})),
+            ("browser_fill_form", json!({"fields": []})),
+            ("browser_run_js", json!({"expression": "1"})),
+            ("browser_batch", json!({"steps": []})),
+            ("browser_call_page_tool", json!({"name": "x"})),
+        ] {
+            assert!(!tool(name).concurrency_safe(&input), "{name}");
+        }
+    }
+
+    /// Every browser step takes the browser permit; search and fetch don't.
+    #[test]
+    fn the_browser_tools_take_the_browser_permit() {
+        for t in tools(WebCore::new()) {
+            let permit = t.resource_permit(&json!({}));
+            assert_eq!(permit.is_some(), t.name().starts_with("browser_"), "{}", t.name());
+        }
+    }
+
+    /// A browser tool's input becomes one step in the browser's own names.
+    #[test]
+    fn browser_calls_become_the_browsers_steps() {
+        let step = |name: &str, input: serde_json::Value| tool(name).kind.browser_step(&input).unwrap();
+        assert_eq!(
+            step("browser_read", json!({"filter": "interactive", "ref_id": "ref_3", "max_chars": 900})),
+            ("read_page", json!({"filter": "interactive", "refId": "ref_3", "maxChars": 900}))
+        );
+        assert_eq!(step("browser_close_tab", json!({"tab_id": 7})), ("close_tab", json!({"tabId": 7})));
+        assert_eq!(step("browser_close_tab", json!({})), ("close_tab", json!({})));
+        assert_eq!(
+            step("browser_console", json!({"only_errors": true, "pattern": "x"})),
+            ("read_console_messages", json!({"onlyErrors": true, "pattern": "x"}))
+        );
+        assert_eq!(
+            step("browser_act", json!({"action": "click", "ref": "ref_1", "click_count": 2})),
+            ("click", json!({"ref": "ref_1", "click_count": 2}))
+        );
+        assert_eq!(step("browser_open", json!({"url": "https://a.test", "fresh": true})).0, "navigate");
+        assert_eq!(step("browser_page_tools", json!({})).0, "webmcp_list");
+        let (action, args) = step(
+            "browser_batch",
+            json!({"steps": [
+                {"name": "browser_open", "input": {"url": "https://a.test"}},
+                {"name": "browser_act", "input": {"action": "type", "text": "hi"}},
+                {"name": "browser_read", "input": {"ref_id": "ref_2"}}
+            ]}),
+        );
+        assert_eq!(action, "browser_batch");
+        assert_eq!(
+            args,
+            json!({"actions": [
+                {"action": "navigate", "url": "https://a.test"},
+                {"action": "type", "text": "hi"},
+                {"action": "read_page", "refId": "ref_2"}
+            ]})
+        );
+        assert!(tool("search_web").kind.browser_step(&json!({})).is_none());
+    }
+
+    #[test]
+    fn a_call_is_checked_before_it_runs() {
+        let check = |name: &str, input: serde_json::Value| tool(name).validate_input(&input);
+        assert!(check("search_web", json!({"queries": ["  "]})).unwrap_err().contains("non-empty query"));
+        assert!(check("search_web", json!({"queries": ["rust"]})).is_ok());
+        assert!(check("fetch_url", json!({"url": "example.com"})).unwrap_err().contains("full http:// or https:// URL"));
+        assert!(check("fetch_url", json!({"url": "file:///etc/passwd"})).is_err());
+        assert!(check("http_request", json!({"method": "POST", "url": "https://example.com"})).is_ok());
+        assert_eq!(check("browser_act", json!({"action": "type"})).unwrap_err(), "browser_act type needs `text`.");
+        assert!(check("browser_act", json!({"action": "click"})).unwrap_err().contains("`ref` or `coordinate`"));
+        assert!(check("browser_act", json!({"action": "click", "coordinate": [1, 2]})).is_ok());
+        assert!(check("browser_act", json!({"action": "screenshot"})).is_ok());
+        let batch = |steps: serde_json::Value| check("browser_batch", json!({ "steps": steps }));
+        assert!(batch(json!([{"name": "web", "input": {}}])).unwrap_err().contains("no browser tool called \"web\""));
+        assert!(batch(json!([{"name": "browser_status", "input": {}}])).unwrap_err().contains("can't run inside browser_batch"));
+        assert!(batch(json!([{"name": "browser_act", "input": {}}])).unwrap_err().contains("`action` is missing"));
+        assert!(batch(json!([{"name": "browser_act", "input": {"action": "press"}}])).unwrap_err().contains("needs `key`"));
+        assert!(batch(json!([{"name": "browser_act", "input": {"action": "press", "key": "Enter"}}])).is_ok());
+    }
+
+    /// A POST reaches the HTTP handler, whose URL guard refuses a private
+    /// address: the method went through, not a missing-shape error.
+    #[tokio::test]
+    async fn an_http_request_reaches_the_url_guard() {
+        let ctx = ToolContext::default();
+        let r = tool("http_request")
+            .execute_dyn(&ctx, json!({"method": "POST", "url": "http://127.0.0.1:9/x", "body": "{}"}))
+            .await;
+        assert!(r.is_error);
+        assert!(r.content.starts_with("Cannot fetch http://127.0.0.1:9/x"), "{}", r.content);
+    }
+
+    /// Reads and opens name the site (www. stripped), so a run that read
+    /// four pages doesn't read as four searches.
+    #[test]
+    fn labels_name_the_site() {
+        let labels = |name: &str, input: serde_json::Value| {
+            let t = tool(name);
+            (t.activity(&input), t.outcome(&input))
+        };
+        assert_eq!(
+            labels("fetch_url", json!({"url": "https://www.example.com/page"})),
+            ("reading example.com".to_string(), "Read example.com".to_string())
+        );
+        assert_eq!(labels("browser_open", json!({"url": "https://docs.rs/x"})).0, "opening docs.rs");
+        assert_eq!(labels("search_web", json!({"queries": ["x"]})).1, "Searched the web");
+        assert_eq!(labels("http_request", json!({"method": "POST", "url": "https://api.example.com/v1"})).1, "Sent POST to api.example.com");
+        assert_eq!(labels("browser_act", json!({"action": "screenshot"})).1, "Took a screenshot");
+    }
+
+    /// Only a screenshot the model asked for is media for the owner.
+    #[test]
+    fn only_an_asked_for_screenshot_is_media() {
+        assert!(tool("browser_act").emits_image(&json!({"action": "screenshot"})));
+        assert!(!tool("browser_act").emits_image(&json!({"action": "click", "ref": "e1"})));
+        assert!(!tool("browser_open").emits_image(&json!({"url": "https://example.com"})));
+    }
+
+    /// Every retired `web` shape the upgrade migration rewrites lands on a
+    /// tool of this family, and every tool of the family is reachable.
+    #[test]
+    fn the_rename_rows_cover_the_family() {
+        let names: Vec<&str> = KINDS.iter().map(|k| k.name()).collect();
+        let web_rows: Vec<_> = crate::rename_map::RENAMES.iter().filter(|r| r.tool == "web").collect();
+        for r in &web_rows {
+            assert!(names.contains(&r.to), "{r:?}");
+        }
+        for name in &names {
+            assert!(web_rows.iter().any(|r| r.to == *name), "{name} has no old shape");
+        }
     }
 }
