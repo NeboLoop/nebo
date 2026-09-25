@@ -1287,19 +1287,19 @@ async fn grade_kept_run(
         "Grading {} trace(s) with {grader_model}, {GRADE_CONCURRENCY} at a time",
         jobs.len()
     );
-    let graded: Vec<_> = futures::stream::iter(jobs)
+    // Each trace is written the moment its grade lands, so a batch cut
+    // short (a usage limit, ^C) keeps every grade it finished.
+    let mut graded = futures::stream::iter(jobs)
         .map(|(entry, fix, mut t, dest)| async move {
             let outcome = grader::grade_trace(&mut t, fix, Some(grader_model)).await;
             (entry, t, dest, outcome)
         })
-        .buffer_unordered(GRADE_CONCURRENCY)
-        .collect()
-        .await;
+        .buffer_unordered(GRADE_CONCURRENCY);
 
     let mut critical: Vec<String> = Vec::new();
     let mut judge_failures = 0usize;
     let mut graded_count = 0usize;
-    for (entry, t, dest, outcome) in graded {
+    while let Some((entry, t, dest, outcome)) = graded.next().await {
         let label = format!("{entry}/{}", dest.file_name().unwrap_or_default().to_string_lossy());
         match outcome {
             Err(e) => {
@@ -1308,9 +1308,12 @@ async fn grade_kept_run(
             }
             Ok(o) => {
                 critical.extend(o.critical_failures);
-                if let Some(e) = o.judge_error {
-                    judge_failures += 1;
-                    eprintln!("  {label}: grading failed: {e}");
+                match o.judge_error {
+                    Some(e) => {
+                        judge_failures += 1;
+                        eprintln!("  {label}: grading failed: {e}");
+                    }
+                    None => println!("  graded {label}"),
                 }
             }
         }
