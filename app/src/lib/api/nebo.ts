@@ -251,6 +251,20 @@ export function workOutAgentNeeds(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Get workflow run approval"
+ */
+export function getWorkflowRunApproval(runId: string) {
+	return webapi.get<components.GetWorkflowRunApprovalResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`)
+}
+
+/**
+ * @description "Answer workflow run approval"
+ */
+export function answerWorkflowRunApproval(runId: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.AnswerWorkflowRunApprovalResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`, req)
+}
+
+/**
  * @description "Get agent"
  */
 export function getAgent(id: string) {
@@ -1529,6 +1543,13 @@ export function neboAIPhoneClaimable() {
  */
 export function neboAIPhoneLines() {
 	return webapi.get<unknown>(`/api/v1/phone/lines`)
+}
+
+/**
+ * @description "Update"
+ */
+export function update(req: Record<string, unknown> = {}) {
+	return webapi.put<components.UpdateResponse>(`/api/v1/phone/location`, req)
 }
 
 /**

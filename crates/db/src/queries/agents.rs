@@ -259,11 +259,17 @@ impl Store {
             ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        drop(conn);
+        // Exposure on the loop is an outside door: the employee is multi-chat.
+        if loop_exposed == Some(true) {
+            self.mark_multi_chat(id)?;
+        }
         Ok(())
     }
 
     /// Set an agent's "Expose to Loop" flag. Used to seed the primary agent's
     /// default (ON) at row creation; the toggle save path uses `update_agent`.
+    /// Exposure is an outside door, so the employee becomes multi-chat.
     pub fn set_loop_exposed(&self, id: &str, exposed: bool) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -271,6 +277,10 @@ impl Store {
             params![id, exposed as i32],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        drop(conn);
+        if exposed {
+            self.mark_multi_chat(id)?;
+        }
         Ok(())
     }
 
@@ -1286,7 +1296,7 @@ mod structure_tests {
         seat(&s, "a", "Social");
         seat(&s, "ab", "Other");
         let job = |name: &str, task_type: &str, agent: Option<&str>| {
-            s.create_cron_job(name, "0 0 9 * * * *", "", task_type, Some("x"), None, None, true, agent, None)
+            s.create_cron_job(name, "0 0 9 * * * *", "", task_type, Some("x"), None, None, true, agent, None, None)
                 .unwrap();
         };
         job("agent-a-plan-week", "agent_workflow", Some("a"));

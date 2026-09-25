@@ -39,6 +39,21 @@ pub async fn update_entity_config(
             "entity_type must be main, agent, or channel".into(),
         )));
     }
+    // An employee with an outside door is multi-chat (owner rule 09-25):
+    // the switch-off is refused, and the refusal says why. A phone line is
+    // checked live at NeboAI too, as the memory-isolation lock is.
+    if entity_type == "agent" && body.get("multiChat").is_some() {
+        let mut doors = state.store.outside_doors(&entity_id).map_err(to_error_response)?;
+        if !doors.iter().any(|d| d == "phonecall")
+            && super::neboai::agent_has_phone_line(&state, &entity_id).await
+        {
+            doors.push("phonecall".to_string());
+        }
+        let name_of = |slug: &str| state.plugin_store.get_manifest(slug).map(|m| m.name);
+        if let Some(refusal) = crate::outside::multi_chat_lock(&body, &doors, name_of) {
+            return Err(to_error_response(NeboError::Validation(refusal)));
+        }
+    }
     // Permission edits are the owner's rules; the rest is the config row.
     entity_config::apply_permission_patch(&state.store, &entity_type, &entity_id, &mut body)
         .map_err(|e| to_error_response(NeboError::Validation(e.to_string())))?;

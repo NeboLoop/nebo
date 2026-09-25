@@ -2486,6 +2486,7 @@ impl PersonaTool {
                         true,
                         Some(&agent.id),
                         None,
+                        None,
                     );
 
                     fixes.push(format!(
@@ -2704,6 +2705,7 @@ impl PersonaTool {
                         None,
                         true,
                         Some(agent_id),
+                        None,
                         None,
                     ) {
                         warn!(agent = agent_id, binding = %binding.binding_name, error = %e, "failed to register schedule trigger");

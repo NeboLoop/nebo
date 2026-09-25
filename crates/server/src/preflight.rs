@@ -495,10 +495,11 @@ mod tests {
                 true,
                 Some("emp"),
                 None,
+                None,
             )
             .unwrap();
         let run = s
-            .engine_get_run(&s.queue_cron_run(&prompt, false).unwrap())
+            .engine_get_run(&s.queue_cron_run(&prompt, false, false).unwrap())
             .unwrap()
             .unwrap();
         assert_eq!(fire_binding(&s, &run), None);
@@ -514,10 +515,11 @@ mod tests {
                 true,
                 Some("emp"),
                 None,
+                None,
             )
             .unwrap();
         let run = s
-            .engine_get_run(&s.queue_cron_run(&wf, false).unwrap())
+            .engine_get_run(&s.queue_cron_run(&wf, false, false).unwrap())
             .unwrap()
             .unwrap();
         assert_eq!(fire_binding(&s, &run), Some(("emp".into(), "sweep".into())));

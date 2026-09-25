@@ -48,6 +48,9 @@ fixtures:
   - ../fixtures/engine/operations/uc33-a-renewal-wakes-on-the-day-and-not-before.yaml
   - ../fixtures/engine/operations/uc34-milestones-wake-a-case-months-later-across-a-restart.yaml
   - ../fixtures/engine/operations/uc35-interval-checks-catch-up-once-never-storm.yaml
+  - ../fixtures/engine/operations/a31-a-schedule-skips-while-its-last-run-goes.yaml
+  - ../fixtures/engine/operations/a31-a-buffered-schedule-starts-once-the-last-run-ends.yaml
+  - ../fixtures/engine/operations/a31-an-allow-all-schedule-starts-every-fire.yaml
   # Marketing
   - ../fixtures/engine/marketing/uc36-a-drip-pauses-on-reply-and-resumes-on-silence.yaml
   - ../fixtures/engine/marketing/uc37-each-piece-is-one-case-from-brief-to-publish.yaml

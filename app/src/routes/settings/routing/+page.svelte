@@ -3,10 +3,7 @@
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import Sparkles from 'lucide-svelte/icons/sparkles';
-  import Brain from 'lucide-svelte/icons/brain';
-  import Code from 'lucide-svelte/icons/code';
   import Eye from 'lucide-svelte/icons/eye';
-  import Volume2 from 'lucide-svelte/icons/volume-2';
   import Tag from 'lucide-svelte/icons/tag';
   import Plus from 'lucide-svelte/icons/plus';
   import Trash2 from 'lucide-svelte/icons/trash-2';
@@ -42,12 +39,17 @@
   type TaskKey = 'general' | 'reasoning' | 'code' | 'vision' | 'audio';
   type LaneKey = 'heartbeat' | 'events' | 'comm' | 'subagent';
 
+  // Every task route the settings store. Reasoning, Code and Audio are kept
+  // on purpose (owner, 09-25): no turn reads them since the per-step keyword
+  // guesser was deleted, so the page no longer shows them, but their stored
+  // values and backups are saved back untouched for the intelligence-packs
+  // redesign.
+  const taskKeys: TaskKey[] = ['general', 'reasoning', 'code', 'vision', 'audio'];
+
+  // The routes a turn reads: General for every turn, Vision to describe images.
   const routingModes: { key: TaskKey; label: string; description: string; icon: any; color: string }[] = $derived([
     { key: 'general', label: $t('settingsRouting.modeAllPurpose'), description: $t('settingsRouting.modeAllPurposeDesc'), icon: Sparkles, color: 'text-primary' },
-    { key: 'reasoning', label: $t('settingsRouting.modes.reasoning'), description: $t('settingsRouting.modeReasoningDesc'), icon: Brain, color: 'text-secondary' },
-    { key: 'code', label: $t('settingsRouting.modeAdvanced'), description: $t('settingsRouting.modeAdvancedDesc'), icon: Code, color: 'text-accent' },
     { key: 'vision', label: $t('settingsRouting.modes.vision'), description: $t('settingsRouting.modeVisionDesc'), icon: Eye, color: 'text-info' },
-    { key: 'audio', label: $t('settingsRouting.modes.audio'), description: $t('settingsRouting.modeAudioDesc'), icon: Volume2, color: 'text-warning' },
   ]);
 
   const laneModes: { key: LaneKey; label: string; description: string }[] = $derived([
@@ -73,9 +75,9 @@
       const api = await import('$lib/api/nebo');
       const toApi = (v: string) => (v === 'auto' || v === 'none') ? '' : v;
       const fallbacks: Record<string, string[]> = {};
-      for (const mode of routingModes) {
-        const backup = toApi(backupForm[mode.key]);
-        if (backup) fallbacks[mode.key] = [backup];
+      for (const key of taskKeys) {
+        const backup = toApi(backupForm[key]);
+        if (backup) fallbacks[key] = [backup];
       }
 
       const validAliases = aliasesForm.filter(a => a.alias.trim() && a.modelId);

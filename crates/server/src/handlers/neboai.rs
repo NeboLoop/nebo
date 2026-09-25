@@ -1493,6 +1493,9 @@ pub async fn phone_bind(
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("phone bind: {e}"))))?;
     info!(agent = %req.agent_id, number = %req.number, "phone number bound via NeboAI");
+    // A line is an outside door: every caller and texter gets a chat of
+    // their own (owner rule 09-25).
+    state.store.mark_multi_chat(&req.agent_id).map_err(to_error_response)?;
     Ok(Json(resp))
 }
 

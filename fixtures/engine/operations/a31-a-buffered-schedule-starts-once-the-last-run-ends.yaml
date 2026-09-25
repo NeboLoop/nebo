@@ -1,0 +1,10 @@
+id: a31-a-buffered-schedule-starts-once-the-last-run-ends
+name: "A31 — A buffered schedule starts once the last run ends"
+description: |
+  A31 — Overlap policy buffer one: an occurrence that comes due while the last
+  run goes waits and starts when that run ends; while one waits, further
+  occurrences are skipped. Each schedule's buffered fire is released by its own
+  run's end, the sweep's by its workflow run, the report's by its turn.
+target_component: engine
+proof: engine::proof::operations::a31_a_buffered_schedule_starts_once_the_last_run_ends
+conversation: []

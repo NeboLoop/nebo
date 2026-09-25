@@ -483,6 +483,7 @@ async fn reply_to_the_inbound_sender_is_not_case_five() {
             definition: None,
             inputs: case.inputs.as_deref(),
             external_ref: None,
+            state: None,
         })
         .unwrap();
     let (mail, ran) = Act::new("mail", None);

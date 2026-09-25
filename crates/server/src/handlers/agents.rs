@@ -2670,6 +2670,9 @@ async fn hub_webhook_create(
         .create_webhook(&hub_id, label, workflow.unwrap_or(""))
         .await
         .map_err(|e| types::NeboError::Internal(format!("webhooks: {e}")))?;
+    // A webhook is an outside door: each delivery is a chat of its own
+    // (owner rule 09-25).
+    state.store.mark_multi_chat(&agent.id)?;
     // Echo the fields explicitly so the generated TS client carries the contract.
     Ok(serde_json::json!({
         "id": body["id"],

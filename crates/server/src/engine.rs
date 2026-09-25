@@ -17,9 +17,11 @@
 //! Schedules (cron jobs) are recurring timers: every enabled job holds ONE
 //! pending timer aimed at binding `cron:<id>`; a due timer becomes a run of
 //! kind `task` that `drive` executes; the next occurrence is armed from the
-//! consumed one. A job's fire never overlaps its previous fire (skipped and
-//! noted), and a fire missed by more than the catch-up window is skipped,
-//! never replayed as a storm.
+//! consumed one. What a fire does while the previous one — or the workflow
+//! it started — is still going is the job's overlap policy: skipped and
+//! noted (the default), buffered to start once it ends (one at most), or
+//! started anyway. A fire missed by more than the catch-up window is
+//! skipped, never replayed as a storm.
 //!
 //! Boot: runs the dead process left `running` are stamped `interrupted` and
 //! given their ONE resume (I-3). Cases enter through
@@ -35,7 +37,7 @@ use chrono::{Local, TimeZone};
 use tracing::{debug, info, warn};
 
 use crate::state::AppState;
-use db::models::CronJob;
+use db::models::{CronJob, OverlapPolicy};
 use db::{EngineEvent, EngineRun, NewEvent, Store};
 use tools::workflows::WorkflowManager;
 use workflow::cases::{needs_attention, parse_turn, settle_turn, start_child};
@@ -73,6 +75,10 @@ pub struct TickReport {
     pub armed: usize,
     pub fired: usize,
     pub skipped: usize,
+    /// Schedule fires held back behind the one still going (overlap policy
+    /// buffer_one), and those released because it ended.
+    pub buffered: usize,
+    pub released: usize,
 }
 
 /// Boot sweep (I-3): nothing is left `running` by a process that is gone.
@@ -141,6 +147,7 @@ pub fn tick(store: &Store, t: i64, live: &dyn Fn(&str) -> Option<String>, steer:
     for event in &events {
         deliver(store, event, t, live, steer, &mut report);
     }
+    release_buffered_fires(store, t, &mut report);
 
     match store.engine_pending_effects() {
         Ok(pending) => {
@@ -716,7 +723,7 @@ fn fire_binding_heartbeat(store: &Store, event: &EngineEvent, t: i64, report: &m
         return;
     }
     let wf_id = types::keyparser::agent_workflow_id(agent_id);
-    if store.has_running_run(&wf_id, binding).unwrap_or(false) || store.engine_has_live_run_for_ref(&event.target_id).unwrap_or(false) {
+    if store.has_live_run(&wf_id, Some(binding)).unwrap_or(false) || store.engine_has_live_run_for_ref(&event.target_id).unwrap_or(false) {
         info!(agent = agent_id, binding, "engine: previous heartbeat run still active; this one skipped");
         skip(store, "skipped: previous run still active", report);
         return;
@@ -748,8 +755,9 @@ fn fire_binding_heartbeat(store: &Store, event: &EngineEvent, t: i64, report: &m
 }
 
 /// A schedule's timer came due. Skip (and say why) when the job is gone or
-/// disabled, when its last fire is still running, or when the occurrence
-/// was missed by more than the catch-up window; otherwise queue ONE run.
+/// disabled, or when the occurrence was missed by more than the catch-up
+/// window; while its last fire is still going, do what its overlap policy
+/// says; otherwise queue ONE run.
 /// The next occurrence is armed on the following tick from this consumed one.
 fn fire_schedule(store: &Store, event: &EngineEvent, t: i64, report: &mut TickReport) {
     if event.target_id.starts_with("hb:") {
@@ -790,31 +798,121 @@ fn fire_schedule(store: &Store, event: &EngineEvent, t: i64, report: &mut TickRe
         skip(store, &format!("skipped: missed by {late}s, beyond the catch-up window"), report);
         return;
     }
-    match store.engine_has_live_run_for_ref(&cron_target(&job)) {
-        Ok(true) => {
-            info!(job = job.name.as_str(), "engine: previous fire still running; this occurrence skipped");
-            skip(store, "skipped: previous fire still running", report);
-            return;
+    // The job's overlap policy decides what an occurrence does while the
+    // last fire is still going (Temporal's schedule overlap policy).
+    let buffered = match job.overlap() {
+        OverlapPolicy::AllowAll => false,
+        policy => match previous_fire_live(store, &job) {
+            Ok(false) => false,
+            Ok(true) if policy == OverlapPolicy::Skip => {
+                info!(job = job.name.as_str(), "engine: previous fire still running; this occurrence skipped");
+                skip(store, "skipped: previous fire still running", report);
+                return;
+            }
+            Ok(true) => match store.engine_has_buffered_fire_for_ref(&cron_target(&job)) {
+                Ok(true) => {
+                    info!(job = job.name.as_str(), "engine: previous fire still running and one already waits; this occurrence skipped");
+                    skip(store, "skipped: previous fire still running and one already waits", report);
+                    return;
+                }
+                Ok(false) => true,
+                Err(e) => {
+                    warn!(job = job.name.as_str(), error = %e, "engine: overlap check failed; lease will expire and retry");
+                    return;
+                }
+            },
+            Err(e) => {
+                warn!(job = job.name.as_str(), error = %e, "engine: overlap check failed; lease will expire and retry");
+                return;
+            }
+        },
+    };
+    match store.queue_cron_run(&job, false, buffered).and_then(|_| store.engine_complete_event(event.id, t)) {
+        Ok(()) if buffered => {
+            report.buffered += 1;
+            info!(job = job.name.as_str(), "engine: previous fire still running; this occurrence waits for it");
         }
-        Ok(false) => {}
-        Err(e) => {
-            warn!(job = job.name.as_str(), error = %e, "engine: overlap check failed; lease will expire and retry");
-            return;
-        }
-    }
-    match store.queue_cron_run(&job, false).and_then(|_| store.engine_complete_event(event.id, t)) {
         Ok(()) => {
             report.fired += 1;
             info!(job = job.name.as_str(), "dispatching scheduled task");
-            // A one-shot has just had its only fire: done, not armed again.
-            if matches!(next_occurrence(&job.schedule, event.due_at.unwrap_or(t)), Ok(None)) {
-                match store.set_cron_job_enabled(job.id, false) {
-                    Ok(()) => info!(job_id = job.id, job = job.name.as_str(), "one-shot schedule fired; retired"),
-                    Err(e) => warn!(job_id = job.id, job = job.name.as_str(), error = %e, "engine: could not retire one-shot schedule"),
-                }
-            }
+            retire_spent_one_shot(store, &job, event.due_at.unwrap_or(t));
         }
         Err(e) => warn!(job = job.name.as_str(), error = %e, "engine: could not queue the scheduled run; lease will expire and retry"),
+    }
+}
+
+/// A one-shot whose only fire has just started is done: not armed again.
+/// A buffered fire starts when it is released, so it retires then.
+fn retire_spent_one_shot(store: &Store, job: &CronJob, due: i64) {
+    if matches!(next_occurrence(&job.schedule, due), Ok(None)) {
+        match store.set_cron_job_enabled(job.id, false) {
+            Ok(()) => info!(job_id = job.id, job = job.name.as_str(), "one-shot schedule fired; retired"),
+            Err(e) => warn!(job_id = job.id, job = job.name.as_str(), error = %e, "engine: could not retire one-shot schedule"),
+        }
+    }
+}
+
+/// Is the job's last fire still going? A fire is its engine run while that
+/// is queued or running — for a prompt or shell job, the whole of the work.
+/// A workflow job's fire ends as soon as the workflow it started is under
+/// way, so the workflow's own run counts too, until it ends (a run parked
+/// on an approval is still going).
+fn previous_fire_live(store: &Store, job: &CronJob) -> Result<bool, types::NeboError> {
+    if store.engine_has_live_run_for_ref(&cron_target(job))? {
+        return Ok(true);
+    }
+    match job.task_type.as_str() {
+        "agent_workflow" | "role_workflow" => match job.command.splitn(3, ':').collect::<Vec<_>>()[..] {
+            [_, agent_id, binding] => store.has_live_run(&types::keyparser::agent_workflow_id(agent_id), Some(binding)),
+            _ => Ok(false),
+        },
+        // A standalone workflow, or a binding by its scoped id
+        // (`agent:<id>:<binding>`, which `run` fires as the binding).
+        "workflow" => match job.command.strip_prefix("agent:").and_then(|rest| rest.split_once(':')) {
+            Some((agent_id, binding)) => store.has_live_run(&types::keyparser::agent_workflow_id(agent_id), Some(binding)),
+            None => store.has_live_run(&job.command, None),
+        },
+        _ => Ok(false),
+    }
+}
+
+/// Buffered fires (overlap policy buffer_one) start once the fire before
+/// them has ended: released to `queued`, `drive` runs them. One whose job
+/// is gone or switched off while it waited is cancelled with the reason.
+fn release_buffered_fires(store: &Store, t: i64, report: &mut TickReport) {
+    let waiting = match store.engine_buffered_fires() {
+        Ok(w) => w,
+        Err(e) => {
+            warn!(error = %e, "engine: could not read buffered fires");
+            return;
+        }
+    };
+    for run in waiting {
+        let job = run
+            .external_ref
+            .as_deref()
+            .and_then(|r| r.strip_prefix("cron:"))
+            .and_then(|id| id.parse::<i64>().ok())
+            .and_then(|id| store.get_cron_job(id).ok().flatten())
+            .filter(|j| j.enabled.unwrap_or(0) != 0);
+        let Some(job) = job else {
+            if let Err(e) = store.engine_set_run_state(&run.id, "cancelled", t, Some("its schedule was removed or switched off while it waited")) {
+                warn!(run = %run.id, error = %e, "engine: could not cancel a buffered fire");
+            }
+            continue;
+        };
+        match previous_fire_live(store, &job) {
+            Ok(true) => {}
+            Ok(false) => match store.engine_set_run_state(&run.id, "queued", t, None) {
+                Ok(_) => {
+                    report.released += 1;
+                    info!(job = job.name.as_str(), "engine: the previous fire ended; the buffered one starts");
+                    retire_spent_one_shot(store, &job, t);
+                }
+                Err(e) => warn!(run = %run.id, error = %e, "engine: could not release a buffered fire"),
+            },
+            Err(e) => warn!(job = job.name.as_str(), error = %e, "engine: overlap check failed; retried next tick"),
+        }
     }
 }
 
@@ -2066,7 +2164,7 @@ mod tests {
     /// A job whose floor is `floor`: one consumed timer at that moment, the
     /// way a job that has fired before carries its floor.
     fn job(s: &Store, name: &str, schedule: &str, floor: i64) -> CronJob {
-        let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None).unwrap();
+        let j = s.create_cron_job(name, schedule, "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
         let target = cron_target(&j);
         let db::Enqueued::Inserted(id) = s
             .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
@@ -2133,7 +2231,7 @@ mod tests {
 
         // Rescheduled: the pending timer is replaced by one on the new schedule.
         tick(&s, local(2026, 8, 24, 9, 0, 6), &idle, &no_steer);
-        s.upsert_cron_job("briefing", "0 30 9 * * *", "echo hi", "shell", None, None, None, true, None, None).unwrap();
+        s.upsert_cron_job("briefing", "0 30 9 * * *", "echo hi", "shell", None, None, None, true, None, None, None).unwrap();
         let r = tick(&s, local(2026, 8, 24, 9, 0, 11), &idle, &no_steer);
         assert_eq!(r.armed, 1);
         let pending = s.engine_pending_timers("binding").unwrap();
@@ -2188,7 +2286,7 @@ mod tests {
     /// An employee's own job at `schedule`, with its floor consumed like
     /// [`job`]'s.
     fn employee_job(s: &Store, name: &str, schedule: &str, task_type: &str, command: &str, agent: &str, message: &str, floor: i64) -> CronJob {
-        let j = s.create_cron_job(name, schedule, command, task_type, Some(message), None, None, true, Some(agent), None).unwrap();
+        let j = s.create_cron_job(name, schedule, command, task_type, Some(message), None, None, true, Some(agent), None, None).unwrap();
         let target = cron_target(&j);
         let db::Enqueued::Inserted(id) = s
             .engine_enqueue_event(&NewEvent { kind: "timer", target_type: "binding", target_id: &target, idem_key: &format!("{target}:floor"), due_at: Some(floor), ..Default::default() })
@@ -2926,14 +3024,14 @@ mod tests {
         let t = now();
         s.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
         let job = s
-            .create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("Check the engagement-desk run and report results."), None, None, true, Some("emp"), None)
+            .create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("Check the engagement-desk run and report results."), None, None, true, Some("emp"), None, None)
             .unwrap();
         let key = db::cron_ref(job.id);
         past_fire(&s, "prev", &key, "emp", t, 120, "done", "The engagement-desk workflow no longer exists.\nDetails follow.");
         // A skipped fire after it is passed over.
         past_fire(&s, "skipped", &key, "emp", t, 5, "done", "");
         s.engine_set_run_result_tag("skipped", "skipped").unwrap();
-        let fire_id = s.queue_cron_run(&job, false).unwrap();
+        let fire_id = s.queue_cron_run(&job, false, false).unwrap();
         let fire = s.engine_get_run(&fire_id).unwrap().unwrap();
 
         let b = triage_binding(&s, &fire, None, t).expect("an employee's agent job is triaged");
@@ -2955,15 +3053,15 @@ mod tests {
         // A failed last run is a change.
         let s2 = store();
         s2.conn_exec_for_test("INSERT INTO agents (id, name, description, agent_md, frontmatter, updated_at) VALUES ('emp', 'E', '', '', '', 0)");
-        let job2 = s2.create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None).unwrap();
+        let job2 = s2.create_cron_job("status-check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
         past_fire(&s2, "prev", &db::cron_ref(job2.id), "emp", t, 120, "failed", "");
-        let fire2 = s2.engine_get_run(&s2.queue_cron_run(&job2, false).unwrap()).unwrap().unwrap();
+        let fire2 = s2.engine_get_run(&s2.queue_cron_run(&job2, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s2, &fire2, None, t).unwrap().flags.last_run_failed);
 
         // No run on record: a first run.
         let s3 = store();
-        let job3 = s3.create_cron_job("once", "0 5 10 23 8 * 2099", "", "agent", Some("Wake me"), None, None, true, Some("emp"), None).unwrap();
-        let fire3 = s3.engine_get_run(&s3.queue_cron_run(&job3, false).unwrap()).unwrap().unwrap();
+        let job3 = s3.create_cron_job("once", "0 5 10 23 8 * 2099", "", "agent", Some("Wake me"), None, None, true, Some("emp"), None, None).unwrap();
+        let fire3 = s3.engine_get_run(&s3.queue_cron_run(&job3, false, false).unwrap()).unwrap().unwrap();
         let b3 = triage_binding(&s3, &fire3, None, t).unwrap();
         assert!(b3.flags.first_run && b3.since_last_run.is_none());
         assert_eq!(b3.cadence, None, "a one-shot has no cadence");
@@ -2973,14 +3071,14 @@ mod tests {
     fn triage_does_not_apply_without_an_employee_to_a_run_now_or_to_a_shell_job() {
         let s = store();
         let t = now();
-        let shell = s.create_cron_job("sh", "*/2 * * * *", "echo hi", "shell", None, None, None, true, Some("emp"), None).unwrap();
-        let fire = s.engine_get_run(&s.queue_cron_run(&shell, false).unwrap()).unwrap().unwrap();
+        let shell = s.create_cron_job("sh", "*/2 * * * *", "echo hi", "shell", None, None, None, true, Some("emp"), None, None).unwrap();
+        let fire = s.engine_get_run(&s.queue_cron_run(&shell, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &fire, None, t).is_none());
-        let agentless = s.create_cron_job("check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, None, None).unwrap();
-        let fire = s.engine_get_run(&s.queue_cron_run(&agentless, false).unwrap()).unwrap().unwrap();
+        let agentless = s.create_cron_job("check", "*/2 * * * *", "", "agent", Some("x"), None, None, true, None, None, None).unwrap();
+        let fire = s.engine_get_run(&s.queue_cron_run(&agentless, false, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &fire, None, t).is_none());
-        let agent = s.create_cron_job("mine", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None).unwrap();
-        let manual = s.engine_get_run(&s.queue_cron_run(&agent, true).unwrap()).unwrap().unwrap();
+        let agent = s.create_cron_job("mine", "*/2 * * * *", "", "agent", Some("x"), None, None, true, Some("emp"), None, None).unwrap();
+        let manual = s.engine_get_run(&s.queue_cron_run(&agent, true, false).unwrap()).unwrap().unwrap();
         assert!(triage_binding(&s, &manual, None, t).is_none());
         // The main agent's heartbeat has no employee id.
         s.engine_create_run(&NewRun { id: "hb-main", kind: "heartbeat", session_key: "heartbeat-main-main", agent_id: "", lane: "heartbeat", external_ref: Some("heartbeat:main:main"), ..Default::default() }).unwrap();

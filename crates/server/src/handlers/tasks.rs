@@ -37,6 +37,19 @@ pub async fn list_tasks(
     Ok(Json(ListTasksResponse { tasks, total }))
 }
 
+/// The schedule's overlap policy from a request body's `overlapPolicy`
+/// (`skip`, `buffer_one` or `allow_all`); absent keeps the job's own, or
+/// skip for a new one.
+fn overlap_policy(
+    body: &serde_json::Value,
+) -> Result<Option<db::models::OverlapPolicy>, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
+    body["overlapPolicy"]
+        .as_str()
+        .map(db::models::OverlapPolicy::parse)
+        .transpose()
+        .map_err(to_error_response)
+}
+
 /// POST /api/v1/tasks
 pub async fn create_task(
     State(state): State<AppState>,
@@ -57,6 +70,7 @@ pub async fn create_task(
 
     let agent_id = body["agentId"].as_str();
     let channel_ctx_json = body["channelCtxJson"].as_str();
+    let overlap = overlap_policy(&body)?;
     let task = state
         .store
         .create_cron_job(
@@ -70,6 +84,7 @@ pub async fn create_task(
             enabled,
             agent_id,
             channel_ctx_json,
+            overlap,
         )
         .map_err(to_error_response)?;
     Ok(Json(serde_json::json!(task)))
@@ -118,6 +133,7 @@ pub async fn update_task(
     let channel_ctx_json = body["channelCtxJson"]
         .as_str()
         .or(existing.channel_ctx_json.as_deref());
+    let overlap = overlap_policy(&body)?;
     state
         .store
         .upsert_cron_job(
@@ -131,6 +147,7 @@ pub async fn update_task(
             enabled,
             agent_id,
             channel_ctx_json,
+            overlap,
         )
         .map_err(to_error_response)?;
 
@@ -197,7 +214,7 @@ pub async fn run_task(
     // scheduled fire runs and announces `task_complete` when it settles.
     let run_id = state
         .store
-        .queue_cron_run(&task, true)
+        .queue_cron_run(&task, true, false)
         .map_err(to_error_response)?;
 
     Ok(Json(serde_json::json!({
