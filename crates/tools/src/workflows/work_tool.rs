@@ -454,7 +454,7 @@ impl DynTool for WorkflowTool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     /// A create, an update and a delete name the workflow the same way, so
     /// the permission check can tell a delete of the employee's own work.
     #[test]
@@ -487,8 +487,8 @@ mod tests {
 
     /// A manager that records what it was asked and holds one workflow.
     #[derive(Default)]
-    struct Recorder {
-        calls: Mutex<Vec<String>>,
+    pub(crate) struct Recorder {
+        pub(crate) calls: Mutex<Vec<String>>,
         enabled: Mutex<bool>,
     }
 

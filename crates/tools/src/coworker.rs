@@ -115,8 +115,8 @@ pub struct TeamPostReceipt {
     pub asked: Vec<String>,
 }
 
-/// Implemented by the server (`CoworkerRailImpl`), consumed by the `message`
-/// and `team` tools. `Pin<Box<dyn Future>>` for object safety — same seam
+/// Implemented by the server (`CoworkerRailImpl`), consumed by
+/// `send_message` (coworkers and teams) and the escalation up a reporting line. `Pin<Box<dyn Future>>` for object safety — same seam
 /// shape as `SubAgentOrchestrator`.
 pub trait CoworkerRail: Send + Sync {
     fn send(
@@ -145,7 +145,7 @@ pub fn new_rail_cell() -> CoworkerRailCell {
 /// the envelope is built from a [`crate::origin::ToolContext`].
 ///
 /// Two callers, deliberately sharing this rather than each assembling the
-/// envelope: `message(resource: "coworker")`, and the escalation that takes
+/// envelope: `send_message` to a coworker, and the escalation that takes
 /// work a seat cannot finish up its reporting line. Every field a run's
 /// identity, isolation, taint and hop budget depend on is derived here, once —
 /// a second copy is exactly how a caller forgets `requester_scope` and pools an

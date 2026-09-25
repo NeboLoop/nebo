@@ -1817,9 +1817,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow_loop,
     ));
     // Register the workflow tools now that the manager exists
-    for tool in tools::workflows::tools(workflow_manager.clone() as Arc<dyn tools::WorkflowManager>) {
-        tool_registry.register(Box::new(tool)).await;
-    }
+    tool_registry
+        .register_workflows(workflow_manager.clone() as Arc<dyn tools::WorkflowManager>)
+        .await;
 
     // Create agent loader — embedded bundled + nebo/agents/ + user/agents/
     let agent_loader = Arc::new(
@@ -2369,7 +2369,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     )));
 
     // Wire the coworker message rail (late, like the installer above — it needs
-    // `AppState`). With this set, message(resource: "coworker") delivers real
+    // `AppState`). With this set, send_message to a coworker delivers real
     // agent→agent messages through the ONE chat pipeline.
     state
         .tools
@@ -5380,8 +5380,8 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                     "You are the lead for this request. The user asked you to work together with \
                      {peers} to produce ONE combined result. They are NOT replying here on their \
                      own — consult a peer when you need their expertise by messaging them: \
-                     message(resource: \"coworker\", action: \"send\", to: \"{first}\", \
-                     text: \"<what you need from them>\") — then write a single integrated \
+                     send_message(to: \"{first}\", message: \"<what you need from them>\") \
+                     — then write a single integrated \
                      answer yourself.",
                     peers = coordinator_peer_names.join(", "),
                     first = coordinator_peer_names.first().map(|s| s.as_str()).unwrap_or("the peer"),
@@ -5470,7 +5470,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                             "read_loop_channel",
                             "loop_channel_members",
                             "find_tools",
-                            "message",
+                            "send_message",
                             "list_employees",
                             "get_employee",
                             "create_task",
