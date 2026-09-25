@@ -2704,6 +2704,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let update_pending = state.update_pending.clone();
         tokio::spawn(async move {
             let checker = updater::BackgroundChecker::new(
+                updater::NEBO,
                 VERSION.to_string(),
                 std::time::Duration::from_secs(3600),
                 move |result| {
@@ -2749,10 +2750,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                                         }),
                                     );
                                 });
-                            match updater::download(&tag, Some(progress_fn)).await {
+                            match updater::download(&updater::NEBO, &tag, Some(progress_fn)).await {
                                 Ok(path) => {
                                     // Verify checksum before staging
-                                    match updater::verify_checksum(&path, &tag).await {
+                                    match updater::verify_checksum(&updater::NEBO, &path, &tag).await {
                                         Ok(()) => {
                                             pending.lock().await.replace((path, tag.clone()));
                                             hub.broadcast(
