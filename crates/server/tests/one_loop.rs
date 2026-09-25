@@ -155,6 +155,14 @@ async fn a_chat_message_runs_a_turn_through_the_one_loop() {
     assert!(said.iter().any(|m| m.contains(OWNER)), "the owner's words: {said:?}");
     assert!(said.iter().any(|m| m.contains("<system-reminder>")), "the session's facts ride as attachment rows: {said:?}");
     assert!(!system.contains(OWNER), "never in the system prompt");
+    // The core tools are declared on the first step; the rest are listed.
+    let declared: Vec<&str> = body["tools"]
+        .as_array()
+        .map(|t| t.iter().filter_map(|d| d["function"]["name"].as_str()).collect())
+        .unwrap_or_default();
+    for core in ["run_command", "read_file", "write_file", "edit_file", "delegate", "find_tools"] {
+        assert!(declared.contains(&core), "{core} is not declared: {declared:?}");
+    }
 
     // The thread holds the owner's row, the typed attachment rows and the reply.
     let store = server.db_store();
