@@ -882,7 +882,6 @@ async fn start_janus_stream(
         max_tokens: body.max_tokens.unwrap_or(2000),
         temperature: body.temperature.unwrap_or(0.7),
         system: body.system.unwrap_or_default(),
-        static_system: String::new(),
         model: body.model.unwrap_or_default(),
         enable_thinking: false,
         metadata: None,

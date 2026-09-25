@@ -2005,7 +2005,7 @@ mod walk_tests {
         ) -> Result<crate::LoopOutcome, WorkflowError> {
             let req = ai::ChatRequest {
                 messages: turn.seed_messages.clone(),
-                system: turn.system.clone(),
+                system: turn.instructions.clone(),
                 temperature: 0.0,
                 max_tokens: 16384,
                 ..ai::ChatRequest::new(turn.trace.clone())
