@@ -95,17 +95,20 @@ impl Reminders {
     }
 
     fn add_under(&mut self, spec: &Spec, event: &TurnEvent) {
-        let Some(attachment) = events::attachment_for(event) else {
-            return;
-        };
-        if !spec.allows(attachment.kind) {
-            self.tally.entry(attachment.kind).or_default().1 += 1;
-            return;
+        for attachment in events::attachments_for(event) {
+            if !spec.allows(attachment.kind) {
+                self.tally.entry(attachment.kind).or_default().1 += 1;
+                continue;
+            }
+            if !self.queued.contains(&attachment) {
+                self.queued.push(attachment);
+            }
         }
-        if self.queued.contains(&attachment) {
-            return;
-        }
-        self.queued.push(attachment);
+    }
+
+    /// Whether attachments are waiting for the next write.
+    pub fn has_queued(&self) -> bool {
+        !self.queued.is_empty()
     }
 
     /// The only way an attachment enters the context: persist each queued
