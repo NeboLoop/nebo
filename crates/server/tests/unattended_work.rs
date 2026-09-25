@@ -196,9 +196,11 @@ async fn run_and_answer(server: &TestServer, agent_id: &str, target: &std::path:
         .await;
     assert_eq!(answered.status(), 200, "the {via} answer is taken");
 
+    // A released run is queued to resume, which reads as "interrupted"
+    // (about to resume) until the engine picks it up: not an end.
     let status = eventually(60, "the run to finish", async || {
         let run = store.get_workflow_run(&run_id).ok()??;
-        (!["awaiting_approval", "running", "pending"].contains(&run.status.as_str())).then_some(run.status)
+        (!["awaiting_approval", "running", "pending", "interrupted"].contains(&run.status.as_str())).then_some(run.status)
     })
     .await;
     assert_eq!(status, "completed", "answered from {via}, the run resumes and completes");
