@@ -41,8 +41,13 @@ pub enum TurnEvent {
     /// The workspace notes or the employee's own setup changed: the
     /// replacement, whole.
     SessionContextChanged(String),
-    /// The installed employees changed; a line is the employee's description.
+    /// The installed employees changed; a line is the employee's job (its
+    /// description). With [`TurnEvent::TeamsListing`], the roster: who owns
+    /// which job (Claude Code's agent listing, `agent_listing_delta`).
     AgentsListing(LinedDelta),
+    /// The teams changed: hired, changed or restaffed. A line is what the
+    /// team owns, its lead and its members ([`team_line`]).
+    TeamsListing(LinedDelta),
     /// The date rolled over mid-session.
     DateChanged(chrono::NaiveDate),
     /// Team roster, @mention, room briefing.
@@ -167,6 +172,7 @@ pub const NAMES: &[&str] = &[
     "time",
     "phone_location",
     "agents_listing",
+    "teams_listing",
     "date_changed",
     "run_briefing",
     "restricted_run",
@@ -272,6 +278,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             );
         }
         TurnEvent::AgentsListing(d) => return d.attachment("agents_listing", &AGENT_WORDS),
+        TurnEvent::TeamsListing(d) => return d.attachment("teams_listing", &TEAM_WORDS),
         TurnEvent::DateChanged(date) => {
             return Some(Attachment {
                 kind: "date_changed",
@@ -624,6 +631,24 @@ const AGENT_WORDS: ListingWords = ListingWords {
     removed: "These employees are no longer on the team:",
 };
 
+const TEAM_WORDS: ListingWords = ListingWords {
+    available: "Teams, and the work each owns. A message to a team with send_message goes to its lead, who answers and hands steps to the members; write @Name to ask a member, @everyone to ask the whole team. A team with no lead takes only named asks:",
+    removed: "These teams no longer exist:",
+};
+
+/// One team's roster line: what it owns, its lead and its members, by name.
+pub fn team_line(mission: &str, lead: Option<&str>, members: &[String]) -> String {
+    let owns = match mission.trim() {
+        "" => "nothing stated yet",
+        m => m,
+    };
+    let lead = match lead {
+        Some(name) => format!("lead: {name}"),
+        None => "no lead set".to_string(),
+    };
+    format!("owns {owns}; {lead}; members: {}", members.join(", "))
+}
+
 const HELPER_WORDS: ListingWords = ListingWords {
     available: "These helper types are available to delegate:",
     removed: "These helper types are no longer available:",
@@ -923,6 +948,7 @@ mod tests {
             TurnEvent::SessionSnapshot(facts()),
             TurnEvent::ActivityChanged("## Task\nReconcile the ledger.".into()),
             TurnEvent::AgentsListing(lined.clone()),
+            TurnEvent::TeamsListing(lined.clone()),
             TurnEvent::StreamCut,
             TurnEvent::EmptyReply,
             TurnEvent::DateChanged(chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap()),

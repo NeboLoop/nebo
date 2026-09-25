@@ -1239,6 +1239,22 @@ async fn step_events(
     if let Some(delta) = events::LinedDelta::between(&events::announced("agents_listing", conversation), &team) {
         st.reminders.add(&TurnEvent::AgentsListing(delta));
     }
+    let teams: events::Listing = h
+        .store
+        .list_teams()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| {
+            let roster = tools::team::member_roster(&h.store, &t);
+            let lead = tools::team::lead_of(&t).and_then(|id| roster.iter().find(|(m, _)| *m == id).map(|(_, name)| name.as_str()));
+            let members: Vec<String> = roster.iter().map(|(_, name)| name.clone()).collect();
+            let line = events::team_line(&t.mission, lead, &members);
+            (t.name, line)
+        })
+        .collect();
+    if let Some(delta) = events::LinedDelta::between(&events::announced("teams_listing", conversation), &teams) {
+        st.reminders.add(&TurnEvent::TeamsListing(delta));
+    }
     st.recall.land(&mut st.reminders, &mut st.surfaced_memories, &h.store);
 
     if let Some(delta) = listing {
@@ -2837,6 +2853,56 @@ mod tests {
         let rows = stored(&h);
         assert_eq!(rows.iter().filter(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)).count(), 1);
         assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
+    }
+
+    /// The text of the latest stored attachment row of `kind`.
+    fn latest_row(h: &Harness, kind: &str) -> Option<String> {
+        stored(h).into_iter().rev().find(|m| reminders::attachment_kind(m).as_deref() == Some(kind)).map(|m| m.content)
+    }
+
+    /// B10: the employee the owner talks to sees who owns which job — each
+    /// employee's name and job, and each team's name, what it owns, its
+    /// lead and its members — as roster rows (Claude Code's agent listing),
+    /// never in the system prompt. A restaffed team is told again as a
+    /// delta: only what changed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_roster_names_who_owns_which_job_and_follows_restaffing() {
+        let model = Scripted::new(vec![Step::Say("Hi."), Step::Say("Noted."), Step::Say("Still here.")]);
+        let h = harness(&model).await;
+        for (id, name, job) in [
+            ("bk", "Bookkeeper", "Keeps the books and reports the budget."),
+            ("ava", "Ava", "Plans the marketing calendar."),
+            ("bo", "Bo", "Writes the ads."),
+        ] {
+            h.store.create_agent(id, None, name, job, "", "", None, None).unwrap();
+        }
+        h.store
+            .create_team("t-mkt", "Marketing", "every campaign we run", &[db::TeamMember::local("ava"), db::TeamMember::local("bo")], "ava", None)
+            .unwrap();
+        h.store
+            .create_team("t-ops", "Ops", "", &[db::TeamMember::local("bk"), db::TeamMember::local("bo")], "", None)
+            .unwrap();
+
+        run_turn(&h, owner("Who handles what?")).await;
+        let agents = latest_row(&h, "agents_listing").expect("the employees are listed");
+        assert!(agents.contains("- Bookkeeper: Keeps the books and reports the budget."), "{agents}");
+        let teams = latest_row(&h, "teams_listing").expect("the teams are listed");
+        assert!(teams.contains("- Marketing: owns every campaign we run; lead: Ava; members: Ava, Bo"), "{teams}");
+        assert!(teams.contains("- Ops: owns nothing stated yet; no lead set; members: Bookkeeper, Bo"), "{teams}");
+        assert!(model.calls()[0].system == crate::harness::prompt::system_prompt(), "never in the system prompt");
+
+        run_turn(&h, owner("Thanks")).await;
+        assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "teams_listing").count(), 1, "unchanged: not told again");
+
+        // Restaffed: Bo leads Marketing now.
+        h.store
+            .update_team("t-mkt", "Marketing", "every campaign we run", &[db::TeamMember::local("ava"), db::TeamMember::local("bo")], "bo")
+            .unwrap();
+        run_turn(&h, owner("Bo leads marketing now")).await;
+        assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "teams_listing").count(), 2);
+        let delta = latest_row(&h, "teams_listing").unwrap();
+        assert!(delta.contains("- Marketing: owns every campaign we run; lead: Bo; members: Ava, Bo"), "{delta}");
+        assert!(!delta.contains("Ops"), "only what changed: {delta}");
     }
 
     /// B12: the one permit pool serves the owner's turn before any work

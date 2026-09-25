@@ -291,6 +291,14 @@ pub fn member_roster(store: &Store, team: &Team) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The team's lead: the member on record as organizer, when it is still on
+/// the team. The ONE lead rule — a post that names nobody goes to it, a call
+/// opened from the team thread speaks with it, and the roster names it.
+pub fn lead_of(team: &Team) -> Option<&str> {
+    let lead = team.organizer_agent_id.as_str();
+    (!lead.is_empty() && team.members.iter().any(|m| m.agent_id == lead)).then_some(lead)
+}
+
 /// Every member's addressable id, in team order. A local member is addressed
 /// by its local agent id and a remote one by its hub agent id — the same id a
 /// mention token carries in each case, which is why one list serves both.
