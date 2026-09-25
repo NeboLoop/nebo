@@ -307,11 +307,9 @@ pub trait DynTool: Send + Sync {
     fn mcp_proxy_info(&self) -> Option<(String, String)> {
         None
     }
-    /// Execution budget for THIS call, when it legitimately exceeds the
-    /// runner's default tool timeout (e.g. deep research runs for many
-    /// minutes by design). `None` = use the runner default. Observed live:
-    /// the 300s default killed every standard/deep research mid-flight and
-    /// the model spiraled into retries.
+    /// This call's working-time limit, parked time not counted. `None`: the
+    /// call runs until it finishes or the turn is stopped; the loop has no
+    /// blanket tool budget of its own.
     fn execution_timeout(&self, _input: &serde_json::Value) -> Option<std::time::Duration> {
         None
     }
@@ -320,6 +318,13 @@ pub trait DynTool: Send + Sync {
         ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>>;
+}
+
+/// Why a call can't run as written.
+enum Invalid {
+    Unparsed(String),
+    Schema { input: serde_json::Value, issues: Vec<String> },
+    Tool(String),
 }
 
 /// Registry manages available tools.
@@ -718,10 +723,46 @@ impl Registry {
 
     /// Whether this call may run alongside the other concurrency-safe calls
     /// of its response. `false` for an unknown tool.
+    /// Whether the call may run alongside other concurrency-safe calls of
+    /// its response: the tool says so for the call as it will run, and the
+    /// call is valid. An unknown tool or invalid input is not safe.
     pub async fn concurrency_safe(&self, tool_name: &str, input: &serde_json::Value) -> bool {
-        self.get(tool_name)
-            .await
-            .is_some_and(|tool| tool.concurrency_safe(input))
+        let Some(tool) = self.get(tool_name).await else {
+            return false;
+        };
+        match self.settle(tool.as_ref(), tool_name, input.clone()).await {
+            Ok(input) => tool.concurrency_safe(&input),
+            Err(_) => false,
+        }
+    }
+
+    /// The call as it will run, or why it can't: arguments that never
+    /// parsed, input the schema refuses, or the tool's own check. Stringified
+    /// values are repaired against the schema and the tool settles the call's
+    /// shape first, so every check (and the tool) sees the call that runs.
+    async fn settle(&self, tool: &dyn DynTool, name: &str, mut input: serde_json::Value) -> Result<serde_json::Value, Invalid> {
+        // Arguments that never parsed arrive as `{"_raw": "..."}` (the
+        // provider's salvage of a cut or malformed stream).
+        if let Some(raw) = unparsed_arguments(&input) {
+            return Err(Invalid::Unparsed(raw.to_string()));
+        }
+        if let Some(def) = self.definition(name).await {
+            crate::mcp_tool::coerce_schema_types(&mut input, &def.input_schema);
+        }
+        let input = tool.normalize_input(input);
+        let validator = if tool.validates_input() {
+            self.validators.read().await.get(name).cloned()
+        } else {
+            None
+        };
+        if let Some(validator) = validator {
+            let issues = crate::input_schema::issues(&validator, &input);
+            if !issues.is_empty() {
+                return Err(Invalid::Schema { input, issues });
+            }
+        }
+        tool.validate_input(&input).map_err(Invalid::Tool)?;
+        Ok(input)
     }
 
     /// Whether this call changes nothing outside this process. `false` for
@@ -794,7 +835,7 @@ impl Registry {
         } else {
             None
         };
-        let (name, mut input) = if let Some((strap_name, params)) = alias {
+        let (name, input) = if let Some((strap_name, params)) = alias {
             let mut merged = input;
             if let Some(obj) = merged.as_object_mut() {
                 for (k, v) in params {
@@ -813,35 +854,14 @@ impl Registry {
             return ToolResult::error(crate::result_shape::unknown_tool(name));
         };
 
-        // Arguments that never parsed arrive as `{"_raw": "..."}` (the
-        // provider's salvage of a cut or malformed stream).
-        if let Some(raw) = unparsed_arguments(&input) {
-            return ToolResult::error(bad_json_error(name, raw));
-        }
-
-        // Repair model-stringified values against the tool's own schema
-        // (`tasks: "[{...}]"`, `limit: "5"`), then settle the call's shape
-        // BEFORE anything reads it: every check below, and the tool itself,
-        // sees the call that executes, whichever shape the model wrote.
-        if let Some(def) = self.definition(name).await {
-            crate::mcp_tool::coerce_schema_types(&mut input, &def.input_schema);
-        }
-        input = tool.normalize_input(input);
-
-        let validator = if tool.validates_input() {
-            self.validators.read().await.get(name).cloned()
-        } else {
-            None
-        };
-        if let Some(validator) = validator {
-            let issues = crate::input_schema::issues(&validator, &input);
-            if !issues.is_empty() {
+        let input = match self.settle(tool.as_ref(), name, input).await {
+            Ok(input) => input,
+            Err(Invalid::Unparsed(raw)) => return ToolResult::error(bad_json_error(name, &raw)),
+            Err(Invalid::Schema { input, issues }) => {
                 return ToolResult::error(self.validation_error(ctx, tool.as_ref(), &input, issues).await);
             }
-        }
-        if let Err(message) = tool.validate_input(&input) {
-            return ToolResult::error(crate::result_shape::tool_use_error(&message));
-        }
+            Err(Invalid::Tool(message)) => return ToolResult::error(crate::result_shape::tool_use_error(&message)),
+        };
 
         // The permission check: hard limits, the ceiling, the rules and the
         // mode, decided on the call as it will run.
@@ -1908,6 +1928,40 @@ mod tests {
         let out = r.execute(&ctx, "echo_text", serde_json::json!({})).await;
         assert!(out.content.contains("The required parameter `text` is missing"), "{}", out.content);
         assert!(out.content.contains("A minimal valid call: {\"text\": <string>}"), "{}", out.content);
+    }
+
+    /// Invalid input is never concurrency-safe: a call that won't run as
+    /// written doesn't join a parallel batch.
+    #[tokio::test]
+    async fn invalid_input_is_not_concurrency_safe() {
+        struct Reader;
+        impl DynTool for Reader {
+            fn name(&self) -> &str {
+                "reader"
+            }
+            fn description(&self) -> String {
+                String::new()
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]})
+            }
+            fn read_only(&self, _input: &serde_json::Value) -> bool {
+                true
+            }
+            fn execute_dyn<'a>(
+                &'a self,
+                _ctx: &'a ToolContext,
+                _input: serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+                Box::pin(async { ToolResult::ok("read") })
+            }
+        }
+        let registry = Registry::new(crate::gate::test_gate());
+        registry.register(Box::new(Reader)).await;
+        assert!(registry.concurrency_safe("reader", &serde_json::json!({"path": "/a"})).await);
+        assert!(!registry.concurrency_safe("reader", &serde_json::json!({})).await, "missing a required field");
+        assert!(!registry.concurrency_safe("reader", &serde_json::json!({"_raw": "{\"pa"})).await, "never parsed");
+        assert!(!registry.concurrency_safe("nope", &serde_json::json!({})).await, "unknown tool");
     }
 
     #[tokio::test]
