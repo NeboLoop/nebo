@@ -54,9 +54,7 @@ pub async fn write_recap(
     broadcast: Option<crate::agent_worker::NotifyFn>,
     req: RecapRequest,
 ) -> Option<String> {
-    let _permit = concurrency.acquire_background_permit().await;
-
-    let text = call_for_recap(&req).await?;
+    let text = call_for_recap(&req, concurrency.background(req.provider.clone())).await?;
     let capped = cap_chars(&text, RECAP_CHAR_CAP);
 
     if let Err(e) = store.write_chat_recap(&req.chat_id, &req.turn_id, &capped) {
@@ -86,7 +84,7 @@ pub async fn write_recap(
 /// instruction appended, so the model and provider agree on the cached
 /// prefix (§2.7, "reusing the turn's prompt cache"). One step; the reply's
 /// text is the recap, nothing else reads or retries it.
-async fn call_for_recap(req: &RecapRequest) -> Option<String> {
+async fn call_for_recap(req: &RecapRequest, provider: Arc<dyn Provider>) -> Option<String> {
     let mut messages = req.fork_of.messages.clone();
     messages.push(Message {
         role: "user".to_string(),
@@ -102,7 +100,7 @@ async fn call_for_recap(req: &RecapRequest) -> Option<String> {
         ..req.fork_of.clone()
     };
 
-    let mut rx = match req.provider.stream(&chat_req).await {
+    let mut rx = match provider.stream(&chat_req).await {
         Ok(rx) => rx,
         Err(e) => {
             tracing::warn!(error = %e, "recap provider call failed");
@@ -317,6 +315,29 @@ mod tests {
         for m in &sent_req.messages {
             assert!(!m.content.contains("Working the client list"));
         }
+    }
+
+    /// A recap is housekeeping: it waits for a background permit and never
+    /// takes one of the pool the owner's turns use.
+    #[tokio::test]
+    async fn a_recap_waits_for_a_background_permit() {
+        let (_dir, s) = store();
+        let concurrency = Arc::new(ConcurrencyController::new(Some(4)));
+        concurrency.set_ceiling(4);
+        assert_eq!(concurrency.background_permits(), 1);
+        let held = concurrency.acquire_background_permit().await;
+        let provider = Arc::new(ScriptedProvider::new("Working the list; next, the totals."));
+        let recap = tokio::spawn(write_recap(Arc::new(s), concurrency.clone(), None, req(provider.clone())));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(provider.sent.lock().unwrap().is_empty(), "no call while housekeeping's permit is taken");
+        let owner = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            concurrency.acquire_llm_permit(crate::concurrency::Priority::Owner),
+        )
+        .await;
+        assert!(owner.is_ok(), "the owner's pool is untouched by the waiting recap");
+        drop(held);
+        assert!(recap.await.unwrap().is_some(), "the recap runs once a background permit is free");
     }
 
     #[test]

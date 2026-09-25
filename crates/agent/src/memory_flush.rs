@@ -207,7 +207,9 @@ async fn run_flush_inner(
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     provenance: &[types::provenance::ProvenanceClass],
 ) {
-    let messages = match store.get_chat_messages(session_id) {
+    // The conversation the checkpoint is about to summarise: the session's
+    // active chat from its last boundary on.
+    let messages = match store.get_chat_messages_since_checkpoint(&store.resolve_session_chat_id(session_id)) {
         Ok(msgs) => msgs,
         Err(e) => {
             warn!(error = %e, "memory flush: failed to load messages");

@@ -159,6 +159,8 @@ pub(crate) struct ModelCall<'a> {
     pub providers: &'a RwLock<Vec<Arc<dyn Provider>>>,
     pub selector: &'a ModelSelector,
     pub concurrency: &'a ConcurrencyController,
+    /// Whose call this is: the owner's turn is served before queued work.
+    pub priority: crate::concurrency::Priority,
     pub sessions: &'a SessionManager,
     pub cancel: &'a CancellationToken,
     pub tx: &'a mpsc::Sender<StreamEvent>,
@@ -231,6 +233,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         providers,
         selector,
         concurrency,
+        priority,
         sessions,
         cancel: cancel_token,
         tx,
@@ -252,7 +255,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             info!(session_id, "run cancelled waiting for LLM permit");
             return CallOutcome::Cancelled;
         }
-        permit = concurrency.acquire_llm_permit() => permit,
+        permit = concurrency.acquire_llm_permit(priority) => permit,
     };
     // A 429 on this call reports the round its permit was granted in, so
     // one wave of rejections halves the pool once.

@@ -975,6 +975,11 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 providers: &h.providers,
                 selector: &h.selector,
                 concurrency: &h.concurrency,
+                priority: if owner_in_turn(&cx.request) {
+                    crate::concurrency::Priority::Owner
+                } else {
+                    crate::concurrency::Priority::Work
+                },
                 sessions,
                 cancel: &cx.request.cancel,
                 tx: &cx.tx,
@@ -1405,7 +1410,8 @@ async fn checkpoint(
     let mut hooks: Vec<Box<dyn compact::checkpoint::PreCheckpointHook>> = Vec::new();
     if !cx.seat.memory.writes_disabled {
         hooks.push(Box::new(compact::checkpoint::MemoryFlush {
-            provider: provider.clone(),
+            // Housekeeping: the background pool, like every memory write.
+            provider: h.concurrency.background(provider.clone()),
             store: h.store.clone(),
             user_id: cx.seat.memory.user_id.clone(),
             topics: cx.seat.memory_topics.clone(),
@@ -2831,6 +2837,73 @@ mod tests {
         let rows = stored(&h);
         assert_eq!(rows.iter().filter(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)).count(), 1);
         assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
+    }
+
+    /// B12: the one permit pool serves the owner's turn before any work
+    /// waiting for a permit. Both permits are out; a helper's call queues
+    /// first, then the owner's. The first permit back goes to the owner's
+    /// turn, which answers before the helper's call is made.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn work_waiting_for_a_permit_never_holds_the_owners_turn() {
+        use crate::concurrency::Priority;
+        let model = Scripted::new(vec![Step::Say("Owner answered."), Step::Say("Helper done.")]);
+        let h = harness(&model).await;
+        h.concurrency.set_ceiling(2);
+        let mut busy = vec![
+            h.concurrency.acquire_llm_permit(Priority::Work).await,
+            h.concurrency.acquire_llm_permit(Priority::Work).await,
+        ];
+        let mut helper = owner("Count the till");
+        helper.session_key = format!("subagent:{KEY}:h-1");
+        helper.mode = TurnMode::Helper {
+            parent_session_key: KEY.into(),
+            kind: crate::harness::delegation::HelperKind::General,
+            depth: 1,
+        };
+        let mut helper_events = h.start_turn(helper).await.expect("helper starts").events;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let owner_turn = tokio::spawn({
+            let h = h.clone();
+            async move { run_turn(&h, owner("What time do we open?")).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(model.calls().is_empty(), "both calls wait for a permit");
+
+        drop(busy.pop());
+        let events = tokio::time::timeout(std::time::Duration::from_secs(10), owner_turn)
+            .await
+            .expect("the owner's turn finishes while the helper still waits")
+            .unwrap();
+        assert_eq!(exit_of(&events), "text_response");
+        assert!(stored(&h).iter().any(|m| m.role == "assistant" && m.content == "Owner answered."), "the owner's call went first");
+        drop(busy);
+        while helper_events.recv().await.is_some() {}
+        assert_eq!(model.calls().len(), 2, "the helper's call is made once the owner's is served");
+    }
+
+    /// B12: the memory flush before a checkpoint is housekeeping: it waits
+    /// for a background permit, never the pool the owner's turns use.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_checkpoint_memory_flush_waits_for_a_background_permit() {
+        let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Carried on.")]);
+        let h = harness(&model).await;
+        h.concurrency.set_ceiling(4);
+        assert_eq!(h.concurrency.background_permits(), 1);
+        run_turn(&h, owner("The Zanzibar invoice is due on the ninth.")).await;
+        let held = h.concurrency.acquire_background_permit().await;
+        let turn = tokio::spawn({
+            let h = h.clone();
+            async move { run_turn(&h, owner("Keep going")).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !model.side.lock().unwrap().iter().any(|r| r.trace.purpose == "memory_flush"),
+            "no flush while housekeeping's only permit is taken"
+        );
+        drop(held);
+        let events = tokio::time::timeout(std::time::Duration::from_secs(10), turn).await.expect("the turn goes on").unwrap();
+        assert_eq!(exit_of(&events), "text_response");
+        assert!(model.side_call("memory_flush").await.is_some(), "the flush ran once a background permit was free");
     }
 
     /// The same vector for every text: a search through it finds whatever

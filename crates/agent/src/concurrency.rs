@@ -1,8 +1,9 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ai::{ChatRequest, EventReceiver, Provider, ProviderError, StreamEventType};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tracing::{debug, info, warn};
 
 /// Hard upper bound for the adaptive ceiling when no explicit limit is configured.
@@ -64,37 +65,68 @@ struct Bounds {
     round: u64,
 }
 
-/// A pool's books. Every change goes through `Pool::resize`.
+/// Whose call is waiting for a permit. The owner's own turn is answered
+/// before any queued work: a helper, a coworker or a workflow waiting for a
+/// permit never stands in front of the owner's reply. Permits held by calls
+/// already streaming are never taken back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Priority {
+    /// A turn the owner is in (`harness::turn::owner_in_turn`).
+    Owner,
+    /// Everything else: helpers, coworkers, workflows, scheduled runs.
+    Work,
+}
+
+/// A pool's books. Every change goes through the pool's lock.
 struct Books {
-    /// Permits that exist: free in the semaphore plus checked out.
+    /// Permits that exist: free plus checked out.
     capacity: usize,
     /// Checked-out permits to retire when they come back instead of freeing
     /// them — the part of a cut larger than the free permits at that moment.
     debt: usize,
+    /// Permits nobody holds. Never above zero while anyone waits: a
+    /// returned or added permit goes to the next waiter first.
+    free: usize,
+    /// Calls waiting, the owner's first, each in arrival order.
+    owner: VecDeque<oneshot::Sender<LlmPermit>>,
+    work: VecDeque<oneshot::Sender<LlmPermit>>,
 }
 
 /// A permit pool that can shrink while every permit is busy.
 struct Pool {
-    semaphore: Arc<Semaphore>,
     books: Arc<Mutex<Books>>,
 }
 
 impl Pool {
     fn new(permits: usize) -> Self {
         Self {
-            semaphore: Arc::new(Semaphore::new(permits)),
-            books: Arc::new(Mutex::new(Books { capacity: permits, debt: 0 })),
+            books: Arc::new(Mutex::new(Books {
+                capacity: permits,
+                debt: 0,
+                free: permits,
+                owner: VecDeque::new(),
+                work: VecDeque::new(),
+            })),
         }
     }
 
-    async fn acquire(&self, round: u64) -> LlmPermit {
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("permit pool closed");
-        LlmPermit { permit: Some(permit), books: self.books.clone(), round }
+    async fn acquire(&self, round: u64, priority: Priority) -> LlmPermit {
+        let waiting = {
+            let mut books = self.books.lock().unwrap();
+            if books.free > 0 {
+                books.free -= 1;
+                return LlmPermit { books: Some(self.books.clone()), round };
+            }
+            let (tx, rx) = oneshot::channel();
+            match priority {
+                Priority::Owner => books.owner.push_back(tx),
+                Priority::Work => books.work.push_back(tx),
+            }
+            rx
+        };
+        let mut permit = waiting.await.expect("permit pool closed");
+        permit.round = round;
+        permit
     }
 
     /// Bring the pool to `target`. Growing pays down owed retirements before
@@ -104,25 +136,20 @@ impl Pool {
         let mut books = self.books.lock().unwrap();
         let effective = books.capacity - books.debt;
         if target < effective {
-            let mut cut = effective - target;
-            while cut > 0 {
-                match self.semaphore.clone().try_acquire_owned() {
-                    Ok(free) => {
-                        free.forget();
-                        books.capacity -= 1;
-                        cut -= 1;
-                    }
-                    Err(_) => break,
-                }
-            }
-            books.debt += cut;
+            let cut = effective - target;
+            let now = cut.min(books.free);
+            books.free -= now;
+            books.capacity -= now;
+            books.debt += cut - now;
         } else if target > effective {
             let grow = target - effective;
             let forgiven = grow.min(books.debt);
             books.debt -= forgiven;
             let added = grow - forgiven;
-            self.semaphore.add_permits(added);
             books.capacity += added;
+            for _ in 0..added {
+                hand_on(&self.books, &mut books);
+            }
         }
         debug!(target, capacity = books.capacity, debt = books.debt, "permit pool resized");
     }
@@ -133,17 +160,38 @@ impl Pool {
         books.capacity - books.debt
     }
 
+    /// Permits nobody holds right now.
+    fn available(&self) -> usize {
+        self.books.lock().unwrap().free
+    }
+
     /// Permits checked out right now.
     fn in_flight(&self) -> usize {
-        self.effective().saturating_sub(self.semaphore.available_permits())
+        self.effective().saturating_sub(self.available())
     }
 }
 
-/// A checked-out LLM permit. Dropping it frees the slot, or retires it when
-/// the pool owes a cut.
+/// A permit that is not held goes to the next waiter, the owner's first; a
+/// waiter that gave up is skipped. With nobody waiting it is free.
+fn hand_on(pool: &Arc<Mutex<Books>>, books: &mut Books) {
+    loop {
+        let Some(waiter) = books.owner.pop_front().or_else(|| books.work.pop_front()) else {
+            books.free += 1;
+            return;
+        };
+        if let Err(mut unsent) = waiter.send(LlmPermit { books: Some(pool.clone()), round: 0 }) {
+            // Nobody is there to hold it: it never left the pool.
+            unsent.books = None;
+        } else {
+            return;
+        }
+    }
+}
+
+/// A checked-out LLM permit. Dropping it hands the slot to the next waiter,
+/// frees it, or retires it when the pool owes a cut.
 pub struct LlmPermit {
-    permit: Option<OwnedSemaphorePermit>,
-    books: Arc<Mutex<Books>>,
+    books: Option<Arc<Mutex<Books>>>,
     round: u64,
 }
 
@@ -157,13 +205,14 @@ impl LlmPermit {
 
 impl Drop for LlmPermit {
     fn drop(&mut self) {
-        let Some(permit) = self.permit.take() else { return };
-        let mut books = self.books.lock().unwrap();
+        let Some(pool) = self.books.take() else { return };
+        let mut books = pool.lock().unwrap();
         if books.debt > 0 {
             books.debt -= 1;
             books.capacity -= 1;
-            permit.forget();
+            return;
         }
+        hand_on(&pool, &mut books);
     }
 }
 
@@ -214,10 +263,11 @@ impl ConcurrencyController {
         self.max_ceiling
     }
 
-    /// Acquire a permit for an LLM call. Blocks when at capacity.
-    pub async fn acquire_llm_permit(&self) -> LlmPermit {
+    /// Acquire a permit for an LLM call. Waits when at capacity; the
+    /// owner's turn is served before queued work.
+    pub async fn acquire_llm_permit(&self, priority: Priority) -> LlmPermit {
         let round = self.bounds.lock().unwrap().round;
-        self.llm.acquire(round).await
+        self.llm.acquire(round, priority).await
     }
 
     /// Acquire a permit for background LLM work. A separate pool, a share of
@@ -226,7 +276,7 @@ impl ConcurrencyController {
     /// overload.
     pub async fn acquire_background_permit(&self) -> LlmPermit {
         let round = self.bounds.lock().unwrap().round;
-        self.background.acquire(round).await
+        self.background.acquire(round, Priority::Work).await
     }
 
     /// Acquire a permit for parallel tool execution within a turn.
@@ -438,7 +488,7 @@ mod tests {
     #[tokio::test]
     async fn test_acquire_llm_permit() {
         let ctrl = ConcurrencyController::new(None);
-        let permit = ctrl.acquire_llm_permit().await;
+        let permit = ctrl.acquire_llm_permit(Priority::Work).await;
         assert!(ctrl.effective_permits() >= 2);
         drop(permit);
     }
@@ -492,14 +542,14 @@ mod tests {
         ctrl.set_ceiling(8);
         let mut busy = Vec::new();
         for _ in 0..8 {
-            busy.push(ctrl.acquire_llm_permit().await);
+            busy.push(ctrl.acquire_llm_permit(Priority::Work).await);
         }
         let round = busy[0].round();
         ctrl.report_rate_limit(round);
         assert_eq!(ctrl.effective_permits(), 4, "halved to half of the 8 in flight");
         drop(busy);
         assert_eq!(
-            ctrl.llm.semaphore.available_permits(),
+            ctrl.llm.available(),
             4,
             "four returning permits were retired, four freed"
         );
@@ -513,7 +563,7 @@ mod tests {
         ctrl.set_ceiling(16);
         let mut wave = Vec::new();
         for _ in 0..16 {
-            wave.push(ctrl.acquire_llm_permit().await);
+            wave.push(ctrl.acquire_llm_permit(Priority::Work).await);
         }
         for p in &wave {
             ctrl.report_rate_limit(p.round());
@@ -521,7 +571,7 @@ mod tests {
         assert_eq!(ctrl.effective_permits(), 8, "one cut, not sixteen");
         drop(wave);
         // A call granted after the cut is a new round: it may cut again.
-        let next = ctrl.acquire_llm_permit().await;
+        let next = ctrl.acquire_llm_permit(Priority::Work).await;
         ctrl.report_rate_limit(next.round());
         assert_eq!(ctrl.effective_permits(), MIN_PERMITS, "half of the one call in flight, floored");
     }
@@ -534,7 +584,7 @@ mod tests {
         ctrl.set_ceiling(8);
         let mut busy = Vec::new();
         for _ in 0..8 {
-            busy.push(ctrl.acquire_llm_permit().await);
+            busy.push(ctrl.acquire_llm_permit(Priority::Work).await);
         }
         ctrl.report_rate_limit(busy[0].round());
         drop(busy);
@@ -543,7 +593,7 @@ mod tests {
             ctrl.report_success();
         }
         assert_eq!(ctrl.effective_permits(), 8, "back to the machine's bound, not past it");
-        assert_eq!(ctrl.llm.semaphore.available_permits(), 8);
+        assert_eq!(ctrl.llm.available(), 8);
     }
 
     /// The memory trim shrinks a busy pool the same way a 429 does.
@@ -553,12 +603,81 @@ mod tests {
         ctrl.set_ceiling(8);
         let mut busy = Vec::new();
         for _ in 0..8 {
-            busy.push(ctrl.acquire_llm_permit().await);
+            busy.push(ctrl.acquire_llm_permit(Priority::Work).await);
         }
         ctrl.set_ceiling(3);
         assert_eq!(ctrl.effective_permits(), 3);
         drop(busy);
-        assert_eq!(ctrl.llm.semaphore.available_permits(), 3);
+        assert_eq!(ctrl.llm.available(), 3);
+    }
+
+    /// A full pool with work queued: the owner's turn, arriving last, gets
+    /// the next permit that comes back. Queued work never stands in front
+    /// of the owner's reply; it still runs, in order, once the owner's call
+    /// is served.
+    #[tokio::test]
+    async fn the_owners_turn_is_served_before_queued_work() {
+        let ctrl = Arc::new(ConcurrencyController::new(Some(2)));
+        ctrl.set_ceiling(2);
+        let mut busy = vec![
+            ctrl.acquire_llm_permit(Priority::Work).await,
+            ctrl.acquire_llm_permit(Priority::Work).await,
+        ];
+        let (served_tx, mut served) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
+        let wait = |who: &'static str, priority: Priority| {
+            let (ctrl, served_tx) = (ctrl.clone(), served_tx.clone());
+            tokio::spawn(async move {
+                let permit = ctrl.acquire_llm_permit(priority).await;
+                let _ = served_tx.send(who);
+                permit
+            })
+        };
+        let helpers = [wait("helper-1", Priority::Work), wait("helper-2", Priority::Work), wait("coworker", Priority::Work)];
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        let owner = wait("owner", Priority::Owner);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        drop(busy.pop());
+        assert_eq!(served.recv().await, Some("owner"), "the first permit back goes to the owner's turn");
+        drop(owner.await.unwrap());
+        assert_eq!(served.recv().await, Some("helper-1"), "then queued work, in order");
+        drop(busy);
+        assert_eq!(served.recv().await, Some("helper-2"));
+        for h in helpers {
+            drop(h.await.unwrap());
+        }
+        assert_eq!(served.recv().await, Some("coworker"));
+        assert_eq!(ctrl.llm.available(), 2, "every permit came back");
+    }
+
+    /// A waiter that gives up (its turn was stopped) never swallows a
+    /// permit: the next one gets it.
+    #[tokio::test]
+    async fn a_waiter_that_gives_up_takes_no_permit() {
+        let ctrl = Arc::new(ConcurrencyController::new(Some(2)));
+        ctrl.set_ceiling(2);
+        let busy = vec![
+            ctrl.acquire_llm_permit(Priority::Work).await,
+            ctrl.acquire_llm_permit(Priority::Work).await,
+        ];
+        let gone = {
+            let ctrl = ctrl.clone();
+            tokio::spawn(async move { ctrl.acquire_llm_permit(Priority::Owner).await })
+        };
+        tokio::task::yield_now().await;
+        gone.abort();
+        let _ = gone.await;
+        let next = {
+            let ctrl = ctrl.clone();
+            tokio::spawn(async move { ctrl.acquire_llm_permit(Priority::Work).await })
+        };
+        tokio::task::yield_now().await;
+        drop(busy);
+        drop(tokio::time::timeout(Duration::from_secs(5), next).await.expect("the live waiter is served").unwrap());
+        assert_eq!(ctrl.llm.available(), 2);
     }
 
     /// Housekeeping is a share of the foreground pool and follows its cuts:
@@ -575,13 +694,13 @@ mod tests {
         }
         let mut busy = Vec::new();
         for _ in 0..16 {
-            busy.push(ctrl.acquire_llm_permit().await);
+            busy.push(ctrl.acquire_llm_permit(Priority::Work).await);
         }
         ctrl.report_rate_limit(busy[0].round());
         assert_eq!(ctrl.effective_permits(), 8);
         assert_eq!(ctrl.background_permits(), 2, "housekeeping halved with the foreground");
         drop(busy_bg);
-        assert_eq!(ctrl.background.semaphore.available_permits(), 2, "two returning permits retired");
+        assert_eq!(ctrl.background.available(), 2, "two returning permits retired");
         drop(busy);
         for _ in 0..8 {
             ctrl.report_success();
@@ -639,7 +758,7 @@ mod tests {
         // Eight foreground calls in flight so the halving has something to halve.
         let mut busy = Vec::new();
         for _ in 0..8 {
-            busy.push(ctrl.acquire_llm_permit().await);
+            busy.push(ctrl.acquire_llm_permit(Priority::Work).await);
         }
 
         assert!(prov.stream(&req).await.is_err(), "first call is refused at send time");
