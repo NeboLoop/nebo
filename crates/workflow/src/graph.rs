@@ -238,6 +238,9 @@ pub(crate) async fn execute_graph(
             Ok((run_id.to_string(), final_context))
         }
         Err(WorkflowError::Cancelled) => Err(WorkflowError::Cancelled),
+        // Parked on the owner's answer: the suspension already set the run
+        // awaiting_approval, and the answer resumes it. Not a failure.
+        Err(e @ WorkflowError::AwaitingApproval { .. }) => Err(e),
         // A standing outcome (an exit, a terminal refusal) ends the run
         // cleanly with its reason — never a failure.
         Err(e) if let Some(reason) = e.standing_outcome() => {
@@ -1505,6 +1508,14 @@ async fn run_llm_activity<'a>(
 
             record_output(ctx, scope, &activity.id, result_text);
             route(ctx, scope, &activity.id, |_| true).await
+        }
+        // Parked on the owner's answer: the step re-runs from its pending
+        // call when the answer resumes the run, so nothing is recorded yet.
+        Err(e @ WorkflowError::AwaitingApproval { .. }) => {
+            let mut st = ctx.state.lock().unwrap();
+            st.total_tokens += spent;
+            st.total_output_tokens += spent_output;
+            Err(e)
         }
         Err(e) if let Some(reason) = e.standing_outcome() => {
             {

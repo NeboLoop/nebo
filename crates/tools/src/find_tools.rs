@@ -92,7 +92,7 @@ impl DynTool for FindToolsTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
@@ -101,7 +101,9 @@ impl DynTool for FindToolsTool {
                 .get("max_results")
                 .and_then(|v| v.as_u64())
                 .map_or(DEFAULT_MAX_RESULTS, |n| n.max(1) as usize);
-            let catalog = self.registry.deferred_entries().await;
+            // A tool the seat walls off is not there to find.
+            let mut catalog = self.registry.deferred_entries().await;
+            catalog.retain(|e| !ctx.walled_tools.contains(&e.definition.name));
             ToolResult::ok(answer(&catalog, query, max_results))
         })
     }

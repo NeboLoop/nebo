@@ -195,6 +195,10 @@ pub struct ToolContext {
     /// teach the recovery for the run's actual situation — a room organizer is
     /// told to delegate, a phone run is told to take a message).
     pub whitelist_denial_hint: Option<String>,
+    /// Tools this run's seat walls off: company Memory for an isolated
+    /// employee with no matter. Refused by name at the one check, whether
+    /// or not the model saw them.
+    pub walled_tools: std::sync::Arc<std::collections::HashSet<String>>,
     /// Set when this run is the self-improvement review fork (or curator):
     /// save_skill and delete_skill target the LEARNED tree of this agent
     /// instead of user/skills/, and replacing or deleting a skill requires it

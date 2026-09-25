@@ -824,6 +824,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         st.seen = conversation.clone();
 
         let declared_names: Arc<HashSet<String>> = Arc::new(request.tools.iter().map(|t| t.name.clone()).collect());
+        let walled_names = Arc::new(surface.walled);
         let memory_user_id = cx.seat.memory.user_id.clone();
         let tool_scope = RunToolScope {
             sessions,
@@ -851,6 +852,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             tool_allowlist: cx.request.seat.tool_allowlist.as_ref(),
             tool_denial_hint: &cx.request.seat.tool_denial_hint,
             declared_tools: &declared_names,
+            walled_tools: &walled_names,
         };
         let issue_credential = h.tool_credentials.as_ref().map(|credentials| {
             let tool_scope = &tool_scope;
@@ -2534,6 +2536,96 @@ mod tests {
         req.seat.agent_id = agent_id.into();
         req.session_key = key.into();
         req
+    }
+
+    /// A company Memory search, proxied to the Memory integration; counts
+    /// the calls that reached it.
+    struct CompanyMemory {
+        integration: String,
+        ran: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl tools::registry::DynTool for CompanyMemory {
+        fn name(&self) -> &str {
+            "mcp__nebo_kb__memory_search"
+        }
+        fn description(&self) -> String {
+            "Searches company memory".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"query": {"type": "string"}}})
+        }
+        fn should_defer(&self) -> bool {
+            true
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn mcp_proxy_info(&self) -> Option<(String, String)> {
+            Some((self.integration.clone(), "memory_search".into()))
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                self.ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tools::ToolResult::ok("Matter 12: settlement is $40,000.")
+            })
+        }
+    }
+
+    /// The ethical wall: an isolated employee's run with no matter can't
+    /// reach company Memory. The tool is never listed or declared, find_tools
+    /// doesn't find it, and a call by its name is refused at the check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sealed_seat_cannot_reach_company_memory_by_name() {
+        const KB: &str = "mcp__nebo_kb__memory_search";
+        let model = Scripted::new(vec![
+            Step::Call("find_tools", serde_json::json!({"query": format!("select:{KB}")})),
+            Step::Call(KB, serde_json::json!({"query": "settlement"})),
+            Step::Say("I can't see company memory here."),
+        ]);
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = harness(&model).await;
+        let memory = h
+            .store
+            .create_mcp_integration("kb-1", "Company Memory", "remote", Some(&config::memory_url()), "none", None, None)
+            .expect("the Memory integration");
+        h.tools.register(Box::new(CompanyMemory { integration: memory.id, ran: ran.clone() })).await;
+        let isolated: napp::agent::AgentConfig =
+            serde_json::from_value(serde_json::json!({"memory": {"context_isolated": true}})).unwrap();
+        h.agent_registry.write().await.insert("iso".into(), employee("iso", "Iso", "Discreet.", Some(isolated)));
+
+        // A helper of the isolated employee whose parent's scope carried no
+        // matter: sealed.
+        let key = "subagent:agent:iso:web:h-1";
+        let mut req = seat_of(owner("Find the settlement figure"), "iso", key);
+        req.mode = TurnMode::Helper {
+            parent_session_key: "agent:iso:web".into(),
+            kind: crate::harness::delegation::HelperKind::General,
+            depth: 1,
+        };
+        let mut handle = h.start_turn(req).await.expect("start");
+        while handle.events.recv().await.is_some() {}
+
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0, "company Memory never ran");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3);
+        for call in &calls {
+            assert!(!call.tools.iter().any(|t| t.name == KB), "never declared");
+            let reminders: Vec<&String> =
+                call.messages.iter().map(|m| &m.content).filter(|c| c.starts_with("<system-reminder>")).collect();
+            assert!(!reminders.iter().any(|c| c.contains(KB)), "never listed: {reminders:?}");
+        }
+        let results: Vec<String> = calls[2]
+            .messages
+            .iter()
+            .filter_map(|m| m.tool_results.as_ref().map(|r| r.to_string()))
+            .collect();
+        assert!(results[0].contains("No deferred tool matches") || results[0].contains("Not found"), "find_tools doesn't find it: {}", results[0]);
+        assert!(results[1].contains("company Memory"), "a call by name is refused: {}", results[1]);
     }
 
     /// The cached prefix is the same for every turn on every bot: two

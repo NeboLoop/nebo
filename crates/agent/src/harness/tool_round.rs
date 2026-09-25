@@ -58,6 +58,8 @@ pub(crate) struct RunToolScope<'a> {
     pub tool_denial_hint: &'a Option<String>,
     /// The tools whose definitions this step's request carried.
     pub declared_tools: &'a Arc<HashSet<String>>,
+    /// The tools the seat walls off (`tool_surface::Surface::walled`).
+    pub walled_tools: &'a Arc<HashSet<String>>,
 }
 
 impl RunToolScope<'_> {
@@ -89,6 +91,7 @@ impl RunToolScope<'_> {
             tool_allowlist,
             tool_denial_hint,
             declared_tools,
+            walled_tools,
         } = *self;
         let resolved_key = sessions
             .resolve_session_key(session_id)
@@ -143,6 +146,7 @@ impl RunToolScope<'_> {
                 .map(|r| r.skills_read.clone())
                 .unwrap_or_default(),
             declared_tools: Some(declared_tools.clone()),
+            walled_tools: walled_tools.clone(),
             tool_call_id: String::new(),
         }
     }
