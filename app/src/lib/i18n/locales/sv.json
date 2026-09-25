@@ -237,7 +237,6 @@
 		"working": "Arbetar"
 	},
 	"chat": {
-		"contextStats": "Kontext denna omgång: {files} filer lästes om {times} gånger, {passes} komprimeringar.",
 		"goalLine": "Mål: {condition} ({turns} omgångar)",
 		"goalLastCheck": "senaste kontroll: {reason}",
 		"goalPaused": "Pausad. Ditt nästa meddelande återupptar den.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Peka på en mapp som innehåller ditt appmanifest",
 		"sideloadPoint2": "Nebo upptäcker och laddar appen i utvecklingsläge",
 		"sideloadPoint3": "Ändringar i din app laddas om automatiskt",
-		"sideloadPoint4": "Sidladdade appar körs i en sandlådemiljö",
-		"guardrails": "Loop-skyddsräcken",
-		"guardrailsDesc": "Gränser som stoppar en medarbetare som upprepar samma åtgärd utan att komma vidare. Standardvärdena är säkra — ändra bara om du vet vad du justerar.",
-		"sameActionLimit": "Spiralgräns",
-		"sameActionLimitDesc": "Improduktiva upprepningar av en verktygsåtgärd per omgång innan modellen styrs bort från den",
-		"identicalArgsBlockAfter": "Blockering vid identiskt anrop",
-		"identicalArgsBlockAfterDesc": "Improduktiva upprepningar av exakt samma anrop (samma verktyg, samma argument) innan det blockeras",
-		"hardStop": "Hårt stopp vid spiral",
-		"hardStopDesc": "Avsluta omgången när spiralgränsen slår till, i stället för att knuffa modellen mot ett annat angreppssätt",
-		"guardrailsSaved": "Skyddsräcken sparade",
-		"guardrailsSaveFailed": "Skyddsräckena kunde inte sparas",
-		"resetDefaults": "Återställ till standard",
-		"save": "Spara"
+		"sideloadPoint4": "Sidladdade appar körs i en sandlådemiljö"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

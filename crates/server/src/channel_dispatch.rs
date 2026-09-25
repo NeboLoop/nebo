@@ -137,8 +137,8 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
 /// internal status/progress notifications.
 ///
 /// Reply accumulation is gated by [`crate::chat_dispatch::reply_fragment`]:
-/// only `Text` events contribute. `ControlNotice` (spiral backstop, circuit
-/// breaker, terminal tool error) is run-control status and is ignored by type
+/// only `Text` events contribute. `ControlNotice` (step or spending limit,
+/// terminal tool error) is run-control status and is ignored by type
 /// — it must never land in a customer channel as prose.
 ///
 /// `owner`: when the run happens on the LOCAL machine for the local owner
@@ -247,8 +247,8 @@ mod tests {
             .await
             .unwrap();
         tx.send(ai::StreamEvent::control_notice(
-            "Stopped: 'web(search)' was called 8 times this turn without progress.",
-            "repeated_tool_calls",
+            "Stopped after 100 steps, the most one turn takes.",
+            "max_steps",
         ))
         .await
         .unwrap();

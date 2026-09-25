@@ -458,13 +458,6 @@ impl ActivityLoop for WorkflowTurns {
                     need,
                 ));
             }
-            super::turn::LOOPING => {
-                return Err(WorkflowError::RunawayLoop(if notice.is_empty() {
-                    format!("runaway loop in activity '{}'", turn.activity.id)
-                } else {
-                    notice
-                }));
-            }
             super::delegation::collect::STOP_SPEND_CAP => {
                 // Money in cents for the owner's words; the loop compares microcents.
                 return Err(WorkflowError::SpendCapReached {

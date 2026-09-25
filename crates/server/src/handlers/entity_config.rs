@@ -99,7 +99,6 @@ fn load_globals(
             developer_mode: 0,
             auto_update: 1,
             full_access: 0,
-            guardrails: serde_json::json!({}),
             updated_at: 0,
         });
 

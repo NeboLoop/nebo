@@ -237,7 +237,6 @@
 		"working": "Werkt"
 	},
 	"chat": {
-		"contextStats": "Context deze beurt: {files} bestanden zijn {times} keer opnieuw gelezen, {passes} compactieslagen.",
 		"goalLine": "Doel: {condition} ({turns} beurten)",
 		"goalLastCheck": "laatste controle: {reason}",
 		"goalPaused": "Gepauzeerd. Je volgende bericht hervat het.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Wijs naar een map met je app-manifest",
 		"sideloadPoint2": "Nebo ontdekt en laadt de app in ontwikkelmodus",
 		"sideloadPoint3": "Wijzigingen aan je app worden automatisch hot-reloaded",
-		"sideloadPoint4": "Gesideloade apps draaien in een sandbox-omgeving",
-		"guardrails": "Loop-beveiligingen",
-		"guardrailsDesc": "Drempels die een medewerker stoppen wanneer die dezelfde actie herhaalt zonder vooruitgang. De standaardwaarden zijn veilig — verander ze alleen als je weet waar je aan draait.",
-		"sameActionLimit": "Spiraallimiet",
-		"sameActionLimitDesc": "Onproductieve herhalingen van één gereedschapsactie per beurt voordat het model ervan weg wordt geduwd",
-		"identicalArgsBlockAfter": "Blokkade bij identieke aanroep",
-		"identicalArgsBlockAfterDesc": "Onproductieve herhalingen van precies dezelfde aanroep (zelfde gereedschap, zelfde argumenten) voordat die wordt geblokkeerd",
-		"hardStop": "Harde stop bij spiraal",
-		"hardStopDesc": "De beurt beëindigen zodra de spiraallimiet aanslaat, in plaats van het model naar een andere aanpak te duwen",
-		"guardrailsSaved": "Beveiligingen opgeslagen",
-		"guardrailsSaveFailed": "Beveiligingen konden niet worden opgeslagen",
-		"resetDefaults": "Terug naar standaard",
-		"save": "Opslaan"
+		"sideloadPoint4": "Gesideloade apps draaien in een sandbox-omgeving"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

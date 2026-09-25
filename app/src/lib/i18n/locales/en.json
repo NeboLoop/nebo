@@ -237,7 +237,6 @@
 		"working": "Working"
 	},
 	"chat": {
-		"contextStats": "Context this turn: {files} files were re-read {times} times, {passes} compaction passes.",
 		"goalLine": "Goal: {condition} ({turns} turns)",
 		"goalLastCheck": "last check: {reason}",
 		"goalPaused": "Paused. Your next message resumes it.",
@@ -1083,19 +1082,7 @@
 		"sideloadPoint1": "Point to a folder containing your app manifest",
 		"sideloadPoint2": "Nebo discovers and loads the app in development mode",
 		"sideloadPoint3": "Changes to your app are hot-reloaded automatically",
-		"sideloadPoint4": "Sideloaded apps run in a sandboxed environment",
-		"guardrails": "Loop Guardrails",
-		"guardrailsDesc": "Thresholds that stop an employee when it repeats the same action without progress. Defaults are safe — change only if you know what you're tuning.",
-		"sameActionLimit": "Spiral limit",
-		"sameActionLimitDesc": "Unproductive repeats of one tool action per turn before the model is nudged off it",
-		"identicalArgsBlockAfter": "Identical-call block",
-		"identicalArgsBlockAfterDesc": "Unproductive repeats of one exact call (same tool, same arguments) before it is blocked",
-		"hardStop": "Hard stop on spiral",
-		"hardStopDesc": "End the turn when the spiral limit trips, instead of nudging the model to change approach",
-		"guardrailsSaved": "Guardrails saved",
-		"guardrailsSaveFailed": "Failed to save guardrails",
-		"resetDefaults": "Reset to defaults",
-		"save": "Save"
+		"sideloadPoint4": "Sideloaded apps run in a sandboxed environment"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

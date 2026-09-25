@@ -237,7 +237,6 @@
 		"working": "作業中"
 	},
 	"chat": {
-		"contextStats": "このターンのコンテキスト：{files}個のファイルを{times}回読み直し、圧縮{passes}回。",
 		"goalLine": "目標: {condition}（{turns} ターン）",
 		"goalLastCheck": "前回の確認: {reason}",
 		"goalPaused": "一時停止中。次のメッセージで再開します。",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "アプリマニフェストを含むフォルダを指定します",
 		"sideloadPoint2": "Neboがアプリを検出し、開発モードで読み込みます",
 		"sideloadPoint3": "アプリへの変更は自動的にホットリロードされます",
-		"sideloadPoint4": "サイドロードしたアプリはサンドボックス環境で実行されます",
-		"guardrails": "ループガードレール",
-		"guardrailsDesc": "進展のないまま同じ操作を繰り返す社員を停止するしきい値です。既定値は安全です — 何を調整しているか分かっている場合にのみ変更してください。",
-		"sameActionLimit": "スパイラル上限",
-		"sameActionLimitDesc": "1ターン内で同じツール操作を無駄に繰り返す回数。これを超えるとモデルに別の方法を促します",
-		"identicalArgsBlockAfter": "同一呼び出しのブロック",
-		"identicalArgsBlockAfterDesc": "まったく同じ呼び出し（同じツール、同じ引数）を無駄に繰り返す回数。これを超えるとブロックされます",
-		"hardStop": "スパイラル時に強制停止",
-		"hardStopDesc": "スパイラル上限に達したとき、モデルに方針変更を促す代わりにターンを終了します",
-		"guardrailsSaved": "ガードレールを保存しました",
-		"guardrailsSaveFailed": "ガードレールを保存できませんでした",
-		"resetDefaults": "既定値に戻す",
-		"save": "保存"
+		"sideloadPoint4": "サイドロードしたアプリはサンドボックス環境で実行されます"
 	},
 	"settingsHeartbeat": {
 		"title": "ハートビート",

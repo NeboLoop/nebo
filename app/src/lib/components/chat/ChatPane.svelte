@@ -93,7 +93,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, contextStats = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -130,7 +130,6 @@
     /** Helpers started from this conversation that are still working. */
     helpers?: HelperLine[];
     tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number; overhead?: number } | null;
-    contextStats?: { files: number; filesReread: number; redundantReads: number; compactionPasses: number; evictions: number; spilledResults: number } | null;
     /** The thread's agreed goal while it is worked toward; null hides the line. */
     goal?: SessionGoalStatus | null;
     quotaWarning?: string;
@@ -1907,11 +1906,6 @@
         <span>{helpers.length === 1
           ? $t('chat.helperWorking', { values: { what: helpers[0].activity || helpers[0].description } })
           : $t('chat.helpersWorking', { values: { n: helpers.length } })}</span>
-      </div>
-    {/if}
-    {#if !isLoading && contextStats && (contextStats.redundantReads > 0 || contextStats.compactionPasses > 0)}
-      <div class="max-w-[640px] mt-2 text-xs text-base-content/70">
-        {$t('chat.contextStats', { values: { files: contextStats.filesReread, times: contextStats.redundantReads, passes: contextStats.compactionPasses } })}
       </div>
     {/if}
     <!-- The owner recap (WP2.5): one or two plain sentences under the

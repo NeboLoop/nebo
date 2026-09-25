@@ -237,7 +237,6 @@
 		"working": "Arbeitet"
 	},
 	"chat": {
-		"contextStats": "Kontext in dieser Runde: {files} Dateien wurden {times} Mal neu gelesen, {passes} Verdichtungsdurchläufe.",
 		"goalLine": "Ziel: {condition} ({turns} Runden)",
 		"goalLastCheck": "letzte Prüfung: {reason}",
 		"goalPaused": "Pausiert. Ihre nächste Nachricht setzt es fort.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Verweise auf einen Ordner mit deinem App-Manifest",
 		"sideloadPoint2": "Nebo erkennt und lädt die App im Entwicklungsmodus",
 		"sideloadPoint3": "Änderungen an deiner App werden automatisch neu geladen",
-		"sideloadPoint4": "Sideloaded Apps laufen in einer Sandbox-Umgebung",
-		"guardrails": "Loop-Schutzgrenzen",
-		"guardrailsDesc": "Schwellen, die einen Mitarbeiter stoppen, wenn er dieselbe Aktion ohne Fortschritt wiederholt. Die Standardwerte sind sicher — ändere sie nur, wenn du weißt, woran du drehst.",
-		"sameActionLimit": "Spiralgrenze",
-		"sameActionLimitDesc": "Unproduktive Wiederholungen einer Werkzeugaktion pro Runde, bevor das Modell davon weggelenkt wird",
-		"identicalArgsBlockAfter": "Sperre bei identischem Aufruf",
-		"identicalArgsBlockAfterDesc": "Unproduktive Wiederholungen genau desselben Aufrufs (gleiches Werkzeug, gleiche Argumente), bevor er gesperrt wird",
-		"hardStop": "Harter Stopp bei Spirale",
-		"hardStopDesc": "Die Runde beenden, wenn die Spiralgrenze greift, statt das Modell zu einem anderen Vorgehen zu bewegen",
-		"guardrailsSaved": "Schutzgrenzen gespeichert",
-		"guardrailsSaveFailed": "Schutzgrenzen konnten nicht gespeichert werden",
-		"resetDefaults": "Auf Standard zurücksetzen",
-		"save": "Speichern"
+		"sideloadPoint4": "Sideloaded Apps laufen in einer Sandbox-Umgebung"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

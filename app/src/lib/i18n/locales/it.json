@@ -237,7 +237,6 @@
 		"working": "Al lavoro"
 	},
 	"chat": {
-		"contextStats": "Contesto di questo turno: {files} file riletti {times} volte, {passes} passaggi di compattazione.",
 		"goalLine": "Obiettivo: {condition} ({turns} turni)",
 		"goalLastCheck": "ultimo controllo: {reason}",
 		"goalPaused": "In pausa. Il tuo prossimo messaggio lo riprende.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Indica una cartella contenente il manifest della tua app",
 		"sideloadPoint2": "Nebo rileva e carica l'app in modalità sviluppo",
 		"sideloadPoint3": "Le modifiche alla tua app vengono ricaricate automaticamente",
-		"sideloadPoint4": "Le app caricate in sideload girano in un ambiente sandbox",
-		"guardrails": "Protezioni del ciclo",
-		"guardrailsDesc": "Soglie che fermano un dipendente quando ripete la stessa azione senza avanzare. I valori predefiniti sono sicuri: cambiali solo se sai cosa stai regolando.",
-		"sameActionLimit": "Limite di avvitamento",
-		"sameActionLimitDesc": "Ripetizioni improduttive di un'azione di uno strumento per turno prima che il modello venga dirottato",
-		"identicalArgsBlockAfter": "Blocco di chiamata identica",
-		"identicalArgsBlockAfterDesc": "Ripetizioni improduttive di una chiamata identica (stesso strumento, stessi argomenti) prima che venga bloccata",
-		"hardStop": "Stop netto all'avvitamento",
-		"hardStopDesc": "Chiudere il turno quando scatta il limite di avvitamento, invece di spingere il modello a cambiare approccio",
-		"guardrailsSaved": "Protezioni salvate",
-		"guardrailsSaveFailed": "Non è stato possibile salvare le protezioni",
-		"resetDefaults": "Ripristina i valori predefiniti",
-		"save": "Salva"
+		"sideloadPoint4": "Le app caricate in sideload girano in un ambiente sandbox"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

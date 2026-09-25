@@ -3,76 +3,221 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const INTERPRETER_BINS: &[&str] = &[
-    "bash", "sh", "zsh", "fish", "dash", "ksh", "csh", "tcsh", "env", "command", "nohup",
-    "xargs", "watch", "time", "eval", "exec", "source", ".", "sudo", "su",
-    "python", "python2", "python3", "ruby", "perl", "node", "deno", "bun", "php", "lua",
-    "rscript", "osascript", "awk", "expect",
-];
-
-/// Subcommand-style binaries: keep the subcommand in the stored prefix so
-/// "Approve Always" on `git push …` grants `git push`, not all of git.
-const SUBCOMMAND_BINS: &[&str] = &[
-    "git", "npm", "pnpm", "yarn", "cargo", "docker", "kubectl", "brew", "go", "pip", "pip3",
-    "gh", "apt", "apt-get", "systemctl", "gws", "gcloud", "aws", "terraform",
-];
-
-/// A "simple" command — a single program invocation with no shell
-/// metacharacters that could chain or inject other commands. Only simple
-/// commands are eligible for the per-command allowlist; anything with
-/// `; | & $( ) \` < > {} \n` re-asks, so an allowlisted prefix can never
-/// smuggle a second command (`mv x y && bash evil.sh`).
-pub fn is_simple_command(cmd: &str) -> bool {
-    !cmd.chars().any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '<' | '>' | '(' | ')' | '\n'))
+/// One command a shell call runs, as the permission rules judge it: its
+/// words with quoting removed and run-only wrappers (`nohup`, `timeout 5`,
+/// `env`, …) stripped. A `None` word is only known when the call runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subcommand {
+    assigns: bool,
+    words: Vec<Option<String>>,
 }
 
-/// Derive the allowlist pattern to store for an "Approve Always" on a shell
-/// command, or `None` if the command must never be allowlisted: not simple
-/// (compound), an interpreter/wrapper, or a path-based invocation (`./x`,
-/// `/abs/x`). Pairs with [`command_matches`] (same shape).
-pub fn command_prefix(cmd: &str) -> Option<String> {
-    let cmd = cmd.trim();
-    if !is_simple_command(cmd) {
-        return None;
-    }
-    let parts: Vec<&str> = cmd.split_whitespace().collect();
-    let first = *parts.first()?;
-    if first.starts_with("./") || first.starts_with('/') || first.starts_with("../") {
-        return None;
-    }
-    if INTERPRETER_BINS.contains(&first) {
-        return None;
-    }
-    if SUBCOMMAND_BINS.contains(&first) && parts.len() > 1 {
-        return Some(format!("{} {}", first, parts[1]));
-    }
-    Some(first.to_string())
+/// Shells whose `-c` argument is itself a script.
+const SCRIPT_SHELLS: &[&str] = &["bash", "sh", "zsh", "dash", "ksh"];
+
+/// How deep `bash -c "bash -c '…'"` / `eval` nesting is read before the
+/// rest counts as unreadable.
+const MAX_SCRIPT_DEPTH: usize = 8;
+
+/// How a rule's command prefix covers one command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cover {
+    No,
+    Yes,
+    /// Only an unknown word stands between the command and the prefix: it
+    /// may be the command the rule names, or not. Never an allow's.
+    Unread,
 }
 
-/// Does `cmd` match any stored allowlist `pattern` (exact / first-word /
-/// two-word)? Only simple commands can match — a compound command always
-/// re-asks even if its leading binary is allowlisted.
-pub fn command_matches(patterns: &[String], cmd: &str) -> bool {
-    let cmd = cmd.trim();
-    if !is_simple_command(cmd) {
-        return false;
+/// A command's second word that names a subcommand (`commit`, `run`,
+/// `compose`), not a flag, a file, a path or a number — the shape Claude
+/// Code keeps in a saved prefix (`getSimpleCommandPrefix`).
+fn looks_like_subcommand(word: &str) -> bool {
+    let mut parts = word.split('-');
+    let first = parts.next().unwrap_or("");
+    let lower = |p: &str| p.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    first.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && lower(first)
+        && parts.all(|p| !p.is_empty() && lower(p))
+}
+
+impl Subcommand {
+    /// A command that can't be read: it may be anything.
+    fn unknown() -> Self {
+        Subcommand { assigns: false, words: vec![None] }
     }
-    if patterns.iter().any(|p| p == cmd) {
-        return true;
+
+    /// Whether every word of the command is known before it runs.
+    pub fn readable(&self) -> bool {
+        self.words.iter().all(Option::is_some)
     }
-    let parts: Vec<&str> = cmd.split_whitespace().collect();
-    if let Some(&first) = parts.first() {
-        if patterns.iter().any(|p| p == first) {
-            return true;
+
+    /// How the rule prefix `pattern` — one word, two words, or an exact
+    /// command — covers this command. An allow (`allow`) is strict: an
+    /// unknown word or a variable prefix (`PATH=… ls`) never matches it. A
+    /// deny or ask that only an unknown word stands between is `Unread`.
+    pub fn covered_by(&self, pattern: &str, allow: bool) -> Cover {
+        let pattern: Vec<&str> = pattern.split_whitespace().collect();
+        if pattern.is_empty() || (allow && self.assigns) {
+            return Cover::No;
         }
-        if parts.len() > 1 {
-            let two = format!("{} {}", first, parts[1]);
-            if patterns.iter().any(|p| p == &two) {
-                return true;
+        for (i, p) in pattern.iter().enumerate() {
+            match self.words.get(i) {
+                Some(Some(w)) if w == p => {}
+                Some(None) if !allow => return Cover::Unread,
+                _ => return Cover::No,
             }
         }
+        let rest = &self.words[pattern.len()..];
+        if pattern.len() <= 2 || rest.is_empty() {
+            Cover::Yes
+        } else if !allow && rest.iter().all(Option::is_none) {
+            Cover::Unread
+        } else {
+            Cover::No
+        }
     }
-    false
+
+    /// The prefix an "Allow always" saves for this command, as Claude Code
+    /// suggests one: the command and its subcommand (`git push`) when the
+    /// second word names one, else the command exactly. `None` when no allow
+    /// could ever cover it (an unknown word, a variable prefix, nothing run).
+    pub fn rule_prefix(&self) -> Option<String> {
+        if self.assigns || self.words.is_empty() || !self.readable() {
+            return None;
+        }
+        let words: Vec<&str> = self.words.iter().flatten().map(String::as_str).collect();
+        match words.as_slice() {
+            [command, sub, ..] if looks_like_subcommand(sub) => Some(format!("{command} {sub}")),
+            _ => Some(words.join(" ")),
+        }
+    }
+}
+
+/// Every command a shell call runs: each one of a compound command (`&&`,
+/// `||`, `;`, `|`, newlines), the ones in subshells, `$(…)`, backticks and
+/// redirect targets, and the scripts `bash -c` / `sh -c` / `eval` run. A
+/// script that doesn't parse is one unknown command (see
+/// [`Subcommand::covered_by`]); one that runs nothing is one empty command,
+/// which no command rule covers.
+pub fn subcommands(cmd: &str) -> Vec<Subcommand> {
+    let mut out = Vec::new();
+    collect_subcommands(cmd, 0, &mut out);
+    if out.is_empty() {
+        out.push(Subcommand { assigns: false, words: Vec::new() });
+    }
+    out
+}
+
+fn collect_subcommands(script: &str, depth: usize, out: &mut Vec<Subcommand>) {
+    let parsed = if depth < MAX_SCRIPT_DEPTH { syntax::shell_commands(script) } else { None };
+    let Some(commands) = parsed else {
+        out.push(Subcommand::unknown());
+        return;
+    };
+    for command in commands {
+        let mut sub = Subcommand { assigns: command.assigns, words: command.words };
+        unwrap_wrappers(&mut sub);
+        match inline_script(&sub.words) {
+            Some(Some(inner)) => collect_subcommands(&inner, depth + 1, out),
+            Some(None) => out.push(Subcommand::unknown()),
+            None => {}
+        }
+        out.push(sub);
+    }
+}
+
+/// Strip the wrappers that only run the command after them (`nohup rm x` runs
+/// `rm x`). A wrapper whose flags it can't read makes the command unknown.
+fn unwrap_wrappers(sub: &mut Subcommand) {
+    loop {
+        let Some(Some(name)) = sub.words.first() else { return };
+        let name = name.clone();
+        let args = sub.words[1..].to_vec();
+        let arg = |i: usize| args.get(i).cloned().flatten();
+        let flag = |i: usize| arg(i).filter(|a| a.starts_with('-') && a != "--");
+        let mut i = 0;
+        match name.as_str() {
+            "time" | "nohup" | "command" | "builtin" | "stdbuf" => {
+                while flag(i).is_some() {
+                    i += 1;
+                }
+            }
+            "exec" | "timeout" | "nice" => {
+                while let Some(a) = flag(i) {
+                    let valued = matches!(a.as_str(), "-a" | "-k" | "-s" | "-n" | "--kill-after" | "--signal");
+                    i += if valued { 2 } else { 1 };
+                }
+            }
+            "env" => {
+                while let Some(a) = flag(i).or_else(|| arg(i).filter(|a| a.contains('='))) {
+                    if a.starts_with("-S") || a.starts_with("--split-string") {
+                        // Its argument is itself a command line.
+                        *sub = Subcommand::unknown();
+                        return;
+                    }
+                    sub.assigns |= a.contains('=') && !a.starts_with('-');
+                    i += if matches!(a.as_str(), "-u" | "-C" | "-S") { 2 } else { 1 };
+                }
+            }
+            _ => return,
+        }
+        if arg(i).as_deref() == Some("--") {
+            i += 1;
+        }
+        if i >= args.len() {
+            // The wrapper alone (`time`, `env`): it is the command.
+            return;
+        }
+        if name == "timeout" {
+            let duration = |d: &str| d.trim_end_matches(['s', 'm', 'h', 'd']).parse::<f64>().is_ok();
+            if !arg(i).is_some_and(|d| duration(&d)) {
+                *sub = Subcommand::unknown();
+                return;
+            }
+            i += 1;
+        }
+        if args[..i].iter().any(Option::is_none) {
+            *sub = Subcommand::unknown();
+            return;
+        }
+        sub.words = args[i..].to_vec();
+    }
+}
+
+/// The script a command runs from a string: `bash -c '…'` and the like, or
+/// `eval …`. `Some(None)` when that script is only known when it runs.
+fn inline_script(words: &[Option<String>]) -> Option<Option<String>> {
+    let Some(Some(name)) = words.first() else { return None };
+    if name == "eval" {
+        let args = &words[1..];
+        if args.is_empty() {
+            return None;
+        }
+        return Some(args.iter().cloned().collect::<Option<Vec<_>>>().map(|a| a.join(" ")));
+    }
+    if !SCRIPT_SHELLS.contains(&name.as_str()) {
+        return None;
+    }
+    let mut has_c = false;
+    let mut i = 1;
+    while let Some(word) = words.get(i) {
+        let Some(a) = word else { return Some(None) };
+        if a == "--" || !(a.starts_with('-') || a.starts_with('+')) {
+            if a == "--" {
+                i += 1;
+            }
+            break;
+        }
+        if !a.starts_with("--") && a[1..].contains('c') {
+            has_c = true;
+        }
+        i += if matches!(a.as_str(), "-o" | "+o" | "--rcfile" | "--init-file") { 2 } else { 1 };
+    }
+    if !has_c {
+        return None;
+    }
+    words.get(i).cloned()
 }
 
 /// Check if a command appears dangerous.
@@ -306,6 +451,89 @@ impl CompanyPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn words(cmd: &str) -> Vec<(bool, Vec<Option<String>>)> {
+        subcommands(cmd).into_iter().map(|s| (s.assigns, s.words)).collect()
+    }
+
+    fn lit(ws: &[&str]) -> Vec<Option<String>> {
+        ws.iter().map(|w| Some(w.to_string())).collect()
+    }
+
+    #[test]
+    fn a_shell_call_splits_into_every_command_it_runs() {
+        let plain = |ws: &[&[&str]]| ws.iter().map(|w| (false, lit(w))).collect::<Vec<_>>();
+        let cases: &[(&str, Vec<(bool, Vec<Option<String>>)>)] = &[
+            ("ls && rm -rf x", plain(&[&["ls"], &["rm", "-rf", "x"]])),
+            ("ls || rm x", plain(&[&["ls"], &["rm", "x"]])),
+            ("ls; rm x", plain(&[&["ls"], &["rm", "x"]])),
+            ("ls | rm x", plain(&[&["ls"], &["rm", "x"]])),
+            ("ls\nrm x", plain(&[&["ls"], &["rm", "x"]])),
+            ("(cd a; rm b)", plain(&[&["cd", "a"], &["rm", "b"]])),
+            ("echo \"a && b\"", plain(&[&["echo", "a && b"]])),
+            ("echo 'a; rm b'", plain(&[&["echo", "a; rm b"]])),
+            ("'r'm x", plain(&[&["rm", "x"]])),
+            ("r\\m x", plain(&[&["rm", "x"]])),
+            ("rm x > out.txt 2>&1", plain(&[&["rm", "x"]])),
+            ("bash -c 'ls && rm -rf x'", plain(&[&["ls"], &["rm", "-rf", "x"], &["bash", "-c", "ls && rm -rf x"]])),
+            ("sh -ec \"rm x\"", plain(&[&["rm", "x"], &["sh", "-ec", "rm x"]])),
+            ("eval rm x", plain(&[&["rm", "x"], &["eval", "rm", "x"]])),
+            ("nohup timeout -s KILL 5 nice -n 3 rm x", plain(&[&["rm", "x"]])),
+            ("time", plain(&[&["time"]])),
+            ("", plain(&[&[]])),
+            ("FOO=1 rm x", vec![(true, lit(&["rm", "x"]))]),
+            ("env A=1 rm x", vec![(true, lit(&["rm", "x"]))]),
+        ];
+        for (cmd, want) in cases {
+            assert_eq!(&words(cmd), want, "{cmd:?}");
+        }
+        // Substitutions and backticks run their own commands; the outer word
+        // is only known when it runs.
+        assert_eq!(words("echo $(rm y)"), vec![(false, vec![Some("echo".into()), None]), (false, lit(&["rm", "y"]))]);
+        assert_eq!(words("echo `rm y`"), vec![(false, vec![Some("echo".into()), None]), (false, lit(&["rm", "y"]))]);
+        assert_eq!(words("ls > $(rm z)"), vec![(false, lit(&["ls"])), (false, lit(&["rm", "z"]))]);
+        // What can't be read is one unknown command.
+        for cmd in ["ls &&", "bash -c \"$X\"", "eval \"$X\"", "timeout -k $K 5 rm x", "env -S 'rm x'"] {
+            assert_eq!(words(cmd)[0], (false, vec![None]), "{cmd:?}");
+        }
+        assert_eq!(words("$CMD x"), vec![(false, vec![None, Some("x".into())])]);
+    }
+
+    #[test]
+    fn an_allow_is_strict_and_a_deny_reads_the_unknown_as_unread() {
+        let sub = |ws: Vec<Option<String>>, assigns| Subcommand { assigns, words: ws };
+        let git_push = sub(lit(&["git", "push", "origin"]), false);
+        assert_eq!(git_push.covered_by("git", true), Cover::Yes);
+        assert_eq!(git_push.covered_by("git push", true), Cover::Yes);
+        assert_eq!(git_push.covered_by("git pull", false), Cover::No);
+        assert_eq!(git_push.covered_by("git push origin", true), Cover::Yes, "exact");
+        assert_eq!(sub(lit(&["ls"]), true).covered_by("ls", true), Cover::No, "a variable prefix never meets an allow");
+        assert_eq!(sub(lit(&["rm", "x"]), true).covered_by("rm", false), Cover::Yes);
+        let dynamic = sub(vec![Some("git".into()), None], false);
+        assert_eq!(dynamic.covered_by("git push", false), Cover::Unread);
+        assert_eq!(dynamic.covered_by("git push", true), Cover::No);
+        assert_eq!(Subcommand::unknown().covered_by("rm -rf /", false), Cover::Unread);
+        assert_eq!(Subcommand::unknown().covered_by("ls", true), Cover::No);
+        assert_eq!(sub(lit(&["rm", "-rf", "x"]), false).covered_by("rm", false), Cover::Yes, "known words decide");
+        assert_eq!(sub(Vec::new(), false).covered_by("rm", false), Cover::No, "an empty command runs nothing");
+    }
+
+    /// The prefix "Allow always" saves, as Claude Code suggests one.
+    #[test]
+    fn a_saved_prefix_is_the_command_and_its_subcommand() {
+        let prefix = |cmd: &str| subcommands(cmd).into_iter().map(|s| s.rule_prefix()).collect::<Vec<_>>();
+        assert_eq!(prefix("git commit -m 'fix'"), [Some("git commit".to_string())]);
+        assert_eq!(prefix("npm run build-all"), [Some("npm run".to_string())]);
+        assert_eq!(prefix("ls -la"), [Some("ls -la".to_string())]);
+        assert_eq!(prefix("cat file.txt"), [Some("cat file.txt".to_string())]);
+        assert_eq!(prefix("chmod 755 f"), [Some("chmod 755 f".to_string())]);
+        assert_eq!(prefix("ls"), [Some("ls".to_string())]);
+        assert_eq!(prefix("ls && git push origin"), [Some("ls".to_string()), Some("git push".to_string())]);
+        // No allow could cover these, so none is saved.
+        assert_eq!(prefix("FOO=1 ls"), [None]);
+        assert_eq!(prefix("$CMD x"), [None]);
+        assert_eq!(prefix(""), [None]);
+    }
 
     #[test]
     fn destructive_git_is_named_and_the_safe_forms_pass() {
