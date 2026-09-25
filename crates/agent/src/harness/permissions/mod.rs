@@ -254,10 +254,9 @@ fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
     if t.effects.widens {
         return Ok(Decision::Ask { case: AskCase::Widens });
     }
-    let full = cx.grant.mode == Mode::FullAccess;
-    if let Some((rule, Effect::Ask)) = decided
-        && !full
-    {
+    // An ask rule asks in every mode, Full Access included, as Claude Code's
+    // bypass mode still honours an ask rule.
+    if let Some((rule, Effect::Ask)) = decided {
         return Ok(Decision::Ask { case: AskCase::AskRule { rule_id: rule.id.clone() } });
     }
     // 4. The mode.

@@ -212,8 +212,11 @@ async fn credentials_never_leave_in_an_outbound_call() {
     assert_eq!(reg.execute(&c, "mail", json!({ "to": "someone@example.com", "body": "hi" })).await.content, "RAN");
 }
 
+/// Full Access runs everything else without asking, but an ask rule still
+/// asks and a deny rule still refuses, as Claude Code's bypass mode honours
+/// ask and deny rules (m0342 `jLt`: the ask rules return before the mode).
 #[tokio::test]
-async fn full_access_never_asks_but_deny_and_hard_limits_hold() {
+async fn full_access_keeps_ask_and_deny_rules() {
     let (_d, store) = store();
     put(&store, rule(Scope::Company, RuleKey::Tool("send_invoice".into()), None, Effect::Ask));
     put(&store, rule(Scope::Company, cap("desktop"), None, Effect::Deny));
@@ -222,7 +225,7 @@ async fn full_access_never_asks_but_deny_and_hard_limits_hold() {
     let (click, click_ran) = Probe::new("desktop", "desktop_click", Some("desktop"));
     let reg = registry(&store, vec![inv, shell, click]).await;
     let full = with_mode(ctx(&store, "", Origin::User), Mode::FullAccess);
-    assert_eq!(reg.execute(&full, "invoices", json!({})).await.content, "RAN", "an ask rule allows");
+    assert!(reg.execute(&full, "invoices", json!({})).await.parked_ask.is_some(), "an ask rule asks");
     assert_eq!(reg.execute(&full, "run_command", json!({})).await.content, "RAN", "outside the job allows");
     let r = reg.execute(&full, "desktop", json!({})).await;
     assert!(r.is_error, "a deny rule held: {}", r.content);
