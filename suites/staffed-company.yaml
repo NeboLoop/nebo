@@ -39,3 +39,4 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc34-a-question-up-the-line-never-waits.yaml
   - ../fixtures/staffed-company/conversation/sc35-a-woken-turn-replies-where-the-work-came-from.yaml
   - ../fixtures/staffed-company/conversation/sc36-an-employees-team-post-goes-to-the-lead.yaml
+  - ../fixtures/staffed-company/conversation/sc37-the-owners-next-message-answers-the-open-question.yaml

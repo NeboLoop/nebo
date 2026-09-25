@@ -445,6 +445,20 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
 }
 
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
+    // The owner's message answers the question open in this conversation,
+    // as typing answers Claude Code's AskUserQuestion: the parked call gets
+    // it as the answer and the turn goes on. It starts no turn of its own.
+    let owner_writes = config.origin == Origin::User
+        && config.audience.is_none()
+        && !config.hidden_prompt
+        && !config.prompt.trim().is_empty();
+    if owner_writes
+        && let Some(ask) = state.run_registry.pending_ask_for_session(&config.session_key).await
+        && answer_ask(state, &ask.request_id, config.prompt.clone()).await
+    {
+        info!(session = %config.session_key, "the owner's message answered the open question");
+        return;
+    }
     // New input says where this session's work comes from: a loop or phone
     // conversation, or the owner in the app. A turn a notification wakes
     // later replies there (`reply_route`).

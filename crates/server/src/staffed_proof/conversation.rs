@@ -841,3 +841,50 @@ async fn an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_i
         "nothing was recorded"
     );
 }
+
+/// Parity 1.9: the owner's next message answers the question card that is
+/// open in the conversation, as typing answers Claude Code's
+/// AskUserQuestion. The parked call gets the message as its answer and the
+/// turn goes on; it is never queued behind a card nobody will click.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owners_next_message_answers_the_open_question() {
+    let nebo = session().await;
+    const OWNER: &str = "agent:proof-q:web";
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !t.opener().contains("OWNER-Q") {
+            return None;
+        }
+        if t.has_tool_results() {
+            let answered = t
+                .since_last_answer()
+                .iter()
+                .filter_map(|m| m.tool_results.as_ref())
+                .any(|r| r.to_string().contains("teal, please"));
+            return Some(Step::say(if answered { "ANSWER-Q teal it is." } else { "ANSWER-Q no answer." }));
+        }
+        t.new_text().contains("OWNER-Q").then(|| {
+            Step::call(vec![(
+                "ask_owner",
+                json!({"question": "Which color for the banner?", "options": ["blue", "green"]}),
+            )])
+        })
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    rig.owner_writes(OWNER, "", None, "OWNER-Q make the sale banner").await;
+    rig.until(20, "the question is open on the conversation", || {
+        futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_some()
+    })
+    .await;
+
+    rig.owner_writes(OWNER, "", None, "teal, please").await;
+    rig.until(20, "the turn goes on with the owner's message as the answer", || {
+        rig.thread(OWNER).iter().any(|m| m.role == "assistant" && m.content.contains("ANSWER-Q"))
+    })
+    .await;
+    let said: Vec<String> = rig.thread(OWNER).into_iter().filter(|m| m.role == "assistant").map(|m| m.content).collect();
+    assert!(said.iter().any(|c| c.contains("ANSWER-Q teal it is.")), "{said:?}");
+    assert!(
+        futures::executor::block_on(nebo.state.run_registry.pending_ask_for_session(OWNER)).is_none(),
+        "the card is closed"
+    );
+}
