@@ -244,6 +244,8 @@
 		"resumedActivity": "Still working: {tool}",
 		"waitingForYou": "Waiting for you",
 		"subagentStep": "{op} · step {n}",
+		"helperWorking": "A helper is working: {what}",
+		"helpersWorking": "{n} helpers are working",
 		"moreQuestionsWaiting": "{count, plural, one {1 more question waiting} other {# more questions waiting}}",
 		"pending": "Pending",
 		"yourAICompanion": "Your AI Workforce",

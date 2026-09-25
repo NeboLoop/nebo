@@ -55,6 +55,19 @@ pub enum TurnEvent {
         label: String,
         text: String,
     },
+    /// After a checkpoint: a file read before it, as it is on disk now.
+    RestoredFile {
+        path: String,
+        content: String,
+    },
+    /// After a checkpoint: the skills loaded before it, (name, content).
+    InvokedSkills(Vec<(String, String)>),
+    /// After a checkpoint: work started before it that is still running.
+    RunningWork {
+        id: String,
+        description: String,
+        status: String,
+    },
 }
 
 /// One work task as the task reminder lists it.
@@ -92,6 +105,9 @@ pub const NAMES: &[&str] = &[
     "cutoff_resume",
     "workflow_contract",
     "app_hook",
+    "restored_file",
+    "invoked_skills",
+    "running_work",
 ];
 
 /// Most memories one recall surfaces.
@@ -173,6 +189,24 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         ),
         TurnEvent::WorkflowContract(text) => ("workflow_contract", non_empty(text)?),
         TurnEvent::AppHook { text, .. } => ("app_hook", non_empty(text)?),
+        TurnEvent::RestoredFile { path, content } => (
+            "restored_file",
+            format!("{path} was read earlier in this conversation. Its content now, re-read from disk after the checkpoint:\n\n{content}"),
+        ),
+        TurnEvent::InvokedSkills(skills) => {
+            if skills.is_empty() {
+                return None;
+            }
+            let sections: Vec<String> = skills.iter().map(|(name, content)| format!("### {name}\n{content}")).collect();
+            (
+                "invoked_skills",
+                format!("Skills loaded earlier in this conversation. Their instructions still apply:\n\n{}", sections.join("\n\n")),
+            )
+        }
+        TurnEvent::RunningWork { id, description, status } => (
+            "running_work",
+            format!("Still running from before the checkpoint: {description} [{id}]: {status}"),
+        ),
     };
     Some(Attachment {
         kind,
@@ -421,6 +455,16 @@ mod tests {
             TurnEvent::AppHook {
                 label: "app".into(),
                 text: "the invoice is due".into(),
+            },
+            TurnEvent::RestoredFile {
+                path: "/tmp/a.txt".into(),
+                content: "a".into(),
+            },
+            TurnEvent::InvokedSkills(vec![("letters".into(), "write plainly".into())]),
+            TurnEvent::RunningWork {
+                id: "task-1".into(),
+                description: "research".into(),
+                status: "running".into(),
             },
         ]
     }

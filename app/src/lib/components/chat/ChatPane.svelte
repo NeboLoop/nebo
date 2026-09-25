@@ -29,6 +29,7 @@
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
+  import type { HelperLine } from '$lib/chat/helpers';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -88,7 +89,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, contextStats = null, goal = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, contextStats = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -122,12 +123,19 @@
     emptyDesc?: string;
     allAgents?: AgentInfo[];
     activityStatus?: string;
+    /** Helpers started from this conversation that are still working. */
+    helpers?: HelperLine[];
     tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number; overhead?: number } | null;
     contextStats?: { files: number; filesReread: number; redundantReads: number; compactionPasses: number; evictions: number; spilledResults: number } | null;
     /** The thread's agreed goal while it is worked toward; null hides the line. */
     goal?: SessionGoalStatus | null;
     quotaWarning?: string;
     chatError?: string;
+    /** The owner recap for the last finished turn (`turn_recap`, WP2.5):
+     *  one or two plain sentences for coming back to the thread. Cleared by
+     *  the page on thread switch and on send — a stale recap from an
+     *  earlier turn never lingers under a newer one. */
+    recapText?: string;
     onsend?: (text: string, files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[]) => void;
     onteachsent?: (message: string, sessionKey: string) => void;
     onstop?: () => void;
@@ -1878,9 +1886,24 @@
         <span class="text-sm text-base-content/70 animate-pulse">{activityStatus || $t('chat.working')}</span>
       </div>
     {/if}
+    {#if !isLoading && helpers.length > 0}
+      <div class="helper-status">
+        <span class="loading loading-dots loading-xs"></span>
+        <span>{helpers.length === 1
+          ? $t('chat.helperWorking', { values: { what: helpers[0].activity || helpers[0].description } })
+          : $t('chat.helpersWorking', { values: { n: helpers.length } })}</span>
+      </div>
+    {/if}
     {#if !isLoading && contextStats && (contextStats.redundantReads > 0 || contextStats.compactionPasses > 0)}
       <div class="max-w-[640px] mt-2 text-xs text-base-content/70">
         {$t('chat.contextStats', { values: { files: contextStats.filesReread, times: contextStats.redundantReads, passes: contextStats.compactionPasses } })}
+      </div>
+    {/if}
+    <!-- The owner recap (WP2.5): one or two plain sentences under the
+         finished turn, for coming back to this thread. -->
+    {#if !isLoading && recapText}
+      <div class="max-w-[640px] mt-2 text-xs text-base-content/60 italic">
+        {recapText}
       </div>
     {/if}
   </div>

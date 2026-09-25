@@ -1260,11 +1260,6 @@ impl DynTool for PluginTool {
         }
     }
 
-    /// Plugin payloads (mail, drive, CRM records) are the deliverable.
-    fn keeps_content_when_trimmed(&self, _input: &serde_json::Value) -> bool {
-        true
-    }
-
     fn activity(&self, input: &serde_json::Value) -> String {
         plugin_labels(input).0
     }

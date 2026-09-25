@@ -20,6 +20,7 @@ import type { ChatMessagesResponse, SessionGoalStatus } from '$lib/api/neboCompo
 import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { parseMessages } from '$lib/chat/history';
+import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { formatTime } from '$lib/time';
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
@@ -222,6 +223,8 @@ export function createChatController(config: ChatControllerConfig) {
   let activityStatus = $state('');
   /** The thread's agreed goal while it is being worked toward (active or paused). */
   let goal = $state<SessionGoalStatus | null>(null);
+  /** Helpers started from this conversation that are still working. */
+  let helpers = $state<HelperLine[]>([]);
 
   // --- Internal tracking ---
   let phaseStartTime = 0;
@@ -667,8 +670,19 @@ export function createChatController(config: ChatControllerConfig) {
     });
   }
 
+  function handleSubagentStart(data: any) {
+    if (!isMyEvent(data)) return;
+    helpers = applyHelperEvent(helpers, 'subagent_start', data);
+  }
+
+  function handleSubagentComplete(data: any) {
+    if (!isMyEvent(data)) return;
+    helpers = applyHelperEvent(helpers, 'subagent_complete', data);
+  }
+
   function handleSubagentProgress(data: any) {
     if (!isMyEvent(data)) return;
+    helpers = applyHelperEvent(helpers, 'subagent_progress', data);
     const op = data.current_operation as string | undefined;
     if (!op) return;
     // The delegate's current step IS this turn's live status: without it a
@@ -769,7 +783,9 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('chat_error', handleChatError));
   unsubs.push(onServer('ask_request', handleAskRequest));
   unsubs.push(onServer('ask_answered', handleAskAnswered));
+  unsubs.push(onServer('subagent_start', handleSubagentStart));
   unsubs.push(onServer('subagent_progress', handleSubagentProgress));
+  unsubs.push(onServer('subagent_complete', handleSubagentComplete));
   unsubs.push(onServer('session_reset', handleSessionReset));
 
   // The agreed goal: loaded with the thread, then kept by `goal_status`.
@@ -1130,6 +1146,7 @@ export function createChatController(config: ChatControllerConfig) {
     get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },
     get goal() { return goal; },
+    get helpers() { return helpers; },
     set activityStatus(v: string) { activityStatus = v; },
     get askQueueLength() { return askQueue.length; },
     get allAgents() { return allAgents; },

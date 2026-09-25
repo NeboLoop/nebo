@@ -65,7 +65,7 @@ use tools::{FollowUp, SpawnRequest, SpawnResult, SubAgentOrchestrator};
 /// Build a human-readable description from a tool call.
 ///
 /// For STRAP tools, extracts resource/action from the input JSON so
-/// the progress heartbeat shows "persona: create" instead of just "agent".
+/// the owner's progress line shows "persona: create" instead of just "agent".
 fn describe_tool_call(tc: &ToolCall) -> String {
     let input = &tc.input;
     let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
@@ -1327,6 +1327,8 @@ async fn run_and_collect(
     parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
     inactivity_timeout: Option<std::time::Duration>,
 ) -> Result<String, String> {
+    // The child's own id, for the progress events its parent's screen shows.
+    let child_id = req.session_key.rsplit(':').next().unwrap_or_default().to_string();
     let mut rx = runner
         .run(req)
         .await
@@ -1335,14 +1337,8 @@ async fn run_and_collect(
     let mut output = String::new();
     let mut tool_count: usize = 0;
     let mut token_count: i32 = 0;
-    let mut last_operation = String::new();
     let mut last_activity = tokio::time::Instant::now();
     let mut stalled = false;
-
-    // Periodic progress timer: send a short status to the parent every 30s
-    // so the user sees activity instead of silence during long sub-agent runs.
-    let mut progress_interval = tokio::time::interval(std::time::Duration::from_secs(30));
-    progress_interval.tick().await; // skip first immediate tick
 
     loop {
         // Recomputed each iteration so any stream event below resets the window.
@@ -1350,16 +1346,6 @@ async fn run_and_collect(
         tokio::select! {
             _ = cancel.cancelled() => {
                 return Err("Cancelled".to_string());
-            }
-            _ = progress_interval.tick() => {
-                if let Some(ref ptx) = parent_stream_tx {
-                    let desc = if last_operation.is_empty() {
-                        "Working...".to_string()
-                    } else {
-                        format!("Working on: {}", &last_operation[..last_operation.len().min(50)])
-                    };
-                    let _ = ptx.send(ai::StreamEvent::text(format!("\n_{}_\n", desc))).await;
-                }
             }
             // Inactivity guard: fires only when enabled and no stream event has
             // arrived for the whole window.
@@ -1380,8 +1366,18 @@ async fn run_and_collect(
                         match e.event_type {
                             StreamEventType::Text => output.push_str(&e.text),
                             StreamEventType::ToolCall => {
-                                if let Some(ref tc) = e.tool_call {
-                                    last_operation = describe_tool_call(tc);
+                                // Progress is a UI event on the parent's
+                                // stream, never text in its reply.
+                                if let (Some(ptx), Some(tc)) = (&parent_stream_tx, &e.tool_call) {
+                                    let op = describe_tool_call(tc);
+                                    let mut ev = ai::StreamEvent::subagent_start(child_id.as_str(), op.as_str());
+                                    ev.event_type = StreamEventType::SubagentProgress;
+                                    ev.widgets = Some(serde_json::json!({
+                                        "task_id": child_id,
+                                        "tool_count": tool_count,
+                                        "current_operation": op,
+                                    }));
+                                    let _ = ptx.send(ev).await;
                                 }
                                 if let Some((ref tid, ref tx)) = progress_tx {
                                     let op = e.tool_call.as_ref()
@@ -1475,10 +1471,9 @@ fn format_dep_context(deps: &[(String, String)]) -> String {
     let mut parts = vec!["[Results from prerequisite tasks]\n".to_string()];
 
     for (desc, result) in deps {
-        let truncated = if result.len() > MAX_DEP_CONTEXT_CHARS {
-            format!("{}...(truncated)", &result[..MAX_DEP_CONTEXT_CHARS])
-        } else {
-            result.clone()
+        let truncated = match crate::harness::delegation::collect::clip_chars(result, MAX_DEP_CONTEXT_CHARS) {
+            Some(head) => format!("{head}...(truncated)"),
+            None => result.clone(),
         };
         parts.push(format!(
             "--- Task \"{}\" (completed) ---\n{}\n",
@@ -1987,6 +1982,15 @@ mod tests {
         let ctx = format_dep_context(&deps);
         assert!(ctx.contains("truncated"));
         assert!(ctx.len() < 5500);
+    }
+
+    /// Multi-byte text past the clip point must not split a character (it
+    /// used to byte-slice at 4000 and panic).
+    #[test]
+    fn dep_context_clip_is_char_safe() {
+        let long_result = format!("a{}", "é".repeat(MAX_DEP_CONTEXT_CHARS));
+        let ctx = format_dep_context(&[("Task".to_string(), long_result)]);
+        assert!(ctx.contains(&format!("a{}...(truncated)", "é".repeat(MAX_DEP_CONTEXT_CHARS - 1))));
     }
 
     #[test]
