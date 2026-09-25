@@ -238,6 +238,9 @@
 	},
 	"chat": {
 		"contextStats": "Context deze beurt: {files} bestanden zijn {times} keer opnieuw gelezen, {passes} compactieslagen.",
+		"goalLine": "Doel: {condition} ({turns} beurten)",
+		"goalLastCheck": "laatste controle: {reason}",
+		"goalPaused": "Gepauzeerd. Je volgende bericht hervat het.",
 		"resumedActivity": "Nog bezig: {tool}",
 		"waitingForYou": "Wacht op jou",
 		"subagentStep": "{op} · stap {n}",
@@ -2463,6 +2466,7 @@
 		},
 		"approvalGate": {
 			"batchHeadline": "{n} acties in één stap hebben je OK nodig",
+			"goalHeadline": "Akkoord met dit doel? Het werk gaat door tot een controle bevestigt dat het bereikt is.",
 			"yourAgent": "Je medewerker"
 		},
 		"approvalModal": {

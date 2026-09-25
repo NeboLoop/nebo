@@ -36,14 +36,14 @@ impl Profile {
             .collect()
     }
 
-    fn api(&self) -> Result<comm::api::NeboAIApi, ToolResult> {
-        crate::build_neboai_api(&self.store).map_err(ToolResult::error)
+    fn api(&self) -> Result<comm::api::NeboAIApi, String> {
+        crate::build_neboai_api(&self.store)
     }
 
     async fn get(&self, ctx: &ToolContext) -> ToolResult {
         let api = match self.api() {
             Ok(a) => a,
-            Err(e) => return e,
+            Err(e) => return ToolResult::error(e),
         };
         let mut out = format!("Bot ID: {}\n", api.bot_id());
         // Resolved "provider/model" of the invoking run (resolved ID only —
@@ -61,7 +61,7 @@ impl Profile {
     async fn update(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let api = match self.api() {
             Ok(a) => a,
-            Err(e) => return e,
+            Err(e) => return ToolResult::error(e),
         };
         let name = input["name"].as_str().unwrap_or("");
         let role = input["role"].as_str().unwrap_or("");
@@ -201,7 +201,7 @@ impl Profile {
     async fn open_billing(&self) -> ToolResult {
         let api = match self.api() {
             Ok(a) => a,
-            Err(e) => return e,
+            Err(e) => return ToolResult::error(e),
         };
         match api.billing_portal().await {
             Ok(v) => {

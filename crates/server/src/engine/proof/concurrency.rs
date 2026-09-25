@@ -612,7 +612,7 @@ async fn a_parents_message_reaches_its_running_sub_agent() {
     let pricing = second.iter().position(|m| m.contains("Also cover pricing.")).expect("the next step read the first message");
     let edges = second.iter().position(|m| m.contains("And the edge cases.")).expect("the next step read the second message");
     assert!(pricing < edges, "in the order sent");
-    assert!(second[pricing].starts_with("The employee who gave you this task sent you a message"), "{}", second[pricing]);
+    assert!(second[pricing].starts_with("The employee who gave you this task sent this message"), "{}", second[pricing]);
     assert!(!script.seen(0).iter().any(|m| m.contains("Also cover pricing.")), "the first step was already in flight");
 
     let thread = child_thread(&runner, &task);

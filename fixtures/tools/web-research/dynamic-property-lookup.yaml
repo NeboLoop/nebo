@@ -5,20 +5,28 @@ description: |
   site. This involves navigating to a government portal, filling address
   search forms, and reading structured property data. Tests form-based
   search on government sites with tabular results.
-target_component: web
+target_component: browser_open
 
 conversation:
   - role: user
     content: "Look up the property records for 1600 Pennsylvania Ave in Washington DC on the DC property tax database. I need the assessed value and owner name"
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
+    enabled: true
+  browser_act:
+    enabled: true
+  browser_fill_form:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: starts-with-search-or-navigate
-      text: "Model starts with web(action: 'search') for DC property tax records or navigates to the DC OTR real property site"
+      text: "Model starts with search_web for DC property tax records or navigates to the DC OTR real property site"
       severity: critical
   recovery:
     - id: finds-property-search
@@ -48,8 +56,8 @@ ideal_behavior:
   tool_calls: 10
   total_tokens: 14000
   narrative: |
-    1. search "DC property tax records lookup" → find mytax.dc.gov or similar
-    2. navigate to the property search page → snapshot to see form
+    1. search_web "DC property tax records lookup" → find mytax.dc.gov or similar
+    2. browser_open the property search page → browser_read to see form
     3. fill address fields → submit search
-    4. read_page → extract assessed value, owner name, lot/square info
+    4. browser_read → extract assessed value, owner name, lot/square info
     5. Report findings to user

@@ -43,13 +43,11 @@ impl Helpers {
             .collect()
     }
 
-    fn orchestrator(&self) -> Result<&dyn SubAgentOrchestrator, ToolResult> {
-        self.orchestrator.get().map(|o| o.as_ref()).ok_or_else(|| {
-            ToolResult::error(
-                "Helpers aren't ready yet: the server is still starting. Try again in a moment, \
-                 or do the work yourself.",
-            )
-        })
+    fn orchestrator(&self) -> Result<&dyn SubAgentOrchestrator, &'static str> {
+        self.orchestrator.get().map(|o| o.as_ref()).ok_or(
+            "Helpers aren't ready yet: the server is still starting. Try again in a moment, \
+             or do the work yourself.",
+        )
     }
 
     /// A helper has no name: a call that names an employee is work for a
@@ -77,7 +75,7 @@ impl Helpers {
         }
         let orch = match self.orchestrator() {
             Ok(o) => o,
-            Err(e) => return e,
+            Err(e) => return ToolResult::error(e),
         };
         let background = input["background"].as_bool().unwrap_or(true);
         let isolated = input["isolation"].as_str() == Some("worktree");
@@ -140,7 +138,7 @@ impl Helpers {
     async fn orchestrate(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let orch = match self.orchestrator() {
             Ok(o) => o,
-            Err(e) => return e,
+            Err(e) => return ToolResult::error(e),
         };
         // The nodes of a decomposition are this run's own helpers: they sit,
         // run at the model, and are limited like a single delegate.
@@ -170,7 +168,7 @@ impl Helpers {
         let message = input["message"].as_str().unwrap_or("").trim();
         let orch = match self.orchestrator() {
             Ok(o) => o,
-            Err(e) => return e,
+            Err(e) => return ToolResult::error(e),
         };
         match orch
             .send(
