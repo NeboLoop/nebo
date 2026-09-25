@@ -269,6 +269,8 @@
       loadedIdentityFor = agentId;
       editName = agent.name;
       editRole = agent.role;
+      jobCheckedRole = agent.role;
+      jobEdit = null;
       editColor = agent.color;
       editVoice = agent.voice ?? '';
       editLoopExposed = agent.loopExposed ?? false;
@@ -320,6 +322,36 @@
 
   let identityError = $state('');
 
+  // Editing the job runs the needs step again: what the new description adds
+  // shows as one line, and adding it grants it (the line's draft).
+  let jobEdit = $state<{ line: string; draftId: string } | null>(null);
+  let jobCheckedRole = '';
+
+  async function checkJobEdit() {
+    if (!agentId || managed || editRole === jobCheckedRole) return;
+    jobCheckedRole = editRole;
+    try {
+      const api = await import('$lib/api/nebo');
+      const res = await api.workOutAgentNeeds({ agentId, name: editName, description: editRole });
+      jobEdit = res.items.length > 0 && res.draftId ? { line: res.line, draftId: res.draftId } : null;
+    } catch {
+      jobEdit = null;
+    }
+  }
+
+  async function addJobEdit() {
+    if (!agentId || !jobEdit) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent(agentId, { draftId: jobEdit.draftId });
+      jobEdit = null;
+      identitySaved = true;
+      setTimeout(() => identitySaved = false, 2000);
+    } catch (e) {
+      identityError = (e as Error)?.message || $t('agentSettings.saveFailed');
+    }
+  }
+
   async function saveIdentity() {
     if (!agentId) return;
     try {
@@ -337,6 +369,7 @@
       identityError = '';
       identitySaved = true;
       setTimeout(() => identitySaved = false, 2000);
+      void checkJobEdit();
     } catch (e) {
       // A refused reporting line names the loop it would have closed, and a
       // taken name names the employee that has it. Swallowing that left the
@@ -1284,6 +1317,12 @@
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.role')}{#if managed} <span class="normal-case tracking-normal font-normal text-base-content/50">· {$t('agentSettings.fromPackage')}</span>{/if}</span>
         <textarea bind:value={editRole} oninput={debounceIdentitySave} disabled={managed} rows="3" class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed resize-none"></textarea>
       </label>
+      {#if jobEdit}
+        <div class="flex flex-wrap items-center gap-3 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5">
+          <span class="flex-1 min-w-0 text-sm">{jobEdit.line}</span>
+          <button type="button" class="btn btn-sm btn-primary" onclick={addJobEdit}>{$t('permissions.addJobEdit')}</button>
+        </div>
+      {/if}
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.color')}</div>
         <div class="flex gap-2 items-center">

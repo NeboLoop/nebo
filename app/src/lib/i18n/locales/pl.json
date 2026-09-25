@@ -387,7 +387,9 @@
 		"researchWriting": "pisze raport",
 		"researchOtherDomains": "+ {n} innych stron",
 		"researchVerified": "twierdzeń potwierdzonych w źródłach: {n}",
-		"historyLoadFailed": "Nie udało się wczytać tej rozmowy. Sprawdź połączenie i spróbuj ponownie."
+		"historyLoadFailed": "Nie udało się wczytać tej rozmowy. Sprawdź połączenie i spróbuj ponownie.",
+		"consentCreates": "Powiedz tak, a zostanie utworzony dokładnie z tym zakresem pracy.",
+		"consentAdds": "Powiedz tak, a to zostanie dodane do zakresu pracy."
 	},
 	"chatInput": {
 		"placeholder": "Odpowiedz...",
@@ -2964,7 +2966,13 @@
 		"placeholder": "np. Dyspozytor, Piper, Sam…",
 		"create": "Zatrudnij",
 		"failed": "Nie udało się utworzyć pracownika. Spróbuj ponownie.",
-		"marketplaceHint": "Wolisz gotowego specjalistę? Zajrzyj do sklepu."
+		"marketplaceHint": "Wolisz gotowego specjalistę? Zajrzyj do sklepu.",
+		"jobLabel": "Zakres pracy (opcjonalnie)",
+		"jobPlaceholder": "Co będzie robić? (opcjonalnie)",
+		"working": "Ustalamy, czego będzie potrzebować…",
+		"willDo": "{name} będzie:",
+		"thisEmployee": "Ten pracownik",
+		"removeItem": "Usuń: {item}"
 	},
 	"runLimit": {
 		"title": "Limit wydatków na przebieg",
@@ -3154,6 +3162,7 @@
 		"whyAsked": "Dlaczego zapytał?",
 		"whyRefused": "Dlaczego to odrzucono?",
 		"unreviewed": "Nieprzejrzane",
-		"loadMore": "Pokaż więcej"
+		"loadMore": "Pokaż więcej",
+		"addJobEdit": "Dodaj do zakresu pracy"
 	}
 }

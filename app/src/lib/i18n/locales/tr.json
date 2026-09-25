@@ -387,7 +387,9 @@
 		"researchWriting": "Rapor yazılıyor",
 		"researchOtherDomains": "+ {n} site daha",
 		"researchVerified": "{n} iddia kaynaklarla doğrulandı",
-		"historyLoadFailed": "Bu sohbet yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin."
+		"historyLoadFailed": "Bu sohbet yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
+		"consentCreates": "Evet deyin, tam olarak bu görevle oluşturulsun.",
+		"consentAdds": "Evet deyin, bu görevine eklensin."
 	},
 	"chatInput": {
 		"placeholder": "Yanıtla...",
@@ -2964,7 +2966,13 @@
 		"placeholder": "örneğin Dispatch, Piper, Sam…",
 		"create": "İşe al",
 		"failed": "Çalışan oluşturulamadı. Tekrar deneyin.",
-		"marketplaceHint": "Bunun yerine hazır bir uzman mı istiyorsunuz? Mağazaya göz atın."
+		"marketplaceHint": "Bunun yerine hazır bir uzman mı istiyorsunuz? Mağazaya göz atın.",
+		"jobLabel": "Görevi (isteğe bağlı)",
+		"jobPlaceholder": "Ne yapacak? (isteğe bağlı)",
+		"working": "Nelere ihtiyaç duyacağı belirleniyor…",
+		"willDo": "{name} şunları yapacak:",
+		"thisEmployee": "Bu çalışan",
+		"removeItem": "{item} kaldır"
 	},
 	"runLimit": {
 		"title": "Çalıştırma başına harcama sınırı",
@@ -3154,6 +3162,7 @@
 		"whyAsked": "Neden sordu?",
 		"whyRefused": "Bu neden reddedildi?",
 		"unreviewed": "İncelenmedi",
-		"loadMore": "Daha fazla göster"
+		"loadMore": "Daha fazla göster",
+		"addJobEdit": "İşe ekle"
 	}
 }

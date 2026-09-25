@@ -16,10 +16,13 @@
   import FolderPlus from 'lucide-svelte/icons/folder-plus';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import * as api from '$lib/api/nebo';
-  import type { Mode, PermissionItem, PermissionsPage, MoneyAmounts } from '$lib/api/nebo';
+  import type { PermissionItem, PermissionsPage, MoneyAmounts } from '$lib/api/nebo';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
   let { agentId, name = '' }: { agentId?: string; name?: string } = $props();
+
+  /** The server's mode ids. */
+  type Mode = 'automatic' | 'ask' | 'plan' | 'full_access';
 
   let page = $state<PermissionsPage | null>(null);
   let loading = $state(true);
@@ -40,7 +43,7 @@
     { id: 'full_access', label: 'permissions.modeFullAccess', desc: 'permissions.modeFullAccessDesc' }
   ];
 
-  function modeLabel(m: Mode): string {
+  function modeLabel(m: string): string {
     return $t(modes.find((x) => x.id === m)?.label ?? 'permissions.modeAutomatic');
   }
 

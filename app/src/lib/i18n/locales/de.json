@@ -387,7 +387,9 @@
 		"researchWriting": "schreibt den Bericht",
 		"researchOtherDomains": "+ {n} weitere Seiten",
 		"researchVerified": "{n} Aussagen anhand von Quellen geprüft",
-		"historyLoadFailed": "Dieses Gespräch konnte nicht geladen werden. Prüf deine Verbindung und versuch es nochmal."
+		"historyLoadFailed": "Dieses Gespräch konnte nicht geladen werden. Prüf deine Verbindung und versuch es nochmal.",
+		"consentCreates": "Sagen Sie Ja, und sie wird mit genau dieser Aufgabe angelegt.",
+		"consentAdds": "Sagen Sie Ja, und das kommt zu ihrer Aufgabe hinzu."
 	},
 	"chatInput": {
 		"placeholder": "Antworten...",
@@ -2964,7 +2966,13 @@
 		"placeholder": "z. B. Dispatch, Piper, Sam…",
 		"create": "Einstellen",
 		"failed": "Der Mitarbeiter konnte nicht erstellt werden. Versuch es nochmal.",
-		"marketplaceHint": "Lieber einen fertigen Experten? Sieh dich auf dem Marktplatz um."
+		"marketplaceHint": "Lieber einen fertigen Experten? Sieh dich auf dem Marktplatz um.",
+		"jobLabel": "Ihre Aufgabe (optional)",
+		"jobPlaceholder": "Was sollen sie tun? (optional)",
+		"working": "Wir ermitteln, was sie brauchen…",
+		"willDo": "{name} wird:",
+		"thisEmployee": "Diese Mitarbeiterin",
+		"removeItem": "{item} entfernen"
 	},
 	"runLimit": {
 		"title": "Ausgabenlimit pro Lauf",
@@ -3154,6 +3162,7 @@
 		"whyAsked": "Warum hat er gefragt?",
 		"whyRefused": "Warum wurde das abgelehnt?",
 		"unreviewed": "Nicht überprüft",
-		"loadMore": "Mehr anzeigen"
+		"loadMore": "Mehr anzeigen",
+		"addJobEdit": "Zur Aufgabe hinzufügen"
 	}
 }

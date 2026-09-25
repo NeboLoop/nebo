@@ -25,11 +25,12 @@ use crate::state::AppState;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionsPage {
-    pub mode: Mode,
+    /// automatic | ask | plan | full_access
+    pub mode: String,
     /// The employee has no mode of its own and follows the company default.
     pub mode_from_company: bool,
     /// The company default mode.
-    pub company_mode: Mode,
+    pub company_mode: String,
     /// What the job includes: the capabilities it may use.
     pub job: Vec<PermissionItem>,
     /// Capabilities the owner can add to the job.
@@ -310,9 +311,9 @@ fn page(store: &db::Store, agent_id: Option<&str>, connected: &BTreeSet<String>)
         None => (company_mode, false),
     };
     let mut p = PermissionsPage {
-        mode,
+        mode: mode.as_str().to_string(),
         mode_from_company,
-        company_mode,
+        company_mode: company_mode.as_str().to_string(),
         job: Vec::new(),
         can_add: Vec::new(),
         money: Vec::new(),
@@ -565,6 +566,11 @@ fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
             None => "Set to ask first".into(),
         },
         AskCase::AskMode => "Ask mode: it asks before changing anything".into(),
+        AskCase::Widens => "It would give an employee more room, which only you can do".into(),
+        AskCase::CreatedExtras { capabilities } => {
+            let needs: Vec<String> = capabilities.iter().map(|c| lower_first(&capability_phrase(c))).collect();
+            format!("An employee it made needs more than it holds: {}", needs.join(", "))
+        }
     }
 }
 
@@ -964,15 +970,15 @@ mod tests {
             update(&store, agent, &PermissionsUpdate { mode: Some(m.into()), ..Default::default() }, &BTreeSet::new())
         };
         let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
-        assert_eq!((p.mode, p.mode_from_company), (Mode::Automatic, true));
+        assert_eq!((p.mode.as_str(), p.mode_from_company), ("automatic", true));
         set(Some("a"), "plan").unwrap();
         assert_eq!(store.permission_mode(&emp()).unwrap(), Some(Mode::Plan));
         let p = page(&store, Some("a"), &BTreeSet::new()).unwrap();
-        assert_eq!((p.mode, p.mode_from_company, p.company_mode), (Mode::Plan, false, Mode::Automatic));
+        assert_eq!((p.mode.as_str(), p.mode_from_company, p.company_mode.as_str()), ("plan", false, "automatic"));
         set(Some("a"), "company").unwrap();
         assert_eq!(store.permission_mode(&emp()).unwrap(), None);
         set(None, "full_access").unwrap();
-        assert_eq!(page(&store, Some("a"), &BTreeSet::new()).unwrap().mode, Mode::FullAccess);
+        assert_eq!(page(&store, Some("a"), &BTreeSet::new()).unwrap().mode, "full_access");
         assert!(set(None, "company").is_err(), "the company has no default above it");
         assert!(set(Some("a"), "everything").is_err());
     }

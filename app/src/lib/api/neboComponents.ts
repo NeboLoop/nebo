@@ -273,15 +273,6 @@ export interface BillingSubscription {
 	currentPeriodEnd?: string
 }
 
-export interface CallEffects {
-	money_cents?: number
-	counterparty?: string
-	recipients: string[]
-	publishes: Knowable
-	deletes: string[]
-	overwrites: string[]
-}
-
 export interface CaseDetail {
 	case: CaseSummary
 	turns: CaseTurn[]
@@ -619,15 +610,6 @@ export interface ExtensionInfo {
 	needsConfiguration: boolean
 }
 
-export interface Grant {
-	agent_id: string
-	mode: Mode
-	rules: Rule[]
-	ceiling?: Ceiling
-	run_folders?: string[]
-	fence?: string[]
-}
-
 export interface HandleAvailableResponse {
 	available: boolean
 }
@@ -816,13 +798,6 @@ export interface MoneyAmounts {
 	perCounterpartyDayCents?: number
 }
 
-export interface MoneyLimit {
-	per_action_cents?: number
-	per_day_cents?: number
-	per_day_count?: number
-	per_counterparty_day_cents?: number
-}
-
 export interface Notification {
 	id: string
 	userId: string
@@ -948,9 +923,9 @@ export interface PermissionItem {
 }
 
 export interface PermissionsPage {
-	mode: Mode
+	mode: string
 	modeFromCompany: boolean
-	companyMode: Mode
+	companyMode: string
 	job: PermissionItem[]
 	canAdd: PermissionItem[]
 	money: PermissionItem[]
@@ -1021,18 +996,6 @@ export interface RefreshToken {
 	tokenHash: string
 	expiresAt: number
 	createdAt: number
-}
-
-export interface Rule {
-	id: string
-	scope: Scope
-	key: RuleKey
-	field?: RuleField
-	effect: Effect
-	money?: MoneyLimit
-	source: RuleSource
-	locked: boolean
-	created_at: number
 }
 
 export interface RunExit {
@@ -1158,16 +1121,6 @@ export interface SkillSecretInfo {
 	hint: string
 	required: boolean
 	configured: boolean
-}
-
-export interface Target {
-	tool: string
-	key: string
-	operation?: string
-	capability?: string
-	field?: RuleField
-	read_only: boolean
-	effects: CallEffects
 }
 
 export interface Team {
@@ -1337,51 +1290,6 @@ export interface WorkflowToolBinding {
 	interfaceName: string
 	tool: string
 }
-
-export type Ceiling =
-	| { kind: "parent"; grant: Grant }
-	| { kind: "creator"; creator_id: string; grant: Grant }
-
-export type Effect =
-	| "allow"
-	| "ask"
-	| "deny"
-
-export type Knowable =
-	| "yes"
-	| "no"
-	| "unknown"
-
-export type Mode =
-	| "automatic"
-	| "ask"
-	| "plan"
-	| "full_access"
-
-export type RuleField =
-	| { kind: "command_prefix"; value: string }
-	| { kind: "folder"; value: string }
-	| { kind: "domain"; value: string }
-	| { kind: "recipient"; value: string }
-
-export type RuleKey =
-	| { kind: "tool"; value: string }
-	| { kind: "operation"; value: string }
-	| { kind: "capability"; value: string }
-
-export type RuleSource =
-	| { kind: "hire"; package: string }
-	| { kind: "created"; draft_id: string }
-	| { kind: "job_edit" }
-	| { kind: "allow_always"; ask_id: string }
-	| { kind: "owner" }
-	| { kind: "package"; package: string }
-	| { kind: "law"; pack: string }
-	| { kind: "migrated"; from: string }
-
-export type Scope =
-	| { kind: "company" }
-	| { kind: "employee"; agent_id: string }
 
 // ── API Response Types (inferred from handlers) ────────────────────
 
@@ -2473,6 +2381,13 @@ export interface UserUpdatePermissionsResponse {
 
 export interface UserUpdateProfileResponse {
 	profile: unknown
+}
+
+export interface WorkOutAgentNeedsResponse {
+	line: string
+	items: string[]
+	accounts: string[]
+	draftId: string | null
 }
 
 // ── Common Types ───────────────────────────────────────────────────

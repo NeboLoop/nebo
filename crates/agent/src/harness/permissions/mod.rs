@@ -8,6 +8,7 @@
 
 pub mod activity;
 pub mod ask;
+pub mod consent;
 pub mod limits;
 pub mod migrate;
 pub mod plan;
@@ -49,6 +50,9 @@ pub fn resolve_grant(store: &db::Store, agent_id: &str, mode: Option<Mode>) -> G
         Ok(r) => grant.rules = r,
         Err(e) => tracing::warn!(agent = %agent_id, error = %e, "permission rules unreadable; the run holds none"),
     }
+    // An employee made by an employee works under its creator's grant until
+    // the owner answers its card.
+    grant.ceiling = consent::creator_ceiling(store, agent_id);
     grant
 }
 
@@ -116,6 +120,10 @@ pub fn decide(cx: &CheckCx<'_>, t: &Target) -> Decision {
     }
     if let Some(ask_id) = &cx.ctx.answered_ask {
         return Decision::Allow { why: Why::AnsweredOnce { ask_id: ask_id.clone() } };
+    }
+    // Only the owner gives an employee more room, in every mode.
+    if t.effects.widens {
+        return Decision::Ask { case: AskCase::Widens };
     }
     let full = cx.grant.mode == Mode::FullAccess;
     if let Some((rule, Effect::Ask)) = decided
@@ -244,5 +252,7 @@ fn spend(cx: &CheckCx<'_>, t: &Target) {
     }
 }
 
+#[cfg(test)]
+mod proof;
 #[cfg(test)]
 mod tests;
