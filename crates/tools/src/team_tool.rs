@@ -289,6 +289,7 @@ impl Teams {
             handoff_depth: ctx.handoff_depth,
             provenance: ctx.run_taint.clone(),
             is_reply: false,
+            reply_to: Some(ctx.session_key.clone()),
         };
         match rail.post_team(post).await {
             Ok(receipt) => {
@@ -296,7 +297,7 @@ impl Teams {
                     "Every member read it as context; nobody was asked to act (mention members to ask them).".to_string()
                 } else {
                     format!(
-                        "Asked to act: {}. They answer in the team; their replies reach you as team posts.",
+                        "Asked to act: {}. They answer in the team, and each reply comes to you as a notification.",
                         receipt.asked.join(", ")
                     )
                 };

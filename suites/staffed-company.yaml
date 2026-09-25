@@ -32,3 +32,9 @@ fixtures:
   - ../fixtures/staffed-company/policy/sc20-the-phones-default-is-the-employees-mode.yaml
   - ../fixtures/staffed-company/connections/sc21-a-plugin-required-by-its-code-is-its-own-tool.yaml
   - ../fixtures/staffed-company/policy/sc22-an-ask-reaches-the-owners-conversation.yaml
+  - ../fixtures/staffed-company/conversation/sc30-the-owner-is-answered-while-the-company-works.yaml
+  - ../fixtures/staffed-company/conversation/sc31-a-coworker-message-never-waits.yaml
+  - ../fixtures/staffed-company/conversation/sc32-a-team-reply-reaches-the-poster.yaml
+  - ../fixtures/staffed-company/conversation/sc33-one-employee-works-three-conversations-at-once.yaml
+  - ../fixtures/staffed-company/conversation/sc34-a-question-up-the-line-never-waits.yaml
+  - ../fixtures/staffed-company/conversation/sc35-a-woken-turn-replies-where-the-work-came-from.yaml

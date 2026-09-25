@@ -152,6 +152,46 @@ pub struct ChannelContext {
     pub thread_ts: Option<String>,
 }
 
+/// How many of a run's calls are waiting on someone other than the run
+/// itself: the owner answering a question. A run that is waiting is not
+/// stalled, however long the answer takes; the dispatcher's idle bound
+/// counts only time when nothing is waited on (`agent::guardrails`).
+#[derive(Debug, Default)]
+pub struct Waiting {
+    count: std::sync::atomic::AtomicUsize,
+    changed: tokio::sync::Notify,
+}
+
+impl Waiting {
+    /// A call starts waiting; it stops when the guard drops.
+    pub fn enter(self: &std::sync::Arc<Self>) -> WaitGuard {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.changed.notify_waiters();
+        WaitGuard(self.clone())
+    }
+
+    /// Nothing is waited on.
+    pub fn is_idle(&self) -> bool {
+        self.count.load(std::sync::atomic::Ordering::SeqCst) == 0
+    }
+
+    /// Resolves at the next start or end of a wait. Enable it before
+    /// reading [`Self::is_idle`] so a change in between is not missed.
+    pub fn changed(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
+    }
+}
+
+/// One call's wait; see [`Waiting::enter`].
+pub struct WaitGuard(std::sync::Arc<Waiting>);
+
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        self.0.count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.changed.notify_waiters();
+    }
+}
+
 /// Context carried through tool execution for origin tracking and session info.
 #[derive(Debug, Clone, Default)]
 pub struct ToolContext {
@@ -240,6 +280,9 @@ pub struct ToolContext {
     /// reporting it as "timed out after 300s" sent a live run off to blame
     /// the marketplace (2026-09-05).
     pub parked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The run's count of calls waiting on the owner, shared by every call
+    /// of the run and read by its dispatcher.
+    pub waiting: std::sync::Arc<Waiting>,
     /// Channel context (Slack/Discord/etc.) when this run was triggered by an
     /// inbound channel message. `None` for web UI, scheduled, or system runs.
     pub channel: Option<ChannelContext>,
@@ -401,6 +444,9 @@ impl ToolContext {
 
         channels.lock().await.insert(request_id.clone(), resp_tx);
 
+        // Waiting on the owner from before the card goes out: the run is not
+        // stalled while they decide, however long that takes.
+        let waiting = self.waiting.enter();
         let _ = tx
             .send(ai::StreamEvent::ask_request(
                 &request_id,
@@ -419,6 +465,7 @@ impl ToolContext {
                 None
             }
         };
+        drop(waiting);
         self.parked.store(false, std::sync::atomic::Ordering::SeqCst);
         answer
     }
@@ -427,6 +474,26 @@ impl ToolContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// While a question waits on the owner the run counts as waiting, and
+    /// stops the moment the answer arrives.
+    #[tokio::test]
+    async fn a_question_to_the_owner_is_a_wait() {
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: AskChannels = Default::default();
+        let mut ctx = ToolContext::new(Origin::User);
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        let waiting = ctx.waiting.clone();
+        assert!(waiting.is_idle());
+        let asking = tokio::spawn(async move { ctx.ask_user("Which?", serde_json::json!([])).await });
+        let card = stream_rx.recv().await.expect("the card");
+        assert!(!waiting.is_idle(), "the run waits on the owner");
+        let id = card.error.clone().expect("request id");
+        channels.lock().await.remove(&id).unwrap().send("A".into()).unwrap();
+        assert_eq!(asking.await.unwrap().as_deref(), Some("A"));
+        assert!(waiting.is_idle(), "answered: nothing is waited on");
+    }
 
     /// A parked ask ends with the run: cancelling the run's token resolves
     /// the wait with no answer and withdraws the request from the channel

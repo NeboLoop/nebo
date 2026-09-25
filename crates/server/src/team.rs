@@ -194,10 +194,10 @@ pub(crate) fn post(
                 requester_scope: String::new(),
                 handoff_depth: post.handoff_depth,
                 provenance: post.provenance.clone(),
-                wait: false,
                 team: Some(TeamDelivery {
                     team_id: team.id.clone(),
                     act: act_now,
+                    reply_to: post.reply_to.clone(),
                 }),
             };
             match crate::coworker::send_coworker_message(state.clone(), msg).await {

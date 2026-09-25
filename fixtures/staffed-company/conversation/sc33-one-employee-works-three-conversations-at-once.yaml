@@ -1,0 +1,8 @@
+id: sc33-one-employee-works-three-conversations-at-once
+name: "SC33 — One employee works three conversations at once"
+description: |
+  No per-employee turn slots: three conversations of one employee are all in a model call at
+  once; one turn per session is the only serialization (B3).
+target_component: staffed-company
+proof: staffed_proof::conversation::one_employee_works_three_conversations_at_once
+conversation: []

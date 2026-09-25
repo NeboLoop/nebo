@@ -315,6 +315,38 @@ impl Store {
         Ok(())
     }
 
+    /// Where a turn woken in this session sends its reply (`None` clears it):
+    /// the conversation the session's work came from. Stored in the
+    /// session's metadata as `replyRoute`; the server owns its shape.
+    pub fn set_session_reply_route(&self, id: &str, route: Option<&str>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        match route {
+            Some(route) => conn.execute(
+                "UPDATE sessions SET metadata = json_set(COALESCE(NULLIF(metadata, ''), '{}'), '$.replyRoute', json(?2)) WHERE id = ?1",
+                params![id, route],
+            ),
+            None => conn.execute(
+                "UPDATE sessions SET metadata = json_remove(COALESCE(NULLIF(metadata, ''), '{}'), '$.replyRoute') WHERE id = ?1",
+                params![id],
+            ),
+        }
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The reply route [`Self::set_session_reply_route`] stored, if any.
+    pub fn session_reply_route(&self, id: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT json_extract(COALESCE(NULLIF(metadata, ''), '{}'), '$.replyRoute') FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(Option::flatten)
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Reset conversation-scoped counters without clearing session-level preferences.
     /// Preserves model_override, provider_override, auth_profile_override, send_policy,
     /// custom_label, verbose_level — only clears per-conversation state.
@@ -507,5 +539,26 @@ mod counter_tests {
         assert_eq!(fetched.scope_id.as_deref(), Some("rt"));
         assert_eq!(fetched.metadata.as_deref(), Some("{}"));
         assert_eq!(fetched.active_chat_id, None);
+    }
+
+    /// A reply route is kept beside whatever else the metadata holds, and
+    /// clearing it leaves the rest.
+    #[test]
+    fn a_reply_route_round_trips_and_clears() {
+        let (_dir, store) = store();
+        store
+            .create_session("s-route", Some("agent:r:web"), None, None, Some(r#"{"keep":1}"#))
+            .unwrap();
+        assert_eq!(store.session_reply_route("s-route").unwrap(), None);
+        store.set_session_reply_route("s-route", Some(r#"{"kind":"comm","topic":"dm"}"#)).unwrap();
+        let route: serde_json::Value =
+            serde_json::from_str(&store.session_reply_route("s-route").unwrap().unwrap()).unwrap();
+        assert_eq!(route["topic"], "dm");
+        store.set_session_reply_route("s-route", None).unwrap();
+        assert_eq!(store.session_reply_route("s-route").unwrap(), None);
+        let meta: serde_json::Value =
+            serde_json::from_str(&store.get_session("s-route").unwrap().unwrap().metadata.unwrap()).unwrap();
+        assert_eq!(meta["keep"], 1);
+        assert_eq!(store.session_reply_route("missing").unwrap(), None);
     }
 }

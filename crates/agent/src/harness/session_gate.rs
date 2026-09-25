@@ -230,6 +230,12 @@ pub struct RunProgress {
     pub iteration_count: Arc<std::sync::atomic::AtomicU32>,
     pub tool_call_count: Arc<std::sync::atomic::AtomicU32>,
     pub current_tool: Arc<std::sync::Mutex<String>>,
+    /// The run's calls waiting on the owner. The dispatcher's idle bound
+    /// never ends a run while one is (`guardrails::next_event`).
+    pub waiting: Arc<tools::Waiting>,
+    /// Set by the dispatcher that ends the run as stalled, before it
+    /// cancels: the turn then records a stall, not the owner's stop.
+    pub stalled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(test)]
@@ -242,6 +248,8 @@ mod tests {
             iteration_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             tool_call_count: Arc::new(std::sync::atomic::AtomicU32::new(3)),
             current_tool: Arc::new(std::sync::Mutex::new("os: exec".into())),
+            waiting: Default::default(),
+            stalled: Default::default(),
         }
     }
 

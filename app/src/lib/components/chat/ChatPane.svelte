@@ -613,7 +613,6 @@
     toAgentId?: string;
     threadKey?: string;
     text?: string;
-    reply?: string | null;
     [k: string]: unknown;
   }
   function coworkerEvents(tools: ToolMsg[] | undefined): CoworkerEventPayload[] {

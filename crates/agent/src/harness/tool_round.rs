@@ -114,6 +114,7 @@ impl RunToolScope<'_> {
             run_id: progress.map(|p| p.run_id.clone()),
             ask_channels: ask_channels.cloned(),
             parked: Default::default(),
+            waiting: progress.map(|p| p.waiting.clone()).unwrap_or_default(),
             channel: channel_ctx.cloned(),
             model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
             memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),

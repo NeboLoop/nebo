@@ -13,6 +13,7 @@
 use tracing::{info, warn};
 
 use crate::chat_dispatch::{ChatConfig, run_chat};
+use crate::reply_route::ReplyRoute;
 use crate::state::AppState;
 use agent::harness::delegation::notify;
 use types::provenance::ProvenanceClass;
@@ -22,7 +23,10 @@ use types::provenance::ProvenanceClass;
 const PAYLOAD_CLIP: usize = 2000;
 
 /// Producer entry: persist the wake, then try to deliver it. Never blocks the
-/// producer on the woken run.
+/// producer on the woken run. An update for a helper's session goes to the
+/// helper registry, which holds the helper; one whose helper has finished
+/// and been let go goes to that helper's parent, so it is never lost in a
+/// thread nobody will read.
 pub fn enqueue(
     state: &AppState,
     session_key: &str,
@@ -31,6 +35,14 @@ pub fn enqueue(
     provenance: &[ProvenanceClass],
     handoff_depth: u8,
 ) {
+    let mut session_key = session_key;
+    while let Some((parent, task_id)) = agent::harness::delegation::split_helper_key(session_key) {
+        if state.helpers.notify(session_key, &row_text(kind, payload), provenance) {
+            return;
+        }
+        info!(session = %session_key, task_id, "update for a finished helper goes to its parent");
+        session_key = parent;
+    }
     let prov = serde_json::to_string(provenance).unwrap_or_else(|_| "[]".to_string());
     if let Err(e) =
         state
@@ -48,6 +60,10 @@ pub fn enqueue(
 /// Write a session's pending updates into its conversation as notification
 /// rows, then, when no turn is running there, start one that hears them.
 pub async fn deliver(state: &AppState, session_key: &str) {
+    // Claiming, writing the rows and stamping them delivered is one step:
+    // two deliveries racing (two replies landing together) would otherwise
+    // both claim the same updates and write each row twice.
+    let claim = claimed().lock().await;
     let (batch, poisoned) = match state.store.engine_claim_session_events(session_key, now()) {
         Ok(v) => v,
         Err(e) => {
@@ -86,7 +102,7 @@ pub async fn deliver(state: &AppState, session_key: &str) {
     let mut written = Vec::new();
     for w in &batch {
         let taint = serde_json::from_str::<Vec<ProvenanceClass>>(&w.provenance).unwrap_or_default();
-        match notify::append_row(state.harness.sessions(), session_key, &row_text(w), &taint) {
+        match notify::append_row(state.harness.sessions(), session_key, &row_text(&w.kind, &w.payload), &taint) {
             Ok(()) => written.push(w.id),
             Err(e) => {
                 warn!(error = %e, session = %session_key, kind = %w.kind, "wake: row not written; it redelivers");
@@ -106,9 +122,12 @@ pub async fn deliver(state: &AppState, session_key: &str) {
     if let Err(e) = state.store.engine_complete_events(&written, now()) {
         warn!(error = %e, session = %session_key, "wake: failed to stamp delivered");
     }
+    drop(claim);
     // A running turn hears the rows at its next step, or on the turn it
-    // hands them to when they land after its last one.
-    if state.harness.is_session_busy(session_key) {
+    // hands them to when they land after its last one. A turn already
+    // closing has made its last check for input: the rows need a turn of
+    // their own, which waits for its slot.
+    if state.harness.hears_new_rows(session_key) {
         return;
     }
 
@@ -124,6 +143,14 @@ pub async fn deliver(state: &AppState, session_key: &str) {
     };
 
     info!(session = %session_key, count = written.len(), "wake: waking session");
+    // The woken turn replies where the session's work came from.
+    let route = crate::reply_route::of(state, session_key);
+    if let Some(ReplyRoute::Coworker(route)) = route {
+        if let Err(e) = crate::coworker::run_in_thread(state, session_key, route, String::new(), None, seed_taint).await {
+            warn!(error = %e, session = %session_key, "wake: coworker thread not woken; its rows wait for its next message");
+        }
+        return;
+    }
     let config = ChatConfig {
         session_key: session_key.to_string(),
         // The conversation already holds what the turn hears.
@@ -135,7 +162,7 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         agent_id,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::COMM.to_string(),
-        comm_reply: None,
+        comm_reply: route.as_ref().and_then(ReplyRoute::comm_reply),
         entity_config,
         images: vec![],
         attachments: vec![],
@@ -190,6 +217,12 @@ pub async fn recover_pending_wakes(state: &AppState) {
     }
 }
 
+/// The one lock over claiming a session's updates and writing them.
+fn claimed() -> &'static tokio::sync::Mutex<()> {
+    static CLAIM: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    CLAIM.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -197,16 +230,17 @@ fn now() -> i64 {
 /// The row an update becomes. A helper's notification is already in the one
 /// format and is never clipped (a helper's result is capped where it is
 /// collected); any other update is labeled and clipped.
-fn row_text(w: &db::EngineEvent) -> String {
-    if w.kind == notify::WAKE_KIND {
-        return w.payload.clone();
+fn row_text(kind: &str, payload: &str) -> String {
+    if kind == notify::WAKE_KIND {
+        return payload.to_string();
     }
-    notify::render_update(label(&w.kind), &clip(&w.payload))
+    notify::render_update(label(kind), &clip(payload))
 }
 
 fn label(kind: &str) -> &str {
     match kind {
         "coworker_reply" => "A coworker replied to your message",
+        "team_reply" => "A teammate replied to your team post",
         "task_done" => "A background task you started finished",
         other => other,
     }
@@ -247,7 +281,8 @@ mod tests {
 
     #[test]
     fn an_update_is_a_labeled_notification() {
-        let row = row_text(&wake("coworker_reply", "[Reply from Billy]\nDone."));
+        let w = wake("coworker_reply", "[Reply from Billy]\nDone.");
+        let row = row_text(&w.kind, &w.payload);
         assert!(row.starts_with("<system-reminder>\n[Notification: not a message from the owner]"), "{row}");
         assert!(row.contains("A coworker replied to your message:\n[Reply from Billy]\nDone."));
     }
@@ -260,13 +295,13 @@ mod tests {
             "<system-reminder>\n[Notification: not a message from the owner]\nhelper h-1 \"read logs\": done\n{}\n</system-reminder>",
             "x".repeat(5000)
         );
-        assert_eq!(row_text(&wake(notify::WAKE_KIND, &n)), n);
+        assert_eq!(row_text(notify::WAKE_KIND, &n), n);
     }
 
     #[test]
     fn oversized_payload_clips_with_pointer() {
         let big = "x".repeat(5000);
-        let row = row_text(&wake("coworker_reply", &big));
+        let row = row_text("coworker_reply", &big);
         assert!(row.contains("[clipped — read the source thread for the full text]"));
         assert!(row.len() < 3000);
     }

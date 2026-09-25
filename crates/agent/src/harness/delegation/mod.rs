@@ -173,9 +173,10 @@ pub fn depth_of(key: &str) -> u8 {
     key.matches("subagent:").count().min(u8::MAX as usize) as u8
 }
 
-/// The parent session key of helper `task_id`, from its own key.
-fn parent_of<'a>(helper_key: &'a str, task_id: &str) -> Option<&'a str> {
-    helper_key.strip_prefix("subagent:")?.strip_suffix(task_id)?.strip_suffix(':')
+/// The parent session and task id of a helper's session key, `None` for
+/// any other session. A task id never holds a colon.
+pub fn split_helper_key(key: &str) -> Option<(&str, &str)> {
+    key.strip_prefix("subagent:")?.rsplit_once(':')
 }
 
 /// The session key of helper `task_id` of `parent_key`.
@@ -777,7 +778,7 @@ impl Helpers {
                 warn!(task_id = %run.id, error = %e, "an interrupted helper could not be marked failed");
                 continue;
             }
-            let Some(parent_key) = parent_of(&run.session_key, &run.id) else {
+            let Some(parent_key) = split_helper_key(&run.session_key).filter(|(_, id)| *id == run.id).map(|(p, _)| p) else {
                 continue;
             };
             if depth_of(parent_key) > 0 {
@@ -1035,32 +1036,7 @@ impl Helpers {
                             state.forget(&pid);
                         }
                     } else {
-                        let grandparent = state.helpers[&pid].parent_key.clone();
-                        let cancel = state.session_token(&grandparent).child_token();
-                        state.stops.insert(parent_key.to_string(), cancel.clone());
-                        let Some(p) = state.helpers.get_mut(&pid) else {
-                            return;
-                        };
-                        let spec = HelperSpec {
-                            description: p.description.clone(),
-                            prompt: String::new(),
-                            kind: p.kind,
-                            background: true,
-                            isolation: None,
-                            skills: Vec::new(),
-                        };
-                        let parent = Parent {
-                            session_key: &p.parent_key,
-                            seat: &p.parent_seat,
-                            grant: p.parent_grant.as_ref(),
-                            run_taint: &[],
-                            cancel: cancel.clone(),
-                        };
-                        let req = child::child_request(&parent, &pid, &spec, None, TurnInput::Notification(c.clone()));
-                        p.running = true;
-                        p.cancel = cancel;
-                        p.held = None;
-                        resume = Some((pid, req));
+                        resume = State::resume(&mut state, &pid, TurnInput::Notification(c.clone())).map(|req| (pid, req));
                     }
                 }
                 None if wakes => {
@@ -1093,6 +1069,72 @@ impl Helpers {
         if let Err(e) = notify::append_row(&self.sessions, session_key, text, &[]) {
             warn!(error = %e, session = %session_key, "helper notification row could not be written");
         }
+    }
+
+    /// Any other update for a helper's session, already in the one format
+    /// (`notify::render_update`, an ask's outcome): a coworker's reply, a
+    /// team reply, a finished command. When this process still holds the
+    /// helper, the row is written with the taint it carries: a running
+    /// helper hears it at its next step, an idle one runs a turn that hears
+    /// it. Returns false when no held helper has that session (it finished
+    /// and was let go, or a restart forgot it): the caller takes the update
+    /// to the helper's parent instead.
+    pub fn notify(self: &Arc<Self>, session_key: &str, text: &str, taint: &[ProvenanceClass]) -> bool {
+        let resume = {
+            let mut state = self.state();
+            let Some((pid, running)) =
+                state.helpers.iter().find(|(_, h)| h.session_key == session_key).map(|(id, h)| (id.clone(), h.running))
+            else {
+                return false;
+            };
+            // Written under the lock the helper's finish takes, so a row
+            // either reaches a running turn or finds the helper idle.
+            if let Err(e) = notify::append_row(&self.sessions, session_key, text, taint) {
+                warn!(error = %e, session = %session_key, "update for a helper could not be written");
+                return true;
+            }
+            if running {
+                return true;
+            }
+            State::resume(&mut state, &pid, TurnInput::None).map(|req| (pid, req))
+        };
+        if let Some((pid, req)) = resume {
+            let _ = self.store.update_task_running(&pid);
+            self.spawn_turn(pid, req, None);
+        }
+        true
+    }
+}
+
+impl State {
+    /// Mark idle helper `pid` running again and build the turn that hears
+    /// `input`, under a fresh stop token from its parent's session.
+    fn resume(&mut self, pid: &str, input: TurnInput) -> Option<TurnRequest> {
+        let grandparent = self.helpers.get(pid)?.parent_key.clone();
+        let cancel = self.session_token(&grandparent).child_token();
+        let session_key = self.helpers.get(pid)?.session_key.clone();
+        self.stops.insert(session_key, cancel.clone());
+        let p = self.helpers.get_mut(pid)?;
+        let spec = HelperSpec {
+            description: p.description.clone(),
+            prompt: String::new(),
+            kind: p.kind,
+            background: true,
+            isolation: None,
+            skills: Vec::new(),
+        };
+        let parent = Parent {
+            session_key: &p.parent_key,
+            seat: &p.parent_seat,
+            grant: p.parent_grant.as_ref(),
+            run_taint: &[],
+            cancel: cancel.clone(),
+        };
+        let req = child::child_request(&parent, pid, &spec, None, input);
+        p.running = true;
+        p.cancel = cancel;
+        p.held = None;
+        Some(req)
     }
 }
 
@@ -1589,6 +1631,33 @@ mod tests {
         rig.next_wake().await;
         let pending = rig.pending_notifications("agent:bookkeeper:web");
         assert!(pending[0].contains("done\nQ1 is 12,000.\n\nWith April, 16,100.\n"), "{}", pending[0]);
+    }
+
+    /// A coworker's reply to a helper that asked reaches that helper, not a
+    /// chat turn on its session: a running helper hears it (with the
+    /// taint it carries) and one that ended before a step read it runs a
+    /// turn that does. Once the helper is let go, the caller is told, so
+    /// the update goes to the helper's parent instead.
+    #[tokio::test]
+    async fn an_update_reaches_the_helper_that_asked() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let owner = rig.owner_turn("agent:bookkeeper:web");
+        task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Ask the clerk.", None)).await.unwrap());
+        let child = rig.next_turn().await;
+        let key = child.request.session_key.clone();
+        let reply = notify::render_update("A coworker replied to your message", "[Reply from Clerk]\nFiled.");
+        assert!(rig.helpers.notify(&key, &reply, &[ProvenanceClass::Coworker]));
+        let rows: Vec<_> = rig.sessions.get_messages(&rig.sessions.resolve_session_id_by_key(&key).unwrap()).unwrap();
+        let row = rows.iter().find(|m| notify::is_notification_row(m)).expect("the reply is a row in the helper's thread");
+        assert_eq!(notify::row_taint(row), vec![ProvenanceClass::Coworker]);
+
+        child.answer("Asked the clerk.").await;
+        let again = rig.next_turn().await;
+        assert_eq!(again.request.session_key, key, "the helper runs a turn that hears the reply");
+        rig.heard(&key);
+        again.answer("The clerk filed it.").await;
+        rig.next_wake().await;
+        assert!(!rig.helpers.notify(&key, &reply, &[]), "a helper let go takes no update");
     }
 
     #[tokio::test]

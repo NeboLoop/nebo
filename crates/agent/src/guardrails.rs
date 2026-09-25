@@ -1,14 +1,16 @@
 //! The run's idle bound: a run whose stream carries no event for
-//! [`RUN_IDLE_LIMIT`] is ended by the dispatcher as [`STALLED`].
+//! [`RUN_IDLE_LIMIT`] while nothing is waited on is ended by the dispatcher
+//! as [`STALLED`]. Waiting on the owner is never a stall.
 
 /// The exit label of a run the dispatcher ended for going silent.
 pub const STALLED: &str = "stalled";
 
-/// How long a run may go without a single stream event before the dispatcher
-/// ends it as [`STALLED`]. Must outlast the longest thing that is
-/// silent while it works: a foreground helper (`delegation::INACTIVITY_LIMIT`)
-/// and a shell command at its own timeout. Live 2026-09-02: a run whose turn
-/// had ended sat "active" for 38 minutes with nothing bounding it.
+/// How long a run may go without a single stream event, while none of its
+/// calls waits on the owner, before the dispatcher ends it as [`STALLED`].
+/// Must outlast the longest thing that is silent while it works: a
+/// foreground helper (`delegation::INACTIVITY_LIMIT`) and a shell command at
+/// its own timeout. Live 2026-09-02: a run whose turn had ended sat "active"
+/// for 38 minutes with nothing bounding it.
 pub const RUN_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// The owner-facing line for a stalled run. States what was observed and what
@@ -22,9 +24,11 @@ pub fn stall_notice() -> String {
 }
 
 /// The next event of a run's stream, or `Stalled` once nothing has arrived
-/// for [`RUN_IDLE_LIMIT`] since `last_event`. The ONE idle bound for every
-/// loop that drains a run (both chat dispatchers and voice), so a third copy
-/// of the select arm cannot drift. Cancel-safe: both arms are.
+/// for [`RUN_IDLE_LIMIT`] while nothing is waited on. The clock counts from
+/// the later of `last_event` and the end of the last wait: a question the
+/// owner takes an hour to answer, or a day, never ends the run. The ONE idle
+/// bound for every loop that drains a run (both chat dispatchers and voice),
+/// so a third copy of the select arm cannot drift. Cancel-safe: every arm is.
 pub enum Next<T> {
     Event(T),
     Closed,
@@ -34,29 +38,69 @@ pub enum Next<T> {
 pub async fn next_event<T>(
     rx: &mut tokio::sync::mpsc::Receiver<T>,
     last_event: tokio::time::Instant,
+    waiting: &tools::Waiting,
 ) -> Next<T> {
-    tokio::select! {
-        _ = tokio::time::sleep_until(last_event + RUN_IDLE_LIMIT) => Next::Stalled,
-        ev = rx.recv() => match ev {
-            Some(e) => Next::Event(e),
-            None => Next::Closed,
-        },
+    let mut quiet_since = last_event;
+    loop {
+        let changed = waiting.changed();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        let idle = waiting.is_idle();
+        tokio::select! {
+            ev = rx.recv() => return match ev {
+                Some(e) => Next::Event(e),
+                None => Next::Closed,
+            },
+            _ = &mut changed => {
+                if waiting.is_idle() {
+                    quiet_since = tokio::time::Instant::now();
+                }
+            }
+            _ = tokio::time::sleep_until(quiet_since + RUN_IDLE_LIMIT), if idle => return Next::Stalled,
+        }
     }
 }
 
 #[cfg(test)]
 mod next_event_tests {
     use super::*;
+    use std::sync::Arc;
 
     #[tokio::test(start_paused = true)]
     async fn stalls_only_when_nothing_arrives() {
+        let waiting = tools::Waiting::default();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);
         tx.send(7).await.expect("channel open");
-        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now()).await, Next::Event(7)));
+        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now(), &waiting).await, Next::Event(7)));
         // Sender alive, nothing sent: paused time jumps straight to the limit.
-        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now()).await, Next::Stalled));
+        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now(), &waiting).await, Next::Stalled));
         drop(tx);
-        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now()).await, Next::Closed));
+        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now(), &waiting).await, Next::Closed));
+    }
+
+    /// A question the owner answers a day later is not a stall, and the
+    /// idle clock starts over when the wait ends.
+    #[tokio::test(start_paused = true)]
+    async fn waiting_on_the_owner_is_never_a_stall() {
+        let waiting = Arc::new(tools::Waiting::default());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);
+        let asked = waiting.enter();
+        let answered = {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(24 * 3600)).await;
+                drop(asked);
+                tokio::time::sleep(RUN_IDLE_LIMIT / 2).await;
+                tx.send(1).await.expect("channel open");
+            })
+        };
+        let start = tokio::time::Instant::now();
+        assert!(matches!(next_event(&mut rx, start, &waiting).await, Next::Event(1)), "the answer arrived; the run was never ended");
+        answered.await.unwrap();
+        // With nothing waited on, silence past the limit is a stall again.
+        let quiet = tokio::time::Instant::now();
+        assert!(matches!(next_event(&mut rx, quiet, &waiting).await, Next::Stalled));
+        assert!(tokio::time::Instant::now() - quiet >= RUN_IDLE_LIMIT);
     }
 }
 
