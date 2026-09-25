@@ -1,42 +1,25 @@
 //! Session wake rail — "the turn ends, the attention doesn't"
 //! (docs/prd/session-wake-rail.md).
 //!
-//! Anything a session started or asked to be woken for re-invokes that
-//! session: same session, full context, labeled as machine, exactly once,
-//! even across a restart. Producers call [`enqueue`] — persist first (R1's
-//! write-ahead queue), then attempt delivery. [`deliver`] is the ONE entry
-//! that decides delivery from `run_registry` state: a busy session's wakes
-//! stay queued and are drained by [`on_run_finished`] when its run ends; an
-//! idle session gets a wake run whose hidden prompt (isMeta, invisible in
-//! the owner's transcript) carries the payloads plus a directive to act and
-//! report. The owner only ever sees the agent's resulting message.
-
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+//! Anything a session started or asked to be woken for reaches that session:
+//! same session, full context, labeled as machine, exactly once, even across
+//! a restart. Producers call [`enqueue`] — persist first (the write-ahead
+//! queue), then attempt delivery. [`deliver`] is the ONE delivery: every
+//! pending update becomes a notification row in the session's conversation
+//! (`agent::harness::delegation::notify`). A running turn hears the rows at
+//! its next step; an idle session gets a turn that starts from them. The
+//! owner only ever sees the employee's resulting message.
 
 use tracing::{info, warn};
 
 use crate::chat_dispatch::{ChatConfig, run_chat};
 use crate::state::AppState;
+use agent::harness::delegation::notify;
 use types::provenance::ProvenanceClass;
 
-/// R6 storm cap: a wake run carries at most this many payloads verbatim;
-/// anything beyond degrades to one honest summary line, never a wake storm.
-const STORM_CAP: usize = 20;
-/// R2 payload bound: a single payload is clipped to this many chars in the
-/// wake prompt — the full text stays in the queue row / source thread.
+/// A single update is clipped to this many chars in its row — the full text
+/// stays in the queue row / source thread.
 const PAYLOAD_CLIP: usize = 2000;
-/// The kind of a helper's notification (see
-/// `agent::harness::delegation::notify`): already in its one format, never
-/// clipped (a helper's result is capped where it is collected).
-const NOTIFICATION: &str = agent::harness::delegation::notify::WAKE_KIND;
-
-/// Sessions with a wake run dispatched but not yet finished, mapped to the
-/// claimed wake ids that ride it. Stamped delivered when the run completes
-/// ([`on_run_finished`]) — crash mid-run leaves the rows unstamped, so the
-/// boot sweep redelivers (WS4's write-ahead discipline; poison cap bounds it).
-static IN_FLIGHT: LazyLock<Mutex<HashMap<String, Vec<i64>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Producer entry: persist the wake, then try to deliver it. Never blocks the
 /// producer on the woken run.
@@ -62,67 +45,13 @@ pub fn enqueue(
     tokio::spawn(async move { deliver(&state, &key).await });
 }
 
-/// Drain a session's pending wakes into ONE wake run. No-op when the session
-/// is busy (its run's completion drains) or a wake run is already in flight.
+/// Write a session's pending updates into its conversation as notification
+/// rows, then, when no turn is running there, start one that hears them.
 pub async fn deliver(state: &AppState, session_key: &str) {
-    if state.runner.is_session_busy(session_key) {
-        // Busy (R3): hand the payloads to the live run's steering stream —
-        // the agent hears them mid-work. Rows stamp delivered at injection
-        // (runner-side); a run that ends without draining loses nothing —
-        // the still-pending rows redeliver from the completion hook.
-        let (batch, poisoned) = match state.store.engine_claim_session_events(session_key, now()) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(error = %e, session = %session_key, "wake: busy claim failed");
-                return;
-            }
-        };
-        if poisoned > 0 {
-            warn!(session = %session_key, poisoned, "wake: undeliverable wakes poisoned");
-        }
-        for w in batch {
-            // A helper's notification is a row in the conversation: the
-            // running turn loads it at its next step.
-            if w.kind == NOTIFICATION {
-                match agent::harness::delegation::notify::append_row(state.runner.sessions(), session_key, &w.payload) {
-                    Ok(()) => {
-                        if let Err(e) = state.store.engine_complete_events(&[w.id], now()) {
-                            warn!(error = %e, session = %session_key, "wake: failed to stamp a notification row delivered");
-                        }
-                    }
-                    Err(e) => warn!(error = %e, session = %session_key, "wake: notification row not written; it redelivers"),
-                }
-                continue;
-            }
-            let taint =
-                serde_json::from_str::<Vec<ProvenanceClass>>(&w.provenance).unwrap_or_default();
-            let content = agent::steering::wrap_system_reminder(&format!(
-                "[Background event — not an owner message]\n{}:\n{}\n\nHandle this alongside \
-                 your current work, and include the outcome in your report to the owner.",
-                label(&w.kind),
-                clip(&w.payload)
-            ));
-            agent::steering::push_wake(
-                session_key,
-                agent::steering::WakeEntry { wake_id: Some(w.id), content, taint },
-            );
-        }
-        return;
-    }
-    {
-        let mut in_flight = IN_FLIGHT.lock().expect("wake in-flight lock");
-        if in_flight.contains_key(session_key) {
-            return; // a wake run is already carrying this session's batch
-        }
-        // Reserve before claiming so a concurrent deliver can't double-claim.
-        in_flight.insert(session_key.to_string(), Vec::new());
-    }
-
     let (batch, poisoned) = match state.store.engine_claim_session_events(session_key, now()) {
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, session = %session_key, "wake: claim failed");
-            IN_FLIGHT.lock().expect("wake in-flight lock").remove(session_key);
             return;
         }
     };
@@ -146,29 +75,41 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         );
     }
     if batch.is_empty() {
-        IN_FLIGHT.lock().expect("wake in-flight lock").remove(session_key);
         return;
     }
 
-    let ids: Vec<i64> = batch.iter().map(|w| w.id).collect();
-    IN_FLIGHT
-        .lock()
-        .expect("wake in-flight lock")
-        .insert(session_key.to_string(), ids);
-
-    // Union the batch's taint and take the deepest handoff chain — the woken
-    // run is decided at the WS2 gates exactly as the payloads' origins demand,
-    // and further coworker sends stay bounded by MAX_HANDOFF_DEPTH (R6).
+    // Union the batch's taint and take the deepest handoff chain: the turn
+    // that hears them is decided at the gates exactly as their origins
+    // demand, and further coworker sends stay bounded (R6).
     let mut seed_taint: Vec<ProvenanceClass> = Vec::new();
     let mut handoff_depth: u8 = 0;
+    let mut written = Vec::new();
     for w in &batch {
+        let taint = serde_json::from_str::<Vec<ProvenanceClass>>(&w.provenance).unwrap_or_default();
+        match notify::append_row(state.harness.sessions(), session_key, &row_text(w), &taint) {
+            Ok(()) => written.push(w.id),
+            Err(e) => {
+                warn!(error = %e, session = %session_key, kind = %w.kind, "wake: row not written; it redelivers");
+                continue;
+            }
+        }
         handoff_depth = handoff_depth.max(w.handoff_depth.clamp(0, u8::MAX as i64) as u8);
-        for class in serde_json::from_str::<Vec<ProvenanceClass>>(&w.provenance).unwrap_or_default()
-        {
+        for class in taint {
             if !seed_taint.contains(&class) {
                 seed_taint.push(class);
             }
         }
+    }
+    if written.is_empty() {
+        return;
+    }
+    if let Err(e) = state.store.engine_complete_events(&written, now()) {
+        warn!(error = %e, session = %session_key, "wake: failed to stamp delivered");
+    }
+    // A running turn hears the rows at its next step, or on the turn it
+    // hands them to when they land after its last one.
+    if state.harness.is_session_busy(session_key) {
+        return;
     }
 
     let agent_id = types::keyparser::extract_agent_id(session_key);
@@ -182,11 +123,11 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         if info.channel.is_empty() { "web".to_string() } else { info.channel }
     };
 
-    info!(session = %session_key, count = batch.len(), "wake: waking session");
+    info!(session = %session_key, count = written.len(), "wake: waking session");
     let config = ChatConfig {
         session_key: session_key.to_string(),
-        prompt: wake_prompt(&batch),
-        system: String::new(),
+        // The conversation already holds what the turn hears.
+        prompt: String::new(),
         user_id: String::new(),
         channel,
         origin: tools::Origin::System,
@@ -207,7 +148,7 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         handoff_depth,
         seed_taint,
         tool_allowlist: None,
-        hidden_prompt: true,
+        hidden_prompt: false,
         audience: None,
         cwd: None,
         model_override: None,
@@ -215,21 +156,10 @@ pub async fn deliver(state: &AppState, session_key: &str) {
     run_chat(state, config).await;
 }
 
-/// Run-completion hook — called at the end of every chat run's lane task.
-/// Stamps the batch the finished run carried (if it was a wake run), then
-/// drains anything that queued while the session was busy.
+/// Run-completion hook — called at the end of every chat run's lane task:
+/// anything still pending for the session (a row that could not be written)
+/// is delivered again.
 pub fn on_run_finished(state: &AppState, session_key: &str) {
-    // Discard inbox entries the finished run never drained — their DB rows
-    // are still pending and redeliver as a normal wake below.
-    let _ = agent::steering::drain_wakes(session_key);
-    let ids = IN_FLIGHT.lock().expect("wake in-flight lock").remove(session_key);
-    if let Some(ids) = ids
-        && !ids.is_empty()
-    {
-        if let Err(e) = state.store.engine_complete_events(&ids, now()) {
-            warn!(error = %e, session = %session_key, "wake: failed to stamp delivered");
-        }
-    }
     let has_pending = matches!(
         state.store.engine_sessions_with_pending(),
         Ok(keys) if keys.iter().any(|k| k == session_key)
@@ -260,43 +190,18 @@ pub async fn recover_pending_wakes(state: &AppState) {
     }
 }
 
-/// The hidden wake context (R2). The agent sees this; the transcript never
-/// does — what the owner sees is only the agent's resulting report.
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-fn wake_prompt(batch: &[db::EngineEvent]) -> String {
-    // Helper notifications carry their own header and format: an idle
-    // session hears them exactly as a running one would.
-    if batch.iter().all(|w| w.kind == NOTIFICATION) {
-        return batch.iter().map(|w| w.payload.as_str()).collect::<Vec<_>>().join("\n\n");
+/// The row an update becomes. A helper's notification is already in the one
+/// format and is never clipped (a helper's result is capped where it is
+/// collected); any other update is labeled and clipped.
+fn row_text(w: &db::EngineEvent) -> String {
+    if w.kind == notify::WAKE_KIND {
+        return w.payload.clone();
     }
-    let mut out = String::from("[Background event — not an owner message]\n");
-    let shown = batch.len().min(STORM_CAP);
-    if batch.len() == 1 {
-        out.push_str(&format!("{}:\n{}\n", label(&batch[0].kind), clip(&batch[0].payload)));
-    } else {
-        out.push_str(&format!("{} events arrived while you were idle, in order:\n\n", batch.len()));
-        for (i, w) in batch[..shown].iter().enumerate() {
-            if w.kind == NOTIFICATION {
-                out.push_str(&format!("{}. {}\n\n", i + 1, w.payload));
-            } else {
-                out.push_str(&format!("{}. {}:\n{}\n\n", i + 1, label(&w.kind), clip(&w.payload)));
-            }
-        }
-        if batch.len() > shown {
-            out.push_str(&format!(
-                "…plus {} more not shown — check your threads and tasks for the rest.\n",
-                batch.len() - shown
-            ));
-        }
-    }
-    out.push_str(
-        "\nAct on this now: continue what you were doing with it, and report the outcome \
-         to the owner in your own words. If it changes nothing, a short note is enough.",
-    );
-    out
+    notify::render_update(label(&w.kind), &clip(&w.payload))
 }
 
 fn label(kind: &str) -> &str {
@@ -341,44 +246,29 @@ mod tests {
     }
 
     #[test]
-    fn single_wake_prompt_is_direct() {
-        let p = wake_prompt(&[wake("coworker_reply", "[Reply from Billy]\nDone.")]);
-        assert!(p.starts_with("[Background event — not an owner message]"));
-        assert!(p.contains("A coworker replied to your message"));
-        assert!(p.contains("[Reply from Billy]\nDone."));
-        assert!(p.contains("report the outcome"));
+    fn an_update_is_a_labeled_notification() {
+        let row = row_text(&wake("coworker_reply", "[Reply from Billy]\nDone."));
+        assert!(row.starts_with("<system-reminder>\n[Notification: not a message from the owner]"), "{row}");
+        assert!(row.contains("A coworker replied to your message:\n[Reply from Billy]\nDone."));
     }
 
+    /// A helper's notification is written in its one format, unclipped, with
+    /// no second header around it.
     #[test]
-    fn storm_degrades_to_summary() {
-        let batch: Vec<_> = (0..30).map(|i| wake("task_done", &format!("t{i}"))).collect();
-        let p = wake_prompt(&batch);
-        assert!(p.contains("30 events arrived"));
-        assert!(p.contains("t19"), "first 20 shown verbatim");
-        assert!(!p.contains("t20\n"), "beyond the cap is summarized");
-        assert!(p.contains("plus 10 more not shown"));
-    }
-
-    /// A helper's notification reaches an idle session in its one format,
-    /// unclipped, with no second header around it.
-    #[test]
-    fn notifications_wake_in_their_own_format() {
+    fn a_helper_notification_is_written_as_it_is() {
         let n = format!(
-            "[Notification: not a message from the owner]\nhelper h-1 \"read logs\": done\n{}",
+            "<system-reminder>\n[Notification: not a message from the owner]\nhelper h-1 \"read logs\": done\n{}\n</system-reminder>",
             "x".repeat(5000)
         );
-        assert_eq!(wake_prompt(&[wake(NOTIFICATION, &n)]), n);
-        let two = wake_prompt(&[wake(NOTIFICATION, "a"), wake(NOTIFICATION, "b")]);
-        assert_eq!(two, "a\n\nb");
-        let mixed = wake_prompt(&[wake("coworker_reply", "hi"), wake(NOTIFICATION, &n)]);
-        assert!(mixed.contains(&n), "never clipped in a mixed batch");
+        assert_eq!(row_text(&wake(notify::WAKE_KIND, &n)), n);
     }
 
     #[test]
     fn oversized_payload_clips_with_pointer() {
         let big = "x".repeat(5000);
-        let p = wake_prompt(&[wake("coworker_reply", &big)]);
-        assert!(p.contains("[clipped — read the source thread for the full text]"));
-        assert!(p.len() < 3000);
+        let row = row_text(&wake("coworker_reply", &big));
+        assert!(row.contains("[clipped — read the source thread for the full text]"));
+        assert!(row.len() < 3000);
     }
+
 }

@@ -621,7 +621,6 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
     let config = crate::chat_dispatch::ChatConfig {
         session_key,
         prompt: intro,
-        system: String::new(),
         user_id: String::new(),
         channel: "web".to_string(),
         origin: tools::Origin::User,
@@ -3131,7 +3130,6 @@ pub async fn chat_with_agent(
     let config = crate::chat_dispatch::ChatConfig {
         session_key: session_key.clone(),
         prompt,
-        system: String::new(),
         user_id: String::new(),
         channel: "web".to_string(),
         origin: tools::Origin::User,
@@ -3841,11 +3839,11 @@ pub async fn list_agent_chats(
     // Resolve active chat_id from the legacy web session (if it exists).
     let legacy_session_key = types::keyparser::build_agent_session_key(&id, "web");
     let active_chat_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(&legacy_session_key)
         .ok()
-        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .map(|sid| state.harness.sessions().active_chat_id(&sid))
         .unwrap_or_default();
 
     // Prefix query: catches both legacy `agent:<id>:web` and new `agent:<id>:thread:<uuid>`.
@@ -3973,7 +3971,7 @@ pub(crate) fn create_agent_thread(
     let session_key = format!("agent:{}:thread:{}", agent_id, new_chat_id);
 
     // Creates a new session with active_chat_id = new_chat_id (via extract_chat_id_from_key).
-    state.runner.sessions().get_or_create(&session_key, "")?;
+    state.harness.sessions().get_or_create(&session_key, "")?;
 
     // Create the chat row linked to this session.
     let chat = state
@@ -3990,13 +3988,13 @@ pub async fn activate_agent_chat(
     let session_key = types::keyparser::build_agent_session_key(&id, "web");
 
     let session_id = state
-        .runner
+        .harness
         .sessions()
         .resolve_session_id_by_key(&session_key)
         .map_err(to_error_response)?;
 
     state
-        .runner
+        .harness
         .sessions()
         .set_active_chat(&session_id, &chat_id)
         .map_err(to_error_response)?;
@@ -4361,7 +4359,7 @@ pub async fn start_workflow_chat(
         types::keyparser::build_agent_session_key(&id, "help:workflow");
 
     let session = state
-        .runner
+        .harness
         .sessions()
         .get_or_create(&session_key, "")
         .map_err(to_error_response)?;
@@ -4375,7 +4373,7 @@ pub async fn start_workflow_chat(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if refresh {
-        if let Ok(messages) = state.runner.sessions().get_messages(&session.id) {
+        if let Ok(messages) = state.harness.sessions().get_messages(&session.id) {
             if let Some(sys) = messages.iter().find(|m| m.role == "system") {
                 state
                     .store
@@ -4391,9 +4389,9 @@ pub async fn start_workflow_chat(
 
     // Full seed (builder open / first visit): clear old messages and inject
     // fresh context so the AI sees the latest workflow state.
-    let _ = state.runner.sessions().clear_current_messages(&session.id);
+    let _ = state.harness.sessions().clear_current_messages(&session.id);
 
-    let _ = state.runner.sessions().append_message(
+    let _ = state.harness.sessions().append_message(
         &session.id,
         "system",
         &system_context,
@@ -4416,7 +4414,7 @@ pub async fn start_workflow_chat(
         }
     );
 
-    let _ = state.runner.sessions().append_message(
+    let _ = state.harness.sessions().append_message(
         &session.id,
         "assistant",
         &greeting,

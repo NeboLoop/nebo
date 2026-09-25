@@ -413,6 +413,26 @@ fn build_embedding_provider(
 /// resolver the comms and tunnel paths use (`codes::neboai_token_from`, which
 /// honors the rotated-token cache), so a rotation or a login after boot needs
 /// no rebuild. Janus rejects a bare bot id as a bearer.
+/// A helper's progress on the owner's screen: `subagent_start`,
+/// `subagent_progress` and `subagent_complete`, addressed to the session
+/// that started it. Never text in anyone's conversation.
+fn helper_event_to_hub(hub: &handlers::ws::ClientHub, ev: agent::harness::delegation::HelperEvent) {
+    let name = match ev.event.event_type {
+        ai::StreamEventType::SubagentStart => "subagent_start",
+        ai::StreamEventType::SubagentProgress => "subagent_progress",
+        ai::StreamEventType::SubagentComplete => "subagent_complete",
+        _ => return,
+    };
+    let mut payload = serde_json::json!({
+        "session_id": ev.parent_session_key,
+        "agentId": types::keyparser::extract_agent_id(&ev.parent_session_key),
+    });
+    for (k, v) in ev.event.widgets.iter().flat_map(|w| w.as_object()).flatten() {
+        payload[k] = v.clone();
+    }
+    hub.broadcast(name, payload);
+}
+
 pub fn build_decide_client(store: Arc<db::Store>, cfg: &Config) -> Arc<ai::DecideClient> {
     Arc::new(ai::DecideClient::new(&cfg.neboai.janus_url, move || {
         Some(ai::Bearer {
@@ -1740,7 +1760,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let decide_client = build_decide_client(store.clone(), &cfg);
     // Desktop control asks Jev which element "the Save button" is.
     tools::desktop_tool::set_decider(decide_client.clone());
-    let mut runner_builder = agent::Runner::new(
+    let mut harness = agent::Harness::new(
         store.clone(),
         tool_registry.clone(),
         providers,
@@ -1751,27 +1771,23 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         active_role_state.clone(),
         Some(skill_loader.clone()),
     )
-    .set_ask_channels(ask_channels.clone())
-    .set_approval_channels(approval_channels.clone())
+    .with_ask_channels(ask_channels.clone())
+    .with_approval_channels(approval_channels.clone())
     // Same adapter instance as the memory tool — one search pathway, one
-    // TurboVec index cache — powering per-message prompt recall.
-    .set_hybrid_searcher(hybrid_searcher);
-
+    // TurboVec index cache — powering the turn's recall.
+    .with_hybrid_searcher(hybrid_searcher);
     if let Some(ep) = embedding_provider.clone() {
-        runner_builder = runner_builder.set_embedding_provider(ep);
+        harness = harness.with_embedding_provider(ep);
     }
-    runner_builder = runner_builder.set_decide(decide_client);
-
-    let runner = Arc::new(runner_builder);
 
     // Spawn background memory consolidation sweep (30-min interval, per-scope
     // dedup/prune); the embedding provider keeps merged values' vectors fresh
     // and the decide client judges write-time contradiction pairs.
     agent::memory_consolidation::spawn_sweep(
         store.clone(),
-        runner.providers(),
+        harness.providers(),
         embedding_provider.clone(),
-        runner.decide(),
+        Some(decide_client.clone()),
     );
 
     // Create event bus and dispatcher for workflow-to-workflow events
@@ -1794,17 +1810,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         ))
         .await;
 
-    // The ONE agentic loop for workflow activities: the chat Runner, adapted
-    // (Phase 4 — the engine's second loop is deleted; see workflow::loop_contract).
-    let workflow_loop: Arc<dyn workflow::ActivityLoop> = Arc::new(
-        agent::workflow_loop::RunnerActivityLoop::new(runner.clone(), store.clone()),
-    );
+    // The ONE loop runs workflow activities too (see workflow::loop_contract).
+    let workflow_loop: Arc<dyn workflow::ActivityLoop> =
+        Arc::new(agent::harness::workflow_turn::WorkflowTurns::new(harness.clone()));
 
-    // Create workflow manager (needs runner's shared providers for background execution)
+    // Create workflow manager (needs the shared providers for background execution)
     let workflow_manager = Arc::new(workflow_manager::WorkflowManagerImpl::new(
         store.clone(),
-        runner.providers(),
-        runner.decide(),
+        harness.providers(),
+        Some(decide_client.clone()),
         tool_registry.clone(),
         hub.clone(),
         cfg.clone(),
@@ -2102,22 +2116,38 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         store.clone(),
     );
 
-    // Create orchestrator and fill the late-binding handle. The wake channel
-    // lets fire-and-forget task completions reach the session wake rail (R5)
-    // without the agent crate depending on server state — rows are durable
-    // before the send, so a dropped notification only delays to the boot sweep.
+    // The helper registry, and the helper tools' door onto it. The wake
+    // channel lets a helper's notification reach an owner session through
+    // the wake rail without the agent crate depending on server state — rows
+    // are durable before the send, so a dropped send only delays to the boot
+    // sweep. Helper progress goes to the owner's screen.
     let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let orchestrator = agent::Orchestrator::new(runner.clone(), store.clone())
-        .with_lanes(lanes.clone())
-        .with_wake_notify(wake_tx);
+    let (helper_ui_tx, mut helper_ui_rx) = tokio::sync::mpsc::unbounded_channel::<agent::harness::delegation::HelperEvent>();
+    let helpers = agent::harness::delegation::Helpers::new(
+        store.clone(),
+        Arc::new(harness.sessions().clone()),
+        tool_registry.clone(),
+        Arc::new(harness.clone()),
+        Some(wake_tx),
+        Some(helper_ui_tx),
+    );
     if orch_handle
-        .set(Box::new(orchestrator) as Box<dyn tools::SubAgentOrchestrator>)
+        .set(Box::new(agent::harness::delegation::door::HelperDoor::new(helpers.clone(), harness.clone()))
+            as Box<dyn tools::SubAgentOrchestrator>)
         .is_err()
     {
-        panic!("orchestrator handle set twice");
+        panic!("helper door set twice");
+    }
+    {
+        let hub = hub.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = helper_ui_rx.recv().await {
+                helper_event_to_hub(&hub, ev);
+            }
+        });
     }
 
-    // Recover incomplete sub-agent tasks from previous crash
+    // Helpers a restart interrupted fail and tell their owner session.
     orch_handle.get().unwrap().recover().await;
 
     // provider_models is seeded earlier, BEFORE build_providers (fresh-DB
@@ -2158,8 +2188,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         embedding_provider: embedding_provider.clone(),
         auth: auth_service,
         hub,
-        runner,
-        goal_tracker: Arc::new(agent::goals::GoalTracker::new()),
+        harness,
+        helpers,
+        decide: Some(decide_client),
         tools: tool_registry,
         bridge,
         napp_registry,
@@ -2192,7 +2223,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         pending_layers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         presence: Arc::new(agent::PresenceTracker::new()),
         tunnel_online: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
         run_registry: run_registry::RunRegistry::new(),
         personal_loop_id: Arc::new(tokio::sync::RwLock::new(personal_loop_id_seed)),
         channel_providers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
@@ -2263,14 +2293,18 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
-    // Install the chat-title sink: the runner generates+persists titles for every
-    // run path, then this broadcasts the change + propagates it to the loop. One
-    // generator, set once (CODE_AUDITOR Rule 8).
-    state
-        .runner
-        .set_title_sink(std::sync::Arc::new(chat_dispatch::TitleBroadcaster::new(
-            state.clone(),
-        )));
+    // Bind the harness's outlets: the chat-title sink (the harness generates
+    // and stores titles; this broadcasts them and pushes them to the loop),
+    // owner-facing events outside a turn, and the agreed goal's status,
+    // kickoffs and running work. Set once (CODE_AUDITOR Rule 8).
+    {
+        let hub = state.hub.clone();
+        state.harness.bind(agent::Outlets {
+            title_sink: Some(Arc::new(chat_dispatch::TitleBroadcaster::new(state.clone()))),
+            broadcast: Some(Arc::new(move |event: &str, payload: serde_json::Value| hub.broadcast(event, payload))),
+            goal_observer: Some(Arc::new(handlers::goal::GoalOutlet::new(state.clone()))),
+        });
+    }
 
     // Wire the comm incoming-message handler now that AppState exists. Install
     // events route through the SAME canonical install pathway as store/code
@@ -3601,6 +3635,7 @@ async fn try_handle_comm_control(
     metadata: &std::collections::HashMap<String, String>,
 ) -> bool {
     if metadata.get("kind").map(String::as_str) == Some("stop") {
+        state.helpers.stop_session(Some(session_key));
         let cancelled = state.run_registry.cancel_by_session(session_key).await;
         tracing::info!(session = %session_key, cancelled, "inbound comm stop command");
         return true;
@@ -4075,7 +4110,6 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
-            system: String::new(),
             user_id: String::new(),
             channel: "neboai".to_string(),
             origin: comm_origin(is_personal && !is_webhook),
@@ -4245,7 +4279,6 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
-            system: String::new(),
             user_id: String::new(),
             channel: "neboai".to_string(),
             // A QR scan, an embedded widget, a public web chat: whoever typed
@@ -4532,7 +4565,6 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             let config = chat_dispatch::ChatConfig {
                 session_key,
                 prompt,
-                system: String::new(),
                 user_id: String::new(),
                 channel: "neboai".to_string(),
                 origin: comm_origin(is_personal),
@@ -4644,7 +4676,6 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
-            system: String::new(),
             user_id: String::new(),
             channel: "neboai".to_string(),
             origin: tools::Origin::Comm,
@@ -5411,7 +5442,6 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             let config = chat_dispatch::ChatConfig {
                 session_key,
                 prompt: prompt.clone(),
-                system: String::new(),
                 user_id: String::new(),
                 channel: "neboai".to_string(),
                 origin: tools::Origin::Comm,
@@ -5644,10 +5674,10 @@ async fn handle_comm_slash_command(
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             match state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(session_key)
-                .and_then(|sid| state.runner.sessions().reset(&sid))
+                .and_then(|sid| state.harness.sessions().reset(&sid))
             {
                 Ok(_new_chat_id) => {
                     tracing::info!(
@@ -5673,10 +5703,10 @@ async fn handle_comm_slash_command(
             // records-are-sacred stance as run dismissal. Destruction remains
             // an explicit act: delete-chat in the list, behind a confirm.
             match state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(session_key)
-                .and_then(|sid| state.runner.sessions().reset(&sid))
+                .and_then(|sid| state.harness.sessions().reset(&sid))
             {
                 Ok(_new_chat_id) => {
                     "Context cleared — fresh start. The previous conversation is still in your chat list.".to_string()
@@ -5701,11 +5731,11 @@ async fn handle_comm_slash_command(
 
         "/status" => {
             let msg_count = state
-                .runner
+                .harness
                 .sessions()
                 .resolve_session_id_by_key(session_key)
                 .ok()
-                .and_then(|sid| state.runner.sessions().get_messages(&sid).ok())
+                .and_then(|sid| state.harness.sessions().get_messages(&sid).ok())
                 .map(|m| m.len())
                 .unwrap_or(0);
 

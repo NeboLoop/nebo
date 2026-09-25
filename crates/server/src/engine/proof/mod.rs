@@ -94,7 +94,9 @@ pub struct World {
 pub fn idle(_: &str) -> Option<String> {
     None
 }
-pub fn no_steer(_: &str, _: &EngineEvent) {}
+pub fn no_steer(_: &str, _: &EngineEvent) -> bool {
+    false
+}
 
 /// A fresh store on its own file.
 pub fn fresh_store() -> Store {

@@ -84,7 +84,6 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
             let config = crate::chat_dispatch::ChatConfig {
                 session_key: session_key.to_string(),
                 prompt: prompt.to_string(),
-                system: String::new(),
                 user_id: String::new(),
                 channel: channel_kind.clone(),
                 // A Slack/Discord/Teams interlocutor is a third party typing
@@ -166,15 +165,6 @@ pub(crate) async fn collect_channel_reply(
     let mut reply_provenance: Vec<types::provenance::ProvenanceClass> = Vec::new();
     while let Some(event) = rx.recv().await {
         if let Some(frag) = crate::chat_dispatch::reply_fragment(&event) {
-            // Skip orchestrator progress notifications — the
-            // "_Working on: ..._" heartbeat (shared predicate) and
-            // the background-task notice are status, not content.
-            if crate::chat_dispatch::is_progress_heartbeat(frag) {
-                continue;
-            }
-            if frag.trim() == "Working on this in the background..." {
-                continue;
-            }
             full_response.push_str(frag);
             continue;
         }
@@ -230,14 +220,7 @@ pub(crate) async fn collect_channel_reply(
         }
     }
 
-    // Clean up any residual empty lines from filtered status messages
-    let reply = full_response
-        .lines()
-        .filter(|line| !line.trim().is_empty() || full_response.matches('\n').count() < 20)
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string();
+    let reply = full_response.trim().to_string();
 
     // Empty-reply fallback: surface the terminal status line rather than
     // silence. Real prose always wins — the notice never mixes into it.

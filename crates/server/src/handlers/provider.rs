@@ -208,11 +208,11 @@ pub(crate) async fn reload_providers(state: &AppState) {
     providers.extend(gateway_providers);
 
     info!(count = providers.len(), "reloading providers");
-    state.runner.reload_providers(providers).await;
+    state.harness.reload_providers(providers).await;
 
     // Refresh the DB-held models in the selector (they're not in yaml)
-    crate::inject_db_models(&state.store, state.runner.selector(), "ollama");
-    crate::inject_db_models(&state.store, state.runner.selector(), "janus");
+    crate::inject_db_models(&state.store, state.harness.selector(), "ollama");
+    crate::inject_db_models(&state.store, state.harness.selector(), "janus");
 }
 
 /// GET /api/v1/providers
@@ -553,10 +553,10 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
     let cfg = config::ModelsConfig::load();
     // The synced speeds must be known to the selector, or a pin like
     // "janus/nebo-1-pro" fuzzy-matches to the nearest name it does know.
-    crate::inject_db_models(&state.store, state.runner.selector(), "janus");
+    crate::inject_db_models(&state.store, state.harness.selector(), "janus");
     let user_aliases: std::collections::HashMap<String, String> =
         cfg.aliases.iter().map(|a| (a.alias.clone(), a.model_id.clone())).collect();
-    state.runner.selector().rebuild_fuzzy(&user_aliases);
+    state.harness.selector().rebuild_fuzzy(&user_aliases);
 
     // Task routing
     let task_routing = cfg.task_routing.as_ref().map(|tr| {

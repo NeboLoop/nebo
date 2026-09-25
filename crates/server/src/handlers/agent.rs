@@ -230,7 +230,7 @@ pub async fn update_profile(
 
 /// GET /api/v1/agent/status
 pub async fn get_status(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    let provider_count = state.runner.provider_count();
+    let provider_count = state.harness.provider_count();
     let tool_names = state.tools.get_tool_names().await;
 
     // Get real task counts from the DB

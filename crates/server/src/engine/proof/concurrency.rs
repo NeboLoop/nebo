@@ -228,7 +228,7 @@ async fn the_store_and_the_ledger_hold_under_contention() {
 /// For `reject_for` after the first call past the plan, every call is
 /// refused with a 429 and Retry-After 1 s — a wave the way Janus sends one:
 /// everyone, for a moment. `live`/`peak` count the calls in flight at the
-/// provider. The permits, the runner's loop and retries, the store and the
+/// provider. The permits, the harness's loop and retries, the store and the
 /// DAG scheduler are the product's own.
 struct GivenWords(Arc<Words>);
 
@@ -316,24 +316,33 @@ impl ai::Provider for GivenWords {
     }
 }
 
-/// A real runner over a fresh store with only the model's words given.
-fn given_words_runner(
-    words: Arc<Words>,
-    concurrency: Arc<agent::ConcurrencyController>,
-) -> (Arc<agent::Runner>, Arc<db::Store>) {
+/// The real harness over a fresh store, with only the model given.
+fn harness_over(provider: Arc<dyn ai::Provider>, concurrency: Arc<agent::ConcurrencyController>) -> agent::Harness {
     let store = Arc::new(fresh_store());
-    let runner = Arc::new(agent::Runner::new(
+    agent::Harness::new(
         store.clone(),
-        Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone())))),
-        vec![Arc::new(GivenWords(words)) as Arc<dyn ai::Provider>],
+        Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store)))),
+        vec![provider],
         agent::selector::ModelSelector::new(Default::default()),
         concurrency,
         Arc::new(napp::HookDispatcher::new()),
         None,
         Default::default(),
         None,
-    ));
-    (runner, store)
+    )
+}
+
+/// The helper tools' door over the real helper registry on `harness`.
+fn helper_door(harness: &agent::Harness) -> agent::harness::delegation::door::HelperDoor {
+    let helpers = agent::harness::delegation::Helpers::new(
+        harness.store().clone(),
+        Arc::new(harness.sessions().clone()),
+        harness.tools().clone(),
+        Arc::new(harness.clone()),
+        None,
+        None,
+    );
+    agent::harness::delegation::door::HelperDoor::new(helpers, harness.clone())
 }
 
 /// The run a proof's fan-out is spawned from: the owner's, with no limits.
@@ -349,17 +358,17 @@ fn owner_run() -> tools::SpawnRequest {
 /// A fan-out finishes when only two model calls may run at once. A permit
 /// is taken where the resource is spent, at the call, never around a unit
 /// of work that makes calls: the DAG once held an LLM permit per sub-task
-/// while each sub-task's runner took one per call, so at the permit floor
-/// two sub-tasks held both and waited forever. Three independent sub-tasks
-/// run through the real runner and all three report back.
+/// while each sub-task's turn took one per call, so at the permit floor
+/// two sub-tasks held both and waited forever. Three independent helpers
+/// run through the real harness and all three report back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fan_out_finishes_at_the_permit_floor() {
     use tools::SubAgentOrchestrator as _;
 
     let concurrency = Arc::new(agent::ConcurrencyController::new(Some(2)));
     assert_eq!(concurrency.ceiling(), 2, "the scenario runs at the permit floor");
-    let (runner, store) = given_words_runner(Words::new(3, std::time::Duration::ZERO), concurrency);
-    let orchestrator = agent::Orchestrator::new(runner, store);
+    let harness = harness_over(Arc::new(GivenWords(Words::new(3, std::time::Duration::ZERO))), concurrency);
+    let orchestrator = helper_door(&harness);
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -390,8 +399,8 @@ async fn a_429_slows_the_whole_bot_and_it_recovers() {
     concurrency.set_ceiling(8);
     assert_eq!(concurrency.effective_permits(), 8);
     let words = Words::new(8, std::time::Duration::from_millis(300));
-    let (runner, store) = given_words_runner(words.clone(), concurrency.clone());
-    let orchestrator = agent::Orchestrator::new(runner, store);
+    let harness = harness_over(Arc::new(GivenWords(words.clone())), concurrency.clone());
+    let orchestrator = helper_door(&harness);
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(60),
@@ -523,21 +532,24 @@ impl ai::Provider for Scripted {
 /// The parent a scenario's sub-agent reports to: an interactive session.
 const PARENT: &str = "agent:ops:web";
 
-/// A real orchestrator over a real runner and store, the child's words given.
-fn scripted_orchestrator(script: Arc<Script>) -> (agent::Orchestrator, Arc<agent::Runner>, Arc<db::Store>) {
-    let store = Arc::new(fresh_store());
-    let runner = Arc::new(agent::Runner::new(
-        store.clone(),
-        Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone())))),
-        vec![Arc::new(Scripted(script)) as Arc<dyn ai::Provider>],
-        agent::selector::ModelSelector::new(Default::default()),
-        Arc::new(agent::ConcurrencyController::new(Some(4))),
-        Arc::new(napp::HookDispatcher::new()),
-        None,
-        Default::default(),
-        None,
-    ));
-    (agent::Orchestrator::new(runner.clone(), store.clone()), runner, store)
+/// The real helper door over the real harness and store, the child's words
+/// given.
+fn scripted_orchestrator(
+    script: Arc<Script>,
+) -> (agent::harness::delegation::door::HelperDoor, agent::Harness, Arc<db::Store>) {
+    let harness = harness_over(Arc::new(Scripted(script)), Arc::new(agent::ConcurrencyController::new(Some(4))));
+    let store = harness.store().clone();
+    (helper_door(&harness), harness, store)
+}
+
+/// The parent's side of a message to one of its helpers.
+fn from_parent(taint: Vec<types::provenance::ProvenanceClass>) -> tools::SpawnRequest {
+    tools::SpawnRequest {
+        parent_session_key: PARENT.into(),
+        user_id: "owner".into(),
+        seat: tools::orchestrator::ChildSeat { taint, ..Default::default() },
+        ..Default::default()
+    }
 }
 
 /// A background child of `PARENT` whose prompt carries the script's marker.
@@ -551,12 +563,10 @@ fn background_child(marker: &str) -> tools::SpawnRequest {
         parent_session_key: PARENT.into(),
         user_id: "owner".into(),
         wait: false,
-        parent_cancel: None,
         max_iterations: 10,
         skills: vec![],
         plugins: vec![],
         tools: vec![],
-        parent_stream_tx: None,
         handoff_depth: 0,
         isolate: String::new(),
         workspace: String::new(),
@@ -578,9 +588,21 @@ async fn report_holding(store: &db::Store, task_id: &str, expect: &str) -> Strin
     panic!("the sub-agent never reported '{expect}'");
 }
 
+/// Wait until helper `task_id` of `PARENT` is no longer running.
+async fn wait_until_finished(door: &agent::harness::delegation::door::HelperDoor, task_id: &str) {
+    use tools::SubAgentOrchestrator as _;
+    for _ in 0..1000 {
+        if !door.list_active(PARENT).await.iter().any(|(id, _, status)| id == task_id && status == "running") {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("helper {task_id} kept running");
+}
+
 /// The child's thread, as stored.
-fn child_thread(runner: &agent::Runner, task_id: &str) -> Vec<db::models::ChatMessage> {
-    let sessions = runner.sessions();
+fn child_thread(harness: &agent::Harness, task_id: &str) -> Vec<db::models::ChatMessage> {
+    let sessions = harness.sessions();
     let id = sessions.resolve_session_id_by_key(&format!("subagent:{PARENT}:{task_id}")).expect("the child's session");
     sessions.get_messages(&id).expect("the child's thread")
 }
@@ -595,13 +617,13 @@ fn child_thread(runner: &agent::Runner, task_id: &str) -> Vec<db::models::ChatMe
 async fn a_parents_message_reaches_its_running_sub_agent() {
     use tools::SubAgentOrchestrator as _;
     let script = Script::new("MARKET-7", [Reply::Tool, Reply::Text("Report: pricing and edge cases covered.")]);
-    let (orchestrator, runner, store) = scripted_orchestrator(script.clone());
+    let (orchestrator, harness, store) = scripted_orchestrator(script.clone());
     let task = orchestrator.spawn(background_child("MARKET-7")).await.expect("spawned").task_id;
     script.started(0).await;
 
     let web = vec![types::provenance::ProvenanceClass::Web];
     for words in ["Also cover pricing.", "And the edge cases."] {
-        let sent = orchestrator.send(&task, words, PARENT, web.clone(), None, None).await.expect("sent");
+        let sent = orchestrator.send(&task, words, from_parent(web.clone())).await.expect("sent");
         assert!(matches!(sent, tools::FollowUp::Delivered { .. }), "a running child takes the message: {sent:?}");
     }
     assert_eq!(script.calls(), 1, "delivering does not start a second run beside the first");
@@ -617,7 +639,7 @@ async fn a_parents_message_reaches_its_running_sub_agent() {
     assert!(second[pricing].starts_with("The employee who gave you this task sent this message"), "{}", second[pricing]);
     assert!(!script.seen(0).iter().any(|m| m.contains("Also cover pricing.")), "the first step was already in flight");
 
-    let thread = child_thread(&runner, &task);
+    let thread = child_thread(&harness, &task);
     let rows: Vec<_> = thread.iter().filter(|m| m.content == "Also cover pricing." || m.content == "And the edge cases.").collect();
     assert_eq!(rows.len(), 2, "both persist in the child's thread, as sent");
     for row in rows {
@@ -628,13 +650,15 @@ async fn a_parents_message_reaches_its_running_sub_agent() {
         assert_eq!(meta["provenance"], json!(["web"]), "the parent's taint rides with its words");
     }
 
-    // Finished: a message continues it on its own session, as before.
+    // Finished: a message continues it on its own session.
+    wait_until_finished(&orchestrator, &task).await;
     script.answer(1);
-    let sent = orchestrator.send(&task, "One more thing.", PARENT, vec![], None, None).await.expect("sent");
+    let sent = orchestrator.send(&task, "One more thing.", from_parent(vec![])).await.expect("sent");
     assert!(matches!(sent, tools::FollowUp::Continued(ref r) if r.success), "a finished child continues: {sent:?}");
     report_holding(&store, &task, "done").await;
-    let follow_up = child_thread(&runner, &task).into_iter().find(|m| m.content.ends_with("One more thing.")).expect("the follow-up turn");
-    assert!(follow_up.content.starts_with(agent::orchestrator::CONTINUATION_FRAME), "{}", follow_up.content);
+    let follow_up = child_thread(&harness, &task).into_iter().find(|m| m.content == "One more thing.").expect("the follow-up input");
+    let meta: serde_json::Value = serde_json::from_str(follow_up.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(meta["from"], "parent", "the continuation is the parent's message, framed as such");
 }
 
 /// A message that lands while the sub-agent's last step is writing its
@@ -644,18 +668,18 @@ async fn a_parents_message_reaches_its_running_sub_agent() {
 async fn a_message_that_lands_as_the_sub_agent_finishes_is_heard() {
     use tools::SubAgentOrchestrator as _;
     let script = Script::new("MARKET-8", [Reply::Text("First report."), Reply::Text("Revised: prices in euros.")]);
-    let (orchestrator, runner, store) = scripted_orchestrator(script.clone());
+    let (orchestrator, harness, store) = scripted_orchestrator(script.clone());
     let task = orchestrator.spawn(background_child("MARKET-8")).await.expect("spawned").task_id;
     script.started(0).await;
 
-    let sent = orchestrator.send(&task, "Prices in euros, please.", PARENT, vec![], None, None).await.expect("sent");
+    let sent = orchestrator.send(&task, "Prices in euros, please.", from_parent(vec![])).await.expect("sent");
     assert!(matches!(sent, tools::FollowUp::Delivered { .. }), "{sent:?}");
     script.answer(2);
 
     let report = report_holding(&store, &task, "Revised").await;
     assert!(report.contains("First report.") && report.contains("Revised: prices in euros."), "{report}");
     assert!(script.seen(1).iter().any(|m| m.contains("Prices in euros, please.")), "the step after the report read it");
-    let thread = child_thread(&runner, &task);
+    let thread = child_thread(&harness, &task);
     let at = thread.iter().position(|m| m.content == "Prices in euros, please.").expect("persisted");
     assert!(thread[at + 1..].iter().any(|m| m.role == "assistant" && m.content.contains("Revised")), "answered after it");
 }
@@ -666,14 +690,14 @@ async fn a_message_that_lands_as_the_sub_agent_finishes_is_heard() {
 async fn a_sub_agent_with_a_message_waiting_can_still_be_cancelled() {
     use tools::SubAgentOrchestrator as _;
     let script = Script::new("MARKET-9", [Reply::Tool, Reply::Text("never")]);
-    let (orchestrator, _runner, store) = scripted_orchestrator(script.clone());
+    let (orchestrator, _harness, store) = scripted_orchestrator(script.clone());
     let task = orchestrator.spawn(background_child("MARKET-9")).await.expect("spawned").task_id;
     script.started(0).await;
 
-    let sent = orchestrator.send(&task, "Stop at the summary.", PARENT, vec![], None, None).await.expect("sent");
+    let sent = orchestrator.send(&task, "Stop at the summary.", from_parent(vec![])).await.expect("sent");
     assert!(matches!(sent, tools::FollowUp::Delivered { .. }), "{sent:?}");
-    orchestrator.cancel(&task).await.expect("cancelled");
-    assert!(orchestrator.list_active().await.iter().all(|(id, _, _)| id != &task), "no longer running");
+    orchestrator.cancel(&task, PARENT).await.expect("cancelled");
+    wait_until_finished(&orchestrator, &task).await;
 
     script.answer(2);
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;

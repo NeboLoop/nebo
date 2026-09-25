@@ -143,7 +143,6 @@ pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -
     let config = ChatConfig {
         session_key: format!("heartbeat-{entity_type}-{entity_id}"),
         prompt: resolved.heartbeat_content.clone(),
-        system: String::new(),
         user_id: String::new(),
         channel: "heartbeat".into(),
         origin: Origin::System,

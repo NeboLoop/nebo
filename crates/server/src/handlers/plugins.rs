@@ -1754,14 +1754,14 @@ pub async fn start_help_chat(
         types::keyparser::build_agent_session_key(&agent_id, &format!("help:{slug}"));
 
     let session = state
-        .runner
+        .harness
         .sessions()
         .get_or_create(&session_key, "")
         .map_err(to_error_response)?;
 
     // Only seed if this is a fresh session (no messages yet).
     let existing = state
-        .runner
+        .harness
         .sessions()
         .get_messages(&session.id)
         .unwrap_or_default();
@@ -1769,7 +1769,7 @@ pub async fn start_help_chat(
     if existing.is_empty() {
         // Inject the help docs as a system message so every follow-up turn
         // has context, then add an assistant greeting.
-        let _ = state.runner.sessions().append_message(
+        let _ = state.harness.sessions().append_message(
             &session.id,
             "system",
             &system_context,
@@ -1782,7 +1782,7 @@ pub async fn start_help_chat(
             "Hi! I'm here to help you set up **{}**. What would you like to know?",
             plugin_name
         );
-        let _ = state.runner.sessions().append_message(
+        let _ = state.harness.sessions().append_message(
             &session.id,
             "assistant",
             &greeting,

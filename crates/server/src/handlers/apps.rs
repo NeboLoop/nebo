@@ -780,7 +780,6 @@ async fn start_app_agent_run(
         crate::chat_dispatch::ChatConfig {
             session_key,
             prompt: body.message,
-            system: String::new(),
             user_id: String::new(),
             channel: "app".to_string(),
             origin: tools::Origin::App,
@@ -868,7 +867,7 @@ async fn start_janus_stream(
     state: &AppState,
     body: JanusRequest,
 ) -> Result<tokio::sync::mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
-    let providers = state.runner.providers();
+    let providers = state.harness.providers();
     let providers = providers.read().await;
     let provider = providers
         .first()

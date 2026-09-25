@@ -117,7 +117,7 @@ pub fn recover(store: &Store) -> usize {
 /// an AppState. `busy` answers whether a session has a live turn; a matched
 /// signal for a case whose turn is live is steered through `steer` instead
 /// of starting another turn.
-pub fn tick(store: &Store, t: i64, live: &dyn Fn(&str) -> Option<String>, steer: &dyn Fn(&str, &EngineEvent)) -> TickReport {
+pub fn tick(store: &Store, t: i64, live: &dyn Fn(&str) -> Option<String>, steer: &dyn Fn(&str, &EngineEvent) -> bool) -> TickReport {
     let mut report = TickReport::default();
     report.armed = arm_schedules(store, t);
     let (events, poisoned) = match store.engine_claim_events(t, CLAIM_BATCH) {
@@ -176,7 +176,7 @@ fn deliver(
     event: &EngineEvent,
     t: i64,
     live: &dyn Fn(&str) -> Option<String>,
-    steer: &dyn Fn(&str, &EngineEvent),
+    steer: &dyn Fn(&str, &EngineEvent) -> bool,
     report: &mut TickReport,
 ) {
     if event.target_type == "binding" {
@@ -417,7 +417,7 @@ fn live_turn(
     event: &EngineEvent,
     t: i64,
     live: &dyn Fn(&str) -> Option<String>,
-    steer: &dyn Fn(&str, &EngineEvent),
+    steer: &dyn Fn(&str, &EngineEvent) -> bool,
 ) -> LiveTurn {
     let child = match store.engine_live_child(&case.id) {
         Ok(Some(c)) => c,
@@ -425,20 +425,21 @@ fn live_turn(
     };
     match child.state.as_str() {
         "running" => {
-            // The runner says which session the turn is live on — the
-            // activity session under the turn's key. The event is queued for
-            // that session's NEXT model call and stays undelivered until the
-            // runner injects it — the injection stamps it. A turn that ends
-            // first never consumed it: its lease expires and the next tick
-            // routes it to the case's next wait, or by the reopen rules if
-            // the turn closed the case. No event is ever marked heard by a
-            // turn that could not hear it.
+            // The harness says which session the turn is live on — the
+            // activity session under the turn's key. The event becomes a
+            // notification row there: the turn's next step hears it, or the
+            // turn the harness hands it to when it lands after the last step.
+            // Written, it is delivered; a row that could not be written leaves
+            // the event for its lease to expire and the next tick to route.
             match live(&child.session_key) {
-                Some(session) => {
-                    steer(&session, event);
-                    LiveTurn::Handed
-                }
-                None => LiveTurn::Deferred,
+                Some(session) if steer(&session, event) => match store.engine_complete_event(event.id, t) {
+                    Ok(()) => LiveTurn::Handed,
+                    Err(e) => {
+                        warn!(event = event.id, error = %e, "engine: complete after steering failed");
+                        LiveTurn::Deferred
+                    }
+                },
+                _ => LiveTurn::Deferred,
             }
         }
         "queued" => match store.engine_append_pending_signal(&child.id, &event.payload) {
@@ -1116,10 +1117,6 @@ async fn drive(state: &AppState) {
     // A turn the workflow ended, whose case has not heard it: the turn's
     // declared wait (or the default) becomes the case's next wait.
     for turn in store.engine_unsettled_turns(TURNS_PER_TICK).unwrap_or_default() {
-        // Wakes queued for a turn that ended before its next model call were
-        // never heard; their events are still undelivered and will be
-        // routed afresh. Drop the stale queue so nothing rides a dead session.
-        let _ = agent::steering::drain_wakes(&turn.session_key);
         let failed = turn.state != "done";
         let output = turn_output(&turn, t);
         if let Err(e) = settle_turn(store, &turn, output.as_deref(), failed, t) {
@@ -1188,7 +1185,7 @@ async fn triage_admits(state: &AppState, run: &EngineRun) -> bool {
         debug!(site = "heartbeat_triage", run = %run.id, binding = ?run.external_ref, "triage does not apply to this fire; running");
         return true;
     };
-    let decide = state.runner.decide();
+    let decide = state.decide.clone();
     let gate = triage::triage(decide.as_deref(), mode, &binding, TRIAGE_TIMEOUT).await;
     let tell = |duty: &str, held: &triage::HeldNeed| {
         crate::workflow_manager::tell_owner_need(
@@ -1594,18 +1591,10 @@ pub fn spawn(state: AppState) {
                 continue;
             }
             let s = store.clone();
-            let runner = state.runner.clone();
+            let harness = state.harness.clone();
             let report = tokio::task::spawn_blocking(move || {
-                let live = |session: &str| runner.live_session_under(session);
-                let steer = |session: &str, event: &EngineEvent| {
-                    let content = agent::steering::wrap_system_reminder(&format!(
-                        "[Case event — not an owner message]\n{}:\n{}\n\nHandle this alongside your current work, and include the outcome in your report.",
-                        event.kind,
-                        event.payload.chars().take(2_000).collect::<String>()
-                    ));
-                    let taint = serde_json::from_str(&event.provenance).unwrap_or_default();
-                    agent::steering::push_wake(session, agent::steering::WakeEntry { wake_id: Some(event.id), content, taint });
-                };
+                let live = |session: &str| harness.live_session_under(session);
+                let steer = |session: &str, event: &EngineEvent| steer_into(harness.sessions(), session, event);
                 tick(&s, now(), &live, &steer)
             })
             .await
@@ -1616,6 +1605,24 @@ pub fn spawn(state: AppState) {
             drive(&state).await;
         }
     });
+}
+
+/// Hand a case event to the turn live on `session`: a notification row its
+/// next step loads (or the turn it hands the row to, when the row lands after
+/// its last step). `false` when the row could not be written.
+fn steer_into(sessions: &agent::SessionManager, session: &str, event: &EngineEvent) -> bool {
+    let text = agent::harness::delegation::notify::render_update(
+        &format!("A case event ({})", event.kind),
+        &event.payload.chars().take(2_000).collect::<String>(),
+    );
+    let taint: Vec<types::provenance::ProvenanceClass> = serde_json::from_str(&event.provenance).unwrap_or_default();
+    match agent::harness::delegation::notify::append_row(sessions, session, &text, &taint) {
+        Ok(()) => true,
+        Err(e) => {
+            warn!(session, event = event.id, error = %e, "engine: case event not written into the live turn");
+            false
+        }
+    }
 }
 
 /// The text a finished turn is settled on. A turn that exited early carries
@@ -1650,7 +1657,9 @@ mod tests {
     fn idle(_: &str) -> Option<String> {
         None
     }
-    fn no_steer(_: &str, _: &EngineEvent) {}
+    fn no_steer(_: &str, _: &EngineEvent) -> bool {
+        false
+    }
 
     fn binding<'a>() -> CaseBinding<'a> {
         CaseBinding {
@@ -1737,8 +1746,8 @@ mod tests {
     /// Seen live: the engine knows a case turn by its own session key, the
     /// runner marks the ACTIVITY session under it busy, and an exact-match
     /// "busy?" said no — so the customer's correction was deferred and the
-    /// turn closed the case without hearing it. The runner answers with the
-    /// live session under the key; steering goes there; a settle drains it.
+    /// turn closed the case without hearing it. The harness answers with the
+    /// live session under the key, and the event is written there.
     #[test]
     fn a_signal_that_lands_mid_turn_is_steered_into_the_activity_session_the_turn_runs_under() {
         let s = store();
@@ -1754,16 +1763,11 @@ mod tests {
         let handed = std::sync::Mutex::new(Vec::<(String, i64)>::new());
         let record = |session: &str, e: &EngineEvent| {
             handed.lock().unwrap().push((session.to_string(), e.id));
-            agent::steering::push_wake(session, agent::steering::WakeEntry { wake_id: Some(e.id), content: e.payload.clone(), taint: Default::default() });
+            true
         };
         let r = tick(&s, 200, &live, &record);
         assert_eq!((r.steered, r.children_started), (1, 0));
         assert_eq!(handed.lock().unwrap()[0].0, activity, "steered to the session the turn is live on");
-        // The queued wake sits under the activity key; the turn's key drains it.
-        let drained = agent::steering::drain_wakes("agent:a:workflow:turn-1");
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].content, "11am, not 10am");
-        assert!(agent::steering::drain_wakes(activity).is_empty());
     }
 
     /// Seen live: a correction ("11am, not 10am") was claimed while the
@@ -1852,16 +1856,20 @@ mod tests {
         assert!(s.get_notification(&format!("attention:unreceipted:{}", turn.id), &user).unwrap().is_none());
     }
 
-    /// A signal handed to a running turn is heard only if the turn's next
-    /// model call injects it: the runner's stamp delivers it. A turn that
-    /// ends first never heard it — the event stays undelivered and rides
-    /// the case's next wait. Exactly one delivery either way.
+    /// A signal handed to a running turn is delivered when its row is
+    /// written into the turn's conversation (the turn, or the one it hands
+    /// the row to, hears it). A row that could not be written leaves the
+    /// event undelivered: it rides the case's next wait. Exactly one delivery
+    /// either way.
     #[test]
-    fn a_steered_signal_is_delivered_by_injection_or_rides_the_next_wait_never_lost() {
+    fn a_steered_signal_is_delivered_by_its_row_or_rides_the_next_wait_never_lost() {
         let s = store();
         let busy = |k: &str| Some(k.to_string());
         let steered = std::sync::Mutex::new(Vec::<i64>::new());
-        let record = |_: &str, e: &EngineEvent| steered.lock().unwrap().push(e.id);
+        let record = |_: &str, e: &EngineEvent| {
+            steered.lock().unwrap().push(e.id);
+            true
+        };
         let make = |s: &Store, case: &str, turn: &str, key: &str| {
             s.engine_create_run(&NewRun { id: case, kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
             s.engine_declare_wait(case, &NewWait { action: "trigger_child", on_kind: "signal", key, deadline: None, reason: "first contact", ..Default::default() }, 100).unwrap();
@@ -1870,22 +1878,20 @@ mod tests {
             s.engine_set_run_state(turn, "running", 150, None).unwrap();
         };
 
-        // Heard: the runner injects and stamps it.
+        // Written: delivered once, by its row.
         make(&s, "case-1", "turn-1", "email:x");
         s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: "reply", idem_key: "s1", durable: true, ..Default::default() }).unwrap();
         let r = tick(&s, 200, &busy, &record);
         assert_eq!((r.steered, r.children_started), (1, 0));
-        let id = steered.lock().unwrap()[0];
-        assert!(s.engine_claim_events(200 + db::EVENT_LEASE_SECS + 1, 10).unwrap().0.iter().any(|e| e.id == id), "not marked delivered by the hand-off");
-        s.engine_complete_events(&[id], 210).unwrap(); // what the runner does at injection
-        assert!(s.engine_claim_events(200 + 2 * (db::EVENT_LEASE_SECS + 1), 10).unwrap().0.is_empty(), "delivered once, by injection");
+        assert_eq!(steered.lock().unwrap().len(), 1);
+        assert!(s.engine_claim_events(200 + db::EVENT_LEASE_SECS + 1, 10).unwrap().0.is_empty(), "delivered once, by its row");
 
-        // Not heard: the turn ends before its next model call. The event
-        // outlives the turn and starts the next one — once.
+        // Not written: the event outlives the turn and starts the next one — once.
         make(&s, "case-2", "turn-2", "email:y");
         s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:y", payload: "reply", idem_key: "s2", durable: true, ..Default::default() }).unwrap();
-        let r = tick(&s, 1_000, &busy, &record);
-        assert_eq!(r.steered, 1);
+        let unwritten = |_: &str, _: &EngineEvent| false;
+        let r = tick(&s, 1_000, &busy, &unwritten);
+        assert_eq!(r.steered, 0);
         s.complete_workflow_run("turn-2", "completed", 1, None, None, Some(r#"{"next":{"action":"wait","deadline":"3d"}}"#)).unwrap();
         let turn = s.engine_unsettled_turns(1).unwrap().remove(0);
         settle_turn(&s, &turn, turn.result.as_deref(), false, 1_100).unwrap();

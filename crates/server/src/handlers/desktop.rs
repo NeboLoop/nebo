@@ -101,7 +101,6 @@ pub async fn teach_stop(
     let config = crate::chat_dispatch::ChatConfig {
         session_key: session_key.clone(),
         prompt: VISIBLE.to_string(),
-        system: String::new(),
         user_id: String::new(),
         channel: "web".to_string(),
         origin: tools::Origin::User,

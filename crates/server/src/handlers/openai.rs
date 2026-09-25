@@ -245,7 +245,7 @@ async fn resolve_thread(state: &AppState, agent_id: &str, agent_name: &str, user
         // its first turn (Deal Desk, 2026-09-10: five keys, ten rows). Bind
         // the session to this row; a session that already holds its
         // conversation elsewhere keeps it, history and summary intact.
-        let sessions = state.runner.sessions();
+        let sessions = state.harness.sessions();
         let bound = match sessions.get_or_create(&session_key, "") {
             Ok(session) => {
                 let existing = session
@@ -359,7 +359,6 @@ async fn start_employee_run(
         crate::chat_dispatch::ChatConfig {
             session_key,
             prompt,
-            system: String::new(),
             user_id: String::new(),
             channel: CHANNEL.to_string(),
             origin: tools::Origin::Visitor,
