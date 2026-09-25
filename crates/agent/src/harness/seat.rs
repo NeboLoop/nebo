@@ -312,7 +312,6 @@ pub async fn seal_company_memory(
     tools: &tools::Registry,
     agent_id: &str,
     all_tool_defs: &mut Vec<ai::ToolDefinition>,
-    agent_tool_names: &mut HashSet<String>,
 ) -> bool {
     let memory_url = config::memory_url();
     let memory_integration_ids: HashSet<String> = if memory_url.is_empty() {
@@ -339,7 +338,6 @@ pub async fn seal_company_memory(
     }
     let (kept, withheld) = crate::harness::tool_surface::withhold_memory_tools(
         std::mem::take(all_tool_defs),
-        agent_tool_names,
         &memory_tool_names,
     );
     *all_tool_defs = kept;

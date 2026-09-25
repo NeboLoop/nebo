@@ -1,12 +1,5 @@
-//! The system prompt's cache boundary, and the STRAP tool docs: the tools
-//! doc owns those and retires them with the STRAP tools. The system prompt
-//! itself is built by `harness::prompt`.
-
-/// The shared, fixed part of the system prompt sits above this marker and
-/// the employee's own section below it: the provider caches up to it for
-/// every employee.
-pub const CACHE_BOUNDARY: &str =
-    "\n<!-- CACHE_BOUNDARY -->\n[--- cache boundary: content below changes per-turn ---]\n";
+//! The STRAP tool docs: the tools doc owns those and retires them with the
+//! STRAP tools. The system prompt is `harness::prompt`.
 
 const STRAP_CODE: &str = include_str!("strap/code.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");

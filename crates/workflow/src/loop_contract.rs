@@ -18,9 +18,10 @@ use crate::parser::Activity;
 /// the `exit` tool, iteration/token budgets, `requires_tools`.
 pub struct LoopTurn<'a> {
     pub activity: &'a Activity,
-    /// Fully built activity system prompt (context, inputs, skills, agent
-    /// identity) — used as-is, never merged with a chat persona.
-    pub system: String,
+    /// The activity's instructions (rules, skills, type, parameters, task,
+    /// inputs, prior results, controls). The loop tells them in the
+    /// conversation; the system prompt is the same for every turn.
+    pub instructions: String,
     /// The curated conversation so far — step prompts and step results, plus
     /// (on durable resume) the suspended in-loop transcript restored
     /// verbatim. The implementation seeds its own scratch history from this;

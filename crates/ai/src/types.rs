@@ -539,8 +539,6 @@ pub struct ChatRequest {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub system: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub static_system: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
     #[serde(default)]
     pub enable_thinking: bool,
@@ -580,7 +578,6 @@ impl ChatRequest {
             max_tokens: 0,
             temperature: 0.0,
             system: String::new(),
-            static_system: String::new(),
             model: String::new(),
             enable_thinking: false,
             metadata: None,

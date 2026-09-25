@@ -129,7 +129,6 @@ pub async fn synthesize_directive(
         temperature: 0.3,
         system: "You are a personality synthesis engine. Produce concise, actionable directives."
             .to_string(),
-        static_system: String::new(),
         model: String::new(),
         enable_thinking: false,
         metadata: None,

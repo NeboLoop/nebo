@@ -87,7 +87,6 @@ pub async fn summarize_tool_batch(
         max_tokens: 100,
         temperature: 0.0,
         system: SYSTEM_PROMPT.to_string(),
-        static_system: String::new(),
         model: aux_model,
         enable_thinking: false,
         metadata: None,
@@ -171,7 +170,6 @@ pub async fn one_line(
         tool_choice: Default::default(),
         model,
         system: instruction.to_string(),
-        static_system: String::new(),
         messages: vec![Message {
             role: "user".to_string(),
             content: text.to_string(),

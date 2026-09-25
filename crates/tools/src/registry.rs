@@ -737,7 +737,7 @@ impl Registry {
 
     /// The operation tools an employee binds through `requires.interfaces`:
     /// every registered operation tool whose catalog term it names. They are
-    /// always loaded for that employee.
+    /// named in that employee's session context.
     pub async fn operation_tools_for(&self, interfaces: &[String]) -> HashSet<String> {
         if interfaces.is_empty() {
             return HashSet::new();
@@ -1347,8 +1347,8 @@ impl Registry {
         }
 
         // Authority tool (standing authority inside the constitution). Deferred:
-        // it reaches the model only when a seat's `requires.tools` names
-        // "authority" (the General Manager) or a turn discovers it.
+        // it reaches the model when a turn loads it with find_tools (a seat's
+        // `requires.tools` names "authority" for the General Manager).
         self.register(Box::new(crate::authority_tool::AuthorityTool::new(store.clone())))
             .await;
 

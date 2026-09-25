@@ -412,9 +412,7 @@ impl Provider for AnthropicProvider {
         // with `cache_control: { type: "ephemeral" }` so that the stable prefix
         // can be served from Anthropic's prompt cache at ~90% discount.
         //
-        // Fallback: if no breakpoints but `static_system` is set (legacy path),
-        // split at the static/dynamic boundary.  Otherwise send the whole prompt
-        // as a single cached block.
+        // Without breakpoints the whole prompt is sent as a single cached block.
         let system_blocks = if !system_prompt.is_empty() {
             if !req.cache_breakpoints.is_empty() {
                 let mut blocks = Vec::new();
@@ -458,24 +456,6 @@ impl Provider for AnthropicProvider {
                 } else {
                     Some(blocks)
                 }
-            } else if !req.static_system.is_empty() && system_prompt.starts_with(&req.static_system)
-            {
-                let dynamic_suffix = system_prompt.strip_prefix(&req.static_system).unwrap_or("");
-                let mut blocks = vec![SystemBlock {
-                    text: req.static_system.clone(),
-                    block_type: "text".to_string(),
-                    cache_control: Some(CacheControl {
-                        cache_type: "ephemeral".to_string(),
-                    }),
-                }];
-                if !dynamic_suffix.is_empty() {
-                    blocks.push(SystemBlock {
-                        text: dynamic_suffix.to_string(),
-                        block_type: "text".to_string(),
-                        cache_control: None,
-                    });
-                }
-                Some(blocks)
             } else {
                 Some(vec![SystemBlock {
                     text: system_prompt,
