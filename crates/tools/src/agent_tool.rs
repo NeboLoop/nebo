@@ -3389,7 +3389,7 @@ impl DynTool for PersonaTool {
                             "interval": { "type": "string", "description": "Interval — presence auto-sets trigger to heartbeat (e.g. '15m', '1h')" },
                             "window": { "type": "string", "description": "Time window for heartbeat (e.g. '08:00-18:00')" },
                             "sources": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Event sources — presence auto-sets trigger to event. An event automation needs at least one; an empty list is refused before anything is written." },
-                            "plugin": { "type": "string", "description": "Plugin slug for watch trigger: an installed plugin's slug, from plugin(action: \"list\"); presence auto-sets trigger to watch" },
+                            "plugin": { "type": "string", "description": "Plugin slug for watch trigger: an installed plugin's slug (its tool is plugin__<slug>); presence auto-sets trigger to watch" },
                             "event": { "type": "string", "description": "Plugin event name for watch trigger (e.g. 'email.new'). Resolves command from plugin manifest." },
                             "command": { "type": "string", "description": "CLI args for watch trigger (e.g. 'gmail +watch --format ndjson'). Required if event not set." },
                             "restart_delay_secs": { "type": "integer", "description": "Seconds before restarting watch process on crash (default: 5)" },

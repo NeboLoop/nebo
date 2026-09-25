@@ -507,19 +507,19 @@ async fn money_limits_ask_past_the_grant_and_count_what_runs() {
     let mut grant = rule(Scope::Employee("bk".into()), RuleKey::Operation("ledger.billpayment.create".into()), None, Effect::Allow);
     grant.money = Some(MoneyLimit { per_action_cents: Some(1000), per_day_count: Some(2), ..Default::default() });
     let grant = put(&store, grant);
-    let (mut pay, ran) = Probe::new("plugin", "plugin__ledger", None);
+    let (mut pay, ran) = Probe::new("ledger_billpayment_create", "ledger_billpayment_create", None);
     pay.operation = Some("ledger.billpayment.create");
     let reg = registry(&store, vec![pay]).await;
     let c = ctx(&store, "bk", Origin::Workflow);
-    assert_eq!(reg.execute(&c, "plugin", json!({ "amount_cents": 500 })).await.content, "RAN");
-    let over = reg.execute(&c, "plugin", json!({ "amount_cents": 1500 })).await;
+    assert_eq!(reg.execute(&c, "ledger_billpayment_create", json!({ "amount_cents": 500 })).await.content, "RAN");
+    let over = reg.execute(&c, "ledger_billpayment_create", json!({ "amount_cents": 1500 })).await;
     assert!(over.parked_ask.is_some() && over.content.contains("money limit"), "{}", over.content);
     // A helper spends its employee's counters, never a fresh allowance.
     let mut helper = resolve_grant(&store, "", None);
     helper = Grant { agent_id: "bk".into(), rules: store.permission_rules("bk").unwrap(), ..helper };
     let hc = ToolContext { grant: Some(Arc::new(helper)), door: Door::Helper, ..c.clone() };
-    assert_eq!(reg.execute(&hc, "plugin", json!({ "amount_cents": 100 })).await.content, "RAN");
-    let third = reg.execute(&c, "plugin", json!({ "amount_cents": 100 })).await;
+    assert_eq!(reg.execute(&hc, "ledger_billpayment_create", json!({ "amount_cents": 100 })).await.content, "RAN");
+    let third = reg.execute(&c, "ledger_billpayment_create", json!({ "amount_cents": 100 })).await;
     assert!(third.parked_ask.is_some(), "the day's count was used: {}", third.content);
     assert_eq!(ran.load(Ordering::SeqCst), 2);
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -530,17 +530,17 @@ async fn money_limits_ask_past_the_grant_and_count_what_runs() {
 #[tokio::test]
 async fn untrusted_words_in_the_run_never_spend_a_gated_operation_unasked() {
     let (_d, store) = store();
-    let (mut send, ran) = Probe::new("plugin", "plugin__mail", None);
+    let (mut send, ran) = Probe::new("mail_message_send", "mail_message_send", None);
     send.operation = Some("mail.message.send");
     let reg = registry(&store, vec![send]).await;
     assert!(tools::interface_catalog::is_gated("mail.message.send"));
-    assert_eq!(reg.execute(&ctx(&store, "", Origin::User), "plugin", json!({})).await.content, "RAN");
+    assert_eq!(reg.execute(&ctx(&store, "", Origin::User), "mail_message_send", json!({})).await.content, "RAN");
     for origin in [Origin::Comm, Origin::Mcp, Origin::App] {
-        let r = reg.execute(&ctx(&store, "", origin), "plugin", json!({})).await;
+        let r = reg.execute(&ctx(&store, "", origin), "mail_message_send", json!({})).await;
         assert!(r.parked_ask.is_some(), "{origin:?}: {}", r.content);
     }
     let tainted = ToolContext { untrusted_input: true, ..ctx(&store, "", Origin::Workflow) };
-    assert!(reg.execute(&tainted, "plugin", json!({})).await.parked_ask.is_some());
+    assert!(reg.execute(&tainted, "mail_message_send", json!({})).await.parked_ask.is_some());
     assert_eq!(ran.load(Ordering::SeqCst), 1);
 }
 

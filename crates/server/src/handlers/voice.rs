@@ -468,7 +468,7 @@ fn resolve_call_tree(state: &AppState, agent_id: &str, line: &str) -> Option<Cal
             allowlist.insert(format!("work:{w}"));
         }
         for p in grant_values("plugins") {
-            allowlist.insert(format!("plugin:{p}"));
+            allowlist.insert(tools::plugin_tools::plugin_tool_name(&p));
         }
         for m in grant_values("mcp") {
             allowlist.insert(format!("mcp__{m}__*"));

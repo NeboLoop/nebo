@@ -1405,6 +1405,11 @@ fn action_key(call: &ai::ToolCall, target: Option<&types::permissions::Target>) 
     if let Some(t) = target.filter(|t| t.key != call.name) {
         return t.key.clone();
     }
+    // Every failed verb against one plugin is one spiral (the QuickBooks
+    // thread, 2026-09-06: fifty-seven guesses, each a different verb).
+    if tools::plugin_tools::plugin_slug(&call.name).is_some() {
+        return call.name.clone();
+    }
     let verb = call
         .input
         .get("command")
@@ -1617,10 +1622,9 @@ async fn apply_post_tool_hooks(
 }
 
 /// Detect if a tool call is requesting documentation (help/schema).
-/// Returns a cache key like "skill:gws-sheets" or "plugin:sheets:help" if so.
+/// Returns a cache key like "skill:gws-sheets" if so.
 fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<String> {
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-    let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
 
     match tool_name {
         "skill" => {
@@ -1630,33 +1634,6 @@ fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<St
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 Some(format!("skill:{}", skill_name))
-            } else {
-                None
-            }
-        }
-        "plugin" => {
-            if action == "help" || action == "schema" || action == "services" {
-                let name = if !resource.is_empty() {
-                    resource
-                } else {
-                    input
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                };
-                Some(format!("plugin:{}:{}", name, action))
-            } else {
-                None
-            }
-        }
-        // MCP tool documentation
-        "mcp" => {
-            if action == "help" || action == "list" || action == "schema" {
-                let server = input
-                    .get("server")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                Some(format!("mcp:{}:{}", server, action))
             } else {
                 None
             }
@@ -1847,10 +1824,8 @@ mod tests {
     #[test]
     fn action_key_keys_plugin_calls_on_the_plugin() {
         let plugin = |slug: &str, cmd: &str| {
-            (
-                call("plugin", serde_json::json!({"resource": slug, "command": cmd})),
-                target("plugin", &format!("plugin__{slug}"), None),
-            )
+            let name = format!("plugin__{slug}");
+            (call(&name, serde_json::json!({"command": cmd})), target(&name, &name, None))
         };
         let (a, ta) = plugin("quickbooks", "payment create --line x");
         let (b, tb) = plugin("quickbooks", "batch execute --batch-item-request y");
@@ -1858,9 +1833,6 @@ mod tests {
         assert_eq!(action_key(&b, Some(&tb)), "plugin__quickbooks");
         let (other, to) = plugin("gws", "gmail +send --to a@b.c");
         assert_ne!(action_key(&a, Some(&ta)), action_key(&other, Some(&to)));
-        // An explicit action keys on the tool and action.
-        let with_action = call("plugin", serde_json::json!({"resource": "quickbooks", "action": "exec", "command": "q"}));
-        assert_eq!(action_key(&with_action, Some(&ta)), "plugin:exec");
         let glob = call("os", serde_json::json!({"action": "glob", "path": "/tmp"}));
         assert_eq!(action_key(&glob, Some(&command("x"))), "os:glob");
     }

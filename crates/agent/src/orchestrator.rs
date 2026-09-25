@@ -71,17 +71,13 @@ fn describe_tool_call(tc: &ToolCall) -> String {
     let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
-    // Plugin tool: show slug + command prefix
-    if tc.name == "plugin" {
+    // A plugin's tool: show slug + command prefix
+    if let Some(slug) = tools::plugin_tools::plugin_slug(&tc.name) {
         let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-        let cmd_prefix = command.split_whitespace().next().unwrap_or("");
-        if !resource.is_empty() && !cmd_prefix.is_empty() {
-            return format!("{}: {}", resource, cmd_prefix);
-        }
-        if !resource.is_empty() {
-            return resource.to_string();
-        }
-        return tc.name.clone();
+        return match command.split_whitespace().next() {
+            Some(cmd_prefix) => format!("{slug}: {cmd_prefix}"),
+            None => slug.to_string(),
+        };
     }
 
     // STRAP tools: show resource + action
@@ -1269,10 +1265,13 @@ fn build_subagent_request(
     }
     if !spawn_req.plugins.is_empty() {
         run_req.preload_plugins = spawn_req.plugins.clone();
-        // Pre-activate the "plugin" tool so it's available from turn 1
-        // (it's normally deferred and discovered via find_tools).
-        if !run_req.preactivate_tools.contains(&"plugin".to_string()) {
-            run_req.preactivate_tools.push("plugin".to_string());
+        // Each plugin's tool is loaded from turn 1 (it is deferred and
+        // otherwise loaded through find_tools).
+        for slug in &spawn_req.plugins {
+            let tool = tools::plugin_tools::plugin_tool_name(slug);
+            if !run_req.preactivate_tools.contains(&tool) {
+                run_req.preactivate_tools.push(tool);
+            }
         }
     }
     if !spawn_req.tools.is_empty() {

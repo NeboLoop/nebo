@@ -2301,33 +2301,26 @@ async fn run_loop(
     // tool — same as every other skill. No need to dump full SKILL.md bodies
     // into the system prompt (that caused 230KB+ prompt bloat).
 
-    // Pre-activate tools declared in agent.json — these are part of the agent's job
-    // definition and must be available from turn 1 (not discovered via find_tools).
-    // Agent-declared tools stay active for the entire session.
-    // Scope-specific plugins are merged with global requires.plugins.
+    // Tools declared in agent.json are part of the employee's job and are
+    // loaded from turn 1 (not discovered via find_tools): each required
+    // plugin's `plugin__<slug>` (the active scope's plugins merged in).
+    // Operation tools for its `requires.interfaces` join per step, since
+    // they come and go with the connected plugins.
+    let agent_interfaces: Vec<String> = active_agent_entry
+        .as_ref()
+        .and_then(|e| e.config.as_ref())
+        .map(|cfg| cfg.requires.interfaces.clone())
+        .unwrap_or_default();
     let agent_preactivated: std::collections::HashSet<String> = {
         let mut set = std::collections::HashSet::new();
         if let Some(ref agent_entry) = active_agent_entry {
             if let Some(ref cfg) = agent_entry.config {
-                let mut needs_plugin = !cfg.requires.plugins.is_empty();
-
-                // Merge scope-specific plugin requirements
-                if let Some(scope_name) = tool_scope {
-                    if let Some(scope) = cfg.scopes.get(scope_name) {
-                        if !scope.plugins.is_empty() {
-                            needs_plugin = true;
-                        }
-                    }
-                }
-
-                if needs_plugin {
-                    set.insert("plugin".to_string());
-                    info!(
-                        agent = %agent_entry.name,
-                        plugins = ?cfg.requires.plugins,
-                        scope = ?tool_scope,
-                        "pre-activating plugin tool for agent-declared dependencies"
-                    );
+                let scope_plugins = tool_scope
+                    .and_then(|name| cfg.scopes.get(name))
+                    .map(|scope| scope.plugins.as_slice())
+                    .unwrap_or_default();
+                for slug in cfg.requires.plugins.iter().chain(scope_plugins) {
+                    set.insert(tools::plugin_tools::plugin_tool_name(slug));
                 }
                 // Tools the employee's definition names outright (`requires.tools`):
                 // part of its job, present from turn 1, no keyword or discovery needed.
@@ -2980,17 +2973,23 @@ async fn run_loop(
         let deferred_names = tools.get_deferred_names().await;
         let loaded = crate::harness::tool_surface::loaded_tools(&all_messages, &deferred_names);
         let mut all_tool_defs = tools.list().await;
+        // The marketplace search exists for this run (loaded or not), so a
+        // "no access" answer can be pointed at it.
+        let plugin_offered = all_tool_defs.iter().any(|d| d.name == tools::plugin_tools::FIND_PLUGINS)
+            && tool_allowlist.is_none_or(|wl| allowlist_admits(wl, tools::plugin_tools::FIND_PLUGINS));
         let mut agent_tool_names = tools.agent_tool_names(agent_id).await;
 
         // Scope filtering: restrict sidecar tools to those listed in the active scope
+        // (a scope lists an app tool by its own name, without `app__<app>__`).
         if let Some(scope_name) = tool_scope {
             if let Some(ref agent_entry) = active_agent_entry {
                 if let Some(ref cfg) = agent_entry.config {
                     if let Some(scope) = cfg.scopes.get(scope_name) {
                         if !scope.tools.is_empty() {
-                            let scope_set: HashSet<String> = scope.tools.iter().cloned().collect();
-                            agent_tool_names =
-                                agent_tool_names.intersection(&scope_set).cloned().collect();
+                            agent_tool_names.retain(|name| {
+                                let local = tools::sidecar_tool::app_tool_local_name(name).unwrap_or(name);
+                                scope.tools.iter().any(|t| t == local)
+                            });
                             debug!(scope = %scope_name, tools = ?agent_tool_names, "scoped agent tools");
                         }
                     }
@@ -3010,13 +3009,15 @@ async fn run_loop(
             turn_signals = crate::turn_decide::receive(rx, turn_fired).await;
         }
 
-        // Always loaded for this employee: its `requires.tools` (and the
-        // plugin tool when it requires plugins), its own app tools, and the
-        // tools a parent handed this helper.
+        // Always loaded for this employee: its `requires.tools`, its
+        // required plugins' tools, the operation tools of the interfaces it
+        // binds, its own app tools, and the tools a parent handed this helper.
+        let bound_operations = tools.operation_tools_for(&agent_interfaces).await;
         let always_load: HashSet<String> = agent_preactivated
             .iter()
             .chain(agent_tool_names.iter())
             .chain(preactivate_tools.iter())
+            .chain(bound_operations.iter())
             .cloned()
             .collect();
         // What can still be listed: withheld tools are neither sent nor listed.
@@ -3031,7 +3032,6 @@ async fn run_loop(
             &always_load,
             &loaded,
         );
-        let plugin_offered = tool_defs.iter().any(|d| d.name == "plugin");
 
         // Restricted runs (phone callers) declare ONLY their allowlisted
         // tools — an untrusted caller must not even see the rest of the
@@ -4132,10 +4132,10 @@ async fn run_loop(
         // model make the call; a reply of "os(resource: ..., action: ...)" is
         // not an answer the user can use.
 
-        // "I don't have access to X" with the plugin tool on the table and no
-        // discover call is an answer from memory (smoke 2026-09-05: a tweet
-        // request got "no Twitter plugin" and zero calls). Once: point at
-        // discover; the marketplace is where access comes from.
+        // "I don't have access to X" with the marketplace search on the table
+        // and no search made is an answer from memory (smoke 2026-09-05: a
+        // tweet request got "no Twitter plugin" and zero calls). Once: point
+        // at find_plugins; the marketplace is where access comes from.
         if tool_calls.is_empty() && plugin_offered && no_access_nudges < 1 {
             let lower = assistant_content.to_ascii_lowercase();
             let denies = (lower.contains("don't have access") || lower.contains("do not have access")
@@ -4148,14 +4148,17 @@ async fn run_loop(
                 .iter()
                 .rev()
                 .take(12)
-                .any(|m| m.role == "assistant" && m.content.contains("\"discover\""));
+                .any(|m| {
+                    m.role == "assistant"
+                        && m.tool_calls.as_deref().is_some_and(|c| c.contains(tools::plugin_tools::FIND_PLUGINS))
+                });
             if denies && !discovered {
                 no_access_nudges += 1;
                 warn!(iteration, session_id, "access denied from memory; nudging to discover");
                 pending_stream_reminders.push(steering::wrap_system_reminder(
-                    "You said a service is unavailable without checking. Call \
-                     plugin(action: \"discover\", query: \"<service>\") now and answer from \
-                     what it returns; if it finds nothing, say that.",
+                    "You said a service is unavailable without checking. Load find_plugins \
+                     with find_tools, search it for the service now, and answer from what it \
+                     returns; if it finds nothing, say that.",
                 ));
                 continue;
             }

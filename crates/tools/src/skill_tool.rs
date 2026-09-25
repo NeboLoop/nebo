@@ -499,17 +499,16 @@ impl DynTool for SkillTool {
                             if is_the_slug {
                                 return ToolResult::ok(format!(
                                     "`{}` is a plugin, not a skill. Skills are local capability bundles; plugins are managed binaries. \
-                                     USE: plugin(resource: \"{}\", action: \"exec\", command: \"help\") to see its commands, \
-                                     then call plugin(resource: \"{}\", command: \"<subcommand> ...\") to use it. \
+                                     USE its tool {}: command \"help\" lists its commands. \
                                      For channel messaging (upload/post/dm/reply), the bridge fills channel and thread from context; you only need the operation and its arguments.",
-                                    slug, slug, slug
+                                    slug, crate::plugin_tools::plugin_tool_name(&slug)
                                 ));
                             }
                             return ToolResult::ok(format!(
                                 "No installed skill matches \"{}\". The installed plugin `{}` matches part of that query; \
-                                 if that is what you need, plugin(resource: \"{}\", action: \"exec\", command: \"help\") lists its commands. \
+                                 if that is what you need, its tool {} lists its commands with command \"help\". \
                                  Otherwise proceed with your built-in tools (os, web, code).",
-                                query, slug, slug
+                                query, slug, crate::plugin_tools::plugin_tool_name(&slug)
                             ));
                         }
                         {

@@ -32,7 +32,7 @@ the user asks who can help, search employees:
     agent(resource: "registry", action: "discover", department: "accounting")
     agent(resource: "registry", action: "discover", query: "returns", department: "customer-support")
 
-Never answer a staffing question with `plugin(action: "discover")`. If a hire
+Never answer a staffing question with `find_plugins`. If a hire
 later needs a connection (a mailbox, a store, a ledger), its connect card
 appears on first use — do not front-load tool installs.
 

@@ -121,9 +121,8 @@ const ROWS: &[Row] = &[
     row("message", &["notify"], &["send", "alert"], "push_notification", &[]),
     row("message", &["notify"], &["dnd_status"], "check_dnd", &[]),
     row("message", &["sms"], &["send"], "sms_message_send", &[]),
-    // plugins other than exec (exec is `plugin__<slug>`, below)
+    // plugins other than exec, events and operations (below)
     row("plugin", &[], &["discover"], "find_plugins", &[]),
-    row("plugin", &[], &["events"], "read_plugin_events", &[]),
     // scheduling and workflows
     row("event", &[], &["create"], "create_schedule", &[]),
     row("event", &[], &["list"], "list_schedules", &[]),
@@ -149,6 +148,8 @@ const BROWSER_ACT: &[&str] =
 /// The prefix of a new-vocabulary plugin tool: `plugin__<slug>` is the old
 /// `plugin(resource: <slug>, action: "exec")`.
 const PLUGIN_PREFIX: &str = "plugin__";
+/// The old plugin tool's events action; the slug is the new tool's `plugin`.
+const PLUGIN_EVENTS: &str = "read_plugin_events";
 /// The old `code` tool takes `action`; `code_intel` takes `operation`.
 const CODE_OLD: &str = "code";
 const CODE_NEW: &str = "code_intel";
@@ -167,10 +168,29 @@ fn old_to_new(tool: &str, args: &Value) -> Option<(String, Value)> {
     let action = str_arg(args, "action");
     let resource = str_arg(args, "resource");
 
-    if tool == "plugin" && action == Some("exec") {
-        let slug = resource.or_else(|| str_arg(args, "plugin"))?;
-        let rest = without(args, &["resource", "action", "plugin"]);
-        return Some((format!("{PLUGIN_PREFIX}{slug}"), rest));
+    if tool == "plugin" {
+        // A typed port: `plugin(operation, input, display)` is the operation's
+        // own tool with the input's fields flat.
+        if let Some(op) = str_arg(args, "operation") {
+            let mut flat = args.get("input").and_then(Value::as_object).cloned().unwrap_or_default();
+            if let Some(d) = args.get("display") {
+                flat.insert("display".into(), d.clone());
+            }
+            let name = tools::operation_tools::operation_tool_name(&tools::plugin_tool::port_suffix(op));
+            return Some((name, Value::Object(flat)));
+        }
+        let slug = resource.or_else(|| str_arg(args, "plugin"));
+        match (action, slug) {
+            // exec is the old tool's default action
+            (None | Some("exec"), Some(slug)) => {
+                let rest = without(args, &["resource", "action", "plugin"]);
+                return Some((format!("{PLUGIN_PREFIX}{slug}"), rest));
+            }
+            (Some("events"), Some(slug)) => {
+                return Some((PLUGIN_EVENTS.to_string(), serde_json::json!({ "plugin": slug })));
+            }
+            _ => {}
+        }
     }
     if tool == CODE_OLD {
         let mut rest = without(args, &["action"]);
@@ -198,6 +218,20 @@ fn new_to_old(tool: &str, args: &Value) -> Option<(String, Value)> {
         obj.insert("resource".into(), Value::String(slug.to_string()));
         obj.insert("action".into(), Value::String("exec".into()));
         return Some(("plugin".to_string(), old));
+    }
+    if tool == PLUGIN_EVENTS {
+        let slug = str_arg(args, "plugin")?;
+        return Some(("plugin".to_string(), serde_json::json!({ "resource": slug, "action": "events" })));
+    }
+    if let Some(op) = tools::interface_catalog::operation_named(tool) {
+        let mut input = args.as_object().cloned().unwrap_or_default();
+        let mut old = serde_json::Map::new();
+        old.insert("operation".into(), Value::String(op.to_string()));
+        if let Some(d) = input.remove("display") {
+            old.insert("display".into(), d);
+        }
+        old.insert("input".into(), Value::Object(input));
+        return Some(("plugin".to_string(), Value::Object(old)));
     }
     if tool == CODE_NEW {
         let mut old = without(args, &["operation"]);
@@ -303,10 +337,29 @@ mod tests {
         let (tool, args) = translate("plugin__quickbooks", &json!({"command": "doctor"})).unwrap();
         assert_eq!(tool, "plugin");
         assert_eq!(args, json!({"command": "doctor", "resource": "quickbooks", "action": "exec"}));
+        // exec was the old tool's default action
+        assert_eq!(translate("plugin", &json!({"resource": "quickbooks", "command": "doctor"})).unwrap().0, "plugin__quickbooks");
+        let (tool, args) = translate("plugin", &json!({"resource": "quickbooks", "action": "events"})).unwrap();
+        assert_eq!((tool.as_str(), args), ("read_plugin_events", json!({"plugin": "quickbooks"})));
+        assert_eq!(translate("read_plugin_events", &json!({"plugin": "quickbooks"})).unwrap().1, json!({"resource": "quickbooks", "action": "events"}));
 
         let (tool, args) = translate("code", &json!({"action": "outline", "path": "main.rs"})).unwrap();
         assert_eq!(tool, "code_intel");
         assert_eq!(args, json!({"operation": "outline", "path": "main.rs"}));
+    }
+
+    /// A typed port call is the operation's own tool, its input flat; the
+    /// department and role prefix of a seat's port is not part of the name.
+    #[test]
+    fn a_typed_port_is_its_operation_tool() {
+        let old = json!({"operation": "accounting.ap.ledger.bill.create", "input": {"vendorId": "V7"}, "display": "Pay V7"});
+        let (tool, args) = translate("plugin", &old).unwrap();
+        assert_eq!(tool, "ledger_bill_create");
+        assert_eq!(args, json!({"vendorId": "V7", "display": "Pay V7"}));
+        let (tool, args) = translate("ledger_bill_create", &json!({"vendorId": "V7", "display": "Pay V7"})).unwrap();
+        assert_eq!(tool, "plugin");
+        assert_eq!(args, json!({"operation": "ledger.bill.create", "input": {"vendorId": "V7"}, "display": "Pay V7"}));
+        assert!(translate("ledger_nothing_here", &json!({})).is_none());
     }
 
     #[test]

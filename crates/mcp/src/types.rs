@@ -30,6 +30,59 @@ pub struct McpToolDef {
         alias = "inputSchema"
     )]
     pub input_schema: Option<serde_json::Value>,
+    /// The server's hints about the tool (`readOnlyHint`, `destructiveHint`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<McpToolAnnotations>,
+    /// Loading and result hints the MCP ecosystem carries in `_meta`.
+    #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// An MCP tool's annotations, as the protocol names them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolAnnotations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+}
+
+impl McpToolDef {
+    /// The server says the tool changes nothing.
+    pub fn read_only(&self) -> bool {
+        self.annotations.as_ref().and_then(|a| a.read_only_hint).unwrap_or(false)
+    }
+
+    /// The server says the tool may delete or overwrite.
+    pub fn destructive(&self) -> bool {
+        self.annotations.as_ref().and_then(|a| a.destructive_hint).unwrap_or(false)
+    }
+
+    fn meta(&self, key: &str) -> Option<&serde_json::Value> {
+        self.meta.as_ref()?.get(&format!("anthropic/{key}"))
+    }
+
+    /// `_meta` asks for the tool to be loaded on every call instead of deferred.
+    pub fn always_load(&self) -> bool {
+        self.meta("alwaysLoad").and_then(|v| v.as_bool()).unwrap_or(false)
+    }
+
+    /// `_meta`'s words for tool search, whitespace collapsed (a newline would
+    /// break the one-name-per-line listing).
+    pub fn search_hint(&self) -> Option<String> {
+        let hint = self.meta("searchHint")?.as_str()?;
+        let hint = hint.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!hint.is_empty()).then_some(hint)
+    }
+
+    /// `_meta`'s result size past which the result is saved to disk.
+    pub fn max_result_chars(&self) -> Option<usize> {
+        self.meta("maxResultSizeChars")?
+            .as_f64()
+            .filter(|n| n.is_finite() && *n > 0.0)
+            .map(|n| n as usize)
+    }
 }
 
 /// Result from calling an MCP tool.

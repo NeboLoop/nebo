@@ -507,6 +507,38 @@ mod tests {
         }
     }
 
+    /// The plugin fixtures' checks, written in the new names, decide the old
+    /// plugin tool's calls too: an exec is its plugin's tool, a discover is
+    /// find_plugins, a typed port is its operation's tool.
+    #[test]
+    fn plugin_checks_decide_both_vocabularies() {
+        let old_arm = trace_with(
+            vec![
+                ("plugin", serde_json::json!({"resource": "quickbooks", "action": "exec", "command": "doctor"})),
+                ("plugin", serde_json::json!({"action": "discover", "query": "twitter"})),
+                ("plugin", serde_json::json!({"operation": "ledger.invoice.send", "input": {"invoiceId": "1041"}})),
+            ],
+            0,
+        );
+        let new_arm = trace_with(
+            vec![
+                ("plugin__quickbooks", serde_json::json!({"command": "doctor"})),
+                ("find_plugins", serde_json::json!({"query": "twitter"})),
+                ("ledger_invoice_send", serde_json::json!({"invoiceId": "1041"})),
+            ],
+            0,
+        );
+        for c in [
+            r#"{ first_call: true, tool: [plugin__quickbooks, find_tools] }"#,
+            r#"{ call: 2, tool: [find_skills, find_plugins, find_tools] }"#,
+            r#"{ tool: ledger_invoice_send, arg: invoiceId, equals: "1041" }"#,
+        ] {
+            let (a, why_a) = evaluate(&check(c), &old_arm).unwrap();
+            let (p, why_p) = evaluate(&check(c), &new_arm).unwrap();
+            assert!(a && p, "{c}: old arm {a} ({why_a}), new arm {p} ({why_p})");
+        }
+    }
+
     /// The map renames a call; it never turns one call into another. A wrong
     /// file, a wrong recipient or an old-only shape still fails on both arms.
     #[test]

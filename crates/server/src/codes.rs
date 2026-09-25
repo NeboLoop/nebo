@@ -1441,16 +1441,8 @@ pub(crate) async fn fetch_and_install_plugin(
     }
     let _ = state.store.upsert_artifact_update_pref(slug, "plugin", &version);
 
-    // Re-register the plugin tool + hooks so the new plugin is usable immediately.
-    // Always register (never gate on count) — the tool must stay present in the prompt.
-    state.tools.unregister("plugin").await;
-    state
-        .tools
-        .register(Box::new(tools::plugin_tool::PluginTool::new(
-            state.plugin_store.clone(),
-            state.store.clone(),
-        )))
-        .await;
+    // The new plugin's tool and the operations it binds are usable immediately.
+    state.tools.refresh_plugin_tools().await;
     if let Some(manifest) = state.plugin_store.get_manifest(slug) {
         if let Some(binary) = state.plugin_store.resolve(slug, "*") {
             let count =

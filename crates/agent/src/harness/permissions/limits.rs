@@ -76,12 +76,11 @@ const OUTSIDE_KEYS: &[&str] = &[
     "system_settings",
     "music_control",
     "keychain_*",
-    // Plugins, MCP, NeboAI loops.
-    "plugin",
+    // Plugins, MCP, NeboAI loops. A catalog operation a connected account
+    // performs is refused by `denied_operation_for_origin`.
     "plugin__*",
     "find_plugins",
     "read_plugin_events",
-    "mcp",
     "loop_*",
     "send_loop_message",
     "ensure_loop_channel",
@@ -162,6 +161,22 @@ fn origin_limits() -> &'static HashMap<Origin, HashSet<&'static str>> {
     })
 }
 
+/// The catalog capabilities whose operations the owner may enable on a
+/// channel a stranger reaches (a caller booking a time). Every other
+/// operation performed through a connected account stays out of reach.
+const OUTSIDE_OPERATION_CAPABILITIES: &[&str] = &["calendar"];
+
+/// Whether a catalog operation is refused for the origin: outside origins
+/// never perform one, except the capabilities an owner may enable.
+fn denied_operation_for_origin(origin: Origin, t: &Target) -> bool {
+    matches!(origin, Origin::Caller | Origin::Visitor)
+        && t.operation.is_some()
+        && !t
+            .capability
+            .as_deref()
+            .is_some_and(|c| OUTSIDE_OPERATION_CAPABILITIES.contains(&c))
+}
+
 /// Whether a call with this rule key is refused for the origin.
 pub fn denied_for_origin(origin: Origin, rule_key: &str) -> bool {
     origin_limits().get(&origin).is_some_and(|denied| {
@@ -199,7 +214,7 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
     if let Some(err) = tools::safeguard::check_safeguard(&t.key, cx.input) {
         return Some(deny("safeguard", err));
     }
-    if denied_for_origin(cx.ctx.origin, &t.key) {
+    if denied_for_origin(cx.ctx.origin, &t.key) || denied_operation_for_origin(cx.ctx.origin, t) {
         return Some(deny(
             "origin",
             format!(
@@ -296,8 +311,8 @@ mod tests {
                 "contacts_search", "fetch_url", "search_web", "browser_open", "run_skill_script",
                 "vm_run", "publish_app", "code_intel", "desktop_click", "keychain_get",
                 "system_settings", "list_employees", "delegate", "search_history", "get_profile",
-                "plugin", "plugin__gws", "app_open", "send_loop_message", "sms_message_send",
-                "edit_notebook", "search_computer", "mcp", "push_notification",
+                "plugin__gws", "app_open", "send_loop_message", "sms_message_send",
+                "edit_notebook", "search_computer", "find_plugins", "push_notification",
             ] {
                 assert!(denied_for_origin(origin, key), "{origin:?} must deny {key}");
             }
@@ -310,6 +325,36 @@ mod tests {
         for key in ["read_file", "write_file", "desktop_see", "run_command"] {
             assert!(denied_for_origin(Origin::Comm, key), "{key}");
         }
+    }
+
+    /// An operation tool reaches a connected account: outside origins never
+    /// perform one, except the calendar an owner may open to callers; every
+    /// other origin is left to the rules.
+    #[test]
+    fn outside_origins_never_perform_an_operation_through_a_connected_account() {
+        let op = |operation: &str| {
+            let tool = operation.replace('.', "_");
+            Target {
+                tool: tool.clone(),
+                key: tool,
+                operation: Some(operation.to_string()),
+                capability: operation.split('.').next().map(str::to_string),
+                field: None,
+                read_only: false,
+                effects: types::permissions::CallEffects::unknown(),
+            }
+        };
+        for origin in [Origin::Visitor, Origin::Caller] {
+            assert!(denied_operation_for_origin(origin, &op("ledger.bill.create")), "{origin:?}");
+            assert!(denied_operation_for_origin(origin, &op("crm.contact.get")), "{origin:?}");
+            assert!(!denied_operation_for_origin(origin, &op("calendar.event.list")), "{origin:?}");
+        }
+        for origin in [Origin::User, Origin::Comm, Origin::Workflow] {
+            assert!(!denied_operation_for_origin(origin, &op("ledger.bill.create")), "{origin:?}");
+        }
+        let mut plain = op("ledger.bill.create");
+        plain.operation = None;
+        assert!(!denied_operation_for_origin(Origin::Caller, &plain), "no operation, nothing to refuse here");
     }
 
     /// The origin refusal names the caller in plain words, never the enum

@@ -167,11 +167,11 @@ impl ShellTool {
                     return ToolResult::error(format!(
                         "`{slug}` is an installed plugin, and the shell runs it with no \
                          account, approval or profile context (that is why it answers 401 \
-                         here). Run it through the plugin tool instead: plugin(resource: \
-                         \"{slug}\", action: \"exec\", command: \"{rest}\"). JSON flag \
-                         values go in `args` so nothing needs shell quoting: \
-                         plugin(resource: \"{slug}\", command: \"payment create\", \
-                         args: {{\"line\": \"{{...}}\"}})."
+                         here). Run it through its own tool instead: {tool} with command \
+                         \"{rest}\". JSON flag values go in `args` so nothing needs shell \
+                         quoting: {tool} with command \"payment create\" and args \
+                         {{\"line\": \"{{...}}\"}}.",
+                        tool = crate::plugin_tools::plugin_tool_name(&slug)
                     ));
                 }
             }

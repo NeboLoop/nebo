@@ -54,15 +54,16 @@ pub(crate) fn producer_slug(store: &Store, agent_id: &str) -> String {
 /// The full registry (~38 tools, ~21k tokens of schemas) went out with EVERY
 /// LLM turn and invited small models to wander — web-searching for
 /// instructions the step already spells out, or shelling out to plugin
-/// binaries via `os` instead of the plugin tool. A tool is included when:
+/// binaries via `os` instead of the plugin's own tool. A tool is included when:
 ///
 /// - the activity DECLARES it in agent.json — `mcps` entries select that
-///   server's proxy tools (`mcp__<server>__*`), `cmds` (plugin commands)
-///   select the `plugin` tool — the authored contract comes first;
+///   server's proxy tools (`mcp__<server>__*`), `cmds` (plugin commands,
+///   the plugin's slug first) select that plugin's `plugin__<slug>` tool —
+///   the authored contract comes first;
 /// - or its intent/steps/skill docs REFERENCE it — `<tool>(` — directly or
-///   through a legacy pre-STRAP name (`organizer(` → `os`, `gws(` →
-///   `plugin`; see `tools::registry::legacy_tool_aliases`), so imported
-///   workflows authored against old tool names still scope correctly;
+///   through a legacy pre-STRAP name (`organizer(` → `os`; see
+///   `tools::registry::legacy_tool_aliases`), so imported workflows authored
+///   against old tool names still scope correctly;
 /// - or it is `message` (the delivery primitive — steps often say "alert"
 ///   without naming it).
 ///
@@ -125,9 +126,15 @@ pub(crate) fn scoped_activity_tools<'a>(
             format!("mcp__{norm}")
         })
         .collect();
-    // Declared plugin commands run through the plugin tool ("emit" is the
+    // Declared plugin commands run through that plugin's tool ("emit" is the
     // event primitive, injected separately — it declares no plugin need).
-    let wants_plugin = activity.cmds.iter().any(|c| c != "emit");
+    let plugin_tools: Vec<String> = activity
+        .cmds
+        .iter()
+        .filter(|c| c.as_str() != "emit")
+        .filter_map(|c| c.split_whitespace().next())
+        .map(tools::plugin_tools::plugin_tool_name)
+        .collect();
     // Legacy pre-STRAP names appearing in the text → their absorbing tool.
     let alias_targets: HashSet<&'static str> = tools::registry::legacy_tool_aliases()
         .iter()
@@ -142,7 +149,7 @@ pub(crate) fn scoped_activity_tools<'a>(
             n == "message"
                 || text.contains(&format!("{n}("))
                 || alias_targets.contains(n)
-                || (wants_plugin && n == "plugin")
+                || plugin_tools.iter().any(|p| p == n)
                 || mcp_prefixes.iter().any(|p| n.to_lowercase().starts_with(p.as_str()))
                 || activity.mcps.iter().any(|m| m == n)
         })
@@ -1450,19 +1457,17 @@ fn build_activity_prompt_with_context(
         prompt.push_str("## Available Tools\n");
         prompt.push_str("Your tools (case-sensitive, call ONLY these): ");
         prompt.push_str(&tool_names.join(", "));
-        prompt.push_str("\nDo NOT call any tool not in this list. Do NOT prefix tool names with mcp__ or any namespace.\n");
+        prompt.push_str("\nDo NOT call any tool not in this list. Use each name exactly as listed.\n");
         // A step phrased as a CLI command ("Run: gws calendar +agenda") must go
-        // through the plugin tool — running the bare binary via os/shell skips
-        // the per-account credential injection and fails with "not
+        // through the plugin's own tool — running the bare binary via os/shell
+        // skips the per-account credential injection and fails with "not
         // authenticated" even when the account is connected.
-        if tool_names.iter().any(|t| t == "plugin") {
+        if tool_names.iter().any(|t| tools::plugin_tools::plugin_slug(t).is_some()) {
             prompt.push_str(
-                "To run a plugin command (e.g. gws, slack, cos-store), ALWAYS use the plugin tool: \
-                 plugin(resource: \"<name>\", action: \"exec\", command: \"<the command>\"). \
-                 A step written as a shell command like `gws calendar +agenda --today` means \
-                 plugin(resource: \"gws\", action: \"exec\", command: \"calendar +agenda --today\"). \
-                 NEVER run a plugin binary through os or shell — only the plugin tool injects the \
-                 account credentials, so the shell path fails auth.\n",
+                "A step written as a plugin's command line, like `<name> calendar +agenda --today`, \
+                 runs through that plugin's own tool: plugin__<name> with command \
+                 \"calendar +agenda --today\". NEVER run a plugin binary through a shell — only \
+                 its tool injects the account credentials, so the shell path fails auth.\n",
             );
         }
         prompt.push('\n');
@@ -1711,7 +1716,7 @@ mod engine_tests {
     }
 
     fn fake_registry() -> Vec<Box<dyn DynTool>> {
-        ["plugin", "agent", "message", "os", "web", "browser"]
+        ["plugin__gws", "agent", "message", "os", "web", "browser"]
             .iter()
             .map(|n| Box::new(FakeTool(n)) as Box<dyn DynTool>)
             .collect()
@@ -1723,7 +1728,7 @@ mod engine_tests {
             "id": "sweep",
             "intent": "Mark noise read",
             "steps": [
-                "List: plugin(resource: \"gws\", action: \"exec\", command: \"gmail users messages list\")",
+                "List: plugin__gws(command: \"gmail users messages list\")",
                 "Record ids: agent(resource: \"memory\", action: \"store\", key: \"x\")"
             ]
         }))
@@ -1731,8 +1736,8 @@ mod engine_tests {
         let registry = fake_registry();
         let scoped = scoped_activity_tools(&activity, &registry, None, None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        // plugin + agent referenced; message always rides along; os/web/browser stripped
-        assert_eq!(names, vec!["plugin", "agent", "message"]);
+        // plugin__gws + agent referenced; message always rides along; os/web/browser stripped
+        assert_eq!(names, vec!["plugin__gws", "agent", "message"]);
     }
 
     #[test]
@@ -1790,7 +1795,7 @@ mod engine_tests {
         #[test]
     fn test_scoped_activity_tools_honors_declared_mcps_and_cmds() {
         // agent.json declarations are the authored tool contract: mcps
-        // selects that server's proxy tools, cmds selects the plugin tool —
+        // selects that server's proxy tools, cmds selects the plugin's tool —
         // even when the step prose never writes a `tool(` call.
         let activity: Activity = serde_json::from_value(serde_json::json!({
             "id": "sync",
@@ -1806,7 +1811,7 @@ mod engine_tests {
         let scoped = scoped_activity_tools(&activity, &registry, None, Some(&deferred));
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"mcp__monument__project"), "declared mcps scope in: {names:?}");
-        assert!(names.contains(&"plugin"), "declared cmds scope the plugin tool in: {names:?}");
+        assert!(names.contains(&"plugin__gws"), "declared cmds scope the plugin's tool in: {names:?}");
         assert!(!names.contains(&"web"), "undeclared tools stay out: {names:?}");
     }
 
@@ -1822,13 +1827,13 @@ mod engine_tests {
         let mut skills = HashMap::new();
         skills.insert(
             "gws-gmail-triage".to_string(),
-            "Use plugin(resource: \"gws\", action: \"exec\", ...) to triage.".to_string(),
+            "Use plugin__gws(command: \"gmail +triage\") to triage.".to_string(),
         );
         let registry = fake_registry();
-        // Step text never names a tool, but the skill doc shows plugin( usage
+        // Step text never names a tool, but the skill doc shows plugin__gws( usage
         let scoped = scoped_activity_tools(&activity, &registry, Some(&skills), None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["plugin", "message"]);
+        assert_eq!(names, vec!["plugin__gws", "message"]);
     }
 
     fn prompt_with_tools(tool_names: &[&str]) -> String {
@@ -1853,19 +1858,19 @@ mod engine_tests {
 
     #[test]
     fn test_activity_prompt_routes_plugin_commands_through_plugin_tool() {
-        // A step written as a bare CLI command must be steered to the plugin
-        // tool — os/shell skips per-account credential injection.
-        let prompt = prompt_with_tools(&["plugin", "message"]);
-        assert!(prompt.contains("ALWAYS use the plugin tool"));
-        assert!(prompt.contains("NEVER run a plugin binary through os or shell"));
+        // A step written as a bare CLI command must be steered to the
+        // plugin's own tool — a shell skips per-account credential injection.
+        let prompt = prompt_with_tools(&["plugin__gws", "message"]);
+        assert!(prompt.contains("runs through that plugin's own tool: plugin__<name>"));
+        assert!(prompt.contains("NEVER run a plugin binary through a shell"));
     }
 
     #[test]
     fn test_activity_prompt_omits_plugin_guidance_without_plugin_tool() {
         let prompt = prompt_with_tools(&["os", "message"]);
-        assert!(!prompt.contains("ALWAYS use the plugin tool"));
+        assert!(!prompt.contains("plugin's own tool"));
         // Section spacing unchanged for the no-plugin case.
-        assert!(prompt.contains("or any namespace.\n\n"));
+        assert!(prompt.contains("exactly as listed.\n\n"));
     }
 
     #[test]

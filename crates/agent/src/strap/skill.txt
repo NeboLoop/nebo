@@ -14,6 +14,6 @@ Never read more than one skill upfront. Only load after choosing.
 - skill(action: "browse", name: "xlsx-processor"): List resource files in a skill's directory
 - skill(action: "read_resource", name: "xlsx-processor", path: "scripts/recalc.py"): Read a resource file
 
-Skills that document a plugin's commands are run with plugin(resource: "<slug>", action: "exec", command: "..."), never through os/shell.
+Skills that document a plugin's commands are run with that plugin's tool, plugin__<slug> with command: "...", never through os/shell.
 Auth: do not call `auth login`. In direct chat the harness offers a connect card; otherwise tell the user to reconnect the account in Settings, Plugins, and stop.
 If a skill is not found, suggest checking the app store.

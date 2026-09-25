@@ -1,11 +1,12 @@
 id: correction-plugin-discover-installed
 name: "Correction: discover never offers to install what is installed"
 description: |
-  From the owner's live thread on 2026-09-05: plugin(action: "discover")
-  built an install card for QuickBooks Online while that plugin was already
-  installed, and the run parked on the card. Now discover checks the plugin
-  store before offering a card: an installed best match is reported as
-  already installed and the run continues with the connect step. Setup
+  From the owner's live thread on 2026-09-05: the marketplace search built
+  an install card for QuickBooks Online while that plugin was already
+  installed, and the run parked on the card. Now find_plugins checks the
+  plugin store before offering a card: an installed best match is reported
+  as already installed (its tool is plugin__quickbooks) and the run
+  continues with the connect step. Setup
   installs quickbooks through the one install pathway (the store product's
   install code), so the machine this runs on really does have it, and
   teardown removes it again. It pins that no install card is ever offered.
@@ -21,7 +22,9 @@ conversation:
     content: "Let's create a quickbooks auto-categorization assistant."
 
 tool_config:
-  plugin:
+  plugin__quickbooks:
+    enabled: true
+  find_plugins:
     enabled: true
   agent:
     enabled: true
@@ -34,15 +37,15 @@ prompt_assertions:
       text: "No tool result contains \"Install it on the card\"; no install_plugin ask is produced for a plugin that is already installed"
       severity: critical
     - id: says-installed
-      text: "If discover is called for quickbooks, its result says the plugin was already installed and points at plugin(resource: \"quickbooks\", ...)"
+      text: "If find_plugins is called for quickbooks, its result says the plugin was already installed and points at plugin__quickbooks"
       severity: critical
     - id: no-first-call-misses
-      text: "No call is rejected for its shape: no missing-resource or unknown-action error, no install card for the installed plugin, and no 'not found. Available' (the setup above failed to install). A verb past doctor answering 'No quickbooks account is connected' is the gate bot's state, not a miss — it has no merchant's OAuth grant and never will."
+      text: "No call is rejected for its shape: no InputValidationError or unknown-tool error, no install card for the installed plugin, and no 'not found. Available' (the setup above failed to install). A verb past doctor answering 'No quickbooks account is connected' is the gate bot's state, not a miss — it has no merchant's OAuth grant and never will."
       severity: critical
       check:
         no_error_contains:
-          - "Resource is required"
-          - "Unknown action"
+          - "InputValidationError"
+          - "No such tool"
           - "Install it on the card"
           - "not found. Available"
     - id: bounded
@@ -55,4 +58,4 @@ prompt_assertions:
 
 ideal_behavior:
   tool_calls: 3
-  narrative: "Confirm quickbooks is installed (list or help), then design or create the assistant; no install card, no install narration."
+  narrative: "Confirm quickbooks is installed (plugin__quickbooks in the tool listing, or its help), then design or create the assistant; no install card, no install narration."

@@ -113,11 +113,11 @@ async fn a_hand_off_connects() {
 }
 
 /// A fake ledger plugin binds `ledger.invoice.send` to a template. Through
-/// the plugin tool in the server's registry, the port call reaches the
+/// its operation tool in the server's registry, the call reaches the
 /// binary as exactly the words the template shapes: `invoice send 1041
 /// --send-to x@example.com` with `sendTo`, `invoice send 1041` without it,
-/// and a call missing `invoiceId` is an error naming the field and the
-/// operation, never an empty argument.
+/// and a call missing `invoiceId` is refused naming the field and the
+/// tool, never run with an empty argument.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_template_binding_shapes_the_call() {
     // The fake plugin was installed before the server's first scan
@@ -138,7 +138,7 @@ async fn a_template_binding_shapes_the_call() {
     };
 
     let with = nebo
-        .tool(&ctx, "plugin", json!({ "operation": "ledger.invoice.send", "input": { "invoiceId": "1041", "sendTo": "x@example.com" } }))
+        .tool(&ctx, "ledger_invoice_send", json!({ "invoiceId": "1041", "sendTo": "x@example.com" }))
         .await;
     assert!(!with.is_error, "{}", with.content);
     assert!(with.content.contains("invoice\nsend\n1041\n--send-to\nx@example.com"), "exactly the shaped words: {}", with.content);
@@ -146,29 +146,29 @@ async fn a_template_binding_shapes_the_call() {
     assert_eq!(argv(&with.content).iter().filter(|w| w.as_str() == "1041").count(), 1, "{}", with.content);
 
     let without = nebo
-        .tool(&ctx, "plugin", json!({ "operation": "ledger.invoice.send", "input": { "invoiceId": "1041" } }))
+        .tool(&ctx, "ledger_invoice_send", json!({ "invoiceId": "1041" }))
         .await;
     assert!(!without.is_error, "{}", without.content);
     assert!(without.content.contains("invoice\nsend\n1041"), "{}", without.content);
     assert!(!without.content.contains("--send-to"), "an absent optional emits nothing: {}", without.content);
 
     let missing = nebo
-        .tool(&ctx, "plugin", json!({ "operation": "ledger.invoice.send", "input": { "sendTo": "x@example.com" } }))
+        .tool(&ctx, "ledger_invoice_send", json!({ "sendTo": "x@example.com" }))
         .await;
     assert!(missing.is_error, "{}", missing.content);
-    assert!(missing.content.contains("'invoiceId'") && missing.content.contains("ledger.invoice.send"), "{}", missing.content);
+    assert!(missing.content.contains("`invoiceId`") && missing.content.contains("ledger_invoice_send"), "{}", missing.content);
     assert!(!missing.content.contains("invoice\nsend"), "the binary never ran: {}", missing.content);
 
     // A plain binding is byte-for-byte as written and every field is a flag.
     let plain = nebo
-        .tool(&ctx, "plugin", json!({ "operation": "ledger.invoice.list", "input": { "limit": 5 } }))
+        .tool(&ctx, "ledger_invoice_list", json!({ "limit": 5 }))
         .await;
     assert!(!plain.is_error, "{}", plain.content);
     assert!(plain.content.contains("invoice\nlist\n--limit\n5"), "{}", plain.content);
 }
 
 /// A chat parked on an install card resumes when the plugin lands by another
-/// door. The card is the one the plugin tool's discover parks on, asked
+/// door. The card is the one find_plugins parks on, asked
 /// through the real `ask_user` on the server's ask channels and announced the
 /// way the chat pipeline announces it; the owner then pastes the card's code
 /// into another chat, and `codes::handle_code` installs it from the hub
