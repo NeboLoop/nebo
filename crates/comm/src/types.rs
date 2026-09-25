@@ -31,7 +31,16 @@ pub enum CommError {
     /// running process holds this bot.
     #[error("another running copy of this bot holds its NeboAI connection (lease_held)")]
     LeaseHeld,
+    /// The hub refused the connection because the bot was removed from
+    /// NeboAI (AUTH_FAIL [`REVOKED_REASON`]). Its tokens never work again;
+    /// only redeeming a new code from the owner brings it back.
+    #[error("this bot was removed from NeboAI")]
+    Revoked,
 }
+
+/// The reason the hub gives, on CONNECT (AUTH_FAIL) and on the REST API
+/// (401 `{"error": ...}`), when it refuses a removed bot.
+pub const REVOKED_REASON: &str = "bot has been revoked";
 
 /// Thread-safe message handler callback.
 pub type MessageHandler = Arc<dyn Fn(CommMessage) + Send + Sync>;
