@@ -50,11 +50,16 @@ impl DynTool for SuggestGoalTool {
         "suggest_goal"
     }
 
+    /// Claude Code 2.1.280's ProposeGoal prompt (m0251 `Eno`), in our words:
+    /// what a goal does, that the proposal doesn't wait, when to ask and
+    /// when to set it directly, when to propose, and how to state the
+    /// condition for a check that reads only the conversation.
     fn description(&self) -> String {
-        "Proposes an agreed goal: an end state the work continues toward until a separate check confirms it.\n\
-         - Only when the owner asked for an outcome with a checkable end state that spans several turns. Not for one-off tasks, and never to widen scope.\n\
-         - The owner approves it unless their own words in this conversation stated the outcome; if you inferred it or are unsure, ask.\n\
-         - One goal at a time. A declined goal is never proposed again."
+        "Proposes an agreed goal: an end state that keeps you working until a separate check confirms it is met. It doesn't wait: the owner sees it on a card while you keep working.\n\
+         - Propose one only when the owner asked for an outcome with a checkable end state (\"every test passes\", \"all 40 invoices are filed\") and the work spans several turns. Not for one-off tasks, and never to widen scope: the goal follows from what they asked.\n\
+         - The owner approves it on the card. Set ask_owner false only when the owner's own words in this conversation stated this outcome; if you inferred it, or are unsure, ask. Either way you're told when the goal is set.\n\
+         - The check reads only the conversation; it can't run commands or open files. State one end state and how it is shown, in at most 500 characters.\n\
+         - One goal at a time: a new one replaces the current one. If the owner declines, you aren't told; don't ask about it or propose it again."
             .to_string()
     }
 
@@ -78,7 +83,13 @@ impl DynTool for SuggestGoalTool {
     }
 
     fn search_hint(&self) -> &str {
-        "propose an agreed goal to work toward"
+        "propose a goal for the owner to approve"
+    }
+
+    /// Deferred, as Claude Code's ProposeGoal is (2.1.280 m1493
+    /// `shouldDefer: !0`): listed by name and loaded with find_tools.
+    fn should_defer(&self) -> bool {
+        true
     }
 
     /// The goal is the employee's own work; the owner approves it.
@@ -192,5 +203,25 @@ mod tests {
             tool.schema()["properties"]["condition"]["maxLength"],
             MAX_SUGGESTED_CONDITION_CHARS
         );
+    }
+
+    /// D18: suggest_goal carries Claude Code's ProposeGoal text: what a
+    /// goal does, that proposing doesn't wait, when to propose, and how to
+    /// state a condition for a check that reads only the conversation. It
+    /// stays deferred, as ProposeGoal is.
+    #[test]
+    fn suggest_goal_says_what_a_goal_does_and_when_to_propose_one() {
+        let tool = SuggestGoalTool::new(new_handle());
+        let text = tool.description();
+        for part in [
+            "an end state that keeps you working until a separate check confirms it is met",
+            "It doesn't wait: the owner sees it on a card while you keep working.",
+            "the work spans several turns. Not for one-off tasks",
+            "The check reads only the conversation; it can't run commands or open files.",
+            "If the owner declines, you aren't told; don't ask about it or propose it again.",
+        ] {
+            assert!(text.contains(part), "{part:?} missing from:\n{text}");
+        }
+        assert!(tool.should_defer());
     }
 }
