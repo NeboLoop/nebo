@@ -436,7 +436,7 @@ mod idempotency_tests {
     fn an_mcp_servers_known_tools_carry_over() {
         let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
         let conn = Connection::open(&path).unwrap();
-        run_migrations_to(&conn, 174).unwrap();
+        run_migrations_to(&conn, 176).unwrap();
         conn.execute_batch(
             r#"INSERT INTO mcp_integrations (id, name, server_type, auth_type, tool_permissions)
                  VALUES ('seen', 'CRM', 'crm', 'none', '{"default":"allow","tools":{},"known":["lookup","update"]}');
@@ -444,7 +444,7 @@ mod idempotency_tests {
                  VALUES ('never', 'Docs', 'docs', 'none', NULL);"#,
         )
         .unwrap();
-        run_migrations_to(&conn, 175).unwrap();
+        run_migrations_to(&conn, 177).unwrap();
         drop(conn);
         let store = crate::Store::new(&path.to_string_lossy()).unwrap();
         assert_eq!(
