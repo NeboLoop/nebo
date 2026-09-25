@@ -198,15 +198,14 @@ pub struct SurfaceInputs<'a> {
     /// A restricted run's allowlist: only what it admits is declared or
     /// listed.
     pub allowlist: Option<&'a HashSet<String>>,
-    /// An isolated seat with no matter: company Memory is withheld.
-    pub company_memory_sealed: bool,
     /// A workflow activity's scoped set: its declaration, deferred tools
     /// included, with the `exit` primitive.
     pub workflow: Option<&'a crate::harness::WorkflowMode>,
     /// A helper's kind and depth take the helper tools off its surface.
     pub mode: &'a crate::harness::TurnMode,
-    /// The employee's own tools the active tool scope leaves out
-    /// ([`scope_withheld`]): neither declared nor listed.
+    /// The tools the run may not use: the employee's own tools the active
+    /// tool scope leaves out ([`scope_withheld`]) and a sealed seat's company
+    /// Memory (`seat::company_memory_tools`); neither declared nor listed.
     pub withheld: &'a HashSet<String>,
 }
 
@@ -250,13 +249,16 @@ pub struct Surface {
 /// `conversation` is the conversation as stored since the last checkpoint.
 pub async fn surface(
     tools: &tools::Registry,
-    store: &db::Store,
     conversation: &[ChatMessage],
     seat: &SurfaceInputs<'_>,
 ) -> Surface {
     if let Some(m) = seat.workflow {
-        let mut declared: Vec<ToolDefinition> =
-            tools.list().await.into_iter().filter(|d| m.advertised_tools.contains(&d.name)).collect();
+        let mut declared: Vec<ToolDefinition> = tools
+            .list()
+            .await
+            .into_iter()
+            .filter(|d| m.advertised_tools.contains(&d.name))
+            .collect();
         if m.advertised_tools.contains("exit") && !declared.iter().any(|d| d.name == "exit") {
             let exit = tools::ExitTool::new();
             declared.push(ToolDefinition {
@@ -271,10 +273,7 @@ pub async fn surface(
 
     let deferred = tools.get_deferred_names().await;
     let loaded = loaded_tools(conversation, &deferred);
-    let mut all = tools.list().await;
-    if seat.company_memory_sealed {
-        crate::harness::seat::seal_company_memory(store, tools, seat.agent_id, &mut all).await;
-    }
+    let all = tools.list().await;
     let mut declared = declared(all, &deferred, &loaded);
     declared.retain(|d| crate::harness::delegation::on_surface(seat.mode, &d.name));
     let mut listed = listed(&deferred, &declared);
@@ -289,21 +288,6 @@ pub async fn surface(
         crate::harness::events::announced("tools_available", conversation).into_keys().collect();
     let listing = ListingDelta::between(&announced, &listed);
     Surface { declared, loaded, listing }
-}
-
-/// Remove company-Memory tools from a run's declared set (the per-employee
-/// ethical wall). `memory_tool_names` is resolved by the caller from the MCP
-/// proxy → integration mapping, so this stays pure and testable.
-///
-/// Returns the surviving definitions and how many were withheld.
-pub fn withhold_memory_tools(
-    all_tools: Vec<ToolDefinition>,
-    memory_tool_names: &HashSet<String>,
-) -> (Vec<ToolDefinition>, usize) {
-    let before = all_tools.len();
-    let kept: Vec<ToolDefinition> = all_tools.into_iter().filter(|d| !memory_tool_names.contains(&d.name)).collect();
-    let withheld = before - kept.len();
-    (kept, withheld)
 }
 
 /// Whether a restricted run's allowlist names this tool: by name, as the
@@ -426,19 +410,5 @@ mod tests {
         let text = render_listing(&ListingDelta::all(names));
         let lines: Vec<&str> = text.lines().skip(1).collect();
         assert_eq!(lines, ["app__crm__* (2)", "mcp__github__* (40)", "vm"]);
-    }
-
-    #[test]
-    fn isolated_employee_loses_memory_tools_only() {
-        let all = vec![def("os"), def("mcp__nebo_kb__memory_search"), def("mcp__other__x")];
-        let (kept, withheld) = withhold_memory_tools(all, &set(&["mcp__nebo_kb__memory_search"]));
-        assert_eq!(withheld, 1);
-        assert_eq!(kept.into_iter().map(|d| d.name).collect::<Vec<_>>(), ["os", "mcp__other__x"]);
-    }
-
-    #[test]
-    fn non_isolated_employee_keeps_everything() {
-        let (kept, withheld) = withhold_memory_tools(vec![def("os")], &HashSet::new());
-        assert_eq!((kept.len(), withheld), (1, 0));
     }
 }

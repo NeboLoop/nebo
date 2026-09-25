@@ -191,9 +191,10 @@ pub struct ToolContext {
     /// still DECLARED to the model (prompt-cache byte parity) — restriction
     /// happens here, never by narrowing the registry.
     pub tool_whitelist: Option<std::collections::HashSet<String>>,
-    /// The employee's own tools the run's tool scope leaves out
-    /// (`scopes.<name>.tools`): never listed, never loaded, never run.
-    /// `None` when no scope narrows the run.
+    /// The tools this run may not use: the employee's own tools its tool
+    /// scope leaves out (`scopes.<name>.tools`), and company Memory for an
+    /// isolated employee with no matter. Never listed, never loaded, never
+    /// run. `None` when nothing is withheld.
     pub withheld_tools: Option<std::sync::Arc<std::collections::HashSet<String>>>,
     /// When a whitelist denial fires, this text IS the error (the denial must
     /// teach the recovery for the run's actual situation — a room organizer is

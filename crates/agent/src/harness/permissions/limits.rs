@@ -236,7 +236,9 @@ pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
             },
         ));
     }
-    // The tool scope's narrowing: the employee's own tools it leaves out.
+    // What the run may not use: the tool scope's narrowing, and company
+    // Memory for an isolated seat with no matter, however the call was
+    // reached (a name from find_tools, a guess).
     if cx
         .ctx
         .withheld_tools

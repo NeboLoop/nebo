@@ -303,52 +303,37 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     }
 }
 
-/// Withhold company Memory's tools from a sealed seat's toolset. Exact URL
-/// match, not a substring guess: a customer's own KB at some other host is
-/// their business and must not be withheld. Returns whether any Memory
-/// integration was found (and so whether the toolset was filtered).
-pub async fn seal_company_memory(
-    store: &Store,
-    tools: &tools::Registry,
-    agent_id: &str,
-    all_tool_defs: &mut Vec<ai::ToolDefinition>,
-) -> bool {
+/// The registered tools that reach company Memory: those proxied to an MCP
+/// integration at the Memory URL. Exact URL match, not a substring guess: a
+/// customer's own KB at some other host is their business and is never
+/// walled off. What a sealed seat walls off.
+pub async fn company_memory_tools(store: &Store, tools: &tools::Registry, agent_id: &str) -> HashSet<String> {
     let memory_url = config::memory_url();
-    let memory_integration_ids: HashSet<String> = if memory_url.is_empty() {
-        HashSet::new()
-    } else {
-        store
-            .list_mcp_integrations()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|i| i.server_url.as_deref() == Some(memory_url.as_str()))
-            .map(|i| i.id)
-            .collect()
-    };
-    if memory_integration_ids.is_empty() {
-        return false;
+    if memory_url.is_empty() {
+        return HashSet::new();
     }
-    let mut memory_tool_names: HashSet<String> = HashSet::new();
-    for def in all_tool_defs.iter() {
+    let memory_integration_ids: HashSet<String> = store
+        .list_mcp_integrations()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| i.server_url.as_deref() == Some(memory_url.as_str()))
+        .map(|i| i.id)
+        .collect();
+    if memory_integration_ids.is_empty() {
+        return HashSet::new();
+    }
+    let mut walled = HashSet::new();
+    for def in tools.list().await {
         if let Some((integration_id, _)) = tools.mcp_proxy_info(&def.name).await
             && memory_integration_ids.contains(&integration_id)
         {
-            memory_tool_names.insert(def.name.clone());
+            walled.insert(def.name);
         }
     }
-    let (kept, withheld) = crate::harness::tool_surface::withhold_memory_tools(
-        std::mem::take(all_tool_defs),
-        &memory_tool_names,
-    );
-    *all_tool_defs = kept;
-    if withheld > 0 {
-        debug!(
-            agent = %agent_id,
-            withheld,
-            "context_isolated employee: company Memory withheld (no matter scoping yet)"
-        );
+    if !walled.is_empty() {
+        debug!(agent = %agent_id, walled = walled.len(), "context_isolated employee: company Memory walled off (no matter)");
     }
-    true
+    walled
 }
 
 /// What a restricted run is told when its allowlist left it no tools.
