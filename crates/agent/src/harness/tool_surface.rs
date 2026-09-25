@@ -201,9 +201,9 @@ fn family_prefix(name: &str) -> Option<String> {
 /// What a step's surface is built from: the seat's side of it.
 pub struct SurfaceInputs<'a> {
     pub agent_id: &'a str,
-    /// Declared on every step for this employee: its `requires.tools` and,
-    /// when its job needs plugins, the plugin tool. Its own app tools join
-    /// them from the registry.
+    /// Declared on every step for this employee: its `requires.tools`, its
+    /// required plugins' tools and the operation tools of the interfaces it
+    /// binds. Its own app tools join them from the registry.
     pub always_load: &'a HashSet<String>,
     /// A restricted run's allowlist: only what it admits is declared or
     /// listed.

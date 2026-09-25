@@ -356,10 +356,12 @@ pub struct Registry {
     read_state: std::sync::RwLock<Option<crate::file_tool::ReadState>>,
     /// DB store for MCP proxy tools (OAuth token refresh during tool calls).
     store: std::sync::RwLock<Option<Arc<db::Store>>>,
-    /// The MCP proxy tools this registry holds, by server: the index the
-    /// `mcp` tool describes itself from, kept at the one place proxies come
-    /// and go (`register_proxy` / `unregister_proxy`).
-    mcp_proxies: crate::mcp_tool::ProxyRoster,
+    /// The plugin runner behind the plugin and operation tools, once a
+    /// plugin store is wired.
+    plugin_runner: std::sync::RwLock<Option<Arc<crate::plugin_tool::PluginRunner>>>,
+    /// The `plugin__<slug>` and operation tools the last refresh registered;
+    /// held across a refresh so two never interleave.
+    plugin_tools: tokio::sync::Mutex<HashSet<String>>,
     /// Browser manager, for closing a session's tab/page when a sub-agent finishes.
     browser_manager: std::sync::RwLock<Option<Arc<browser::Manager>>>,
     /// Canonical marketplace-code installer (server-implemented). `Arc`-wrapped so the
@@ -405,7 +407,8 @@ impl Registry {
             agent_loader: std::sync::RwLock::new(None),
             read_state: std::sync::RwLock::new(None),
             store: std::sync::RwLock::new(None),
-            mcp_proxies: crate::mcp_tool::new_roster(),
+            plugin_runner: std::sync::RwLock::new(None),
+            plugin_tools: tokio::sync::Mutex::new(HashSet::new()),
             browser_manager: std::sync::RwLock::new(None),
             code_installer: Arc::new(std::sync::RwLock::new(None)),
             job_consent: Arc::new(std::sync::RwLock::new(None)),
@@ -438,35 +441,6 @@ impl Registry {
     /// Set the DB store (used by MCP proxy tools for OAuth token refresh).
     pub fn set_store(&self, store: Arc<db::Store>) {
         *self.store.write().unwrap() = Some(store);
-    }
-
-    /// The proxy roster the `mcp` tool is built on (see `McpTool::new`).
-    pub fn mcp_proxy_roster(&self) -> crate::mcp_tool::ProxyRoster {
-        self.mcp_proxies.clone()
-    }
-
-    /// Record that a proxy tool arrived or left, then re-derive the `mcp`
-    /// tool's cached description from the roster so it names what the
-    /// toolset holds. Not a proxy-shaped name: nothing to record.
-    async fn note_proxy_change(&self, name: &str, present: bool) {
-        let Some(server) = crate::mcp_tool::roster_server(name) else {
-            return;
-        };
-        {
-            let mut roster = match self.mcp_proxies.write() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            if present {
-                roster.entry(server.to_string()).or_default().insert(name.to_string());
-            } else if let Some(tools) = roster.get_mut(server) {
-                tools.remove(name);
-                if tools.is_empty() {
-                    roster.remove(server);
-                }
-            }
-        }
-        self.refresh_definition(crate::mcp_tool::MCP_TOOL_NAME).await;
     }
 
     /// Set the plugin store for injecting plugin binary env vars into subprocesses.
@@ -709,6 +683,76 @@ impl Registry {
             self.def_cache.write().await.insert(name.to_string(), def);
             debug!(tool = %name, "refreshed cached tool definition");
         }
+    }
+
+    /// Re-derive the plugin tools from what is installed and connected: one
+    /// `plugin__<slug>` per installed plugin and one operation tool per
+    /// catalog operation a connected plugin binds. Called at registration and
+    /// whenever a plugin is installed, removed, toggled, connected or
+    /// disconnected; a tool no longer backed by a plugin is removed.
+    pub async fn refresh_plugin_tools(&self) {
+        let Some(runner) = self.plugin_runner.read().unwrap().clone() else {
+            return;
+        };
+        let mut registered = self.plugin_tools.lock().await;
+        let mut next: Vec<Box<dyn DynTool>> = runner
+            .installed_slugs()
+            .iter()
+            .map(|slug| Box::new(crate::plugin_tools::PluginCliTool::new(runner.clone(), slug)) as Box<dyn DynTool>)
+            .collect();
+        let providers: Vec<Arc<dyn crate::operation_tools::OperationProvider>> = runner
+            .active_slugs()
+            .iter()
+            .map(|slug| {
+                Arc::new(crate::operation_tools::PluginProvider::new(runner.clone(), slug))
+                    as Arc<dyn crate::operation_tools::OperationProvider>
+            })
+            .collect();
+        next.extend(
+            crate::operation_tools::operation_tools(&providers)
+                .into_iter()
+                .map(|t| Box::new(t) as Box<dyn DynTool>),
+        );
+        // A name another tool already holds stays that tool's.
+        let mut names = HashSet::new();
+        let mut keep: Vec<Box<dyn DynTool>> = Vec::new();
+        for tool in next {
+            let name = tool.name().to_string();
+            if !registered.contains(&name) && self.get(&name).await.is_some() {
+                warn!(tool = %name, "a plugin tool's name is taken by another tool; not registered");
+                continue;
+            }
+            if names.insert(name) {
+                keep.push(tool);
+            }
+        }
+        for stale in registered.difference(&names) {
+            self.unregister(stale).await;
+        }
+        for tool in keep {
+            self.register(tool).await;
+        }
+        *registered = names;
+    }
+
+    /// The operation tools an employee binds through `requires.interfaces`:
+    /// every registered operation tool whose catalog term it names. They are
+    /// always loaded for that employee.
+    pub async fn operation_tools_for(&self, interfaces: &[String]) -> HashSet<String> {
+        if interfaces.is_empty() {
+            return HashSet::new();
+        }
+        let empty = serde_json::json!({});
+        self.tools
+            .read()
+            .await
+            .iter()
+            .filter(|(_, t)| {
+                t.operation_performed(&empty)
+                    .is_some_and(|op| interfaces.iter().any(|i| op.split('.').next() == Some(i.as_str())))
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     /// Get the full description of a specific tool (used for steering injection on first use).
@@ -1273,17 +1317,20 @@ impl Registry {
         self.register(Box::new(crate::notebook_tool::NotebookTool::new()))
             .await;
 
-        // Plugin tool — ALWAYS registered when a plugin store exists, even with ZERO
-        // plugins installed, so the agent can always list/discover/install plugins from
-        // the system prompt (no chicken-and-egg where the tool only appears after the
-        // first install). Its description() handles the zero-state and points at discover.
+        // Plugins: the marketplace search and the events reader whenever a
+        // plugin store exists (zero plugins installed included), then one
+        // tool per installed plugin and per operation a connected one binds.
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
-            let mut pt = crate::plugin_tool::PluginTool::new(ps, store.clone());
+            let mut runner = crate::plugin_tool::PluginRunner::new(ps, store.clone());
             if let Some(ref bc) = broadcaster {
-                pt = pt.with_broadcaster(bc.clone());
+                runner = runner.with_broadcaster(bc.clone());
             }
-            self.register(Box::new(pt)).await;
+            let runner = Arc::new(runner);
+            *self.plugin_runner.write().unwrap() = Some(runner.clone());
+            self.register(Box::new(crate::plugin_tools::FindPluginsTool::new(runner.clone()))).await;
+            self.register(Box::new(crate::plugin_tools::ReadPluginEventsTool::new(runner))).await;
+            self.refresh_plugin_tools().await;
         }
 
         // VM tool (isolated Linux environment for builds/toolchains) — deferred
@@ -1318,73 +1365,8 @@ impl Registry {
     }
 }
 
-/// MCP proxy tool that delegates execution to the bridge.
-struct McpProxyTool {
-    proxy_name: String,
-    original_name: String,
-    tool_description: String,
-    tool_schema: Option<serde_json::Value>,
-    integration_id: String,
-    bridge: Arc<mcp::Bridge>,
-    store: Arc<db::Store>,
-}
-
-impl DynTool for McpProxyTool {
-    fn name(&self) -> &str {
-        &self.proxy_name
-    }
-
-    fn description(&self) -> String {
-        self.tool_description.clone()
-    }
-
-    fn schema(&self) -> serde_json::Value {
-        self.tool_schema
-            .clone()
-            .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}))
-    }
-
-
-    fn mcp_proxy_info(&self) -> Option<(String, String)> {
-        Some((self.integration_id.clone(), self.original_name.clone()))
-    }
-
-    fn execute_dyn<'a>(
-        &'a self,
-        ctx: &'a crate::origin::ToolContext,
-        mut input: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
-        // Repair model-stringified object/array args against the server's real
-        // schema before forwarding (see coerce_schema_types).
-        if let Some(schema) = &self.tool_schema {
-            crate::mcp_tool::coerce_schema_types(&mut input, schema);
-        }
-        // The run's confidentiality scope rides along as a header, so a sealed
-        // employee reaches only its own matter on the server side.
-        let matter = ctx.memory_matter.clone();
-        Box::pin(async move {
-            crate::mcp_tool::call_mcp_tool_scoped(
-                &self.store,
-                &self.bridge,
-                &self.integration_id,
-                &self.original_name,
-                input,
-                matter.as_deref(),
-            )
-            .await
-        })
-    }
-}
-
 impl mcp::bridge::ProxyToolRegistry for Registry {
-    fn register_proxy(
-        &self,
-        name: &str,
-        original_name: &str,
-        description: &str,
-        schema: Option<serde_json::Value>,
-        integration_id: &str,
-    ) {
+    fn register_proxy(&self, name: &str, def: &mcp::McpToolDef, integration_id: &str) {
         let bridge = match self.bridge.read().unwrap().as_ref() {
             Some(b) => b.clone(),
             None => {
@@ -1399,22 +1381,10 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
                 return;
             }
         };
-        let tool = McpProxyTool {
-            proxy_name: name.to_string(),
-            original_name: original_name.to_string(),
-            tool_description: description.to_string(),
-            tool_schema: schema,
-            integration_id: integration_id.to_string(),
-            bridge,
-            store,
-        };
-        // MCP proxy tools are deferred — activated by keyword matching or direct call
+        let tool = crate::mcp_tool::McpProxyTool::new(name, def, integration_id, bridge, store);
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    self.register(Box::new(tool)).await;
-                    self.note_proxy_change(name, true).await;
-                });
+                tokio::runtime::Handle::current().block_on(self.register(Box::new(tool)));
             });
         }
     }
@@ -1423,10 +1393,7 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         if tokio::runtime::Handle::try_current().is_ok() {
             let name = name.to_string();
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    self.unregister(&name).await;
-                    self.note_proxy_change(&name, false).await;
-                });
+                tokio::runtime::Handle::current().block_on(self.unregister(&name));
             });
         }
     }
@@ -1496,7 +1463,7 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
 pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Value)>)> {
     let lc = name.to_lowercase();
     let (tool, params): (&str, Vec<(&str, &str)>) = match lc.as_str() {
-        // Legacy STRAP consolidations — tools absorbed into os/plugin. The
+        // Legacy STRAP consolidations — tools absorbed into os. The
         // call shape carried over (resource/action args), so organizer-style
         // calls pass through untouched; single-purpose tools inject their
         // absorbed resource. Must agree with legacy_tool_aliases (the
@@ -1507,9 +1474,6 @@ pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json
         "music" => ("os", vec![("resource", "music")]),
         "keychain" => ("os", vec![("resource", "keychain")]),
         "spotlight" => ("os", vec![("resource", "search")]),
-        "gws" | "google-workspace" | "gmail" | "gcalendar" | "gdrive" | "gsheets" | "gdocs" => {
-            ("plugin", vec![("resource", "gws")])
-        }
         _ => return None,
     };
     let params = params
@@ -1535,13 +1499,6 @@ pub fn legacy_tool_aliases() -> &'static [(&'static str, &'static str)] {
         ("spotlight", "os"),
         ("desktop", "os"),
         ("system", "os"),
-        ("gws", "plugin"),
-        ("google-workspace", "plugin"),
-        ("gmail", "plugin"),
-        ("gcalendar", "plugin"),
-        ("gdrive", "plugin"),
-        ("gsheets", "plugin"),
-        ("gdocs", "plugin"),
     ]
 }
 
@@ -2071,22 +2028,42 @@ mod tests {
     }
 
     /// Every tool the full roster registers, the way a bot builds it (the
-    /// server adds find_tools and mcp after `register_all`).
+    /// server adds find_tools after `register_all`), with one installed
+    /// plugin that binds an operation, so its tool and the operation's are
+    /// in the roster too.
     async fn full_registry() -> (Arc<Registry>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
+        let version_dir = dir.path().join("plugins").join("ledgerly").join("0.1.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(
+            version_dir.join("plugin.json"),
+            serde_json::json!({
+                "id": "ledgerly", "slug": "ledgerly", "name": "Ledgerly", "version": "0.1.0", "platforms": {},
+                "description": "Bookkeeping for small businesses.",
+                "interfaceBindings": {"ledger.invoice.send": "invoice send {invoiceId} {sendTo?:--send-to}"},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(version_dir.join("ledgerly"), b"#!/bin/sh\necho ok\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("user_plugins")).unwrap();
         let registry = Arc::new(Registry::new(crate::gate::test_gate()));
+        registry.set_plugin_store(Arc::new(napp::plugin::PluginStore::new(
+            dir.path().join("plugins"),
+            dir.path().join("user_plugins"),
+            None,
+        )));
         registry.register_all(store, crate::orchestrator::new_handle()).await;
         registry.register(Box::new(crate::find_tools::FindToolsTool::new(registry.clone()))).await;
-        registry.register(Box::new(crate::mcp_tool::McpTool::new(registry.mcp_proxy_roster()))).await;
         (registry, dir)
     }
 
     /// The tools that still carry several jobs behind `action`/`resource`.
     /// Each tool package removes its names; nothing is ever added.
     const PRE_INTERFACE_TOOLS: &[&str] = &[
-        "a2ui", "authority", "code", "execute", "exit", "mcp", "message", "notebook",
-        "os", "pack", "plugin", "publisher", "rules", "vm",
+        "a2ui", "authority", "code", "execute", "exit", "message", "notebook", "os", "pack",
+        "publisher", "rules", "vm",
     ];
 
     /// The enum-dispatch surfaces the interface allows (device surfaces).
@@ -2143,7 +2120,7 @@ mod tests {
 
     #[test]
     fn the_pre_interface_list_is_closed_and_the_allowed_surfaces_are_the_device_ones() {
-        assert_eq!(PRE_INTERFACE_TOOLS.len(), 14, "packages only remove names from this list");
+        assert_eq!(PRE_INTERFACE_TOOLS.len(), 12, "packages only remove names from this list");
         assert!(ENUM_SURFACES.iter().all(|(t, _)| is_tool_name(t)));
     }
 
@@ -2156,19 +2133,18 @@ mod tests {
     /// (−8,361); WP9 the schedule and team families (−4,976). WP1 moved
     /// files and commands off os: 37,495 on macOS (os 9,304 · run_command
     /// 1,087 · read_file 782 · edit_file 705 · write_file 448) and 37,798
-    /// on Linux (os 9,609). The plugin tool (core too, and sized by the
-    /// installed plugins) needs a plugin store and is not in this roster.
-    /// WP4 swapped skill (3,102) for use_skill (585): −2,517. Tools WP2
-    /// moved helpers, memory and asking off agent and message (agent 6,005 ·
-    /// message 2,657 · delegate 1,702 · remember 1,039 · recall 701 ·
-    /// ask_owner 618 · forget 336). Tools WP3 deferred the employee family
-    /// and deleted agent: −6,005. WP9 moved coworker messages off message to
-    /// send_message (message 1,450: −1,207). Each package that lands lowers
-    /// the numbers; they never rise.
+    /// on Linux (os 9,609). WP4 swapped skill (3,102) for use_skill (585):
+    /// −2,517. Tools WP2 moved helpers, memory and asking off agent and
+    /// message (agent 6,005 · message 2,657 · delegate 1,702 · remember
+    /// 1,039 · recall 701 · ask_owner 618 · forget 336). Tools WP3 deferred
+    /// the employee family and deleted agent: −6,005. WP9 moved coworker
+    /// messages off message to send_message (message 1,450: −1,207). WP6
+    /// deleted the mcp tool and deferred the plugin family (−657). Each
+    /// package that lands lowers the numbers; they never rise.
     #[cfg(target_os = "macos")]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 19_955;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 19_298;
     #[cfg(not(target_os = "macos"))]
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 20_407;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 19_750;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2199,7 +2175,7 @@ mod tests {
         assert_eq!(
             core,
             [
-                "ask_owner", "delegate", "edit_file", "find_tools", "forget", "mcp", "message", "os",
+                "ask_owner", "delegate", "edit_file", "find_tools", "forget", "message", "os",
                 "read_file", "recall", "remember", "run_command", "use_skill", "write_file"
             ]
         );
@@ -2209,9 +2185,15 @@ mod tests {
         for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules", "create_schedule", "list_teams"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
+        // The plugin family: the marketplace, the events reader, one tool
+        // per installed plugin and per operation it binds, all deferred.
+        for name in ["find_plugins", "read_plugin_events", "plugin__ledgerly", "ledger_invoice_send"] {
+            assert!(deferred.contains(name), "{name} is registered and deferred");
+        }
     }
 
-    /// Every rule key a tool answers is a tool name of the current set.
+    /// Every rule key a tool answers is a tool name of the current set, or
+    /// the catalog operation an operation tool performs.
     #[tokio::test]
     async fn rule_keys_are_tool_names() {
         let (registry, _dir) = full_registry().await;
@@ -2231,10 +2213,15 @@ mod tests {
             ("message", serde_json::json!({"resource": "sms", "action": "send"})),
             ("message_owner", serde_json::json!({"message": "m"})),
             ("find_tools", serde_json::json!({"query": "x"})),
+            ("find_plugins", serde_json::json!({"query": "x"})),
+            ("read_plugin_events", serde_json::json!({"plugin": "ledgerly"})),
+            ("plugin__ledgerly", serde_json::json!({"command": "doctor"})),
+            ("ledger_invoice_send", serde_json::json!({"invoiceId": "1041"})),
         ];
         for (tool, input) in calls {
             let t = registry.target(tool, &input).await.unwrap();
-            assert!(is_tool_name(&t.key) && !PRE_INTERFACE_TOOLS.contains(&t.key.as_str()), "{tool} {input} → {}", t.key);
+            let named = is_tool_name(&t.key) && !PRE_INTERFACE_TOOLS.contains(&t.key.as_str());
+            assert!(named || t.operation.as_deref() == Some(t.key.as_str()), "{tool} {input} → {}", t.key);
         }
     }
 

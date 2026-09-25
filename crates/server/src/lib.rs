@@ -1206,9 +1206,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // via gmail, …) read as unbound and fell back to the local app until then.
     // Off the boot path: each probe is one `auth status` per plugin, bounded by
     // AUTH_PROBE_TIMEOUT, and a slow one must not hold the server up.
+    // Readiness decides which operations a plugin provides, so the plugin
+    // tools are re-derived once it is known.
     tokio::spawn({
         let ps = plugin_store.clone();
-        async move { ps.refresh_auth_cache().await }
+        let tools = tool_registry.clone();
+        async move {
+            ps.refresh_auth_cache().await;
+            tools.refresh_plugin_tools().await;
+        }
     });
 
     // Append plugin-provided AI providers (e.g., openrouter, local model servers)
@@ -1526,11 +1532,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         hub_for_notify.broadcast(event_type, payload);
     });
     tool_registry.set_notify_fn(alert_notify_fn);
-
-    // Register the MCP enumeration tool — mcp(action:"list") lists connected servers.
-    // Each server's tools are exposed as their own mcp__<server>__<tool> proxy tools.
-    let mcp_tool = tools::mcp_tool::McpTool::new(tool_registry.mcp_proxy_roster());
-    tool_registry.register(Box::new(mcp_tool)).await;
 
     // Sync MCP integrations from DB — reconnect with stored OAuth tokens
     let bridge_init = bridge.clone();
@@ -2438,7 +2439,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 }
                 if let Some(tool_dir) = handlers::agents::app_tool_dir(agent) {
                     let mut lifecycle = app_lifecycle::AppLifecycle::new(
-                        agent.id.clone(),
+                        agent,
                         tool_dir,
                         startup_state.hub.clone(),
                         startup_state.tools.clone(),

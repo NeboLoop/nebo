@@ -1053,7 +1053,7 @@ fn calls_since_unexecuted_skill_load(messages: &[ChatMessage]) -> Option<usize> 
                 .unwrap_or("")
                 .to_string()
         };
-        if arr.iter().any(|c| name_of(c) == "plugin") {
+        if arr.iter().any(|c| tools::plugin_tools::plugin_slug(&name_of(c)).is_some()) {
             return deepest; // plugin execution counts as producing
         }
         if arr.iter().any(|c| name_of(c) == tools::skill_tool::USE_SKILL) {
@@ -1175,7 +1175,7 @@ fn soul_essence(soul: &str) -> String {
     format!(" — {s}.")
 }
 
-/// Distinct `plugin` resource slugs the agent has called this session (assistant turns).
+/// Distinct plugins (`plugin__<slug>` tools) the agent has called this session (assistant turns).
 fn recent_plugin_slugs(messages: &[ChatMessage]) -> Vec<String> {
     let mut slugs = std::collections::BTreeSet::new();
     for m in messages {
@@ -1187,24 +1187,12 @@ fn recent_plugin_slugs(messages: &[ChatMessage]) -> Vec<String> {
             continue;
         };
         for c in &calls {
-            if c.get("name").and_then(|v| v.as_str()) != Some("plugin") {
-                continue;
-            }
-            let Some(input) = c.get("input") else { continue };
-            // `input` may be an object or a JSON-encoded string.
-            let obj = if let Some(s) = input.as_str() {
-                serde_json::from_str::<serde_json::Value>(s).ok()
-            } else {
-                Some(input.clone())
-            };
-            if let Some(slug) = obj
-                .as_ref()
-                .and_then(|o| o.get("resource"))
+            if let Some(slug) = c
+                .get("name")
                 .and_then(|v| v.as_str())
+                .and_then(tools::plugin_tools::plugin_slug)
             {
-                if !slug.is_empty() {
-                    slugs.insert(slug.to_string());
-                }
+                slugs.insert(slug.to_string());
             }
         }
     }
@@ -1212,7 +1200,7 @@ fn recent_plugin_slugs(messages: &[ChatMessage]) -> Vec<String> {
 }
 
 /// PluginAffinity — after the agent uses a channel/messaging plugin, surface the slugs
-/// it's already used so it calls them directly instead of re-running `plugin` discovery.
+/// it's already used so it calls them directly instead of searching the marketplace again.
 /// Informational ("a capability is available" tone); migrated from the
 /// runner's suffix injection in R8. Fires after a plugin call lands in the window.
 struct PluginAffinity;
@@ -1232,8 +1220,8 @@ impl Reminder for PluginAffinity {
             return None;
         }
         Some(format!(
-            "Plugins you've already used this session: {}. Call them directly — \
-             no need to run `plugin` discovery again.",
+            "Plugins you've already used this session: {}. Call their plugin__<name> \
+             tools directly — no need to search the marketplace again.",
             slugs.join(", ")
         ))
     }
@@ -1500,12 +1488,7 @@ fn last_discovery_query(messages: &[ChatMessage]) -> String {
         for c in calls.iter().rev() {
             let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let input = c.get("input").cloned().unwrap_or(serde_json::Value::Null);
-            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let discovery = match name {
-                "find_skills" => true,
-                "plugin" => matches!(action, "discover" | "search" | "browse"),
-                _ => false,
-            };
+            let discovery = matches!(name, "find_skills" | "find_plugins");
             if !discovery {
                 continue;
             }
@@ -1668,7 +1651,7 @@ fn recent_tool_calls(messages: &[ChatMessage], limit: usize) -> Vec<(String, Str
 
 /// Detects when the main agent is in an exploratory research loop —
 /// repeatedly calling discovery-flavored tools (`find_tools`,
-/// `find_skills`, repeated `plugin` probes) trying to figure out how to do
+/// `find_skills`, `find_plugins`, repeated plugin probes) trying to figure out how to do
 /// something — and nudges it to delegate the discovery to a sub-agent instead.
 ///
 /// Why: every exploratory tool call adds a user message + tool result pair
@@ -1676,9 +1659,9 @@ fn recent_tool_calls(messages: &[ChatMessage], limit: usize) -> Vec<(String, Str
 /// downstream turn. A sub-agent burns its OWN context on the research and
 /// returns one consolidated answer, keeping the main chat history clean.
 ///
-/// The prescribed chain `find_skills` → `use_skill` → `plugin help` →
-/// `plugin exec` is not exploration: `use_skill` and `plugin help` never
-/// count. Triggers when RESEARCH_DELEGATION_THRESHOLD or more of the last
+/// The prescribed chain `find_skills` → `use_skill` → a plugin command is
+/// not exploration: `use_skill` never counts, and one plugin call is not a
+/// probe. Triggers when RESEARCH_DELEGATION_THRESHOLD or more of the last
 /// RESEARCH_DELEGATION_WINDOW calls were discovery-flavored.
 struct ResearchDelegationNudge;
 impl Reminder for ResearchDelegationNudge {
@@ -1700,15 +1683,15 @@ impl Reminder for ResearchDelegationNudge {
         let mut plugin_count = 0usize;
         for (name, action) in &window {
             match (name.as_str(), action.as_str()) {
-                ("use_skill", _) | ("plugin", "help") => {} // the prescribed chain
-                ("find_tools", _) | ("find_skills", _) => discovery_count += 1,
-                ("plugin", _) => plugin_count += 1,
+                ("use_skill", _) => {} // the prescribed chain
+                ("find_tools", _) | ("find_skills", _) | ("find_plugins", _) => discovery_count += 1,
+                (n, _) if tools::plugin_tools::plugin_slug(n).is_some() => plugin_count += 1,
                 _ => {}
             }
         }
         // Treat repeated plugin probes as additional discovery signal
-        // (agent calling the same plugin tool multiple times to look up
-        // syntax via exec +help / --help / events).
+        // (agent calling a plugin's tool several times to look up syntax
+        // via +help / --help).
         if plugin_count >= 2 {
             discovery_count += plugin_count.saturating_sub(1);
         }
@@ -2120,7 +2103,7 @@ mod tests {
         // The reminder names the query of the discovery call that missed.
         let mut call = make_msg("assistant", "");
         call.tool_calls = Some(
-            r#"[{"id":"c1","name":"plugin","input":{"action":"discover","query":"twitter"}}]"#.into(),
+            r#"[{"id":"c1","name":"find_plugins","input":{"query":"twitter"}}]"#.into(),
         );
         let mut miss = make_msg("tool", "");
         miss.tool_results = Some(
@@ -2170,7 +2153,7 @@ mod tests {
 
     #[test]
     fn test_plugin_affinity_fires_after_plugin_use() {
-        let tc = r#"[{"name":"plugin","input":{"resource":"slack","command":"post"}}]"#;
+        let tc = r#"[{"name":"plugin__slack","input":{"command":"post"}}]"#;
         let msgs = vec![
             make_msg("user", "post to slack"),
             make_assistant_with_tools("", tc),
@@ -2348,24 +2331,23 @@ mod tests {
     }
 
     /// The chain the system prompt prescribes before a plugin command
-    /// (discover → load → help → exec) must not read as a discovery loop.
+    /// (discover → load → run) must not read as a discovery loop.
     #[test]
     fn test_research_delegation_nudge_spares_the_prescribed_chain() {
         let chain = calls_as_msgs(&[
             ("find_skills", ""),
             ("use_skill", ""),
-            ("plugin", "help"),
-            ("plugin", "exec"),
+            ("plugin__nebo-office", ""),
         ]);
         assert!(
-            ResearchDelegationNudge.check(&rctx_tools(&chain, &[], 4)).is_none(),
-            "discover → load → help → exec is the prescribed chain, not exploration"
+            ResearchDelegationNudge.check(&rctx_tools(&chain, &[], 3)).is_none(),
+            "discover → load → run is the prescribed chain, not exploration"
         );
         // Genuine probing around that chain still fires.
         let probing = calls_as_msgs(&[
             ("find_skills", ""),
             ("use_skill", ""),
-            ("plugin", "help"),
+            ("find_plugins", ""),
             ("find_tools", ""),
             ("find_skills", ""),
         ]);
@@ -2402,7 +2384,7 @@ mod tests {
         // A plugin invocation also counts as producing.
         let plugin_msgs = vec![
             make_assistant_with_tools("", skill),
-            make_assistant_with_tools("", r#"[{"name":"plugin","input":{"resource":"nebo-office","action":"help"}}]"#),
+            make_assistant_with_tools("", r#"[{"name":"plugin__nebo-office","input":{"command":"help"}}]"#),
         ];
         assert!(
             SkillExecutionNudge

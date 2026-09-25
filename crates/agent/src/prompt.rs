@@ -79,9 +79,6 @@ pub struct DynamicContext {
     pub channel: String,
     /// Work tasks for the current session (synced from pending_tasks).
     pub work_tasks: Vec<crate::steering::WorkTask>,
-    /// Cached tool documentation (key → content). Injected into the dynamic
-    /// suffix so it survives sliding window eviction.
-    pub tool_doc_cache: Vec<(String, String)>,
     /// User-configured IANA timezone (e.g. "America/Denver"). When set, date/time
     /// in the dynamic suffix is computed in this timezone instead of system-local.
     pub user_timezone: Option<String>,
@@ -181,8 +178,6 @@ Examples:
 - **os** — desktop, apps, settings, search, mail, calendar, contacts and reminders
 - **message** — SMS. Work for a named AI employee is send_message(to: "<name>"), never a helper; so is a post to a team
 - **use_skill** — load a skill: packaged instructions for a kind of work. Skills are listed by name with one line each; load a matching one before starting
-- **plugin** — run installed plugin binaries (subcommand only — binary auto-resolved)
-- **mcp** — list connected MCP servers: mcp(action: "list"). Each server's tools appear as their own `mcp__<server>__<tool>` tools — call those directly (find them with find_tools).
 - **find_tools** — load the deferred tools listed by name: find_tools(query: "select:<name>")
 
 **Tool discipline:**
@@ -190,10 +185,10 @@ Examples:
 - A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls.
 - Call independent tools in parallel — batch them into ONE response and Nebo runs read-only tools (read_file, search_web, fetch_url) concurrently. Reading several files, running several searches, or fetching several URLs? Do it in a single message, not one call per turn. Only sequence when a call genuinely depends on a previous result.
 - For several searches at once use search_web(queries: [...]); start helpers only for independent multi-step investigations. For open-ended searching where you're unsure of the match, a read-only explore helper (delegate(helper_type: "explore", ...)) keeps bulky output out of your context; when you already know the exact path, read it directly.
-- **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Load a deferred tool with find_tools(query: "select:<name>"), or search them by keywords (1–6 words); find_skills(query) searches skills, and use_skill(name) loads one to follow inline; plugin(action: "list") for installed plugins and plugin(action: "discover", query) for marketplace plugins; list_employees for installed employees and apps; mcp(action: "list") for connected MCP servers.
-- **Capability questions ("can X do …?", "give X access to …"):** go straight to plugin(action: "list") + plugin(action: "discover", query) — not the registry or filesystem. One short line before the batch; no per-call narration. In chat, discover shows an install card and pauses — the card IS the question: never paste install codes or ask "shall I proceed?" in prose. After install, the connect card appears on first use.
+- **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Load a deferred tool with find_tools(query: "select:<name>"), or search them by keywords (1–6 words); find_skills(query) searches skills, and use_skill(name) loads one to follow inline; installed plugins (plugin__<name>), their operations and connected MCP servers' tools (mcp__<server>__<tool>) are in the deferred listing, and find_plugins searches the marketplace; list_employees for installed employees and apps.
+- **Capability questions ("can X do …?", "give X access to …"):** go straight to the deferred listing and find_plugins — not the registry or filesystem. One short line before the batch; no per-call narration. In chat, discover shows an install card and pauses — the card IS the question: never paste install codes or ask "shall I proceed?" in prose. After install, the connect card appears on first use.
 - **Discover before you act on an unconfirmed capability.** Before invoking a named external service through a plugin or skill (posting, sending, querying a system you haven't used this session), confirm it exists first — the skill listing, or find_skills(query: "..."), then use_skill(name: "...") — not a trial execution. And discovery's verdict is final: if it says a capability is unavailable, report that to the user and stop; don't keep hunting through sub-agents, other plugins, or the browser.
-- **Don't guess plugin command syntax — load the skill first.** Command-rich plugins ship skills/recipes that document the exact syntax. When your task maps to a plugin command you haven't run this session, find the skill in the listing (or with `find_skills(query: "<what you're doing>")`) and load it with `use_skill(name)` BEFORE you run it — the skill carries the precise subcommand, flags, and environment-specific quirks you cannot reliably guess (for example a plugin might expose an operation as `reports generate --period month`, not a bare `generate` — guessing the wrong shape just errors and wastes a turn). Run the raw `plugin` command only with syntax you've confirmed from a skill, its `help`, or this turn's context.
+- **Don't guess plugin command syntax — load the skill first.** Command-rich plugins ship skills/recipes that document the exact syntax. When your task maps to a plugin command you haven't run this session, find the skill in the listing (or with `find_skills(query: "<what you're doing>")`) and load it with `use_skill(name)` BEFORE you run it — the skill carries the precise subcommand, flags, and environment-specific quirks you cannot reliably guess (for example a plugin might expose an operation as `reports generate --period month`, not a bare `generate` — guessing the wrong shape just errors and wastes a turn). Run a plugin's command only with syntax you've confirmed from a skill, its `help`, or this turn's context.
 - **You cannot sign in to or re-authenticate plugins or accounts yourself.** Do not call `auth login` and do not improvise around it (browser, shell, curl, another plugin). In direct chat the harness offers a connect card when a plugin needs signing in; otherwise tell the user to reconnect the account in Settings, Plugins, and stop. Read-only `auth status` is fine for diagnosis.
 
 **@Mentions:** When the user @mentions another agent (e.g., <@agent-id>), the message is automatically routed to that agent. You do NOT need to relay or forward — the system handles routing. Respond to the user naturally; the mentioned agent handles its part independently.
@@ -386,7 +381,7 @@ const GEMINI_OPERATIONAL_GUIDANCE: &str = r#"
 /// Exactly one of four forms applies: terse-formatting channels (dm/cli/voice), the
 /// NeboAI loop (file sharing via the `loop` tool), desktop/web surfaces (""/web/app —
 /// Work-panel document steering), or any other plugin-backed channel (route I/O +
-/// uploads through `plugin(...)`). `neboai` is served by the `loop` tool, not a plugin.
+/// uploads through the channel's `plugin__<slug>` tool). `neboai` is served by the `loop` tool, not a plugin.
 /// Mathematics renders on the desktop/web/app surfaces and in loop chats.
 /// One inline form, one display form — the two both renderers accept.
 const MATH_GUIDANCE: &str = "\n\n## Math\n\
@@ -477,12 +472,12 @@ fn channel_guidance(channel: &str) -> String {
     // is filled from the runtime channel string, so a new channel plugin needs no edit.
     format!(
         "\n\n## Channel Routing\nChannel context: `{channel}`. \
-         ALWAYS route channel I/O through `plugin(resource: \"{channel}\", command: \"...\")`. \
+         ALWAYS route channel I/O through the `plugin__{channel}` tool. \
          NEVER use skills for channel messaging — channels are plugins, not skills, \
          and find_skills will not find `{channel}`. \
          When the user references a local file or asks you to grab/share/send/upload one, \
          the DEFAULT action is to upload it into this channel via \
-         `plugin(resource: \"{channel}\", command: \"upload --path <abs_path>\")` — \
+         `plugin__{channel}` with command `upload --path <abs_path>` — \
          the bridge fills in the channel and thread automatically, you only need the path. \
          Do NOT offer to copy, extract, or link a file unless the user explicitly asks \
          for that instead. For plain text replies, just write your response — \
@@ -532,8 +527,6 @@ fn build_model_specific_guidance(provider_name: &str, model_name: &str) -> Strin
 const STRAP_CODE: &str = include_str!("strap/code.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
 const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
-const STRAP_MCP: &str = include_str!("strap/mcp.txt");
-const STRAP_PLUGIN: &str = include_str!("strap/plugin.txt");
 const STRAP_VM: &str = include_str!("strap/vm.txt");
 const STRAP_PUBLISHER: &str = include_str!("strap/publisher.txt");
 
@@ -558,8 +551,6 @@ pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
         "code" => Some(STRAP_CODE),
         "message" => Some(STRAP_MESSAGE),
         "execute" => Some(STRAP_EXECUTE),
-        "mcp" => Some(STRAP_MCP),
-        "plugin" => Some(STRAP_PLUGIN),
         "vm" => Some(STRAP_VM),
         "publisher" => Some(STRAP_PUBLISHER),
         _ => None,
@@ -987,33 +978,6 @@ Stay on this objective until it is complete or the user changes direction. If an
         sb.push_str("---");
     }
 
-    // 6. Cached tool documentation — survives sliding window eviction
-    if !dctx.tool_doc_cache.is_empty() {
-        sb.push_str("\n\n---\n[Reference Documentation — cached from earlier tool calls]\n");
-        let mut total_chars = 0usize;
-        const MAX_DOC_CHARS: usize = 8_000;
-        for (key, content) in &dctx.tool_doc_cache {
-            if total_chars >= MAX_DOC_CHARS {
-                break;
-            }
-            let remaining = MAX_DOC_CHARS - total_chars;
-            let truncated = if content.len() > remaining {
-                // Find a char boundary at or before `remaining`
-                {
-                    let mut end = remaining.min(content.len());
-                    while end > 0 && !content.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    &content[..end]
-                }
-            } else {
-                content.as_str()
-            };
-            sb.push_str(&format!("## {}\n{}\n\n", key, truncated));
-            total_chars += truncated.len() + key.len() + 5;
-        }
-        sb.push_str("---");
-    }
 
     sb
 }
@@ -1204,7 +1168,6 @@ mod tests {
             neboai_connected: false,
             channel: "web".to_string(),
             work_tasks: vec![],
-            tool_doc_cache: vec![],
             user_timezone: None,
         };
         let result = build_dynamic_suffix(&dctx);
@@ -1428,7 +1391,7 @@ mod tests {
         let pctx = PromptContext {
             mode: PromptMode::Minimal,
             agent_name: "Nebo".to_string(),
-            active_skill: Some("## Gmail Skill\nUse plugin(resource: \"<slug>\")".to_string()),
+            active_skill: Some("## Gmail Skill\nUse plugin__<slug>".to_string()),
             ..Default::default()
         };
         let result = build_static(&pctx);

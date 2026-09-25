@@ -88,6 +88,8 @@ impl SidecarCaller for GrpcSidecarCaller {
 
 pub struct AppLifecycle {
     agent_id: String,
+    /// The app's part of its tools' names (`app__<app>__<tool>`).
+    app: String,
     tool_dir: PathBuf,
     runtime: Arc<napp::Runtime>,
     supervisor: Arc<napp::supervisor::Supervisor>,
@@ -108,7 +110,7 @@ pub struct AppLifecycle {
 
 impl AppLifecycle {
     pub fn new(
-        agent_id: String,
+        agent: &db::models::Agent,
         tool_dir: PathBuf,
         hub: Arc<ClientHub>,
         registry: Arc<tools::Registry>,
@@ -121,7 +123,8 @@ impl AppLifecycle {
             .to_path_buf();
         let runtime = Arc::new(napp::Runtime::new(&runtime_root));
         Self {
-            agent_id,
+            agent_id: agent.id.clone(),
+            app: tools::sidecar_tool::app_slug(&agent.name),
             tool_dir,
             runtime,
             supervisor: Arc::new(napp::supervisor::Supervisor::new()),
@@ -214,7 +217,7 @@ impl AppLifecycle {
 
         let count = defs.len();
         for def in defs {
-            let tool = SidecarActionTool::new(def, caller.clone());
+            let tool = SidecarActionTool::new(&self.app, def, caller.clone());
             self.registry
                 .register_for_agent(&self.agent_id, Box::new(tool))
                 .await;
@@ -228,6 +231,7 @@ impl AppLifecycle {
 
     fn spawn_health_checker(&self) {
         let agent_id = self.agent_id.clone();
+        let app = self.app.clone();
         let tool_dir = self.tool_dir.clone();
         let process_slot = self.process.clone();
         let runtime = self.runtime.clone();
@@ -280,7 +284,7 @@ impl AppLifecycle {
                             let agent_root = &tool_dir;
                             if let Some(defs) = read_tool_defs_from_config(agent_root, &agent_id) {
                                 for def in defs {
-                                    let tool = SidecarActionTool::new(def, caller.clone());
+                                    let tool = SidecarActionTool::new(&app, def, caller.clone());
                                     registry.register_for_agent(&agent_id, Box::new(tool)).await;
                                 }
                             }
@@ -350,7 +354,7 @@ pub(crate) async fn relaunch(state: &crate::state::AppState, agent: &db::models:
         return;
     };
     let mut lifecycle = AppLifecycle::new(
-        agent_id.clone(),
+        agent,
         tool_dir,
         state.hub.clone(),
         state.tools.clone(),

@@ -40,18 +40,62 @@ pub trait SidecarCaller: Send + Sync {
     >;
 }
 
+/// The namespace of an app's tools: `app__<app>__<tool>`, so an app's tool
+/// never shadows a built-in.
+pub const APP_PREFIX: &str = "app__";
+
+/// A name as one part of a tool name: lowercase, anything outside
+/// `[a-z0-9-]` written as `_`, no runs of `_` (`__` separates the parts).
+fn name_part(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().to_lowercase().chars() {
+        let c = if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' };
+        if c == '_' && (out.is_empty() || out.ends_with('_')) {
+            continue;
+        }
+        out.push(c);
+    }
+    out.trim_end_matches('_').to_string()
+}
+
+/// The app part of its tools' names, from the app's own name.
+pub fn app_slug(app_name: &str) -> String {
+    let slug = name_part(app_name);
+    if slug.is_empty() { "app".to_string() } else { slug }
+}
+
+/// `app__<app>__<tool>`.
+pub fn app_tool_name(app: &str, tool: &str) -> String {
+    format!("{APP_PREFIX}{}__{}", app_slug(app), name_part(tool))
+}
+
+/// The tool's own name inside its app's namespace (`list_projects` for
+/// `app__brief__list_projects`), as an app's scopes list it.
+pub fn app_tool_local_name(name: &str) -> Option<&str> {
+    name.strip_prefix(APP_PREFIX)?.split_once("__").map(|(_, tool)| tool)
+}
+
 /// Individual tool that routes a single LLM tool call to a sidecar HTTP endpoint.
 ///
-/// Each sidecar endpoint becomes its own native tool — the LLM sees
-/// `list_projects(...)` directly, not `brief(action: "list_projects")`.
+/// Each sidecar endpoint becomes its own tool, `app__<app>__<endpoint>`:
+/// deferred everywhere, always loaded for the employee that owns the app.
 pub struct SidecarActionTool {
+    name: String,
+    hint: String,
     def: SidecarToolDef,
     caller: Arc<dyn SidecarCaller>,
 }
 
 impl SidecarActionTool {
-    pub fn new(def: SidecarToolDef, caller: Arc<dyn SidecarCaller>) -> Self {
-        Self { def, caller }
+    pub fn new(app: &str, def: SidecarToolDef, caller: Arc<dyn SidecarCaller>) -> Self {
+        let name = app_tool_name(app, &def.name);
+        let hint = name
+            .trim_start_matches(APP_PREFIX)
+            .split(['_', '-'])
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        Self { name, hint, def, caller }
     }
 
     /// Resolve path parameters like `/documents/{id}` using input values.
@@ -75,7 +119,11 @@ impl SidecarActionTool {
 
 impl DynTool for SidecarActionTool {
     fn name(&self) -> &str {
-        &self.def.name
+        &self.name
+    }
+
+    fn search_hint(&self) -> &str {
+        &self.hint
     }
 
     fn description(&self) -> String {
@@ -153,5 +201,20 @@ impl DynTool for SidecarActionTool {
                 Err(e) => ToolResult::error(format!("Failed to call sidecar: {}", e)),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_tools_live_in_their_apps_namespace() {
+        assert_eq!(app_tool_name("Project Brief", "list_projects"), "app__project_brief__list_projects");
+        assert_eq!(app_tool_name("brief", "Create Document"), "app__brief__create_document");
+        assert_eq!(app_slug("  ACME   Tools!! "), "acme_tools");
+        assert_eq!(app_slug("??"), "app");
+        assert_eq!(app_tool_local_name("app__project_brief__list_projects"), Some("list_projects"));
+        assert_eq!(app_tool_local_name("list_projects"), None);
     }
 }

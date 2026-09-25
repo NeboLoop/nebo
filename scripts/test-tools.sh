@@ -189,9 +189,15 @@ if case_ skill-onedoor-03 "the skill tool is gone"; then
   ok
 fi
 
-if case_ plugin-onedoor-01 "plugin help is gone; skills are read through use_skill"; then
+if case_ plugin-onedoor-01 "the plugin tool is gone; each plugin is its own tool"; then
   call '{"action":"help","resource":"anything"}' plugin
-  expect_error 'use_skill(name'
+  expect_error 'No such tool available: plugin'
+  ok
+fi
+
+if case_ plugin-onedoor-02 "events are read for an installed plugin only"; then
+  call '{"plugin":"not-installed-anywhere"}' read_plugin_events
+  expect_error 'No installed plugin is named not-installed-anywhere'
   ok
 fi
 
