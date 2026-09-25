@@ -2,7 +2,8 @@
 //! every registered check runs; one that says continue sends the loop into
 //! another step with its reminder, one that says exit ends the turn.
 //! Continuation is a loop transition, never a new run and never a stored
-//! owner message.
+//! owner message. An app ends a turn from outside through `app_halt`,
+//! asked before every step.
 
 use std::collections::{HashMap, HashSet};
 
@@ -112,51 +113,35 @@ fn succeeded_tools(transcript: &[ai::Message]) -> HashSet<&str> {
         .collect()
 }
 
-/// The name the app hook's continue reminder carries.
-pub const APP_HOOK: &str = "app_hook";
-
-/// Times one turn may be kept going by apps before it ends regardless.
-const APP_HOOK_CONTINUES: u8 = 8;
-
-/// The apps subscribed to `agent.should_continue`: asked when the model
-/// stops, one may keep the turn going by saying why. A reply that does not
-/// name a reason lets the turn end.
-pub struct AppHookCheck {
-    pub hooks: std::sync::Arc<napp::HookDispatcher>,
-    pub session_id: String,
-    /// The tools called this turn, in order.
-    pub called_tools: Vec<String>,
-}
-
-#[async_trait::async_trait]
-impl EndCheck for AppHookCheck {
-    fn name(&self) -> &'static str {
-        APP_HOOK
+/// The apps subscribed to `agent.should_continue`, asked before every step
+/// whether the employee may take it. An app that answers `false` halts the
+/// turn there: it is how an app stops a running employee. Returns the
+/// app's reason (empty when it gave none) when one said stop. An app never
+/// keeps a turn going; a reply that does not say `false`, or no reply,
+/// lets the step run.
+pub async fn app_halt(
+    hooks: &napp::HookDispatcher,
+    session_id: &str,
+    step: u32,
+    called_tools: &[String],
+    has_active_task: bool,
+) -> Option<String> {
+    if !hooks.has_subscribers("agent.should_continue") {
+        return None;
     }
-
-    async fn check(&self, end: &TurnEnd<'_>) -> EndVerdict {
-        if end.checks_this_turn >= APP_HOOK_CONTINUES || !self.hooks.has_subscribers("agent.should_continue") {
-            return EndVerdict::Stop;
+    let payload = serde_json::to_vec(&crate::hooks::ShouldContinuePayload {
+        session_id: session_id.to_string(),
+        turn: step as usize,
+        total_tool_calls: called_tools.to_vec(),
+        has_active_task,
+    })
+    .unwrap_or_default();
+    let (result, _) = hooks.apply_filter("agent.should_continue", payload).await;
+    match serde_json::from_slice::<crate::hooks::ShouldContinueResponse>(&result) {
+        Ok(crate::hooks::ShouldContinueResponse { should_continue: false, reason }) => {
+            Some(reason.unwrap_or_default().trim().to_string())
         }
-        let payload = serde_json::to_vec(&crate::hooks::ShouldContinuePayload {
-            session_id: self.session_id.clone(),
-            turn: end.step as usize,
-            total_tool_calls: self.called_tools.clone(),
-            has_active_task: false,
-        })
-        .unwrap_or_default();
-        let (result, _) = self.hooks.apply_filter("agent.should_continue", payload).await;
-        match serde_json::from_slice::<crate::hooks::ShouldContinueResponse>(&result) {
-            Ok(crate::hooks::ShouldContinueResponse { should_continue: true, reason: Some(reason) })
-                if !reason.trim().is_empty() =>
-            {
-                EndVerdict::Continue(TurnEvent::AppHook {
-                    label: "app".to_string(),
-                    text: reason,
-                })
-            }
-            _ => EndVerdict::Stop,
-        }
+        _ => None,
     }
 }
 
@@ -167,27 +152,18 @@ pub struct EndChecks {
     pub goal: Option<GoalCheck>,
     /// The activity's contract (workflow turns).
     pub workflow_contract: Option<WorkflowContract>,
-    /// The apps that may keep a chat or workflow turn going.
-    pub app_hook: Option<AppHookCheck>,
 }
 
 /// The checks a turn of `mode` runs at its end: the agreed-goal check for
-/// chat turns, the workflow contract for workflow turns, then the app hook
-/// for both; none for helpers and forks.
+/// chat turns, the workflow contract for workflow turns; none for helpers
+/// and forks.
 pub fn registry(mode: &TurnMode, checks: EndChecks) -> Vec<Box<dyn EndCheck>> {
-    let app = checks.app_hook.map(|a| Box::new(a) as Box<dyn EndCheck>);
     match mode {
-        TurnMode::Chat => checks
-            .goal
-            .map(|g| Box::new(g) as Box<dyn EndCheck>)
-            .into_iter()
-            .chain(app)
-            .collect(),
+        TurnMode::Chat => checks.goal.map(|g| Box::new(g) as Box<dyn EndCheck>).into_iter().collect(),
         TurnMode::Workflow(_) => checks
             .workflow_contract
             .map(|c| Box::new(WorkflowContractCheck(c)) as Box<dyn EndCheck>)
             .into_iter()
-            .chain(app)
             .collect(),
         TurnMode::Helper { .. } | TurnMode::Fork(_) => Vec::new(),
     }
@@ -243,7 +219,6 @@ mod tests {
         let checks = || EndChecks {
             goal: None,
             workflow_contract: Some(contract()),
-            app_hook: None,
         };
         // Chat, helpers and forks never run the workflow contract.
         assert!(registry(&TurnMode::Chat, checks()).is_empty());

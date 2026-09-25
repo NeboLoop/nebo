@@ -100,6 +100,31 @@ impl PreCheckpointHook for MemoryFlush {
     }
 }
 
+/// The pre-checkpoint transcript index: the conversation the summary is
+/// about to replace is indexed in the background, under the memory scope,
+/// so recall still finds its details after the checkpoint.
+pub struct TranscriptIndex {
+    pub store: Arc<db::Store>,
+    pub embedding: Arc<dyn ai::EmbeddingProvider>,
+    pub user_id: String,
+}
+
+#[async_trait::async_trait]
+impl PreCheckpointHook for TranscriptIndex {
+    fn name(&self) -> &'static str {
+        "transcript_index"
+    }
+
+    async fn before_checkpoint(&self, session_id: &str, _why: CheckpointReason) {
+        let (store, embedding, session_id, user_id) =
+            (self.store.clone(), self.embedding.clone(), session_id.to_string(), self.user_id.clone());
+        let handle = tokio::spawn(async move {
+            crate::transcript::index_compacted_messages(&store, embedding.as_ref(), &session_id, &user_id).await;
+        });
+        crate::memory_flush::track_extraction(handle).await;
+    }
+}
+
 /// Everything one checkpoint runs with.
 pub struct CheckpointContext<'a> {
     pub sessions: &'a SessionManager,

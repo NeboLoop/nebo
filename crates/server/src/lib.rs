@@ -3655,8 +3655,7 @@ async fn try_handle_comm_control(
     metadata: &std::collections::HashMap<String, String>,
 ) -> bool {
     if metadata.get("kind").map(String::as_str) == Some("stop") {
-        state.helpers.stop_session(Some(session_key));
-        let cancelled = state.run_registry.cancel_by_session(session_key).await;
+        let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
         tracing::info!(session = %session_key, cancelled, "inbound comm stop command");
         return true;
     }
@@ -5706,7 +5705,7 @@ async fn handle_comm_slash_command(
 
     let response = match cmd.as_str() {
         "/new" | "/reset" => {
-            let cancelled = state.run_registry.cancel_by_session(session_key).await;
+            let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
             if cancelled {
                 tracing::info!(session_key = %session_key, "cancelled active run before /new");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -5729,7 +5728,7 @@ async fn handle_comm_slash_command(
         }
 
         "/clear" => {
-            let cancelled = state.run_registry.cancel_by_session(session_key).await;
+            let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
             if cancelled {
                 tracing::info!(session_key = %session_key, "cancelled active run before /clear");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -5754,7 +5753,7 @@ async fn handle_comm_slash_command(
         }
 
         "/stop" | "/cancel" | "/halt" => {
-            let cancelled = state.run_registry.cancel_by_session(session_key).await;
+            let cancelled = chat_dispatch::stop_session(&state.helpers, &state.run_registry, session_key).await;
             tracing::info!(
                 session_key = %session_key,
                 cancelled,

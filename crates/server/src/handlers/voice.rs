@@ -2121,8 +2121,12 @@ async fn handle_conversation_session(
                             // Counters first: once the token fires the turn is
                             // gone and there is nothing left to describe.
                             let before = state.harness.active_turn_status(&ctx.session_key);
-                            state.helpers.stop_session(Some(&ctx.session_key));
-                            let cancelled = state.run_registry.cancel_by_session(&ctx.session_key).await;
+                            let cancelled = crate::chat_dispatch::stop_session(
+                                &state.helpers,
+                                &state.run_registry,
+                                &ctx.session_key,
+                            )
+                            .await;
                             info!(session_key = %ctx.session_key, cancelled, "voice cancel");
                             let line = voice_cancel_line(cancelled, before.as_ref());
                             if tool_done_tx

@@ -78,6 +78,10 @@ pub struct TurnContext {
     /// The workspace notes, the employee's own setup and the tools its job
     /// uses.
     pub session_context: String,
+    /// How to write for the channel; empty for a channel with none.
+    pub channel_rules: String,
+    /// The limit on a coworker without shared memory; empty otherwise.
+    pub coworker_access: String,
     pub tx: mpsc::Sender<StreamEvent>,
     pub progress: RunProgress,
     pub max_steps: u32,
@@ -189,6 +193,10 @@ pub enum TurnExit {
     },
     /// The owner's spending limit was reached.
     BudgetReached,
+    /// An app's `agent.should_continue` hook said stop, with its reason.
+    AppHalted {
+        reason: String,
+    },
     /// A tool ended the turn, with what only the owner can supply when the
     /// tool named it.
     TerminalTool {
@@ -221,6 +229,7 @@ impl TurnExit {
             // What a helper's collector reads as a partial result.
             TurnExit::MaxSteps { .. } => super::delegation::collect::STOP_MAX_STEPS.into(),
             TurnExit::BudgetReached => super::delegation::collect::STOP_SPEND_CAP.into(),
+            TurnExit::AppHalted { .. } => "app_halted".into(),
             TurnExit::TerminalTool { .. } => "terminal_tool_error".into(),
             TurnExit::WorkflowEnded(reason) => reason.clone(),
             TurnExit::ProviderFailed(_) => "provider_failed".into(),
@@ -529,6 +538,12 @@ pub(crate) async fn prepare(
         permission_mode: permission_mode_name(grant.mode).to_string(),
     };
     let environment = sections::environment_fields(req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
+    let channel_plugin = h.tools.get(&format!("{}{channel}", tools::plugin_tools::PLUGIN_PREFIX)).await.is_some();
+    let files_dir = config::data_dir()
+        .map(|d| d.join("files").to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "~/Documents".to_string());
+    let channel_rules = sections::channel_rules(&channel, channel_plugin, &files_dir);
+    let coworker_access = sections::coworker_access(seat.audience_restricted);
     let identity = Identity {
         name: name.clone(),
         role,
@@ -594,7 +609,8 @@ pub(crate) async fn prepare(
     };
     st.persisted_renderings = st.frozen_renderings.keys().cloned().collect();
 
-    // The first step's events.
+    // The first step's events: when the turn starts, then its briefing.
+    st.reminders.add(&TurnEvent::TurnTime(sections::owner_now(memory_timezone.as_deref())));
     if let Some(briefing) = req.delivery.mention_briefing.as_deref() {
         st.reminders.add(&TurnEvent::RunBriefing(briefing.to_string()));
     }
@@ -627,6 +643,8 @@ pub(crate) async fn prepare(
         environment,
         mode_facts,
         session_context,
+        channel_rules,
+        coworker_access,
         tx,
         progress,
         max_steps,
@@ -738,6 +756,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             return TurnExit::MaxSteps { steps: st.step };
         }
         if let Some(exit) = budget_reached(cx, st).await {
+            return exit;
+        }
+        if let Some(exit) = app_halted(cx, st).await {
             return exit;
         }
         st.step += 1;
@@ -1040,6 +1061,31 @@ async fn budget_reached(cx: &TurnContext, st: &TurnState) -> Option<TurnExit> {
     Some(TurnExit::BudgetReached)
 }
 
+/// An app's `agent.should_continue` answer, asked before each step: `false`
+/// ends the turn there, and the owner sees why.
+async fn app_halted(cx: &TurnContext, st: &TurnState) -> Option<TurnExit> {
+    let h = &cx.harness;
+    if !h.hooks.has_subscribers("agent.should_continue") {
+        return None;
+    }
+    let has_active_task = h
+        .store
+        .list_task_items(&format!("session:{}", cx.session_id))
+        .unwrap_or_default()
+        .iter()
+        .any(|t| t.status == "pending" || t.status == "in_progress");
+    let reason =
+        turn_end::app_halt(&h.hooks, &cx.session_id, st.step + 1, &st.round.called_tools, has_active_task).await?;
+    info!(session_id = %cx.session_id, step = st.step + 1, reason = %reason, "an app halted the turn");
+    let notice = if reason.is_empty() {
+        "Stopped: an app asked for this work to stop.".to_string()
+    } else {
+        format!("Stopped: an app asked for this work to stop ({reason}).")
+    };
+    let _ = cx.tx.send(StreamEvent::control_notice(notice, "app_halted")).await;
+    Some(TurnExit::AppHalted { reason })
+}
+
 /// Queue what happened since the last step: files changed outside the
 /// turn, new diagnostics, the date rolling over, a changed tool or skill
 /// listing, the task reminder, the app hook's text.
@@ -1079,6 +1125,8 @@ async fn step_events(
         mode: cx.mode_facts.clone(),
         employee_memory: memory.section,
         session_context: cx.session_context.clone(),
+        channel_rules: cx.channel_rules.clone(),
+        coworker_access: cx.coworker_access.clone(),
     };
     for event in events::session_fact_events(&facts, conversation) {
         st.reminders.add(&event);
@@ -1259,10 +1307,12 @@ async fn checkpoint(
     };
     let taint: Vec<types::provenance::ProvenanceClass> =
         cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied().collect();
-    let hooks: Vec<Box<dyn compact::checkpoint::PreCheckpointHook>> = if cx.seat.memory.writes_disabled {
-        Vec::new()
-    } else {
-        vec![Box::new(compact::checkpoint::MemoryFlush {
+    // Both write under the memory scope, so a run that may not write
+    // memory (an isolated employee with no derivable matter, a helper) runs
+    // neither.
+    let mut hooks: Vec<Box<dyn compact::checkpoint::PreCheckpointHook>> = Vec::new();
+    if !cx.seat.memory.writes_disabled {
+        hooks.push(Box::new(compact::checkpoint::MemoryFlush {
             provider: provider.clone(),
             store: h.store.clone(),
             user_id: cx.seat.memory.user_id.clone(),
@@ -1270,8 +1320,15 @@ async fn checkpoint(
             embedding: h.embedding_provider.clone(),
             barred: taint.iter().any(|c| cx.seat.write_bar.contains(c)),
             taint,
-        })]
-    };
+        }));
+        if let Some(embedding) = h.embedding_provider.clone() {
+            hooks.push(Box::new(compact::checkpoint::TranscriptIndex {
+                store: h.store.clone(),
+                embedding,
+                user_id: cx.seat.memory.user_id.clone(),
+            }));
+        }
+    }
     let goal = goal::GoalStore::new(&h.sessions, &cx.session_id).active().ok().flatten();
     let outcome = compact::checkpoint::checkpoint(
         &compact::checkpoint::CheckpointContext {
@@ -1432,12 +1489,7 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
         _ => None,
     };
     let workflow_contract = cx.workflow().map(|m| m.contract.clone());
-    let app_hook = h.hooks.has_subscribers("agent.should_continue").then(|| turn_end::AppHookCheck {
-        hooks: h.hooks.clone(),
-        session_id: cx.session_id.clone(),
-        called_tools: st.round.called_tools.clone(),
-    });
-    let checks = turn_end::registry(&cx.request.mode, turn_end::EndChecks { goal, workflow_contract, app_hook });
+    let checks = turn_end::registry(&cx.request.mode, turn_end::EndChecks { goal, workflow_contract });
     if checks.is_empty() {
         return None;
     }
@@ -1510,6 +1562,20 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     if !cx.after_turn {
         return;
     }
+    // The goal this turn worked under: still pursued, or settled by this
+    // turn's own done check.
+    let goal = goal::GoalStore::new(&h.sessions, &cx.session_id)
+        .get()
+        .ok()
+        .flatten()
+        .filter(|g| match g.status {
+            goal::GoalStatus::Active | goal::GoalStatus::Paused(_) => true,
+            goal::GoalStatus::Met | goal::GoalStatus::Impossible => {
+                matches!(exit, TurnExit::GoalMet { .. } | TurnExit::GoalImpossible { .. })
+            }
+            goal::GoalStatus::Cleared => false,
+        })
+        .map(|g| g.condition);
     super::after_turn::MemoryExtraction {
         sessions: &h.sessions,
         session_id: &cx.session_id,
@@ -1522,7 +1588,7 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         memory_topics: &cx.seat.memory_topics,
         memory_write_bar: &cx.seat.write_bar,
         run_taint: &cx.taint,
-        goal: None,
+        goal: goal.as_deref(),
         skip_memory: false,
         trace: cx.trace("memory_extract"),
     }
@@ -1647,6 +1713,8 @@ mod tests {
         calls: Mutex<Vec<ChatRequest>>,
         /// The done check's answers, in order.
         verdicts: Mutex<VecDeque<&'static str>>,
+        /// Every side call (title, recap, memory, …), in order.
+        side: Mutex<Vec<ChatRequest>>,
     }
 
     impl Scripted {
@@ -1660,6 +1728,18 @@ mod tests {
         fn calls(&self) -> Vec<ChatRequest> {
             self.calls.lock().unwrap().clone()
         }
+
+        /// The first side call of `purpose`, waiting up to two seconds for
+        /// it: side calls run in the background after the turn.
+        async fn side_call(&self, purpose: &str) -> Option<ChatRequest> {
+            for _ in 0..200 {
+                if let Some(req) = self.side.lock().unwrap().iter().find(|r| r.trace.purpose == purpose) {
+                    return Some(req.clone());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            None
+        }
     }
 
     #[async_trait::async_trait]
@@ -1669,6 +1749,9 @@ mod tests {
         }
 
         async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            if req.trace.purpose != "agent_turn" {
+                self.side.lock().unwrap().push(req.clone());
+            }
             if req.trace.purpose == "done_check" {
                 let verdict = self.verdicts.lock().unwrap().pop_front().unwrap_or(r#"{"met": true, "reason": "done"}"#);
                 return Ok(events(vec![StreamEvent::text(verdict)], None));
@@ -2067,6 +2150,52 @@ mod tests {
         assert!(weather_result.contains("weather ran"), "{weather_result}");
     }
 
+    /// An app subscribed to `agent.should_continue` that answers `false`
+    /// halts a running employee before its next step, as on main; `true`
+    /// (or no answer) never keeps a finished turn going.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_app_answering_false_halts_the_running_turn() {
+        /// Lets step 1 run, then says stop.
+        struct StopAfterFirst(Mutex<Vec<crate::hooks::ShouldContinuePayload>>);
+        #[async_trait::async_trait]
+        impl napp::hooks::HookCaller for StopAfterFirst {
+            async fn call_filter(&self, _hook: &str, payload: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
+                let asked: crate::hooks::ShouldContinuePayload = serde_json::from_slice(&payload).unwrap();
+                let go_on = asked.turn < 2;
+                self.0.lock().unwrap().push(asked);
+                let answer = serde_json::json!({"should_continue": go_on, "reason": "the close is locked"});
+                Ok((serde_json::to_vec(&answer).unwrap(), true))
+            }
+            async fn call_action(&self, _hook: &str, _payload: Vec<u8>) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let model = Scripted::new(vec![Step::Call("echo", serde_json::json!({})), Step::Say("Posted.")]);
+        let h = harness(&model).await;
+        let app = Arc::new(StopAfterFirst(Mutex::default()));
+        h.hooks.register("agent.should_continue", "ledger-app", napp::hooks::HookType::Filter, 0, app.clone());
+
+        let events = run_turn(&h, owner("Post the entries")).await;
+        assert_eq!(exit_of(&events), "app_halted");
+        assert_eq!(model.calls().len(), 1, "no step after the app said stop");
+        let asked = app.0.lock().unwrap();
+        assert_eq!(asked.iter().map(|p| p.turn).collect::<Vec<_>>(), [1, 2], "asked before each step");
+        assert_eq!(asked[1].total_tool_calls, ["echo"], "with the tools called so far");
+        let status = events
+            .iter()
+            .find(|e| e.stop_reason.as_deref() == Some("app_halted") && e.event_type != ai::StreamEventType::Done)
+            .expect("the owner sees why the work stopped");
+        assert!(status.text.contains("the close is locked"), "{}", status.text);
+
+        // An app that says go on never adds a step to a finished answer.
+        let model = Scripted::new(vec![Step::Say("Hello.")]);
+        let h = harness(&model).await;
+        h.hooks.register("agent.should_continue", "ledger-app", napp::hooks::HookType::Filter, 0, Arc::new(StopAfterFirst(Mutex::default())));
+        let events = run_turn(&h, owner("Hi")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(model.calls().len(), 1);
+    }
+
     /// The owner's spending limit ends the turn before the next step, with
     /// a status line that says so.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2178,6 +2307,74 @@ mod tests {
         assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
     }
 
+    /// The same vector for every text: a search through it finds whatever
+    /// the index holds, and only that.
+    struct ConstEmbedder;
+
+    #[async_trait::async_trait]
+    impl ai::EmbeddingProvider for ConstEmbedder {
+        fn id(&self) -> &str {
+            "const-test-embed"
+        }
+        fn dimensions(&self) -> usize {
+            8
+        }
+        async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ai::ProviderError> {
+            Ok(texts.iter().map(|_| vec![1.0; 8]).collect())
+        }
+    }
+
+    /// What a checkpoint summarizes away is indexed for recall: after the
+    /// boundary, a search in the employee's memory scope finds an owner's
+    /// detail from before it, and Nebo's own rows are not indexed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_checkpoint_indexes_the_conversation_it_replaces_for_recall() {
+        let model = Scripted::new(vec![Step::Say("Noted."), Step::Overflow, Step::Say("Carried on.")]);
+        let h = harness(&model).await.with_embedding_provider(Arc::new(ConstEmbedder));
+        run_turn(&h, owner("The Zanzibar invoice is due on the ninth.")).await;
+        run_turn(&h, owner("Keep going")).await;
+        assert!(texts(&model.calls()[2])[0].starts_with(compact::checkpoint::BOUNDARY_LEAD), "a checkpoint was taken");
+
+        let sid = h.sessions.resolve_session_id_by_key(KEY).expect("session");
+        let scope = seat::resolve_seat(
+            &h.store,
+            KEY,
+            seat::SeatInputs {
+                agent: None,
+                agent_id: "",
+                user_id: "",
+                session_id: &sid,
+                origin: tools::Origin::User,
+                channel: "web",
+                audience: None,
+            },
+        )
+        .memory
+        .user_id;
+        let mut found = Vec::new();
+        for _ in 0..200 {
+            found = crate::search::hybrid_search(
+                &h.store,
+                Some(&ConstEmbedder),
+                "When is the Zanzibar invoice due?",
+                &scope,
+                &crate::search::SearchConfig::default(),
+                None,
+            )
+            .await;
+            if !found.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let text: Vec<&str> = found.iter().map(|r| r.value.as_str()).collect();
+        assert!(
+            text.iter().any(|t| t.contains("user: The Zanzibar invoice is due on the ninth.")),
+            "recall finds the detail from before the checkpoint: {text:?}"
+        );
+        assert!(!text.iter().any(|t| t.contains("<system-reminder>")), "Nebo's own rows are not indexed: {text:?}");
+    }
+
     /// A tool whose 5,000-character result can be got again.
     struct Reader;
 
@@ -2272,6 +2469,52 @@ mod tests {
         assert!(texts(&calls[1]).iter().any(|t| t.contains("The agreed goal isn't met yet") && t.contains("2 failing")));
         assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "goal_check").count(), 1);
         assert!(watch.0.lock().unwrap().iter().any(|s| s == "met"), "the owner is told");
+    }
+
+    /// Main's prompt facts come back as rows, never as prompt text: the time
+    /// the turn starts, the channel's rules, and a coworker's limit on
+    /// shared memory.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn time_channel_rules_and_coworker_limit_are_rows() {
+        let model = Scripted::new(vec![Step::Say("Done."), Step::Say("Sure.")]);
+        let h = harness(&model).await;
+        let mut voice = owner("Remind me in two hours");
+        voice.delivery.channel = "voice".into();
+        run_turn(&h, voice).await;
+        let call = &model.calls()[0];
+        assert_eq!(call.system, crate::harness::prompt::system_prompt(), "the one system prompt");
+        let rows = texts(call);
+        assert!(rows.iter().any(|t| t.contains("It is ") && t.contains(" on ")), "the time the turn starts: {rows:?}");
+        assert!(rows.iter().any(|t| t.contains("# Channel rules") && t.contains("spoken aloud")), "{rows:?}");
+        assert!(!rows.iter().any(|t| t.contains("shared memory")), "the owner has no limit");
+
+        let asker = "agent:ops:coworker:thread-1";
+        let mut coworker = seat_of(owner("What's the settlement figure?"), "", asker);
+        coworker.seat.audience = Some("scout".into());
+        run_turn(&h, coworker).await;
+        let rows = texts(&model.calls()[1]);
+        assert!(rows.iter().any(|t| t.contains("must not be passed on")), "{rows:?}");
+    }
+
+    /// Memory extraction after a turn reads the goal the turn worked under.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn memory_extraction_reads_the_goal_the_turn_worked_under() {
+        let model = Scripted::new(vec![Step::Say("All four renewal letters are sent.")]);
+        let h = harness(&model).await;
+        h.bind(crate::harness::Outlets { goal_observer: Some(Arc::new(Watch(Mutex::new(Vec::new())))), ..Default::default() });
+        let sid = h.sessions.get_or_create(KEY, "").unwrap().id;
+        goal::GoalStore::new(&h.sessions, &sid)
+            .set("every renewal letter is sent before Friday", goal::GoalSource::OwnerCommand)
+            .unwrap();
+
+        let events = run_turn(&h, owner("Send the renewal letters")).await;
+        assert_eq!(exit_of(&events), "goal_met");
+        let extraction = model.side_call("memory_extract").await.expect("memory extraction ran");
+        let asked: String = extraction.messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(
+            asked.contains("The agreed goal of this work: every renewal letter is sent before Friday"),
+            "the extraction request names the goal: {asked}"
+        );
     }
 
     fn employee(id: &str, name: &str, soul: &str, config: Option<napp::agent::AgentConfig>) -> tools::ActiveAgent {

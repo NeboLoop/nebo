@@ -47,6 +47,19 @@ pub(crate) async fn announce_ask(
     ask
 }
 
+/// The owner's Stop on one session, from whichever surface it came (the
+/// loop's Stop button, a `/stop` typed in any channel, a voice "cancel"):
+/// every helper the session started stops, whichever turn started it, then
+/// the running turn. Returns whether a turn was running.
+pub(crate) async fn stop_session(
+    helpers: &agent::harness::delegation::Helpers,
+    runs: &RunRegistry,
+    session_key: &str,
+) -> bool {
+    helpers.stop_session(Some(session_key));
+    runs.cancel_by_session(session_key).await
+}
+
 /// The ONE way a parked question is answered, whichever surface the answer
 /// came from (the app's ask card, a loop or channel reply, the MCP
 /// auto-answer): the tool's oneshot receives the value and the run's card is
@@ -809,6 +822,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // broadcast (friendly label), the loop emission, and the
                                 // typing indicator — one tool-naming source of truth.
                                 let activity = spec_tools.labels(&tc.name, &tc.input).await.0;
+                                _run_handle.show_activity(&activity);
                                 hub.broadcast(
                                     "tool_start",
                                     ws_payload!(
@@ -2293,7 +2307,62 @@ impl agent::ChatTitleSink for TitleBroadcaster {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::reply_fragment;
+
+    /// A `/stop` from a channel stops what the Stop button stops: the
+    /// running turn, and every helper the session started, whichever turn
+    /// started it. A helper's cancel token is a child of the session's
+    /// token, so a stopped session token is a stopped helper.
+    #[tokio::test]
+    async fn stop_reaches_the_turn_and_every_helper_of_the_session() {
+        let path = std::env::temp_dir().join(format!("nebo-stop-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(db::Store::new(&path.to_string_lossy()).expect("store"));
+        let tools = Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone()))));
+        let harness = agent::Harness::new(
+            store.clone(),
+            tools.clone(),
+            Vec::new(),
+            agent::selector::ModelSelector::new(Default::default()),
+            Arc::new(agent::ConcurrencyController::new(Some(2))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        );
+        let helpers = agent::harness::delegation::Helpers::new(
+            store,
+            Arc::new(harness.sessions().clone()),
+            tools,
+            Arc::new(harness.clone()),
+            None,
+            None,
+        );
+        let runs = crate::run_registry::RunRegistry::new();
+        let key = "neboai:dm:conv-1";
+        let turn = tokio_util::sync::CancellationToken::new();
+        let run = runs
+            .register(crate::run_registry::RegisterParams {
+                session_key: key.to_string(),
+                entity_id: "assistant".to_string(),
+                entity_name: "Assistant".to_string(),
+                origin: "comm".to_string(),
+                channel: "neboai".to_string(),
+                cancel_token: turn.clone(),
+                parent_run_id: None,
+            })
+            .await;
+        let helper = helpers.session_token(key).child_token();
+        let other_session = helpers.session_token("neboai:dm:conv-2").child_token();
+
+        assert!(super::stop_session(&helpers, &runs, key).await, "a turn was running");
+        assert!(turn.is_cancelled(), "the running turn stops");
+        assert!(helper.is_cancelled(), "the session's background helper stops");
+        assert!(!other_session.is_cancelled(), "another conversation's helper runs on");
+        drop(run); // the turn ended on its cancel
+        assert!(!super::stop_session(&helpers, &runs, key).await, "nothing is running now");
+    }
 
     #[test]
     fn only_text_events_are_reply_text() {
