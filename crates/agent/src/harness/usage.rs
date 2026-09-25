@@ -3,11 +3,8 @@
 
 use std::sync::Arc;
 
-use ai::StreamEvent;
 use db::Store;
-use tokio::sync::mpsc;
 
-use crate::read_ledger::LedgerStats;
 use crate::selector::ModelSelector;
 
 /// A turn's token and cost counters across its calls, and the local
@@ -164,30 +161,6 @@ fn classify_run(session_id: &str) -> (&'static str, Option<String>) {
         return ("workflow", None);
     }
     ("chat", None)
-}
-
-/// Context accounting for the owner: one event per turn, rendered as a
-/// quiet line under the reply (Stage 8), never as reply text.
-pub(crate) async fn send_context_stats(
-    tx: &mpsc::Sender<StreamEvent>,
-    ledger: LedgerStats,
-    compaction_passes: usize,
-    evictions: usize,
-    spilled_results: usize,
-    state: &RunState,
-) {
-    let _ = tx
-        .send(StreamEvent::context_stats(serde_json::json!({
-            "files": ledger.files,
-            "files_reread": ledger.files_reread,
-            "redundant_reads": ledger.redundant_observations,
-            "compaction_passes": compaction_passes,
-            "evictions": evictions,
-            "spilled_results": spilled_results,
-            "input_tokens": state.total_input_tokens,
-            "cache_read_tokens": state.total_cache_read_tokens,
-        })))
-        .await;
 }
 
 #[cfg(test)]

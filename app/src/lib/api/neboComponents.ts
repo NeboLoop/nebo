@@ -1108,7 +1108,6 @@ export interface Setting {
 	developerMode: boolean
 	autoUpdate: boolean
 	fullAccess: boolean
-	guardrails: unknown
 }
 
 export interface ShareChannel {

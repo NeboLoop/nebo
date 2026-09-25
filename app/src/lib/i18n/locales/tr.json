@@ -237,7 +237,6 @@
 		"working": "Çalışıyor"
 	},
 	"chat": {
-		"contextStats": "Bu turdaki bağlam: {files} dosya {times} kez yeniden okundu, {passes} sıkıştırma geçişi.",
 		"goalLine": "Hedef: {condition} ({turns} tur)",
 		"goalLastCheck": "son kontrol: {reason}",
 		"goalPaused": "Duraklatıldı. Bir sonraki mesajınız devam ettirir.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Uygulama manifestinizi içeren bir klasörü gösterin",
 		"sideloadPoint2": "Nebo, uygulamayı keşfeder ve geliştirme modunda yükler",
 		"sideloadPoint3": "Uygulamanızdaki değişiklikler otomatik olarak anında yeniden yüklenir",
-		"sideloadPoint4": "Yandan yüklenen uygulamalar korumalı bir ortamda çalışır",
-		"guardrails": "Döngü korumaları",
-		"guardrailsDesc": "Bir çalışan ilerleme kaydetmeden aynı işi tekrarladığında onu durduran eşikler. Varsayılanlar güvenlidir — yalnızca neyi ayarladığınızı biliyorsanız değiştirin.",
-		"sameActionLimit": "Döngü sınırı",
-		"sameActionLimitDesc": "Model yönlendirilmeden önce bir turda tek bir araç işleminin verimsiz tekrar sayısı",
-		"identicalArgsBlockAfter": "Aynı çağrıyı engelle",
-		"identicalArgsBlockAfterDesc": "Engellenmeden önce birebir aynı çağrının (aynı araç, aynı argümanlar) verimsiz tekrar sayısı",
-		"hardStop": "Döngüde kesin durdurma",
-		"hardStopDesc": "Döngü sınırı aşıldığında modeli başka bir yaklaşıma yönlendirmek yerine turu bitir",
-		"guardrailsSaved": "Korumalar kaydedildi",
-		"guardrailsSaveFailed": "Korumalar kaydedilemedi",
-		"resetDefaults": "Varsayılanlara sıfırla",
-		"save": "Kaydet"
+		"sideloadPoint4": "Yandan yüklenen uygulamalar korumalı bir ortamda çalışır"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

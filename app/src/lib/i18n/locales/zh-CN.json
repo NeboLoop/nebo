@@ -237,7 +237,6 @@
 		"working": "工作中"
 	},
 	"chat": {
-		"contextStats": "本轮上下文：{files} 个文件被重新读取了 {times} 次，压缩 {passes} 轮。",
 		"goalLine": "目标：{condition}（{turns} 轮）",
 		"goalLastCheck": "上次检查：{reason}",
 		"goalPaused": "已暂停。你的下一条消息会恢复它。",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "指向包含应用清单的文件夹",
 		"sideloadPoint2": "Nebo 会发现并以开发模式加载该应用",
 		"sideloadPoint3": "应用的更改会自动热重载",
-		"sideloadPoint4": "侧载应用在沙盒环境中运行",
-		"guardrails": "循环护栏",
-		"guardrailsDesc": "当员工反复做同一件事却没有进展时，用于让它停下来的阈值。默认值是安全的 — 只有清楚自己在调什么时才修改。",
-		"sameActionLimit": "重复上限",
-		"sameActionLimitDesc": "每轮中同一个工具动作可以无效重复的次数，超过后会引导模型换个方式",
-		"identicalArgsBlockAfter": "相同调用拦截",
-		"identicalArgsBlockAfterDesc": "完全相同的调用（同一工具、同样参数）可以无效重复的次数，超过后将被拦截",
-		"hardStop": "触发重复上限时直接停止",
-		"hardStopDesc": "达到重复上限时结束本轮，而不是引导模型换一种方式",
-		"guardrailsSaved": "护栏已保存",
-		"guardrailsSaveFailed": "护栏保存失败",
-		"resetDefaults": "恢复默认值",
-		"save": "保存"
+		"sideloadPoint4": "侧载应用在沙盒环境中运行"
 	},
 	"settingsHeartbeat": {
 		"title": "心跳",

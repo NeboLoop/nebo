@@ -325,7 +325,7 @@ mod tests {
                 None,
             ),
         ];
-        let export = fixture_from_run(SESSION, "same_error_loop", &messages).unwrap();
+        let export = fixture_from_run(SESSION, "max_steps", &messages).unwrap();
         assert_eq!(export.fixture.cwd.as_deref(), Some("/proj"));
         assert_eq!(
             export.touched,
@@ -421,7 +421,7 @@ mod tests {
     fn identity_and_recovery_name_the_run_and_its_exit() {
         let long_prompt = "word ".repeat(40);
         let messages = vec![msg("user", &long_prompt, None, None)];
-        let export = fixture_from_run(SESSION, "repeated_tool_calls", &messages).unwrap();
+        let export = fixture_from_run(SESSION, "max_steps", &messages).unwrap();
         let f = &export.fixture;
         assert_eq!(f.id.len(), "replay-".len() + REPLAY_ID_HASH_CHARS);
         assert!(f.id.starts_with("replay-"));
@@ -434,12 +434,12 @@ mod tests {
         assert!(f.name.ends_with("..."));
         assert!(f.name.chars().count() <= REPLAY_NAME_MAX_CHARS + "...".len());
         assert_eq!(f.agent.as_deref(), Some("emp1"));
-        assert!(f.description.contains("repeated_tool_calls"));
+        assert!(f.description.contains("max_steps"));
 
         let recovery = &f.prompt_assertions.recovery;
         assert_eq!(recovery.len(), 1);
         assert_eq!(recovery[0].severity, Severity::Critical);
-        assert!(recovery[0].text.contains("must not end in repeated_tool_calls again"));
+        assert!(recovery[0].text.contains("must not end in max_steps again"));
         assert!(recovery[0].text.contains("blocked"));
 
         let plain = fixture_from_run("eval:x:run-1:1", "r", &messages).unwrap();

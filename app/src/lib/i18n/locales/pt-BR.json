@@ -237,7 +237,6 @@
 		"working": "Trabalhando"
 	},
 	"chat": {
-		"contextStats": "Contexto desta rodada: {files} arquivos relidos {times} vezes, {passes} passagens de compactação.",
 		"goalLine": "Meta: {condition} ({turns} turnos)",
 		"goalLastCheck": "última verificação: {reason}",
 		"goalPaused": "Pausada. Sua próxima mensagem a retoma.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Aponte para uma pasta contendo o manifesto do seu app",
 		"sideloadPoint2": "O Nebo descobre e carrega o app em modo de desenvolvimento",
 		"sideloadPoint3": "Alterações no seu app são recarregadas automaticamente",
-		"sideloadPoint4": "Apps carregados externamente executam em um ambiente isolado",
-		"guardrails": "Proteções do ciclo",
-		"guardrailsDesc": "Limites que param um funcionário quando ele repete a mesma ação sem avançar. Os valores padrão são seguros — só mude se souber o que está ajustando.",
-		"sameActionLimit": "Limite de repetição em espiral",
-		"sameActionLimitDesc": "Repetições improdutivas de uma ação de ferramenta por rodada antes de o modelo ser desviado",
-		"identicalArgsBlockAfter": "Bloqueio de chamada idêntica",
-		"identicalArgsBlockAfterDesc": "Repetições improdutivas de uma chamada exata (mesma ferramenta, mesmos argumentos) antes de ser bloqueada",
-		"hardStop": "Parada seca na espiral",
-		"hardStopDesc": "Encerrar a rodada quando o limite de espiral dispara, em vez de levar o modelo a mudar de abordagem",
-		"guardrailsSaved": "Proteções salvas",
-		"guardrailsSaveFailed": "Não foi possível salvar as proteções",
-		"resetDefaults": "Voltar ao padrão",
-		"save": "Salvar"
+		"sideloadPoint4": "Apps carregados externamente executam em um ambiente isolado"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",

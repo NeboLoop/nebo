@@ -237,7 +237,6 @@
 		"working": "Đang làm việc"
 	},
 	"chat": {
-		"contextStats": "Ngữ cảnh lượt này: {files} tệp được đọc lại {times} lần, {passes} lượt nén.",
 		"goalLine": "Mục tiêu: {condition} ({turns} lượt)",
 		"goalLastCheck": "lần kiểm tra gần nhất: {reason}",
 		"goalPaused": "Đã tạm dừng. Tin nhắn tiếp theo của bạn sẽ tiếp tục.",
@@ -1076,19 +1075,7 @@
 		"sideloadPoint1": "Trỏ đến thư mục chứa manifest ứng dụng của bạn",
 		"sideloadPoint2": "Nebo phát hiện và tải ứng dụng ở chế độ phát triển",
 		"sideloadPoint3": "Các thay đổi trong ứng dụng được tự động tải lại nóng",
-		"sideloadPoint4": "Ứng dụng sideload chạy trong môi trường sandbox",
-		"guardrails": "Chặn an toàn vòng lặp",
-		"guardrailsDesc": "Ngưỡng dừng nhân viên lại khi họ lặp lại cùng một hành động mà không tiến triển. Giá trị mặc định là an toàn — chỉ đổi nếu bạn hiểu mình đang đặt gì.",
-		"sameActionLimit": "Giới hạn lặp lại",
-		"sameActionLimitDesc": "Số lần lặp vô ích của một hành động công cụ trong mỗi lượt trước khi mô hình bị lái sang hướng khác",
-		"identicalArgsBlockAfter": "Chặn lời gọi giống hệt",
-		"identicalArgsBlockAfterDesc": "Số lần lặp vô ích của một lời gọi y hệt (cùng công cụ, cùng tham số) trước khi bị chặn",
-		"hardStop": "Dừng hẳn khi lặp lại",
-		"hardStopDesc": "Kết thúc lượt khi chạm giới hạn lặp lại, thay vì lái mô hình sang cách làm khác",
-		"guardrailsSaved": "Đã lưu chặn an toàn",
-		"guardrailsSaveFailed": "Lưu chặn an toàn thất bại",
-		"resetDefaults": "Đặt lại mặc định",
-		"save": "Lưu"
+		"sideloadPoint4": "Ứng dụng sideload chạy trong môi trường sandbox"
 	},
 	"settingsHeartbeat": {
 		"title": "Heartbeat",
