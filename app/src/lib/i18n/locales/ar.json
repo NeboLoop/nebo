@@ -387,7 +387,9 @@
 		"researchWriting": "كتابة التقرير",
 		"researchOtherDomains": "+ {n} موقع آخر",
 		"researchVerified": "{n} ادعاء تم التحقق منه مقابل المصادر",
-		"historyLoadFailed": "تعذّر تحميل هذه المحادثة. تحقق من اتصالك وحاول مرة أخرى."
+		"historyLoadFailed": "تعذّر تحميل هذه المحادثة. تحقق من اتصالك وحاول مرة أخرى.",
+		"consentCreates": "قل نعم وسيُنشأ بهذا العمل تمامًا.",
+		"consentAdds": "قل نعم وستُضاف هذه إلى عمله."
 	},
 	"chatInput": {
 		"placeholder": "اكتب ردك...",
@@ -3016,7 +3018,13 @@
 		"placeholder": "مثل: ديسباتش، بايبر، سام…",
 		"create": "وظّفه",
 		"failed": "تعذّر إنشاء الموظف. حاول مرة أخرى.",
-		"marketplaceHint": "تريد خبيرًا جاهزًا بدلًا من ذلك؟ تصفّح المتجر."
+		"marketplaceHint": "تريد خبيرًا جاهزًا بدلًا من ذلك؟ تصفّح المتجر.",
+		"jobLabel": "عمله (اختياري)",
+		"jobPlaceholder": "ماذا سيفعل؟ (اختياري)",
+		"working": "نحدد ما سيحتاج إليه…",
+		"willDo": "سيقوم {name} بما يلي:",
+		"thisEmployee": "هذا الموظف",
+		"removeItem": "إزالة {item}"
 	},
 	"runLimit": {
 		"title": "حد الإنفاق لكل تشغيل",
