@@ -1,19 +1,19 @@
 name: error-handling
 fixtures:
   # File operations — all error paths upgraded
-  - ../fixtures/tools/os-file-read.yaml
-  - ../fixtures/tools/os-file-write.yaml
-  - ../fixtures/tools/os-file-edit.yaml
-  - ../fixtures/tools/os-file-grep.yaml
-  - ../fixtures/tools/os-file-glob.yaml
+  - ../fixtures/tools/read-file.yaml
+  - ../fixtures/tools/write-file.yaml
+  - ../fixtures/tools/edit-file.yaml
+  - ../fixtures/tools/search-file-contents.yaml
+  - ../fixtures/tools/find-files.yaml
   # Shell — command semantics (grep exit 1, timeout, cwd, command-not-found)
-  - ../fixtures/tools/os-shell-path-not-found.yaml
-  - ../fixtures/tools/os-shell-permission-denied.yaml
-  - ../fixtures/tools/os-shell-command-fails.yaml
+  - ../fixtures/tools/run-command-path-not-found.yaml
+  - ../fixtures/tools/run-command-permission-denied.yaml
+  - ../fixtures/tools/run-command-fails.yaml
   # Spiral prevention — should improve with better error signals
-  - ../fixtures/tools/os-file-discovery-spiral.yaml
-  - ../fixtures/tools/os-shell-retry-spiral.yaml
-  - ../fixtures/tools/os-file-search-loop.yaml
-  - ../fixtures/tools/os-redundant-read-loop.yaml
+  - ../fixtures/tools/file-discovery-spiral.yaml
+  - ../fixtures/tools/run-command-retry-spiral.yaml
+  - ../fixtures/tools/file-search-loop.yaml
+  - ../fixtures/tools/redundant-read-loop.yaml
   # FRAMES Phase 1 — terminal-error classification (auth self-reauth deny + no spiral)
   - ../fixtures/tools/plugin-auth-no-self-reauth.yaml

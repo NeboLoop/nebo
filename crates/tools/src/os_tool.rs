@@ -3,25 +3,18 @@ use std::sync::Arc;
 use crate::app_tool::AppTool;
 use crate::desktop_tool::DesktopTool;
 use crate::domain::DomainInput;
-use crate::file_tool::FileTool;
 use crate::keychain_tool::KeychainTool;
 use crate::music_tool::MusicTool;
 use crate::organizer;
 use crate::origin::ToolContext;
-use crate::process::ProcessRegistry;
 use crate::registry::{DynTool, ResourceKind, ToolResult};
 use crate::settings_tool::SettingsTool;
-use crate::shell_tool::ShellTool;
 use crate::spotlight_tool::SpotlightTool;
 
-/// Unified OS tool — all local machine operations under one namespace.
-///
-/// 23 resources spanning file system, shell, desktop automation, apps, settings,
-/// media, credentials, search, and personal information management.
-/// Per-resource approval: safe resources auto-approve, sensitive ones require confirmation.
+/// The OS tool: desktop automation, apps, settings, media, credentials,
+/// search and personal information management under one namespace. Files
+/// and commands are their own tools (`file_tools`, `command_tools`).
 pub struct OsTool {
-    file_tool: FileTool,
-    shell_tool: ShellTool,
     desktop_tool: DesktopTool,
     app_tool: AppTool,
     settings_tool: SettingsTool,
@@ -35,10 +28,8 @@ pub struct OsTool {
 }
 
 impl OsTool {
-    pub fn new(process_registry: Arc<ProcessRegistry>) -> Self {
+    pub fn new() -> Self {
         Self {
-            file_tool: FileTool::new(),
-            shell_tool: ShellTool::new(process_registry),
             desktop_tool: DesktopTool::new(),
             app_tool: AppTool::new(),
             settings_tool: SettingsTool::new(),
@@ -51,196 +42,8 @@ impl OsTool {
     }
 
     pub fn with_plugin_store(mut self, ps: Arc<napp::plugin::PluginStore>) -> Self {
-        self.plugin_store = Some(ps.clone());
-        self.shell_tool = self.shell_tool.with_plugin_store(ps);
+        self.plugin_store = Some(ps);
         self
-    }
-
-    /// `os(resource: "file", action: "convert", path: "report.md", to: "pdf")` —
-    /// generate office documents with the embedded engines (Typst for PDF,
-    /// pure-Rust OOXML writers for docx/xlsx). The one document-conversion
-    /// pathway: identical on every platform — never host binaries (wkhtmltopdf
-    /// is abandoned upstream) and never the bundled browser (no layout engine).
-    /// Each verify command gets this long; a build that needs more belongs in
-    /// a background shell call, not a plan step.
-    const PLAN_VERIFY_TIMEOUT_SECS: u64 = 120;
-    /// One line of stderr per failing step in the plan document.
-    const PLAN_NOTE_CHARS: usize = 160;
-
-    /// `os(resource: "file", action: "plan_check", path: "plan.md")`: run every
-    /// step's verify command and rewrite the checkboxes from the exit codes.
-    /// The model cannot tick a box; only a passing command can. A check that
-    /// verifies nothing new is reported as an error so a stalled plan never
-    /// counts as progress.
-    async fn handle_plan_check(&self, ctx: &ToolContext, input: &serde_json::Value) -> ToolResult {
-        let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        if path.is_empty() {
-            return ToolResult::error(
-                "plan_check needs `path`: the plan file written by action: \"plan\"",
-            );
-        }
-        let path = match ctx.cwd.as_deref() {
-            Some(cwd) if std::path::Path::new(path).is_relative() => {
-                std::path::Path::new(cwd).join(path).to_string_lossy().into_owned()
-            }
-            _ => path.to_string(),
-        };
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => return ToolResult::error(format!("read {path}: {e}")),
-        };
-        let plan = match crate::plan::parse(&content) {
-            Ok(p) => p,
-            Err(e) => return ToolResult::error(e),
-        };
-        let dir = std::path::Path::new(&path)
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| ".".into());
-        let mut results = Vec::with_capacity(plan.steps.len());
-        for step in &plan.steps {
-            // Same policy, same refusals as any shell call; raw mode returns
-            // stdout only on success and an error carrying stderr otherwise.
-            let out = self
-                .shell_tool
-                .execute(
-                    ctx,
-                    serde_json::json!({
-                        "resource": "shell", "action": "exec", "command": step.verify,
-                        "cwd": dir, "timeout": Self::PLAN_VERIFY_TIMEOUT_SECS, "raw": true
-                    }),
-                )
-                .await;
-            // Raw mode reports a failure as "Command exited with code N\n<stderr>";
-            // a policy refusal (destructive git) has no such header: "did not run".
-            let (header, rest) = out.content.split_once('\n').unwrap_or((out.content.as_str(), ""));
-            let exit = header
-                .strip_prefix("Command exited with code ")
-                .and_then(|c| c.trim().parse::<i32>().ok())
-                .or(if out.is_error { None } else { Some(0) });
-            let note = if !out.is_error {
-                String::new()
-            } else if exit.is_some() {
-                crate::plan::first_line(rest, Self::PLAN_NOTE_CHARS)
-            } else {
-                crate::plan::first_line(&out.content, Self::PLAN_NOTE_CHARS)
-            };
-            results.push(crate::plan::StepResult { n: step.n, ok: !out.is_error, exit, note });
-        }
-        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let (rewritten, newly) = crate::plan::apply(&content, &results, &now);
-        let write = self.file_tool.write_document(&ctx.session_key, &path, &rewritten);
-        if write.is_error {
-            return write;
-        }
-        let verified = results.iter().filter(|r| r.ok).count();
-        let mut summary = format!(
-            "plan_check {}: {verified} of {} steps pass; {newly} newly passed on this check\n",
-            path,
-            results.len()
-        );
-        for r in &results {
-            let title = plan.steps.iter().find(|s| s.n == r.n).map(|s| s.title.as_str()).unwrap_or("");
-            if r.ok {
-                summary.push_str(&format!("  {}. ✓ {title}\n", r.n));
-            } else {
-                let exit = r.exit.map(|c| format!("exit {c}")).unwrap_or_else(|| "did not run".into());
-                summary.push_str(&format!("  {}. ✗ {title}, {exit}{}\n", r.n, if r.note.is_empty() { String::new() } else { format!(": {}", r.note) }));
-            }
-        }
-        let mut result = if verified == 0 && newly == 0 {
-            summary.push_str("Nothing verified. Fix the failing steps and check again; do not report the task done.");
-            ToolResult::error(summary)
-        } else {
-            ToolResult::ok(summary)
-        };
-        result.payload = Some(serde_json::json!({ "newly_verified": newly, "verified": verified, "steps": results.len() }));
-        result
-    }
-
-    async fn handle_convert(&self, input: &serde_json::Value) -> ToolResult {
-        let path = input["path"].as_str().unwrap_or("");
-        let to = input["to"].as_str().unwrap_or("pdf");
-        if path.is_empty() {
-            return ToolResult::error(
-                "Error: path is required. Example: os(resource: \"file\", action: \"convert\", path: \"/path/report.md\", to: \"pdf\")",
-            );
-        }
-        let src = crate::file_tool::expand_path(path);
-        let src_path = std::path::Path::new(&src);
-        if !src_path.exists() {
-            return ToolResult::error(format!("Error: source file not found: {src}"));
-        }
-        let ext = src_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let source = match std::fs::read_to_string(src_path) {
-            Ok(s) => s,
-            Err(e) => return ToolResult::error(format!("Error reading {src}: {e}")),
-        };
-        // Rendering is CPU-bound — keep it off the async runtime threads.
-        let to_owned = to.to_string();
-        let file_name = src_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "component".into());
-        let rendered = tokio::task::spawn_blocking(move || {
-            match (to_owned.as_str(), ext.as_str()) {
-                ("pdf", "md" | "markdown" | "txt") => {
-                    render::markdown_to_pdf(&source).map_err(|e| e.to_string())
-                }
-                ("pdf", "typ") => render::typst_to_pdf(&source).map_err(|e| e.to_string()),
-                ("docx", "md" | "markdown" | "txt") => {
-                    render::markdown_to_docx(&source).map_err(|e| e.to_string())
-                }
-                ("xlsx", "csv") => render::csv_to_xlsx(&source).map_err(|e| e.to_string()),
-                ("html", "jsx") => render::jsx_to_html(&source, &file_name, render::JsxLang::Jsx)
-                    .map(String::into_bytes)
-                    .map_err(|e| e.to_string()),
-                ("html", "tsx") => render::jsx_to_html(&source, &file_name, render::JsxLang::Tsx)
-                    .map(String::into_bytes)
-                    .map_err(|e| e.to_string()),
-                ("pdf", other) => Err(format!(
-                    "pdf converts from .md or .typ (got .{other}). Write the document as Markdown first."
-                )),
-                ("docx", other) => Err(format!(
-                    "docx converts from .md (got .{other}). Write the document as Markdown first."
-                )),
-                ("xlsx", other) => Err(format!(
-                    "xlsx converts from .csv (got .{other}). Write the data as CSV first."
-                )),
-                ("html", other) => Err(format!(
-                    "html converts from .jsx or .tsx (got .{other}). Write the interactive component as a single-file .jsx first."
-                )),
-                (other, _) => Err(format!(
-                    "unsupported target format '{other}' (supported: pdf from .md/.typ, docx from .md, xlsx from .csv, html from .jsx/.tsx)."
-                )),
-            }
-        })
-        .await;
-        let bytes = match rendered {
-            Ok(Ok(b)) => b,
-            Ok(Err(msg)) => {
-                return ToolResult::error(format!("Error converting: {msg}"));
-            }
-            Err(e) => return ToolResult::error(format!("Error converting: {e}")),
-        };
-        let out = src_path.with_extension(to);
-        let replaced = out.exists();
-        if let Err(e) = std::fs::write(&out, &bytes) {
-            return ToolResult::error(format!("Error writing {}: {e}", out.display()));
-        }
-        let out_str = out.to_string_lossy().to_string();
-        ToolResult::ok(format!(
-            "Converted {src} to {out_str} ({} bytes{})",
-            bytes.len(),
-            if replaced { ", replacing the previous file" } else { "" }
-        ))
-        // PDF is a user-facing work product — surface it in the Work panel.
-        .with_image_url(out_str)
     }
 
     pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
@@ -248,19 +51,10 @@ impl OsTool {
         self
     }
 
-    /// True when the call is a file-management verb (move/copy/rename/delete/
-    /// mkdir) shaped like a file op (has `path`, no explicit resource) rather
-    /// than a mouse `move`. The file tool has no such actions (they go through
-    /// the shell), so these are redirected to a shell
-    /// correction — and the permission gate must NOT treat them as desktop
-    /// control. One detection, shared by `execute` (the redirect) and
-    /// `DynTool::capability` (skip the wrong-capability ask).
     /// The current-set tool name for the job a call does (its permission
-    /// rule key): the file, shell, desktop and organizer tools this call
-    /// stands for.
+    /// rule key): the desktop and organizer tools this call stands for.
     pub fn rule_key_for(input: &serde_json::Value) -> String {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let has = |k: &str| input.get(k).is_some_and(|v| !v.is_null());
         let named = |family: &str| {
             if action.is_empty() {
                 family.to_string()
@@ -269,32 +63,6 @@ impl OsTool {
             }
         };
         match OsTool::resolved_resource(input) {
-            "file" => match action {
-                "read" => "read_file",
-                "edit" => "edit_file",
-                "glob" | "grep" | "list" | "ls" => "run_command",
-                "share" | "present" | "send" => "share_file",
-                "convert" => "convert_file",
-                "checkpoint" => "checkpoint_files",
-                "checkpoints" => "list_checkpoints",
-                "restore" => "restore_checkpoint",
-                "plan" => "write_plan",
-                "plan_check" => "check_plan",
-                // write, append, and anything else that could change a file.
-                _ => "write_file",
-            }
-            .to_string(),
-            "shell" => match action {
-                // A background shell session's own keys: shell control, never
-                // the helper status/cancel keys other origins may hold.
-                "poll" | "log" | "status" => "read_command_output",
-                "info" if has("session_id") => "read_command_output",
-                "kill" => "stop_command",
-                "list" | "info" => "list_processes",
-                "write" => "send_input",
-                _ => "run_command",
-            }
-            .to_string(),
             "capture" => match action {
                 "see" => "desktop_see",
                 _ => "desktop_screenshot",
@@ -351,10 +119,6 @@ impl OsTool {
     /// the owner needs to see.
     pub(crate) fn labels(input: &serde_json::Value) -> (String, String) {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let short = |s: &str, n: usize| -> String {
-            let t: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-            if t.chars().count() > n { format!("{}…", t.chars().take(n).collect::<String>()) } else { t }
-        };
         let app = input.get("app").and_then(|v| v.as_str()).unwrap_or("");
         let point = input
             .get("coordinate")
@@ -363,10 +127,6 @@ impl OsTool {
             .map(|a| format!("({},{})", a[0], a[1]))
             .or_else(|| Some(format!("({},{})", input.get("x")?.as_i64()?, input.get("y")?.as_i64()?)));
         let labelled = match action {
-            "exec" => input.get("command").and_then(|v| v.as_str()).map(|c| {
-                let c = short(c, 72);
-                (format!("running `{c}`"), format!("Ran `{c}`"))
-            }),
             "click" | "double_click" | "right_click" => {
                 let what = input
                     .get("ref")
@@ -388,69 +148,11 @@ impl OsTool {
                 Some((format!("capturing {what}"), format!("Captured {what}")))
             }
             "activate" | "launch" if !app.is_empty() => Some((format!("opening {app}"), format!("Opened {app}"))),
-            "read" | "write" | "edit" | "append" => input.get("path").and_then(|v| v.as_str()).map(|path| {
-                let name = path.rsplit('/').next().unwrap_or(path);
-                let (g, p) = match action { "read" => ("reading", "Read"), "write" => ("writing", "Wrote"), "append" => ("appending to", "Appended to"), _ => ("editing", "Edited") };
-                (format!("{g} {name}"), format!("{p} {name}"))
-            }),
             _ => None,
         };
         labelled.unwrap_or_else(|| crate::humanize::call_labels("os", input))
     }
 
-
-    pub(crate) fn is_file_mgmt_redirect(input: &serde_json::Value) -> bool {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let has_explicit_resource = input
-            .get("resource")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| !s.is_empty());
-        let has_path = input.get("path").and_then(|v| v.as_str()).is_some();
-        let has_dest = input
-            .get("destination")
-            .or_else(|| input.get("to"))
-            .and_then(|v| v.as_str())
-            .is_some();
-        let file_mgmt_verb = matches!(
-            action,
-            "move" | "copy" | "rename" | "delete" | "remove" | "mkdir" | "rmdir" | "trash"
-        );
-        !has_explicit_resource && file_mgmt_verb && has_path && (has_dest || action != "move")
-    }
-
-    /// The redirect text for a file-management verb: names the shell command
-    /// that does the job, with every path quoted for the shell, `rm -r` when
-    /// the path is a directory, and no pretence that `rm` moves anything to
-    /// the Trash.
-    fn file_mgmt_redirect_message(input: &serde_json::Value) -> String {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let src_raw = input.get("path").and_then(|v| v.as_str()).unwrap_or("<src>");
-        let dst_raw = input
-            .get("destination")
-            .or_else(|| input.get("to"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("<dst>");
-        let src = shell_quote(src_raw);
-        let dst = shell_quote(dst_raw);
-        let src_is_dir = std::path::Path::new(&crate::file_tool::expand_path(src_raw)).is_dir();
-        let dir_flag = if src_is_dir { " -r" } else { "" };
-        let cmd = match action {
-            "copy" => format!("cp{dir_flag} {src} {dst}"),
-            "delete" | "remove" | "trash" => format!("rm{dir_flag} {src}"),
-            "mkdir" => format!("mkdir -p {src}"),
-            "rmdir" => format!("rmdir {src}"),
-            _ => format!("mv {src} {dst}"),
-        };
-        let trash_note = if action == "trash" {
-            " Note: rm deletes permanently; it does not move the file to the Trash. If the user asked for the Trash, tell them that."
-        } else {
-            ""
-        };
-        format!(
-            "The file resource has no '{action}' action. Use the shell: \
-             os(resource: \"shell\", action: \"exec\", command: \"{cmd}\"){trash_note}"
-        )
-    }
 
     /// Resolve the effective resource of an os call — THE canonical chain:
     /// explicit non-empty `resource` field → [`Self::infer_resource`] from the
@@ -462,8 +164,8 @@ impl OsTool {
     /// field. PUBLIC because it is the ONE definition of that inference — the
     /// history trim (`agent::harness::compact::trim`) must classify a call exactly as the
     /// executor did, or it mislabels the call and can destroy its result
-    /// (2026-08-28: a bare `os {"action":"read","path":…}` was summarized as
-    /// `[os] 0 lines` and the model believed the file was empty).
+    /// (2026-08-28: a bare `os` call was summarized as `[os] 0 lines` and the
+    /// model believed its result was empty).
     pub fn resolved_resource(input: &serde_json::Value) -> &str {
         let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
         if !resource.is_empty() {
@@ -471,8 +173,7 @@ impl OsTool {
         }
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         // Parameters settle an action that several resources share before its
-        // bare name does (a `read` without a path is a mail read, not a file
-        // read that then demands `path`).
+        // bare name does.
         let shared = Self::infer_resource_from_shared_action(action, input);
         if !shared.is_empty() {
             return shared;
@@ -488,9 +189,7 @@ impl OsTool {
     /// Actions one resource owns by name that another resource also uses,
     /// settled by the parameters the call carries. Each arm is a misroute the
     /// 2026-09-05 audit found live: a window `move` with `app` went to the
-    /// mouse, a notification `send` went to Mail (and its approval gate), a
-    /// stdin `write` went to the file tool, and every session verb with a
-    /// `session_id` was unroutable.
+    /// mouse and a notification `send` went to Mail (and its approval gate).
     pub(crate) fn infer_resource_from_shared_action(
         action: &str,
         input: &serde_json::Value,
@@ -501,7 +200,6 @@ impl OsTool {
                 .and_then(|v| v.as_str())
                 .is_some_and(|s| !s.is_empty())
         };
-        let has_pid = input.get("pid").and_then(|v| v.as_i64()).is_some_and(|p| p > 0);
         let has_input_target = has("ref")
             || has("element_id")
             || has("element")
@@ -509,7 +207,7 @@ impl OsTool {
             || input.get("x").is_some();
         match action {
             // `account` alone is safe here: keychain uses get/find, never "read".
-            "read" if input.get("path").is_none() => {
+            "read" => {
                 let ctx = Self::infer_resource_from_context(input);
                 if !ctx.is_empty() {
                     ctx
@@ -518,12 +216,6 @@ impl OsTool {
                 } else {
                     ""
                 }
-            }
-            "write" if has("session_id") => "shell",
-            "kill" | "info" | "list" | "status" | "poll" | "log"
-                if has("session_id") || has_pid =>
-            {
-                "shell"
             }
             "move" if has("app") => "window",
             // `action: "menu", name: "Edit > Find"` means choose that item.
@@ -549,11 +241,6 @@ impl OsTool {
     /// Infer resource from action name when resource field is omitted.
     pub(crate) fn infer_resource(action: &str) -> &str {
         match action {
-            // File
-            "read" | "write" | "append" | "edit" | "share" | "glob" | "grep" | "convert"
-            | "checkpoint" | "checkpoints" | "restore" | "plan" | "plan_check" => "file",
-            // Shell
-            "exec" | "poll" | "log" => "shell",
             // Input
             "click" | "type" | "press" | "move" | "double_click" | "right_click" | "hotkey"
             | "scroll" | "drag" | "paste" => "input",
@@ -581,22 +268,7 @@ impl OsTool {
     /// Infer resource from parameter context when action-based inference fails
     /// (e.g. "create" is shared across calendar, contacts, reminders).
     pub(crate) fn infer_resource_from_context(input: &serde_json::Value) -> &'static str {
-        // File: "list"/"ls" with a dir/path target is a directory listing
-        // (a strong model prior — routed to file, which handles it via glob).
-        // Bare "list" with no target stays ambiguous (window, app, shell, ...).
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        if matches!(action, "list" | "ls")
-            && (input
-                .get("dir")
-                .and_then(|v| v.as_str())
-                .is_some_and(|s| !s.is_empty())
-                || input
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|s| !s.is_empty()))
-        {
-            return "file";
-        }
         // Keychain: a `password` param is uniquely keychain-shaped, and
         // `service` with a keychain verb is too — models often write the full
         // arg set (service/account/password) and drop `resource`, which used
@@ -677,55 +349,26 @@ impl OsTool {
 
     /// Every resource the os tool dispatches to.
     const RESOURCE_NAMES: &'static [&'static str] = &[
-        "file", "shell", "window", "input", "clipboard", "capture", "notification",
+        "window", "input", "clipboard", "capture", "notification",
         "ui", "menu", "dialog", "space", "shortcut", "tts", "dock",
         "app", "settings", "music", "keychain", "search",
         "mail", "contacts", "calendar", "reminders",
     ];
 
     /// The call as it will run: shorthand accepted (first-call doctrine: fix
-    /// the API, not the client), the action a call plainly means filled in,
-    /// and the resource it resolves to written into `resource`.
+    /// the API, not the client) and the resource it resolves to written into
+    /// `resource`.
     ///
     /// This is the ONE place a call's shape is settled, and the registry
     /// applies it (`DynTool::normalize_input`) BEFORE any gate reads the
-    /// call: safeguard, path fence, origin deny list, capability and approval
-    /// all see the action and resource that execute, whichever shape the
+    /// call: origin deny list, capability and approval all see the action and resource that execute, whichever shape the
     /// model wrote. Idempotent, so running it again changes nothing.
     pub(crate) fn normalized(input: serde_json::Value) -> serde_json::Value {
         let mut v = input;
-        // dir / directory / folder are the path (live 2026-09-05: a
-        // listing sent {command: "", dir: ...} and failed to parse).
-        if v.get("path").and_then(|p| p.as_str()).unwrap_or("").is_empty() {
-            if let Some(dir) = ["dir", "directory", "folder"]
-                .iter()
-                .find_map(|k| v.get(*k).and_then(|d| d.as_str()).filter(|d| !d.is_empty()))
-                .map(String::from)
-            {
-                v["path"] = serde_json::json!(dir);
-            }
-        }
-        // resource: "shell" with the command in `pattern` (live
-        // 2026-09-05: {command: "", pattern: "ls ... | wc -l"}).
-        if v.get("resource").and_then(|r| r.as_str()) == Some("shell")
-            && v.get("command").and_then(|c| c.as_str()).unwrap_or("").is_empty()
-        {
-            if let Some(cmd) = v.get("pattern").and_then(|c| c.as_str()).filter(|c| !c.is_empty()).map(String::from) {
-                v["command"] = serde_json::json!(cmd);
-                v.as_object_mut().map(|o| o.remove("pattern"));
-            }
-        }
-        if let Some(action) = Self::infer_missing_action(&v) {
-            v["action"] = serde_json::json!(action);
-        }
-        // A call with no action is refused by the tool; a file-management
-        // verb is answered with a shell correction and names no resource.
+        // A call with no action is refused by the tool.
         let Ok(domain_input) = serde_json::from_value::<DomainInput>(v.clone()) else {
             return v;
         };
-        if Self::is_file_mgmt_redirect(&v) {
-            return v;
-        }
         let corrected =
             crate::domain::auto_correct_resource(&domain_input, &mut v, Self::RESOURCE_NAMES);
         let resource = if corrected.is_empty() {
@@ -750,57 +393,9 @@ impl OsTool {
         v
     }
 
-    /// The action a call plainly means when it names none (the agent tool's
-    /// `infer_missing_action` precedent). A live run wrote
-    /// os({glob: "*.md", path: ...}) and got "missing field `action`"; the
-    /// shape is in the error-shape baseline, so it recurs. Anything less
-    /// obvious still needs `action`.
-    pub(crate) fn infer_missing_action(input: &serde_json::Value) -> Option<&'static str> {
-        let obj = input.as_object()?;
-        let has = |k: &str| obj.get(k).is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
-        // action: "file" (a resource name in the action slot) names no action;
-        // the fields still do (live 2026-09-05: {action: "file", glob: ...}).
-        let action_is_resource = obj
-            .get("action")
-            .and_then(|a| a.as_str())
-            .is_some_and(|a| matches!(a, "file" | "shell" | "app" | "capture" | "input" | "settings" | "desktop"));
-        if has("action") && !action_is_resource {
-            return None;
-        }
-        // A `glob` key names the action even when its value is empty, and a
-        // path that is itself a pattern is a glob whatever the keys say. Live
-        // 2026-09-09: os({glob: "", path: "/data/files/*N993012*"}) fell
-        // through to read and answered "file not found" for the pattern,
-        // five times, until the repeat guard blocked it.
-        let path_is_pattern = obj
-            .get("path")
-            .and_then(|v| v.as_str())
-            .is_some_and(|p| p.contains('*') || p.contains('?') || p.contains('{'));
-        if obj.contains_key("glob")
-            || (has("pattern") && has("path") && !has("content"))
-            || (path_is_pattern && !has("content") && !has("old_string"))
-        {
-            return Some("glob");
-        }
-        if has("command") {
-            return Some("exec");
-        }
-        if has("path") && has("content") {
-            return Some("write");
-        }
-        if has("path") && has("old_string") {
-            return Some("edit");
-        }
-        if has("path") {
-            return Some("read");
-        }
-        None
-    }
-
     /// The actions the parse error lists when a call names none and the
     /// fields do not settle it.
-    const ACTION_INDEX: &'static str = "file read/write/edit/glob/grep/share/convert/checkpoint/restore/plan; \
-         shell exec/list/poll/log/write/kill/info; app launch/quit/activate/list; \
+    const ACTION_INDEX: &'static str = "app launch/quit/activate/list; \
          capture screenshot/see; input click/type/press/scroll; \
          settings volume/brightness/mute/wifi/bluetooth/darkmode/battery; \
          mail unread/read/send/search; calendar today/upcoming/create; \
@@ -835,12 +430,11 @@ impl OsTool {
         Ok(call)
     }
 
-    pub fn file_tool(&self) -> &FileTool {
-        &self.file_tool
-    }
+}
 
-    pub fn shell_tool(&self) -> &ShellTool {
-        &self.shell_tool
+impl Default for OsTool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -854,22 +448,14 @@ impl DynTool for OsTool {
         // model call os(action: "today", calendar: …) on a headless server
         // and get the refusal below after the fact.
         let server_note = if crate::server_mode() {
-            "SERVER MODE — this Nebo runs in the cloud: no mail, contacts, calendar, reminders, notification, shortcut, tts or dock (never call them here); window, input, clipboard, capture, ui, menu, dialog and space only while a desktop session is up. File, shell, web, keychain, settings and search work normally.\n\n"
+            "SERVER MODE — this Nebo runs in the cloud: no mail, contacts, calendar, reminders, notification, shortcut, tts or dock (never call them here); window, input, clipboard, capture, ui, menu, dialog and space only while a desktop session is up. Keychain, settings and search work normally.\n\n"
         } else {
             ""
         };
-        format!("{server_note}{}", "Local machine operations — files, shell, apps, desktop automation, settings, media, credentials, search, PIM.\n\n\
+        format!("{server_note}{}", "Local machine operations — apps, desktop automation, settings, media, credentials, search, PIM. Files and commands have their own tools (read_file, edit_file, write_file, run_command).\n\n\
          Rules:\n\
-         - ALWAYS call this tool for file/system facts — NEVER answer from memory or training data. To read a file, call os(resource: \"file\", action: \"read\"); do NOT claim a file is missing or report its contents without calling first.\n\
-         - Prefer file actions over shell: use file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find.\n\
-         - Always pass `action`. `resource` is inferred when the action belongs to one resource (read→file, exec→shell, play→music, volume→settings) or its parameters settle it (session_id→shell, move+app→window, click+label→input (resolved against the last capture), send+title→notification); pass it for actions several resources share (create, list, search, get, delete).\n\
-         - Interactive React (dashboards, charts, visualizations): write the component as a .jsx file, then convert it (action: \"convert\", to: \"html\") — Nebo transpiles it into a self-contained, renderable page. NEVER put JSX or CDN-loaded React (unpkg/esm) directly in a .html; raw JSX has no transpiler in the browser and renders blank.\n\
-         - Before edit or overwrite of an EXISTING file, read it first (edit/overwrite are rejected without a prior read). A brand-new file needs no prior read.\n\
-         - glob = find files by NAME pattern (*.md, src/**/*.rs); grep = match text INSIDE files by regex. Do not confuse them.\n\
-         - NEVER use sudo without asking the user first; on permission denied, explain and offer alternatives.\n\n\
+         - Always pass `action`. `resource` is inferred when the action belongs to one resource (play→music, volume→settings) or its parameters settle it (move+app→window, click+label→input (resolved against the last capture), send+title→notification); pass it for actions several resources share (create, list, search, get, delete).\n\n\
          Resources:\n\
-         - file: read, write, edit, share, glob, grep, convert, checkpoint, checkpoints, restore, plan, plan_check — checkpoint snapshots the files you are about to change (paths: [...]) and restore puts them back (never git stash/reset); plan writes a work document whose steps each carry a verify command, and plan_check runs those commands and ticks only the steps that pass; to list a directory, glob its path (pattern defaults to *); share hands an EXISTING file to the user as a download card (a deck/PDF/binary already on disk — never recite its path or copy it to \"trigger\" a card); convert generates documents via embedded engines: .md→pdf/docx, .csv→xlsx, .jsx/.tsx→html (interactive React) (never use host binaries like wkhtmltopdf/pandoc)\n\
-         - shell: exec, list (background sessions; with filter: system processes), poll, log, write (data), kill, info (session_id or pid)\n\
          - window: list, focus, minimize, maximize, resize, close, move\n\
          - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste — by ref through accessibility; right_click on a [menu] element opens its context menu and lists the items as refs; every act returns the window after it and says whether it was delivered and what changed; wait_for waits for text/an element/a menu instead of guessing a pause\n\
          - clipboard: read, write, clear\n\
@@ -892,8 +478,6 @@ impl DynTool for OsTool {
          - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure — the LOCAL Apple/Mac calendar (for Google Calendar use plugin(resource: \"gws\", ...))\n\
          - reminders: lists, list, create, complete, delete\n\n\
          Examples:\n  \
-         os(resource: \"file\", action: \"read\", path: \"/path/to/file.txt\")\n  \
-         os(resource: \"shell\", action: \"exec\", command: \"ls -la\")\n  \
          os(resource: \"app\", action: \"launch\", app: \"Safari\")\n  \
          os(resource: \"capture\", action: \"screenshot\")\n  \
          os(resource: \"capture\", action: \"see\", app: \"Safari\") — returns snapshot_id + element IDs\n  \
@@ -917,9 +501,8 @@ impl DynTool for OsTool {
             "resource".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "Optional. The resource category — usually inferred from the action (read→file, exec→shell). Specify it only to disambiguate actions shared across resources (e.g. create, list).",
+                "description": "Optional. The resource category — usually inferred from the action (play→music, volume→settings). Specify it only to disambiguate actions shared across resources (e.g. create, list).",
                 "enum": [
-                    "file", "shell",
                     "window", "input", "clipboard", "capture", "notification",
                     "ui", "menu", "dialog", "space", "shortcut", "tts", "dock",
                     "app", "settings", "music", "keychain", "search",
@@ -929,119 +512,15 @@ impl DynTool for OsTool {
         );
         props.insert(
             "action".into(),
-            prop("string", "The operation to perform on the selected resource (e.g. resource: \"file\" → action: \"read\"; resource: \"calendar\" → action: \"today\"). Never put a resource name here."),
+            prop("string", "The operation to perform on the selected resource (e.g. resource: \"calendar\" → action: \"today\"). Never put a resource name here."),
         );
-        // File
-        props.insert("path".into(), prop("string", "File or directory path"));
-        props.insert("content".into(), prop("string", "REQUIRED for write. The file content to write. Must use this exact field name — not 'text' or 'data'."));
-        props.insert("pattern".into(), prop("string", "Pattern to match: filename glob (for glob action) or regex (for grep action)"));
-        props.insert(
-            "old_string".into(),
-            prop("string", "String to find (for edit)"),
-        );
-        props.insert(
-            "new_string".into(),
-            prop("string", "Replacement string (for edit)"),
-        );
-        props.insert(
-            "replace_all".into(),
-            prop("boolean", "Replace all occurrences"),
-        );
-        props.insert("offset".into(), prop("integer", "Line offset for reading"));
         props.insert(
             "limit".into(),
-            prop("integer", "Max lines/results to return"),
-        );
-        props.insert("append".into(), prop("boolean", "Append to file"));
-        // Checkpoints and plans: declared here so the model can pass them.
-        // A parameter that exists only in prose gets stripped by strict
-        // providers and the model loops on "restore needs `checkpoint`".
-        props.insert(
-            "paths".into(),
-            serde_json::json!({
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "checkpoint: the files you are about to change (absolute paths). restore: optional subset of the checkpoint's files to put back."
-            }),
-        );
-        props.insert("label".into(), prop("string", "checkpoint: a short label, e.g. \"before rename\""));
-        props.insert(
-            "checkpoint".into(),
-            prop("string", "restore: the checkpoint id (cp-…) from the checkpoint or checkpoints result"),
-        );
-        props.insert("title".into(), prop("string", "plan: the plan's title"));
-        props.insert(
-            "steps".into(),
-            serde_json::json!({
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "title": { "type": "string", "description": "what the step achieves" },
-                        "verify": { "type": "string", "description": "shell command that exits 0 only when the step is done" }
-                    },
-                    "required": ["title", "verify"]
-                },
-                "description": "plan: one entry per step; every step needs a verify command"
-            }),
-        );
-        // "pattern" is already registered above (used by both glob and grep)
-        // "regex" kept on FileInput for backward compat but removed from schema
-        props.insert(
-            "case_insensitive".into(),
-            prop("boolean", "Case-insensitive search"),
-        );
-        props.insert(
-            "multiline".into(),
-            prop("boolean", "Grep: let the pattern span lines and `.` match newlines (rg -U --multiline-dotall). Default false: a pattern matches within one line."),
-        );
-        props.insert(
-            "glob".into(),
-            prop("string", "File filter pattern for grep"),
-        );
-        props.insert(
-            "output_mode".into(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Grep result format: 'content' (matching lines with context, default), 'files' (file paths only), 'count' (match counts per file)",
-                "enum": ["content", "files", "count"]
-            }),
-        );
-        props.insert(
-            "context_before".into(),
-            prop("integer", "Lines to show before each grep match (like grep -B)"),
-        );
-        props.insert(
-            "context_after".into(),
-            prop("integer", "Lines to show after each grep match (like grep -A)"),
-        );
-        // Shell
-        props.insert("command".into(), prop("string", "Shell command to execute"));
-        props.insert(
-            "timeout".into(),
-            prop("integer", "Command timeout in seconds"),
-        );
-        props.insert("session_id".into(), prop("string", "Background session ID"));
-        props.insert("pid".into(), prop("integer", "Process ID"));
-        props.insert(
-            "signal".into(),
-            prop("string", "Signal: SIGTERM, SIGKILL, SIGINT"),
-        );
-        props.insert(
-            "background".into(),
-            prop("boolean", "Run command in background"),
-        );
-        props.insert(
-            "cwd".into(),
-            prop("string", "Working directory to run the command in"),
-        );
-        props.insert(
-            "data".into(),
-            prop("string", "stdin to write to a background session (shell write)"),
+            prop("integer", "Max results to return"),
         );
         props.insert(
             "filter".into(),
-            prop("string", "Substring filter for shell process/session list"),
+            prop("string", "Substring filter for a ui or app list"),
         );
         // Desktop
         props.insert("app".into(), prop("string", "Application name"));
@@ -1156,7 +635,7 @@ impl DynTool for OsTool {
                     { "type": "string" },
                     { "type": "array", "items": { "type": "string" } }
                 ],
-                "description": "convert: the target format, \"pdf\" (from .md/.typ), \"docx\" (from .md), \"xlsx\" (from .csv) or \"html\" (from .jsx/.tsx, interactive React); output lands next to the source. mail send: the recipient address(es)."
+                "description": "mail send: the recipient address(es)."
             }),
         );
         props.insert(
@@ -1242,7 +721,7 @@ impl DynTool for OsTool {
     }
 
     fn search_hint(&self) -> &str {
-        "files shell commands desktop apps mail calendar"
+        "desktop apps settings mail calendar"
     }
 
     fn should_defer(&self) -> bool {
@@ -1252,7 +731,6 @@ impl DynTool for OsTool {
     fn read_only(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match OsTool::resolved_resource(input) {
-            "file" => matches!(action, "read" | "list" | "glob" | "grep" | "checkpoints"),
             "search" => true,
             "capture" => matches!(action, "screenshot" | "see" | "wait"),
             _ => false,
@@ -1266,27 +744,13 @@ impl DynTool for OsTool {
     fn rule_field(&self, input: &serde_json::Value) -> Option<types::permissions::RuleField> {
         let str_of = |k: &str| input.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
         match OsTool::resolved_resource(input) {
-            "file" => str_of("path").map(|p| {
-                types::permissions::RuleField::Folder(crate::file_tool::expand_path(p).into())
-            }),
-            "shell" => str_of("command")
-                .map(|c| types::permissions::RuleField::CommandPrefix(c.to_string())),
             "mail" => str_of("to").map(|t| types::permissions::RuleField::Recipient(t.to_string())),
             _ => None,
         }
     }
 
     fn capability(&self, input: &serde_json::Value) -> Option<&'static str> {
-        // A file-management verb (move/copy/delete with file args) is
-        // redirected to a shell correction — it never reaches a desktop
-        // resource, so it belongs to no capability; the shell retry gets the
-        // right one.
-        if Self::is_file_mgmt_redirect(input) {
-            return None;
-        }
         match OsTool::resolved_resource(input) {
-            "file" => Some("file"),
-            "shell" => Some("shell"),
             "settings" | "keychain" | "platform" | "system" => Some("system"),
             "capture" | "screenshot" | "see" => Some("media"),
             "contacts" => Some("contacts"),
@@ -1302,23 +766,8 @@ impl DynTool for OsTool {
         if self.read_only(input) {
             return CallEffects::none();
         }
-        let path = input.get("path").and_then(|v| v.as_str()).filter(|p| !p.is_empty());
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match (OsTool::resolved_resource(input), action) {
-            // A write brings a new file into being, or replaces one that
-            // was there; an append takes nothing away.
-            ("file", "write" | "append" | "edit") => {
-                let mut effects = CallEffects { publishes: Knowable::No, ..CallEffects::default() };
-                if let Some(p) = path.map(crate::file_tool::expand_path) {
-                    let named = format!("file:{p}");
-                    if !std::path::Path::new(&p).exists() {
-                        effects.creates.push(named);
-                    } else if action != "append" {
-                        effects.overwrites.push(named);
-                    }
-                }
-                effects
-            }
             ("mail", "send") => CallEffects {
                 recipients: input
                     .get("to")
@@ -1332,17 +781,6 @@ impl DynTool for OsTool {
         }
     }
 
-    fn max_result_chars(&self, input: &serde_json::Value) -> Option<usize> {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        match OsTool::resolved_resource(input) {
-            // A file read pages itself: its footer names the offset to go on
-            // from, so a preview must never replace it.
-            "file" if action == "read" => None,
-            "shell" => Some(crate::MAX_SUBPROCESS_OUTPUT),
-            _ => Some(crate::registry::DEFAULT_MAX_RESULT_CHARS),
-        }
-    }
-
     fn taint(&self, input: &serde_json::Value) -> Option<types::provenance::ProvenanceClass> {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match OsTool::resolved_resource(input) {
@@ -1350,27 +788,14 @@ impl DynTool for OsTool {
             "mail" if !matches!(action, "send" | "accounts") => {
                 Some(types::provenance::ProvenanceClass::ExternalEmail)
             }
-            // A file the agent pulled in (the attachment root), not one the
-            // owner placed.
-            "file" if action == "read" => input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .filter(|p| crate::file_tool::is_ingested_file(p))
-                .map(|_| types::provenance::ProvenanceClass::Document),
             _ => None,
         }
-    }
-
-    /// File reads, searches and changes, and commands.
-    fn cleared_when_stale(&self, input: &serde_json::Value) -> bool {
-        matches!(OsTool::resolved_resource(input), "file" | "shell")
     }
 
     fn emits_image(&self, input: &serde_json::Value) -> bool {
         // Reading an existing image returns it for the model, and every
         // observe and click returns the window it acted on: the tool's eyes,
-        // not media the owner asked for. An explicit screenshot, or a file the
-        // call produced, is.
+        // not media the owner asked for. An explicit screenshot is.
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         !matches!(
             action,
@@ -1410,26 +835,11 @@ impl DynTool for OsTool {
                     return ToolResult::error(format!(
                         "Failed to parse input: {e}. Received fields: [{keys}]. Every `os` \
                          call needs an `action` (resource is inferred when omitted). Actions: \
-                         {}. E.g. os(resource: \"shell\", action: \"exec\", command: \"ls -la\") or \
-                         os(resource: \"file\", action: \"write\", path: \"...\", content: \"...\").",
+                         {}. E.g. os(resource: \"app\", action: \"launch\", app: \"Safari\").",
                         Self::ACTION_INDEX
                     ));
                 }
             };
-
-            // File-management verbs (move/copy/rename/delete/mkdir) with file-shaped
-            // args are file operations, NOT a mouse "move" — but action-name inference
-            // resolves bare "move" to the desktop "input" resource, which then gated on
-            // the wrong (Desktop) capability and surfaced a misleading "need Desktop".
-            // The file tool has no move/copy/delete (those go through the shell),
-            // so steer the agent to shell `mv`/`cp`/`rm` instead of
-            // misrouting. Disambiguated by file args: a real mouse move never carries
-            // `path` + `destination`.
-            {
-                if Self::is_file_mgmt_redirect(&input) {
-                    return ToolResult::error(Self::file_mgmt_redirect_message(&input));
-                }
-            }
 
             // `normalized` wrote the resource when the call settles one.
             let resource = input
@@ -1440,8 +850,7 @@ impl DynTool for OsTool {
 
             if resource.is_empty() {
                 return ToolResult::error(format!(
-                    "Could not infer a resource from action '{}'. Pass resource explicitly (file, shell, \
-                     window, input, clipboard, capture, notification, ui, menu, dialog, space, shortcut, \
+                    "Could not infer a resource from action '{}'. Pass resource explicitly (window, input, clipboard, capture, notification, ui, menu, dialog, space, shortcut, \
                      tts, dock, app, settings, music, keychain, search, mail, contacts, calendar, \
                      reminders) or use one of the documented actions.",
                     domain_input.action
@@ -1494,42 +903,12 @@ impl DynTool for OsTool {
                         }
                     }
                     return ToolResult::error(format!(
-                        "os(resource: \"{resource}\") is not available in server mode — this Nebo runs in the cloud and has no screen, input devices, or desktop apps. File, shell, and web tools work normally."
+                        "os(resource: \"{resource}\") is not available in server mode — this Nebo runs in the cloud and has no screen, input devices, or desktop apps. The file, command and web tools work normally."
                     ));
                 }
             }
 
             match resource.as_str() {
-                // File + Shell — delegate to inner tools. `convert` is handled
-                // here (not in FileTool) because rendering runs on the async
-                // bundled-browser engine; everything else about it is a file op.
-                "file" if input["action"].as_str() == Some("convert") => {
-                    self.handle_convert(&input).await
-                }
-                // plan_check needs the shell (each step's verify command) and
-                // the file tool (the rewrite), so it lives here.
-                "file" if input["action"].as_str() == Some("plan_check") => {
-                    self.handle_plan_check(ctx, &input).await
-                }
-                "file" => self.file_tool.execute(ctx, input),
-                "shell" => {
-                    let command = input["command"].as_str().unwrap_or("").to_string();
-                    let cwd = input["cwd"].as_str().map(str::to_string).or_else(|| ctx.cwd.clone());
-                    let result = self.shell_tool.execute(ctx, input).await;
-                    if !result.is_error && !command.is_empty() {
-                        for target in crate::policy::shell_write_targets(&command) {
-                            let path = std::path::Path::new(&target);
-                            let abs = if path.is_relative() {
-                                cwd.as_deref().map(|c| std::path::Path::new(c).join(path)).unwrap_or_else(|| path.to_path_buf())
-                            } else {
-                                path.to_path_buf()
-                            };
-                            self.file_tool.note_shell_write(&ctx.session_key, &abs.to_string_lossy());
-                        }
-                    }
-                    result
-                }
-
                 // Desktop resources — delegate to DesktopTool
                 "window" | "input" | "clipboard" | "capture" | "notification" | "ui" | "menu"
                 | "dialog" | "space" | "shortcut" | "tts" | "dock" => {
@@ -1649,8 +1028,6 @@ impl DynTool for OsTool {
     }
 }
 
-/// Quote one path for a POSIX shell command line. Plain names pass through;
-/// anything with spaces or shell metacharacters is single-quoted.
 /// Why a mail send cannot go out as written, or `None` when the message is
 /// where it belongs. ONE field for the message, and an error that names the
 /// mistake: a model that wrote `body` once sent a customer an empty email.
@@ -1670,48 +1047,9 @@ fn mail_send_refusal(input: &serde_json::Value) -> Option<String> {
     })
 }
 
-fn shell_quote(s: &str) -> String {
-    let safe = !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "/._-~:@%+=,<>".contains(c));
-    if safe {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The file-management redirect names a runnable shell command: paths
-    /// with spaces are quoted, a directory gets `rm -r`, and `trash` never
-    /// pretends rm moves anything to the Trash.
-    #[test]
-    fn file_mgmt_redirect_quotes_paths_and_handles_directories() {
-        let dir = tempfile::tempdir().unwrap();
-        let sub = dir.path().join("my folder");
-        std::fs::create_dir_all(&sub).unwrap();
-        let sub_s = sub.to_string_lossy().into_owned();
-        let msg = OsTool::file_mgmt_redirect_message(&serde_json::json!({
-            "action": "delete", "path": sub_s
-        }));
-        assert!(msg.contains(&format!("rm -r '{sub_s}'")), "{msg}");
-        assert!(msg.contains("has no 'delete' action"), "{msg}");
-
-        let msg = OsTool::file_mgmt_redirect_message(&serde_json::json!({
-            "action": "move", "path": "/tmp/a.txt", "destination": "/tmp/b c.txt"
-        }));
-        assert!(msg.contains("mv /tmp/a.txt '/tmp/b c.txt'"), "{msg}");
-
-        let msg = OsTool::file_mgmt_redirect_message(&serde_json::json!({
-            "action": "trash", "path": "/tmp/a.txt"
-        }));
-        assert!(msg.contains("rm /tmp/a.txt"), "{msg}");
-        assert!(msg.contains("does not move the file to the Trash"), "{msg}");
-        assert_eq!(shell_quote("it's"), "'it'\\''s'");
-    }
 
     /// Every row of the 2026-09-05 misroute table (audit class C, os) plus
     /// the arms that already existed: the resource a call resolves to when
@@ -1732,18 +1070,7 @@ mod tests {
             (serde_json::json!({"action": "send", "title": "Done", "message": "Task complete"}), "notification"),
             (serde_json::json!({"action": "send", "message": "hi"}), "notification"),
             (serde_json::json!({"action": "send", "to": "a@b.c", "subject": "x"}), "mail"),
-            (serde_json::json!({"action": "write", "session_id": "s1", "data": "y\n"}), "shell"),
-            (serde_json::json!({"action": "write", "path": "/tmp/x", "content": "y"}), "file"),
-            (serde_json::json!({"action": "kill", "session_id": "s1"}), "shell"),
-            (serde_json::json!({"action": "info", "session_id": "s1"}), "shell"),
-            (serde_json::json!({"action": "status", "session_id": "s1"}), "shell"),
-            (serde_json::json!({"action": "list", "session_id": "s1"}), "shell"),
-            (serde_json::json!({"action": "kill", "pid": 4242}), "shell"),
-            (serde_json::json!({"action": "info", "pid": 4242}), "shell"),
-            (serde_json::json!({"action": "poll", "session_id": "s1"}), "shell"),
-            (serde_json::json!({"action": "log", "session_id": "s1"}), "shell"),
             (serde_json::json!({"action": "read", "mailbox": "INBOX"}), "mail"),
-            (serde_json::json!({"action": "read", "path": "/tmp/x"}), "file"),
             // Action names that belong to one resource.
             (serde_json::json!({"action": "volume", "value": 50}), "settings"),
             (serde_json::json!({"action": "brightness"}), "settings"),
@@ -1752,7 +1079,6 @@ mod tests {
             (serde_json::json!({"action": "battery"}), "settings"),
             (serde_json::json!({"action": "capture"}), "capture"),
             (serde_json::json!({"action": "screenshot"}), "capture"),
-            (serde_json::json!({"action": "convert", "path": "r.md", "to": "pdf"}), "file"),
             (serde_json::json!({"action": "create", "name": "Ann", "email": "ann@x.com"}), "contacts"),
             // Shared names with nothing to settle them stay unrouted.
             (serde_json::json!({"action": "kill"}), ""),
@@ -1763,123 +1089,6 @@ mod tests {
         for (input, want) in cases {
             assert_eq!(OsTool::resolved_resource(input), *want, "{input}");
         }
-    }
-
-    /// A call that names no action but plainly means one gets it; anything
-    /// less obvious keeps the parse error.
-    #[test]
-    fn missing_action_inference_table() {
-        let cases: &[(serde_json::Value, Option<&str>)] = &[
-            (serde_json::json!({"glob": "*.md", "path": "/tmp"}), Some("glob")),
-            (serde_json::json!({"glob": "*.md"}), Some("glob")),
-            (serde_json::json!({"pattern": "*.rs", "path": "/src"}), Some("glob")),
-            (serde_json::json!({"command": "ls -la"}), Some("exec")),
-            (serde_json::json!({"path": "/tmp/x", "content": "hello"}), Some("write")),
-            (serde_json::json!({"path": "/tmp/x", "old_string": "a", "new_string": "b"}), Some("edit")),
-            (serde_json::json!({"path": "/tmp/x"}), Some("read")),
-            // An empty glob key still names the action; a path that is a
-            // pattern is a glob on its own (live 2026-09-09).
-            (serde_json::json!({"glob": "", "path": "/data/files/*N993012*"}), Some("glob")),
-            (serde_json::json!({"path": "/data/files/underwriting-memo*"}), Some("glob")),
-            (serde_json::json!({"path": "/tmp/{a,b}.txt", "content": "x"}), Some("write")),
-            (serde_json::json!({"action": "grep", "glob": "*.md", "path": "/tmp"}), None),
-            (serde_json::json!({"action": "", "path": "/tmp/x"}), Some("read")),
-            (serde_json::json!({"pattern": "TODO"}), None),
-            (serde_json::json!({"app": "Safari"}), None),
-            (serde_json::json!({}), None),
-        ];
-        for (input, want) in cases {
-            assert_eq!(OsTool::infer_missing_action(input), *want, "{input}");
-        }
-    }
-
-    /// The whole shell lifecycle through `os`, the way the model reaches it:
-    /// the os tool stamps resource "shell" and every session verb must still
-    /// land on its handler (until 2026-09-05 each answered "exec requires
-    /// command").
-    #[tokio::test]
-    async fn shell_session_verbs_reach_their_handlers_through_os() {
-        let tool = os();
-        let ctx = ToolContext::new(crate::origin::Origin::User);
-        let start = tool
-            .execute_dyn(
-                &ctx,
-                serde_json::json!({"resource": "shell", "action": "exec", "command": "sleep 5", "background": true}),
-            )
-            .await;
-        assert!(!start.is_error, "{}", start.content);
-        let id = start.content.split("**").nth(1).expect("session id between ** markers").to_string();
-
-        let poll = tool
-            .execute_dyn(&ctx, serde_json::json!({"resource": "shell", "action": "poll", "session_id": id}))
-            .await;
-        assert!(!poll.is_error, "{}", poll.content);
-        assert!(poll.content.contains("Status: Running"), "{}", poll.content);
-
-        let info = tool
-            .execute_dyn(&ctx, serde_json::json!({"resource": "shell", "action": "info", "session_id": id}))
-            .await;
-        assert!(!info.is_error, "{}", info.content);
-        assert!(info.content.contains("Command: `sleep 5`"), "{}", info.content);
-
-        let log = tool
-            .execute_dyn(&ctx, serde_json::json!({"action": "log", "session_id": id}))
-            .await;
-        assert!(!log.is_error, "{}", log.content);
-        assert!(log.content.starts_with("(no output yet; still running"), "{}", log.content);
-
-        let list = tool
-            .execute_dyn(&ctx, serde_json::json!({"resource": "shell", "action": "list"}))
-            .await;
-        assert!(!list.is_error, "{}", list.content);
-        assert!(list.content.contains(&id), "{}", list.content);
-
-        let write = tool
-            .execute_dyn(
-                &ctx,
-                serde_json::json!({"resource": "shell", "action": "write", "session_id": id, "data": "x\n"}),
-            )
-            .await;
-        assert!(!write.is_error, "{}", write.content);
-        assert!(write.content.starts_with("Wrote 2 bytes"), "{}", write.content);
-
-        let kill = tool
-            .execute_dyn(&ctx, serde_json::json!({"resource": "shell", "action": "kill", "session_id": id}))
-            .await;
-        assert!(!kill.is_error, "{}", kill.content);
-        assert!(kill.content.contains("Killed session"), "{}", kill.content);
-
-        // A kill with neither id nor pid says which of the two to pass.
-        let bare = tool
-            .execute_dyn(&ctx, serde_json::json!({"resource": "shell", "action": "kill"}))
-            .await;
-        assert!(bare.is_error);
-        assert!(bare.content.contains("session_id is required"), "{}", bare.content);
-        assert!(bare.content.contains("pid: <number>"), "{}", bare.content);
-    }
-
-    /// An os call with glob and path and no action runs as a glob.
-    #[tokio::test]
-    async fn glob_and_path_without_an_action_is_a_glob() {
-        // A visible directory: tempdir names start with ".tmp" and the glob
-        // walker skips hidden directories.
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("docs");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("alpha.md"), "# a").unwrap();
-        std::fs::write(dir.join("notes.txt"), "x").unwrap();
-        let ctx = ToolContext::new(crate::origin::Origin::User);
-        let r = os()
-            .execute_dyn(&ctx, serde_json::json!({"glob": "*.md", "path": dir}))
-            .await;
-        assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.contains("alpha.md"), "{}", r.content);
-        assert!(!r.content.contains("notes.txt"), "{}", r.content);
-
-        let r = os().execute_dyn(&ctx, serde_json::json!({"app": "Safari"})).await;
-        assert!(r.is_error);
-        assert!(r.content.contains("missing field `action`"), "{}", r.content);
-        assert!(r.content.contains("Actions: file read/write"), "{}", r.content);
     }
 
     /// `unmute` is `mute` with value false; the setting name becomes the
@@ -1906,10 +1115,9 @@ mod tests {
 
     /// The os schema names the input target the handler reads (ref and
     /// coordinate), keeps element_id as its alias, declares quality, and
-    /// describes `to` for both convert and mail (the second insert used to
-    /// overwrite the first, leaving only the email meaning).
+    /// describes `to` as the mail recipient.
     #[test]
-    fn os_schema_declares_input_targets_quality_and_both_meanings_of_to() {
+    fn os_schema_declares_input_targets_quality_and_the_recipient() {
         let schema = os().schema();
         let props = schema["properties"].as_object().expect("object schema");
         for p in ["ref", "coordinate", "start_coordinate", "quality", "element_id"] {
@@ -1917,14 +1125,16 @@ mod tests {
         }
         assert_eq!(props["element_id"]["description"], "Alias of ref");
         let to = props["to"]["description"].as_str().unwrap();
-        assert!(to.contains("pdf"), "{to}");
         assert!(to.contains("recipient"), "{to}");
+        for gone in ["path", "command", "session_id", "content", "old_string", "pattern", "steps"] {
+            assert!(!props.contains_key(gone), "files and commands have their own tools: `{gone}`");
+        }
     }
 
     #[test]
     fn test_infer_resource() {
-        assert_eq!(OsTool::infer_resource("read"), "file");
-        assert_eq!(OsTool::infer_resource("exec"), "shell");
+        assert_eq!(OsTool::infer_resource("read"), "");
+        assert_eq!(OsTool::infer_resource("exec"), "");
         assert_eq!(OsTool::infer_resource("click"), "input");
         assert_eq!(OsTool::infer_resource("screenshot"), "capture");
         assert_eq!(OsTool::infer_resource("play"), "music");
@@ -1979,13 +1189,8 @@ mod tests {
     }
 
     #[test]
-    fn test_infer_resource_from_context_list_with_target() {
-        // "list" with a dir/path target is a directory listing → file
-        let input = serde_json::json!({"action": "list", "dir": "~/Desktop"});
-        assert_eq!(OsTool::infer_resource_from_context(&input), "file");
-        let input = serde_json::json!({"action": "ls", "path": "/tmp"});
-        assert_eq!(OsTool::infer_resource_from_context(&input), "file");
-        // Bare "list" stays ambiguous (window, app, shell, ...)
+    fn test_infer_resource_from_context_list() {
+        // Bare "list" stays ambiguous (window, app, ...)
         let input = serde_json::json!({"action": "list"});
         assert_eq!(OsTool::infer_resource_from_context(&input), "");
         // "list" with a reminders list name still routes to reminders
@@ -1994,79 +1199,7 @@ mod tests {
     }
 
     fn os() -> OsTool {
-        OsTool::new(Arc::new(crate::process::ProcessRegistry::new()),
-        )
-    }
-
-    fn write_plan(dir: &std::path::Path, steps: &[(&str, &str)]) -> String {
-        let steps: Vec<(String, String)> = steps.iter().map(|(t, v)| (t.to_string(), v.to_string())).collect();
-        let doc = crate::plan::render("t", &steps).unwrap();
-        let path = dir.join("PLAN.md");
-        std::fs::write(&path, doc).unwrap();
-        path.to_string_lossy().into_owned()
-    }
-
-    // The verify commands run in the plan's directory (relative paths in a
-    // step mean "next to the plan"), through the shell's raw mode.
-    #[tokio::test]
-    async fn plan_check_runs_verify_in_the_plans_directory_with_raw_shell() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("marker"), "x").unwrap();
-        let plan = write_plan(dir.path(), &[("marker is here", "test -f ./marker"), ("and is not elsewhere", "test -f /nonexistent/marker")]);
-        let ctx = ToolContext::new(crate::origin::Origin::User);
-        let r = os().execute_dyn(&ctx, serde_json::json!({"resource": "file", "action": "plan_check", "path": plan})).await;
-        assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.contains("1 of 2 steps pass; 1 newly passed"), "{}", r.content);
-        let doc = std::fs::read_to_string(&plan).unwrap();
-        assert!(doc.contains("- [x] 1."), "{doc}");
-        assert!(doc.contains("- [ ] 2."), "{doc}");
-        assert!(doc.contains("2. ✗ and is not elsewhere, exit 1"), "{doc}");
-    }
-
-    // A destructive verify command is refused like any shell call: the step
-    // stays unticked and reads "did not run" with the refusal's first line.
-    #[tokio::test]
-    async fn plan_check_refuses_a_destructive_verify_command() {
-        let dir = tempfile::tempdir().unwrap();
-        let plan = write_plan(dir.path(), &[("bad", "git stash"), ("good", "true")]);
-        let ctx = ToolContext::new(crate::origin::Origin::User);
-        let r = os().execute_dyn(&ctx, serde_json::json!({"resource": "file", "action": "plan_check", "path": plan})).await;
-        assert!(!r.is_error, "{}", r.content);
-        let doc = std::fs::read_to_string(&plan).unwrap();
-        assert!(doc.contains("1. ✗ bad, did not run: This git command discards work"), "{doc}");
-        assert!(doc.contains("- [x] 2."), "{doc}");
-    }
-
-    // A check that verifies nothing is an error, so a stalled plan never
-    // counts as progress; one newly verified step is not.
-    #[tokio::test]
-    async fn plan_check_sets_is_error_when_nothing_is_verified() {
-        let dir = tempfile::tempdir().unwrap();
-        let plan = write_plan(dir.path(), &[("fails", "false")]);
-        let ctx = ToolContext::new(crate::origin::Origin::User);
-        let r = os().execute_dyn(&ctx, serde_json::json!({"resource": "file", "action": "plan_check", "path": plan})).await;
-        assert!(r.is_error, "{}", r.content);
-        assert!(r.content.contains("Nothing verified"), "{}", r.content);
-        assert_eq!(r.payload.as_ref().and_then(|p| p.get("newly_verified")).and_then(|v| v.as_u64()), Some(0));
-        let sub = dir.path().join("b");
-        std::fs::create_dir_all(&sub).unwrap();
-        let plan2 = write_plan(&sub, &[("passes", "true")]);
-        let r = os().execute_dyn(&ctx, serde_json::json!({"resource": "file", "action": "plan_check", "path": plan2})).await;
-        assert!(!r.is_error, "{}", r.content);
-        assert_eq!(r.payload.as_ref().and_then(|p| p.get("newly_verified")).and_then(|v| v.as_u64()), Some(1));
-    }
-
-    // Every parameter the file actions read must be declared: a parameter that
-    // lives only in prose is stripped by strict providers, and the model then
-    // loops on "restore needs `checkpoint`" (49 calls, live, 2026-09-02).
-    #[test]
-    fn os_schema_declares_every_checkpoint_and_plan_parameter() {
-        let schema = os().schema();
-        let props = schema["properties"].as_object().expect("object schema");
-        for p in ["paths", "label", "checkpoint", "title", "steps"] {
-            assert!(props.contains_key(p), "schema is missing `{p}`");
-        }
-        assert_eq!(schema["properties"]["steps"]["items"]["required"], serde_json::json!(["title", "verify"]));
+        OsTool::new()
     }
 
     /// Seen live: a customer received an empty email because the message
@@ -2075,7 +1208,7 @@ mod tests {
     /// html, is refused with the mistake named — nothing sent or recorded.
     #[tokio::test]
     async fn a_mail_send_with_the_message_in_the_wrong_field_is_refused_and_steered() {
-        let tool = OsTool::new(Arc::new(crate::process::ProcessRegistry::new()));
+        let tool = OsTool::new();
         let ctx = crate::origin::ToolContext::default();
         let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com", "subject": "Re: quote", "body": "hello"})).await;
         assert!(r.is_error, "{}", r.content);
@@ -2092,16 +1225,6 @@ mod tests {
     fn each_call_keys_on_the_job_it_does() {
         let tool = os();
         for (input, key) in [
-            (serde_json::json!({"action": "read", "path": "/tmp/x"}), "read_file"),
-            (serde_json::json!({"resource": "file", "action": "write", "path": "/tmp/x"}), "write_file"),
-            (serde_json::json!({"action": "append", "path": "/tmp/x"}), "write_file"),
-            (serde_json::json!({"action": "edit", "path": "/tmp/x"}), "edit_file"),
-            (serde_json::json!({"action": "grep", "path": "/tmp", "pattern": "x"}), "run_command"),
-            (serde_json::json!({"action": "exec", "command": "ls"}), "run_command"),
-            (serde_json::json!({"command": "rm -rf /"}), "run_command"),
-            (serde_json::json!({"resource": "shell", "action": "kill", "session_id": "s"}), "stop_command"),
-            (serde_json::json!({"resource": "shell", "action": "poll", "session_id": "s"}), "read_command_output"),
-            (serde_json::json!({"action": "checkpoint", "paths": ["/tmp/x"]}), "checkpoint_files"),
             (serde_json::json!({"resource": "capture", "action": "screenshot"}), "desktop_screenshot"),
             (serde_json::json!({"action": "click", "x": 1, "y": 2}), "desktop_click"),
             (serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com"}), "mail_message_send"),
@@ -2116,40 +1239,24 @@ mod tests {
     #[test]
     fn reads_are_read_only_and_writes_are_not() {
         let tool = os();
-        assert!(tool.read_only(&serde_json::json!({"action": "read", "path": "/tmp/x"})));
-        assert!(tool.read_only(&serde_json::json!({"action": "grep", "path": "/tmp", "pattern": "x"})));
-        assert!(!tool.read_only(&serde_json::json!({"action": "write", "path": "/tmp/x"})));
-        assert!(!tool.read_only(&serde_json::json!({"action": "exec", "command": "ls"})));
-        // A write to a new path creates it; to an existing one replaces it;
-        // an append takes nothing away.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("x.txt").to_string_lossy().into_owned();
-        let fx = tool.effects(&serde_json::json!({"action": "write", "path": path}));
-        assert_eq!((fx.creates, fx.overwrites), (vec![format!("file:{path}")], vec![]));
-        std::fs::write(&path, "x").unwrap();
-        let fx = tool.effects(&serde_json::json!({"action": "write", "path": path}));
-        assert_eq!((fx.creates, fx.overwrites), (vec![], vec![format!("file:{path}")]));
-        let fx = tool.effects(&serde_json::json!({"action": "append", "path": path}));
-        assert!(fx.creates.is_empty() && fx.overwrites.is_empty());
+        assert!(tool.read_only(&serde_json::json!({"action": "screenshot"})));
+        assert!(tool.read_only(&serde_json::json!({"resource": "search", "action": "search", "query": "x"})));
+        assert!(!tool.read_only(&serde_json::json!({"resource": "input", "action": "click", "ref": "B1"})));
         let fx = tool.effects(&serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com, b@example.com"}));
         assert_eq!(fx.recipients, vec!["a@example.com", "b@example.com"]);
-        assert_eq!(tool.max_result_chars(&serde_json::json!({"action": "read", "path": "/x"})), None);
     }
 
-    /// The capability comes from the resource: file ops gate on file, not
-    /// desktop (the old bug), and mail/calendar sit behind no toggle.
+    /// The capability comes from the resource, and mail/calendar sit behind
+    /// no toggle.
     #[test]
     fn capability_follows_the_resource() {
         let tool = os();
         let cap = |v: serde_json::Value| tool.capability(&v);
-        assert_eq!(cap(serde_json::json!({"action": "write", "path": "/tmp/x"})), Some("file"));
-        assert_eq!(cap(serde_json::json!({"action": "exec", "command": "ls"})), Some("shell"));
         assert_eq!(cap(serde_json::json!({"resource": "input", "action": "click"})), Some("desktop"));
         assert_eq!(cap(serde_json::json!({"action": "screenshot"})), Some("media"));
         assert_eq!(cap(serde_json::json!({"resource": "settings"})), Some("system"));
         assert_eq!(cap(serde_json::json!({"resource": "contacts", "action": "search"})), Some("contacts"));
         assert_eq!(cap(serde_json::json!({"resource": "mail", "action": "unread"})), None);
-        assert_eq!(cap(serde_json::json!({"action": "move", "path": "/a", "destination": "/b"})), None);
     }
 
     #[test]
@@ -2191,17 +1298,14 @@ mod tests {
 
     #[test]
     fn test_resolved_resource_mail_read() {
-        // "read" with mail params and no path routes to mail, not file
+        // "read" with mail params routes to mail
         let input = serde_json::json!({"action": "read", "mailbox": "INBOX", "limit": 5});
         assert_eq!(OsTool::resolved_resource(&input), "mail");
         let input = serde_json::json!({"action": "read", "account": "you@example.com"});
         assert_eq!(OsTool::resolved_resource(&input), "mail");
-        // "read" with a path is still a file read
-        let input = serde_json::json!({"action": "read", "path": "/tmp/x"});
-        assert_eq!(OsTool::resolved_resource(&input), "file");
-        // Bare "read" stays file (missing-path error is the right correction)
+        // Bare "read" names no resource
         let input = serde_json::json!({"action": "read"});
-        assert_eq!(OsTool::resolved_resource(&input), "file");
+        assert_eq!(OsTool::resolved_resource(&input), "");
         // Explicit resource always wins
         let input = serde_json::json!({"resource": "mail", "action": "read"});
         assert_eq!(OsTool::resolved_resource(&input), "mail");
@@ -2226,8 +1330,7 @@ mod tests {
 
     #[test]
     fn test_schema_requires_resource() {
-        let tool = OsTool::new(Arc::new(crate::process::ProcessRegistry::new()),
-        );
+        let tool = OsTool::new();
         let schema = tool.schema();
         let required = schema["required"].as_array().unwrap();
         let required_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
@@ -2246,28 +1349,17 @@ mod tests {
     /// other resource keeps the runner default.
     #[test]
     fn a_file_search_carries_its_own_execution_budget() {
-        let tool = OsTool::new(Arc::new(crate::process::ProcessRegistry::new()),
-        );
+        let tool = OsTool::new();
         let search = serde_json::json!({"resource": "search", "action": "search", "query": "*.md"});
         let budget = tool
             .execution_timeout(&search)
             .expect("a search declares its own budget");
         assert!(budget < std::time::Duration::from_secs(180), "{budget:?}");
         assert!(
-            tool.execution_timeout(&serde_json::json!({"resource": "shell", "action": "exec", "command": "ls"}))
+            tool.execution_timeout(&serde_json::json!({"resource": "app", "action": "list"}))
                 .is_none(),
             "only search overrides the runner default"
         );
     }
 
-    #[test]
-    fn test_schema_has_grep_fields() {
-        let tool = OsTool::new(Arc::new(crate::process::ProcessRegistry::new()),
-        );
-        let schema = tool.schema();
-        let props = schema["properties"].as_object().unwrap();
-        assert!(props.contains_key("output_mode"), "schema missing output_mode");
-        assert!(props.contains_key("context_before"), "schema missing context_before");
-        assert!(props.contains_key("context_after"), "schema missing context_after");
-    }
 }

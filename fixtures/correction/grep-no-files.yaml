@@ -1,11 +1,12 @@
 id: correction-grep-no-files
 name: "Correction — nothing searched is not nothing found"
 description: |
-  The directory the user points at is empty. A grep there searches zero files
-  and the result says so. The model must not conclude that the function does
+  The directory the user points at is empty. A grep or rg there through
+  run_command searches zero files and prints nothing (rg says no files were
+  searched; grep -r exits 1 with no output). The model must not conclude that the function does
   not exist; it must say the directory has nothing to search and ask where
   the code is.
-target_component: os
+target_component: run_command
 
 setup:
   - "mkdir -p {{scratch}}/empty-src"
@@ -17,14 +18,15 @@ conversation:
     content: "Search {{scratch}}/empty-src for where the function handle_login is defined and tell me the file and line."
 
 tool_config:
-  os:
+  run_command:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: searches
-      text: "Model searches the directory (os file grep, or shell grep/rg)"
+      text: "Model searches the directory with run_command (grep, rg, or find)"
       severity: critical
+      check: { first_call: true, tool: run_command, arg: command, matches: "\\b(find|grep|rg)\\b" }
   recovery:
     - id: no-false-absence
       text: "Model does NOT tell the user that handle_login does not exist or is not defined anywhere"
@@ -44,5 +46,5 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    One grep, "No files to search under {{scratch}}/empty-src", then:
+    One run_command grep or rg that finds no files under {{scratch}}/empty-src, then:
     "That directory has no files, so nothing was searched. Where is the code?"

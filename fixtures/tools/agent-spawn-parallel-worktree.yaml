@@ -16,7 +16,11 @@ conversation:
     content: "In the repo /tmp/nebo-test/wt, run two sub-agents in parallel with worktree isolation: one changes a.txt to say ONE, the other changes b.txt to say TWO. When both are merged back, tell me what the merge section said."
 
 tool_config:
-  os:
+  edit_file:
+    enabled: true
+  write_file:
+    enabled: true
+  run_command:
     enabled: true
   agent:
     enabled: true

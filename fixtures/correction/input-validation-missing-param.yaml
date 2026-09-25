@@ -1,0 +1,78 @@
+id: correction-input-validation-missing-param
+name: "Correction - a call missing its required parameter, or to an unloaded deferred tool, is fixed on the next call"
+description: |
+  The flat file and command tools validate every call against their schema
+  before running it. A call that leaves out a required parameter comes back
+  as `<tool_use_error>InputValidationError: read_file failed due to the
+  following issue(s): The required parameter `path` is missing`, with the
+  smallest valid call when nothing was sent. A deferred tool the model calls
+  before loading it runs when the call is valid; when it is not, the error
+  adds "This tool wasn't loaded, so its
+  definition was never sent. Call find_tools with query
+  "select:checkpoint_files", then retry this call." These replace the old
+  os tool's "Failed to parse input: missing field `action`" and its action
+  inference. This fixture asks for both mistakes on purpose, then pins the
+  recovery: find_tools loads checkpoint_files, the checkpoint lands, the
+  file is read with its path, and the answer comes from the file. The two
+  induced errors are the test, not a failure.
+induced_errors: 2  # the empty read_file and the empty, unloaded checkpoint_files
+target_component: read_file
+
+setup:
+  - "mkdir -p {{scratch}} && printf 'Memo to the team\nApproval code: AMBER-4471\nFiled by the operations lead.\n' > {{scratch}}/memo.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Two deliberate mistakes first, so I can see the errors. One: call read_file with no arguments at all. Two: call checkpoint_files with no arguments at all, without loading it first. Then fix whatever the errors tell you: get the checkpoint of {{scratch}}/memo.txt taken, read the file, and tell me the approval code it lists."
+
+tool_config:
+  read_file:
+    enabled: true
+  checkpoint_files:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: empty-read-first
+      text: "The first call is read_file with no path, as asked"
+      severity: important
+      check: { first_call: true, tool: read_file }
+  recovery:
+    - id: new-error-shapes-only
+      text: "The errors are the two induced InputValidationErrors and nothing else: no old os parse error ('Failed to parse input', 'missing field') and no third error from a repeated bad shape"
+      severity: critical
+      check: { max_errors: 2, no_error_contains: ["Failed to parse input", "missing field"] }
+    - id: loads-the-deferred-tool
+      text: "After the unloaded-tool error, the model calls find_tools with query \"select:checkpoint_files\" as the error told it to"
+      severity: critical
+      check: { tool: find_tools, arg: query, contains: "select:checkpoint_files" }
+    - id: checkpoint-lands
+      text: "The model then calls checkpoint_files with paths naming {{scratch}}/memo.txt and the checkpoint is taken"
+      severity: critical
+      check: { tool: checkpoint_files, arg: paths, contains: "memo.txt" }
+    - id: reads-with-path
+      text: "The model reads the file with read_file(path: {{scratch}}/memo.txt)"
+      severity: critical
+      check: { tool: read_file, arg: path, contains: "memo.txt" }
+    - id: answer-from-the-file
+      text: "The reply gives the approval code AMBER-4471 from the file"
+      severity: critical
+      check: { reply_matches: "AMBER-4471" }
+  cost:
+    - id: bounded
+      text: "At most 7 tool calls: the two induced errors, find_tools, checkpoint_files, read_file, and a spare"
+      severity: important
+      check: { max_tool_calls: 7 }
+
+ideal_behavior:
+  tool_calls: 5
+  total_tokens: 4000
+  narrative: |
+    read_file({}) returns "The required parameter `path` is missing";
+    checkpoint_files(paths) returns the same error shape plus "Call
+    find_tools with query "select:checkpoint_files""; find_tools loads it;
+    checkpoint_files(paths: ["{{scratch}}/memo.txt"]) succeeds;
+    read_file(path: "{{scratch}}/memo.txt"); then "The approval code is
+    AMBER-4471."
