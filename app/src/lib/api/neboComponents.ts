@@ -2700,11 +2700,11 @@ export type WSServerEventType =
 	| "chat_cancelled"
 	| "chat_message"
 	| "session_reset"
-	| "session_compact"
 	| "chat_complete"
 	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
+	| "session_compact"
 
 export interface AppActionEvent {
 	agentId: string
@@ -2729,12 +2729,6 @@ export interface ChatMessageEvent {
 	artifacts: unknown
 }
 
-export interface SessionCompactEvent {
-	session_id: string
-	success: boolean
-	error: string
-}
-
 export interface ChatCompleteEvent {
 	session_id: string
 	skipped: boolean
@@ -2753,6 +2747,11 @@ export interface ChatStreamEvent {
 export interface ChatErrorEvent {
 	error: string
 	session_id: string
+}
+
+export interface SessionCompactEvent {
+	success: boolean
+	error: string
 }
 
 /** Client → Server WebSocket message types */
