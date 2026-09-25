@@ -27,6 +27,12 @@ pub fn safe_truncate(s: &mut String, max_bytes: usize) {
     }
 }
 
+/// The names in one string of comma-separated names ("a.done, b.ready"),
+/// blanks dropped: how a workflow's `emit` events are written as one string.
+pub fn name_list(names: &str) -> Vec<String> {
+    names.split(',').map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).collect()
+}
+
 /// Borrow a prefix of `s` up to at most `max_bytes`, on a char boundary.
 pub fn safe_prefix(s: &str, max_bytes: usize) -> &str {
     &s[..floor_char_boundary(s, max_bytes)]

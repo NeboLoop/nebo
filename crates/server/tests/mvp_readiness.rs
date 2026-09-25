@@ -801,7 +801,7 @@ async fn test_events() -> TestResult {
             agent_source: "test-role".into(),
             binding_name: "email-watch".into(),
             definition_json: None,
-            emit_source: None,
+            emit_sources: Vec::new(),
             case: None,
         })
         .await;
@@ -812,7 +812,7 @@ async fn test_events() -> TestResult {
             agent_source: "test-role".into(),
             binding_name: "urgent-watch".into(),
             definition_json: None,
-            emit_source: None,
+            emit_sources: Vec::new(),
             case: None,
         })
         .await;

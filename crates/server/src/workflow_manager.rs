@@ -206,7 +206,7 @@ impl WorkflowManagerImpl {
                     "recovery",
                     run.trigger_detail.clone(),
                     &agent_id,
-                    None,
+                    Vec::new(),
                 )
                 .await
             {
@@ -453,10 +453,11 @@ impl WorkflowManagerImpl {
             &types::keyparser::agent_workflow_id(agent_id),
         );
 
-        let emit_source = binding
+        let emit_sources: Vec<String> = binding
             .emit
-            .as_ref()
-            .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name));
+            .iter()
+            .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name))
+            .collect();
 
         self.run_inline(
             def_json,
@@ -464,7 +465,7 @@ impl WorkflowManagerImpl {
             trigger_type,
             Some(binding_name.to_string()),
             agent_id,
-            emit_source,
+            emit_sources,
         )
         .await
     }
@@ -846,7 +847,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     Some(&cancel_token),
                     skill_content.as_ref(),
                     event_bus.as_ref(),
-                    None,
+                    Vec::new(),
                     None,
                     None, // standalone run — no per-employee approval policy
                     None,
@@ -1207,7 +1208,7 @@ impl WorkflowManager for WorkflowManagerImpl {
         trigger_type: &'a str,
         trigger_detail: Option<String>,
         agent_id: &'a str,
-        emit_source: Option<String>,
+        emit_sources: Vec<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
@@ -1680,7 +1681,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     Some(&cancel_token),
                     skill_content.as_ref(),
                     event_bus.as_ref(),
-                    emit_source,
+                    emit_sources,
                     Some(progress_tx),
                     checkpoint_ctx.as_ref(),
                     resume_state,

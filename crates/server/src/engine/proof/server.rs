@@ -154,7 +154,7 @@ fn the_webhook_door_routes_people_to_their_case_and_the_rest_to_a_plain_run() {
     match route_webhook(&w.s, "ic", "notify", Some("not json at all"), "", w.t).unwrap() {
         Webhook::Plain { payload, emit, def_json, .. } => {
             assert_eq!(payload, json!("not json at all"));
-            assert_eq!(emit.as_deref(), Some("posted"));
+            assert_eq!(emit, ["posted"]);
             assert!(def_json.contains("post it"));
         }
         other => panic!("a plain binding runs plain, got {other:?}"),

@@ -26,7 +26,7 @@ struct StartedRun {
     agent_id: String,
     trigger_type: String,
     trigger_detail: Option<String>,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     event_source: String,
     producer: Option<String>,
 }
@@ -96,13 +96,13 @@ impl WorkflowManager for RecordingManager {
         trigger_type: &'a str,
         trigger_detail: Option<String>,
         agent_id: &'a str,
-        emit_source: Option<String>,
+        emit_sources: Vec<String>,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         let started = StartedRun {
             agent_id: agent_id.to_string(),
             trigger_type: trigger_type.to_string(),
             trigger_detail,
-            emit_source,
+            emit_sources,
             event_source: inputs["_event_source"].as_str().unwrap_or_default().to_string(),
             producer: inputs["_event_payload"]["producer"].as_str().map(str::to_string),
         };
@@ -181,10 +181,10 @@ async fn one_seats_announcement_reaches_the_seat_waiting_for_it() {
             binding_name: "requisition-intake".into(),
             definition_json: Some(DEF.into()),
             // The consumer's own announcement, addressed by the ONE function.
-            emit_source: Some(nebo_workflow::events::emit_source_for(
+            emit_sources: vec![nebo_workflow::events::emit_source_for(
                 "Procurement Coordinator",
                 procurement_emit,
-            )),
+            )],
             case: None,
         })
         .await;
@@ -216,7 +216,7 @@ async fn one_seats_announcement_reaches_the_seat_waiting_for_it() {
     assert_eq!(run.event_source, announcement);
     assert_eq!(run.producer.as_deref(), Some("inventory-manager"), "the announcement says who spoke");
     // And what this seat will announce in turn is its package's address, once.
-    assert_eq!(run.emit_source.as_deref(), Some(procurement_emit));
+    assert_eq!(run.emit_sources, [procurement_emit]);
 }
 
 /// A registered company event is bare on both sides: a seat announces
@@ -235,7 +235,7 @@ async fn a_bare_company_event_matches_a_bare_subscription() {
             agent_source: manager_seat.clone(),
             binding_name: "close-the-loop".into(),
             definition_json: Some(DEF.into()),
-            emit_source: None,
+            emit_sources: Vec::new(),
             case: None,
         })
         .await;
@@ -269,7 +269,7 @@ async fn an_event_raised_from_chat_is_addressed_by_the_seat_that_raised_it() {
             agent_source: procurement.clone(),
             binding_name: "requisition-intake".into(),
             definition_json: Some(DEF.into()),
-            emit_source: None,
+            emit_sources: Vec::new(),
             case: None,
         })
         .await;

@@ -179,9 +179,9 @@ impl AgentWorker {
                         .unwrap_or_else(|| serde_json::json!({}));
 
                     // The event's address, built by the ONE addressing function.
-                    let event_emit_source = wf_binding
-                        .and_then(|wb| wb.emit.as_ref())
-                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
+                    let event_emit_sources: Vec<String> = wf_binding
+                        .map(|wb| wb.emit.iter().map(|emit_name| workflow::events::emit_source_for(&name, emit_name)).collect())
+                        .unwrap_or_default();
 
                     for source in binding.trigger_config.split(',') {
                         let pattern = source.trim().to_string();
@@ -194,7 +194,7 @@ impl AgentWorker {
                             agent_source: agent_id.clone(),
                             binding_name: binding.binding_name.clone(),
                             definition_json: def_json.clone(),
-                            emit_source: event_emit_source.clone(),
+                            emit_sources: event_emit_sources.clone(),
                             case: wf_binding.and_then(|wb| workflow::events::CaseRoute::from_binding(&binding.binding_name, wb)),
                         };
                         // Inline (not spawned): subscriptions must be in place
@@ -338,9 +338,9 @@ impl AgentWorker {
                         continue;
                     }
 
-                    let emit_source = wf_binding
-                        .and_then(|wb| wb.emit.as_ref())
-                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
+                    let emit_sources: Vec<String> = wf_binding
+                        .map(|wb| wb.emit.iter().map(|emit_name| workflow::events::emit_source_for(&name, emit_name)).collect())
+                        .unwrap_or_default();
 
                     // Per-account isolation: a plugin that declares a
                     // profile_dir_env (the "resource" credential model, e.g. gws)
@@ -397,7 +397,7 @@ impl AgentWorker {
                         inputs,
                         agent,
                         bname,
-                        emit_source,
+                        emit_sources,
                         mgr,
                         token,
                         auto_emit,
@@ -468,9 +468,9 @@ impl AgentWorker {
                         continue;
                     }
 
-                    let emit_source = wf_binding
-                        .and_then(|wb| wb.emit.as_ref())
-                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
+                    let emit_sources: Vec<String> = wf_binding
+                        .map(|wb| wb.emit.iter().map(|emit_name| workflow::events::emit_source_for(&name, emit_name)).collect())
+                        .unwrap_or_default();
 
                     let token = cancel.clone();
                     let mgr = workflow_manager.clone();
@@ -486,7 +486,7 @@ impl AgentWorker {
                         inputs,
                         agent,
                         bname,
-                        emit_source,
+                        emit_sources,
                         mgr,
                         token,
                         bus,
@@ -1108,7 +1108,7 @@ async fn watch_loop(
     base_inputs: serde_json::Value,
     agent_id: String,
     binding_name: String,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     workflow_manager: Arc<dyn WorkflowManager>,
     cancel: CancellationToken,
     auto_emit: Option<(String, bool)>,
@@ -1397,7 +1397,7 @@ async fn watch_loop(
                                     "watch",
                                     watch_detail,
                                     &agent_id,
-                                    emit_source.clone(),
+                                    emit_sources.clone(),
                                 ).await {
                                     Ok(run_id) => {
                                         info!(
@@ -1569,7 +1569,7 @@ async fn folder_watch_loop(
     base_inputs: serde_json::Value,
     agent_id: String,
     binding_name: String,
-    emit_source: Option<String>,
+    emit_sources: Vec<String>,
     workflow_manager: Arc<dyn WorkflowManager>,
     cancel: CancellationToken,
     event_bus: EventBus,
@@ -1744,7 +1744,7 @@ async fn folder_watch_loop(
                 });
 
                 // Emit event if configured
-                if let Some(ref source) = emit_source {
+                for source in &emit_sources {
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -1778,7 +1778,7 @@ async fn folder_watch_loop(
                         "folder",
                         detail,
                         &agent_id,
-                        emit_source.clone(),
+                        emit_sources.clone(),
                     )
                     .await
                 {
