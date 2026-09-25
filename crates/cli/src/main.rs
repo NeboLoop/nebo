@@ -154,6 +154,12 @@ enum TestCommands {
         /// Number of runs per fixture (for variance measurement)
         #[arg(long, default_value = "1")]
         runs: usize,
+        /// Number of the first run: runs are numbered first-run to
+        /// first-run + runs - 1. The gate runs a replay one run at a time on
+        /// a fresh server each (`--runs 1 --first-run 2`), and each run keeps
+        /// its own number on disk.
+        #[arg(long, default_value = "1")]
+        first_run: usize,
         /// Nebo server URL
         #[arg(long, default_value = "localhost:27895")]
         server: String,
@@ -887,6 +893,7 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
             grader: grader_model,
             no_judge,
             runs,
+            first_run,
             server,
             output,
             baseline,
@@ -899,6 +906,9 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
             let fixtures = resolve_fixtures(fixture_path.as_deref(), suite.as_deref())?;
             if fixtures.is_empty() {
                 anyhow::bail!("No fixtures specified. Use --fixture or --suite.");
+            }
+            if first_run == 0 {
+                anyhow::bail!("--first-run counts from 1");
             }
 
             let mut all_traces: Vec<trace::Trace> = Vec::new();
@@ -926,7 +936,8 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
                 }
                 println!("Running fixture: {} ({}x)", fix.id, runs);
 
-                let mut traces = match scratch::run_bound(fix, &server, model.as_deref(), &overrides, runs).await {
+                let run_numbers = first_run..=first_run + runs - 1;
+                let mut traces = match scratch::run_bound(fix, &server, model.as_deref(), &overrides, run_numbers).await {
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!("  FAILED: {}", e);
@@ -1307,10 +1318,11 @@ mod tests {
         let cli = Cli::try_parse_from(["nebo", "test", "run", "--fixture", "f.yaml"]).unwrap();
         match cli.command {
             Some(Commands::Test {
-                command: TestCommands::Run { fixture, runs, server, no_judge, json, .. },
+                command: TestCommands::Run { fixture, runs, first_run, server, no_judge, json, .. },
             }) => {
                 assert_eq!(fixture.as_deref(), Some("f.yaml"));
                 assert_eq!(runs, 1);
+                assert_eq!(first_run, 1);
                 assert_eq!(server, "localhost:27895");
                 assert!(!no_judge);
                 assert!(!json);
