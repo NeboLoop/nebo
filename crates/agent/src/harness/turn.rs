@@ -283,7 +283,10 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
     Ok(TurnHandle { events: rx, turn_id })
 }
 
-/// Whether the owner wrote this turn's input in their own chat.
+/// Whether the owner wrote this turn's input in their own chat: an owner
+/// chat turn from the owner's app, not a chat channel (Slack, Discord, a
+/// loop), a coworker, a visitor or a caller. Only such input is stored as
+/// the owner's word (a consent reads nothing else).
 fn owner_speaks(req: &TurnRequest) -> bool {
     matches!(req.mode, TurnMode::Chat)
         && matches!(req.input, TurnInput::Owner { .. })
@@ -310,9 +313,28 @@ fn resume_goal(h: &Harness, session_id: &str) {
 fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
     let written = match &req.input {
         TurnInput::Owner { text, .. } => {
-            let via = if req.delivery.channel.is_empty() { "chat" } else { &req.delivery.channel };
-            let meta = MidTurnFrom::Owner { via: via.to_string() }.metadata();
-            h.sessions.append_message(session_id, "user", text, None, None, Some(&meta)).map(|_| ())
+            let via = if req.delivery.channel.is_empty() {
+                "chat"
+            } else {
+                &req.delivery.channel
+            };
+            let mut meta = MidTurnFrom::Owner {
+                via: via.to_string(),
+            }
+            .value();
+            if owner_speaks(req) {
+                conversation::mark_owner(&mut meta);
+            }
+            h.sessions
+                .append_message(
+                    session_id,
+                    "user",
+                    text,
+                    None,
+                    None,
+                    Some(&meta.to_string()),
+                )
+                .map(|_| ())
         }
         TurnInput::Platform { text } => h
             .sessions
@@ -671,7 +693,13 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
         &h.selector,
         &req.seat.agent_id,
         session_id,
-        InputRow { text, images, attachments, hidden },
+        InputRow {
+            text,
+            images,
+            attachments,
+            hidden,
+            by_owner: !hidden && owner_speaks(req),
+        },
     )
     .await
 }
@@ -1995,6 +2023,111 @@ mod tests {
         assert_eq!(calls.len(), 2, "heard inside the same turn");
         assert!(!texts(&calls[0]).iter().any(|t| t.contains("Also check the calendar")));
         assert!(texts(&calls[1]).iter().any(|t| t.contains("Also check the calendar")), "heard at the next step");
+    }
+
+    /// A message from someone who isn't the owner, as its door sends it.
+    fn from_elsewhere(
+        text: &str,
+        origin: tools::Origin,
+        door: types::permissions::Door,
+        channel: &str,
+    ) -> TurnRequest {
+        let mut req = owner(text);
+        req.seat.origin = origin;
+        req.seat.door = door;
+        req.delivery.channel = channel.into();
+        req
+    }
+
+    /// The owner's messages in the session's conversation, as a consent
+    /// reads them.
+    fn owner_words(h: &Harness) -> usize {
+        let sid = h.sessions.resolve_session_id_by_key(KEY).expect("session");
+        h.store
+            .owner_messages_after(&h.sessions.active_chat_id(&sid), 0)
+            .expect("rows")
+    }
+
+    /// A consent is the owner's own word: only input the owner typed in
+    /// their own app is stored as the owner's. A coworker's "yes", a Slack,
+    /// Discord or loop message, a visitor's, stored through the same one
+    /// path at a turn's start, never count.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_the_owners_own_input_is_stored_as_the_owners() {
+        use tools::Origin;
+        use types::permissions::Door;
+        let not_the_owner = [
+            from_elsewhere(
+                "yes",
+                Origin::Comm,
+                Door::Coworker { from: "ops".into() },
+                "coworker",
+            ),
+            from_elsewhere("yes", Origin::Comm, Door::Chat, "slack"),
+            from_elsewhere("yes", Origin::Comm, Door::Chat, "discord"),
+            from_elsewhere("yes", Origin::Comm, Door::Chat, "loop"),
+            from_elsewhere("yes", Origin::Visitor, Door::Chat, "web"),
+        ];
+        for req in not_the_owner {
+            let channel = req.delivery.channel.clone();
+            let model = Scripted::new(vec![Step::Say("Noted.")]);
+            let h = harness(&model).await;
+            run_turn(&h, req).await;
+            assert!(
+                stored(&h)
+                    .iter()
+                    .any(|m| m.role == "user" && m.content == "yes"),
+                "{channel}: stored"
+            );
+            assert_eq!(
+                owner_words(&h),
+                0,
+                "{channel}: a message that isn't the owner's is never the owner's word"
+            );
+        }
+        let model = Scripted::new(vec![Step::Say("Creating it.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("yes")).await;
+        assert_eq!(owner_words(&h), 1, "the owner's own message is");
+    }
+
+    /// The same holds for a message queued into a running turn: the owner's
+    /// counts, a channel's arriving at the same moment doesn't.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_queued_message_is_the_owners_only_when_the_owner_sent_it() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let h2 = h.clone();
+        let hook: Hook = Box::pin(async move {
+            let slack = from_elsewhere(
+                "yes from slack",
+                tools::Origin::Comm,
+                types::permissions::Door::Chat,
+                "slack",
+            );
+            let mut queued = h2.start_turn(slack).await.expect("queued");
+            while queued.events.recv().await.is_some() {}
+            let mut queued = h2
+                .start_turn(owner("yes from the owner"))
+                .await
+                .expect("queued");
+            while queued.events.recv().await.is_some() {}
+        });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook),
+            Step::Say("Done."),
+        ]);
+        run_turn(&h, owner("Echo something")).await;
+        let rows = stored(&h);
+        assert!(
+            rows.iter().any(|m| m.content == "yes from slack"),
+            "the channel's message was queued"
+        );
+        assert_eq!(
+            owner_words(&h),
+            2,
+            "the turn's own input and the owner's queued message; not the channel's"
+        );
     }
 
     /// Input that lands during the last step was in no call: the next turn

@@ -13,7 +13,7 @@ pub use pool::create_pool;
 pub use queries::agent_slug;
 pub use queries::{Assignment, NewAssignment};
 pub use queries::cron_ref;
-pub use queries::{EmployeeCeilingRow, EmployeeDraftRow};
+pub use queries::{EmployeeCeilingRow, EmployeeDraftRow, OWNER_MARK};
 pub use queries::{PermissionActivityFilter, PermissionActivityRow, PermissionAskRow, PermissionSpend};
 pub use queries::{
     AgentChanges, EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,

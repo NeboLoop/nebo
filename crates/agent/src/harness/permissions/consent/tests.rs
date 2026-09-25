@@ -321,11 +321,29 @@ impl Chat {
         t.execute_dyn(&self.ctx, input).await
     }
 
-    /// The owner says something in the chat, after the line was shown.
+    /// The owner says something in the chat, after the line was shown: the
+    /// row the harness stores for the owner's own input.
     fn owner_says(&self, text: &str) {
+        self.says(
+            text,
+            Some(&serde_json::json!({ db::OWNER_MARK: true }).to_string()),
+        );
+    }
+
+    /// A message lands in the chat after the line was shown, stored with
+    /// `metadata` as its door stores it.
+    fn says(&self, text: &str, metadata: Option<&str>) {
         let later = chrono::Utc::now().timestamp() + 5;
         self.store
-            .create_chat_message_imported(&uuid::Uuid::new_v4().to_string(), "chat-s1", "user", text, None, None, later)
+            .create_chat_message_imported(
+                &uuid::Uuid::new_v4().to_string(),
+                "chat-s1",
+                "user",
+                text,
+                None,
+                metadata,
+                later,
+            )
             .unwrap();
     }
 
@@ -378,6 +396,56 @@ async fn chat_create_grants_only_after_an_owner_message() {
     let sources: Vec<RuleSource> =
         c.store.permission_rules_in(&Scope::Employee(id)).unwrap().into_iter().map(|r| r.source).collect();
     assert!(sources.iter().all(|s| matches!(s, RuleSource::Created { .. })), "{sources:?}");
+}
+
+/// Another employee's "yes", or one from Slack, Discord or a loop, is not
+/// the owner's consent: the create stays the assistant's own, capped at what
+/// it holds, with the rest on one card for the owner.
+#[tokio::test]
+async fn a_yes_from_anyone_but_the_owner_is_no_consent() {
+    let c = chat(vec!["mail", "calendar"]);
+    let drafted = c
+        .call("create_employee", json!({ "name": "invoice-chaser", "description": "Reads the inbox and books follow-ups." }))
+        .await;
+    // Each as its door stores it: a coworker's or a channel's message that
+    // starts a turn (no mark), and one queued into a running turn.
+    c.says("yes", None);
+    c.says(
+        "yes, create it",
+        Some(r#"{"arrivedMidTurn":true,"via":"slack"}"#),
+    );
+    c.says("yes", Some(r#"{"arrivedMidTurn":true,"via":"discord"}"#));
+    c.says(
+        "yes",
+        Some(r#"{"arrivedMidTurn":true,"from":"coworker","coworker":"Ops"}"#),
+    );
+    c.says("yes", Some(r#"{"arrivedMidTurn":true,"via":"loop"}"#));
+    let created = c
+        .call(
+            "create_employee",
+            json!({ "draft_id": Chat::draft_of(&drafted) }),
+        )
+        .await;
+    assert!(!created.is_error, "{}", created.content);
+    let id = c.agent_id("Invoice Chaser");
+    assert_eq!(
+        employee_caps(&c.store, &id),
+        vec!["mail"],
+        "only what the creator holds"
+    );
+    assert!(
+        resolve_grant(&c.store, &id, None).ceiling.is_some(),
+        "it works under its creator"
+    );
+    assert!(
+        created.content.contains("Waiting on one card"),
+        "{}",
+        created.content
+    );
+    assert!(
+        c.store.employee_ceiling(&id).unwrap().is_some(),
+        "the extras wait on the owner"
+    );
 }
 
 #[tokio::test]

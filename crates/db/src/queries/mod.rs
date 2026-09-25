@@ -44,7 +44,7 @@ mod teams;
 pub use agents::agent_slug;
 pub use assignments::{Assignment, NewAssignment};
 pub use cron_jobs::cron_ref;
-pub use employee_drafts::{EmployeeCeilingRow, EmployeeDraftRow};
+pub use employee_drafts::{EmployeeCeilingRow, EmployeeDraftRow, OWNER_MARK};
 pub use engine::{
     AgentChanges, EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,
