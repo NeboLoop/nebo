@@ -94,9 +94,42 @@ pub struct PermissionAskRow {
     pub target: String,
     pub call: String,
     pub seat: String,
+    /// open | answered | expired
     pub status: String,
+    /// allow_always | this_once | no (an expired ask is a no).
+    pub answer: Option<String>,
+    /// chat | inbox | mobile
+    pub answered_via: Option<String>,
     pub created_at: i64,
     pub expires_at: i64,
+    pub answered_at: Option<i64>,
+    /// The workflow run parked on this ask, when one is.
+    pub run_id: Option<String>,
+}
+
+const ASK_COLUMNS: &str = "id, agent_id, session_key, chat_id, door, ask_case, sentence, target, call, seat,
+     status, answer, answered_via, created_at, expires_at, answered_at, run_id";
+
+fn row_to_ask(row: &rusqlite::Row<'_>) -> rusqlite::Result<PermissionAskRow> {
+    Ok(PermissionAskRow {
+        id: row.get(0)?,
+        agent_id: row.get(1)?,
+        session_key: row.get(2)?,
+        chat_id: row.get(3)?,
+        door: row.get(4)?,
+        ask_case: row.get(5)?,
+        sentence: row.get(6)?,
+        target: row.get(7)?,
+        call: row.get(8)?,
+        seat: row.get(9)?,
+        status: row.get(10)?,
+        answer: row.get(11)?,
+        answered_via: row.get(12)?,
+        created_at: row.get(13)?,
+        expires_at: row.get(14)?,
+        answered_at: row.get(15)?,
+        run_id: row.get(16)?,
+    })
 }
 
 /// Today's spend against one key.
@@ -381,31 +414,78 @@ impl Store {
 
     pub fn get_permission_ask(&self, id: &str) -> Result<Option<PermissionAskRow>, NeboError> {
         let conn = self.conn()?;
-        conn.query_row(
-            "SELECT id, agent_id, session_key, chat_id, door, ask_case, sentence, target, call, seat,
-                    status, created_at, expires_at
-             FROM permission_asks WHERE id = ?1",
-            params![id],
-            |row| {
-                Ok(PermissionAskRow {
-                    id: row.get(0)?,
-                    agent_id: row.get(1)?,
-                    session_key: row.get(2)?,
-                    chat_id: row.get(3)?,
-                    door: row.get(4)?,
-                    ask_case: row.get(5)?,
-                    sentence: row.get(6)?,
-                    target: row.get(7)?,
-                    call: row.get(8)?,
-                    seat: row.get(9)?,
-                    status: row.get(10)?,
-                    created_at: row.get(11)?,
-                    expires_at: row.get(12)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(db_err)
+        conn.query_row(&format!("SELECT {ASK_COLUMNS} FROM permission_asks WHERE id = ?1"), params![id], row_to_ask)
+            .optional()
+            .map_err(db_err)
+    }
+
+    /// Settle an open ask: the first answer wins. `status` is `answered`
+    /// or `expired`. False when the ask was already settled (or never was).
+    pub fn settle_permission_ask(
+        &self,
+        id: &str,
+        status: &str,
+        answer: &str,
+        via: Option<&str>,
+        at: i64,
+    ) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let n = conn
+            .execute(
+                "UPDATE permission_asks SET status = ?2, answer = ?3, answered_via = ?4, answered_at = ?5
+                 WHERE id = ?1 AND status = 'open'",
+                params![id, status, answer, via, at],
+            )
+            .map_err(db_err)?;
+        Ok(n == 1)
+    }
+
+    /// Key an ask to the workflow run that parked on it.
+    pub fn link_permission_ask_run(&self, id: &str, run_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE permission_asks SET run_id = ?2 WHERE id = ?1", params![id, run_id]).map_err(db_err)?;
+        Ok(())
+    }
+
+    /// The asks still waiting on the owner, oldest first; `session_key`
+    /// narrows them to one session.
+    pub fn open_permission_asks(&self, session_key: Option<&str>) -> Result<Vec<PermissionAskRow>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {ASK_COLUMNS} FROM permission_asks
+                 WHERE status = 'open' AND (?1 IS NULL OR session_key = ?1)
+                 ORDER BY created_at, id"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt.query_map(params![session_key], row_to_ask).map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    }
+
+    /// Open asks whose time is up at `now`.
+    pub fn due_permission_asks(&self, now: i64) -> Result<Vec<PermissionAskRow>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {ASK_COLUMNS} FROM permission_asks
+                 WHERE status = 'open' AND expires_at <= ?1 ORDER BY expires_at, id"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt.query_map(params![now], row_to_ask).map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    }
+
+    /// The asks of one session the owner said no to, or that expired.
+    pub fn declined_permission_asks(&self, session_key: &str) -> Result<Vec<PermissionAskRow>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {ASK_COLUMNS} FROM permission_asks
+                 WHERE session_key = ?1 AND status != 'open' AND answer = 'no'"
+            ))
+            .map_err(db_err)?;
+        let rows = stmt.query_map(params![session_key], row_to_ask).map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
     }
 
     /// Today's spend for an employee on one key: the key's own totals and,
