@@ -218,7 +218,7 @@ pub trait GoalObserver: Send + Sync {
     /// the turn that is running.
     fn kickoff(&self, goal: &AgreedGoal, prompt: String);
     /// The helpers and background work the session `session_id` has running.
-    fn background(&self, session_id: &str) -> Vec<String>;
+    fn background(&self, session_id: &str) -> Vec<super::compact::restore::RunningWork>;
 }
 
 /// One session's goal over the `session_goals` table. Storage only: the
@@ -567,14 +567,19 @@ impl CheckIns {
     }
 }
 
-fn check_in_prompt(condition: &str, waited: Duration, running: &[String], last: bool) -> String {
+fn check_in_prompt(
+    condition: &str,
+    waited: Duration,
+    running: &[super::compact::restore::RunningWork],
+    last: bool,
+) -> String {
     let minutes = (waited.as_secs() / 60).max(1);
     let mut text = if running.is_empty() {
         format!(
             "The agreed goal is still active: {condition}. Its check waited {minutes} min for background work, which is no longer running (it finished or stopped without reporting back). Continue toward the goal."
         )
     } else {
-        let list: Vec<String> = running.iter().map(|r| format!("- {r}")).collect();
+        let list: Vec<String> = running.iter().map(|r| format!("- {}", r.line())).collect();
         format!(
             "The agreed goal is still active: {condition}. Its check has waited {minutes} min because background work is still running:\n{}\nCheck on its progress. If it is progressing, say so briefly and keep waiting; if it is stuck or no longer needed, fix or stop it and continue toward the goal.",
             list.join("\n")
@@ -940,7 +945,7 @@ mod tests {
     struct Seen {
         statuses: Mutex<Vec<AgreedGoal>>,
         kickoffs: Mutex<Vec<String>>,
-        running: Mutex<Vec<String>>,
+        running: Mutex<Vec<super::super::compact::restore::RunningWork>>,
     }
 
     impl GoalObserver for Seen {
@@ -950,7 +955,7 @@ mod tests {
         fn kickoff(&self, _goal: &AgreedGoal, prompt: String) {
             self.kickoffs.lock().unwrap().push(prompt);
         }
-        fn background(&self, _session_id: &str) -> Vec<String> {
+        fn background(&self, _session_id: &str) -> Vec<super::super::compact::restore::RunningWork> {
             self.running.lock().unwrap().clone()
         }
     }
@@ -1278,7 +1283,7 @@ mod tests {
         seen.running
             .lock()
             .unwrap()
-            .push("h1 · read the filings".into());
+            .push(super::super::compact::restore::RunningWork::helper("h1", "read the filings"));
 
         assert!(matches!(check.check(&end(&[], 0)).await, EndVerdict::Stop));
         assert!(matches!(check.check(&end(&[], 0)).await, EndVerdict::Stop));
@@ -1294,7 +1299,7 @@ mod tests {
         let kickoffs = seen.kickoffs.lock().unwrap().clone();
         assert_eq!(kickoffs.len(), 1);
         assert!(
-            kickoffs[0].contains("still running:\n- h1 · read the filings"),
+            kickoffs[0].contains("still running:\n- helper h1 \"read the filings\""),
             "{}",
             kickoffs[0]
         );
@@ -1332,7 +1337,7 @@ mod tests {
         let (sessions, id) = session();
         set(&sessions, &id, "the research is written up");
         let (check, seen) = goal_check(&sessions, &id, &Judge::new(vec![]));
-        seen.running.lock().unwrap().push("h1".into());
+        seen.running.lock().unwrap().push(super::super::compact::restore::RunningWork::helper("h1", "check"));
         check.check(&end(&[], 0)).await;
         GoalStore::new(&sessions, &id).clear().unwrap();
         tokio::time::sleep(CHECK_IN_AFTER * 2).await;

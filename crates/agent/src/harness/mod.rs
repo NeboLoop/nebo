@@ -306,6 +306,12 @@ pub enum TurnInput {
     Notification(delegation::Completion),
     /// A workflow seed or a resume: the conversation already holds the input.
     None,
+    /// The owner's `/compact`: the turn checkpoints its first step the way
+    /// the turn's own checkpoint does (same request, hooks and restore),
+    /// with the owner's instructions for the summary, and ends. It waits for
+    /// a running turn to finish instead of joining it (Claude Code queues
+    /// `/compact` behind the running query).
+    Compact { instructions: String },
 }
 
 /// Which kind of turn this is.

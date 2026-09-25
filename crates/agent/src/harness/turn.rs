@@ -224,6 +224,8 @@ pub enum TurnExit {
     Refused(String),
     AwaitingApproval,
     PlanProposed,
+    /// The owner's `/compact` wrote its checkpoint.
+    Compacted,
     GoalMet {
         reason: String,
     },
@@ -250,6 +252,7 @@ impl TurnExit {
             TurnExit::Refused(_) => "refused".into(),
             TurnExit::AwaitingApproval => "awaiting_approval".into(),
             TurnExit::PlanProposed => "plan_proposed".into(),
+            TurnExit::Compacted => "compacted".into(),
             TurnExit::GoalMet { .. } => "goal_met".into(),
             TurnExit::GoalImpossible { .. } => "goal_impossible".into(),
             TurnExit::GoalPaused(_) => "goal_paused".into(),
@@ -288,10 +291,15 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
         resume_goal(&h, &session.id);
     }
 
-    let queue = || queue_input(&h, &session.id, &req);
-    let admission =
-        session_gate::admit_or_queue(&h.active_turns, &req.session_key, progress.clone(), req.cancel.clone(), queue)
-            .await;
+    let admission = if matches!(req.input, TurnInput::Compact { .. }) {
+        match session_gate::admit_when_free(&h.active_turns, &req.session_key, progress.clone(), req.cancel.clone()).await {
+            Some(guard) => Admission::Admitted(guard),
+            None => return Err(HarnessError::Failed("The compact was stopped before it started.".into())),
+        }
+    } else {
+        let queue = || queue_input(&h, &session.id, &req);
+        session_gate::admit_or_queue(&h.active_turns, &req.session_key, progress.clone(), req.cancel.clone(), queue).await
+    };
     let (tx, rx) = mpsc::channel(100);
     match admission {
         Admission::Queued { status } => {
@@ -328,7 +336,7 @@ fn owner_speaks(req: &TurnRequest) -> bool {
 /// wrote (an introduction). Only these turns get a recap.
 fn owner_in_turn(req: &TurnRequest) -> bool {
     matches!(req.mode, TurnMode::Chat)
-        && !matches!(req.input, TurnInput::Platform { .. })
+        && !matches!(req.input, TurnInput::Platform { .. } | TurnInput::Compact { .. })
         && req.seat.origin == tools::Origin::User
         && req.seat.audience.is_none()
 }
@@ -401,7 +409,7 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
                 Some(&super::delegation::notify::row_metadata(&c.taint)),
             )
             .map(|_| ()),
-        TurnInput::None => Ok(()),
+        TurnInput::None | TurnInput::Compact { .. } => Ok(()),
     };
     if let Err(e) = written {
         warn!(session_id, error = %e, "could not queue input into the running turn");
@@ -668,7 +676,9 @@ pub(crate) async fn prepare(
         TurnMode::Fork(_) => (crate::review_fork::REVIEW_MAX_ITERATIONS as u32, 0),
         _ => (DEFAULT_MAX_STEPS, 0),
     };
-    let after_turn = matches!(req.mode, TurnMode::Chat) && !seat.memory.writes_disabled;
+    let after_turn = matches!(req.mode, TurnMode::Chat)
+        && !matches!(req.input, TurnInput::Compact { .. })
+        && !seat.memory.writes_disabled;
     let taint = Mutex::new(req.seat.seed_taint.iter().copied().collect());
 
     let mut st = TurnState {
@@ -773,7 +783,7 @@ async fn store_input(h: &Harness, session_id: &str, req: &TurnRequest) -> Result
                     .map(|_| ())
                     .map_err(|e| format!("failed to store the notification: {e}"));
             }
-            TurnInput::None => return Ok(()),
+            TurnInput::None | TurnInput::Compact { .. } => return Ok(()),
         };
     if text.is_empty() {
         return Ok(());
@@ -908,12 +918,24 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let request_tokens =
             st.usage.last_request_estimate + st.usage.system_overhead_tokens + st.usage.estimate_correction;
         let max_output = usize::try_from(request.max_tokens).unwrap_or_default();
+        // The owner's `/compact`: this step's request is what the summary
+        // forks, and the turn ends with the checkpoint.
+        if let TurnInput::Compact { instructions } = &cx.request.input {
+            let why = compact::checkpoint::CheckpointReason::OwnerAsked;
+            return match checkpoint(cx, st, &window, &request, why, Some(instructions)).await {
+                Ok(()) => TurnExit::Compacted,
+                Err(e) => {
+                    let _ = cx.tx.send(StreamEvent::error(format!("The conversation could not be compacted: {e}"))).await;
+                    TurnExit::ProviderFailed(e)
+                }
+            };
+        }
         if st.trigger.due(request_tokens, context_window, max_output) {
             if clear_old_results(cx, st, &conversation).await {
                 st.step -= 1;
                 continue;
             }
-            match checkpoint(cx, st, &window, &request, compact::checkpoint::CheckpointReason::Threshold).await {
+            match checkpoint(cx, st, &window, &request, compact::checkpoint::CheckpointReason::Threshold, None).await {
                 Ok(()) => continue,
                 Err(e) => warn!(session_id = sid, error = %e, "checkpoint failed; sending the conversation as it is"),
             }
@@ -1036,7 +1058,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 } else if st.trigger.tripped() {
                     Err("the checkpoint breaker has tripped".to_string())
                 } else {
-                    checkpoint(cx, st, &window, &fork_of, compact::checkpoint::CheckpointReason::Overflow)
+                    checkpoint(cx, st, &window, &fork_of, compact::checkpoint::CheckpointReason::Overflow, None)
                         .await
                         .map(|()| Transition::OverflowCheckpointed)
                 };
@@ -1449,6 +1471,7 @@ async fn checkpoint(
     conversation: &[ChatMessage],
     fork_of: &ChatRequest,
     why: compact::checkpoint::CheckpointReason,
+    instructions: Option<&str>,
 ) -> Result<(), String> {
     let h = &cx.harness;
     let provider = match &st.last_call {
@@ -1471,6 +1494,7 @@ async fn checkpoint(
             embedding: h.embedding_provider.clone(),
             barred: taint.iter().any(|c| cx.seat.write_bar.contains(c)),
             taint,
+            window_tokens: h.selector.context_window(&st.model),
         }));
         if let Some(embedding) = h.embedding_provider.clone() {
             hooks.push(Box::new(compact::checkpoint::TranscriptIndex {
@@ -1481,6 +1505,7 @@ async fn checkpoint(
         }
     }
     let goal = goal::GoalStore::new(&h.sessions, &cx.session_id).active().ok().flatten();
+    let running = running_work(cx).await;
     let outcome = compact::checkpoint::checkpoint(
         &compact::checkpoint::CheckpointContext {
             sessions: &h.sessions,
@@ -1491,9 +1516,10 @@ async fn checkpoint(
             hooks: &hooks,
             restore: compact::restore::RestoreState {
                 goal: goal.as_ref(),
-                running: &[],
+                running: &running,
                 plan_mode: cx.plan_mode(),
             },
+            instructions,
         },
         why,
     )
@@ -1503,6 +1529,22 @@ async fn checkpoint(
     st.checkpoints += 1;
     st.seen.clear();
     Ok(())
+}
+
+/// The work this session started that is still running, told again after a
+/// checkpoint (Claude Code's post-compact `task_status` rows): its helpers
+/// and its background commands.
+async fn running_work(cx: &TurnContext) -> Vec<compact::restore::RunningWork> {
+    let h = &cx.harness;
+    let mut running = h.goal_observer().map(|o| o.background(&cx.session_id)).unwrap_or_default();
+    for (session, caller) in h.tools.process_registry().running_for(&cx.request.session_key).await {
+        running.push(compact::restore::RunningWork {
+            id: session.id.clone(),
+            description: caller.description,
+            kind: compact::restore::WorkKind::Command { command: session.command.clone() },
+        });
+    }
+    running
 }
 
 /// The app hook that may rewrite the reply before it is stored.
@@ -1747,6 +1789,7 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         providers: &h.providers,
         store: &h.store,
         concurrency: &h.concurrency,
+        selector: &h.selector,
         embedding_provider: h.embedding_provider.as_ref(),
         tools: &h.tools,
         memory_user_id: &cx.seat.memory.user_id,
@@ -3081,6 +3124,93 @@ mod tests {
         assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
     }
 
+    /// D10 (parity 6.4): the owner's `/compact` is the turn's own
+    /// checkpoint, not a weaker second path: the summary forks the step's
+    /// request (the one system prompt and the tool list), carries the
+    /// owner's instructions (Claude Code's "Additional Instructions"), and
+    /// the turn ends without a model turn. Sent while a turn runs, it waits
+    /// for that turn instead of joining it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_owners_compact_is_the_turns_checkpoint_and_waits_for_a_running_turn() {
+        let model = Scripted::new(vec![Step::Slow(Box::new(Step::Say("First answer.")), std::time::Duration::from_millis(400))]);
+        let h = harness(&model).await;
+        let mut first = h.start_turn(owner("Start the report")).await.unwrap();
+        for _ in 0..100 {
+            if h.is_session_busy(KEY) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let mut compact = owner("");
+        compact.input = TurnInput::Compact { instructions: "Keep the Rivera numbers exact.".into() };
+        let events = run_turn(&h, compact).await;
+        while first.events.recv().await.is_some() {}
+        assert_eq!(exit_of(&events), "compacted");
+        assert_eq!(model.calls().len(), 1, "the compact made no model turn of its own");
+        let rows = stored(&h);
+        let reply = rows.iter().position(|m| m.content == "First answer.").expect("the running turn's reply");
+        let boundary = rows
+            .iter()
+            .position(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD))
+            .expect("a checkpoint was written");
+        assert!(boundary > reply, "it waited for the running turn");
+        assert!(rows[boundary].metadata.as_deref().unwrap_or("").contains("owner_asked"));
+        let summary = model.side_call("checkpoint").await.expect("the summary call");
+        assert_eq!(summary.system, crate::harness::prompt::system_prompt(), "it forks the step's request");
+        assert!(!summary.tools.is_empty(), "with the step's tools");
+        assert!(
+            summary.messages.last().unwrap().content.ends_with("Additional instructions from the owner:\nKeep the Rivera numbers exact."),
+            "{}",
+            summary.messages.last().unwrap().content
+        );
+    }
+
+    /// The session's running helpers, as the server lists them.
+    struct Running(Vec<compact::restore::RunningWork>);
+
+    impl goal::GoalObserver for Running {
+        fn status(&self, _goal: &goal::AgreedGoal) {}
+        fn kickoff(&self, _goal: &goal::AgreedGoal, _prompt: String) {}
+        fn background(&self, _session_id: &str) -> Vec<compact::restore::RunningWork> {
+            self.0.clone()
+        }
+    }
+
+    /// D10 (parity 6.3): after a checkpoint the model is told the work the
+    /// session started that is still running (Claude Code's post-compact
+    /// task_status rows): its helper and its background command, not
+    /// another session's command.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_checkpoint_tells_the_work_still_running() {
+        let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Carried on.")]);
+        let h = harness(&model).await;
+        h.bind(crate::harness::Outlets {
+            goal_observer: Some(Arc::new(Running(vec![compact::restore::RunningWork::helper("h-7", "price the Rivera order")]))),
+            ..Default::default()
+        });
+        let spawn = |key: &str, what: &str| {
+            let mut cmd = tokio::process::Command::new("sleep");
+            cmd.arg("30");
+            let caller = tools::process::Caller { session_key: key.into(), description: what.into() };
+            h.tools.process_registry().spawn(cmd, "sleep 30", tools::process::Spawn::Background(Some(caller)))
+        };
+        let ours = spawn(KEY, "wait for the build").await.unwrap().session.id.clone();
+        let theirs = spawn("agent:other:web", "someone else's").await.unwrap().session.id.clone();
+        run_turn(&h, owner("Start the report")).await;
+        run_turn(&h, owner("Keep going")).await;
+        let running: Vec<String> = stored(&h)
+            .iter()
+            .filter(|m| reminders::attachment_kind(m).as_deref() == Some("running_work"))
+            .map(|m| m.content.clone())
+            .collect();
+        for id in [&ours, &theirs] {
+            let _ = h.tools.process_registry().kill_session(id).await;
+        }
+        assert_eq!(running.len(), 2, "{running:?}");
+        assert!(running[0].contains("Background helper \"price the Rivera order\" (h-7) is still running"), "{}", running[0]);
+        assert!(running[1].contains(&format!("Background command {ours} (\"wait for the build\") is still running (command: `sleep 30`)")), "{}", running[1]);
+    }
+
     /// A tool result that carries untrusted content (a helper's report of
     /// what it read).
     struct Relay;
@@ -3212,29 +3342,33 @@ mod tests {
         assert_eq!(model.calls().len(), 2, "the helper's call is made once the owner's is served");
     }
 
-    /// B12: the memory flush before a checkpoint is housekeeping: it waits
-    /// for a background permit, never the pool the owner's turns use.
+    /// B12, B15: the memory flush before a checkpoint is housekeeping: it
+    /// waits for a background permit, never the pool the owner's turns use,
+    /// and the turn never waits for it (Claude Code extracts memory in a
+    /// background fork). It reads the conversation the checkpoint
+    /// summarized.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_checkpoint_memory_flush_waits_for_a_background_permit() {
+    async fn the_checkpoint_memory_flush_runs_in_the_background_on_a_background_permit() {
         let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Carried on.")]);
         let h = harness(&model).await;
         h.concurrency.set_ceiling(4);
         assert_eq!(h.concurrency.background_permits(), 1);
         run_turn(&h, owner("The Zanzibar invoice is due on the ninth.")).await;
         let held = h.concurrency.acquire_background_permit().await;
-        let turn = tokio::spawn({
-            let h = h.clone();
-            async move { run_turn(&h, owner("Keep going")).await }
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let events = tokio::time::timeout(std::time::Duration::from_secs(10), run_turn(&h, owner("Keep going")))
+            .await
+            .expect("the turn never waits on the flush");
+        assert_eq!(exit_of(&events), "text_response");
         assert!(
             !model.side.lock().unwrap().iter().any(|r| r.trace.purpose == "memory_flush"),
             "no flush while housekeeping's only permit is taken"
         );
         drop(held);
-        let events = tokio::time::timeout(std::time::Duration::from_secs(10), turn).await.expect("the turn goes on").unwrap();
-        assert_eq!(exit_of(&events), "text_response");
-        assert!(model.side_call("memory_flush").await.is_some(), "the flush ran once a background permit was free");
+        let flush = model.side_call("memory_flush").await.expect("the flush ran once a background permit was free");
+        assert!(
+            flush.messages[0].content.contains("The Zanzibar invoice is due on the ninth."),
+            "it read the conversation before the boundary"
+        );
     }
 
     /// The same vector for every text: a search through it finds whatever
@@ -3372,7 +3506,7 @@ mod tests {
             self.0.lock().unwrap().push(goal.status.as_str().to_string());
         }
         fn kickoff(&self, _goal: &goal::AgreedGoal, _prompt: String) {}
-        fn background(&self, _session_id: &str) -> Vec<String> {
+        fn background(&self, _session_id: &str) -> Vec<compact::restore::RunningWork> {
             Vec::new()
         }
     }

@@ -111,7 +111,7 @@ impl GoalObserver for GoalOutlet {
         });
     }
 
-    fn background(&self, session_id: &str) -> Vec<String> {
+    fn background(&self, session_id: &str) -> Vec<agent::harness::compact::restore::RunningWork> {
         let Some(key) = self.key_of(session_id) else {
             return Vec::new();
         };
@@ -120,7 +120,7 @@ impl GoalObserver for GoalOutlet {
             .list(&key)
             .into_iter()
             .filter(|h| h.running)
-            .map(|h| format!("helper {} \"{}\"", h.task_id, h.description))
+            .map(|h| agent::harness::compact::restore::RunningWork::helper(h.task_id, h.description))
             .collect()
     }
 }

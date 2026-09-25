@@ -67,30 +67,6 @@ pub async fn drain_extractions() {
     }
 }
 
-/// Pending flush context stashed when an extraction is already in progress.
-struct PendingFlush {
-    session_id: String,
-    user_id: String,
-    topics: Vec<napp::agent::MemoryTopic>,
-    provenance: Vec<types::provenance::ProvenanceClass>,
-    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
-}
-
-/// Overlap guard: prevents concurrent memory extractions.
-/// If a flush is already running, the new context is stashed as pending.
-/// When the in-progress flush finishes, it checks for and runs the pending one.
-static FLUSH_LOCK: std::sync::OnceLock<Mutex<Option<PendingFlush>>> = std::sync::OnceLock::new();
-
-fn flush_state() -> &'static Mutex<Option<PendingFlush>> {
-    FLUSH_LOCK.get_or_init(|| Mutex::new(None))
-}
-
-/// In-progress flag — separate from the pending-context mutex so we can
-/// check "is running?" without holding the pending-context lock during
-/// the (potentially long) extraction.
-static FLUSH_IN_PROGRESS: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 /// Check whether a pre-compaction memory flush should run.
 /// Returns true if the session has had new compactions and the message
 /// window is large enough to warrant extraction from all messages.
@@ -125,139 +101,125 @@ pub fn should_run_memory_flush(
     estimated_tokens >= threshold
 }
 
-/// Run memory extraction from ALL messages in the session (not just the last 6).
-/// This captures any facts that might have been lost during compaction.
-///
-/// Overlap guard: if an extraction is already in progress, the context is
-/// stashed as pending and will be run when the current extraction finishes.
-pub async fn run_memory_flush(
-    provider: &dyn Provider,
-    store: &Arc<Store>,
-    session_id: &str,
-    user_id: &str,
-    topics: &[napp::agent::MemoryTopic],
+/// The pre-checkpoint memory flush, for session `session_id` only: the
+/// conversation the checkpoint is about to summarise (the session's active
+/// chat from its last boundary on) is read now, before the boundary is
+/// written, and its facts are extracted in the background, so the turn never
+/// waits on it (Claude Code runs memory extraction as a background fork).
+/// Tracked for shutdown like every background extraction.
+pub async fn spawn_memory_flush(
+    provider: Arc<dyn Provider>,
+    store: Arc<Store>,
+    session_id: String,
+    user_id: String,
+    topics: Vec<napp::agent::MemoryTopic>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
-    provenance: &[types::provenance::ProvenanceClass],
+    provenance: Vec<types::provenance::ProvenanceClass>,
+    window_tokens: usize,
 ) {
-    // Check if an extraction is already in progress.
-    if FLUSH_IN_PROGRESS.load(std::sync::atomic::Ordering::Acquire) {
-        // Stash as pending — the in-progress extraction will pick it up.
-        let mut pending = flush_state().lock().await;
-        *pending = Some(PendingFlush {
-            session_id: session_id.to_string(),
-            user_id: user_id.to_string(),
-            topics: topics.to_vec(),
-            provenance: provenance.to_vec(),
-            embedding_provider,
-        });
-        debug!(session_id, "memory flush already in progress — stashed as pending");
-        return;
-    }
-
-    // Mark in-progress.
-    FLUSH_IN_PROGRESS.store(true, std::sync::atomic::Ordering::Release);
-
-    run_flush_inner(
-        provider,
-        store,
-        session_id,
-        user_id,
-        topics,
-        embedding_provider,
-        provenance,
-    )
-    .await;
-
-    // Finished — check for pending context.
-    FLUSH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::Release);
-
-    let pending = {
-        let mut guard = flush_state().lock().await;
-        guard.take()
-    };
-
-    if let Some(ctx) = pending {
-        debug!(
-            session_id = %ctx.session_id,
-            "running trailing memory flush from pending context"
-        );
-        // Mark in-progress again for the trailing run.
-        FLUSH_IN_PROGRESS.store(true, std::sync::atomic::Ordering::Release);
-        run_flush_inner(
-            provider,
-            store,
-            &ctx.session_id,
-            &ctx.user_id,
-            &ctx.topics,
-            ctx.embedding_provider,
-            &ctx.provenance,
-        )
-        .await;
-        FLUSH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::Release);
-    }
-}
-
-/// Core extraction logic (no overlap guard).
-async fn run_flush_inner(
-    provider: &dyn Provider,
-    store: &Arc<Store>,
-    session_id: &str,
-    user_id: &str,
-    topics: &[napp::agent::MemoryTopic],
-    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
-    provenance: &[types::provenance::ProvenanceClass],
-) {
-    // The conversation the checkpoint is about to summarise: the session's
-    // active chat from its last boundary on.
-    let messages = match store.get_chat_messages_since_checkpoint(&store.resolve_session_chat_id(session_id)) {
+    let messages = match store.get_chat_messages_since_checkpoint(&store.resolve_session_chat_id(&session_id)) {
         Ok(msgs) => msgs,
         Err(e) => {
-            warn!(error = %e, "memory flush: failed to load messages");
+            warn!(session_id, error = %e, "memory flush: failed to load messages");
             return;
         }
     };
-
     if messages.is_empty() {
         return;
     }
-
-    info!(
-        session_id,
-        message_count = messages.len(),
-        "running pre-compaction memory flush"
-    );
-
-    // Extract from all messages
-    if let Some(facts) =
-        memory::extract_facts(
+    let handle = tokio::spawn(async move {
+        info!(session_id, message_count = messages.len(), "running pre-checkpoint memory flush");
+        if let Some(facts) = memory::extract_facts(
             ai::RequestTrace::new("memory_flush"),
-            provider,
+            provider.as_ref(),
             &messages,
-            Some((store.as_ref(), user_id)),
-            topics,
+            Some((store.as_ref(), &user_id)),
+            &topics,
             "",
             None,
+            window_tokens,
         )
         .await
-    {
-        memory::store_facts(store, &facts, user_id, embedding_provider, topics, provenance);
-        debug!(session_id, "memory flush extraction complete");
-    }
-
-    // Update flush tracking
-    let session = match store.get_session(session_id) {
-        Ok(Some(s)) => s,
-        _ => return,
-    };
-
-    let compaction_count = session.compaction_count.unwrap_or(0);
-    if let Err(e) = store.update_session_memory_flush(session_id, compaction_count) {
-        warn!(error = %e, "failed to update memory flush tracking");
-    }
+        {
+            memory::store_facts(&store, &facts, &user_id, embedding_provider, &topics, &provenance);
+            debug!(session_id, "memory flush extraction complete");
+        }
+        let compaction_count = match store.get_session(&session_id) {
+            Ok(Some(s)) => s.compaction_count.unwrap_or(0),
+            _ => return,
+        };
+        if let Err(e) = store.update_session_memory_flush(&session_id, compaction_count) {
+            warn!(error = %e, "failed to update memory flush tracking");
+        }
+    });
+    track_extraction(handle).await;
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Answers `{}` and keeps what each call read; holds every call while
+    /// `hold` is set.
+    #[derive(Default)]
+    struct Reader {
+        hold: std::sync::atomic::AtomicBool,
+        read: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Reader {
+        fn id(&self) -> &str {
+            "reader"
+        }
+        async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            self.read.lock().unwrap().push(req.messages[0].content.clone());
+            while self.hold.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let (tx, rx) = tokio::sync::mpsc::channel(2);
+            let _ = tx.send(ai::StreamEvent::text("{}")).await;
+            let _ = tx.send(ai::StreamEvent::done()).await;
+            Ok(rx)
+        }
+    }
+
+    /// B15: a flush is its own session's: while another session's flush is
+    /// still running, this one reads and extracts its own conversation at
+    /// once, and nobody runs a flush for another session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_flush_runs_for_its_own_session_beside_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("f.db").to_string_lossy()).unwrap());
+        let sessions = crate::session::SessionManager::new(store.clone());
+        let a = sessions.get_or_create("agent:a:web", "").unwrap().id;
+        let b = sessions.get_or_create("agent:b:web", "").unwrap().id;
+        sessions.append_message(&a, "user", "ALPHA: the Rivera deposit is 5%.", None, None, None).unwrap();
+        sessions.append_message(&b, "user", "BRAVO: the Chen lease ends in March.", None, None, None).unwrap();
+        let slow = Arc::new(Reader::default());
+        slow.hold.store(true, std::sync::atomic::Ordering::SeqCst);
+        let quick = Arc::new(Reader::default());
+        let flush = |p: &Arc<Reader>, sid: &str| {
+            spawn_memory_flush(p.clone(), store.clone(), sid.to_string(), "u".into(), vec![], None, vec![], 200_000)
+        };
+        flush(&slow, &a).await;
+        flush(&quick, &b).await;
+        for _ in 0..200 {
+            if !quick.read.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let read = quick.read.lock().unwrap().clone();
+        assert_eq!(read.len(), 1, "B's flush ran while A's was still running");
+        assert!(read[0].contains("BRAVO") && !read[0].contains("ALPHA"), "only its own conversation: {}", read[0]);
+        slow.hold.store(false, std::sync::atomic::Ordering::SeqCst);
+        drain_extractions().await;
+        let slow_read = slow.read.lock().unwrap().clone();
+        assert_eq!(slow_read.len(), 1, "A's flush ran once, for A");
+        assert!(slow_read[0].contains("ALPHA") && !slow_read[0].contains("BRAVO"));
+    }
+
     #[test]
     fn test_chars_per_token() {
         assert_eq!(crate::CHARS_PER_TOKEN, 4);

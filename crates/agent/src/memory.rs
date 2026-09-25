@@ -85,10 +85,6 @@ const MIN_CONFIDENCE_THRESHOLD: f64 = 0.65;
 const NEW_MEMORY_ACCESS_PRIOR: f64 = 3.0;
 const NEW_MEMORY_GRACE_DAYS: f64 = 14.0;
 
-/// Max characters per message when building extraction prompt.
-const MAX_CONTENT_PER_MESSAGE: usize = 500;
-/// Max total characters for extraction prompt.
-const MAX_CONVERSATION_CHARS: usize = 15000;
 
 /// Resolve confidence from raw value and explicit flag.
 /// Explicit facts get 0.9, inferred facts get 0.6, raw value used as fallback.
@@ -155,7 +151,8 @@ fn extract_confidence_from_metadata(mem: &Memory) -> Option<f64> {
 /// when non-empty they replace the generic `project` category in the prompt.
 /// `model` overrides the provider's default model (empty = provider default).
 /// `goal` is the session's agreed goal, when it has one: what the ongoing
-/// work is for.
+/// work is for. `window_tokens` is the extraction model's window: the
+/// conversation fills up to half of it.
 pub async fn extract_facts(
     trace: ai::RequestTrace,
     provider: &dyn Provider,
@@ -164,8 +161,9 @@ pub async fn extract_facts(
     topics: &[MemoryTopic],
     model: &str,
     goal: Option<&str>,
+    window_tokens: usize,
 ) -> Option<ExtractedFacts> {
-    let conversation = build_conversation_text(messages);
+    let conversation = build_conversation_text(messages, window_tokens);
     if conversation.is_empty() {
         return None;
     }
@@ -576,43 +574,58 @@ fn build_existing_memories_section(store: &Store, user_id: &str) -> String {
     section
 }
 
-/// Build conversation text for extraction, truncating per message and total.
-fn build_conversation_text(messages: &[ChatMessage]) -> String {
+/// Share of the extraction model's window the conversation may fill.
+const WINDOW_SHARE: f64 = 0.5;
+
+/// The conversation the extraction reads: every message whole, the tool
+/// calls and their results with them (Claude Code's extraction reads the
+/// messages since its cursor as they are), newest first until half the
+/// extraction model's window is used, then put back in order. Rows the
+/// platform wrote for the model (`isMeta` reminders) are not the
+/// conversation. The newest message always goes in, cut to fit when alone
+/// it is too long.
+fn build_conversation_text(messages: &[ChatMessage], window_tokens: usize) -> String {
+    let budget = ((window_tokens as f64 * WINDOW_SHARE) as usize).saturating_mul(crate::CHARS_PER_TOKEN);
     let mut parts = Vec::new();
-    let mut total_chars = 0usize;
-
+    let mut total = 0usize;
     for msg in messages.iter().rev() {
-        // Skip tool results
-        if msg.role == "tool" {
-            continue;
-        }
-        if msg.content.is_empty() {
-            continue;
-        }
-
-        let content = if msg.content.len() > MAX_CONTENT_PER_MESSAGE {
-            let mut end = MAX_CONTENT_PER_MESSAGE;
-            while !msg.content.is_char_boundary(end) {
-                end -= 1;
+        let Some(line) = message_line(msg) else { continue };
+        if total + line.len() > budget {
+            if parts.is_empty() {
+                let cut = types::strutil::floor_char_boundary(&line, budget);
+                parts.push(format!("{}…", &line[..cut]));
             }
-            format!("{}...", &msg.content[..end])
-        } else {
-            msg.content.clone()
-        };
-
-        let line = format!("{}: {}", msg.role, content);
-        total_chars += line.len();
-
-        if total_chars > MAX_CONVERSATION_CHARS {
             break;
         }
-
+        total += line.len() + 1;
         parts.push(line);
     }
-
-    // Reverse to get chronological order (we built from the end)
     parts.reverse();
     parts.join("\n")
+}
+
+/// One stored message as the extraction reads it; `None` for a platform row
+/// or an empty one.
+fn message_line(msg: &ChatMessage) -> Option<String> {
+    let meta = msg.metadata.as_deref().and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+    if meta.as_ref().and_then(|m| m.get("isMeta")).and_then(|v| v.as_bool()) == Some(true) {
+        return None;
+    }
+    let rows = |json: Option<&str>| -> Vec<serde_json::Value> {
+        json.and_then(|j| serde_json::from_str::<Vec<serde_json::Value>>(j).ok()).unwrap_or_default()
+    };
+    let mut lines = Vec::new();
+    if !msg.content.trim().is_empty() {
+        lines.push(format!("{}: {}", msg.role, msg.content));
+    }
+    for call in rows(msg.tool_calls.as_deref()) {
+        let name = call["name"].as_str().unwrap_or("");
+        lines.push(format!("{} called {name}({})", msg.role, call["input"]));
+    }
+    for result in rows(msg.tool_results.as_deref()) {
+        lines.push(format!("tool result: {}", result["content"].as_str().unwrap_or("")));
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// Find the first balanced JSON object in a response string (public for reuse).
@@ -1086,6 +1099,46 @@ pub async fn backfill_missing_embeddings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(role: &str, content: &str, calls: Option<&str>, results: Option<&str>, meta: Option<&str>) -> ChatMessage {
+        ChatMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            chat_id: "c".into(),
+            role: role.into(),
+            content: content.into(),
+            metadata: meta.map(str::to_string),
+            created_at: 0,
+            day_marker: None,
+            tool_calls: calls.map(str::to_string),
+            tool_results: results.map(str::to_string),
+            token_estimate: None,
+            html: None,
+        }
+    }
+
+    /// B15: extraction reads the messages as they are, as Claude Code's
+    /// does: a long message whole, the tool calls and their results, and
+    /// more than the newest 15k characters when the window allows; the
+    /// platform's own rows are not the conversation.
+    #[test]
+    fn extraction_reads_whole_messages_and_tool_results_to_half_the_window() {
+        let early = format!("The owner's accountant is Dana Ruiz. {}", "Background detail. ".repeat(1_000));
+        let late = format!("Ship it Friday. {}", "Later detail. ".repeat(1_200));
+        let rows = vec![
+            row("user", &early, None, None, None),
+            row("assistant", "", Some(r#"[{"id":"c1","name":"read_file","input":{"path":"/tmp/lease.txt"}}]"#), None, None),
+            row("tool", "", None, Some(r#"[{"tool_call_id":"c1","content":"Lease ends 2027-03-31.","is_error":false}]"#), None),
+            row("user", "<system-reminder>skills</system-reminder>", None, None, Some(r#"{"isMeta":true}"#)),
+            row("user", &late, None, None, None),
+        ];
+        let text = build_conversation_text(&rows, 200_000);
+        assert!(text.contains(&early), "the early message whole, past the newest 15k characters");
+        assert!(text.contains(&late));
+        assert!(text.contains("read_file") && text.contains("Lease ends 2027-03-31."), "tool calls and results");
+        assert!(!text.contains("<system-reminder>"), "the platform's rows are not the conversation");
+        let small = build_conversation_text(&rows, 5_000);
+        assert!(small.contains("Ship it Friday.") && !small.contains("Dana Ruiz"), "the newest first, to half the window");
+    }
 
     #[test]
     fn test_normalize_key() {
