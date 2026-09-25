@@ -3139,5 +3139,16 @@
 		"moveTo": "Przenieś do",
 		"dropHere": "Upuść, aby podlegał temu pracownikowi",
 		"cycleRefused": "Wtedy pracownik podlegałby sam sobie."
+	},
+	"permissionAsk": {
+		"title": "{name} czeka na Twoją zgodę",
+		"allowAlways": "Zawsze zezwalaj",
+		"thisOnce": "Tylko tym razem",
+		"no": "Nie",
+		"allowedAlways": "Dozwolone od teraz",
+		"allowedOnce": "Dozwolone tym razem",
+		"declined": "Odrzucono",
+		"expired": "Wygasło, liczone jako Nie",
+		"failed": "Nie udało się wysłać odpowiedzi. Spróbuj ponownie."
 	}
 }

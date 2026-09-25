@@ -3139,5 +3139,16 @@
 		"moveTo": "Déplacer vers",
 		"dropHere": "Déposez ici pour répondre devant cet employé",
 		"cycleRefused": "Cela ferait répondre un employé devant lui-même."
+	},
+	"permissionAsk": {
+		"title": "{name} attend ton accord",
+		"allowAlways": "Toujours autoriser",
+		"thisOnce": "Juste cette fois",
+		"no": "Non",
+		"allowedAlways": "Autorisé désormais",
+		"allowedOnce": "Autorisé cette fois",
+		"declined": "Refusé",
+		"expired": "Expiré, compté comme Non",
+		"failed": "Impossible d'envoyer ta réponse. Réessaie."
 	}
 }

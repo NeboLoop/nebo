@@ -29,6 +29,8 @@
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
+  import { openAsks } from '$lib/stores/permissionAsks';
+  import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
 
   interface Artifact {
@@ -1105,6 +1107,8 @@
   // readable page; the whole thing arrives when someone opens the row.
   let fullOutputs = $state<Record<string, string>>({});
   const outputChatId = $derived(threadId || sessionId);
+  const chatSessionKey = $derived(sessionId || (threadId ? threadKey(agentId, threadId) : ''));
+  const chatAsks = $derived(chatSessionKey ? $openAsks.filter((a) => a.sessionKey === chatSessionKey) : []);
   async function toggleResult(key: string, tool?: ToolMsg) {
     const opening = !expandedResults[key];
     expandedResults[key] = opening;
@@ -1979,6 +1983,16 @@
           <button type="button" class="btn btn-ghost btn-xs ml-auto" onclick={() => (teachError = '')}>✕</button>
         {/if}
       </div>
+    </div>
+  {/if}
+
+  <!-- The asks this chat's work is waiting on: the same card as the Inbox;
+       answered anywhere, it leaves everywhere. -->
+  {#if chatAsks.length > 0}
+    <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2 flex flex-col gap-2">
+      {#each chatAsks as ask (ask.id)}
+        <PermissionAskCard {ask} via="chat" />
+      {/each}
     </div>
   {/if}
 
