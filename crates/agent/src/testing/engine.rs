@@ -201,15 +201,7 @@ async fn run_single(
         None => format!("eval:{}:{}:{}", fixture.id, run_id, ts),
     };
 
-    // Collect results across all conversation turns
-    let mut all_tool_calls: Vec<TracedToolCall> = Vec::new();
-    let mut all_text: Vec<String> = Vec::new();
-    let mut tool_seq = 0usize;
-    let mut total_input_tokens = 0usize;
-    let mut total_cache_read = 0usize;
-    let mut total_cache_creation = 0usize;
-    let mut total_output_tokens = 0usize;
-    let mut turns: Vec<TurnMetrics> = Vec::new();
+    let mut rec = Recorder::default();
 
     // Send each conversation turn
     let user_turns: Vec<_> = fixture
@@ -249,9 +241,7 @@ async fn run_single(
         });
         // Tool calls started in this turn; the fixture's interrupts fire on it.
         let mut tool_starts = 0usize;
-        let turn_start = Instant::now();
-        let mut tm = TurnMetrics { turn: turn_idx + 1, ..TurnMetrics::default() };
-        let mut cancelled = false;
+        rec.open_turn(false);
 
         ws.send(Message::Text(msg.to_string().into()))
             .await
@@ -271,54 +261,18 @@ async fn run_single(
         // minutes of a 60-minute gate job doing nothing (2026-09-20).
         let turn_timeout = Duration::from_secs(180);
         let mut last_progress = Instant::now();
-        let mut pending_tool: Option<(String, Value, Instant)> = None;
 
         loop {
             let silence_left = turn_timeout.saturating_sub(last_progress.elapsed());
             match timeout(silence_left, ws.next()).await {
                 Ok(Some(Ok(msg))) => {
-                    let text = match msg.to_text() {
-                        Ok(t) => t,
-                        Err(_) => continue,
-                    };
-                    let event: Value = match serde_json::from_str(text) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-
-                    // Filter events by our session to avoid cross-talk. The
-                    // hub broadcasts to every client, and a scheduled
-                    // workflow's completion carries `chatId`, not
-                    // `session_id`; it ended fixture runs early as "Empty run"
-                    // while the server kept running the fixture's turn.
-                    if !event_belongs_to_session(&event, &session_id) {
-                        continue;
-                    }
-
+                    let Some(event) = session_event(&msg, &session_id) else { continue };
                     if is_progress(event["type"].as_str()) {
                         last_progress = Instant::now();
                     }
-
-                    match event["type"].as_str() {
-                        Some("chat_stream") => {
-                            if let Some(t) = event["data"]["content"]
-                                .as_str()
-                                .or_else(|| event["data"]["text"].as_str())
-                            {
-                                if tm.first_reply_ms.is_none() && !t.trim().is_empty() {
-                                    tm.first_reply_ms = Some(turn_start.elapsed().as_millis() as u64);
-                                }
-                                all_text.push(t.to_string());
-                            }
-                        }
-                        Some("tool_start") => {
-                            let tool_name = event["data"]["tool"]
-                                .as_str()
-                                .or_else(|| event["data"]["name"].as_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-                            let args = event["data"]["input"].clone();
-                            pending_tool = Some((tool_name, args, Instant::now()));
+                    match rec.on_event(&event) {
+                        Step::Continue => {}
+                        Step::ToolStarted => {
                             tool_starts += 1;
                             for (n, it) in fixture.interrupts.iter().enumerate() {
                                 if it.turn == turn_idx + 1 && it.after_tool_calls == tool_starts {
@@ -326,129 +280,30 @@ async fn run_single(
                                 }
                             }
                         }
-                        Some("tool_result") => {
-                            if let Some((tool_name, args, tool_start)) = pending_tool.take() {
-                                tool_seq += 1;
-                                let content = event["data"]["result"]
-                                    .as_str()
-                                    .or_else(|| event["data"]["content"].as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let is_error = event["data"]["is_error"]
-                                    .as_bool()
-                                    .unwrap_or(false);
-                                let char_count = content.len();
-                                tm.tool_calls += 1;
-                                tm.tool_errors += usize::from(is_error);
-
-                                all_tool_calls.push(TracedToolCall {
-                                    sequence: tool_seq,
-                                    tool: tool_name,
-                                    arguments: args,
-                                    response: TracedToolResponse {
-                                        content,
-                                        is_error,
-                                        char_count,
-                                    },
-                                    latency_ms: tool_start.elapsed().as_millis() as u64,
-                                });
-                            }
-                        }
-                        Some("usage") => {
-                            let n = |k: &str| event["data"][k].as_u64().unwrap_or(0) as usize;
-                            let (input, output) = (n("input_tokens"), n("output_tokens"));
-                            let (read, created) = (n("cache_read_input_tokens"), n("cache_creation_input_tokens"));
-                            total_input_tokens += input;
-                            total_output_tokens += output;
-                            total_cache_read += read;
-                            total_cache_creation += created;
-                            tm.model_calls += 1;
-                            tm.input_tokens += input;
-                            tm.output_tokens += output;
-                            tm.cache_read_tokens += read;
-                            tm.cache_creation_tokens += created;
-                            tm.max_prompt_tokens = tm.max_prompt_tokens.max(input + read + created);
-                        }
-                        // A parked question (an install card, a connect card, a
-                        // plan to approve). Nobody is at this keyboard: the card
-                        // itself is the observable outcome, so it is recorded in
-                        // the transcript and answered as an owner who declined,
-                        // and the run continues. Left unanswered, the run sat
-                        // parked until the 15-minute idle guard ended it — two of
-                        // three skill-plugin-choreography runs, every gate run,
-                        // 2026-09-20.
-                        Some("ask_request") => {
-                            let (note, reply) = decline_card(&event);
-                            tm.cards += 1;
-                            all_text.push(note);
-                            if ws.send(Message::Text(reply.to_string().into())).await.is_err() {
-                                warn!(fixture = %fixture.id, run = %run_id, "could not answer a card; the run will stall");
-                            }
-                        }
-                        // A tool approval card. The harness stands in for the
-                        // owner and the fixture asked for the work, so the
-                        // call is approved; the transcript records it so a
-                        // check can see what was approved. Unanswered, a
-                        // desktop fixture sat parked until the silence cap
-                        // (Stadium, 2026-09-23).
-                        Some("approval_request") => {
-                            for (note, reply) in approve_calls(&event) {
-                                tm.approvals += 1;
-                                all_text.push(note);
-                                if ws.send(Message::Text(reply.to_string().into())).await.is_err() {
-                                    warn!(fixture = %fixture.id, run = %run_id, "could not answer an approval; the run will stall");
-                                }
-                            }
-                        }
-                        Some("chat_complete") => {
-                            // A message typed mid-turn gets its own short stream
-                            // that ends at once with the typed "queued" stop;
-                            // the real turn is still running.
-                            if event["data"]["stop_reason"].as_str() == Some("queued_into_running_turn") {
-                                continue;
-                            }
-                            tm.end = if cancelled { "cancelled" } else { "complete" }.to_string();
-                            break;
-                        }
-                        // The stop landed. The cancelled turn still closes with
-                        // its own chat_complete a moment later; wait for it, or
-                        // it ends the NEXT turn's collection instead.
-                        Some("chat_cancelled") => {
-                            info!(fixture = %fixture.id, run = %run_id, "run cancelled by the fixture's interrupt");
-                            cancelled = true;
-                            continue;
-                        }
-                        Some("chat_error")
-                            if event["data"]["stop_reason"].as_str() == Some("queued_into_running_turn") =>
-                        {
-                            // The queued message's status line ("still on the
-                            // last thing…"): the real turn is still running.
-                            continue;
-                        }
-                        Some("chat_error") => {
-                            // A run the server stopped (a spiral guard, a
-                            // provider error) still has a story: keep the
-                            // calls made so far and the reason, so the stop
-                            // can be read and turned into a fixture. Two
-                            // SWE-bench runs on 2026-09-06 ended in the
-                            // identical-call stop with nothing on disk.
-                            let err = event["data"]["error"]
-                                .as_str()
-                                .unwrap_or("unknown error");
+                        Step::Reply(replies) => send_replies(&mut ws, replies, &fixture.id, run_id).await,
+                        Step::TurnEnded => break,
+                        // A run the server stopped (a spiral guard, a
+                        // provider error) still has a story: the recorder
+                        // keeps the calls made so far and the reason, so the
+                        // stop can be read and turned into a fixture. Two
+                        // SWE-bench runs on 2026-09-06 ended in the
+                        // identical-call stop with nothing on disk.
+                        Step::Stopped(err) => {
                             warn!(fixture = %fixture.id, run = %run_id, error = %err, "run stopped by the server; keeping the partial trace");
                             cancel_run(&mut ws, &session_id).await;
-                            all_text.insert(0, format!("[run stopped: {err}]\n"));
-                            tm.end = "error".to_string();
                             break;
                         }
-                        _ => {}
                     }
                 }
                 Ok(Some(Err(e))) => {
                     cancel_run(&mut ws, &session_id).await;
                     return Err(format!("WS error: {}", e));
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    // The socket closed mid-turn: the turn has no ending.
+                    rec.close_turn(Some(""));
+                    break;
+                }
                 Err(_) => {
                     cancel_run(&mut ws, &session_id).await;
                     return Err(format!(
@@ -459,16 +314,15 @@ async fn run_single(
                 }
             }
         }
-        tm.latency_ms = turn_start.elapsed().as_millis() as u64;
-        turns.push(tm);
+        rec.close_turn(None);
     }
 
-    let final_text = all_text.join("");
+    settle(&mut ws, &mut rec, &session_id, &fixture.id, run_id).await;
 
     // An empty run — no text, no tool calls — is a failure, not a pass. Silent
     // empties (transient provider errors that still emit chat_complete) used to
     // produce valid-looking zero-call traces that skewed results.
-    if final_text.trim().is_empty() && all_tool_calls.is_empty() {
+    if rec.text.join("").trim().is_empty() && rec.calls.iter().all(Option::is_none) {
         cancel_run(&mut ws, &session_id).await;
         return Err(
             "Empty run: chat completed with no response text and no tool calls \
@@ -478,37 +332,430 @@ async fn run_single(
     }
 
     let total_latency = start.elapsed().as_millis() as u64;
-    let total_tokens = total_input_tokens + total_output_tokens;
+    Ok(rec.into_trace(&fixture.id, run_id, model, session_id, total_latency))
+}
 
-    let now = chrono::Utc::now().to_rfc3339();
+/// How long the runner waits, after the owner's last turn, for the work the
+/// run started in the background to report. Helpers run in the background
+/// by default and their results arrive as turns the session starts on its
+/// own; a run that closed at the last `chat_complete` never saw them
+/// (2026-09-25: agent-spawn-parallel's two summaries, both in a woken turn,
+/// were graded as missing on every run). Bounded, so a helper that never
+/// ends cannot hold the gate.
+const SETTLE_CAP: Duration = Duration::from_secs(300);
 
-    Ok(Trace {
-        fixture_id: fixture.id.clone(),
-        run_id: run_id.to_string(),
-        // No stream event names the model the server used (`usage` carries
-        // tokens, `chat_complete` artifacts), so this is the requested model.
-        model: model.unwrap_or("default").to_string(),
-        timestamp: now,
-        overrides: Vec::new(),
-        tool_calls: all_tool_calls,
-        final_response: TracedResponse {
-            content: final_text,
-            tokens: total_output_tokens,
-        },
-        metrics: TraceMetrics {
-            total_tool_calls: tool_seq,
-            total_tokens,
-            input_tokens: total_input_tokens,
-            output_tokens: total_output_tokens,
-            total_latency_ms: total_latency,
-            cache_read_tokens: total_cache_read,
-            cache_creation_tokens: total_cache_creation,
-        },
-        grade: None,
-        failure_reason: None,
-        session_id,
-        turns,
-    })
+/// After a helper reports, how long the runner still listens for the turn
+/// that hears it. A report that lands after a turn's last step gets a turn of
+/// its own, which starts a moment after the completion event.
+const WAKE_GRACE: Duration = Duration::from_secs(10);
+
+/// What one event did to the run, for the socket loop to act on.
+#[derive(Debug, PartialEq)]
+enum Step {
+    Continue,
+    /// A tool call started (the fixture's interrupts count these).
+    ToolStarted,
+    /// Answers to send back: a declined card, a granted approval.
+    Reply(Vec<Value>),
+    /// The turn ended (`chat_complete`).
+    TurnEnded,
+    /// The server stopped the turn (`chat_error`), with its reason.
+    Stopped(String),
+}
+
+/// A tool call that started and has not returned: its place in the run's
+/// calls, found again by the `tool_id` its result carries.
+struct OpenCall {
+    tool_id: String,
+    slot: usize,
+    tool: String,
+    arguments: Value,
+    started: Instant,
+}
+
+struct OpenTurn {
+    metrics: TurnMetrics,
+    started: Instant,
+    cancelled: bool,
+}
+
+/// Everything one fixture run records, event by event, across the owner's
+/// turns and the turns the session starts on its own afterwards.
+#[derive(Default)]
+struct Recorder {
+    /// One slot per started call, in the order the model made them; filled
+    /// when the call's result comes back. Parallel calls all start before any
+    /// returns, and their results come back in any order: each result goes
+    /// to the call with its `tool_id` (2026-09-25: one pending slot turned two
+    /// parallel delegates into one call carrying the other's result).
+    calls: Vec<Option<TracedToolCall>>,
+    open_calls: Vec<OpenCall>,
+    text: Vec<String>,
+    turns: Vec<TurnMetrics>,
+    turn: Option<OpenTurn>,
+    input_tokens: usize,
+    output_tokens: usize,
+    cache_read_tokens: usize,
+    cache_creation_tokens: usize,
+    /// The session's helpers that started and have not finished
+    /// (`subagent_start` / `subagent_complete`, by task id).
+    helpers_running: std::collections::HashSet<String>,
+    helpers_finished: usize,
+    /// Calls that started work which reports later: a background helper or
+    /// command, in either arm's vocabulary.
+    background_launches: usize,
+    woken_turns: usize,
+    /// A helper finished and no turn of the session has ended since, so its
+    /// report is not heard yet.
+    unheard: bool,
+    /// When the last helper finished, while no woken turn has ended since:
+    /// a turn of the owner's that ended after it may not have heard it, and
+    /// the turn that does can still be on its way (see [`WAKE_GRACE`]).
+    unwoken_finish: Option<Instant>,
+}
+
+impl Recorder {
+    fn open_turn(&mut self, woken: bool) {
+        let n = self.turns.len() + 1;
+        // The reply text is one transcript; a woken turn's part says where
+        // it starts, so a reader can tell it from the owner's last turn.
+        if woken {
+            self.text.push("\n\n[a later turn: the session woke on its own when its background work reported]\n".to_string());
+        }
+        self.turn = Some(OpenTurn {
+            metrics: TurnMetrics { turn: n, woken, ..TurnMetrics::default() },
+            started: Instant::now(),
+            cancelled: false,
+        });
+    }
+
+    /// The turn this event belongs to. After the owner's last turn, the
+    /// session's own activity opens a woken turn.
+    fn active_turn(&mut self) -> &mut OpenTurn {
+        if self.turn.is_none() {
+            self.open_turn(true);
+        }
+        self.turn.as_mut().expect("a turn is open")
+    }
+
+    /// Close the open turn, if any, as `end` (default: how its events ended
+    /// it, else `complete`).
+    fn close_turn(&mut self, end: Option<&str>) {
+        let Some(mut t) = self.turn.take() else { return };
+        if let Some(end) = end {
+            t.metrics.end = end.to_string();
+        } else if t.metrics.end.is_empty() {
+            t.metrics.end = if t.cancelled { "cancelled" } else { "complete" }.to_string();
+        }
+        t.metrics.latency_ms = t.started.elapsed().as_millis() as u64;
+        if t.metrics.woken {
+            self.woken_turns += 1;
+            self.unwoken_finish = None;
+        }
+        self.turns.push(t.metrics);
+    }
+
+    fn on_event(&mut self, event: &Value) -> Step {
+        let data = &event["data"];
+        match event["type"].as_str() {
+            Some("chat_stream") => {
+                if let Some(t) = data["content"].as_str().or_else(|| data["text"].as_str()) {
+                    let turn = self.active_turn();
+                    if turn.metrics.first_reply_ms.is_none() && !t.trim().is_empty() {
+                        turn.metrics.first_reply_ms = Some(turn.started.elapsed().as_millis() as u64);
+                    }
+                    self.text.push(t.to_string());
+                }
+                Step::Continue
+            }
+            Some("tool_start") => {
+                self.active_turn();
+                let tool = data["tool"].as_str().or_else(|| data["name"].as_str()).unwrap_or("unknown").to_string();
+                self.open_calls.push(OpenCall {
+                    tool_id: data["tool_id"].as_str().unwrap_or("").to_string(),
+                    slot: self.calls.len(),
+                    tool,
+                    arguments: data["input"].clone(),
+                    started: Instant::now(),
+                });
+                self.calls.push(None);
+                Step::ToolStarted
+            }
+            Some("tool_result") => {
+                // By id; a result without one answers the oldest open call.
+                let id = data["tool_id"].as_str().unwrap_or("");
+                let at = if id.is_empty() {
+                    (!self.open_calls.is_empty()).then_some(0)
+                } else {
+                    self.open_calls.iter().position(|c| c.tool_id == id)
+                };
+                let Some(at) = at else { return Step::Continue };
+                let call = self.open_calls.remove(at);
+                let content = data["result"].as_str().or_else(|| data["content"].as_str()).unwrap_or("").to_string();
+                let is_error = data["is_error"].as_bool().unwrap_or(false);
+                if !is_error && launches_background_work(&call.tool, &call.arguments) {
+                    self.background_launches += 1;
+                }
+                let turn = self.active_turn();
+                turn.metrics.tool_calls += 1;
+                turn.metrics.tool_errors += usize::from(is_error);
+                self.calls[call.slot] = Some(TracedToolCall {
+                    sequence: 0,
+                    tool: call.tool,
+                    arguments: call.arguments,
+                    response: TracedToolResponse { char_count: content.len(), content, is_error },
+                    latency_ms: call.started.elapsed().as_millis() as u64,
+                });
+                Step::Continue
+            }
+            Some("usage") => {
+                let n = |k: &str| data[k].as_u64().unwrap_or(0) as usize;
+                let (input, output) = (n("input_tokens"), n("output_tokens"));
+                let (read, created) = (n("cache_read_input_tokens"), n("cache_creation_input_tokens"));
+                self.input_tokens += input;
+                self.output_tokens += output;
+                self.cache_read_tokens += read;
+                self.cache_creation_tokens += created;
+                if let Some(t) = self.turn.as_mut() {
+                    let tm = &mut t.metrics;
+                    tm.model_calls += 1;
+                    tm.input_tokens += input;
+                    tm.output_tokens += output;
+                    tm.cache_read_tokens += read;
+                    tm.cache_creation_tokens += created;
+                    tm.max_prompt_tokens = tm.max_prompt_tokens.max(input + read + created);
+                }
+                Step::Continue
+            }
+            Some("subagent_start") => {
+                if let Some(id) = data["task_id"].as_str() {
+                    self.helpers_running.insert(id.to_string());
+                }
+                Step::Continue
+            }
+            Some("subagent_complete") => {
+                if let Some(id) = data["task_id"].as_str() {
+                    self.helpers_running.remove(id);
+                }
+                self.helpers_finished += 1;
+                self.unheard = true;
+                self.unwoken_finish = Some(Instant::now());
+                Step::Continue
+            }
+            // A parked question (an install card, a connect card, a plan to
+            // approve). Nobody is at this keyboard: the card itself is the
+            // observable outcome, so it is recorded in the transcript and
+            // answered as an owner who declined, and the run continues. Left
+            // unanswered, the run sat parked until the 15-minute idle guard
+            // ended it — two of three skill-plugin-choreography runs, every
+            // gate run, 2026-09-20.
+            Some("ask_request") => {
+                let (note, reply) = decline_card(event);
+                self.active_turn().metrics.cards += 1;
+                self.text.push(note);
+                Step::Reply(vec![reply])
+            }
+            // A tool approval card. The harness stands in for the owner and
+            // the fixture asked for the work, so the call is approved; the
+            // transcript records it so a check can see what was approved.
+            // Unanswered, a desktop fixture sat parked until the silence cap
+            // (Stadium, 2026-09-23).
+            Some("approval_request") => {
+                let mut replies = Vec::new();
+                for (note, reply) in approve_calls(event) {
+                    self.active_turn().metrics.approvals += 1;
+                    self.text.push(note);
+                    replies.push(reply);
+                }
+                Step::Reply(replies)
+            }
+            Some("chat_complete") => {
+                // A message typed mid-turn gets its own short stream that
+                // ends at once with the typed "queued" stop; the real turn is
+                // still running.
+                if data["stop_reason"].as_str() == Some("queued_into_running_turn") {
+                    return Step::Continue;
+                }
+                self.close_turn(None);
+                self.unheard = false;
+                Step::TurnEnded
+            }
+            // The stop landed. The cancelled turn still closes with its own
+            // chat_complete a moment later; wait for it, or it ends the NEXT
+            // turn's collection instead.
+            Some("chat_cancelled") => {
+                if let Some(t) = self.turn.as_mut() {
+                    t.cancelled = true;
+                }
+                Step::Continue
+            }
+            // The queued message's status line ("still on the last
+            // thing…"): the real turn is still running.
+            Some("chat_error") if data["stop_reason"].as_str() == Some("queued_into_running_turn") => Step::Continue,
+            Some("chat_error") => {
+                let err = data["error"].as_str().unwrap_or("unknown error").to_string();
+                self.text.insert(0, format!("[run stopped: {err}]\n"));
+                self.close_turn(Some("error"));
+                self.unheard = false;
+                Step::Stopped(err)
+            }
+            _ => Step::Continue,
+        }
+    }
+
+    /// Nothing the run started is still out: no turn running, no helper
+    /// running, every background launch accounted for by a finished helper
+    /// or a turn the session woke for, and every finished helper heard.
+    fn settled(&self) -> bool {
+        self.turn.is_none()
+            && self.helpers_running.is_empty()
+            && self.background_launches <= self.helpers_finished.max(self.woken_turns)
+            && !self.unheard
+    }
+
+    /// What is still out, for the transcript note when the wait runs out.
+    fn outstanding(&self) -> String {
+        let mut parts = Vec::new();
+        if self.turn.is_some() {
+            parts.push("a turn still running".to_string());
+        }
+        if !self.helpers_running.is_empty() {
+            parts.push(format!("{} helper(s) still running", self.helpers_running.len()));
+        }
+        let heard = self.helpers_finished.max(self.woken_turns);
+        if self.background_launches > heard {
+            parts.push(format!("{} background launch(es) not reported back", self.background_launches - heard));
+        }
+        if self.unheard {
+            parts.push("a finished helper's report not yet heard".to_string());
+        }
+        parts.join(", ")
+    }
+
+    fn into_trace(self, fixture_id: &str, run_id: &str, model: Option<&str>, session_id: String, total_latency_ms: u64) -> Trace {
+        let tool_calls: Vec<TracedToolCall> = self
+            .calls
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(i, mut c)| {
+                c.sequence = i + 1;
+                c
+            })
+            .collect();
+        Trace {
+            fixture_id: fixture_id.to_string(),
+            run_id: run_id.to_string(),
+            // No stream event names the model the server used (`usage` carries
+            // tokens, `chat_complete` artifacts), so this is the requested model.
+            model: model.unwrap_or("default").to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            overrides: Vec::new(),
+            final_response: TracedResponse { content: self.text.join(""), tokens: self.output_tokens },
+            metrics: TraceMetrics {
+                total_tool_calls: tool_calls.len(),
+                total_tokens: self.input_tokens + self.output_tokens,
+                input_tokens: self.input_tokens,
+                output_tokens: self.output_tokens,
+                total_latency_ms,
+                cache_read_tokens: self.cache_read_tokens,
+                cache_creation_tokens: self.cache_creation_tokens,
+            },
+            tool_calls,
+            grade: None,
+            failure_reason: None,
+            session_id,
+            turns: self.turns,
+        }
+    }
+}
+
+/// Whether a call starts work that reports in a later turn: a helper in the
+/// background or a background command, in either arm's vocabulary. The
+/// rewrite's `delegate` runs in the background unless told not to; the old
+/// loop's `agent` spawn waits unless told not to.
+fn launches_background_work(tool: &str, args: &Value) -> bool {
+    let flag = |k: &str| args.get(k).and_then(Value::as_bool);
+    let action = args.get("action").and_then(Value::as_str);
+    match tool {
+        "delegate" => flag("background").unwrap_or(true),
+        "agent" => action == Some("spawn") && flag("wait") == Some(false),
+        "run_command" => flag("background") == Some(true),
+        "os" => action == Some("exec") && flag("background") == Some(true),
+        _ => false,
+    }
+}
+
+/// After the owner's last turn: keep recording until everything the run
+/// started in the background has reported and been heard, or [`SETTLE_CAP`]
+/// has passed. A run that started nothing ends here at once.
+async fn settle(ws: &mut Ws, rec: &mut Recorder, session_id: &str, fixture_id: &str, run_id: &str) {
+    let deadline = Instant::now() + SETTLE_CAP;
+    loop {
+        let now = Instant::now();
+        let until = if rec.settled() {
+            match rec.unwoken_finish.map(|t| t + WAKE_GRACE) {
+                Some(grace) if grace > now => grace,
+                _ => return,
+            }
+        } else {
+            deadline
+        };
+        if now >= deadline {
+            let outstanding = rec.outstanding();
+            warn!(fixture = %fixture_id, run = %run_id, %outstanding, "stopped waiting for the run's background work");
+            rec.text.push(format!(
+                "\n[the harness stopped waiting after {} s: {outstanding}]\n",
+                SETTLE_CAP.as_secs()
+            ));
+            rec.close_turn(Some("unfinished"));
+            cancel_run(ws, session_id).await;
+            return;
+        }
+        match timeout(until.min(deadline) - now, ws.next()).await {
+            Ok(Some(Ok(msg))) => {
+                let Some(event) = session_event(&msg, session_id) else { continue };
+                match rec.on_event(&event) {
+                    Step::Reply(replies) => send_replies(ws, replies, fixture_id, run_id).await,
+                    Step::Stopped(err) => {
+                        warn!(fixture = %fixture_id, run = %run_id, error = %err, "a woken turn was stopped by the server")
+                    }
+                    Step::Continue | Step::ToolStarted | Step::TurnEnded => {}
+                }
+            }
+            Ok(Some(Err(e))) => {
+                warn!(fixture = %fixture_id, run = %run_id, error = %e, "the socket failed while waiting for background work");
+                rec.close_turn(Some("unfinished"));
+                return;
+            }
+            Ok(None) => {
+                rec.close_turn(Some("unfinished"));
+                return;
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// The event in a socket frame, when it is this run's (see
+/// [`event_belongs_to_session`]).
+fn session_event(msg: &Message, session_id: &str) -> Option<Value> {
+    let event: Value = serde_json::from_str(msg.to_text().ok()?).ok()?;
+    // Filter events by our session to avoid cross-talk. The hub broadcasts
+    // to every client, and a scheduled workflow's completion carries
+    // `chatId`, not `session_id`; it ended fixture runs early as "Empty run"
+    // while the server kept running the fixture's turn.
+    event_belongs_to_session(&event, session_id).then_some(event)
+}
+
+async fn send_replies(ws: &mut Ws, replies: Vec<Value>, fixture_id: &str, run_id: &str) {
+    for reply in replies {
+        if ws.send(Message::Text(reply.to_string().into())).await.is_err() {
+            warn!(fixture = %fixture_id, run = %run_id, "could not answer a card or an approval; the run will stall");
+        }
+    }
 }
 
 /// The fixture with its employee named by id. A fixture that hires its own
@@ -864,5 +1111,233 @@ mod agent_lookup_tests {
         assert_eq!(agent_id_in(&list, "records-clerk-1f2e").as_deref(), Some("records-clerk-1f2e"), "an id wins over a name");
         assert_eq!(agent_id_in(&list, "odd").as_deref(), Some("records-clerk-1f2e"));
         assert_eq!(agent_id_in(&list, "nobody"), None);
+    }
+}
+
+/// The runner end to end against a scripted server: the real socket loop,
+/// fed the event order a Nebo server produces, so what reaches the trace is
+/// what the checks and the judge would read.
+#[cfg(test)]
+mod recording_tests {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use tokio::net::TcpListener;
+
+    /// One reply batch per chat message the runner sends: each event after
+    /// its delay (ms). `$S` in any string is the run's session id.
+    type Batch = Vec<(u64, Value)>;
+
+    async fn scripted_server(batches: Vec<Batch>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr").to_string();
+        let batches = Arc::new(Mutex::new(VecDeque::from(batches)));
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let batches = batches.clone();
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else { return };
+                    let _ = ws.send(Message::Text(json!({"type": "connected"}).to_string().into())).await;
+                    while let Some(Ok(msg)) = ws.next().await {
+                        let Ok(text) = msg.to_text() else { continue };
+                        let Ok(sent) = serde_json::from_str::<Value>(text) else { continue };
+                        if sent["type"] != "chat" {
+                            continue;
+                        }
+                        let session = sent["data"]["session_id"].as_str().unwrap_or("").to_string();
+                        let Some(batch) = batches.lock().unwrap().pop_front() else { continue };
+                        for (delay, event) in batch {
+                            if delay > 0 {
+                                tokio::time::sleep(Duration::from_millis(delay)).await;
+                            }
+                            let text = event.to_string().replace("$S", &session);
+                            if ws.send(Message::Text(text.into())).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    fn fixture(turns: &[&str]) -> Fixture {
+        let conversation: Vec<Value> = turns.iter().map(|t| json!({"role": "user", "content": t})).collect();
+        serde_json::from_value(json!({"id": "recording", "name": "recording", "conversation": conversation}))
+            .expect("fixture")
+    }
+
+    fn ev(kind: &str, data: Value) -> Value {
+        let mut data = data;
+        data["session_id"] = json!("$S");
+        json!({"type": kind, "data": data})
+    }
+
+    fn start(id: &str, tool: &str, input: Value) -> (u64, Value) {
+        (0, ev("tool_start", json!({"tool_id": id, "tool": tool, "input": input})))
+    }
+
+    fn result(id: &str, tool: &str, content: &str) -> (u64, Value) {
+        (0, ev("tool_result", json!({"tool_id": id, "tool_name": tool, "result": content, "is_error": false})))
+    }
+
+    fn text(delay: u64, t: &str) -> (u64, Value) {
+        (delay, ev("chat_stream", json!({"content": t})))
+    }
+
+    fn complete(delay: u64) -> (u64, Value) {
+        (delay, ev("chat_complete", json!({})))
+    }
+
+    async fn record(turns: &[&str], batches: Vec<Batch>) -> Trace {
+        let server = scripted_server(batches).await;
+        let mut traces = run_live(&fixture(turns), &server, None, &HashMap::new(), 1).await.expect("run");
+        traces.pop().expect("one trace")
+    }
+
+    /// Two delegate calls and four reads, each started before any returns
+    /// (the model's parallel calls), their results back in another order.
+    /// Every call is recorded once, in the order the model made them, with
+    /// its own arguments and its own result.
+    #[tokio::test]
+    async fn parallel_calls_are_each_recorded_with_their_own_result() {
+        let mut turn = vec![
+            start("d1", "delegate", json!({"description": "fees", "prompt": "Research TC fees.", "background": false})),
+            start("d2", "delegate", json!({"description": "crm", "prompt": "Compare CRMs.", "background": false})),
+            result("d2", "delegate", "Helper [h-crm] finished: CRM report"),
+            result("d1", "delegate", "Helper [h-fees] finished: fees report"),
+        ];
+        for n in 1..=4 {
+            turn.push(start(&format!("r{n}"), "read_file", json!({"path": format!("note{n}.txt")})));
+        }
+        for n in [3, 1, 4, 2] {
+            turn.push(result(&format!("r{n}"), "read_file", &format!("contents of note {n}")));
+        }
+        turn.push(text(0, "Done."));
+        turn.push(complete(0));
+        let trace = record(&["go"], vec![turn]).await;
+
+        let calls: Vec<(usize, &str, String, &str)> = trace
+            .tool_calls
+            .iter()
+            .map(|c| {
+                let arg = c.arguments["description"].as_str().or(c.arguments["path"].as_str()).unwrap_or("").to_string();
+                (c.sequence, c.tool.as_str(), arg, c.response.content.as_str())
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                (1, "delegate", "fees".to_string(), "Helper [h-fees] finished: fees report"),
+                (2, "delegate", "crm".to_string(), "Helper [h-crm] finished: CRM report"),
+                (3, "read_file", "note1.txt".to_string(), "contents of note 1"),
+                (4, "read_file", "note2.txt".to_string(), "contents of note 2"),
+                (5, "read_file", "note3.txt".to_string(), "contents of note 3"),
+                (6, "read_file", "note4.txt".to_string(), "contents of note 4"),
+            ]
+        );
+        assert_eq!(trace.metrics.total_tool_calls, 6);
+        assert_eq!(trace.turns[0].tool_calls, 6);
+    }
+
+    /// A helper launched in the background reports in a later turn the
+    /// session starts on its own. The runner keeps listening after the
+    /// owner's last turn until the helper has finished and the session has
+    /// heard it, and that turn's calls and reply are in the trace.
+    #[tokio::test]
+    async fn a_turn_woken_by_a_finished_helper_is_recorded() {
+        let turn = vec![
+            start("d1", "delegate", json!({"description": "read the notes", "prompt": "Read the notes."})),
+            (0, ev("subagent_start", json!({"task_id": "h-1", "description": "read the notes"}))),
+            result("d1", "delegate", "Helper h-1 is working in the background."),
+            text(0, "It's running in the background."),
+            complete(0),
+            (800, ev("subagent_complete", json!({"task_id": "h-1", "description": "read the notes", "success": true}))),
+            start("w1", "read_file", json!({"path": "summary.md"})),
+            result("w1", "read_file", "The access code is 4417."),
+            text(0, "The helper finished: the access code is 4417."),
+            complete(0),
+        ];
+        let trace = record(&["have a helper read the notes"], vec![turn]).await;
+
+        assert!(trace.final_response.content.contains("the access code is 4417"), "{}", trace.final_response.content);
+        assert!(trace.final_response.content.contains("[a later turn: the session woke on its own"), "{}", trace.final_response.content);
+        assert_eq!(trace.tool_calls.iter().map(|c| c.tool.as_str()).collect::<Vec<_>>(), ["delegate", "read_file"]);
+        assert_eq!(trace.turns.len(), 2, "{:?}", trace.turns);
+        assert!(!trace.turns[0].woken && trace.turns[1].woken, "{:?}", trace.turns);
+        assert_eq!(trace.turns[1].tool_calls, 1);
+    }
+
+    /// A helper that finishes as the owner's turn is closing: that turn
+    /// has made its last check for input, so the report gets a turn of its
+    /// own a moment later. The runner still waits for it.
+    #[tokio::test]
+    async fn a_report_landing_as_the_turn_closes_is_still_heard() {
+        let turn = vec![
+            start("d1", "delegate", json!({"description": "count", "prompt": "Count the files."})),
+            (0, ev("subagent_start", json!({"task_id": "h-2", "description": "count"}))),
+            result("d1", "delegate", "Helper h-2 is working in the background."),
+            (0, ev("subagent_complete", json!({"task_id": "h-2", "description": "count", "success": true}))),
+            text(0, "Started a helper."),
+            complete(0),
+            text(1500, "The helper counted 12 files."),
+            complete(0),
+        ];
+        let trace = record(&["count the files"], vec![turn]).await;
+        assert!(trace.final_response.content.contains("12 files"), "{}", trace.final_response.content);
+        assert!(trace.turns[1].woken);
+    }
+
+    /// The old loop says nothing on the socket when its background helper
+    /// ends: its only sign is the turn that wakes the session. A launch
+    /// (`agent` spawn with `wait: false`) is waited for until that turn.
+    #[tokio::test]
+    async fn a_background_launch_is_waited_for_until_a_turn_hears_it() {
+        let turn = vec![
+            start("s1", "agent", json!({"resource": "task", "action": "spawn", "prompt": "Research rates.", "wait": false})),
+            result("s1", "agent", "Sub-agent spawned in background."),
+            text(0, "Started it."),
+            complete(0),
+            text(1500, "The research finished: rates fell 0.1 points."),
+            complete(0),
+        ];
+        let trace = record(&["kick it off"], vec![turn]).await;
+        assert!(trace.final_response.content.contains("rates fell"), "{}", trace.final_response.content);
+        assert_eq!(trace.turns.len(), 2);
+    }
+
+    /// With nothing started in the background the run ends at the owner's
+    /// last turn: nothing to wait for, no time spent waiting.
+    #[tokio::test]
+    async fn a_run_with_no_background_work_ends_at_its_last_turn() {
+        let turn = vec![
+            start("r1", "read_file", json!({"path": "a.txt"})),
+            result("r1", "read_file", "a"),
+            text(0, "Read it."),
+            complete(0),
+            text(3000, "an unrelated later turn"),
+            complete(0),
+        ];
+        let begun = Instant::now();
+        let trace = record(&["read a.txt"], vec![turn]).await;
+        assert!(begun.elapsed() < Duration::from_secs(2), "{:?}", begun.elapsed());
+        assert!(!trace.final_response.content.contains("unrelated"));
+        assert_eq!(trace.turns.len(), 1);
+    }
+
+    #[test]
+    fn background_launches_in_either_vocabulary() {
+        assert!(launches_background_work("delegate", &json!({"prompt": "x"})), "delegate runs in the background by default");
+        assert!(!launches_background_work("delegate", &json!({"prompt": "x", "background": false})));
+        assert!(launches_background_work("run_command", &json!({"command": "sleep 9", "background": true})));
+        assert!(!launches_background_work("run_command", &json!({"command": "ls"})));
+        assert!(launches_background_work("agent", &json!({"resource": "task", "action": "spawn", "wait": false})));
+        assert!(!launches_background_work("agent", &json!({"resource": "task", "action": "spawn"})), "spawn waits by default");
+        assert!(!launches_background_work("agent", &json!({"resource": "task", "action": "spawn_parallel"})));
+        assert!(launches_background_work("os", &json!({"resource": "shell", "action": "exec", "command": "x", "background": true})));
+        assert!(!launches_background_work("os", &json!({"resource": "shell", "action": "exec", "command": "x"})));
+        assert!(!launches_background_work("read_file", &json!({"path": "x"})));
     }
 }

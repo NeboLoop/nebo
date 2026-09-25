@@ -25,20 +25,27 @@ pub struct Trace {
     /// server log and the provider's usage rows.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub session_id: String,
-    /// One row per owner turn, in order. Empty in traces from before it
-    /// existed and in a run that never completed.
+    /// One row per turn, in order: the owner's turns, then the turns the
+    /// session woke for afterwards. Empty in traces from before it existed
+    /// and in a run that never completed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turns: Vec<TurnMetrics>,
 }
 
-/// One owner turn's numbers, so two builds can be compared turn by turn:
-/// how long before the owner saw a word, how many model calls and tool calls
-/// the turn took, how large its biggest request was, and how often it
-/// stopped to ask.
+/// One turn's numbers, so two builds can be compared turn by turn: how long
+/// before the owner saw a word, how many model calls and tool calls the turn
+/// took, how large its biggest request was, and how often it stopped to ask.
+/// An owner turn, or a turn the session started on its own after the owner's
+/// last one, when its background work reported (`woken`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct TurnMetrics {
-    /// 1-based owner turn.
+    /// 1-based turn: the owner's turns first, then any woken turns.
     pub turn: usize,
+    /// A turn nobody sent: the session woke to a helper's or a background
+    /// command's report after the owner's last turn. Its latency and first
+    /// reply count from its first event, not from an owner's message.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub woken: bool,
     /// From sending the turn to its `chat_complete` (or `chat_error`).
     pub latency_ms: u64,
     /// From sending the turn to the first reply text. None: no text.
@@ -383,6 +390,7 @@ mod tests {
         t.session_id = "eval:f:run-1:1".into();
         t.turns = vec![TurnMetrics {
             turn: 1,
+            woken: false,
             latency_ms: 4200,
             first_reply_ms: Some(900),
             model_calls: 3,
