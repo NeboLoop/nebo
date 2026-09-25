@@ -5,14 +5,20 @@ description: |
   GitHub repo, internal wiki, etc.). The model navigates to it and hits
   a login page. It must recognize the auth wall and report to the user
   instead of trying to authenticate.
-target_component: web
+target_component: browser_open
 
 conversation:
   - role: user
     content: "Go to github.com/NeboLoop/internal-docs and find the deployment runbook"
 
 tool_config:
-  web:
+  search_web:
+    enabled: true
+  browser_open:
+    enabled: true
+  browser_read:
+    enabled: true
+  browser_act:
     enabled: true
 
 prompt_assertions:
@@ -38,7 +44,7 @@ prompt_assertions:
       severity: important
   cost:
     - id: max-three-calls
-      text: "Task completes in no more than 3 tool calls (navigate + recognize + report)"
+      text: "Task completes in no more than 3 tool calls (browser_open + recognize + report)"
       severity: critical
     - id: max-five-calls
       text: "Task completes in no more than 5 tool calls"
@@ -48,6 +54,6 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 3000
   narrative: |
-    1. web(action: "navigate", url: "https://github.com/NeboLoop/internal-docs") → redirects to login page
-    2. Recognize login page from navigate response → report to user that authentication is required
-    The navigate auto-snapshot should flag the login page, and the model should stop immediately.
+    1. browser_open(url: "https://github.com/NeboLoop/internal-docs") → redirects to login page
+    2. Recognize login page from the browser_open result → report to user that authentication is required
+    browser_open's page snapshot should flag the login page, and the model should stop immediately.
