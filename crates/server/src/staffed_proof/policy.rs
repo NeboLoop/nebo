@@ -453,32 +453,71 @@ async fn the_phones_default_is_the_employees_mode() {
         )
         .await;
     let mode = || agent::harness::permissions::rules::mode_of(nebo.store(), &seat).unwrap();
+    let modes = [
+        ("automatic", Mode::Automatic),
+        ("ask", Mode::Ask),
+        ("plan", Mode::Plan),
+        ("full_access", Mode::FullAccess),
+    ];
+    // Every state the phone offers, saved from every mode the employee can
+    // be in: it reloads as saved, and the permission check decides by it.
+    for (from, from_mode) in modes {
+        for (default, becomes) in [
+            ("always", None),
+            ("approval", Some(Mode::Ask)),
+            ("blocked", Some(Mode::Plan)),
+        ] {
+            nebo.put_ok(
+                &format!("/agents/{seat}/permissions"),
+                &json!({ "mode": from }),
+            )
+            .await;
+            assert_eq!(mode(), from_mode);
+            save(&nebo, &seat, default, json!({})).await;
+            let (shown, effective) = reload(&nebo, &seat).await;
+            assert_eq!(
+                shown, default,
+                "{default} saved in {from} reloads as {default}"
+            );
+            let now = mode();
+            match becomes {
+                Some(m) => assert_eq!(now, m, "{default} saved in {from}"),
+                // Always keeps a mode that already runs the job (Automatic,
+                // Full Access); from Ask or Plan it is Automatic.
+                None if matches!(from_mode, Mode::Automatic | Mode::FullAccess) => {
+                    assert_eq!(now, from_mode, "always saved in {from}")
+                }
+                None => assert_eq!(now, Mode::Automatic, "always saved in {from}"),
+            }
+            let decided = nebo.decide(&seat, OP, Origin::User, None);
+            match default {
+                "blocked" => {
+                    assert_eq!(effective, "blocked", "{from}");
+                    assert!(
+                        matches!(decided, Decision::Deny { .. }),
+                        "blocked in {from}: {decided:?}"
+                    );
+                }
+                "approval" => {
+                    assert_eq!(effective, "approval", "{from}");
+                    assert!(
+                        matches!(decided, Decision::Ask { .. }),
+                        "approval in {from}: {decided:?}"
+                    );
+                }
+                _ => {
+                    assert_eq!(effective, "always", "{from}");
+                    assert!(
+                        !matches!(decided, Decision::Deny { .. } | Decision::Ask { .. }),
+                        "always in {from}: {decided:?}"
+                    );
+                }
+            }
+        }
+    }
 
-    save(&nebo, &seat, "blocked", json!({})).await;
-    assert_eq!(
-        reload(&nebo, &seat).await,
-        ("blocked".to_string(), "blocked".to_string()),
-        "Blocked reloads as Blocked"
-    );
-    assert_eq!(mode(), Mode::Plan);
-    assert!(matches!(
-        nebo.decide(&seat, OP, Origin::User, None),
-        Decision::Deny { .. }
-    ));
-
-    save(&nebo, &seat, "approval", json!({})).await;
-    assert_eq!(
-        reload(&nebo, &seat).await,
-        ("approval".to_string(), "approval".to_string())
-    );
-    assert_eq!(mode(), Mode::Ask);
-
-    save(&nebo, &seat, "always", json!({})).await;
-    assert_eq!(reload(&nebo, &seat).await.0, "always");
-    assert_eq!(mode(), Mode::Automatic);
-
-    // Full Access set on the Permissions page stays when the phone saves an
-    // override with the default in force.
+    // Full Access stays when the phone saves an override with the default
+    // in force, and an ask rule asks in Full Access too.
     nebo.put_ok(
         &format!("/agents/{seat}/permissions"),
         &json!({ "mode": "full_access" }),
@@ -486,11 +525,7 @@ async fn the_phones_default_is_the_employees_mode() {
     .await;
     save(&nebo, &seat, "always", json!({ OP: "approval" })).await;
     assert_eq!(mode(), Mode::FullAccess);
-    assert_eq!(
-        reload(&nebo, &seat).await.1,
-        "approval",
-        "an ask rule asks in Full Access too"
-    );
+    assert_eq!(reload(&nebo, &seat).await.1, "approval");
 
     let _ = nebo.delete(&format!("/agents/{seat}")).await;
 }
