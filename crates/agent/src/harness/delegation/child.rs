@@ -92,6 +92,7 @@ pub fn child_request(
             parent_session_key: parent.session_key.to_string(),
             kind: spec.kind,
             depth: depth_of(&session_key),
+            answer: None,
         },
         session_key,
         input,

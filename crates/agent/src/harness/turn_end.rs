@@ -85,6 +85,54 @@ impl EndCheck for WorkflowContractCheck {
     }
 }
 
+/// Times the answer check sends a helper back before the turn ends as it
+/// is (the caller reads it and reports what's wrong).
+pub const ANSWER_SHAPE_RETRIES: u8 = 2;
+
+/// A helper whose caller reads its final answer as data: the answer must be
+/// one JSON object matching the schema (Claude Code's structured-output
+/// Stop enforcement, `registerStructuredOutputEnforcement`, with the answer
+/// as the turn's final text rather than a per-task tool, so the tool list
+/// stays the one list).
+pub struct AnswerShapeCheck(pub std::sync::Arc<serde_json::Value>);
+
+/// The JSON object a final answer carries, if it carries one.
+pub fn answer_object(text: &str) -> Option<serde_json::Value> {
+    let json = crate::memory::extract_json_object_pub(text)?;
+    serde_json::from_str::<serde_json::Value>(&json).ok().filter(|v| v.is_object())
+}
+
+/// What's wrong with `answer` against `schema`; empty when it matches.
+pub fn answer_issues(schema: &serde_json::Value, answer: &str) -> Vec<String> {
+    let Some(value) = answer_object(answer) else {
+        return vec!["there is no JSON object in it".to_string()];
+    };
+    match a2ui_validation::validate(schema, &value, "answer") {
+        Ok(()) => Vec::new(),
+        Err(errors) => errors.iter().map(|e| format!("{}: {}", e.path, e.message)).collect(),
+    }
+}
+
+#[async_trait::async_trait]
+impl EndCheck for AnswerShapeCheck {
+    fn name(&self) -> &'static str {
+        "answer_shape"
+    }
+
+    async fn check(&self, end: &TurnEnd<'_>) -> EndVerdict {
+        let answer = end.transcript.iter().rev().find(|m| m.role == "assistant").map(|m| m.content.as_str()).unwrap_or("");
+        let issues = answer_issues(&self.0, answer);
+        if issues.is_empty() || end.checks_this_turn >= ANSWER_SHAPE_RETRIES {
+            return EndVerdict::Stop;
+        }
+        EndVerdict::Continue(TurnEvent::AnswerShape(format!(
+            "Your final answer must be one JSON object matching the schema you were given, and nothing else. It doesn't \
+             yet:\n{}\nAnswer again with the corrected object.",
+            issues.iter().map(|i| format!("- {i}")).collect::<Vec<_>>().join("\n")
+        )))
+    }
+}
+
 fn continue_with(text: String) -> EndVerdict {
     EndVerdict::Continue(TurnEvent::WorkflowContract(text))
 }
@@ -165,6 +213,7 @@ pub fn registry(mode: &TurnMode, checks: EndChecks) -> Vec<Box<dyn EndCheck>> {
             .map(|c| Box::new(WorkflowContractCheck(c)) as Box<dyn EndCheck>)
             .into_iter()
             .collect(),
+        TurnMode::Helper { answer: Some(schema), .. } => vec![Box::new(AnswerShapeCheck(schema.clone())) as Box<dyn EndCheck>],
         TurnMode::Helper { .. } | TurnMode::Fork(_) => Vec::new(),
     }
 }
@@ -180,6 +229,38 @@ mod tests {
             step,
             checks_this_turn: 0,
         }
+    }
+
+    fn said(text: &str) -> ai::Message {
+        ai::Message { role: "assistant".into(), content: text.into(), ..Default::default() }
+    }
+
+    /// D13: a helper whose answer is read as data can't end on an answer in
+    /// the wrong shape: it is sent back with what's wrong, twice at most,
+    /// then ends as it is for its caller to report.
+    #[tokio::test]
+    async fn a_data_answer_must_match_its_schema() {
+        let schema = std::sync::Arc::new(serde_json::json!({
+            "type": "object", "properties": { "refuted": { "type": "boolean" } }, "required": ["refuted"]
+        }));
+        let helper = TurnMode::Helper {
+            parent_session_key: "subagent:agent:a:web:h-1".into(),
+            kind: crate::harness::delegation::HelperKind::General,
+            depth: 2,
+            answer: Some(schema),
+        };
+        let checks = registry(&helper, EndChecks::default());
+        assert_eq!(checks.len(), 1, "a data answer is checked");
+        let wrong = [said("It is probably false.")];
+        let EndVerdict::Continue(event) = checks[0].check(&end(&wrong, 1)).await else { panic!("sent back") };
+        let text = attachment_for(&event).unwrap().text;
+        assert!(text.contains("one JSON object") && text.contains("there is no JSON object in it"), "{text}");
+        let mistyped = [said(r#"{"refuted": "yes"}"#)];
+        assert!(matches!(checks[0].check(&end(&mistyped, 2)).await, EndVerdict::Continue(_)), "a wrong type is sent back too");
+        let right = [said(r#"Done. {"refuted": false}"#)];
+        assert!(matches!(checks[0].check(&end(&right, 3)).await, EndVerdict::Stop));
+        let tired = TurnEnd { transcript: &wrong, step: 4, checks_this_turn: ANSWER_SHAPE_RETRIES };
+        assert!(matches!(checks[0].check(&tired).await, EndVerdict::Stop), "at most twice");
     }
 
     fn call(id: &str, name: &str) -> ai::Message {
@@ -227,6 +308,7 @@ mod tests {
             parent_session_key: "agent:a:web".into(),
             kind: crate::harness::delegation::HelperKind::General,
             depth: 1,
+            answer: None,
         };
         assert!(registry(&helper, checks()).is_empty());
 

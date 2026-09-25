@@ -1384,17 +1384,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )))
     };
 
-    // Structured-output sub-agent runner for the deep-research harness. Shares the same
-    // provider set; absent when no provider can force tool calls.
-    let structured_agent: Option<Arc<dyn tools::bot_tool::StructuredAgent>> =
-        if shared_providers.is_empty() {
-            None
-        } else {
-            Some(Arc::new(agent::structured_agent::StructuredRunner::new(
-                shared_providers.clone(),
-                tool_registry.clone(),
-            )))
-        };
+    // The deep-research pipeline's sub-agents run as helpers of the run, on
+    // the one loop; bound to the helper registry once it exists.
+    let structured_runner = Arc::new(agent::structured_agent::StructuredRunner::new(tool_registry.clone()));
+    let structured_agent: Option<Arc<dyn tools::bot_tool::StructuredAgent>> = Some(structured_runner.clone());
 
     // Build embedding provider for vector search (memory embedding + transcript indexing)
     let embedding_provider = build_embedding_provider(&store, &cfg);
@@ -2166,6 +2159,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(wake_tx),
         Some(helper_ui_tx),
     );
+    structured_runner.bind(helpers.clone());
     if orch_handle
         .set(Box::new(agent::harness::delegation::door::HelperDoor::new(helpers.clone(), harness.clone()))
             as Box<dyn tools::SubAgentOrchestrator>)

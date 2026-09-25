@@ -2,8 +2,8 @@
 //!
 //! The pipeline is
 //! Scope → Search → URL-dedup → Fetch/Extract → 3-vote adversarial Verify → Synthesize,
-//! every stage a bounded fan-out whose sub-agent is forced through a schema-validated
-//! `StructuredOutput` call (see [`crate::deep_research`] callers + `agent::structured`).
+//! every stage a bounded fan-out whose sub-agent is a helper of the run whose final answer
+//! is one schema-validated JSON object (`agent::structured_agent`).
 //!
 //! This module holds the load-bearing *deterministic* logic — the data model, JSON-schema
 //! builders, URL normalisation, fetch-budget allocation, claim ranking, the survival rule,
@@ -40,7 +40,7 @@ const MAX_CLAIMS_PER_SOURCE: usize = 5;
 /// does ONE contradicting-evidence search — not an open-ended browse loop. The
 /// default 8-turn budget plus Nebo's human search flow (~20s/search) let a single
 /// sub-agent burn minutes on 8 searches; 2 turns = one search + one optional
-/// refinement, then the forced StructuredOutput. Keeps the port faithful to the
+/// refinement, then the answer. Keeps the port faithful to the
 /// reference and the verify fan-out (≤25×3) affordable.
 const WEB_SUBAGENT_TOOL_TURNS: u32 = 2;
 
@@ -128,7 +128,7 @@ pub enum Confidence {
     Low,
 }
 
-// ─── Phase outputs (deserialized from the validated StructuredOutput) ───
+// ─── Phase outputs (deserialized from the validated answers) ───
 
 /// One search angle the scope phase produced.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1095,12 +1095,12 @@ fn source_hash(url: &str) -> String {
     format!("{:016x}", h.finish())
 }
 
-/// Per-sub-agent browser-tab/session key. `run_id` is already `research-<uuid>`, so the
-/// `subagent:research-<uuid>:sa-<node>` shape gives each sub-agent its OWN browser tab
-/// (1:1 ownership), while `web_tool::session_group_key` strips the `:sa-<node>` suffix to
-/// share the run's visited-page dedup cache across all its sub-agents.
-fn tab_key(run_id: &str, node: &str) -> String {
-    format!("subagent:{run_id}:sa-{node}")
+/// A sub-agent's session key: a helper of the research run's own session
+/// (`subagent:<run session>:sa-<node>`, the helper key shape). Each sub-agent owns its
+/// browser tab (1:1), while `web_tool::session_group_key` strips the `:sa-<node>` suffix
+/// to share the run's visited-page dedup cache across all its sub-agents.
+fn tab_key(run_session: &str, node: &str) -> String {
+    format!("subagent:{run_session}:sa-{node}")
 }
 
 fn persist(dir: &Path, name: &str, value: &impl Serialize) {
@@ -1205,7 +1205,13 @@ async fn fetch_text(
 
 /// Phase 0 — decompose the question into search angles. On failure, salvages to a single
 /// angle = the raw question.
-async fn scope(agent: &Arc<dyn StructuredAgent>, question: &str, cfg: &Config, cancel: &CancellationToken) -> ScopeOut {
+async fn scope(
+    agent: &Arc<dyn StructuredAgent>,
+    run_session: &str,
+    question: &str,
+    cfg: &Config,
+    cancel: &CancellationToken,
+) -> ScopeOut {
     match run_typed::<ScopeOut>(
         agent,
         StructuredTask {
@@ -1213,7 +1219,7 @@ async fn scope(agent: &Arc<dyn StructuredAgent>, question: &str, cfg: &Config, c
             task: scope_task(question),
             schema: scope_schema(cfg),
             aux_tools: vec![],
-            tab_key: "subagent:research-scope:sa-scope".to_string(),
+            tab_key: tab_key(run_session, "scope"),
             max_tool_turns: None,
         },
         cancel,
@@ -1238,10 +1244,13 @@ async fn scope(agent: &Arc<dyn StructuredAgent>, question: &str, cfg: &Config, c
 
 /// Run the deterministic deep-research harness end-to-end. Persists every phase under
 /// `<data_dir>/research/<run_id>/` and returns the final (or salvaged) report.
+/// `run_session` is the research run's own session: every sub-agent is one of its
+/// helpers.
 pub async fn run(
     agent: Arc<dyn StructuredAgent>,
     data_dir: PathBuf,
     run_id: String,
+    run_session: String,
     question: String,
     cfg: Config,
     cancel: CancellationToken,
@@ -1278,7 +1287,7 @@ pub async fn run(
 
     // ── Phase 0: Scope ──
     emit_node_start(&progress, "scope", "Scope: decomposing the question");
-    let scope: ScopeOut = scope(&agent, &question, &cfg, &cancel).await;
+    let scope: ScopeOut = scope(&agent, &run_session, &question, &cfg, &cancel).await;
     emit_node_done(&progress, "scope", "Scope: decomposing the question", !scope.angles.is_empty());
     persist(&dir, "scope.json", &scope);
     debug!(angles = scope.angles.len(), "deep_research: scoped");
@@ -1302,8 +1311,8 @@ pub async fn run(
 
     let mut angle_futs: Vec<BoxFut<Vec<FetchedSource>>> = Vec::new();
     for (i, angle) in scope.angles.iter().enumerate() {
-        let (agent, cancel, q, angle, run_id, progress) =
-            (agent.clone(), cancel.clone(), question.clone(), angle.clone(), run_id.clone(), progress.clone());
+        let (agent, cancel, q, angle, run_session, progress) =
+            (agent.clone(), cancel.clone(), question.clone(), angle.clone(), run_session.clone(), progress.clone());
         let (dedup, search_log, sem, sources_dir) =
             (dedup.clone(), search_log.clone(), sem.clone(), sources_dir.clone());
         let panel = panel.clone();
@@ -1325,7 +1334,7 @@ pub async fn run(
                     task: search_task(&q, &angle),
                     schema: search_schema(&cfg),
                     aux_tools: vec!["search_web".into()],
-                    tab_key: tab_key(&run_id, &node),
+                    tab_key: tab_key(&run_session, &node),
                     max_tool_turns: Some(WEB_SUBAGENT_TOOL_TURNS),
                 }, &cancel).await {
                     Ok(out) => {
@@ -1356,8 +1365,8 @@ pub async fn run(
             // (c) Fetch + extract each novel source — each bounded by the same sem.
             let mut fetch_futs: Vec<BoxFut<FetchedSource>> = Vec::new();
             for planned in novel {
-                let (agent, cancel, q, cfg, run_id, progress) =
-                    (agent.clone(), cancel.clone(), q.clone(), cfg, run_id.clone(), progress.clone());
+                let (agent, cancel, q, cfg, run_session, progress) =
+                    (agent.clone(), cancel.clone(), q.clone(), cfg, run_session.clone(), progress.clone());
                 let (sem, sources_dir) = (sem.clone(), sources_dir.clone());
                 let panel = panel.clone();
                 fetch_futs.push(Box::pin(async move {
@@ -1375,7 +1384,7 @@ pub async fn run(
                         row: SourceRow { url: planned.url.clone(), quality: SourceQuality::Unreliable, angle: planned.angle.clone(), claim_count: 0, fetch },
                         claims: vec![],
                     };
-                    let (body, status) = match fetch_text(&agent, tab_key(&run_id, &node), &planned.url).await {
+                    let (body, status) = match fetch_text(&agent, tab_key(&run_session, &node), &planned.url).await {
                         Ok(v) => v,
                         Err(e) => {
                             warn!(url = %planned.url, error = %e, "deep_research: fetch failed");
@@ -1396,7 +1405,7 @@ pub async fn run(
                         task: extract_task(&q, &planned, &body),
                         schema: extract_schema(&cfg),
                         aux_tools: vec![],
-                        tab_key: tab_key(&run_id, &format!("extract-{hash}")),
+                        tab_key: tab_key(&run_session, &format!("extract-{hash}")),
                         max_tool_turns: None,
                     }, &cancel).await {
                         Ok(e) => e,
@@ -1504,8 +1513,8 @@ pub async fn run(
     let mut verify_futs: Vec<BoxFut<(usize, Vote, Option<String>)>> = Vec::new();
     for (ci, claim) in ranked.iter().enumerate() {
         for v in 0..votes_per {
-            let (agent, cancel, q, claim, run_id, progress) =
-                (agent.clone(), cancel.clone(), question.clone(), claim.clone(), run_id.clone(), progress.clone());
+            let (agent, cancel, q, claim, run_session, progress) =
+                (agent.clone(), cancel.clone(), question.clone(), claim.clone(), run_session.clone(), progress.clone());
             let required = cfg.refutations_required;
             verify_futs.push(Box::pin(async move {
                 let node = format!("verify-{ci}-{v}");
@@ -1518,7 +1527,7 @@ pub async fn run(
                     task: verify_task(&q, &claim, v, votes_per, required),
                     schema: verdict_schema(),
                     aux_tools: vec!["search_web".into()],
-                    tab_key: tab_key(&run_id, &node),
+                    tab_key: tab_key(&run_session, &node),
                     max_tool_turns: Some(WEB_SUBAGENT_TOOL_TURNS),
                 }, &cancel).await {
                     Ok(verdict) => (Some(verdict), None),
@@ -1608,7 +1617,7 @@ pub async fn run(
         task: synth_task(&question, &confirmed, &killed),
         schema: report_schema(),
         aux_tools: vec![],
-        tab_key: tab_key(&run_id, "synth"),
+        tab_key: tab_key(&run_session, "synth"),
         max_tool_turns: None,
     }, &cancel).await {
         Ok(out) => {

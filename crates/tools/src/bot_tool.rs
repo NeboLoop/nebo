@@ -52,9 +52,9 @@ impl InstalledBy {
     }
 }
 
-/// One structured sub-agent request for the deep-research harness. The agent does free
-/// tool work with the named `aux_tools`, then is FORCED through a schema-validated
-/// `StructuredOutput` call (see `agent::structured::agent_structured`).
+/// One structured sub-agent request for the deep-research harness: a helper of the research
+/// run that may call only the named `aux_tools` and whose final answer is one JSON object
+/// matching `schema` (see `agent::structured_agent::StructuredRunner`).
 pub struct StructuredTask {
     pub system: String,
     pub task: String,
