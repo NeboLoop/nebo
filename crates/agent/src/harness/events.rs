@@ -359,7 +359,7 @@ fn mode_row(m: &ModeFacts) -> Option<Attachment> {
     Some(Attachment {
         kind: "mode",
         text: format!(
-            "Model: {}. Answer questions about your model from this id alone; what it is built on is not shown to you, so don't guess. Permission mode: {}.",
+            "Model: {}. Permission mode: {}.",
             m.model, m.permission_mode
         ),
         data: serde_json::Map::from_iter([
@@ -764,7 +764,9 @@ mod tests {
         let mut plan = facts();
         plan.mode.permission_mode = "Plan".into();
         assert_eq!(fact_step(&mut history, &plan), ["mode"]);
-        assert!(history.last().unwrap().content.contains("Permission mode: Plan."));
+        let row = &history.last().unwrap().content;
+        assert!(row.contains(&format!("Model: {}. Permission mode: Plan.", plan.mode.model)), "{row}");
+        assert!(!row.contains("guess"), "facts only, as Claude Code states the model: {row}");
         assert!(fact_step(&mut history, &plan).is_empty());
     }
 
