@@ -29,7 +29,8 @@ impl AskOwnerTool {
     /// The reporting line (`agents.reports_to`) read through the store's ONE
     /// walk, delivered on the ONE coworker rail — the manager receives it in
     /// their own session, under their own persona and memory, exactly as if
-    /// a coworker had messaged them, and their reply is this call's result.
+    /// a coworker had messaged them. The call returns at once; their reply
+    /// comes back to this session as a notification.
     ///
     /// `None` when there is no reporting line, no rail wired, or the delivery
     /// failed: the caller then decides for itself, as every seat did before
@@ -52,20 +53,14 @@ impl AskOwnerTool {
             "[{my_name} cannot finish this without a decision, and there is nobody at the \
              keyboard. You are the employee they answer to.]\n\n{text}"
         );
-        match crate::coworker::deliver(&rail, ctx, &manager_id, &asked, true).await {
-            Ok(delivery) => Some(match delivery.reply {
-                Some(reply) => ToolResult::ok(format!(
-                    "Nobody is at the keyboard, so this went to {}, who you answer to. Their \
-                     answer:\n\n{reply}",
-                    delivery.to_name
-                )),
-                None => ToolResult::ok(format!(
-                    "Nobody is at the keyboard, so this went to {name}, who you answer to. They \
-                     are deciding in their own session and you will be woken when they answer — \
-                     report this as \"asked {name} — waiting\", never as done.",
-                    name = delivery.to_name
-                )),
-            }),
+        match crate::coworker::deliver(&rail, ctx, &manager_id, &asked).await {
+            Ok(delivery) => Some(ToolResult::ok(format!(
+                "Nobody is at the keyboard, so this went to {name}, who you answer to. They decide \
+                 in their own session, and their answer comes to you as a notification. Until \
+                 then carry on with anything that doesn't depend on it, and don't treat it as \
+                 decided.",
+                name = delivery.to_name
+            ))),
             Err(e) => {
                 tracing::warn!(agent = %me, manager = %manager_id, error = %e,
                     "escalation up the reporting line failed; the seat decides for itself");

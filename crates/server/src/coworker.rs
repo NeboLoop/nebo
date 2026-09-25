@@ -14,6 +14,7 @@ use std::pin::Pin;
 use tracing::info;
 
 use crate::chat_dispatch::{ChatConfig, run_chat_events};
+use crate::reply_route::{CoworkerRoute, ReplyRoute, TeamLeg};
 use crate::state::AppState;
 use tools::coworker::{CoworkerDelivery, CoworkerMessage, CoworkerRail};
 
@@ -21,14 +22,6 @@ use tools::coworker::{CoworkerDelivery, CoworkerMessage, CoworkerRail};
 /// segment is the deliberate isolation context the runner's canonical
 /// `session_key_context` picks up.
 pub(crate) const COWORKER_CHANNEL: &str = "coworker";
-
-/// How long a `wait: true` send blocks on the coworker's reply before
-/// degrading to the fire-and-forget shape (honest "asked — waiting" tool
-/// result now, reply injected into the sender's session when it lands).
-/// Coworker runs are full agent runs — research and tool use at minutes
-/// scale is normal — so this is a park-expiry backstop against a wedged
-/// sender, not an expectation of reply latency.
-const REPLY_WAIT_SLA: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Server-side implementation of [`tools::coworker::CoworkerRail`] — dispatches
 /// through the ONE chat pipeline (`run_chat_events`) on the comm lane.
@@ -155,7 +148,6 @@ pub(crate) async fn send_coworker_message(
             to_agent_id: to_id,
             to_name,
             thread_key,
-            reply: None,
         });
     }
 
@@ -242,50 +234,25 @@ pub(crate) async fn send_coworker_message(
         seed_taint.push(types::provenance::ProvenanceClass::Coworker);
     }
 
-    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", &to_id);
-    let cancel_token = tokio_util::sync::CancellationToken::new();
-    let config = ChatConfig {
-        session_key: thread_key.clone(),
-        prompt,
-        user_id: String::new(),
-        channel: COWORKER_CHANNEL.to_string(),
-        // Another employee's words, which is exactly what `Origin::Comm`
-        // names ("a peer Nebo, a loop, an agent space"). The prompt built
-        // above already tells the receiver this is "not from your owner" and
-        // must not be read as owner instructions — an origin of `User` made
-        // that a request rather than a boundary. It also closed the escalation
-        // path: an employee prompt-injected over Slack, email or a web page
-        // could hand the work to a coworker that still held shell and files.
-        origin: tools::Origin::Comm,
-        // The target acts with its own grant; the requester's is never read.
-        door: types::permissions::Door::Coworker { from: msg.from_agent_id.clone() },
-        agent_id: to_id.clone(),
-        cancel_token: cancel_token.clone(),
-        lane: types::constants::lanes::COMM.to_string(),
-        comm_reply: None,
-        entity_config,
-        images: vec![],
-        attachments: vec![],
-        entity_name: String::new(),
-        origin_agent_id: None,
-        mention_context: Some(mention_context),
-        tool_scope: None,
-        plan_mode: false,
-        channel_ctx: None,
-        handoff_depth: msg.handoff_depth + 1,
-        seed_taint,
-        tool_allowlist: None,
-        hidden_prompt: false,
-        // Recall-for-audience: the target's recall is filtered against this
-        // requester unless the owner granted them in `memory.share_with`.
-        audience: Some(sender_ref.to_string()),
-        cwd: None,
-        model_override: None,
+    // Where this thread's replies go, now and when a notification wakes it
+    // later: back to the sender's session, or into the team (and to the
+    // session that posted).
+    let route = CoworkerRoute {
+        to_agent_id: to_id.clone(),
+        to_name: to_name.clone(),
+        from_agent_id: msg.from_agent_id.clone(),
+        from_name: from_name.clone(),
+        reply_to: match msg.team.as_ref() {
+            Some(t) => t.reply_to.clone(),
+            None => Some(msg.sender_session_key.clone()),
+        },
+        mirror_key,
+        sender_depth: msg.handoff_depth,
+        team: team.as_ref().map(|t| TeamLeg { team_id: t.id.clone(), team_name: t.name.clone() }),
     };
+    crate::reply_route::set(&state, &thread_key, "", Some(&ReplyRoute::Coworker(route.clone())));
 
-    let rx = run_chat_events(&state, config)
-        .await
-        .map_err(|e| format!("failed to dispatch to {}: {}", to_name, e))?;
+    run_in_thread(&state, &thread_key, route, prompt, Some(mention_context), seed_taint).await?;
 
     if let Some(t) = team.as_ref() {
         // The owner's open team view shows who picked the post up — a post
@@ -308,127 +275,153 @@ pub(crate) async fn send_coworker_message(
         thread = %thread_key,
         matter = matter.unwrap_or(""),
         team = team.as_ref().map(|t| t.id.as_str()).unwrap_or(""),
-        wait = msg.wait,
         "coworker message delivered"
     );
-
-    // ONE completion path for both wait modes: the collector task drains B's
-    // run (forwarding approval/ask requests to the owner's frontend), records
-    // the reply in the sender-side thread, then hands the reply to whoever is
-    // waiting. If nobody is — fire-and-forget, or the reply SLA expired — the
-    // failed oneshot send returns the reply and it WAKES the sender's session
-    // through the wake rail instead. The reply reaches the sender exactly once.
-    // A TEAM reply has one destination only: it is posted into the team,
-    // carrying the depth of the post that caused it plus one.
-    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<String>();
-    {
-        let state = state.clone();
-        let to_id = to_id.clone();
-        let to_name = to_name.clone();
-        let from_name = from_name.clone();
-        let thread_key = thread_key.clone();
-        let mirror = mirror.clone();
-        let sender_session_key = msg.sender_session_key.clone();
-        let sender_depth = msg.handoff_depth;
-        let cancel_token = cancel_token.clone();
-        let team_id = team.as_ref().map(|t| t.id.clone());
-        tokio::spawn(async move {
-            let owner = OwnerForward {
-                state: &state,
-                agent_id: &to_id,
-                agent_name: &to_name,
-                from_name: &from_name,
-                session_key: &thread_key,
-            };
-            let (reply, reply_provenance) = crate::channel_dispatch::collect_channel_reply(
-                rx,
-                &cancel_token,
-                &to_id,
-                COWORKER_CHANNEL,
-                Some(&owner),
-            )
-            .await;
-            let reply = label_tainted_reply(reply, &reply_provenance);
-            if let Some(team_id) = team_id {
-                drop(done_tx);
-                if reply.is_empty() {
-                    return;
-                }
-                let post = tools::coworker::TeamPost {
-                    attachments: vec![],
-                    team_id,
-                    from_agent_id: to_id.clone(),
-                    text: reply,
-                    mention: Vec::new(),
-                    handoff_depth: sender_depth.saturating_add(1),
-                    provenance: reply_provenance,
-                    is_reply: true,
-                };
-                if let Err(e) = crate::team::post(state.clone(), post).await {
-                    tracing::warn!(error = %e, to = %to_id, "team: failed to post member reply");
-                }
-                return;
-            }
-            record_reply(&state, mirror.as_deref(), &to_name, &reply);
-            if let Err(reply) = done_tx.send(reply) {
-                // Nobody is blocked on this reply (fire-and-forget, or the
-                // SLA expired) — wake the sender's session with it (R4). The
-                // reply's provenance rides the wake so the woken run is
-                // decided at the WS2 gates; depth continues the sender's
-                // chain so wake-driven sends stay bounded (R6).
-                if !reply.is_empty() {
-                    let mut provenance = reply_provenance.clone();
-                    if !provenance.contains(&types::provenance::ProvenanceClass::Coworker) {
-                        provenance.push(types::provenance::ProvenanceClass::Coworker);
-                    }
-                    crate::wake::enqueue(
-                        &state,
-                        &sender_session_key,
-                        "coworker_reply",
-                        &format!("[Reply from {}]\n{}", to_name, reply),
-                        &provenance,
-                        sender_depth.saturating_add(1),
-                    );
-                }
-            }
-        });
-    }
-
-    let reply = if msg.wait && team.is_none() {
-        let mut done_rx = done_rx;
-        match tokio::time::timeout(REPLY_WAIT_SLA, &mut done_rx).await {
-            Ok(Ok(reply)) => Some(reply),
-            Ok(Err(_)) => {
-                // done_tx dropped without a value — the collector task died.
-                // The message was delivered; the target thread is the record.
-                tracing::warn!(to = %to_id, "coworker: collector task ended without a reply");
-                None
-            }
-            Err(_elapsed) => {
-                // Reply SLA expired: the sender resumes with honest "asked —
-                // waiting" narration and the reply arrives by session
-                // injection. try_recv closes the race where the reply landed
-                // exactly at the deadline.
-                match done_rx.try_recv() {
-                    Ok(reply) => Some(reply),
-                    Err(_) => {
-                        drop(done_rx);
-                        None
-                    }
-                }
-            }
-        }
-    } else {
-        drop(done_rx);
-        None
-    };
 
     Ok(CoworkerDelivery {
         to_agent_id: to_id,
         to_name,
         thread_key,
-        reply,
     })
+}
+
+/// Run one turn in a coworker's thread, as the coworker, on behalf of the
+/// sender `route` names, and take its reply where the route says. It never
+/// waits for the turn: the reply reaches the sender as a notification
+/// (Claude Code's SendMessage). The ONE way a coworker thread runs: a new
+/// message, and a notification that wakes the thread (`wake`), both come
+/// here.
+pub(crate) async fn run_in_thread(
+    state: &AppState,
+    thread_key: &str,
+    route: CoworkerRoute,
+    prompt: String,
+    mention_context: Option<String>,
+    seed_taint: Vec<types::provenance::ProvenanceClass>,
+) -> Result<(), String> {
+    let sender_ref = if route.from_agent_id.is_empty() { "main" } else { route.from_agent_id.as_str() };
+    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", &route.to_agent_id);
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let config = ChatConfig {
+        session_key: thread_key.to_string(),
+        prompt,
+        user_id: String::new(),
+        channel: COWORKER_CHANNEL.to_string(),
+        // Another employee's words, which is exactly what `Origin::Comm`
+        // names ("a peer Nebo, a loop, an agent space"). The prompt built
+        // above already tells the receiver this is "not from your owner" and
+        // must not be read as owner instructions — an origin of `User` made
+        // that a request rather than a boundary. It also closed the escalation
+        // path: an employee prompt-injected over Slack, email or a web page
+        // could hand the work to a coworker that still held shell and files.
+        origin: tools::Origin::Comm,
+        // The target acts with its own grant; the requester's is never read.
+        door: types::permissions::Door::Coworker { from: route.from_agent_id.clone() },
+        agent_id: route.to_agent_id.clone(),
+        cancel_token: cancel_token.clone(),
+        lane: types::constants::lanes::COMM.to_string(),
+        comm_reply: None,
+        entity_config,
+        images: vec![],
+        attachments: vec![],
+        entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context,
+        tool_scope: None,
+        plan_mode: false,
+        channel_ctx: None,
+        handoff_depth: route.sender_depth.saturating_add(1),
+        seed_taint,
+        tool_allowlist: None,
+        hidden_prompt: false,
+        // Recall-for-audience: the target's recall is filtered against this
+        // requester unless the owner granted them in `memory.share_with`.
+        audience: Some(sender_ref.to_string()),
+        cwd: None,
+        model_override: None,
+    };
+
+    let rx = run_chat_events(state, config)
+        .await
+        .map_err(|e| format!("failed to dispatch to {}: {}", route.to_name, e))?;
+
+    // The collector drains the run (forwarding approval and ask requests to
+    // the owner's frontend) and hands its reply on. Input that went into a
+    // turn already running in the thread is answered by that turn.
+    let state = state.clone();
+    let thread_key = thread_key.to_string();
+    tokio::spawn(async move {
+        let owner = OwnerForward {
+            state: &state,
+            agent_id: &route.to_agent_id,
+            agent_name: &route.to_name,
+            from_name: &route.from_name,
+            session_key: &thread_key,
+        };
+        let reply = crate::channel_dispatch::collect_channel_reply(
+            rx,
+            &cancel_token,
+            &route.to_agent_id,
+            COWORKER_CHANNEL,
+            Some(&owner),
+        )
+        .await;
+        if reply.queued {
+            return;
+        }
+        let text = label_tainted_reply(reply.text, &reply.provenance);
+        deliver_reply(&state, &route, text, reply.provenance).await;
+    });
+    Ok(())
+}
+
+/// A coworker's reply, where its thread's route says: posted into the team
+/// for a team member, recorded in the sender's own thread otherwise, and in
+/// both cases to the session that asked, as a notification. Its provenance
+/// rides the wake so the woken run is decided at the gates; the depth
+/// continues the sender's chain so replies stay bounded (R6).
+async fn deliver_reply(
+    state: &AppState,
+    route: &CoworkerRoute,
+    reply: String,
+    provenance: Vec<types::provenance::ProvenanceClass>,
+) {
+    if reply.is_empty() {
+        return;
+    }
+    let depth = route.sender_depth.saturating_add(1);
+    let header = match &route.team {
+        Some(leg) => {
+            let post = tools::coworker::TeamPost {
+                attachments: vec![],
+                team_id: leg.team_id.clone(),
+                from_agent_id: route.to_agent_id.clone(),
+                text: reply.clone(),
+                mention: Vec::new(),
+                handoff_depth: depth,
+                provenance: provenance.clone(),
+                is_reply: true,
+                reply_to: route.reply_to.clone(),
+            };
+            if let Err(e) = crate::team::post(state.clone(), post).await {
+                tracing::warn!(error = %e, to = %route.to_agent_id, "team: failed to post member reply");
+            }
+            format!("[Reply from {} in team \"{}\"]", route.to_name, leg.team_name)
+        }
+        None => {
+            record_reply(state, route.mirror_key.as_deref(), &route.to_name, &reply);
+            format!("[Reply from {}]", route.to_name)
+        }
+    };
+    let Some(reply_to) = route.reply_to.as_deref() else {
+        return;
+    };
+    let mut provenance = provenance;
+    if !provenance.contains(&types::provenance::ProvenanceClass::Coworker) {
+        provenance.push(types::provenance::ProvenanceClass::Coworker);
+    }
+    let kind = if route.team.is_some() { "team_reply" } else { "coworker_reply" };
+    crate::wake::enqueue(state, reply_to, kind, &format!("{header}\n{reply}"), &provenance, depth);
 }
 
 /// Forwarding surface handed to `collect_channel_reply` for runs that happen
@@ -620,17 +613,17 @@ fn label_tainted_reply(
 }
 
 /// Record the coworker's reply in the sender-side thread (best-effort — the
-/// reply already reached the sender via the tool result or session injection).
-fn record_reply(state: &AppState, mirror_sid: Option<&str>, to_name: &str, reply: &str) {
-    let Some(sid) = mirror_sid else { return };
-    if reply.is_empty() {
+/// reply reaches the sender as a notification).
+fn record_reply(state: &AppState, mirror_key: Option<&str>, to_name: &str, reply: &str) {
+    let Some(key) = mirror_key else { return };
+    let Ok(sid) = state.harness.sessions().resolve_session_id_by_key(key) else {
         return;
-    }
+    };
     let content = format!("[Reply from {}]\n{}", to_name, reply);
     if let Err(e) = state
         .harness
         .sessions()
-        .append_message(sid, "system", &content, None, None, None)
+        .append_message(&sid, "system", &content, None, None, None)
     {
         tracing::warn!(error = %e, "coworker: failed to record reply in sender thread");
     }

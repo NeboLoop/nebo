@@ -627,6 +627,8 @@ async fn run_delegated_task(
             iteration_count: run_handle.iteration_count.clone(),
             tool_call_count: run_handle.tool_call_count.clone(),
             current_tool: run_handle.current_tool.clone(),
+            waiting: run_handle.waiting.clone(),
+            stalled: run_handle.stalled.clone(),
         }),
     };
     match state.harness.start_turn(req).await {
@@ -694,10 +696,11 @@ async fn drain_voice_run(
     let mut control_stop: Option<(String, String)> = None;
     let mut last_event = tokio::time::Instant::now();
     loop {
-        let event = match agent::guardrails::next_event(&mut rx, last_event).await {
+        let event = match agent::guardrails::next_event(&mut rx, last_event, &run_handle.waiting).await {
             agent::guardrails::Next::Event(e) => e,
             agent::guardrails::Next::Closed => break,
             agent::guardrails::Next::Stalled => {
+                run_handle.stalled.store(true, std::sync::atomic::Ordering::SeqCst);
                 warn!(
                     session_key,
                     "voice run stalled: no event for {}s",

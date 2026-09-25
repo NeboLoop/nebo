@@ -135,6 +135,12 @@ pub struct RunHandle {
     activity: Arc<std::sync::Mutex<String>>,
     pub cancel_token: CancellationToken,
     pending_ask: ParkedAsk,
+    /// The run's calls waiting on the owner: its drain loop never ends it as
+    /// stalled while one is.
+    pub waiting: Arc<tools::Waiting>,
+    /// Set by the drain loop that ends the run as stalled, before it cancels,
+    /// so the turn records the stall and not an owner's stop.
+    pub stalled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RunHandle {
@@ -275,6 +281,8 @@ impl RunRegistry {
             activity,
             cancel_token: params.cancel_token,
             pending_ask,
+            waiting: Default::default(),
+            stalled: Default::default(),
         }
     }
 

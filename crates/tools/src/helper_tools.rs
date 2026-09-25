@@ -172,7 +172,7 @@ impl Helpers {
         let message = input["message"].as_str().unwrap_or("").trim();
         match self.recipient(to) {
             Recipient::Team(team) => return self.teams.post(ctx, &team, message, &input["mention"]).await,
-            Recipient::Coworker(name) => return self.to_coworker(ctx, &name, message, input["wait"].as_bool().unwrap_or(true)).await,
+            Recipient::Coworker(name) => return self.to_coworker(ctx, &name, message).await,
             Recipient::Helper => {}
         }
         let orch = match self.orchestrator() {
@@ -205,8 +205,10 @@ impl Helpers {
 
 impl Helpers {
     /// A message into a coworker's own session — their persona, memory,
-    /// connected accounts and permissions — through the coworker rail.
-    async fn to_coworker(&self, ctx: &ToolContext, to: &str, text: &str, wait: bool) -> ToolResult {
+    /// connected accounts and permissions — through the coworker rail. It
+    /// never waits: the reply comes back as a notification (Claude Code's
+    /// SendMessage, `SendMessageTool.ts`: queue, return, reply later).
+    async fn to_coworker(&self, ctx: &ToolContext, to: &str, text: &str) -> ToolResult {
         let rail = self.rail.read().unwrap().clone();
         let Some(rail) = rail else {
             return ToolResult::error(
@@ -214,7 +216,7 @@ impl Helpers {
                  use send_loop_message for bots on the NeboAI hub).",
             );
         };
-        match crate::coworker::deliver(&rail, ctx, to, text, wait).await {
+        match crate::coworker::deliver(&rail, ctx, to, text).await {
             Ok(delivery) => {
                 // Structured payload → the chat renders a first-class
                 // "Messaged {name}" event (clickable through to the coworker
@@ -225,22 +227,14 @@ impl Helpers {
                     "toAgentId": delivery.to_agent_id,
                     "threadKey": delivery.thread_key,
                     "text": text,
-                    "reply": delivery.reply.clone(),
                 });
-                match delivery.reply {
-                    Some(ref reply) => ToolResult::ok(format!(
-                        "Message delivered to {}. Their reply:\n\n{}",
-                        delivery.to_name, reply
-                    ))
-                    .with_payload(payload),
-                    None => ToolResult::ok(format!(
-                        "Message delivered to {} — they are handling it in their own session; \
-                         their reply reaches you when it comes. Until then, report this as \
-                         \"asked {} — waiting\", never as done.",
-                        delivery.to_name, delivery.to_name
-                    ))
-                    .with_payload(payload),
-                }
+                ToolResult::ok(format!(
+                    "Message sent to {name}. They work on it in their own session, and their reply \
+                     comes to you as a notification. Until then you know nothing about their answer: \
+                     don't report, guess or redo it. If the owner asks, say {name} is working on it.",
+                    name = delivery.to_name
+                ))
+                .with_payload(payload)
             }
             Err(e) => ToolResult::error(e),
         }
@@ -310,7 +304,7 @@ impl DynTool for HelperTool {
                 .to_string(),
             HelperOp::SendMessage => "Sends a message to a helper you started (by its id), a coworker (another employee on this Nebo, by name) or a team (by name).\n\
                  - A running helper sees it at its next step; a finished one continues with it, keeping its context.\n\
-                 - A coworker gets it in their own session and answers with their own tools and permissions. `wait: false` doesn't wait for the reply; it reaches you when it comes.\n\
+                 - A coworker gets it in their own session and answers with their own tools and permissions; their reply comes to you as a notification. Several messages in one response go out together.\n\
                  - A team's lead answers and hands steps to teammates; `mention` asks named members to act, and @everyone in the message asks the whole team.\n\
                  - Work for a named employee is a message to them, never a helper. Bots on the NeboAI hub are send_loop_message."
                 .to_string(),
@@ -335,7 +329,6 @@ impl DynTool for HelperTool {
                 "properties": {
                     "to": { "type": "string", "description": "A helper's id (from delegate), a coworker's name, or a team's name." },
                     "message": { "type": "string", "description": "What to tell them." },
-                    "wait": { "type": "boolean", "default": true, "description": "To a coworker: wait for their reply (default). false sends it and carries on." },
                     "mention": { "type": "array", "items": { "type": "string" }, "description": "To a team: the members asked to act, by name." }
                 },
                 "required": ["to", "message"]
@@ -361,6 +354,13 @@ impl DynTool for HelperTool {
     /// delegate calls in one response.
     fn read_only(&self, _input: &Value) -> bool {
         self.op == HelperOp::Delegate
+    }
+
+    /// Every call returns at once, the message side too: a send only
+    /// delivers, and the reply is a notification. So several sends in one
+    /// response go out side by side, started as the reply streams.
+    fn concurrency_safe(&self, _input: &Value) -> bool {
+        true
     }
 
     /// Helpers are the employee's own work; a coworker or a team acts on
@@ -511,7 +511,6 @@ mod tests {
                     to_agent_id: "bk".into(),
                     to_name: msg.to,
                     thread_key: "agent:bk:coworker".into(),
-                    reply: Some("on it".into()),
                 })
             })
         }
@@ -727,7 +726,7 @@ mod tests {
         assert_eq!(rig.rail.posts.lock().unwrap()[0], ("t-1".to_string(), "close the month".to_string(), vec!["bk".to_string()]));
 
         let coworker = rig.call("send_message", json!({"to": "Bookkeeper", "message": "send the invoice"})).await;
-        assert!(!coworker.is_error && coworker.content.contains("Their reply:\n\non it"), "{}", coworker.content);
+        assert!(!coworker.is_error && coworker.content.starts_with("Message sent to Bookkeeper."), "{}", coworker.content);
         assert_eq!(rig.rail.sent.lock().unwrap()[0], ("Bookkeeper".to_string(), "send the invoice".to_string()));
 
         let helper = rig.call("send_message", json!({"to": "h1", "message": "also the edge cases"})).await;
@@ -738,5 +737,20 @@ mod tests {
         assert_eq!(send.rule_field(&json!({"to": "Bookkeeper"})), Some(types::permissions::RuleField::Recipient("Bookkeeper".into())));
         assert_eq!(send.rule_field(&json!({"to": "h1"})), None);
         assert_eq!(send.activity(&json!({"to": "Back Office"})), "messaging the Back Office team");
+    }
+
+    /// A send to a coworker never waits (Claude Code's SendMessage): there
+    /// is no way to ask it to, it answers with a receipt, and several sends
+    /// in one response run side by side.
+    #[tokio::test]
+    async fn a_coworker_message_never_waits() {
+        let rig = Rig::new();
+        rig.store.create_agent("bk", None, "Bookkeeper", "d", "# agent", "", None, None).unwrap();
+        let send = rig.tools.iter().find(|t| t.name() == "send_message").unwrap();
+        assert!(send.schema()["properties"].get("wait").is_none(), "one way: a send never waits");
+        assert!(send.concurrency_safe(&json!({"to": "Bookkeeper", "message": "x"})));
+        let r = rig.call("send_message", json!({"to": "Bookkeeper", "message": "the invoice"})).await;
+        assert!(r.content.contains("their reply comes to you as a notification"), "{}", r.content);
+        assert!(r.payload.as_ref().is_some_and(|p| p.get("reply").is_none()), "{:?}", r.payload);
     }
 }

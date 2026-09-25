@@ -447,11 +447,26 @@ fn turn_request(state: &AppState, config: &ChatConfig, run: &RunHandle) -> agent
             iteration_count: run.iteration_count.clone(),
             tool_call_count: run.tool_call_count.clone(),
             current_tool: run.current_tool.clone(),
+            waiting: run.waiting.clone(),
+            stalled: run.stalled.clone(),
         }),
     }
 }
 
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
+    // New input says where this session's work comes from: a loop or phone
+    // conversation, or the owner in the app. A turn a notification wakes
+    // later replies there (`reply_route`).
+    if !config.prompt.is_empty() {
+        match (&config.comm_reply, config.origin) {
+            (Some(cr), _) => {
+                let route = crate::reply_route::ReplyRoute::comm(cr);
+                crate::reply_route::set(state, &config.session_key, &config.user_id, Some(&route));
+            }
+            (None, Origin::User) => crate::reply_route::set(state, &config.session_key, &config.user_id, None),
+            (None, _) => {}
+        }
+    }
     let hub = state.hub.clone();
     let workroom_store = state.store.clone();
     let loopback_state = state.clone();
@@ -511,8 +526,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         hub.broadcast("chat_created", created_payload);
     }
 
-    let fairness_key = agent_id.clone();
-    let mut lane_task = make_task(&lane, format!("chat:{}", sid), async move {
+    let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
         // RunHandle auto-unregisters from RunRegistry on drop (panic-safe).
         let _run_handle = run_handle;
 
@@ -641,16 +655,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                             continue;
                         }
-                        next = agent::guardrails::next_event(&mut rx, last_event) => match next {
+                        next = agent::guardrails::next_event(&mut rx, last_event, &_run_handle.waiting) => match next {
                             agent::guardrails::Next::Event(e) => e,
                             agent::guardrails::Next::Closed => break,
-                            // Nothing has moved for the idle limit: end the run with a typed
-                            // reason the owner can read, and cancel whatever is still holding it.
+                            // Nothing has moved for the idle limit and nothing is waited on:
+                            // end the run with a typed reason the owner can read, and cancel
+                            // whatever is still holding it.
                             agent::guardrails::Next::Stalled => {
                                 let notice = agent::guardrails::stall_notice();
                                 tracing::warn!(session_id = %sid, "run stalled: no event for {}s", agent::guardrails::RUN_IDLE_LIMIT.as_secs());
                                 control_stop = Some((agent::guardrails::STALLED.to_string(), notice.clone()));
                                 hub.broadcast("chat_error", ws_payload!("error": &notice,));
+                                _run_handle.stalled.store(true, std::sync::atomic::Ordering::SeqCst);
                                 cancel_token.cancel();
                                 break;
                             }
@@ -1635,7 +1651,6 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
         Ok(())
     });
-    lane_task.fairness_key = Some(fairness_key);
 
     state.lanes.enqueue_async(&lane, lane_task);
 }
@@ -1654,7 +1669,6 @@ pub async fn run_chat_events(
     let cleanup_tools = state.tools.clone();
 
     let sid = config.session_key.clone();
-    let agent_id = config.agent_id.clone();
     let cancel_token = config.cancel_token.clone();
     let lane = config.lane.clone();
 
@@ -1664,8 +1678,7 @@ pub async fn run_chat_events(
     let req = turn_request(state, &config, &run_handle);
 
     let (tx, rx) = mpsc::channel(64);
-    let fairness_key = agent_id.clone();
-    let mut lane_task = make_task(&lane, format!("chat:{}", sid), async move {
+    let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
         let _run_handle = run_handle;
         let mut last_event = tokio::time::Instant::now();
         match harness.start_turn(req).await {
@@ -1674,10 +1687,11 @@ pub async fn run_chat_events(
                 loop {
                 let event = tokio::select! {
                     _ = cancel_token.cancelled() => break,
-                    next = agent::guardrails::next_event(&mut events, last_event) => match next {
+                    next = agent::guardrails::next_event(&mut events, last_event, &_run_handle.waiting) => match next {
                         agent::guardrails::Next::Event(e) => e,
                         agent::guardrails::Next::Closed => break,
                         agent::guardrails::Next::Stalled => {
+                            _run_handle.stalled.store(true, std::sync::atomic::Ordering::SeqCst);
                             if tx
                                 .send(ai::StreamEvent::control_notice(
                                     agent::guardrails::stall_notice(),
@@ -1730,7 +1744,6 @@ pub async fn run_chat_events(
         drop(_run_handle);
         Ok(())
     });
-    lane_task.fairness_key = Some(fairness_key);
 
     state.lanes.enqueue_async(&lane, lane_task);
     Ok(rx)

@@ -35,14 +35,51 @@ pub const INTERRUPTED_TOOL_RESULT: &str = "[Request interrupted by user for tool
 pub const INTERRUPT_MESSAGE: &str = "[Request interrupted by user] The owner stopped this work. \
 Do not resume the interrupted step on your own; wait for their next message and act on that.";
 
+/// Why a turn was cut short, as its record says: the owner stopped it, or
+/// the dispatcher ended it for going silent (`guardrails::STALLED`). A stall
+/// is never recorded as the owner's stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Interrupt {
+    Owner,
+    Stalled,
+}
+
+impl Interrupt {
+    /// What an open call's result says.
+    fn tool_result(self) -> String {
+        match self {
+            Interrupt::Owner => INTERRUPTED_TOOL_RESULT.to_string(),
+            Interrupt::Stalled => format!("[Run ended: nothing happened for {} minutes]", stall_minutes()),
+        }
+    }
+
+    /// The line the thread carries.
+    fn line(self) -> String {
+        match self {
+            Interrupt::Owner => INTERRUPT_MESSAGE.to_string(),
+            Interrupt::Stalled => format!(
+                "[Run ended: nothing happened for {} minutes] The run went silent (no reply and no \
+                 tool activity) with nothing waiting on the owner, so it was ended. The owner did not \
+                 stop it. Do not resume the interrupted step on your own; when the owner next writes, \
+                 tell them what it was doing.",
+                stall_minutes()
+            ),
+        }
+    }
+}
+
+fn stall_minutes() -> u64 {
+    crate::guardrails::RUN_IDLE_LIMIT.as_secs() / 60
+}
+
 /// Stop means stop, and the record must say so. A cancel can land after the
 /// assistant's tool calls were persisted and before their results were; left
 /// alone, the next turn's history sanitizer fills each gap with the
 /// trimmed-history note, which tells the model to make the call again — and
 /// it did, resuming the very search the owner had just stopped, three times
 /// in a row (2026-09-18). Each open call gets an interrupt result and the
-/// thread gets one interrupt line.
-pub(crate) fn record_interrupt(sessions: &SessionManager, session_id: &str) {
+/// thread gets one interrupt line, both saying why (`why`).
+pub(crate) fn record_interrupt(sessions: &SessionManager, session_id: &str, why: Interrupt) {
     let messages = match sessions.get_messages(session_id) {
         Ok(m) => m,
         Err(e) => {
@@ -76,7 +113,7 @@ pub(crate) fn record_interrupt(sessions: &SessionManager, session_id: &str) {
     for id in &open {
         let row = ToolResultRow {
             tool_call_id: id.clone(),
-            content: INTERRUPTED_TOOL_RESULT.to_string(),
+            content: why.tool_result(),
             is_error: true,
             image_url: None,
             payload: None,
@@ -89,10 +126,10 @@ pub(crate) fn record_interrupt(sessions: &SessionManager, session_id: &str) {
         }
     }
     let meta = serde_json::json!({ "isMeta": true }).to_string();
-    if let Err(e) = sessions.append_message(session_id, "user", INTERRUPT_MESSAGE, None, None, Some(&meta)) {
+    if let Err(e) = sessions.append_message(session_id, "user", &why.line(), None, None, Some(&meta)) {
         warn!(session_id, error = %e, "could not record the interrupt line");
     }
-    info!(session_id, open_calls = open.len(), "interrupt recorded");
+    info!(session_id, open_calls = open.len(), ?why, "interrupt recorded");
 }
 
 /// Who a message queued into a running turn came from. Both senders store

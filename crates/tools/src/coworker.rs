@@ -16,8 +16,8 @@ use std::sync::Arc;
 pub struct CoworkerMessage {
     /// Sending agent id (empty = the main companion).
     pub from_agent_id: String,
-    /// The sender's session key — where a fire-and-forget reply is appended
-    /// when it arrives.
+    /// The sender's session key: the reply comes back to it as a
+    /// notification.
     pub sender_session_key: String,
     /// Target employee, by name or id. Resolved strictly by the rail against
     /// the installed roster — an unknown name is an error, never a minted
@@ -40,10 +40,6 @@ pub struct CoworkerMessage {
     /// verbatim from `ToolContext.run_taint`). The rail seeds the target run
     /// with it, so multi-hop chains carry the union by construction.
     pub provenance: Vec<types::provenance::ProvenanceClass>,
-    /// Wait for the coworker's reply (default). `false` = fire-and-forget:
-    /// delivery is still acknowledged, and the reply is appended to the
-    /// sender's session when it lands.
-    pub wait: bool,
     /// Set when this message is a team post being delivered to a member: the
     /// target's thread is the team thread (`agent:<to>:coworker:team:<id>`),
     /// the briefing names the team, and the reply is posted back into the
@@ -58,19 +54,21 @@ pub struct TeamDelivery {
     pub team_id: String,
     /// Whether the member is asked to act (run) or only receives the post.
     pub act: bool,
+    /// The session that posted, when one did: the member's reply comes back
+    /// to it as a notification as well as into the team.
+    pub reply_to: Option<String>,
 }
 
 /// Delivery acknowledgment — a message is never silently dropped: either this
 /// is returned (the message is persisted in the target's thread and their run
-/// is enqueued) or the send errors.
+/// is enqueued) or the send errors. It never carries the reply: that comes
+/// back to the sender's session as a notification.
 #[derive(Debug, Clone)]
 pub struct CoworkerDelivery {
     pub to_agent_id: String,
     pub to_name: String,
     /// The target-side thread (session key) the message was delivered into.
     pub thread_key: String,
-    /// The coworker's reply (`wait: true` only).
-    pub reply: Option<String>,
 }
 
 /// One post into a team (`crate::team`). The rail appends it to the team's
@@ -102,6 +100,10 @@ pub struct TeamPost {
     /// asks nobody on its own — even the lead's; its mentions still ask, and
     /// the lead's @everyone still summons the team.
     pub is_reply: bool,
+    /// The session that posted (`None` for the owner in the app, who reads
+    /// the team thread): every reply the post causes comes back to it as a
+    /// notification. A reply carries its post's.
+    pub reply_to: Option<String>,
 }
 
 /// Receipt for a team post: the post is in the thread and every listed
@@ -155,7 +157,6 @@ pub async fn deliver(
     ctx: &crate::origin::ToolContext,
     to: &str,
     text: &str,
-    wait: bool,
 ) -> Result<CoworkerDelivery, String> {
     rail.send(CoworkerMessage {
         from_agent_id: types::keyparser::extract_agent_id(&ctx.session_key),
@@ -168,7 +169,6 @@ pub async fn deliver(
         requester_scope: ctx.user_id.clone(),
         handoff_depth: ctx.handoff_depth,
         provenance: ctx.run_taint.clone(),
-        wait,
         team: None,
     })
     .await

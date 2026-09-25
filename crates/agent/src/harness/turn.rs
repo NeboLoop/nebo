@@ -268,6 +268,8 @@ pub(crate) async fn start(h: Harness, mut req: TurnRequest) -> Result<TurnHandle
         iteration_count: Default::default(),
         tool_call_count: Default::default(),
         current_tool: Default::default(),
+        waiting: Default::default(),
+        stalled: Default::default(),
     });
     let turn_id = progress.run_id.clone();
     if owner_speaks(&req) {
@@ -1583,7 +1585,12 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
 pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit) {
     let h = &cx.harness;
     if *exit == TurnExit::Cancelled {
-        conversation::record_interrupt(&h.sessions, &cx.session_id);
+        let why = if cx.progress.stalled.load(std::sync::atomic::Ordering::SeqCst) {
+            conversation::Interrupt::Stalled
+        } else {
+            conversation::Interrupt::Owner
+        };
+        conversation::record_interrupt(&h.sessions, &cx.session_id, why);
     }
     info!(
         session_id = %cx.session_id,
@@ -2559,6 +2566,40 @@ mod tests {
         });
         assert!(calls_open, "every call has a result");
         assert_eq!(model.calls().len(), 1, "no step after the stop");
+    }
+
+    /// A run the dispatcher ended for going silent is recorded as a stall,
+    /// never as the owner stopping it: the owner did nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stall_is_never_recorded_as_the_owners_stop() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let mut req = owner("Echo something");
+        let progress = RunProgress {
+            run_id: "r-stall".into(),
+            iteration_count: Default::default(),
+            tool_call_count: Default::default(),
+            current_tool: Default::default(),
+            waiting: Default::default(),
+            stalled: Default::default(),
+        };
+        req.progress = Some(progress.clone());
+        let cancel = req.cancel.clone();
+        let hook: Hook = Box::pin(async move {
+            progress.stalled.store(true, std::sync::atomic::Ordering::SeqCst);
+            cancel.cancel()
+        });
+        *model.script.lock().unwrap() =
+            VecDeque::from(vec![Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook)]);
+        let events = run_turn(&h, req).await;
+        assert_eq!(exit_of(&events), "cancelled");
+        let rows = stored(&h);
+        assert!(!rows.iter().any(|m| m.content.contains("The owner stopped this work")), "not the owner's stop");
+        assert!(
+            rows.iter().any(|m| m.content.starts_with("[Run ended: nothing happened for 15 minutes]") && m.content.contains("The owner did not stop it")),
+            "the stall is recorded as a stall"
+        );
+        assert!(!rows.iter().any(|m| m.tool_results.as_deref().is_some_and(|r| r.contains(conversation::INTERRUPTED_TOOL_RESULT))));
     }
 
     /// The recap is written after a chat turn and stored, and no later

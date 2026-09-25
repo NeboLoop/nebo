@@ -139,7 +139,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
 
             Ok(collect_channel_reply(rx, &cancel_token, agent_id, channel, None)
                 .await
-                .0)
+                .text)
         })
     }
 }
@@ -152,6 +152,17 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
 /// terminal tool error) is run-control status and is ignored by type
 /// — it must never land in a customer channel as prose.
 ///
+/// A drained run's reply.
+pub(crate) struct ChannelReply {
+    pub text: String,
+    /// Engine-stamped provenance of the run, so the coworker rail can label
+    /// a tainted reply.
+    pub provenance: Vec<types::provenance::ProvenanceClass>,
+    /// The input went into a turn already running in that session: `text` is
+    /// the busy line, not a reply; the running turn answers it.
+    pub queued: bool,
+}
+
 /// `owner`: when the run happens on the LOCAL machine for the local owner
 /// (coworker messages), approval and ask requests are forwarded to the owner's
 /// frontend (same broadcasts `run_chat` emits) and the run parks on its
@@ -164,8 +175,9 @@ pub(crate) async fn collect_channel_reply(
     agent_id: &str,
     channel: &str,
     owner: Option<&crate::coworker::OwnerForward<'_>>,
-) -> (String, Vec<types::provenance::ProvenanceClass>) {
+) -> ChannelReply {
     let mut full_response = String::new();
+    let mut queued = false;
     // Channels have no status banner — the reply is the only surface. Keep the
     // last control-notice status line as a FALLBACK so a run that terminates
     // before producing any prose doesn't answer with silence (which reads as
@@ -181,6 +193,9 @@ pub(crate) async fn collect_channel_reply(
         }
         match event.event_type {
             StreamEventType::ControlNotice => {
+                if event.stop_reason.as_deref() == Some(agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN) {
+                    queued = true;
+                }
                 if !event.text.trim().is_empty() {
                     last_control_notice = Some(event.text.clone());
                 }
@@ -235,12 +250,11 @@ pub(crate) async fn collect_channel_reply(
 
     // Empty-reply fallback: surface the terminal status line rather than
     // silence. Real prose always wins — the notice never mixes into it.
-    if reply.is_empty() {
-        if let Some(notice) = last_control_notice {
-            return (notice.trim().to_string(), reply_provenance);
-        }
-    }
-    (reply, reply_provenance)
+    let text = match last_control_notice {
+        Some(notice) if reply.is_empty() => notice.trim().to_string(),
+        _ => reply,
+    };
+    ChannelReply { text, provenance: reply_provenance, queued }
 }
 
 #[cfg(test)]
@@ -269,7 +283,7 @@ mod tests {
         tx.send(ai::StreamEvent::done()).await.unwrap();
         drop(tx);
 
-        let (reply, _) = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await;
+        let reply = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await.text;
         assert_eq!(
             reply,
             "Here is what I found so far.\nTwo listings match your filters."
@@ -294,10 +308,30 @@ mod tests {
         tx.send(ai::StreamEvent::done()).await.unwrap();
         drop(tx);
 
-        let (reply, _) = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await;
+        let reply = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await;
+        assert!(!reply.queued);
+        let reply = reply.text;
         assert_eq!(
             reply,
             "I couldn't reach gws — reconnect this account in Settings, then ask me again."
         );
+    }
+
+    /// Input that went into a turn already running is not answered by the
+    /// busy line: the collector says it was queued, so nobody reads that
+    /// line as the reply.
+    #[tokio::test]
+    async fn a_queued_input_is_not_a_reply() {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        tx.send(ai::StreamEvent::control_notice(
+            "Got it. I'll pick this up at my next step.",
+            agent::harness::session_gate::QUEUED_INTO_RUNNING_TURN,
+        ))
+        .await
+        .unwrap();
+        tx.send(ai::StreamEvent::done()).await.unwrap();
+        drop(tx);
+        assert!(collect_channel_reply(rx, &cancel, "agent-1", "coworker", None).await.queued);
     }
 }

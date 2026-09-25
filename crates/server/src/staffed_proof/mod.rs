@@ -33,6 +33,7 @@ use serde_json::{json, Value};
 use crate::state::AppState;
 
 mod connections;
+mod conversation;
 mod layers;
 mod migrations;
 mod policy;
@@ -97,6 +98,7 @@ fn every_proof_is_a_fixture_in_the_staffed_company_suite_and_every_fixture_prove
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let sources = [
         ("connections", include_str!("connections.rs")),
+        ("conversation", include_str!("conversation.rs")),
         ("layers", include_str!("layers.rs")),
         ("migrations", include_str!("migrations.rs")),
         ("policy", include_str!("policy.rs")),
