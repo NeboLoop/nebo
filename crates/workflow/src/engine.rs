@@ -60,10 +60,9 @@ pub(crate) fn producer_slug(store: &Store, agent_id: &str) -> String {
 ///   server's proxy tools (`mcp__<server>__*`), `cmds` (plugin commands,
 ///   the plugin's slug first) select that plugin's `plugin__<slug>` tool —
 ///   the authored contract comes first;
-/// - or its intent/steps/skill docs REFERENCE it — `<tool>(` — directly or
-///   through a legacy pre-STRAP name (`organizer(` → `os`; see
-///   `tools::registry::legacy_tool_aliases`), so imported workflows authored
-///   against old tool names still scope correctly;
+/// - or its intent/steps/skill docs REFERENCE it — `<tool>(` (stored
+///   workflows name the current tools: the upgrade moved every old name,
+///   `server::stored_tool_names`);
 /// - or it is a delivery primitive ([`DELIVERY_TOOLS`] — steps often say
 ///   "alert" or "tell the owner" without naming a tool).
 ///
@@ -140,20 +139,12 @@ pub(crate) fn scoped_activity_tools<'a>(
         .filter_map(|c| c.split_whitespace().next())
         .map(tools::plugin_tools::plugin_tool_name)
         .collect();
-    // Legacy pre-STRAP names appearing in the text → their absorbing tool.
-    let alias_targets: HashSet<&'static str> = tools::registry::legacy_tool_aliases()
-        .iter()
-        .filter(|(alias, _)| text.contains(&format!("{alias}(")))
-        .map(|(_, target)| *target)
-        .collect();
-
     let referenced: Vec<&'a Box<dyn DynTool>> = resolved_tools
         .iter()
         .filter(|t| {
             let n = t.name();
             DELIVERY_TOOLS.contains(&n)
                 || text.contains(&format!("{n}("))
-                || alias_targets.contains(n)
                 || plugin_tools.iter().any(|p| p == n)
                 || mcp_prefixes.iter().any(|p| n.to_lowercase().starts_with(p.as_str()))
                 || activity.mcps.iter().any(|m| m == n)
@@ -1767,10 +1758,10 @@ mod engine_tests {
     }
 
     #[test]
-    fn test_scoped_activity_tools_resolves_legacy_alias() {
-        // Imported workflows authored pre-STRAP say `organizer(...)` — that
-        // tool no longer exists (folded into os). The alias table must scope
-        // this to os instead of matching nothing and blanketing the roster.
+    fn test_scoped_activity_tools_gives_an_old_name_no_special_treatment() {
+        // `organizer(` is no tool: nothing aliases it to `os`. It references
+        // nothing, so the step gets the non-deferred roster, as any step that
+        // names no tool does.
         let activity: Activity = serde_json::from_value(serde_json::json!({
             "id": "parse-brief",
             "intent": "List unread messages",
@@ -1779,8 +1770,7 @@ mod engine_tests {
         .unwrap();
         let registry = fake_registry();
         let scoped = scoped_activity_tools(&activity, &registry, None, None);
-        let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["send_message", "message_owner", "push_notification", "os"]);
+        assert_eq!(scoped.len(), registry.len());
     }
 
         #[test]

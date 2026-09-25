@@ -44,8 +44,8 @@ impl DynTool for SpotlightTool {
          The search is bounded: it starts from `dir`, or from the bot's own working area when no `dir` is given, \
          and gives up after 20 seconds. Pass `dir` whenever you know roughly where the file is.\n\n\
          Examples:\n  \
-         spotlight(action: \"search\", query: \"budget 2024\")\n  \
-         spotlight(action: \"search\", query: \"*.pdf\", dir: \"~/Documents\")"
+         os(resource: \"search\", action: \"search\", query: \"budget 2024\")\n  \
+         os(resource: \"search\", action: \"search\", query: \"*.pdf\", dir: \"~/Documents\")"
             .to_string()
     }
 
@@ -312,7 +312,7 @@ async fn handle_search(ctx: &ToolContext, input: &serde_json::Value) -> ToolResu
         return ToolResult::error(crate::errors::missing_param(
             "search",
             "query",
-            "spotlight(action: \"search\", query: \"budget report 2024\")",
+            "os(resource: \"search\", action: \"search\", query: \"budget report 2024\")",
         ));
     }
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]

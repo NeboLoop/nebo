@@ -27,7 +27,7 @@ fn diag(result: ToolResult) -> ToolResult {
 /// lower than `search` to stay inside the 30 s subprocess budget.
 const MAIL_READ_LIMIT_CAP: i64 = 20;
 const MAIL_SEARCH_LIMIT_CAP: i64 = 50;
-const MAIL_SEND_EXAMPLE: &str = "organizer(resource: \"mail\", action: \"send\", to: [\"pat@example.com\"], subject: \"Invoice 42\", text: \"Attached is the invoice.\")";
+const MAIL_SEND_EXAMPLE: &str = "os(resource: \"mail\", action: \"send\", to: [\"pat@example.com\"], subject: \"Invoice 42\", text: \"Attached is the invoice.\")";
 
 pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
     match action {
@@ -183,7 +183,7 @@ end tell"#,
                 return ToolResult::error(missing_param(
                     "search",
                     "query",
-                    "organizer(resource: \"mail\", action: \"search\", query: \"invoice\")",
+                    "os(resource: \"mail\", action: \"search\", query: \"invoice\")",
                 ));
             }
             // Mail's scripting suite has NO `search` verb (the previous
@@ -339,7 +339,7 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
                 return ToolResult::error(missing_param(
                     "search",
                     "query",
-                    "organizer(resource: \"contacts\", action: \"search\", query: \"Pat\")",
+                    "os(resource: \"contacts\", action: \"search\", query: \"Pat\")",
                 ));
             }
             let script = format!(
@@ -366,7 +366,7 @@ end tell"#,
                 return ToolResult::error(missing_param(
                     "get",
                     "name",
-                    "organizer(resource: \"contacts\", action: \"get\", name: \"Pat Smith\")",
+                    "os(resource: \"contacts\", action: \"get\", name: \"Pat Smith\")",
                 ));
             }
             let script = format!(
@@ -408,7 +408,7 @@ end tell"#,
                 return ToolResult::error(missing_param(
                     "create",
                     "name",
-                    "organizer(resource: \"contacts\", action: \"create\", name: \"Pat Smith\", email: \"pat@example.com\")",
+                    "os(resource: \"contacts\", action: \"create\", name: \"Pat Smith\", email: \"pat@example.com\")",
                 ));
             }
             // Split name into first/last
@@ -662,7 +662,7 @@ end tell"#,
     // never mistaken for "no events anywhere" when only tracked ones were.
     let no_events_plain = match saved_prefs {
         Some(ref prefs) => format!(
-            "No events {} in the {} tracked calendar(s): {}. Untracked calendars were not read; change the set with organizer(resource: \"calendar\", action: \"configure\").",
+            "No events {} in the {} tracked calendar(s): {}. Untracked calendars were not read; change the set with os(resource: \"calendar\", action: \"configure\").",
             range,
             prefs.len(),
             prefs.join(", ")
@@ -754,7 +754,7 @@ end tell"#,
         )),
         Ok(Err(e)) => ToolResult::error(format!("Calendar process error: {e}")),
         Err(_) => ToolResult::error(format!(
-            "Calendar query exceeded {} s and was killed. Narrow it: name one calendar, or choose which calendars to track with organizer(resource: \"calendar\", action: \"configure\").",
+            "Calendar query exceeded {} s and was killed. Narrow it: name one calendar, or choose which calendars to track with os(resource: \"calendar\", action: \"configure\").",
             overall_timeout.as_secs()
         )),
     }
@@ -848,7 +848,7 @@ fn save_full_calendar_prefs(
     Ok(())
 }
 
-const CALENDAR_CREATE_EXAMPLE: &str = "organizer(resource: \"calendar\", action: \"create\", title: \"Dentist\", date: \"2026-09-15 14:00\", end_date: \"2026-09-15 15:00\")";
+const CALENDAR_CREATE_EXAMPLE: &str = "os(resource: \"calendar\", action: \"create\", title: \"Dentist\", date: \"2026-09-15 14:00\", end_date: \"2026-09-15 15:00\")";
 
 pub async fn handle_calendar(
     action: &str,
@@ -1079,7 +1079,7 @@ end tell"#,
                 return ToolResult::error(missing_param(
                     "delete",
                     "title",
-                    "organizer(resource: \"calendar\", action: \"delete\", title: \"Dentist\")",
+                    "os(resource: \"calendar\", action: \"delete\", title: \"Dentist\")",
                 ));
             }
             let calendar_filter = if input.calendar.is_empty() {
@@ -1190,7 +1190,7 @@ end tell"#,
                 return ToolResult::error(missing_param(
                     "create",
                     "name",
-                    "organizer(resource: \"reminders\", action: \"create\", name: \"Call the plumber\", due_date: \"tomorrow\")",
+                    "os(resource: \"reminders\", action: \"create\", name: \"Call the plumber\", due_date: \"tomorrow\")",
                 ));
             }
 
@@ -1248,7 +1248,7 @@ end tell"#,
                 return ToolResult::error(missing_param(
                     "complete",
                     "name",
-                    "organizer(resource: \"reminders\", action: \"complete\", name: \"Call the plumber\")",
+                    "os(resource: \"reminders\", action: \"complete\", name: \"Call the plumber\")",
                 ));
             }
             let list = if input.list.is_empty() {
@@ -1277,7 +1277,7 @@ end tell"#,
                 return ToolResult::error(missing_param(
                     "delete",
                     "name",
-                    "organizer(resource: \"reminders\", action: \"delete\", name: \"Call the plumber\")",
+                    "os(resource: \"reminders\", action: \"delete\", name: \"Call the plumber\")",
                 ));
             }
             let list = if input.list.is_empty() {

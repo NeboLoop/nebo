@@ -38,6 +38,7 @@ mod spa;
 mod state;
 pub mod workflow_manager;
 mod permission_asks;
+mod stored_tool_names;
 
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
 /// UTF-8 character.
@@ -1110,7 +1111,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Every tool call passes the one permission check.
     let check = Arc::new(agent::Check::new(store.clone()));
     let permission_asks = check.asks();
-    let tool_registry = Arc::new(tools::Registry::new(check));
+    let tool_registry = Arc::new(tools::Registry::new(check.clone()));
 
     // Create empty orchestrator handle (filled after Runner is built)
     let orch_handle = tools::new_handle();
@@ -1175,6 +1176,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Extract sealed .napp archives to sibling directories (one-time)
     // Must run AFTER seeding so newly seeded .napp files are picked up.
     migration::migrate_napp_extraction(&data_dir);
+
+    // Stored shapes that name tools move onto the current tool set once,
+    // before anything loads an employee, a skill or a workflow.
+    stored_tool_names::upgrade(&store, &data_dir)?;
 
     // Initialize plugin store for shared binary management
     let plugins_dir = data_dir.join("nebo").join("plugins");
@@ -2242,6 +2247,21 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // An ask's card and its answers reach the owner through the hub, the
     // Inbox and the wake rail.
     permission_asks.attach(Arc::new(permission_asks::OwnerSurfaces { state: state.clone() }));
+    // Runs parked on the old approval card become asks, once, now that the
+    // card has somewhere to go.
+    let inbox = codes::inbox_api(&state.store, &state.config.neboai.api_url).map(Arc::new);
+    let resolve_card = |id: String| {
+        let inbox = inbox.clone();
+        async move {
+            match inbox {
+                Some(api) => api.push_inbox_item(&serde_json::json!({ "id": id, "resolved": true })).await.map_err(|e| e.to_string()),
+                None => Ok(()),
+            }
+        }
+    };
+    if let Err(e) = stored_tool_names::convert_parked_approvals(&state.store, &state.tools, check.as_ref(), resolve_card).await {
+        warn!(error = %e, "parked approvals not converted");
+    }
 
     // The proof suite (`staffed_proof`) boots this real server in-process and
     // reaches the same registry, loader and bus the handlers use. Test-only:

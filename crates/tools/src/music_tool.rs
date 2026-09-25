@@ -29,11 +29,11 @@ impl DynTool for MusicTool {
          - playlists: list available playlists\n\
          - shuffle: report shuffle state, or set it with value: true|false\n\n\
          Examples:\n  \
-         music(action: \"play\")\n  \
-         music(action: \"status\")\n  \
-         music(action: \"search\", query: \"bohemian rhapsody\")\n  \
-         music(action: \"volume\", value: 75)\n  \
-         music(action: \"shuffle\")"
+         os(resource: \"music\", action: \"play\")\n  \
+         os(resource: \"music\", action: \"status\")\n  \
+         os(resource: \"music\", action: \"search\", query: \"bohemian rhapsody\")\n  \
+         os(resource: \"music\", action: \"volume\", value: 75)\n  \
+         os(resource: \"music\", action: \"shuffle\")"
             .to_string()
     }
 
@@ -80,7 +80,7 @@ impl DynTool for MusicTool {
                         return ToolResult::error(crate::errors::missing_param(
                             "search",
                             "query",
-                            "music(action: \"search\", query: \"beethoven symphony\")",
+                            "os(resource: \"music\", action: \"search\", query: \"beethoven symphony\")",
                         ));
                     }
                     handle_search(query).await
