@@ -117,6 +117,39 @@ pub struct GradeResult {
     pub model_behavior: Vec<ModelBehaviorScore>,
     #[serde(default)]
     pub overall_notes: String,
+    /// The model that judged this trace. None when no judge ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<String>,
+    /// Why the judge could not grade this trace, in the CLI's own words. The
+    /// program checks above still stand, and `nebo-cli test grade` tries the
+    /// judge again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_error: Option<String>,
+}
+
+impl GradeResult {
+    /// A grade of program checks alone: the judge-derived metrics are an
+    /// honest zero until a judge runs; the reporter labels the modes.
+    pub fn program_only(assertions: Vec<AssertionResult>) -> Self {
+        Self {
+            assertions,
+            first_call_success_rate: 0.0,
+            context_pollution_score: 0.0,
+            tool_quality: Vec::new(),
+            model_behavior: Vec::new(),
+            overall_notes: String::new(),
+            judge: None,
+            judge_error: None,
+        }
+    }
+
+    /// A judge graded this trace: recorded by name, or, in a trace judged
+    /// before the name was kept, by its judged rows.
+    pub fn judged(&self) -> bool {
+        self.judge_error.is_none()
+            && (self.judge.is_some()
+                || self.assertions.iter().any(|a| a.mode != super::checks::MODE_VERIFIED))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
