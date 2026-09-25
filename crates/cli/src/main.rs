@@ -176,6 +176,29 @@ enum TestCommands {
         #[arg(long)]
         experiment: Option<String>,
     },
+    /// Grade a kept gate run offline: the program checks and the judge
+    /// `test run` uses, on the traces the run recorded. The judge is the
+    /// `claude` CLI under its own login (`claude -p`).
+    Grade {
+        /// The kept run (run.json + traces/<entry>/), or its traces directory
+        #[arg(long)]
+        traces: String,
+        /// Judge model for the claude CLI: an alias (sonnet, opus) or a full name
+        #[arg(long, default_value = "claude-opus-5")]
+        grader: String,
+        /// The checkout the run was dispatched from, holding its suites/ and fixtures/
+        #[arg(long, default_value = ".")]
+        fixtures_root: String,
+        /// The run's entries, as the gate's `suites` input (default: run.json's)
+        #[arg(long)]
+        suites: Option<String>,
+        /// Write the graded traces here, in the same layout, instead of in place
+        #[arg(long)]
+        out: Option<String>,
+        /// Judge traces a judge already graded again
+        #[arg(long)]
+        force: bool,
+    },
     /// List runs that ended in a guard or reviewer stop, newest first
     Runs {
         /// Comma-separated exit reasons to list (default: the guard and
@@ -799,10 +822,21 @@ const REPLAY_FIXTURE_DIR: &str = "fixtures/replay";
 const UNKNOWN_EXIT_REASON: &str = "unknown";
 
 async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow::Result<()> {
-    use agent::testing::{checks, engine, fixture, grader, replay, reporter, scratch, trace};
+    use agent::testing::{engine, fixture, grader, replay, reporter, scratch, trace};
     use std::path::Path;
 
     match command {
+        TestCommands::Grade { traces, grader, fixtures_root, suites, out, force } => {
+            grade_kept_run(
+                Path::new(&traces),
+                &grader,
+                Path::new(&fixtures_root),
+                suites.as_deref(),
+                out.as_deref().map(Path::new),
+                force,
+            )
+            .await?;
+        }
         TestCommands::Runs { exit_reason, limit } => {
             let store = db::Store::new(&cfg.database.sqlite_path)?;
             let reasons: Vec<&str> = if exit_reason.is_empty() {
@@ -965,64 +999,14 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
                 // any judge. A malformed matcher fails the RUN (never open);
                 // a failed critical check fails the fixture regardless of the
                 // judge's verdict (WS1-R2).
+                let judge = grader_model.as_deref().filter(|_| !no_judge);
                 for trace in &mut traces {
-                    let verified = checks::evaluate_fixture_checks(fix, trace)
-                        .map_err(|e| anyhow::anyhow!("fixture {}: {}", fix.id, e))?;
-                    if verified.is_empty() {
-                        continue;
-                    }
-                    for v in &verified {
-                        if !v.passed {
-                            let critical = fix
-                                .prompt_assertions
-                                .all()
-                                .into_iter()
-                                .chain(fix.integrated_assertions.iter())
-                                .any(|a| a.id == v.id && a.severity == fixture::Severity::Critical);
-                            if critical {
-                                critical_check_failures
-                                    .push(format!("{} / {}: {}", fix.id, v.id, v.evidence));
-                            }
-                        }
-                    }
-                    match &mut trace.grade {
-                        Some(g) => {
-                            let mut merged = verified.clone();
-                            merged.extend(g.assertions.drain(..));
-                            g.assertions = merged;
-                        }
-                        None => {
-                            trace.grade = Some(trace::GradeResult {
-                                assertions: verified,
-                                // Judge-derived metrics: honest zero until a
-                                // judge runs; the reporter labels the modes.
-                                first_call_success_rate: 0.0,
-                                context_pollution_score: 0.0,
-                                tool_quality: Vec::new(),
-                                model_behavior: Vec::new(),
-                                overall_notes: String::new(),
-                            });
-                        }
-                    }
-                }
-
-                if let Some(ref grader_model) = grader_model.as_ref().filter(|_| !no_judge) {
-                    for trace in &mut traces {
-                        match grader::grade(trace, fix, &server, grader_model).await {
-                            Ok(grade) => match &mut trace.grade {
-                                // Keep the verified rows in front of the judged ones.
-                                Some(existing) => {
-                                    existing.assertions.extend(grade.assertions);
-                                    existing.first_call_success_rate = grade.first_call_success_rate;
-                                    existing.context_pollution_score = grade.context_pollution_score;
-                                    existing.tool_quality = grade.tool_quality;
-                                    existing.model_behavior = grade.model_behavior;
-                                    existing.overall_notes = grade.overall_notes;
-                                }
-                                None => trace.grade = Some(grade),
-                            },
-                            Err(e) => eprintln!("  grading failed: {}", e),
-                        }
+                    let outcome = grader::grade_trace(trace, fix, judge)
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    critical_check_failures.extend(outcome.critical_failures);
+                    if let Some(e) = outcome.judge_error {
+                        eprintln!("  grading failed: {}", e);
                     }
                 }
 
@@ -1140,14 +1124,8 @@ fn resolve_fixtures(
 
     if let Some(path) = suite_path {
         let suite_dir = Path::new(path).parent().unwrap_or(Path::new("."));
-        let suite =
-            fixture::load_suite(Path::new(path)).map_err(|e| anyhow::anyhow!(e))?;
-        for fixture_rel in &suite.fixtures {
-            let full_path = suite_dir.join(fixture_rel);
-            fixtures.push(
-                fixture::load_fixture(&full_path).map_err(|e| anyhow::anyhow!(e))?,
-            );
-        }
+        let (suite, suite_fixtures) = load_suite_fixtures(Path::new(path))?;
+        fixtures.extend(suite_fixtures);
         // Script-backed suites run their scripts here, from the repository
         // root, before any fixture; a script that fails fails the suite.
         let root = suite_dir.parent().unwrap_or(Path::new("."));
@@ -1165,6 +1143,212 @@ fn resolve_fixtures(
     }
 
     Ok(fixtures)
+}
+
+/// A suite and its fixtures, each fixture path relative to the suite file.
+fn load_suite_fixtures(
+    path: &std::path::Path,
+) -> anyhow::Result<(agent::testing::fixture::Suite, Vec<agent::testing::fixture::Fixture>)> {
+    use agent::testing::fixture;
+    let suite_dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let suite = fixture::load_suite(path).map_err(|e| anyhow::anyhow!(e))?;
+    let fixtures = suite
+        .fixtures
+        .iter()
+        .map(|rel| fixture::load_fixture(&suite_dir.join(rel)).map_err(|e| anyhow::anyhow!(e)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok((suite, fixtures))
+}
+
+/// Judge calls in flight at once while grading a kept run.
+const GRADE_CONCURRENCY: usize = 4;
+
+/// `nebo-cli test grade`: grade a kept gate run's traces with
+/// [`grader::grade_trace`], the function `test run` grades with. Each trace's
+/// fixture comes from the entry its directory is named for (the gate writes
+/// `traces/<entry name>/`), resolved under `root` from the entries the run
+/// recorded in run.json, or `suites`. Runs that never completed are left
+/// alone, and traces a judge already graded are skipped unless `force`. A
+/// judge that fails is recorded on that trace and the batch goes on; the
+/// command exits non-zero when any did.
+async fn grade_kept_run(
+    kept: &std::path::Path,
+    grader_model: &str,
+    root: &std::path::Path,
+    suites: Option<&str>,
+    out: Option<&std::path::Path>,
+    force: bool,
+) -> anyhow::Result<()> {
+    use agent::testing::{fixture, grader, reporter, trace};
+    use futures::StreamExt;
+    use std::collections::{BTreeMap, HashMap};
+    use std::path::{Path, PathBuf};
+
+    let (traces_root, run_json) = if kept.join("traces").is_dir() {
+        (kept.join("traces"), kept.join("run.json"))
+    } else {
+        let beside = kept.parent().map(|p| p.join("run.json")).unwrap_or_default();
+        (kept.to_path_buf(), if kept.join("run.json").is_file() { kept.join("run.json") } else { beside })
+    };
+    let entries: String = match suites {
+        Some(s) => s.to_string(),
+        None => std::fs::read_to_string(&run_json)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("suites").and_then(|s| s.as_str()).map(str::to_string))
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no run.json naming the run's suites at {}; pass --suites \"suites/a.yaml suites/b.yaml\" as the run was dispatched",
+                    run_json.display()
+                )
+            })?,
+    };
+
+    // Entry name (the trace directory, named as the gate names it) -> its fixtures by id.
+    let mut by_entry: HashMap<String, HashMap<String, fixture::Fixture>> = HashMap::new();
+    for entry in entries.split_whitespace() {
+        let replay_set = entry
+            .strip_prefix("replays/")
+            .and_then(|rest| rest.strip_suffix("/suite.yaml"));
+        let name = match replay_set {
+            Some(set) => set.to_string(),
+            None => Path::new(entry)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
+        let mut path = root.join(entry);
+        // Replay sets never live in git; locally they are kept where
+        // scripts/export-threads.py and arm-report.py keep them.
+        if let (Some(set), false) = (replay_set, path.is_file()) {
+            if let Some(home) = std::env::var_os("HOME") {
+                path = PathBuf::from(home).join(".cache/nebo-replays").join(set).join("suite.yaml");
+            }
+        }
+        let fixtures = if entry.starts_with("suites/") || replay_set.is_some() {
+            load_suite_fixtures(&path)?.1
+        } else {
+            vec![fixture::load_fixture(&path).map_err(|e| anyhow::anyhow!(e))?]
+        };
+        by_entry.insert(name, fixtures.into_iter().map(|f| (f.id.clone(), f)).collect());
+    }
+
+    // Every trace file, by entry, in name order.
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    for dir in std::fs::read_dir(&traces_root)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", traces_root.display()))?
+    {
+        let dir = dir?.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if !by_entry.contains_key(&name) {
+            eprintln!("  skipping traces/{name}: no entry of the run is named {name}");
+            continue;
+        }
+        let mut in_dir: Vec<PathBuf> = std::fs::read_dir(&dir)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+            .collect();
+        in_dir.sort();
+        files.extend(in_dir.into_iter().map(|p| (name.clone(), p)));
+    }
+
+    let mut problems: Vec<String> = Vec::new();
+    let (mut never_completed, mut already_judged) = (0usize, 0usize);
+    // (entry, fixture id) -> the fixture's completed traces, for the report.
+    let mut report: BTreeMap<(String, String), Vec<trace::Trace>> = BTreeMap::new();
+    let mut jobs = Vec::new();
+    for (entry, path) in files {
+        let t = trace::Trace::load(&path).map_err(|e| anyhow::anyhow!(e))?;
+        if t.failure_reason.is_some() {
+            never_completed += 1;
+            continue;
+        }
+        let Some(fix) = by_entry[&entry].get(&t.fixture_id) else {
+            problems.push(format!("{}: fixture {} is not in the run's {entry}", path.display(), t.fixture_id));
+            continue;
+        };
+        if !force && t.grade.as_ref().is_some_and(|g| g.judged()) {
+            already_judged += 1;
+            report.entry((entry, t.fixture_id.clone())).or_default().push(t);
+            continue;
+        }
+        let dest = match out {
+            Some(dir) => dir.join(&entry).join(path.file_name().unwrap_or_default()),
+            None => path.clone(),
+        };
+        jobs.push((entry, fix, t, dest));
+    }
+
+    println!(
+        "Grading {} trace(s) with {grader_model}, {GRADE_CONCURRENCY} at a time",
+        jobs.len()
+    );
+    let graded: Vec<_> = futures::stream::iter(jobs)
+        .map(|(entry, fix, mut t, dest)| async move {
+            let outcome = grader::grade_trace(&mut t, fix, Some(grader_model)).await;
+            (entry, t, dest, outcome)
+        })
+        .buffer_unordered(GRADE_CONCURRENCY)
+        .collect()
+        .await;
+
+    let mut critical: Vec<String> = Vec::new();
+    let mut judge_failures = 0usize;
+    let mut graded_count = 0usize;
+    for (entry, t, dest, outcome) in graded {
+        let label = format!("{entry}/{}", dest.file_name().unwrap_or_default().to_string_lossy());
+        match outcome {
+            Err(e) => {
+                problems.push(format!("{label}: {e}"));
+                continue;
+            }
+            Ok(o) => {
+                critical.extend(o.critical_failures);
+                if let Some(e) = o.judge_error {
+                    judge_failures += 1;
+                    eprintln!("  {label}: grading failed: {e}");
+                }
+            }
+        }
+        if let Some(dir) = dest.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let json = serde_json::to_string_pretty(&t)?;
+        std::fs::write(&dest, json).map_err(|e| anyhow::anyhow!("write {}: {e}", dest.display()))?;
+        graded_count += 1;
+        report.entry((entry, t.fixture_id.clone())).or_default().push(t);
+    }
+
+    for ((entry, fixture_id), traces) in &mut report {
+        traces.sort_by(|a, b| a.run_id.cmp(&b.run_id));
+        if let Some(fix) = by_entry.get(entry).and_then(|f| f.get(fixture_id)) {
+            reporter::print_report(fix, traces);
+        }
+    }
+
+    println!(
+        "\n  {graded_count} trace(s) graded, {judge_failures} judge failure(s), {already_judged} already judged (--force judges them again), {never_completed} run(s) that never completed"
+    );
+    if !critical.is_empty() {
+        eprintln!("\n  {} critical program check(s) FAILED:", critical.len());
+        for f in &critical {
+            eprintln!("    ✗ {}", f);
+        }
+    }
+    for p in &problems {
+        eprintln!("  ✗ {p}");
+    }
+    if judge_failures > 0 || !problems.is_empty() {
+        anyhow::bail!(
+            "{judge_failures} judge failure(s), {} trace(s) not graded",
+            problems.len()
+        );
+    }
+    Ok(())
 }
 
 /// Run one deterministic proof — a named test in `nebo-server` — from the

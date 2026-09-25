@@ -2,16 +2,81 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::warn;
 
-use super::fixture::Fixture;
+use super::fixture::{Fixture, Severity};
 use super::trace::*;
+
+/// What grading one trace found.
+#[derive(Debug, Default)]
+pub struct GradeOutcome {
+    /// Failed critical program checks, as `fixture / assertion: evidence`.
+    pub critical_failures: Vec<String>,
+    /// Why the judge could not grade the trace; also kept on its grade.
+    pub judge_error: Option<String>,
+}
+
+/// The one way a trace is graded, live (`nebo-cli test run`) or offline from
+/// a kept run (`nebo-cli test grade`). Program checks first, decided from the
+/// trace before any judge; then, with a grader model, the judge (`claude -p`)
+/// on the prose-only assertions, reading the trace with its program-check
+/// rows attached. The result replaces any earlier grade. A judge that fails
+/// is recorded on the grade and returned, never fatal: the program checks
+/// still decide. `Err` = a malformed check, which fails the run (never open).
+pub async fn grade_trace(
+    trace: &mut Trace,
+    fixture: &Fixture,
+    grader_model: Option<&str>,
+) -> Result<GradeOutcome, String> {
+    let verified = super::checks::evaluate_fixture_checks(fixture, trace)
+        .map_err(|e| format!("fixture {}: {}", fixture.id, e))?;
+    let critical_failures = verified
+        .iter()
+        .filter(|v| !v.passed)
+        .filter(|v| {
+            fixture
+                .prompt_assertions
+                .all()
+                .into_iter()
+                .chain(fixture.integrated_assertions.iter())
+                .any(|a| a.id == v.id && a.severity == Severity::Critical)
+        })
+        .map(|v| format!("{} / {}: {}", fixture.id, v.id, v.evidence))
+        .collect();
+    trace.grade = (!verified.is_empty()).then(|| GradeResult::program_only(verified));
+
+    let mut judge_error = None;
+    if let Some(model) = grader_model {
+        match grade(trace, fixture, model).await {
+            Ok(judged) => match &mut trace.grade {
+                // Keep the verified rows in front of the judged ones.
+                Some(existing) => {
+                    existing.assertions.extend(judged.assertions);
+                    existing.first_call_success_rate = judged.first_call_success_rate;
+                    existing.context_pollution_score = judged.context_pollution_score;
+                    existing.tool_quality = judged.tool_quality;
+                    existing.model_behavior = judged.model_behavior;
+                    existing.overall_notes = judged.overall_notes;
+                    existing.judge = Some(model.to_string());
+                }
+                None => trace.grade = Some(GradeResult { judge: Some(model.to_string()), ..judged }),
+            },
+            Err(e) => {
+                trace
+                    .grade
+                    .get_or_insert_with(|| GradeResult::program_only(Vec::new()))
+                    .judge_error = Some(e.clone());
+                judge_error = Some(e);
+            }
+        }
+    }
+    Ok(GradeOutcome { critical_failures, judge_error })
+}
 
 /// Grade a trace using an LLM-as-judge via the `claude` CLI.
 /// Always uses the CLI path to bypass Nebo's chat pipeline (which injects
 /// the full system prompt and causes the grader to respond conversationally).
-pub async fn grade(
+async fn grade(
     trace: &Trace,
     fixture: &Fixture,
-    _server: &str,
     grader_model: &str,
 ) -> Result<GradeResult, String> {
     let grader_prompt = build_grader_prompt(trace, fixture);

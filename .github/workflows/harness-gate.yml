@@ -66,6 +66,17 @@ name: Harness gate
 #
 # A sweep is the gate dispatched by hand with a `suites` list: any suites and
 # fixtures, program checks by default or judged three runs each with `judge`.
+# `runs` sets the runs per fixture either way.
+#
+# Judging is offline. A proof run (scripts/arm-report.py) is dispatched with
+# judge off and runs=3: the gate records the traces and decides the program
+# checks, and the judge runs later on the owner's Mac against the traces kept
+# on the VM, under the Claude Code login there (no token):
+#   nebo-cli test grade --traces ~/.cache/nebo-arm-runs/<run id> --grader sonnet
+# (the fetch and the whole recipe: Proof-Scorecard.md). It is the same grader
+# and the same checks `test run` uses. HARNESS_CLAUDE_OAUTH_TOKEN hit its
+# weekly limit on 2026-09-25, and an in-run judge that fails leaves a run
+# without its judged half.
 # It replaces the gate's own two suites for that run only; with the inputs
 # left empty, a dispatch is exactly the gate. A sweep has its own concurrency
 # group and a longer timeout, so a push to the branch never cancels an
@@ -108,9 +119,13 @@ on:
         type: string
         default: ""
       judge:
-        description: "Sweep only: judge with the claude CLI, three runs each (default: program checks, one run)"
+        description: "Sweep only: judge in the run with the claude CLI (HARNESS_CLAUDE_OAUTH_TOKEN). Proof runs leave this off and are judged offline with `nebo-cli test grade` (default: program checks)"
         type: boolean
         default: false
+      runs:
+        description: "Sweep only: runs per fixture (default: 3 when judged, 1 otherwise; proof runs: 3)"
+        type: string
+        default: ""
       ref:
         description: "Code under test: branch, tag or sha that builds the server (default: this commit). Fixtures, suites and the runner stay this commit's."
         type: string
@@ -241,6 +256,18 @@ jobs:
           tar -x -C "$GATE_JOB/work" -f "$GATE_JOB/work.tar"
           echo "server: $(git -C "$code" log --oneline -1)"
 
+      # `rg` next to the server, as on a customer's machine: the installers
+      # ship the official ripgrep beside the nebo binary (release.yml, Tauri
+      # externalBin), and every command's PATH leads with the binary's own
+      # directory (PluginStore::path_with_plugins), so run_command finds it.
+      # `make stage-ripgrep` fetches that same release for this host.
+      - name: Stage the bundled ripgrep next to the server
+        run: |
+          make stage-ripgrep
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          cp "src-tauri/binaries/rg-$triple" "$GATE_JOB/bin/rg"
+          "$GATE_JOB/bin/rg" --version | head -1
+
       # A fresh NEBO_HOME, the arm's CI bot, Janus confirmed as the provider:
       # scripts/gate-server.sh says how and why.
       - name: Start a headless server
@@ -327,6 +354,7 @@ jobs:
         env:
           SUITES: ${{ inputs.suites }}
           JUDGE: ${{ inputs.judge }}
+          RUNS: ${{ inputs.runs }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.judge && secrets.HARNESS_CLAUDE_OAUTH_TOKEN || '' }}
           A_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
           A_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
@@ -336,6 +364,10 @@ jobs:
           P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
         run: |
           if [ "$JUDGE" = "true" ]; then judge=(--grader claude-opus-5); runs=3; else judge=(--no-judge); runs=1; fi
+          if [ -n "$RUNS" ]; then
+            case "$RUNS" in *[!0-9]*|0) echo "runs must be a positive number, got '$RUNS'"; exit 1 ;; esac
+            runs=$RUNS
+          fi
           failed=""
           for entry in $SUITES; do
             case "$entry" in

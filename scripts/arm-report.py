@@ -186,6 +186,26 @@ def iso(t):
 
 # ---------------------------------------------------------------- scoring
 
+def judged_traces(run):
+    """How many completed runs a judge graded, by which model, and how many
+    judge attempts failed: read from the traces, since a run dispatched with
+    judge off is judged afterwards by `nebo-cli test grade`."""
+    done = judged = failed = 0
+    models = collections.Counter()
+    for _, _, t in run.all():
+        if t.get("failure_reason"):
+            continue
+        done += 1
+        g = t.get("grade") or {}
+        if g.get("judge_error"):
+            failed += 1
+        elif g.get("judge") or any(a.get("mode", "judged") != "verified" for a in g.get("assertions") or []):
+            judged += 1
+            models[g.get("judge") or "in the run"] += 1
+    by = ", ".join(f"{m} {c}" for m, c in models.most_common())
+    return f"{judged} / {done}" + (f" ({by})" if by else "") + (f", judge failed {failed}" if failed else "")
+
+
 def grade(t, sev, fx):
     """(verified pass, verified total, judged pass, judged total, critical fails)"""
     vp = vt = jp = jt = 0
@@ -404,6 +424,7 @@ def main():
         if key.endswith("sha"):
             va, vp = str(va)[:10], str(vp)[:10]
         w(f"| {name} | {va} | {vp} |")
+    w(f"| judged traces (in the run or by `nebo-cli test grade`) | {judged_traces(A)} | {judged_traces(P)} |")
     w("")
 
     # ---- per suite
