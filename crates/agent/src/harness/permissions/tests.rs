@@ -496,6 +496,101 @@ async fn activity_names_the_rule() {
     assert_eq!(serde_json::from_str::<Why>(&basic.why).unwrap(), Why::BasicWork);
 }
 
+/// A tool an MCP server adds after the owner set it to "Always allow"
+/// asks first, as on main: the sync that finds it pins an ask on it, the
+/// tools the owner already saw run under the server's default, and a tool
+/// the server stops offering is new again when it returns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_tool_on_an_always_allowed_server_asks_first() {
+    use mcp::bridge::ProxyToolRegistry;
+    let (_d, store) = store();
+    store
+        .create_mcp_integration(
+            "crm-1",
+            "CRM",
+            "crm",
+            Some("https://mcp.example.com"),
+            "none",
+            None,
+            None,
+        )
+        .unwrap();
+    let (old, old_ran) = Probe::new("mcp__crm__lookup", "mcp__crm__lookup", None);
+    let (new, new_ran) = Probe::new("mcp__crm__delete_all", "mcp__crm__delete_all", None);
+    let reg = registry(&store, vec![old, new]).await;
+    reg.set_store(store.clone());
+    let synced = |names: &[&str]| -> Vec<(String, String)> {
+        names
+            .iter()
+            .map(|n| (n.to_string(), format!("mcp__crm__{n}")))
+            .collect()
+    };
+    // First connect: the server's default asks; the owner sees `lookup`
+    // and sets the server to Always allow.
+    reg.tools_synced("crm-1", "crm", &synced(&["lookup"]));
+    let default = store
+        .permission_rules_in(&Scope::Company)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.key == RuleKey::Tool("mcp__crm__*".into()))
+        .expect("the server's default");
+    assert_eq!(default.effect, Effect::Ask);
+    put(
+        &store,
+        Rule {
+            effect: Effect::Allow,
+            ..default
+        },
+    );
+    // A reconnect finds a tool the owner never saw.
+    reg.tools_synced("crm-1", "crm", &synced(&["lookup", "delete_all"]));
+    let c = ctx(&store, "", Origin::User);
+    assert_eq!(
+        reg.execute(&c, "mcp__crm__lookup", json!({})).await.content,
+        "RAN",
+        "a tool the owner saw"
+    );
+    let r = reg.execute(&c, "mcp__crm__delete_all", json!({})).await;
+    assert!(
+        r.parked_ask.is_some(),
+        "a new tool asks first: {}",
+        r.content
+    );
+    assert_eq!(
+        (
+            old_ran.load(Ordering::SeqCst),
+            new_ran.load(Ordering::SeqCst)
+        ),
+        (1, 0)
+    );
+    // Syncing again changes nothing: the ask stays the owner's to change.
+    reg.tools_synced("crm-1", "crm", &synced(&["lookup", "delete_all"]));
+    assert!(
+        reg.execute(&c, "mcp__crm__delete_all", json!({}))
+            .await
+            .parked_ask
+            .is_some()
+    );
+    // Gone, then back: new again.
+    reg.tools_synced("crm-1", "crm", &synced(&["lookup"]));
+    assert!(
+        !store
+            .permission_rules_in(&Scope::Company)
+            .unwrap()
+            .iter()
+            .any(|r| r.key == RuleKey::Tool("mcp__crm__delete_all".into())),
+        "a gone tool's rule goes with it"
+    );
+    reg.tools_synced("crm-1", "crm", &synced(&["lookup", "delete_all"]));
+    assert!(
+        reg.execute(&c, "mcp__crm__delete_all", json!({}))
+            .await
+            .parked_ask
+            .is_some(),
+        "back is new"
+    );
+}
+
 #[tokio::test]
 async fn a_parked_call_writes_an_ask_and_the_owners_answer_runs_it() {
     let (_d, store) = store();

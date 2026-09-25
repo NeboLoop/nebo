@@ -429,6 +429,31 @@ mod idempotency_tests {
         assert_eq!(store.get_chat_messages("long").unwrap().len(), 101, "the thread keeps every row");
     }
 
+    /// The tools each MCP server offered at its last sync carry over from
+    /// the old per-server permissions, so nothing the owner already saw is
+    /// new at the upgrade; a server with no list starts with none.
+    #[test]
+    fn an_mcp_servers_known_tools_carry_over() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 174).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO mcp_integrations (id, name, server_type, auth_type, tool_permissions)
+                 VALUES ('seen', 'CRM', 'crm', 'none', '{"default":"allow","tools":{},"known":["lookup","update"]}');
+               INSERT INTO mcp_integrations (id, name, server_type, auth_type, tool_permissions)
+                 VALUES ('never', 'Docs', 'docs', 'none', NULL);"#,
+        )
+        .unwrap();
+        run_migrations_to(&conn, 175).unwrap();
+        drop(conn);
+        let store = crate::Store::new(&path.to_string_lossy()).unwrap();
+        assert_eq!(
+            store.get_mcp_known_tools("seen").unwrap(),
+            vec!["lookup", "update"]
+        );
+        assert!(store.get_mcp_known_tools("never").unwrap().is_empty());
+    }
+
     /// The one loop's upgrade: the steering the old loop stored in threads
     /// is deleted and everything else stays; the orchestrator's rows become
     /// helper rows, a live one failed; the old session state columns go.

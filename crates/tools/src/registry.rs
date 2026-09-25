@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use ai::ToolDefinition;
 
@@ -1401,7 +1401,8 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         }
     }
 
-    fn tools_synced(&self, integration_id: &str, server_slug: &str) {
+    fn tools_synced(&self, integration_id: &str, server_slug: &str, tools: &[(String, String)]) {
+        use types::permissions::{Effect, Rule, RuleKey, RuleSource, Scope, Writer};
         let store = match self.store.read().unwrap().as_ref() {
             Some(s) => s.clone(),
             None => {
@@ -1419,28 +1420,75 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         if platform {
             return;
         }
+        let rule = |key: RuleKey, effect: Effect| Rule {
+            id: uuid::Uuid::new_v4().to_string(),
+            scope: Scope::Company,
+            key,
+            field: None,
+            effect,
+            money: None,
+            source: RuleSource::Owner,
+            locked: false,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        let company = match store.permission_rules_in(&Scope::Company) {
+            Ok(rules) => rules,
+            Err(e) => {
+                warn!(integration = %integration_id, error = %e, "cannot settle MCP tool rules: rules unreadable");
+                return;
+            }
+        };
+        let own = |key: &RuleKey| company.iter().find(|r| &r.key == key && r.field.is_none());
         // A server's tools ask until the owner says otherwise: the server's
         // default rule is written once, at its first connect.
-        let key = types::permissions::RuleKey::Tool(format!("mcp__{server_slug}__*"));
-        let has_default = store
-            .permission_rules_in(&types::permissions::Scope::Company)
-            .map(|rules| rules.iter().any(|r| r.key == key && r.field.is_none()))
-            .unwrap_or(true);
-        if !has_default {
-            let rule = types::permissions::Rule {
-                id: uuid::Uuid::new_v4().to_string(),
-                scope: types::permissions::Scope::Company,
-                key,
-                field: None,
-                effect: types::permissions::Effect::Ask,
-                money: None,
-                source: types::permissions::RuleSource::Owner,
-                locked: false,
-                created_at: chrono::Utc::now().timestamp(),
-            };
-            if let Err(e) = store.write_permission_rule(&rule, &types::permissions::Writer::Migration) {
-                warn!(integration = %integration_id, error = %e, "failed to write the MCP server's default rule");
+        let default_key = RuleKey::Tool(format!("mcp__{server_slug}__*"));
+        let default = match own(&default_key) {
+            Some(r) => r.effect,
+            None => {
+                if let Err(e) =
+                    store.write_permission_rule(&rule(default_key, Effect::Ask), &Writer::Migration)
+                {
+                    warn!(integration = %integration_id, error = %e, "failed to write the MCP server's default rule");
+                }
+                Effect::Ask
             }
+        };
+        // A tool the owner has never seen doesn't ride an "Always allow"
+        // default: while the default allows, each tool the server didn't
+        // offer at its last sync gets its own ask, which the owner can
+        // change. A tool the server stopped offering loses its rule, so if
+        // it returns it is new again.
+        let known = store
+            .get_mcp_known_tools(integration_id)
+            .unwrap_or_default();
+        for (original, proxy) in tools {
+            let key = RuleKey::Tool(proxy.clone());
+            if default == Effect::Allow && !known.contains(original) && own(&key).is_none() {
+                match store.write_permission_rule(&rule(key, Effect::Ask), &Writer::Migration) {
+                    Ok(_) => {
+                        info!(integration = %integration_id, tool = %proxy, "a new tool on an always-allowed server asks first")
+                    }
+                    Err(e) => {
+                        warn!(integration = %integration_id, tool = %proxy, error = %e, "the new tool's ask did not land")
+                    }
+                }
+            }
+        }
+        let family = format!("mcp__{server_slug}__");
+        for r in company.iter().filter(|r| r.field.is_none() && !r.locked) {
+            let RuleKey::Tool(key) = &r.key else { continue };
+            if key.starts_with(&family)
+                && !key.ends_with('*')
+                && !tools.iter().any(|(_, proxy)| proxy == key)
+            {
+                if let Err(e) = store.remove_permission_rule(&r.id, &Writer::Migration) {
+                    warn!(integration = %integration_id, tool = %key, error = %e, "a gone tool's rule was not removed");
+                }
+            }
+        }
+        let current: Vec<String> = tools.iter().map(|(original, _)| original.clone()).collect();
+        if let Err(e) = store.set_mcp_known_tools(integration_id, &current) {
+            warn!(integration = %integration_id, error = %e, "the server's tool list was not recorded");
         }
     }
 }
