@@ -2,11 +2,11 @@ id: repo-sveltestrap-fanout
 name: "Real repo: seven parallel workers restyle seven components in worktrees"
 description: |
   sveltestrap (MIT) from the probe clone, a git repo with one Svelte file per
-  component. Seven sub-agents, one per component, each adds one CSS class to
+  component. Seven helpers (seven delegate calls in one response), one per component, each adds one CSS class to
   its component's root element in its own worktree; the merge brings all seven
   back with no conflicts. scripts/test-repo.sh verifies the seven files, the
   absence of .nebo-conflict files, and that nothing else changed.
-target_component: agent
+target_component: delegate
 
 setup:
   - "rm -rf /tmp/nebo-test/sveltestrap && cp -Rc /tmp/nebo-test/probe/sveltestrap /tmp/nebo-test/sveltestrap"
@@ -15,38 +15,43 @@ teardown:
 
 conversation:
   - role: user
-    content: "In the project at /tmp/nebo-test/sveltestrap (a git repo), restyle seven components in parallel with worktree isolation, one sub-agent per component: Alert, Badge, Button, Card, Col, Container, Dropdown. Each sub-agent edits only src/<Name>/<Name>.svelte and adds the CSS class nb-restyled to that component's root element class list, changing nothing else. Give each sub-agent the read_file and edit_file tools. When they are done, tell me what the merge section said."
+    content: "In the project at /tmp/nebo-test/sveltestrap (a git repo), restyle seven components in parallel with worktree isolation, one helper per component: Alert, Badge, Button, Card, Col, Container, Dropdown. Each helper edits only src/<Name>/<Name>.svelte and adds the CSS class nb-restyled to that component's root element class list, changing nothing else. When they are done, tell me what the merge section said."
 
 tool_config:
   read_file:
     enabled: true
   edit_file:
     enabled: true
-  agent:
+  delegate:
     enabled: true
 
 prompt_assertions:
   first_call:
     - id: parallel-isolated
-      text: "The first call is agent task spawn_parallel with isolate: worktree and workspace: /tmp/nebo-test/sveltestrap"
+      text: "The first call is delegate with isolation: worktree and a prompt naming the project /tmp/nebo-test/sveltestrap"
       severity: critical
-      check: { tool: agent, arg: isolate, equals: worktree }
+      check: { first_call: true, tool: delegate, arg: isolation, equals: worktree }
+    - id: prompt-names-project
+      text: "The delegate prompts name the project /tmp/nebo-test/sveltestrap"
+      severity: important
+      check: { tool: delegate, arg: prompt, contains: "/tmp/nebo-test/sveltestrap" }
   recovery:
     - id: seven-tasks
-      text: "The spawn_parallel call carries exactly seven tasks, one per named component, each with the read_file and edit_file tools"
+      text: "The model makes exactly seven delegate calls in one response, one per named component, each with isolation: worktree"
       severity: critical
     - id: merge-reported
-      text: "The final answer quotes a merge section listing the seven tasks as merged with no conflicts"
+      text: "The final answer quotes a merge section listing the seven helpers as merged with no conflicts"
       severity: critical
   cost:
     - id: bounded
-      text: "At most 5 tool calls (one spawn_parallel is ideal; a malformed first attempt corrected from the error text is tolerated, a third is not)"
+      text: "At most 9 tool calls (seven delegate calls in one response is ideal; a malformed attempt or two corrected from the error text is tolerated, more is not)"
       severity: important
-      check: { max_tool_calls: 5 }
+      check: { max_tool_calls: 9 }
 
 ideal_behavior:
-  tool_calls: 1
+  tool_calls: 7
   total_tokens: 30000
   narrative: |
-    spawn_parallel(isolate: worktree, workspace: /tmp/nebo-test/sveltestrap,
-    tasks: [7]) → merge section reported verbatim.
+    Seven delegate(isolation: worktree, prompt: "in /tmp/nebo-test/sveltestrap,
+    edit src/<Name>/<Name>.svelte ...") calls in one response → merge section
+    reported verbatim once the helpers' notifications arrive.

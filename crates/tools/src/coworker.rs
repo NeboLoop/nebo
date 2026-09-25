@@ -5,7 +5,7 @@
 //! message — delivered into their own lane, run under their own identity
 //! (persona, memory scope, connected accounts, run receipt), visible as a
 //! thread on both sides. There is no second way to reach a named agent;
-//! anonymous parallel labor stays on `agent(resource: "task", action: "spawn")`.
+//! anonymous parallel labor is a helper (`delegate`).
 
 use std::future::Future;
 use std::pin::Pin;

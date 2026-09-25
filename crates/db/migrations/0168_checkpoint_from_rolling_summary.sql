@@ -47,7 +47,7 @@ SELECT
     chat_id,
     'user',
     'This conversation continues from an earlier part that was summarized:' || char(10) || char(10) || trim(summary)
-        || char(10) || char(10) || 'If you need a specific detail from before this summary (an exact snippet, an error message, something you wrote), the earlier conversation is still stored: search it with agent(resource: "session", action: "query", query: "...").',
+        || char(10) || char(10) || 'If you need a specific detail from before this summary (an exact snippet, an error message, something you wrote), the earlier conversation is still stored: search it with search_history(query: "...").',
     '{"checkpoint":true,"reason":"migrated","headCut":false,"loadedTools":[]}',
     at,
     date(at, 'unixepoch', 'localtime')
