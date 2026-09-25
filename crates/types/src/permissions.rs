@@ -454,11 +454,29 @@ pub fn normalize_phone(s: &str) -> Option<String> {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AskCase {
     Money { cents: i64, limit_cents: Option<i64> },
-    NewCounterparty { who: String },
-    Irreversible { what: String },
-    OutsideJob { capability: String },
-    UntrustedInput { source: String },
-    AskRule { rule_id: String },
+    /// A standing allow's call would take the whole workforce past what the
+    /// company may spend unattended in a day (the constitution's
+    /// company-wide figures). Only the owner's answer runs it; the company's
+    /// figures change in the company layer, never by an answer.
+    CompanyMoney {
+        cents: i64,
+        limit_cents: Option<i64>,
+    },
+    NewCounterparty {
+        who: String,
+    },
+    Irreversible {
+        what: String,
+    },
+    OutsideJob {
+        capability: String,
+    },
+    UntrustedInput {
+        source: String,
+    },
+    AskRule {
+        rule_id: String,
+    },
     AskMode,
     /// The call gives an employee more room; only the owner does that.
     Widens,

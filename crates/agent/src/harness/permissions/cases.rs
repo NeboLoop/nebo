@@ -42,6 +42,8 @@ pub struct ThreadRef {
 /// What the cases read beside the call itself.
 pub struct Facts<'a> {
     pub spend: &'a SpendToday,
+    /// What the company's whole workforce may spend unattended in a day.
+    pub company: &'a tools::policy::Bounds,
     pub counterparties: &'a Counterparties,
     pub created: &'a CreatedLedger,
     pub taint: &'a [ProvenanceClass],
@@ -91,7 +93,7 @@ pub enum CaseVerdict {
 /// The five cases, in order 1-5. The first case code decides wins; a call
 /// no case asks about but whose outward effect is unknown is undecided.
 pub fn surfaced(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> CaseVerdict {
-    if let Some(case) = money(t, rules, f.spend) {
+    if let Some(case) = money(t, rules, f.spend, f.company) {
         return CaseVerdict::Ask(case);
     }
     let undecided = match new_counterparty(t, rules, f) {
@@ -114,8 +116,9 @@ pub fn surfaced(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> CaseVerdict {
     }
 }
 
-/// Case 1: a standing allow's money limits against today's spend.
-pub fn money(t: &Target, rules: &RuleSet, spend: &SpendToday) -> Option<AskCase> {
+/// Case 1: a standing allow's money limits against today's spend, then the
+/// company's figures against every employee's spend today together.
+pub fn money(t: &Target, rules: &RuleSet, spend: &SpendToday, company: &tools::policy::Bounds) -> Option<AskCase> {
     let limit = rules.money_limit(t)?;
     let cents = t.effects.money_cents.unwrap_or(0);
     let named = t.effects.counterparty.as_deref().is_some_and(|c| !c.is_empty());
@@ -124,7 +127,15 @@ pub fn money(t: &Target, rules: &RuleSet, spend: &SpendToday) -> Option<AskCase>
         || over(limit.per_day_count, spend.count + 1)
         || over(limit.per_day_cents, spend.cents + cents)
         || (named && over(limit.per_counterparty_day_cents, spend.counterparty_cents + cents));
-    exceeded.then(|| AskCase::Money { cents, limit_cents: limit.per_action_cents.or(limit.per_day_cents) })
+    if exceeded {
+        return Some(AskCase::Money { cents, limit_cents: limit.per_action_cents.or(limit.per_day_cents) });
+    }
+    let company_exceeded = over(company.max_amount_cents, cents)
+        || over(company.per_day_count, spend.company_count + 1)
+        || over(company.per_day_cents, spend.company_cents + cents)
+        || (named && over(company.per_counterparty_day_cents, spend.company_counterparty_cents + cents));
+    company_exceeded
+        .then(|| AskCase::CompanyMoney { cents, limit_cents: company.max_amount_cents.or(company.per_day_cents) })
 }
 
 /// Case 2: a first message to someone the employee doesn't work with, or a
@@ -257,6 +268,7 @@ fn untrusted_source(f: &Facts<'_>) -> Option<String> {
 /// The facts one call's cases read, loaded from the store.
 pub struct Gathered {
     pub spend: SpendToday,
+    pub company: tools::policy::Bounds,
     pub counterparties: Counterparties,
     pub created: CreatedLedger,
     pub thread: Option<ThreadRef>,
@@ -269,12 +281,14 @@ impl Gathered {
     /// call asks rather than runs.
     pub fn load(cx: &CheckCx<'_>, rules: &RuleSet, t: &Target) -> Gathered {
         let agent = &cx.grant.agent_id;
-        let spend = match (rules.money_limit(t), rules.decide(t)) {
-            (Some(_), Some((rule, _))) => cx
-                .store
-                .permission_spend(agent, &super::today(), rule.key.value(), t.effects.counterparty.as_deref().unwrap_or(""))
-                .unwrap_or_default(),
-            _ => SpendToday::default(),
+        let (spend, company) = match (rules.money_limit(t), rules.decide(t)) {
+            (Some(_), Some((rule, _))) => (
+                cx.store
+                    .permission_spend(agent, &super::today(), rule.key.value(), t.effects.counterparty.as_deref().unwrap_or(""))
+                    .unwrap_or_default(),
+                tools::policy::CompanyPolicy::from_json(cx.store.get_company_policy().ok().flatten().as_deref()).daily,
+            ),
+            _ => (SpendToday::default(), tools::policy::Bounds::default()),
         };
         let counterparties = Counterparties(
             cx.store.known_counterparties(agent, &t.effects.recipients).unwrap_or_default(),
@@ -289,12 +303,13 @@ impl Gathered {
         } else {
             None
         };
-        Gathered { spend, counterparties, created, thread, outside_source }
+        Gathered { spend, company, counterparties, created, thread, outside_source }
     }
 
     pub fn facts<'a>(&'a self, taint: &'a [ProvenanceClass], input: &'a serde_json::Value) -> Facts<'a> {
         Facts {
             spend: &self.spend,
+            company: &self.company,
             counterparties: &self.counterparties,
             created: &self.created,
             taint,

@@ -815,6 +815,12 @@ fn review_sentences(judgement: Option<&str>) -> (String, String) {
 fn ask_sentence(store: &db::Store, case: &AskCase) -> String {
     match case {
         AskCase::Money { cents, .. } => format!("It would spend {}, more than its limit", dollars(*cents)),
+        AskCase::CompanyMoney { cents, .. } => {
+            format!(
+                "It would spend {}, more than the company allows unattended today",
+                dollars(*cents)
+            )
+        }
         AskCase::NewCounterparty { who } => format!("A first message to {who}"),
         AskCase::Irreversible { what } => format!("It would delete or overwrite {what}, which it didn't make"),
         AskCase::OutsideJob { capability } => {
