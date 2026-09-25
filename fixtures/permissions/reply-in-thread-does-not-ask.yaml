@@ -12,18 +12,58 @@ description: |
   existing thread, or Automatic mode adds an ask on every reply and the
   PRD-Permissions §6 target ("near zero asks per employee per day") is
   unreachable.
-  The conversation establishes an inbound message from a known customer
-  (already in this employee's thread — it wrote in asking about its order),
-  then the owner asks for a reply. The right behaviour is to send the reply
-  immediately, with no ask and no park, because this is the same thread.
+  Setup delivers the customer's text the way an outside system's message
+  reaches an employee: through the hub's webhook door (POST to the hook's
+  URL with its key) into the employee's case binding, keyed by phone, which
+  routes it through `route_signal` and records the sender as someone this
+  employee works with. It waits until the case is open. The owner then asks
+  for a reply. The right behaviour is to send the reply immediately, with no
+  ask and no park, because the customer is already in this employee's
+  thread. Needs the server connected to NeboAI (the gate's harness bot).
 target_component: permissions
 
 agent: "customer-care-{{tag}}"
 
 setup:
-  - "curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"customer-care-{{tag}}\"}' > /dev/null"
+  - |
+    python3 - <<'PY'
+    import json, os, time, urllib.request as u
+    s = 'http://' + os.environ.get('NEBO_TEST_SERVER', 'localhost:27895') + '/api/v1'
+    def call(method, url, body=None, headers=None):
+        req = u.Request(url, data=None if body is None else json.dumps(body).encode(), method=method,
+                        headers={'Content-Type': 'application/json', **(headers or {})})
+        with u.urlopen(req, timeout=30) as r:
+            raw = r.read()
+        return json.loads(raw) if raw.strip() else {}
+    name = 'customer-care-{{tag}}'
+    md = '---\nname: %s\ndescription: Answers customers who text in.\n---\n\n# %s\n' % (name, name)
+    texts = {'trigger': {'type': 'event', 'sources': [name + '.texts']},
+             'case': {'key': 'phone', 'type': 'support'},
+             'activities': [{'id': 'note', 'type': 'custom',
+                             'intent': 'A customer texted in. Take no action; the owner decides the reply.'}]}
+    aid = call('POST', s + '/agents', {'agentMd': md, 'name': name, 'agentJson': {'workflows': {'texts': texts}}})['agent']['id']
+    call('POST', s + '/agents/%s/activate' % aid, {})
+    call('PUT', s + '/agents/%s' % aid, {'loopExposed': True})
+    hook = None
+    for _ in range(60):
+        try:
+            hook = call('POST', s + '/agents/%s/webhooks' % aid, {'label': 'texts', 'workflowName': 'texts'})
+            break
+        except Exception:
+            time.sleep(2)
+    if not hook:
+        raise SystemExit('the employee never registered on NeboAI, so no webhook could be made')
+    call('POST', hook['url'], {'phone': '+1-555-0198', 'text': 'Hi, did my order ship yet?'},
+         {'Authorization': 'Bearer ' + hook['key']})
+    for _ in range(60):
+        if call('GET', s + '/cases?agent=%s' % aid).get('cases'):
+            break
+        time.sleep(1)
+    else:
+        raise SystemExit('the inbound text never reached the case')
+    PY
 teardown:
-  - "python3 -c \"import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'; ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','').startswith('customer-care-{{tag}}')]; [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for i in ids]\""
+  - "python3 -c \"import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'; ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','').startswith('customer-care-{{tag}}')]; [u.urlopen(u.Request(s+'/agents/'+i+'/webhooks/'+h['id'], method='DELETE')) for i in ids for h in json.load(u.urlopen(s+'/agents/'+i+'/webhooks'))['endpoints']]; [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for i in ids]\""
 
 conversation:
   - role: user

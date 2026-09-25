@@ -843,31 +843,53 @@ pub(crate) fn apply_seat_declaration(
     }
 }
 
-/// The Hire tap is the owner's consent to a package's declared needs
-/// (`requires.interfaces`, its plugins, its watches): read off its manifest
-/// with no model call and granted as standing allow rules for that employee.
-/// An account a capability needs and no plugin binds yet reaches the owner
-/// through the Inbox needs flow (the binding's pre-flight), never as an ask.
-pub(crate) async fn grant_hire(state: &AppState, agent_id: &str) {
-    let Ok(Some(agent)) = state.store.get_agent(agent_id) else { return };
-    let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) else { return };
-    let declared = tools::needs::DeclaredNeeds::of(&config);
-    let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
+/// A declaration's needs, through the one needs step.
+async fn declared_needs(
+    name: &str,
+    config: &napp::agent::AgentConfig,
+    installed: &[(String, Vec<String>)],
+    reader: &dyn tools::needs::DescriptionReader,
+) -> tools::needs::Needs {
+    let declared = tools::needs::DeclaredNeeds::of(config);
     let src = tools::needs::JobSource {
-        name: &agent.name,
+        name,
         description: "",
         skills: &[],
         plugins: &[],
         workflows: &[],
         declared: Some(&declared),
-        installed: &installed,
+        installed,
     };
+    tools::needs::work_out_needs(&src, reader).await
+}
+
+/// The owner's consent to an employee's declared needs (`requires.
+/// interfaces`, its plugins, its watches), read off its manifest with no
+/// model call and granted as standing allow rules for that employee. With
+/// no `before` it is a hire (the Hire tap, or the owner's own create from a
+/// package) and grants every declared need; with the declaration as it was
+/// before the owner edited it, it grants only what the edit adds. An account
+/// a capability needs and no plugin binds yet reaches the owner through the
+/// Inbox needs flow (the binding's pre-flight), never as an ask.
+pub(crate) async fn grant_declared(state: &AppState, agent_id: &str, before: Option<&napp::agent::AgentConfig>) {
+    let Ok(Some(agent)) = state.store.get_agent(agent_id) else { return };
+    let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) else { return };
+    let installed = agent::agent_worker::installed_interfaces(&state.plugin_store);
     let reader = agent::harness::permissions::consent::AuxReader::new(state.harness.providers());
-    let needs = tools::needs::work_out_needs(&src, &reader).await;
-    let source = types::permissions::RuleSource::Hire { package: agent_id.to_string() };
+    let declared = declared_needs(&agent.name, &config, &installed, &reader).await;
+    let (needs, source) = match before {
+        None => (declared, types::permissions::RuleSource::Hire { package: agent_id.to_string() }),
+        Some(before) => {
+            let was = declared_needs(&agent.name, before, &installed, &reader).await;
+            (tools::needs::added(&was, &declared), types::permissions::RuleSource::JobEdit)
+        }
+    };
+    if needs.is_empty() {
+        return;
+    }
     match agent::harness::permissions::consent::grant_job(&state.store, agent_id, &needs, source) {
-        Ok(rules) => tracing::info!(agent = agent_id, granted = rules.len(), "the hire granted the package's declared needs"),
-        Err(e) => tracing::warn!(agent = agent_id, error = %e, "the hire's needs were not granted"),
+        Ok(rules) => tracing::info!(agent = agent_id, granted = rules.len(), "the owner's consent granted the declared needs"),
+        Err(e) => tracing::warn!(agent = agent_id, error = %e, "the declared needs were not granted"),
     }
 }
 

@@ -117,6 +117,66 @@ fn hire_tap_grants_the_needs_as_allow_rules() {
     ));
 }
 
+/// A bookkeeping plugin, as the operation tools present its operations.
+struct Books;
+
+impl tools::operation_tools::OperationProvider for Books {
+    fn provider(&self) -> &str {
+        "books"
+    }
+    fn service(&self) -> String {
+        "Books".into()
+    }
+    fn operations(&self) -> Vec<tools::operation_tools::ProvidedOperation> {
+        ["ledger.invoice.list", "ledger.invoice.update"]
+            .into_iter()
+            .map(|op| tools::operation_tools::ProvidedOperation { operation: op.into(), ..Default::default() })
+            .collect()
+    }
+    fn perform<'a>(
+        &'a self,
+        _ctx: &'a ToolContext,
+        _operation: &'a str,
+        _input: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = tools::ToolResult> + Send + 'a>> {
+        Box::pin(async { tools::ToolResult::ok("RAN") })
+    }
+}
+
+/// The interface a hired package binds is its job: the hire's consent
+/// grants it, so the operations of that interface run without asking; an
+/// employee that binds no such interface is outside its job (case 4).
+#[tokio::test]
+async fn a_bound_interface_is_inside_the_job() {
+    let (_d, store) = store();
+    let declared = DeclaredNeeds { interfaces: vec!["ledger".into()], plugins: vec![], watches: vec![] };
+    let src = JobSource {
+        name: "Bookkeeper",
+        description: "",
+        skills: &[],
+        plugins: &[],
+        workflows: &[],
+        declared: Some(&declared),
+        installed: &[],
+    };
+    let needs = tools::needs::work_out_needs(&src, &NeverAsked).await;
+    grant_job(&store, "bookkeeper", &needs, RuleSource::Hire { package: "bookkeeper".into() }).unwrap();
+
+    let ops = tools::operation_tools::operation_tools(&[Arc::new(Books) as Arc<dyn tools::operation_tools::OperationProvider>]);
+    for name in ["ledger_invoice_list", "ledger_invoice_update"] {
+        let tool = ops.iter().find(|t| tools::registry::DynTool::name(*t) == name).unwrap();
+        let t = tools::registry::target_of(tool, &json!({}));
+        assert_eq!(t.capability.as_deref(), Some("ledger"), "{name}");
+        let hired = decide_for(&store, "bookkeeper", &t);
+        assert!(matches!(hired, Decision::Allow { .. }), "{name}: {hired:?}");
+        let unbound = decide_for(&store, "receptionist", &t);
+        assert!(
+            matches!(&unbound, Decision::Ask { case: AskCase::OutsideJob { capability } } if capability == "ledger"),
+            "{name}: {unbound:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn missing_account_goes_to_the_inbox_needs_flow() {
     let (_d, store) = store();

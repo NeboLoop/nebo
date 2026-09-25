@@ -46,6 +46,8 @@ export interface ActivityRow {
 	why: string
 	door: string
 	unreviewed: boolean
+	decidedBy: string
+	verdict: string
 }
 
 export interface Advisor {
@@ -1700,6 +1702,7 @@ export interface GetSessionMessagesResponse {
 
 export interface GetSettingsResponse {
 	settings: Setting
+	permissionJudgement: unknown
 }
 
 export interface GetSkillResponse {
@@ -2309,6 +2312,7 @@ export interface UpdateModelResponse {
 
 export interface UpdateSettingsResponse {
 	settings: Setting
+	permissionJudgement: unknown
 }
 
 export interface UpdateSkillResponse {
