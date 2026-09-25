@@ -205,7 +205,7 @@ pub async fn toggle_plugin(
         .store
         .set_plugin_enabled(&slug, !was_enabled)
         .map_err(to_error_response)?;
-    state.tools.refresh_definition("plugin").await;
+    state.tools.refresh_plugin_tools().await;
     Ok(Json(serde_json::json!({
         "slug": slug,
         "enabled": !was_enabled,
@@ -725,7 +725,7 @@ fn spawn_plugin_login(
                 // Update in-memory auth cache so getAgent reflects the change instantly
                 plugin_store_for_auth.update_auth_status(&slug_owned).await;
                 // Readiness may have changed — refresh plugin tool definition
-                tools_for_refresh.refresh_definition("plugin").await;
+                tools_for_refresh.refresh_plugin_tools().await;
 
                 // Restart agent workers that depend on this plugin
                 let store_r = store_for_restart.clone();
@@ -1049,7 +1049,7 @@ async fn logout_plugin(state: &AppState, slug: &str) -> Result<(), NeboError> {
         info!(plugin = %slug, "plugin auth logout succeeded");
         // Update in-memory auth cache so getAgent reflects the change instantly
         state.plugin_store.update_auth_status(slug).await;
-        state.tools.refresh_definition("plugin").await;
+        state.tools.refresh_plugin_tools().await;
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1063,7 +1063,7 @@ async fn logout_plugin(state: &AppState, slug: &str) -> Result<(), NeboError> {
 /// DELETE /plugins/{slug} handler and the marketplace uninstall flow, so both
 /// uninstall a plugin identically (CODE_AUDITOR Rule 8). Disk removal is the
 /// critical path; the DB delete is best-effort.
-pub fn remove_plugin_by_slug(state: &AppState, slug: &str) -> Result<(), NeboError> {
+pub async fn remove_plugin_by_slug(state: &AppState, slug: &str) -> Result<(), NeboError> {
     state
         .plugin_store
         .remove(slug)
@@ -1103,6 +1103,7 @@ pub fn remove_plugin_by_slug(state: &AppState, slug: &str) -> Result<(), NeboErr
     let _ = state.store.delete_artifact_update_pref(slug, "plugin");
 
     state.hooks.unregister_app(slug);
+    state.tools.refresh_plugin_tools().await;
     info!(plugin = %slug, "plugin removed");
     Ok(())
 }
@@ -1114,7 +1115,7 @@ pub async fn remove_plugin(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    remove_plugin_by_slug(&state, &slug).map_err(to_error_response)?;
+    remove_plugin_by_slug(&state, &slug).await.map_err(to_error_response)?;
     Ok(Json(serde_json::json!({ "message": "Plugin removed" })))
 }
 
@@ -1417,7 +1418,7 @@ pub async fn set_plugin_config(
     }
 
     // Readiness may have changed — refresh plugin tool definition
-    state.tools.refresh_definition("plugin").await;
+    state.tools.refresh_plugin_tools().await;
 
     info!(plugin = %slug, keys = body.len(), "updated plugin config");
     Ok(Json(serde_json::json!({ "success": true })))
@@ -2025,7 +2026,7 @@ pub(crate) async fn revoke_plugin_auth(state: &AppState, revoked: &PluginAuthRev
 
     // The plugin tool's auth view must reflect the loss right away.
     state.plugin_store.update_auth_status(slug).await;
-    state.tools.refresh_definition("plugin").await;
+    state.tools.refresh_plugin_tools().await;
 
     let display = state
         .plugin_store

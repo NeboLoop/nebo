@@ -468,9 +468,9 @@ impl DynTool for OsTool {
          - music: play, pause, next, previous, status, search, volume, playlists, shuffle\n\
          - keychain: get, find, add (alias: store), delete (account optional — narrows the match)\n\
          - search: search (file search via OS index)\n\
-         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. send takes to, subject, text (the message, plain) and optional html; it is the way to send only when no mail plugin is connected — a connected one is the business's mail and this send refuses and points to plugin(operation: \"mail.message.send\"). read/search take optional account (name or address, e.g. \"you@example.com\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
+         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. send takes to, subject, text (the message, plain) and optional html; it is the way to send only when no mail plugin is connected — a connected one is the business's mail and this send refuses and points to mail_message_send. read/search take optional account (name or address, e.g. \"you@example.com\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
          - contacts: search, get, create, groups\n\
-         - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure — the LOCAL Apple/Mac calendar (for Google Calendar use plugin(resource: \"gws\", ...))\n\
+         - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure — the LOCAL Apple/Mac calendar (a connected calendar service is its own plugin__<name> tool)\n\
          - reminders: lists, list, create, complete, delete\n\n\
          Examples:\n  \
          os(resource: \"app\", action: \"launch\", app: \"Safari\")\n  \
@@ -965,7 +965,7 @@ impl DynTool for OsTool {
                                 let bound = crate::plugin_tool::bound_providers(ps, store, "mail.message.send");
                                 if !bound.is_empty() {
                                     return ToolResult::error(format!(
-                                        "Not sent through Apple Mail: this business sends mail through {}. Call plugin(operation: \"mail.message.send\", input: {{to, subject, text, html}}) — same message, the connected account.",
+                                        "Not sent through Apple Mail: this business sends mail through {}. Call mail_message_send with to, subject, text and html — same message, the connected account.",
                                         bound.join(", ")
                                     ));
                                 }

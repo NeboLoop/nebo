@@ -12,6 +12,11 @@ pub struct Rename {
     pub resource: Option<&'static str>,
     /// The old `action`, when the shape had one.
     pub action: Option<&'static str>,
+    /// The tool that does the job now. A family written per call carries a
+    /// placeholder the migration fills from the old call: `{resource}` is
+    /// its `resource` (`plugin__{resource}`), and `{operation}` is its
+    /// `operation` written as a tool name, its `input` fields becoming the
+    /// call's own.
     pub to: &'static str,
     /// Parameters renamed on the way: (old, new).
     pub params: &'static [(&'static str, &'static str)],
@@ -23,6 +28,37 @@ pub const RENAMES: &[Rename] = &[
         resource: None,
         action: None,
         to: crate::find_tools::FIND_TOOLS,
+        params: &[],
+    },
+    // The plugin tool: `list` and the `mcp` tool have no successor — the
+    // deferred-tool listing names every installed plugin and MCP tool.
+    Rename {
+        tool: "plugin",
+        resource: None,
+        action: Some("discover"),
+        to: crate::plugin_tools::FIND_PLUGINS,
+        params: &[],
+    },
+    Rename {
+        tool: "plugin",
+        resource: None,
+        action: Some("events"),
+        to: crate::plugin_tools::READ_PLUGIN_EVENTS,
+        params: &[("resource", "plugin")],
+    },
+    Rename {
+        tool: "plugin",
+        resource: None,
+        action: Some("exec"),
+        to: "plugin__{resource}",
+        params: &[],
+    },
+    // A typed port call (`operation` + `input`) names no action.
+    Rename {
+        tool: "plugin",
+        resource: None,
+        action: None,
+        to: "{operation}",
         params: &[],
     },
     // Tools WP2: helpers, memory, asking and reaching the owner. A task
@@ -556,7 +592,8 @@ mod tests {
     #[test]
     fn every_row_points_at_a_current_name_and_old_names_are_unique_per_shape() {
         for (i, r) in RENAMES.iter().enumerate() {
-            assert!(crate::registry::is_tool_name(r.to), "{} is not a current tool name", r.to);
+            let to = r.to.replace("{resource}", "quickbooks").replace("{operation}", "ledger_bill_create");
+            assert!(crate::registry::is_tool_name(&to), "{} is not a current tool name", r.to);
             assert!(
                 RENAMES[..i]
                     .iter()

@@ -88,7 +88,6 @@ pub fn call_labels(tool_name: &str, input: &serde_json::Value) -> (String, Strin
 mod tests {
     use super::{call_labels, service_name as humanize_slug, strap_verb};
     use crate::os_tool::OsTool;
-    use crate::plugin_tool::plugin_labels;
     use serde_json::json;
 
     #[test]
@@ -145,18 +144,6 @@ mod tests {
             OsTool::labels(&json!({"resource": "reminders", "action": "frobnicate"}));
         assert_eq!(act, "running frobnicate on reminders");
         assert_eq!(out, "Ran frobnicate on reminders");
-    }
-
-    /// Plugin calls must say the SERVICE ("using Gmail"), never the word
-    /// "plugin" — the register the whole install flow protects.
-    #[test]
-    fn plugin_calls_name_the_service_never_the_word_plugin() {
-        let (act, out) =
-            plugin_labels(&json!({"resource": "google-search-console"}));
-        assert_eq!(act, "using Google Search Console");
-        assert_eq!(out, "Used Google Search Console");
-        let (act, _) = plugin_labels(&json!({"action": "discover"}));
-        assert_eq!(act, "browsing the marketplace");
     }
 
     /// A tool without words of its own is named as-is ("using send invoice")

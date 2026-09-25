@@ -110,8 +110,21 @@ fn catalog() -> &'static Catalog {
     })
 }
 
+/// The operation as written first: a four-segment operation
+/// (`ledger.card.limit.set`) is its own entry, not the suffix of a port.
 fn entry(operation: &str) -> Option<&'static Entry> {
-    catalog().entries.get(port_suffix(operation).as_str())
+    let entries = &catalog().entries;
+    entries.get(operation).or_else(|| entries.get(port_suffix(operation).as_str()))
+}
+
+/// The catalog operation whose tool is `tool_name` (`ledger_bill_create` →
+/// `ledger.bill.create`), when the catalog has one.
+pub fn operation_named(tool_name: &str) -> Option<&'static str> {
+    catalog()
+        .entries
+        .keys()
+        .copied()
+        .find(|op| crate::operation_tools::operation_tool_name(op) == tool_name)
 }
 
 /// Whether the operation (bare op or fully-qualified port) is gated.
