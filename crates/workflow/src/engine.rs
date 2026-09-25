@@ -799,14 +799,15 @@ pub async fn execute_activity(
         step_id,
     };
 
-    // Identity + memory continuity for agent-bound runs. Computed per
-    // activity so mid-run memory writes surface in later activities.
+    // Memory continuity for agent-bound runs. Computed per activity so
+    // mid-run memory writes surface in later activities. The employee's
+    // identity is the loop's `identity` row, not part of the instructions.
     let agent_ctx = build_agent_context(store, agent_id);
 
     // If activity has steps, execute per-step. Otherwise, single-turn legacy path.
     if activity.steps.is_empty() {
         // No steps — legacy single-turn execution
-        let system = build_activity_prompt_with_context(
+        let instructions = build_activity_prompt_with_context(
             activity,
             prior_context,
             inputs,
@@ -818,7 +819,7 @@ pub async fn execute_activity(
         );
         let messages = vec![ai::Message {
             role: "user".into(),
-            // Typed nodes may have no intent — the system prompt carries the
+            // Typed nodes may have no intent — the instructions carry the
             // type contract and parameters; providers reject empty messages.
             content: if activity.intent.trim().is_empty() {
                 "Execute this activity as defined by its type and parameters.".to_string()
@@ -833,7 +834,7 @@ pub async fn execute_activity(
         };
         let turn = LoopTurn {
             activity,
-            system,
+            instructions,
             seed_messages: seed,
             workflow_name: &workflow.name,
             advertised_tools: tool_names.clone(),
@@ -868,8 +869,8 @@ pub async fn execute_activity(
         .seed_task_list(&list_id, &step_strs)
         .map_err(|e| WorkflowError::Database(e.to_string()))?;
 
-    // Build system prompt WITHOUT steps (they'll come as individual user messages)
-    let system = build_activity_prompt_no_steps(
+    // Build the instructions WITHOUT steps (they'll come as individual user messages)
+    let instructions = build_activity_prompt_no_steps(
         activity,
         prior_context,
         inputs,
@@ -931,7 +932,7 @@ pub async fn execute_activity(
         // Run this step through the ONE injected agentic loop.
         let turn = LoopTurn {
             activity,
-            system: system.clone(),
+            instructions: instructions.clone(),
             seed_messages: messages.clone(),
             workflow_name: &workflow.name,
             advertised_tools: tool_names.clone(),
@@ -1265,7 +1266,7 @@ async fn evaluate_step(
 /// input-inclusive budget would fail on turn 1 regardless of the model's work.
 /// Budgets are opt-in: an activity with no declared budget (max 0) is uncapped.
 
-/// Build the system prompt for a per-step activity (no steps section — steps come as user messages).
+/// Build the instructions for a per-step activity (no steps section — steps come as user messages).
 #[allow(clippy::too_many_arguments)]
 fn build_activity_prompt_no_steps(
     activity: &Activity,
@@ -1340,22 +1341,15 @@ fn typed_node_preamble(activity_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Per-agent identity + memory context injected into every activity prompt.
-/// Soul is who the agent IS (voice, values, boundaries); the memory slice
-/// gives scheduled runs continuity — most-used facts plus what happened most
-/// recently, including post-run outcome history. Recall is not learning, so
-/// this is NOT gated by learning_mode.
+/// Per-agent memory context in every activity's instructions: the memory
+/// slice gives scheduled runs continuity — most-used facts plus what
+/// happened most recently, including post-run outcome history. Recall is
+/// not learning, so this is NOT gated by learning_mode. Who the agent is
+/// (SOUL.md, rules, AGENT.md) is the loop's `identity` row.
 fn build_agent_context(store: &Store, agent_id: &str) -> Option<String> {
     if agent_id.is_empty() {
         return None;
     }
-    let soul = store
-        .get_agent(agent_id)
-        .ok()
-        .flatten()
-        .and_then(|a| a.soul)
-        .filter(|s| !s.trim().is_empty());
-
     // Base agent scope ONLY — never `:ctx:`-suffixed scopes. Context-isolated
     // agents (law-firm matters, per-client engagements) keep each context's
     // memories sealed from every other; a scheduled run has no case context,
@@ -1369,28 +1363,20 @@ fn build_agent_context(store: &Store, agent_id: &str) -> Option<String> {
     memories.retain(|m| !m.user_id.contains(":ctx:"));
     memories.truncate(8);
 
-    if soul.is_none() && memories.is_empty() {
+    if memories.is_empty() {
         return None;
     }
 
-    let mut out = String::new();
-    if let Some(soul) = soul {
-        out.push_str("## Who You Are\n\nEmbody this personality and tone. This is who you ARE — your voice, values, and boundaries.\n\n");
-        out.push_str(&soul);
-        out.push_str("\n\n");
-    }
-    if !memories.is_empty() {
-        out.push_str("## Your Memory (recent and most-used)\n\n");
-        for m in &memories {
-            let mut value = m.value.replace('\n', " ");
-            if value.len() > 300 {
-                value.truncate(300);
-                value.push('…');
-            }
-            out.push_str(&format!("- [{}/{}] {}\n", m.namespace, m.key, value));
+    let mut out = String::from("## Your Memory (recent and most-used)\n\n");
+    for m in &memories {
+        let mut value = m.value.replace('\n', " ");
+        if value.len() > 300 {
+            value.truncate(300);
+            value.push('…');
         }
-        out.push('\n');
+        out.push_str(&format!("- [{}/{}] {}\n", m.namespace, m.key, value));
     }
+    out.push('\n');
     Some(out)
 }
 
@@ -1427,7 +1413,7 @@ fn build_activity_prompt_with_context(
           you found or did. Never end a step with zero text output — downstream activities depend \
           on your summary.\n\n");
 
-    // Identity + memory continuity for agent-bound runs (soul, recent history).
+    // Memory continuity for agent-bound runs (recent and most-used).
     if let Some(ctx) = agent_context {
         prompt.push_str(ctx);
     }

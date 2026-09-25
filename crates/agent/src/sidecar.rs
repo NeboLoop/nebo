@@ -52,7 +52,6 @@ async fn describe(
         max_tokens,
         temperature: 0.0,
         system: system.to_string(),
-        static_system: String::new(),
         model: sidecar_model(provider.id()),
         enable_thinking: false,
         metadata: None,

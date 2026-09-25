@@ -161,7 +161,6 @@ pub async fn summarize(
         max_tokens: SUMMARY_MAX_TOKENS,
         temperature: 0.0,
         system: system.to_string(),
-        static_system: String::new(),
         model: model.to_string(),
         enable_thinking: false,
         metadata: None,

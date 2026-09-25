@@ -301,7 +301,6 @@ impl AuxReader {
             max_tokens: 400,
             temperature: 0.0,
             system: Self::SYSTEM.to_string(),
-            static_system: String::new(),
             model,
             enable_thinking: false,
             metadata: None,

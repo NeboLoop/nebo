@@ -16,6 +16,11 @@ pub enum TurnEvent {
     /// The session's facts, whole: the first step of a session, and the
     /// first step after a checkpoint. One row per fact.
     SessionSnapshot(SessionFacts),
+    /// Who the turn is for changed (the owner edited the employee): the
+    /// replacement, whole.
+    IdentityChanged(String),
+    /// The workflow activity's instructions changed: the replacement, whole.
+    ActivityChanged(String),
     /// Environment fields that changed since the conversation was told.
     EnvironmentChanged(Vec<(String, String)>),
     /// The model or the permission mode changed.
@@ -93,6 +98,11 @@ pub enum TurnEvent {
 /// cached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFacts {
+    /// Who the turn is for: the employee, or a helper's role and parent
+    /// (`prompt::Identity`).
+    pub identity: String,
+    /// A workflow activity's instructions; empty on every other turn.
+    pub activity: String,
     /// Today in the owner's timezone.
     pub date: chrono::NaiveDate,
     pub timezone: Option<String>,
@@ -129,6 +139,8 @@ pub enum Threshold {
 
 /// Every attachment name, what `NEBO_STEERING` can address.
 pub const NAMES: &[&str] = &[
+    "identity",
+    "activity",
     "environment",
     "mode",
     "employee_memory",
@@ -169,6 +181,8 @@ const MICROCENTS_PER_DOLLAR: f64 = 100_000_000.0;
 pub fn attachments_for(e: &TurnEvent) -> Vec<Attachment> {
     match e {
         TurnEvent::SessionSnapshot(f) => [
+            replacement_row("identity", &f.identity, None),
+            replacement_row("activity", &f.activity, None),
             environment_row(f),
             mode_row(&f.mode),
             replacement_row("employee_memory", &f.employee_memory, None),
@@ -196,6 +210,12 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
                 text: format!("Environment update:\n{}", lines.join("\n")),
                 data: serde_json::Map::from_iter([("fields".to_string(), fields_json(fields))]),
             });
+        }
+        TurnEvent::IdentityChanged(text) => {
+            return replacement_row("identity", text, Some("Who you are has changed; this replaces the earlier version:"));
+        }
+        TurnEvent::ActivityChanged(text) => {
+            return replacement_row("activity", text, Some("The activity's instructions have changed; these replace the earlier ones:"));
         }
         TurnEvent::ModeChanged(m) => return mode_row(m),
         TurnEvent::EmployeeMemoryChanged(text) => {
@@ -339,7 +359,7 @@ fn mode_row(m: &ModeFacts) -> Option<Attachment> {
     Some(Attachment {
         kind: "mode",
         text: format!(
-            "Model: {}. Answer questions about your model from this id alone; what it is built on is not shown to you, so don't guess. Permission mode: {}.",
+            "Model: {}. Permission mode: {}.",
             m.model, m.permission_mode
         ),
         data: serde_json::Map::from_iter([
@@ -372,6 +392,8 @@ fn digest(text: &str) -> String {
 /// rows since the boundary; `None` for a fact never told.
 #[derive(Debug, Default)]
 struct Told {
+    identity: Option<String>,
+    activity: Option<String>,
     date: Option<String>,
     environment: Option<BTreeMap<String, String>>,
     mode: Option<(String, String)>,
@@ -397,6 +419,8 @@ fn told(history: &[ChatMessage]) -> Told {
             }
             Some("date_changed") => t.date = text(&f, "date").or(t.date.take()),
             Some("mode") => t.mode = Some((text(&f, "model").unwrap_or_default(), text(&f, "mode").unwrap_or_default())),
+            Some("identity") => t.identity = text(&f, "digest"),
+            Some("activity") => t.activity = text(&f, "digest"),
             Some("employee_memory") => t.employee_memory = text(&f, "digest"),
             Some("session_context") => t.session_context = text(&f, "digest"),
             _ => {}
@@ -411,10 +435,23 @@ fn told(history: &[ChatMessage]) -> Told {
 /// when nothing did.
 pub fn session_fact_events(now: &SessionFacts, history: &[ChatMessage]) -> Vec<TurnEvent> {
     let t = told(history);
-    if t.environment.is_none() && t.mode.is_none() && t.employee_memory.is_none() && t.session_context.is_none() {
+    if t.identity.is_none()
+        && t.activity.is_none()
+        && t.environment.is_none()
+        && t.mode.is_none()
+        && t.employee_memory.is_none()
+        && t.session_context.is_none()
+    {
         return vec![TurnEvent::SessionSnapshot(now.clone())];
     }
+    let differs = |told: &Option<String>, text: &str| !text.trim().is_empty() && told.as_deref() != Some(digest(text).as_str());
     let mut out = Vec::new();
+    if differs(&t.identity, &now.identity) {
+        out.push(TurnEvent::IdentityChanged(now.identity.clone()));
+    }
+    if differs(&t.activity, &now.activity) {
+        out.push(TurnEvent::ActivityChanged(now.activity.clone()));
+    }
     let env = t.environment.unwrap_or_default();
     let changed: Vec<(String, String)> =
         now.environment.iter().filter(|(k, v)| env.get(k) != Some(v)).cloned().collect();
@@ -427,11 +464,10 @@ pub fn session_fact_events(now: &SessionFacts, history: &[ChatMessage]) -> Vec<T
     if t.mode.as_ref() != Some(&(now.mode.model.clone(), now.mode.permission_mode.clone())) {
         out.push(TurnEvent::ModeChanged(now.mode.clone()));
     }
-    let changed = |told: &Option<String>, text: &str| !text.trim().is_empty() && told.as_deref() != Some(digest(text).as_str());
-    if changed(&t.employee_memory, &now.employee_memory) {
+    if differs(&t.employee_memory, &now.employee_memory) {
         out.push(TurnEvent::EmployeeMemoryChanged(now.employee_memory.clone()));
     }
-    if changed(&t.session_context, &now.session_context) {
+    if differs(&t.session_context, &now.session_context) {
         out.push(TurnEvent::SessionContextChanged(now.session_context.clone()));
     }
     out
@@ -657,6 +693,8 @@ mod tests {
 
     fn facts() -> SessionFacts {
         SessionFacts {
+            identity: "You are Ava, an AI employee working for your owner through Nebo.\n\n# Your job\n\nYou keep the books.".into(),
+            activity: String::new(),
             date: chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap(),
             timezone: Some("America/Denver".into()),
             environment: vec![("Platform".into(), "macOS (aarch64)".into()), ("Channel".into(), "web".into())],
@@ -676,8 +714,8 @@ mod tests {
     #[test]
     fn session_snapshot_on_first_step_then_deltas_only() {
         let mut history = vec![row("user", "hello", None, None)];
-        assert_eq!(fact_step(&mut history, &facts()), ["environment", "mode", "employee_memory", "session_context"]);
-        assert!(history[1].content.contains("- Date: Thursday, September 24, 2026 (America/Denver)"));
+        assert_eq!(fact_step(&mut history, &facts()), ["identity", "environment", "mode", "employee_memory", "session_context"]);
+        assert!(history[2].content.contains("- Date: Thursday, September 24, 2026 (America/Denver)"));
         assert!(fact_step(&mut history, &facts()).is_empty(), "nothing changed, nothing written");
         let mut moved = facts();
         moved.environment[1].1 = "slack".into();
@@ -687,7 +725,36 @@ mod tests {
         assert!(fact_step(&mut history, &moved).is_empty());
         // After a checkpoint the conversation was told nothing: the snapshot again.
         let mut after = vec![row("user", "summary", None, Some(serde_json::json!({"checkpoint": true})))];
-        assert_eq!(fact_step(&mut after, &moved).len(), 4);
+        assert_eq!(fact_step(&mut after, &moved).len(), 5);
+    }
+
+    /// Who the turn is for is a row: told first, told again after a
+    /// checkpoint, and replaced whole when the owner edits the employee.
+    #[test]
+    fn identity_is_told_once_resent_after_checkpoint_and_replaced_on_edit() {
+        let mut history = vec![row("user", "hello", None, None)];
+        assert_eq!(fact_step(&mut history, &facts())[0], "identity");
+        assert_eq!(history[1].content, crate::harness::reminders::wrap(&facts().identity), "told plain, first");
+        assert!(fact_step(&mut history, &facts()).is_empty(), "told once");
+        let mut edited = facts();
+        edited.identity = edited.identity.replace("keep the books", "run payroll");
+        assert_eq!(fact_step(&mut history, &edited), ["identity"]);
+        let replaced = &history.last().unwrap().content;
+        assert!(replaced.contains("Who you are has changed; this replaces the earlier version:") && replaced.contains("run payroll"), "{replaced}");
+        assert!(fact_step(&mut history, &edited).is_empty());
+        let mut after = vec![row("user", "summary", None, Some(serde_json::json!({"checkpoint": true})))];
+        assert_eq!(fact_step(&mut after, &edited)[0], "identity", "re-sent after the checkpoint");
+        assert!(after[1].content.contains("run payroll") && !after[1].content.contains("has changed"), "{}", after[1].content);
+    }
+
+    #[test]
+    fn activity_instructions_ride_after_the_identity() {
+        let mut history = Vec::new();
+        let mut activity = facts();
+        activity.activity = "## Task\nReconcile the ledger.".into();
+        assert_eq!(fact_step(&mut history, &activity)[..2], ["identity", "activity"]);
+        assert!(history[1].content.contains("Reconcile the ledger."));
+        assert!(fact_step(&mut history, &activity).is_empty());
     }
 
     #[test]
@@ -697,7 +764,9 @@ mod tests {
         let mut plan = facts();
         plan.mode.permission_mode = "Plan".into();
         assert_eq!(fact_step(&mut history, &plan), ["mode"]);
-        assert!(history.last().unwrap().content.contains("Permission mode: Plan."));
+        let row = &history.last().unwrap().content;
+        assert!(row.contains(&format!("Model: {}. Permission mode: Plan.", plan.mode.model)), "{row}");
+        assert!(!row.contains("guess"), "facts only, as Claude Code states the model: {row}");
         assert!(fact_step(&mut history, &plan).is_empty());
     }
 
@@ -728,6 +797,7 @@ mod tests {
         let lined = LinedDelta::between(&Listing::new(), &Listing::from([("x".to_string(), "y".to_string())])).unwrap();
         vec![
             TurnEvent::SessionSnapshot(facts()),
+            TurnEvent::ActivityChanged("## Task\nReconcile the ledger.".into()),
             TurnEvent::AgentsListing(lined.clone()),
             TurnEvent::StreamCut,
             TurnEvent::EmptyReply,

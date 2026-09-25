@@ -333,7 +333,7 @@ impl DynTool for ReadFileTool {
             .map(|_| types::provenance::ProvenanceClass::Document)
     }
 
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
+    fn clearable(&self, _input: &Value) -> bool {
         true
     }
 
@@ -435,7 +435,7 @@ impl DynTool for EditFileTool {
         format!("Edited {}", file_name(input))
     }
 
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
+    fn clearable(&self, _input: &Value) -> bool {
         true
     }
 
@@ -535,7 +535,7 @@ impl DynTool for WriteFileTool {
         format!("Wrote {}", file_name(input))
     }
 
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
+    fn clearable(&self, _input: &Value) -> bool {
         true
     }
 
@@ -602,10 +602,6 @@ impl DynTool for ShareFileTool {
         format!("Shared {}", file_name(input))
     }
 
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
-        true
-    }
-
     fn emits_image(&self, _input: &Value) -> bool {
         true
     }
@@ -664,10 +660,6 @@ impl DynTool for ConvertFileTool {
 
     fn outcome(&self, input: &Value) -> String {
         format!("Converted {}", file_name(input))
-    }
-
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
-        true
     }
 
     fn emits_image(&self, _input: &Value) -> bool {
@@ -731,10 +723,6 @@ impl DynTool for CheckpointFilesTool {
         "Saved a restore point".to_string()
     }
 
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
-        true
-    }
-
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
         Box::pin(async move {
             let mut call = input;
@@ -777,10 +765,6 @@ impl DynTool for ListCheckpointsTool {
 
     fn outcome(&self, _input: &Value) -> String {
         "Listed restore points".to_string()
-    }
-
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
-        true
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, _input: Value) -> Fut<'a> {
@@ -826,10 +810,6 @@ impl DynTool for RestoreCheckpointTool {
 
     fn outcome(&self, _input: &Value) -> String {
         "Restored files".to_string()
-    }
-
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
-        true
     }
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
@@ -904,10 +884,6 @@ impl DynTool for WritePlanTool {
         format!("Wrote plan {}", file_name(input))
     }
 
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
-        true
-    }
-
     fn emits_image(&self, _input: &Value) -> bool {
         true
     }
@@ -963,10 +939,6 @@ impl DynTool for CheckPlanTool {
 
     fn outcome(&self, input: &Value) -> String {
         format!("Checked plan {}", file_name(input))
-    }
-
-    fn cleared_when_stale(&self, _input: &Value) -> bool {
-        true
     }
 
     fn emits_image(&self, _input: &Value) -> bool {

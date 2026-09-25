@@ -33,7 +33,7 @@ use tracing::{info, warn};
 use super::conversation::{self, InputRow, MidTurnFrom};
 use super::events::{self, TurnEvent};
 use super::model_call::{self, CallOutcome, RetryWhy};
-use super::prompt::{self, PromptInputs, SystemPrompt, sections};
+use super::prompt::{self, Identity, sections};
 use super::seat::{self, GrantRequest, Seat};
 use types::permissions::{Grant, Mode};
 use super::session_gate::{self, Admission, RunProgress, TurnGuard};
@@ -68,27 +68,21 @@ pub struct TurnContext {
     /// The model the owner or the employee chose (`provider/model`); empty
     /// means the selector's.
     pub model: String,
-    /// Built once per turn.
-    pub prompt: SystemPrompt,
+    /// Who the turn is for, told as the `identity` row; built once per turn.
+    pub identity: String,
     /// The employee's name, for its memory's heading.
     pub name: String,
     /// The session's environment fields after the date.
     pub environment: Vec<(String, String)>,
     pub mode_facts: events::ModeFacts,
-    /// The workspace notes and the employee's own setup.
+    /// The workspace notes, the employee's own setup and the tools its job
+    /// uses.
     pub session_context: String,
     pub tx: mpsc::Sender<StreamEvent>,
     pub progress: RunProgress,
     pub max_steps: u32,
     /// The owner's spending limit for the run, microcents; 0 = none.
     pub spend_cap_microcents: i64,
-    /// Declared on every step: the employee's `requires.tools` and its
-    /// required plugins' `plugin__<slug>` tools.
-    pub always_load: HashSet<String>,
-    /// The catalog interfaces the employee binds (`requires.interfaces`):
-    /// their operation tools are declared on every step, as the connected
-    /// plugins provide them then.
-    pub interfaces: Vec<String>,
     /// The run's provenance: seeded by the input, grown by its tool calls,
     /// stamped on its last event.
     pub taint: Mutex<BTreeSet<types::provenance::ProvenanceClass>>,
@@ -179,6 +173,7 @@ pub enum Transition {
     MidTurnInput,
     CutoffResume { attempt: u8 },
     OutputEscalated,
+    OverflowCleared,
     OverflowCheckpointed,
     TransientRetry { attempt: u8 },
     EndCheckContinue { check: &'static str, reason: String },
@@ -507,8 +502,14 @@ pub(crate) async fn prepare(
     super::memory_context::record_access(&h.store, memory.identity_ids.clone());
     let memory_timezone = memory.timezone.clone();
     let role = match &req.mode {
-        TurnMode::Helper { parent_session_key, .. } => prompt::Role::Helper { parent: parent_name(h, parent_session_key).await },
+        TurnMode::Helper { parent_session_key, kind, .. } => {
+            prompt::Role::Helper { parent: parent_name(h, parent_session_key).await, kind: *kind }
+        }
         _ => prompt::Role::Employee,
+    };
+    let job_tools = match agent.as_ref() {
+        Some(a) => prompt::inputs::job_tools(a, req.seat.tool_scope.as_deref(), &h.tools).await,
+        None => String::new(),
     };
     let session_context = [
         prompt::inputs::workspace_notes().map(|n| sections::workspace_notes(&n)).unwrap_or_default(),
@@ -517,6 +518,7 @@ pub(crate) async fn prepare(
             .as_ref()
             .map(|a| prompt::inputs::plugin_context(a, req.seat.tool_scope.as_deref(), h.skill_loader.as_deref()))
             .unwrap_or_default(),
+        job_tools,
     ]
     .into_iter()
     .filter(|p| !p.trim().is_empty())
@@ -527,17 +529,15 @@ pub(crate) async fn prepare(
         permission_mode: permission_mode_name(grant.mode).to_string(),
     };
     let environment = sections::environment_fields(req.seat.cwd.as_deref(), &channel, seat.execution_mode.into());
-    let prompt = match &req.mode {
-        TurnMode::Workflow(m) => SystemPrompt::activity(&m.system),
-        _ => SystemPrompt::build(&PromptInputs {
-            name: name.clone(),
-            role,
-            personality_snippet: req.seat.personality_snippet.clone(),
-            soul: agent.as_ref().and_then(|a| a.soul.clone()),
-            rules: agent.as_ref().and_then(|a| a.rules.clone()),
-            persona: agent.as_ref().map(|a| prompt::inputs::persona_body(&a.agent_md)),
-        }),
-    };
+    let identity = Identity {
+        name: name.clone(),
+        role,
+        personality_snippet: req.seat.personality_snippet.clone(),
+        soul: agent.as_ref().and_then(|a| a.soul.clone()),
+        rules: agent.as_ref().and_then(|a| a.rules.clone()),
+        persona: agent.as_ref().map(|a| prompt::inputs::persona_body(&a.agent_md)),
+    }
+    .text();
 
     // The relevant-memories search runs while the steps go on; a step lands
     // it once it has finished.
@@ -559,26 +559,6 @@ pub(crate) async fn prepare(
         },
     );
     surfaced.extend(memory.identity_ids.iter().copied());
-
-    let always_load = agent.as_ref().and_then(|a| a.config.as_ref()).map(|cfg| {
-        let mut set: HashSet<String> = cfg.requires.tools.iter().cloned().collect();
-        let scope_plugins = req
-            .seat
-            .tool_scope
-            .as_deref()
-            .and_then(|s| cfg.scopes.get(s))
-            .map(|s| s.plugins.as_slice())
-            .unwrap_or_default();
-        for slug in cfg.requires.plugins.iter().chain(scope_plugins) {
-            set.insert(tools::plugin_tools::plugin_tool_name(slug));
-        }
-        set
-    });
-    let interfaces = agent
-        .as_ref()
-        .and_then(|a| a.config.as_ref())
-        .map(|cfg| cfg.requires.interfaces.clone())
-        .unwrap_or_default();
 
     let (max_steps, spend_cap_microcents) = match &req.mode {
         TurnMode::Workflow(m) => (if m.max_steps > 0 { m.max_steps } else { DEFAULT_MAX_STEPS }, m.spend_cap_microcents),
@@ -642,7 +622,7 @@ pub(crate) async fn prepare(
         channel,
         timezone: memory_timezone,
         model,
-        prompt,
+        identity,
         name,
         environment,
         mode_facts,
@@ -651,8 +631,6 @@ pub(crate) async fn prepare(
         progress,
         max_steps,
         spend_cap_microcents,
-        always_load: always_load.unwrap_or_default(),
-        interfaces,
         taint,
         after_turn,
         review_fork,
@@ -774,11 +752,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         if conversation::mid_turn_message_landed(&conversation, &st.seen) && st.step > 1 {
             st.transition = Transition::MidTurnInput;
         }
-        let mut always_load = cx.always_load.clone();
-        always_load.extend(h.tools.operation_tools_for(&cx.interfaces).await);
         let surface_seat = SurfaceInputs {
             agent_id: cx.agent_id(),
-            always_load: &always_load,
             allowlist: cx.request.seat.tool_allowlist.as_ref(),
             company_memory_sealed: cx.seat.company_memory_sealed,
             workflow: cx.workflow(),
@@ -801,10 +776,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             .unwrap_or_else(|p| p.into_inner())
             .extend(conversation::received_taint(&conversation));
 
-        // 3. Trim, and checkpoint past the threshold.
+        // 3. Trim; past the threshold, clear old results, else checkpoint.
         let context_window = context_window(cx);
-        st.usage.system_overhead_tokens = overhead_tokens(cx, &surface.declared);
-        let window = trim(cx, st, &conversation).await;
+        st.usage.system_overhead_tokens = overhead_tokens(&surface.declared);
+        let window = trim(st, &conversation);
         st.usage.last_request_estimate = pruning::estimate_total_tokens(&window);
         let window = conversation::sanitize_message_order(window);
 
@@ -816,6 +791,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             st.usage.last_request_estimate + st.usage.system_overhead_tokens + st.usage.estimate_correction;
         let max_output = usize::try_from(request.max_tokens).unwrap_or_default();
         if st.trigger.due(request_tokens, context_window, max_output) {
+            if clear_old_results(cx, st, &conversation).await {
+                st.step -= 1;
+                continue;
+            }
             match checkpoint(cx, st, &window, &request, compact::checkpoint::CheckpointReason::Threshold).await {
                 Ok(()) => continue,
                 Err(e) => warn!(session_id = sid, error = %e, "checkpoint failed; sending the conversation as it is"),
@@ -909,16 +888,22 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let reply = match outcome {
             CallOutcome::Reply(reply) => reply,
             CallOutcome::Retry(RetryWhy::Overflow) => {
-                // The provider refused the window: checkpoint, unless the
-                // breaker has tripped; the model call gives up after its own
+                // The provider refused the window: clear old results when
+                // that saves enough, as Claude Code does when the API asks
+                // it to cut the context; else checkpoint, unless the breaker
+                // has tripped. The model call gives up after its own
                 // overflow retries.
-                let outcome = if st.trigger.tripped() {
+                let outcome = if clear_old_results(cx, st, &conversation).await {
+                    Ok(Transition::OverflowCleared)
+                } else if st.trigger.tripped() {
                     Err("the checkpoint breaker has tripped".to_string())
                 } else {
-                    checkpoint(cx, st, &window, &fork_of, compact::checkpoint::CheckpointReason::Overflow).await
+                    checkpoint(cx, st, &window, &fork_of, compact::checkpoint::CheckpointReason::Overflow)
+                        .await
+                        .map(|()| Transition::OverflowCheckpointed)
                 };
                 match outcome {
-                    Ok(()) => st.transition = Transition::OverflowCheckpointed,
+                    Ok(transition) => st.transition = transition,
                     Err(e) => {
                         warn!(session_id = sid, error = %e, "overflow checkpoint failed; retrying as it is");
                         st.transition = Transition::TransientRetry { attempt: st.call.overflow_retries as u8 };
@@ -1086,6 +1071,8 @@ async fn step_events(
         &cx.name,
     );
     let facts = events::SessionFacts {
+        identity: cx.identity.clone(),
+        activity: cx.workflow().map(|m| m.instructions.clone()).unwrap_or_default(),
         date: sections::owner_today(cx.timezone.as_deref()),
         timezone: cx.timezone.clone(),
         environment: cx.environment.clone(),
@@ -1164,19 +1151,32 @@ fn context_window(cx: &TurnContext) -> usize {
 
 /// The system prompt and the tool schemas, in tokens: what every request
 /// carries besides the conversation.
-fn overhead_tokens(cx: &TurnContext, declared: &[ai::ToolDefinition]) -> usize {
+fn overhead_tokens(declared: &[ai::ToolDefinition]) -> usize {
     let schema_chars: usize = declared.iter().map(|t| t.description.len() + t.input_schema.to_string().len()).sum();
-    (cx.prompt.text().len() + schema_chars) / crate::CHARS_PER_TOKEN
+    (prompt::system_prompt().len() + schema_chars) / crate::CHARS_PER_TOKEN
 }
 
-/// The per-step trim: stale results the tool lets be cleared are cleared,
-/// each rendering frozen the first time it is chosen and persisted for the
-/// chat.
-async fn trim(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage]) -> Vec<ChatMessage> {
+/// The per-step trim: every frozen rendering applied, all but the newest
+/// screenshots dropped.
+fn trim(st: &TurnState, conversation: &[ChatMessage]) -> Vec<ChatMessage> {
+    compact::trim::trim(conversation, &st.frozen_renderings).0
+}
+
+/// Under context pressure, clear old results their tools let be cleared,
+/// each saved through the one spill path, when that saves at least 20k
+/// tokens (Claude Code 2.1.280). Each rendering is frozen and persisted for
+/// the chat. Returns whether anything was cleared.
+async fn clear_old_results(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage]) -> bool {
     let h = &cx.harness;
     extend_clearable(&h.tools, conversation, &mut st.trim_checked, &mut st.clearable).await;
-    let now = chrono::Utc::now().timestamp();
-    let (working, _) = compact::trim::trim(conversation, now, &st.clearable, &mut st.frozen_renderings);
+    let dir = tools::result_shape::results_dir(&cx.session_id);
+    let saved = compact::trim::clear_old_results(conversation, &st.clearable, &mut st.frozen_renderings, |text| {
+        tools::result_shape::persist_cleared(&dir, text)
+    });
+    if saved == 0 {
+        return false;
+    }
+    info!(session_id = %cx.session_id, tokens = saved, "cleared old tool results under context pressure");
     let fresh: Vec<(String, String)> = st
         .frozen_renderings
         .iter()
@@ -1190,7 +1190,7 @@ async fn trim(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage]
             Err(e) => warn!(error = %e, "could not persist frozen renderings"),
         }
     }
-    working
+    true
 }
 
 /// The provider, model name and full model id for this step.
@@ -1224,12 +1224,11 @@ fn build_request(
         tools: declared,
         max_tokens: st.call.max_output_tokens(),
         temperature: if cx.workflow().is_some() { 0.0 } else { 0.7 },
-        system: cx.prompt.text(),
-        static_system: format!("{}\n\n{}", cx.prompt.fixed, cx.prompt.employee),
+        system: prompt::system_prompt().to_string(),
         model: model_name.to_string(),
         enable_thinking,
         metadata: st.call.sticky_metadata.clone(),
-        cache_breakpoints: cx.prompt.cache_breakpoints(),
+        cache_breakpoints: prompt::cache_breakpoints(),
         cancel_token: Some(cx.request.cancel.clone()),
         trace: match cx.workflow() {
             Some(m) => m.trace.clone(),
@@ -1544,7 +1543,7 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
 }
 
 /// Add every stored tool call not yet `checked` whose tool says its result
-/// may be cleared once stale (`DynTool::cleared_when_stale`) to `clearable`.
+/// may be cleared under pressure (`DynTool::clearable`) to `clearable`.
 /// A call to a tool no longer registered is never cleared.
 async fn extend_clearable(tools: &tools::Registry, messages: &[ChatMessage], checked: &mut HashSet<String>, clearable: &mut compact::trim::Clearable) {
     for msg in messages.iter().filter(|m| m.role == "assistant") {
@@ -1560,7 +1559,7 @@ async fn extend_clearable(tools: &tools::Registry, messages: &[ChatMessage], che
                 continue;
             }
             if let Some(tool) = tools.get(&call.name).await
-                && tool.cleared_when_stale(&call.input)
+                && tool.clearable(&call.input)
             {
                 clearable.insert(call.id);
             }
@@ -1897,7 +1896,7 @@ mod tests {
         let call = &model.calls()[0];
         let last_words = call.messages.iter().rev().find(|m| !m.content.starts_with("<system-reminder>")).unwrap();
         assert_eq!(last_words.content, "Hi", "the owner's words, then this step's attachments");
-        assert!(call.system.contains(crate::prompt::CACHE_BOUNDARY));
+        assert_eq!(call.system, crate::harness::prompt::system_prompt(), "the one system prompt");
     }
 
     fn probed(probe: &Arc<Probe>) -> Vec<Box<dyn tools::registry::DynTool>> {
@@ -2179,6 +2178,66 @@ mod tests {
         assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
     }
 
+    /// A tool whose 5,000-character result can be got again.
+    struct Reader;
+
+    impl tools::registry::DynTool for Reader {
+        fn name(&self) -> &str {
+            "reader"
+        }
+        fn description(&self) -> String {
+            "reads things".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn clearable(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::ok("r".repeat(5_000)) })
+        }
+    }
+
+    /// Context pressure clears old results before anything is summarised,
+    /// as Claude Code 2.1.280 does: the provider refuses the window, every
+    /// clearable result but the five newest is saved to a file and replaced
+    /// by where it was saved, and the step is taken again with no
+    /// checkpoint.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pressure_clears_old_results_before_a_checkpoint() {
+        let mut script: Vec<Step> = (0..30).map(|_| Step::Call("reader", serde_json::json!({}))).collect();
+        script.extend([Step::Overflow, Step::Say("Carried on.")]);
+        let model = Scripted::new(script);
+        let h = harness_with(&model, vec![Box::new(Reader)]).await;
+        let events = run_turn(&h, owner("Read everything")).await;
+        let sid = h.sessions.resolve_session_id_by_key(KEY).expect("session");
+        let _ = std::fs::remove_dir_all(tools::checkpoint::session_dir(&sid));
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 32, "the refused call and its retry");
+        let results: Vec<String> = calls[31]
+            .messages
+            .iter()
+            .filter_map(|m| m.tool_results.as_ref().map(|r| r.to_string()))
+            .collect();
+        assert_eq!(results.len(), 30);
+        for r in &results[..25] {
+            assert!(r.contains("Tool result saved to:") && !r.contains("rrrrr"), "{r}");
+        }
+        for r in &results[25..] {
+            assert!(r.contains(&"r".repeat(5_000)), "the five newest stay whole");
+        }
+        assert!(!texts(&calls[31]).iter().any(|t| t.starts_with(compact::checkpoint::BOUNDARY_LEAD)), "no checkpoint");
+    }
+
     struct Watch(Mutex<Vec<String>>);
 
     impl goal::GoalObserver for Watch {
@@ -2213,5 +2272,89 @@ mod tests {
         assert!(texts(&calls[1]).iter().any(|t| t.contains("The agreed goal isn't met yet") && t.contains("2 failing")));
         assert_eq!(kinds(&stored(&h)).iter().filter(|k| *k == "goal_check").count(), 1);
         assert!(watch.0.lock().unwrap().iter().any(|s| s == "met"), "the owner is told");
+    }
+
+    fn employee(id: &str, name: &str, soul: &str, config: Option<napp::agent::AgentConfig>) -> tools::ActiveAgent {
+        tools::ActiveAgent {
+            agent_id: id.into(),
+            name: name.into(),
+            agent_md: format!("{name} does the {id} work."),
+            config,
+            channel_id: None,
+            degraded: None,
+            soul: Some(soul.into()),
+            rules: Some(format!("{name}'s rules.")),
+        }
+    }
+
+    fn seat_of(mut req: TurnRequest, agent_id: &str, key: &str) -> TurnRequest {
+        req.seat.agent_id = agent_id.into();
+        req.session_key = key.into();
+        req
+    }
+
+    /// The cached prefix is the same for every turn on every bot: two
+    /// employees with different identities, apps, plugins and required
+    /// tools, a helper of each type and a workflow activity all send the one
+    /// system prompt with the one breakpoint, and the two employees declare
+    /// byte-identical tools. Who each turn is for arrives as its identity
+    /// row, the activity's instructions as its activity row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_turn_sends_the_same_system_prompt_and_every_employee_the_same_tools() {
+        use crate::harness::delegation::HelperKind;
+
+        let model = Scripted::new((0..6).map(|_| Step::Say("Done.")).collect());
+        let h = harness(&model).await;
+        let config: napp::agent::AgentConfig = serde_json::from_value(serde_json::json!({
+            "requires": {"tools": ["weather"], "plugins": ["ledger"], "interfaces": ["mail"]}
+        }))
+        .unwrap();
+        h.agent_registry.write().await.extend([
+            ("ava".to_string(), employee("ava", "Ava", "Warm and exact.", Some(config))),
+            ("bo".to_string(), employee("bo", "Bo", "Dry and brief.", None)),
+        ]);
+        h.tools.register_for_agent("ava", Box::new(Echo { name: "app__crm__lookup", deferred: true, read_only: true })).await;
+        h.tools.register(Box::new(Echo { name: "plugin__ledger", deferred: true, read_only: true })).await;
+
+        run_turn(&h, seat_of(owner("Hi"), "ava", "agent:ava:web")).await;
+        run_turn(&h, seat_of(owner("Hi"), "bo", "agent:bo:web")).await;
+        for (i, kind) in [HelperKind::General, HelperKind::Explore, HelperKind::Plan].into_iter().enumerate() {
+            let mut req = seat_of(owner("Look into it"), "ava", &format!("subagent:agent:ava:web:h-{i}"));
+            req.mode = TurnMode::Helper { parent_session_key: "agent:ava:web".into(), kind, depth: 1 };
+            run_turn(&h, req).await;
+        }
+        let mut activity = seat_of(owner("Reconcile"), "bo", "workflow:run-1:reconcile");
+        activity.mode = TurnMode::Workflow(Box::new(crate::harness::WorkflowMode {
+            trace: RequestTrace::new("agent_turn"),
+            instructions: "## Task\nReconcile the ledger.".into(),
+            advertised_tools: ["echo".to_string()].into(),
+            ..Default::default()
+        }));
+        run_turn(&h, activity).await;
+
+        let calls = model.calls();
+        assert_eq!(calls.len(), 6, "one call per turn");
+        for call in &calls {
+            assert_eq!(call.system, crate::harness::prompt::system_prompt(), "byte-identical system prompt");
+            assert_eq!(call.cache_breakpoints, vec![call.system.len()], "one breakpoint, the whole prompt");
+        }
+        let names = |c: &ChatRequest| c.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            serde_json::to_string(&calls[0].tools).unwrap(),
+            serde_json::to_string(&calls[1].tools).unwrap(),
+            "two employees declare byte-identical tools: {:?} vs {:?}",
+            names(&calls[0]),
+            names(&calls[1])
+        );
+        assert!(!names(&calls[0]).iter().any(|n| n == "weather" || n == "app__crm__lookup" || n == "plugin__ledger"));
+
+        let told = |c: &ChatRequest| c.messages.iter().map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
+        let ava = told(&calls[0]);
+        assert!(ava.contains("You are Ava, an AI employee") && ava.contains("Warm and exact.") && ava.contains("Ava does the ava work."), "{ava}");
+        assert!(ava.contains("## Tools for your job\n- app__crm__lookup\n- plugin__ledger\n- weather"), "{ava}");
+        assert!(told(&calls[1]).contains("You are Bo, an AI employee") && !told(&calls[1]).contains("Ava"));
+        assert!(told(&calls[3]).contains("You are Ava, working as an explore helper on one task for Ava."));
+        let activity = told(&calls[5]);
+        assert!(activity.contains("You are Bo, an AI employee") && activity.contains("Reconcile the ledger."), "{activity}");
     }
 }

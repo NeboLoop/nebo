@@ -1,7 +1,7 @@
-//! The prompt's inputs resolved from the employee and the workspace, once per
-//! turn: the AGENT.md body, the employee's own setup, the plugins its job
-//! needs and the workspace notes. `run_loop` builds its prompt from the same
-//! functions until the cutover deletes it.
+//! What the turn's identity and session-context rows are built from,
+//! resolved from the employee and the workspace once per turn: the AGENT.md
+//! body, the employee's own setup, the plugins and tools its job uses and
+//! the workspace notes.
 
 use tracing::{debug, warn};
 
@@ -78,6 +78,35 @@ pub fn plugin_context(
     skill_loader
         .map(|l| l.agent_plugin_context(&required))
         .unwrap_or_default()
+}
+
+/// The tools the employee's job uses: its `requires.tools`, its required
+/// plugins' tools (the active tool scope's included), the operation tools
+/// of the interfaces it binds and its own app tools. They are deferred like
+/// every tool outside the core set, so the declared tools are the same for
+/// every employee; this names them so the employee loads them with
+/// find_tools. Only tools registered and deferred now are named.
+pub async fn job_tools(agent: &tools::ActiveAgent, tool_scope: Option<&str>, registry: &tools::Registry) -> String {
+    let mut names: std::collections::BTreeSet<String> = registry.agent_tool_names(&agent.agent_id).await.into_iter().collect();
+    if let Some(cfg) = agent.config.as_ref() {
+        names.extend(cfg.requires.tools.iter().cloned());
+        let scope_plugins = tool_scope.and_then(|s| cfg.scopes.get(s)).map(|s| s.plugins.as_slice()).unwrap_or_default();
+        for slug in cfg.requires.plugins.iter().chain(scope_plugins) {
+            names.insert(tools::plugin_tools::plugin_tool_name(slug));
+        }
+        names.extend(registry.operation_tools_for(&cfg.requires.interfaces).await);
+    }
+    let deferred = registry.get_deferred_names().await;
+    names.retain(|n| deferred.contains(n));
+    if names.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = names.iter().map(|n| format!("- {n}")).collect();
+    format!(
+        "## Tools for your job\n{}\n\nThese are in the deferred tool listing; load them with {} before calling.",
+        lines.join("\n"),
+        tools::find_tools::FIND_TOOLS
+    )
 }
 
 /// The employee's own setup as it knows itself from its first step: its

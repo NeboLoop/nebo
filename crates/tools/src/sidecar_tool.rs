@@ -78,7 +78,7 @@ pub fn app_tool_local_name(name: &str) -> Option<&str> {
 /// Individual tool that routes a single LLM tool call to a sidecar HTTP endpoint.
 ///
 /// Each sidecar endpoint becomes its own tool, `app__<app>__<endpoint>`:
-/// deferred everywhere, always loaded for the employee that owns the app.
+/// deferred everywhere, and named in the owning employee's session context.
 pub struct SidecarActionTool {
     name: String,
     hint: String,
