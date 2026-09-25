@@ -2425,15 +2425,9 @@ impl DynTool for WebTool {
         Some(types::provenance::ProvenanceClass::Web)
     }
 
-    fn trim_priority(&self) -> u8 {
-        crate::registry::TRIM_FIRST
-    }
-
-    fn keeps_content_when_trimmed(&self, input: &serde_json::Value) -> bool {
-        matches!(
-            input.get("action").and_then(|v| v.as_str()).unwrap_or(""),
-            "search" | "fetch" | "sanitize" | "read_page" | "get"
-        )
+    /// Web searches and fetches; the browser's own steps are not.
+    fn cleared_when_stale(&self, input: &serde_json::Value) -> bool {
+        matches!(input.get("action").and_then(|v| v.as_str()).unwrap_or(""), "search" | "fetch")
     }
 
     /// The browser screenshots itself after every navigate, click, type

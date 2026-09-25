@@ -382,10 +382,6 @@ impl DynTool for SkillTool {
         .to_string()
     }
 
-    fn keeps_content_when_trimmed(&self, input: &serde_json::Value) -> bool {
-        matches!(self.rule_key(input).as_str(), "use_skill")
-    }
-
     /// Pre-interface: it settles its own call shapes (see
     /// `DynTool::validates_input`).
     fn validates_input(&self) -> bool {
