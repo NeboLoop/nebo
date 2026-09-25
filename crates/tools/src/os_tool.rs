@@ -574,7 +574,7 @@ impl DynTool for OsTool {
             "ref".into(),
             prop(
                 "string",
-                "Input click/type/move target: the element ref from capture(action: see) (e.g. B1, T2). On capture see: drill into that element (a container marked +N inside) and list only its contents",
+                "Input click/type/move target: the element ref from a capture see (e.g. B1, T2). On capture see: drill into that element (a container marked +N inside) and list only its contents",
             ),
         );
         props.insert(

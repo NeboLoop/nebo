@@ -26,10 +26,10 @@ impl DynTool for KeychainTool {
          - add: store a credential (service + account + password)\n\
          - delete: remove a stored credential by service + account\n\n\
          Examples:\n  \
-         keychain(action: \"get\", service: \"myapp\", account: \"user@example.com\")\n  \
-         keychain(action: \"find\", label: \"myapp\")\n  \
-         keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")\n  \
-         keychain(action: \"delete\", service: \"myapp\", account: \"user@example.com\")"
+         os(resource: \"keychain\", action: \"get\", service: \"myapp\", account: \"user@example.com\")\n  \
+         os(resource: \"keychain\", action: \"find\", label: \"myapp\")\n  \
+         os(resource: \"keychain\", action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")\n  \
+         os(resource: \"keychain\", action: \"delete\", service: \"myapp\", account: \"user@example.com\")"
             .to_string()
     }
 
@@ -113,11 +113,11 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
         .or_else(|| input["label"].as_str())
     {
         Some(s) if !s.is_empty() => s,
-        _ => return ToolResult::error(errors::missing_param("get", "service", "keychain(action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
+        _ => return ToolResult::error(errors::missing_param("get", "service", "os(resource: \"keychain\", action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
     };
     let account = match input["account"].as_str() {
         Some(a) if !a.is_empty() => a,
-        _ => return ToolResult::error(errors::missing_param("get", "account", "keychain(action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
+        _ => return ToolResult::error(errors::missing_param("get", "account", "os(resource: \"keychain\", action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
     };
     let res = run_command(
         "security",
@@ -132,7 +132,7 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
 async fn handle_find(input: &serde_json::Value) -> ToolResult {
     let label = match input["label"].as_str() {
         Some(l) if !l.is_empty() => l,
-        _ => return ToolResult::error(errors::missing_param("find", "label", "keychain(action: \"find\", label: \"myapp\")")),
+        _ => return ToolResult::error(errors::missing_param("find", "label", "os(resource: \"keychain\", action: \"find\", label: \"myapp\")")),
     };
     let res = run_command(
         "security",
@@ -153,15 +153,15 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
         .or_else(|| input["label"].as_str())
     {
         Some(s) if !s.is_empty() => s,
-        _ => return ToolResult::error(errors::missing_param("add", "service", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
+        _ => return ToolResult::error(errors::missing_param("add", "service", "os(resource: \"keychain\", action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
     let account = match input["account"].as_str() {
         Some(a) if !a.is_empty() => a,
-        _ => return ToolResult::error(errors::missing_param("add", "account", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
+        _ => return ToolResult::error(errors::missing_param("add", "account", "os(resource: \"keychain\", action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
     let password = match input["password"].as_str() {
         Some(p) if !p.is_empty() => p,
-        _ => return ToolResult::error(errors::missing_param("add", "password", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
+        _ => return ToolResult::error(errors::missing_param("add", "password", "os(resource: \"keychain\", action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
     run_command(
         "security",
@@ -190,7 +190,7 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         .or_else(|| input["label"].as_str())
     {
         Some(s) if !s.is_empty() => s,
-        _ => return ToolResult::error(errors::missing_param("delete", "service", "keychain(action: \"delete\", service: \"myapp\", account: \"user@example.com\")")),
+        _ => return ToolResult::error(errors::missing_param("delete", "service", "os(resource: \"keychain\", action: \"delete\", service: \"myapp\", account: \"user@example.com\")")),
     };
     // `account` narrows the match but is optional — `security` deletes by
     // service alone, and demanding it turned label-only deletes into errors.
@@ -229,11 +229,11 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
         .or_else(|| input["label"].as_str())
     {
         Some(s) if !s.is_empty() => s,
-        _ => return ToolResult::error(errors::missing_param("get", "service", "keychain(action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
+        _ => return ToolResult::error(errors::missing_param("get", "service", "os(resource: \"keychain\", action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
     };
     let account = match input["account"].as_str() {
         Some(a) if !a.is_empty() => a,
-        _ => return ToolResult::error(errors::missing_param("get", "account", "keychain(action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
+        _ => return ToolResult::error(errors::missing_param("get", "account", "os(resource: \"keychain\", action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
     };
     if !which("secret-tool") {
         return ToolResult::error("secret-tool not found. Do not retry \u{2014} this is an environment error. The libsecret-tools package must be installed on this system.");
@@ -250,7 +250,7 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
 async fn handle_find(input: &serde_json::Value) -> ToolResult {
     let label = match input["label"].as_str() {
         Some(l) if !l.is_empty() => l,
-        _ => return ToolResult::error(errors::missing_param("find", "label", "keychain(action: \"find\", label: \"myapp\")")),
+        _ => return ToolResult::error(errors::missing_param("find", "label", "os(resource: \"keychain\", action: \"find\", label: \"myapp\")")),
     };
     if !which("secret-tool") {
         return ToolResult::error("secret-tool not found. Do not retry \u{2014} this is an environment error. The libsecret-tools package must be installed on this system.");
@@ -273,15 +273,15 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
         .or_else(|| input["label"].as_str())
     {
         Some(s) if !s.is_empty() => s,
-        _ => return ToolResult::error(errors::missing_param("add", "service", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
+        _ => return ToolResult::error(errors::missing_param("add", "service", "os(resource: \"keychain\", action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
     let account = match input["account"].as_str() {
         Some(a) if !a.is_empty() => a,
-        _ => return ToolResult::error(errors::missing_param("add", "account", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
+        _ => return ToolResult::error(errors::missing_param("add", "account", "os(resource: \"keychain\", action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
     let password = match input["password"].as_str() {
         Some(p) if !p.is_empty() => p,
-        _ => return ToolResult::error(errors::missing_param("add", "password", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
+        _ => return ToolResult::error(errors::missing_param("add", "password", "os(resource: \"keychain\", action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
     let label = input["label"].as_str().unwrap_or(service);
     if !which("secret-tool") {
@@ -321,7 +321,7 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         .or_else(|| input["label"].as_str())
     {
         Some(s) if !s.is_empty() => s,
-        _ => return ToolResult::error(errors::missing_param("delete", "service", "keychain(action: \"delete\", service: \"myapp\", account: \"user@example.com\")")),
+        _ => return ToolResult::error(errors::missing_param("delete", "service", "os(resource: \"keychain\", action: \"delete\", service: \"myapp\", account: \"user@example.com\")")),
     };
     if !which("secret-tool") {
         return ToolResult::error("secret-tool not found. Do not retry \u{2014} this is an environment error. The libsecret-tools package must be installed on this system.");
@@ -355,7 +355,7 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
         .or_else(|| input["label"].as_str())
     {
         Some(s) if !s.is_empty() => s,
-        _ => return ToolResult::error(errors::missing_param("get", "service", "keychain(action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
+        _ => return ToolResult::error(errors::missing_param("get", "service", "os(resource: \"keychain\", action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
     };
     // cmdkey cannot directly retrieve passwords; return metadata instead
     let target = format!("/list:{}", service);
@@ -376,7 +376,7 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
 async fn handle_find(input: &serde_json::Value) -> ToolResult {
     let label = match input["label"].as_str() {
         Some(l) if !l.is_empty() => l,
-        _ => return ToolResult::error(errors::missing_param("find", "label", "keychain(action: \"find\", label: \"myapp\")")),
+        _ => return ToolResult::error(errors::missing_param("find", "label", "os(resource: \"keychain\", action: \"find\", label: \"myapp\")")),
     };
     // List all credentials and filter by target name
     let output = tokio::process::Command::new("cmdkey")
@@ -414,15 +414,15 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
         .or_else(|| input["label"].as_str())
     {
         Some(s) if !s.is_empty() => s,
-        _ => return ToolResult::error(errors::missing_param("add", "service", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
+        _ => return ToolResult::error(errors::missing_param("add", "service", "os(resource: \"keychain\", action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
     let account = match input["account"].as_str() {
         Some(a) if !a.is_empty() => a,
-        _ => return ToolResult::error(errors::missing_param("add", "account", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
+        _ => return ToolResult::error(errors::missing_param("add", "account", "os(resource: \"keychain\", action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
     let password = match input["password"].as_str() {
         Some(p) if !p.is_empty() => p,
-        _ => return ToolResult::error(errors::missing_param("add", "password", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
+        _ => return ToolResult::error(errors::missing_param("add", "password", "os(resource: \"keychain\", action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
     let target = format!("/add:{}", service);
     let user = format!("/user:{}", account);
@@ -445,7 +445,7 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         .or_else(|| input["label"].as_str())
     {
         Some(s) if !s.is_empty() => s,
-        _ => return ToolResult::error(errors::missing_param("delete", "service", "keychain(action: \"delete\", service: \"myapp\")")),
+        _ => return ToolResult::error(errors::missing_param("delete", "service", "os(resource: \"keychain\", action: \"delete\", service: \"myapp\")")),
     };
     let target = format!("/delete:{}", service);
     run_command(

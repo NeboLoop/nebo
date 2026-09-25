@@ -215,6 +215,12 @@ pub trait DynTool: Send + Sync {
     fn rule_field(&self, _input: &serde_json::Value) -> Option<types::permissions::RuleField> {
         None
     }
+    /// The one thing the call acts on, for a restricted run's `tool:subject`
+    /// allowlist entry. Default: the call's `resource`, on the tools that
+    /// still dispatch on one.
+    fn subject(&self, input: &serde_json::Value) -> Option<String> {
+        input.get("resource").and_then(|v| v.as_str()).map(str::to_string)
+    }
     /// The job capability the call belongs to (`file`, `shell`, `web`,
     /// `browser`, `desktop`, `media`, `system`, `contacts`, or an interfaces
     /// catalog term). `None` is basic work.
@@ -907,26 +913,7 @@ impl Registry {
     ) -> ToolResult {
         debug!(tool = %tool_name, "executing tool");
 
-        // A name no tool is registered under may be an old flat name that
-        // still resolves; a registered name always runs its own tool.
-        let alias = if self.get(tool_name).await.is_none() {
-            resolve_flat_alias(tool_name)
-        } else {
-            None
-        };
-        let (name, input) = if let Some((strap_name, params)) = alias {
-            let mut merged = input;
-            if let Some(obj) = merged.as_object_mut() {
-                for (k, v) in params {
-                    obj.entry(&k).or_insert(v);
-                }
-            }
-            debug!(alias = %tool_name, resolved = %strap_name, "flat-name alias resolved");
-            (strap_name, merged)
-        } else {
-            (tool_name.to_string(), input)
-        };
-        let name = name.as_str();
+        let name = tool_name;
 
         let Some(tool) = self.get(name).await else {
             warn!(tool = %name, "unknown tool");
@@ -1452,59 +1439,6 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
 // (file/shell/system/…), so most toggles silently gated nothing.
 
 
-/// Resolve flat tool names (the model-facing convention) AND legacy pre-STRAP
-/// tool names to STRAP tool + injected params. Returns (strap_tool_name,
-/// params_to_inject) or None if not a known alias. Injected params only fill
-/// keys the call didn't provide (entry().or_insert at the dispatch site), so
-/// passthrough aliases carry the model's own resource/action untouched.
-///
-/// Public because it is THE call-time resolution table: the registry's chat
-/// dispatch and the workflow engine's activity dispatch both consult it, so a
-/// first tool call written against an old name (`organizer(resource: "mail")`)
-/// EXECUTES instead of bouncing through a correction round-trip — small models
-/// follow step text literally and don't get a second turn for free.
-pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Value)>)> {
-    let lc = name.to_lowercase();
-    let (tool, params): (&str, Vec<(&str, &str)>) = match lc.as_str() {
-        // Legacy STRAP consolidations — tools absorbed into os. The
-        // call shape carried over (resource/action args), so organizer-style
-        // calls pass through untouched; single-purpose tools inject their
-        // absorbed resource. Must agree with legacy_tool_aliases (the
-        // scoping table).
-        "organizer" | "desktop" | "system" => ("os", vec![]),
-        "app" => ("os", vec![("resource", "app")]),
-        "settings" => ("os", vec![("resource", "settings")]),
-        "music" => ("os", vec![("resource", "music")]),
-        "keychain" => ("os", vec![("resource", "keychain")]),
-        "spotlight" => ("os", vec![("resource", "search")]),
-        _ => return None,
-    };
-    let params = params
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
-        .collect();
-    Some((tool.to_string(), params))
-}
-
-/// Legacy tool names from before the STRAP consolidation → the STRAP tool
-/// that absorbed them.
-/// Consumed by the workflow engine's activity tool-scoping so a workflow
-/// authored (or imported) against pre-STRAP names — `organizer(...)`,
-/// `gws ...` — still scopes to the right live tool instead of matching
-/// nothing and falling back to the full roster.
-pub fn legacy_tool_aliases() -> &'static [(&'static str, &'static str)] {
-    &[
-        ("organizer", "os"),
-        ("app", "os"),
-        ("settings", "os"),
-        ("music", "os"),
-        ("keychain", "os"),
-        ("spotlight", "os"),
-        ("desktop", "os"),
-        ("system", "os"),
-    ]
-}
-
 /// A tool's answers for one call, resolved for the permission check.
 pub fn target_of(tool: &dyn DynTool, input: &serde_json::Value) -> types::permissions::Target {
     types::permissions::Target {
@@ -1513,6 +1447,7 @@ pub fn target_of(tool: &dyn DynTool, input: &serde_json::Value) -> types::permis
         operation: tool.operation_performed(input).filter(|op| !op.is_empty()),
         capability: tool.capability(input).map(str::to_string),
         field: tool.rule_field(input),
+        subject: tool.subject(input),
         read_only: tool.read_only(input),
         effects: tool.effects(input),
     }
@@ -1569,7 +1504,7 @@ pub(crate) fn is_tool_name(name: &str) -> bool {
 
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A model that serializes a structured argument as a JSON string must not
@@ -2034,7 +1969,7 @@ mod tests {
     /// server adds find_tools after `register_all`), with one installed
     /// plugin that binds an operation, so its tool and the operation's are
     /// in the roster too.
-    async fn full_registry() -> (Arc<Registry>, tempfile::TempDir) {
+    pub(crate) async fn full_registry() -> (Arc<Registry>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap());
         let version_dir = dir.path().join("plugins").join("ledgerly").join("0.1.0");

@@ -259,6 +259,7 @@ fn migrated_decisions_equal_todays() {
         operation: operation.map(str::to_string),
         capability: capability.map(str::to_string),
         field: None,
+        subject: None,
         read_only: false,
         effects: types::permissions::CallEffects::unknown(),
     };
@@ -343,6 +344,7 @@ fn bound_interfaces_become_the_job() {
         operation: Some("ledger.invoice.update".into()),
         capability: Some("ledger".into()),
         field: None,
+        subject: None,
         read_only: false,
         effects: types::permissions::CallEffects::unknown(),
     };

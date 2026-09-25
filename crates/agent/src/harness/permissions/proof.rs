@@ -33,6 +33,7 @@ fn decision(store: &db::Store, agent: &str, capability: &str) -> Decision {
         operation: None,
         capability: Some(capability.into()),
         field: None,
+        subject: None,
         read_only: false,
         effects: CallEffects::unknown(),
     };
@@ -193,6 +194,7 @@ async fn company_deny_beats_employee_allow() {
         operation: None,
         capability: Some("shell".into()),
         field: None,
+        subject: None,
         read_only: false,
         effects: CallEffects::unknown(),
     };

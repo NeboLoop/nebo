@@ -97,18 +97,19 @@
     tool: string,
     input: Record<string, unknown> | undefined
   ): Omit<PendingApproval, 'requestId' | 'agent'> {
-    const action = String(input?.action ?? '');
-    const resource = String(input?.resource ?? '');
-    const operation = String(input?.operation ?? '');
     const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 
-    // Typed gated operation — headline from `display`, facts from the args.
-    if (tool === 'plugin' && operation) {
+    // A call that carries its own sentence for the owner (an operation, a
+    // plugin command): that sentence is the headline, its other fields the
+    // facts.
+    const display = str(input?.display);
+    if (display) {
+      const fields = Object.fromEntries(Object.entries(input ?? {}).filter(([k]) => k !== 'display'));
       return {
-        actionType: operationLabel(operation),
-        actionDetail: JSON.stringify({ operation, input: input?.input ?? {} }),
-        headline: str(input?.display),
-        detailRows: factRows(input?.input as Record<string, unknown> | undefined),
+        actionType: operationLabel(tool.replace(/_/g, '.')),
+        actionDetail: JSON.stringify(fields),
+        headline: display,
+        detailRows: factRows(fields),
       };
     }
     // A suggested agreed goal: the owner approves the end state itself.
@@ -119,10 +120,10 @@
         headline: $t('components.approvalGate.goalHeadline'),
       };
     }
-    if (resource === 'shell' || action === 'exec') {
+    if (tool === 'run_command') {
       return { actionType: 'shell_command', actionDetail: str(input?.command) ?? '' };
     }
-    if (resource === 'file' && (action === 'write' || action === 'edit')) {
+    if (tool === 'write_file' || tool === 'edit_file') {
       return { actionType: 'file_write', actionDetail: str(input?.path) ?? '' };
     }
     if (tool === 'http_request' || tool === 'fetch_url') {
