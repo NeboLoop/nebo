@@ -2138,6 +2138,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // are durable before the send, so a dropped send only delays to the boot
     // sweep. Helper progress goes to the owner's screen.
     let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // A settled assignment rings the same bell: its assigner hears the
+    // outcome now, not at the end of some later run.
+    workflow::cases::install_wake_bell(wake_tx.clone());
     let (helper_ui_tx, mut helper_ui_rx) = tokio::sync::mpsc::unbounded_channel::<agent::harness::delegation::HelperEvent>();
     let helpers = agent::harness::delegation::Helpers::new(
         store.clone(),

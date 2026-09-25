@@ -949,3 +949,157 @@ async fn a_coworkers_message_is_read_as_a_coworkers() {
         assert!(meta.get(db::OWNER_MARK).is_none(), "{text}: never the owner's word");
     }
 }
+
+/// Parity 5.2: a turn woken by a notification continues the conversation
+/// it belongs to, as the same party. A helper started from a chat channel
+/// (a Slack channel: someone who is not the owner) reports back; the woken
+/// turn keeps the channel's limits — files stay off — instead of running
+/// as the system.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_woken_turn_keeps_the_seat_of_the_conversation_it_continues() {
+    let nebo = session().await;
+    const CHANNEL: &str = "proof:slack:c52";
+    let rules: Vec<Rule> = vec![
+        worker("MARK-52H", "h52", "H52-RESULT"),
+        Box::new(|t| {
+            if !t.opener().contains("MARK-52 ") {
+                return None;
+            }
+            if t.has_tool_results() {
+                return Some(Step::say(if t.says("H52-RESULT") { "REPORT-52" } else { "Started." }));
+            }
+            if t.new_text().contains("MARK-52 ") {
+                return Some(Step::call(vec![(
+                    "delegate",
+                    json!({"description": "price it", "prompt": "MARK-52H price the order"}),
+                )]));
+            }
+            (t.says("H52-RESULT") && !t.answered("REPORT-52"))
+                .then(|| Step::call(vec![("read_file", json!({"path": "proof-52-notes.txt"}))]))
+        }),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    let config = crate::chat_dispatch::ChatConfig {
+        session_key: CHANNEL.to_string(),
+        prompt: "MARK-52 price the Rivera order".to_string(),
+        user_id: String::new(),
+        channel: "slack".to_string(),
+        origin: Origin::Comm,
+        door: types::permissions::Door::Chat,
+        agent_id: String::new(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        lane: types::constants::lanes::COMM.to_string(),
+        comm_reply: None,
+        entity_config: None,
+        images: vec![],
+        attachments: vec![],
+        entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context: None,
+        tool_scope: None,
+        plan_mode: false,
+        channel_ctx: Some(tools::ChannelContext {
+            kind: "slack".into(),
+            channel_id: "C52".into(),
+            thread_ts: None,
+        }),
+        handoff_depth: 0,
+        seed_taint: vec![types::provenance::ProvenanceClass::Channel],
+        tool_allowlist: None,
+        hidden_prompt: false,
+        coworker: None,
+        audience: None,
+        cwd: None,
+        model_override: None,
+    };
+    crate::chat_dispatch::run_chat(&nebo.state, config).await;
+    rig.until(20, "the channel's first turn ends", || {
+        rig.thread(CHANNEL).iter().any(|m| m.role == "assistant" && m.content == "Started.")
+    })
+    .await;
+    rig.company.open("h52");
+    rig.until(30, "the woken turn reports", || {
+        rig.thread(CHANNEL).iter().any(|m| m.role == "assistant" && m.content == "REPORT-52")
+    })
+    .await;
+    let results: String = rig
+        .thread(CHANNEL)
+        .iter()
+        .filter_map(|m| m.tool_results.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        results.contains("not permitted when called from a chat channel"),
+        "the woken turn is still the channel's: {results}"
+    );
+}
+
+/// Parity 5.5: an update for a helper that has finished and been let go —
+/// a coworker's late reply, redelivered at boot or at a run's end — goes to
+/// the helper's parent, which is told. It never wakes the helper's own
+/// session as a chat turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_update_for_a_finished_helper_tells_its_parent() {
+    let nebo = session().await;
+    const PARENT: &str = "agent:proof-55:web";
+    let helper = format!("subagent:{PARENT}:h-55gone");
+    let rig = Rig::new(&nebo, vec![]).await;
+    rig.open_session(PARENT);
+    rig.open_session(&helper);
+    nebo.store()
+        .engine_enqueue_wake(&helper, "coworker_reply", "[Reply from Proof Clerk]\nCW55-RESULT: filed.", "[\"coworker\"]", 1)
+        .unwrap();
+    crate::wake::recover_pending_wakes(&nebo.state).await;
+    rig.until(20, "the parent is told", || {
+        rig.notifications(PARENT).iter().any(|n| n.contains("CW55-RESULT"))
+    })
+    .await;
+    assert!(
+        rig.thread(&helper).iter().all(|m| m.role != "assistant"),
+        "the finished helper's session never ran a turn: {:?}",
+        rig.thread(&helper).iter().map(|m| (m.role.clone(), m.content.clone())).collect::<Vec<_>>()
+    );
+    let taint: Vec<types::provenance::ProvenanceClass> = rig
+        .thread(PARENT)
+        .iter()
+        .flat_map(agent::harness::delegation::notify::row_taint)
+        .collect();
+    assert_eq!(taint, vec![types::provenance::ProvenanceClass::Coworker], "it carries its taint to the parent");
+}
+
+/// An assignment's outcome reaches the employee that assigned it when the
+/// case closes, not at the end of some later run or at the next boot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_assignment_outcome_reaches_the_assigner_when_it_happens() {
+    let nebo = session().await;
+    const ASSIGNER: &str = "agent:proof-gm:web";
+    let rig = Rig::new(&nebo, vec![]).await;
+    rig.open_session(ASSIGNER);
+    let id = format!("asg-{}", uuid::Uuid::new_v4().simple());
+    nebo.store()
+        .create_assignment(&db::NewAssignment {
+            id: &id,
+            assigner_agent_id: "proof-gm",
+            assigner_session_key: ASSIGNER,
+            assignee_agent_id: "proof-bk",
+            subject: "Close the books",
+            done_means: "Reports posted",
+            due: None,
+            parent_run_id: None,
+            case_key: &format!("assignment:{id}"),
+        })
+        .unwrap();
+    let inputs = json!({"_assignment": {
+        "id": id,
+        "subject": "Close the books",
+        "assignee_agent_id": "proof-bk",
+        "assigner_agent_id": "proof-gm",
+        "assigner_session_key": ASSIGNER,
+    }});
+    workflow::cases::settle_assignment(nebo.store(), &inputs, "done", "ASG-RESULT: reports posted", chrono::Utc::now().timestamp())
+        .unwrap();
+    rig.until(20, "the assigner is told", || {
+        rig.notifications(ASSIGNER).iter().any(|n| n.contains("ASG-RESULT"))
+    })
+    .await;
+}

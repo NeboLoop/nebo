@@ -142,7 +142,7 @@ pub const SKIP_SENTINEL: &str = "__skip__";
 /// Propagated as env vars `NEBO_CHANNEL_KIND`, `NEBO_CHANNEL_ID`,
 /// `NEBO_THREAD_TS` when the plugin tool invokes a plugin binary.
 /// See `docs/publishers-guide/channel-plugins.md`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChannelContext {
     /// Plugin slug / channel kind — "slack", "discord", "teams", etc.
     pub kind: String,

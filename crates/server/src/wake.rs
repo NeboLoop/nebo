@@ -22,11 +22,8 @@ use types::provenance::ProvenanceClass;
 /// stays in the queue row / source thread.
 const PAYLOAD_CLIP: usize = 2000;
 
-/// Producer entry: persist the wake, then try to deliver it. Never blocks the
-/// producer on the woken run. An update for a helper's session goes to the
-/// helper registry, which holds the helper; one whose helper has finished
-/// and been let go goes to that helper's parent, so it is never lost in a
-/// thread nobody will read.
+/// Producer entry: persist the wake, then deliver it. Never blocks the
+/// producer on the woken run.
 pub fn enqueue(
     state: &AppState,
     session_key: &str,
@@ -35,14 +32,6 @@ pub fn enqueue(
     provenance: &[ProvenanceClass],
     handoff_depth: u8,
 ) {
-    let mut session_key = session_key;
-    while let Some((parent, task_id)) = agent::harness::delegation::split_helper_key(session_key) {
-        if state.helpers.notify(session_key, &row_text(kind, payload), provenance) {
-            return;
-        }
-        info!(session = %session_key, task_id, "update for a finished helper goes to its parent");
-        session_key = parent;
-    }
     let prov = serde_json::to_string(provenance).unwrap_or_else(|_| "[]".to_string());
     if let Err(e) =
         state
@@ -59,7 +48,65 @@ pub fn enqueue(
 
 /// Write a session's pending updates into its conversation as notification
 /// rows, then, when no turn is running there, start one that hears them.
-pub async fn deliver(state: &AppState, session_key: &str) {
+/// The ONE delivery, whoever persisted the updates (a producer, the boot
+/// sweep, a run's end). An update for a helper's session goes to the helper
+/// registry, which holds the helper; one whose helper has finished and been
+/// let go goes to that helper's parent, so it is never lost in a thread
+/// nobody will read and never wakes a helper's session as a chat turn.
+pub fn deliver<'a>(state: &'a AppState, session_key: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        if agent::harness::delegation::split_helper_key(session_key).is_some() {
+            deliver_to_helper(state, session_key).await;
+        } else {
+            deliver_to_session(state, session_key).await;
+        }
+    })
+}
+
+/// A helper's updates: each to the helper while the registry holds it, else
+/// re-queued for its parent, which is then delivered.
+async fn deliver_to_helper(state: &AppState, session_key: &str) {
+    let Some((parent, task_id)) = agent::harness::delegation::split_helper_key(session_key) else {
+        return;
+    };
+    let claim = claimed().lock().await;
+    let batch = match state.store.engine_claim_session_events(session_key, now()) {
+        Ok((batch, _)) => batch,
+        Err(e) => {
+            warn!(error = %e, session = %session_key, "wake: claim failed");
+            return;
+        }
+    };
+    let mut done = Vec::new();
+    let mut to_parent = false;
+    for w in &batch {
+        let taint = serde_json::from_str::<Vec<ProvenanceClass>>(&w.provenance).unwrap_or_default();
+        if state.helpers.notify(session_key, &row_text(&w.kind, &w.payload), &taint) {
+            done.push(w.id);
+            continue;
+        }
+        match state
+            .store
+            .engine_enqueue_wake(parent, &w.kind, &w.payload, &w.provenance, w.handoff_depth.clamp(0, u8::MAX as i64) as u8)
+        {
+            Ok(_) => {
+                done.push(w.id);
+                to_parent = true;
+            }
+            Err(e) => warn!(error = %e, session = %session_key, "wake: not moved to the parent; it redelivers"),
+        }
+    }
+    if let Err(e) = state.store.engine_complete_events(&done, now()) {
+        warn!(error = %e, session = %session_key, "wake: failed to stamp delivered");
+    }
+    drop(claim);
+    if to_parent {
+        info!(session = %session_key, task_id, "update for a finished helper goes to its parent");
+        deliver(state, parent).await;
+    }
+}
+
+async fn deliver_to_session(state: &AppState, session_key: &str) {
     // Claiming, writing the rows and stamping them delivered is one step:
     // two deliveries racing (two replies landing together) would otherwise
     // both claim the same updates and write each row twice.
@@ -151,14 +198,18 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         }
         return;
     }
+    // The woken turn continues the conversation as the party it is with:
+    // the seat of the session's last input (a chat channel's limits, a
+    // visitor's allowlist, the owner's own standing).
+    let seat = crate::reply_route::seat_of(state, session_key).unwrap_or_else(crate::reply_route::WakeSeat::system);
     let config = ChatConfig {
         session_key: session_key.to_string(),
         // The conversation already holds what the turn hears.
         prompt: String::new(),
         user_id: String::new(),
         channel,
-        origin: tools::Origin::System,
-        door: types::permissions::Door::Chat,
+        origin: seat.origin,
+        door: seat.door,
         agent_id,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         lane: types::constants::lanes::COMM.to_string(),
@@ -171,13 +222,13 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         mention_context: None,
         tool_scope: None,
         plan_mode: false,
-        channel_ctx: None,
+        channel_ctx: seat.channel_ctx,
         handoff_depth,
         seed_taint,
-        tool_allowlist: None,
+        tool_allowlist: seat.tool_allowlist.map(|l| l.into_iter().collect()),
         hidden_prompt: false,
         coworker: None,
-        audience: None,
+        audience: seat.audience,
         cwd: None,
         model_override: None,
     };
