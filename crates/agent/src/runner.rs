@@ -318,7 +318,7 @@ pub struct RunRequest {
     /// Tool scope name from agent.json for SDK-driven tool filtering.
     pub tool_scope: Option<String>,
     /// Explicit tool allowlist for restricted runs (phone callers). Entries
-    /// are bare tool names ("skill") or `tool:resource` compounds
+    /// are bare tool names ("use_skill") or `tool:resource` compounds
     /// ("agent:memory"). Enforced at the runner gate AND the registry choke
     /// point via `ToolContext::whitelist_allows`, and the declared schema is
     /// filtered to match. `None` = every normal run, unrestricted.
@@ -332,17 +332,7 @@ pub struct RunRequest {
     /// is injected into the system prompt so the agent has instructions without
     /// needing to discover/load them. Used by sub-agent spawning.
     pub preload_skills: Vec<String>,
-    /// Plugin install codes to include in the sub-agent's system prompt.
-    /// The plugin inventory and usage docs are injected so the sub-agent
-    /// knows how to use these plugins from turn 1.
-    pub preload_plugins: Vec<String>,
-    /// STRAP domain tool names to include in the sub-agent's system prompt.
-    /// The tool's STRAP doc (resources, actions, examples) is injected so the
-    /// sub-agent knows how to use these tools without discovery.
-    pub preload_tools: Vec<String>,
     /// Tool names to pre-activate (bypass deferred-loading discovery).
-    /// Populated automatically from preload_plugins/preload_tools to ensure
-    /// sub-agents have the tools available from turn 1.
     pub preactivate_tools: Vec<String>,
     /// When true, agent presents a plan before executing any tool calls.
     /// The plan is sent via a PlanApproval event for user approval.
@@ -685,7 +675,7 @@ impl Runner {
         // of its own (build_subagent_request never sets agent_id), and the
         // skills it preloads were named by the seat that spawned it. The ONE
         // extractor strips the `subagent:` wrappers and yields that seat, the
-        // same scope the sub-agent's own later skill(action: "load") calls use
+        // same scope the sub-agent's own later use_skill calls use
         // — without it a seat hands work to a helper and its own procedures go
         // along in name only.
         if !req.preload_skills.is_empty() {
@@ -720,77 +710,6 @@ impl Runner {
                         warn!(skill = %skill_name, "pre-load skill not found");
                     }
                 }
-            }
-        }
-
-        // Pre-load plugin docs into the sub-agent's conversation.
-        // Plugin context (description, skills, usage) is injected as a user message
-        // so the sub-agent knows how to use these plugins from turn 1.
-        if !req.preload_plugins.is_empty() {
-            if let Some(ref loader) = self.skill_loader {
-                let plugin_context = loader.agent_plugin_context(&req.preload_plugins);
-                if !plugin_context.is_empty() {
-                    let meta = serde_json::json!({
-                        "isMeta": true,
-                        "pluginPreload": true,
-                    })
-                    .to_string();
-                    let _ = self.sessions.append_message(
-                        &session_id,
-                        "user",
-                        &format!("[Loading plugin context]\n\n{}", plugin_context),
-                        None,
-                        None,
-                        Some(&meta),
-                    );
-                    info!(
-                        plugins = ?req.preload_plugins,
-                        len = plugin_context.len(),
-                        "pre-loaded plugin context into sub-agent"
-                    );
-                }
-            }
-        }
-
-        // Pre-load STRAP tool docs into the sub-agent's conversation.
-        // Each tool's full documentation (resources, actions, examples) is injected
-        // so the sub-agent knows exactly how to call these tools.
-        if !req.preload_tools.is_empty() {
-            let mut tool_docs = String::new();
-            for tool_name in &req.preload_tools {
-                // Try core tool doc first, then OS sub-context doc
-                let doc = prompt::strap_tool_doc(tool_name)
-                    .or_else(|| prompt::strap_context_doc(tool_name));
-                if let Some(d) = doc {
-                    if !tool_docs.is_empty() {
-                        tool_docs.push_str("\n\n---\n\n");
-                    }
-                    tool_docs.push_str(d);
-                }
-            }
-            if !tool_docs.is_empty() {
-                let meta = serde_json::json!({
-                    "isMeta": true,
-                    "toolPreload": true,
-                })
-                .to_string();
-                let _ = self.sessions.append_message(
-                    &session_id,
-                    "user",
-                    &format!(
-                        "[Loading tool documentation for: {}]\n\n{}",
-                        req.preload_tools.join(", "),
-                        tool_docs,
-                    ),
-                    None,
-                    None,
-                    Some(&meta),
-                );
-                info!(
-                    tools = ?req.preload_tools,
-                    len = tool_docs.len(),
-                    "pre-loaded STRAP tool docs into sub-agent"
-                );
             }
         }
 
@@ -1882,9 +1801,9 @@ async fn run_loop(
     let mut active_task = sessions.get_active_task(session_id).unwrap_or_default();
 
     // Skills follow a deferred pattern: NOT auto-loaded into system prompt.
-    // Model uses skill(action: "discover") to find skills and skill(action: "load") to
-    // activate them. Loaded skill content goes into message history (tool results) and
-    // unloads when messages are evicted by sliding window.
+    // The skill listing names them; the model loads one with use_skill, and
+    // its content goes into message history (tool results) and unloads when
+    // messages are evicted by sliding window.
     //
     // Exceptions: force_skill (explicit API activation) and agent-declared skills
     // (part of the job definition — always present for that agent).
@@ -2038,13 +1957,18 @@ async fn run_loop(
         .map(crate::harness::prompt::inputs::self_context)
         .unwrap_or_default();
 
-    // Compact skill listing (name + capped description per enabled skill).
-    // Discovery metadata only — full bodies load on demand via skill(action: "load").
-    // Agent-scoped runs also see their own Learned skills in the index.
+    // The skill listing (name + one line per enabled skill), in the text
+    // the harness reminder path delivers; it rides in the system prompt until
+    // that path carries it. Full bodies load on demand through use_skill.
+    // Agent-scoped runs also see their own skills.
     let skill_catalog = match skill_loader {
         Some(loader) => {
             let scope = (!agent_id.is_empty()).then_some(agent_id);
-            loader.compact_catalog(scope).await
+            let now = loader.listing(scope).await;
+            crate::harness::events::LinedDelta::between(&Default::default(), &now)
+                .and_then(|d| crate::harness::events::attachment_for(&crate::harness::events::TurnEvent::SkillListing(d)))
+                .map(|a| a.text)
+                .unwrap_or_default()
         }
         None => String::new(),
     };
@@ -3570,31 +3494,11 @@ async fn run_loop(
             }
 
             // Pattern 12: skip post-run memory extraction when this iteration
-            // contained an explicit memory write (agent resource:"memory" action:"store").
-            // Re-extracting would duplicate facts the model just wrote.
-            if !skip_memory {
-                for tc in &tool_calls {
-                    if tc.name == "agent" {
-                        let resource = tc
-                            .input
-                            .get("resource")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let action = tc
-                            .input
-                            .get("action")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if resource == "memory" && action == "store" {
-                            debug!(
-                                session_id,
-                                "memory write detected — skipping post-run extraction"
-                            );
-                            skip_memory = true;
-                            break;
-                        }
-                    }
-                }
+            // contained an explicit memory write (`remember`). Re-extracting
+            // would duplicate facts the model just wrote.
+            if !skip_memory && tool_calls.iter().any(|tc| tc.name == "remember") {
+                debug!(session_id, "memory write detected — skipping post-run extraction");
+                skip_memory = true;
             }
 
             // Pattern 13: background tool summary generation via cheap model.
@@ -4027,7 +3931,7 @@ fn max_auto_continuations(work_tasks: &[steering::WorkTask]) -> usize {
 
 /// Convert database ChatMessages to ai::Messages for the provider.
 /// Detect a prompt that IS an explicit invocation of a declared tool —
-/// "use os(resource: ...)", "call web(...)", or the bare "skill(...)" — and
+/// "use os(resource: ...)", "call use_skill(...)", or the bare "read_file(...)" — and
 /// return the ToolChoice that forces that tool. Conservative on purpose: the
 /// whole trimmed prompt must be the invocation (optional leading verb, known
 /// tool name, parenthesized args to the end), so prose that merely mentions a
@@ -4665,11 +4569,11 @@ mod named_invocation_tests {
 
     #[test]
     fn explicit_invocations_force_the_tool() {
-        let tools = defs(&["os", "skill", "mcp__nebo_kb__memory_recall"]);
+        let tools = defs(&["os", "use_skill", "mcp__nebo_kb__memory_recall"]);
         for p in [
             r#"use os(resource: "app", action: "list")"#,
             r#"os(resource: "shell", action: "exec", command: "ls")"#,
-            r#"call skill(action: "list")"#,
+            r#"call use_skill(name: "invoicing")"#,
             r#"Use os(resource: "mail", action: "unread")"#,
         ] {
             match named_tool_invocation(p, &tools) {
@@ -4681,7 +4585,7 @@ mod named_invocation_tests {
 
     #[test]
     fn prose_and_unknown_tools_stay_auto() {
-        let tools = defs(&["os", "skill"]);
+        let tools = defs(&["os", "use_skill"]);
         for p in [
             r#"how do I use os(resource: "app") safely?"#, // prose prefix
             r#"use frobnicate(action: "x")"#,              // undeclared tool

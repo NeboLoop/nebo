@@ -122,6 +122,12 @@ fn ctx(store: &db::Store, agent: &str) -> ToolContext {
     }
 }
 
+/// The employee's latest recorded decision.
+fn last_activity(store: &db::Store, agent: &str) -> db::PermissionActivityRow {
+    let filter = db::PermissionActivityFilter { agent_id: Some(agent.into()), limit: 1, ..Default::default() };
+    store.permission_activity(&filter).unwrap().0.remove(0)
+}
+
 /// The case the parked call's ask names.
 fn asked(store: &db::Store, r: &ToolResult) -> AskCase {
     let id = r.parked_ask.as_deref().unwrap_or_else(|| panic!("expected a parked ask: {}", r.content));
@@ -454,7 +460,7 @@ async fn shadow_judgement_records_and_never_blocks() {
     let judged = ToolContext { judgement: Some(ask.clone()), ..ctx(&store, "e") };
     assert_eq!(store.permission_judgement_mode().unwrap(), JudgementMode::Shadow, "shadow is the default");
     assert_eq!(reg.execute(&judged, "post", json!({ "publishes": "unknown" })).await.content, "RAN");
-    let row = &store.permission_activity("e", 1).unwrap()[0];
+    let row = &last_activity(&store, "e");
     assert_eq!(row.decision, "allow");
     let j: serde_json::Value = serde_json::from_str(row.judgement.as_deref().unwrap()).unwrap();
     assert_eq!(j, json!({ "mode": "shadow", "verdict": "ask", "by": "jev", "reason": "posts to a public page" }));
@@ -478,7 +484,7 @@ async fn activity_records_which_judge_decided() {
     let allowed = Verdict::Allow { by: JudgedBy::AuxClassifier, reason: "saves a draft to the owner's account".into() };
     let c = ToolContext { judgement: Some(allowed), ..ctx(&store, "e") };
     assert_eq!(reg.execute(&c, "post", json!({ "publishes": "unknown" })).await.content, "RAN");
-    let row = &store.permission_activity("e", 1).unwrap()[0];
+    let row = &last_activity(&store, "e");
     let why: types::permissions::Why = serde_json::from_str(&row.why).unwrap();
     assert_eq!(
         why,
@@ -499,7 +505,7 @@ async fn both_down_proceeds_marked_unreviewed() {
         store.set_permission_judgement_mode(mode).unwrap();
         let c = ToolContext { judgement: Some(Verdict::Unjudged), door: types::permissions::Door::Heartbeat, ..ctx(&store, "e") };
         assert_eq!(reg.execute(&c, "post", json!({ "publishes": "unknown" })).await.content, "RAN");
-        let row = &store.permission_activity("e", 1).unwrap()[0];
+        let row = &last_activity(&store, "e");
         assert!(row.unreviewed, "{mode:?}");
         assert!(row.judgement.as_deref().unwrap().contains(types::permissions::UNREVIEWED_REASON));
         if mode == JudgementMode::Enforce {

@@ -468,9 +468,9 @@ mod tests {
             let tools = Arc::new(tools::Registry::new(Arc::new(
                 crate::harness::permissions::Check::new(store.clone()),
             )));
-            tools
-                .register(Box::new(tools::AgentTool::new(store.clone(), tools::new_handle())))
-                .await;
+            for tool in tools::memory_tools::Memory::new(store.clone(), None, None).tools() {
+                tools.register(tool).await;
+            }
             Fixture {
                 store,
                 sessions,
@@ -552,8 +552,8 @@ mod tests {
         f.say("user", "Remember that invoices go out on the 1st.", None);
         let store_call = serde_json::json!([{
             "id": "call-1",
-            "name": "agent",
-            "input": {"resource": "memory", "action": "store", "key": "invoice/day", "value": "Invoices go out on the 1st"}
+            "name": "remember",
+            "input": {"key": "invoice/day", "value": "Invoices go out on the 1st"}
         }]);
         f.say("assistant", "", Some(store_call));
         f.say("assistant", "Saved.", None);
@@ -564,8 +564,8 @@ mod tests {
         f.say("user", "What day do invoices go out? I prefer email reminders.", None);
         let recall_call = serde_json::json!([{
             "id": "call-2",
-            "name": "agent",
-            "input": {"resource": "memory", "action": "recall", "key": "invoice/day"}
+            "name": "recall",
+            "input": {"query": "invoice/day"}
         }]);
         f.say("assistant", "", Some(recall_call));
         f.say("assistant", "On the 1st.", None);

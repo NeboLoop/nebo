@@ -2,10 +2,10 @@ id: correction-skill-miss-proceeds
 name: "Correction — no matching skill is not a missing capability"
 description: |
   The user names a skill that is not installed for a task the built-in tools
-  can do. The discover result says no skill matches and to proceed with the
-  built-in tools. The model must proceed (or ask a clarifying question), not
-  declare the capability unavailable.
-target_component: skill
+  can do. The skill listing doesn't name it; a use_skill or find_skills call
+  says no such skill is installed. The model must proceed (or ask a
+  clarifying question), not declare the capability unavailable.
+target_component: use_skill
 
 setup:
   - "mkdir -p {{scratch}} && printf 'Q1 revenue 120\nQ2 revenue 150\n' > {{scratch}}/revenue.txt"
@@ -17,7 +17,9 @@ conversation:
     content: "Use the quarterly-summary skill to total the revenue in {{scratch}}/revenue.txt."
 
 tool_config:
-  skill:
+  use_skill:
+    enabled: true
+  find_skills:
     enabled: true
   read_file:
     enabled: true
@@ -43,5 +45,6 @@ ideal_behavior:
   tool_calls: 2
   total_tokens: 2500
   narrative: |
-    skill discover (miss) then read_file, then "270. There is no
+    The listing has no quarterly-summary (at most one use_skill or
+    find_skills miss), then read_file, then "270. There is no
     quarterly-summary skill installed, so I read the file directly."

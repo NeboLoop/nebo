@@ -196,9 +196,9 @@ pub struct ToolContext {
     /// told to delegate, a phone run is told to take a message).
     pub whitelist_denial_hint: Option<String>,
     /// Set when this run is the self-improvement review fork (or curator):
-    /// the skill tool's writes target the LEARNED tree of this agent instead
-    /// of user/skills/, and update/delete require the skill to have been
-    /// loaded this run (read-before-write, see `skills_read`).
+    /// save_skill and delete_skill target the LEARNED tree of this agent
+    /// instead of user/skills/, and replacing or deleting a skill requires it
+    /// to have been loaded this run (read-before-write, see `skills_read`).
     pub learned_write_agent: Option<String>,
     /// With `learned_write_agent`: stage writes to pending_writes for Inbox
     /// approval instead of committing (employee's learning_mode = "staged").
@@ -208,8 +208,8 @@ pub struct ToolContext {
     /// Suppresses the auto-mode audit row so approve/revert don't mint a
     /// duplicate `learn:` record for a write a pending_writes row already covers.
     pub learned_write_reapply: bool,
-    /// Read marks for the review fork: learned-skill names loaded via the
-    /// skill tool THIS run. update/delete on a learned skill is refused
+    /// Read marks for the review fork: learned-skill names loaded via
+    /// use_skill THIS run. A save or delete of a learned skill is refused
     /// unless its name is here — the fork must write against actual on-disk
     /// content, never a recollection inferred from the transcript.
     pub skills_read: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -334,7 +334,7 @@ impl ToolContext {
 
     /// Whether the run's tool allowlist admits this call. `None` =
     /// unrestricted (every normal run). Entries are either a bare tool name
-    /// ("skill" — the whole tool) or a `tool:resource` compound
+    /// ("use_skill" — the whole tool) or a `tool:resource` compound
     /// ("agent:memory") admitting only calls whose `resource` input matches —
     /// bare `os` in an allowlist would otherwise hand a restricted run the
     /// shell. Matching lives HERE so the runner's gate and the registry's

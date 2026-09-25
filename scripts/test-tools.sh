@@ -141,59 +141,57 @@ if case_ plan-06 "a destructive verify command is refused and stays unticked"; t
   ok
 fi
 
-# ---- sub-agent continuation (Stage 9) ---------------------------------------
+# ---- helper continuation (Stage 9) ------------------------------------------
 # The live continuation itself is fixtures/tools/agent-send-continuation.yaml
-# (a model in the loop). Here: the verb exists and its two refusals say what
-# to do next, so a model never spirals on them.
-if case_ agent-send-01 "send without a message names the missing parameter"; then
-  call '{"resource":"task","action":"send","task_id":"sa-x"}' agent
-  expect_error "message"; echo "$LAST" | grep -q 'action: "send"' || die "usage example shown"
+# (a model in the loop). Here: send_message exists and its two refusals say
+# what to do next, so a model never spirals on them.
+if case_ agent-send-01 "send_message without a message names the missing parameter"; then
+  call '{"to":"sa-x"}' send_message
+  expect_error "message"
   ok
 fi
 
-if case_ agent-send-02 "send to an unknown task says to spawn afresh"; then
-  call '{"resource":"task","action":"send","task_id":"sa-nope","message":"more"}' agent
-  expect_error "No sub-agent sa-nope to continue"; echo "$LAST" | grep -q "Spawn a new one" || die "recovery named"
+if case_ agent-send-02 "send_message to an unknown helper says to start afresh"; then
+  call '{"to":"sa-nope","message":"more"}' send_message
+  expect_error "sa-nope"; echo "$LAST" | grep -qiE "new one|delegate" || die "recovery named"
   ok
 fi
 
 # ---- one door to a skill (Rule 8) -----------------------------------------
-# A plugin's usage lives in its skills, and there is exactly ONE way to find
-# and read one: the skill tool. 2026-09-15: the plugin tool had its own
-# `help` action printing a trimmed label (`products`), the skill tool had its
-# own `help` preview and a `catalog` alias of `list`, and an employee bounced
-# between all four, concluded the docs were stale, and guessed GraphQL for 51
-# calls. These cases keep the second doors shut.
-if case_ skill-onedoor-01 "a plugin's skill loads through the skill tool"; then
-  call '{"action":"list"}' skill
-  expect_ok
-  SKILL=$(echo "$LAST" | grep -o '\b[a-z0-9]\{2,\}-[a-z0-9-]\{2,\}\b' | head -1)
+# A plugin's usage lives in its skills, and there is exactly ONE way to read
+# one: use_skill. 2026-09-15: the plugin tool had its own `help` action
+# printing a trimmed label (`products`), the skill tool had its own `help`
+# preview and a `catalog` alias of `list`, and an employee bounced between
+# all four, concluded the docs were stale, and guessed GraphQL for 51 calls.
+# Tools WP4 retired the skill tool itself. These cases keep the second doors
+# shut.
+if case_ skill-onedoor-01 "an installed skill loads through use_skill"; then
+  SKILL=$(curl -s -m 10 "http://$TEST_SERVER/api/v1/extensions" | jq -r '[.extensions[] | select(.enabled != false) | .name][0] // empty')
   if [ -z "$SKILL" ]; then
     echo "  (no skills installed — nothing to load)"; ok
   else
-    call "$(jq -cn --arg n "$SKILL" '{action:"load",name:$n}')" skill
-    expect_ok
+    call "$(jq -cn --arg n "$SKILL" '{name:$n}')" use_skill
+    expect_ok "Loaded skill"
     ok
   fi
 fi
 
-if case_ skill-onedoor-02 "skill help is gone; the answer names load"; then
-  call '{"action":"help","name":"anything"}' skill
-  expect_error "Unknown action"
-  echo "$LAST" | grep -q "use load" || die "the recovery must name load"
+if case_ skill-onedoor-02 "an unknown skill points at the listing and find_skills"; then
+  call '{"name":"no-such-skill-xyz"}' use_skill
+  expect_error "No skill named"
+  echo "$LAST" | grep -q "find_skills" || die "the recovery must name find_skills"
   ok
 fi
 
-if case_ skill-onedoor-03 "skill catalog is gone; list is the one word"; then
-  call '{"action":"catalog"}' skill
-  expect_error "Unknown action"
-  echo "$LAST" | grep -q "list" || die "the recovery must name list"
+if case_ skill-onedoor-03 "the skill tool is gone"; then
+  call '{"action":"list"}' skill
+  expect_error "No such tool available"
   ok
 fi
 
-if case_ plugin-onedoor-01 "plugin help is gone; skills are read through the skill tool"; then
+if case_ plugin-onedoor-01 "plugin help is gone; skills are read through use_skill"; then
   call '{"action":"help","resource":"anything"}' plugin
-  expect_error 'skill(action'
+  expect_error 'use_skill(name'
   ok
 fi
 

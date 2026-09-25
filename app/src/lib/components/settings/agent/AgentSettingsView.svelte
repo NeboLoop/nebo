@@ -15,7 +15,7 @@
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import Volume2 from 'lucide-svelte/icons/volume-2';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
-  import ApprovalControls from '$lib/components/settings/ApprovalControls.svelte';
+  import PermissionsSection from './PermissionsSection.svelte';
   import LearningControls from '$lib/components/settings/LearningControls.svelte';
   import IsolationControls from '$lib/components/settings/IsolationControls.svelte';
   import RunLimitControls from '$lib/components/settings/RunLimitControls.svelte';
@@ -23,7 +23,6 @@
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
   import { addToast } from '$lib/stores/toast';
-  import { capabilityLabel } from '$lib/utils/operationLabels';
   import { accountsSectionFor } from './sections';
 
   const ctx = getContext<AgentPageContext>('agentPage');
@@ -270,6 +269,8 @@
       loadedIdentityFor = agentId;
       editName = agent.name;
       editRole = agent.role;
+      jobCheckedRole = agent.role;
+      jobEdit = null;
       editColor = agent.color;
       editVoice = agent.voice ?? '';
       editLoopExposed = agent.loopExposed ?? false;
@@ -321,6 +322,36 @@
 
   let identityError = $state('');
 
+  // Editing the job runs the needs step again: what the new description adds
+  // shows as one line, and adding it grants it (the line's draft).
+  let jobEdit = $state<{ line: string; draftId: string } | null>(null);
+  let jobCheckedRole = '';
+
+  async function checkJobEdit() {
+    if (!agentId || managed || editRole === jobCheckedRole) return;
+    jobCheckedRole = editRole;
+    try {
+      const api = await import('$lib/api/nebo');
+      const res = await api.workOutAgentNeeds({ agentId, name: editName, description: editRole });
+      jobEdit = res.items.length > 0 && res.draftId ? { line: res.line, draftId: res.draftId } : null;
+    } catch {
+      jobEdit = null;
+    }
+  }
+
+  async function addJobEdit() {
+    if (!agentId || !jobEdit) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent(agentId, { draftId: jobEdit.draftId });
+      jobEdit = null;
+      identitySaved = true;
+      setTimeout(() => identitySaved = false, 2000);
+    } catch (e) {
+      identityError = (e as Error)?.message || $t('agentSettings.saveFailed');
+    }
+  }
+
   async function saveIdentity() {
     if (!agentId) return;
     try {
@@ -338,6 +369,7 @@
       identityError = '';
       identitySaved = true;
       setTimeout(() => identitySaved = false, 2000);
+      void checkJobEdit();
     } catch (e) {
       // A refused reporting line names the loop it would have closed, and a
       // taken name names the employee that has it. Swallowing that left the
@@ -551,82 +583,6 @@
   function setQuestionMoney(index: number, money: boolean) {
     questions = questions.map((q, i) => (i === index ? { ...q, money, default: money ? '' : q.default } : q));
     debounceQuestionsSave();
-  }
-
-  // --- Capabilities (agent.json `requires.interfaces`) ---
-  // What this employee is allowed to reach. The catalogue is what the company
-  // has actually connected; the selection lands in `requires.interfaces` on the
-  // same agent.json a package declares it in.
-  type CapabilityRow = {
-    capability: string;
-    providers: string[];
-    builtin: boolean;
-    gatedOperations: number;
-    bound: boolean;
-  };
-  let capabilityRows = $state<CapabilityRow[]>([]);
-  let boundCapabilities = $state<string[]>([]);
-  let capabilitiesLoading = $state(true);
-  let capabilitiesSaved = $state(false);
-  let capabilitiesError = $state('');
-  let loadedCapabilitiesFor = $state('');
-  let capabilitiesSaveTimer: ReturnType<typeof setTimeout> | null = null;
-
-  async function loadCapabilities(id: string) {
-    capabilitiesLoading = true;
-    capabilitiesError = '';
-    try {
-      const api = await import('$lib/api/nebo');
-      const resp = (await api.getAgentOperations(id)) as unknown as {
-        available?: CapabilityRow[];
-        interfaces?: string[];
-      };
-      capabilityRows = resp.available ?? [];
-      boundCapabilities = resp.interfaces ?? [];
-    } catch (e) {
-      capabilitiesError = e instanceof Error ? e.message : String(e);
-    } finally {
-      capabilitiesLoading = false;
-    }
-  }
-
-  // Depends on `section` and `agentId` only. The once-per-employee guard is
-  // read inside untrack, because the effect also writes it — reading it as a
-  // dependency is how a loader effect re-fires itself.
-  $effect(() => {
-    if (section !== 'capabilities') return;
-    const id = agentId;
-    if (!id) return;
-    untrack(() => {
-      if (id === loadedCapabilitiesFor) return;
-      loadedCapabilitiesFor = id;
-      void loadCapabilities(id);
-    });
-  });
-
-  function toggleCapability(capability: string, on: boolean) {
-    boundCapabilities = on
-      ? [...boundCapabilities, capability].sort()
-      : boundCapabilities.filter((c) => c !== capability);
-    capabilityRows = capabilityRows.map((r) =>
-      r.capability === capability ? { ...r, bound: on } : r,
-    );
-    if (capabilitiesSaveTimer) clearTimeout(capabilitiesSaveTimer);
-    capabilitiesSaveTimer = setTimeout(() => saveCapabilities(), 700);
-  }
-
-  async function saveCapabilities() {
-    const id = agentId;
-    if (!id) return;
-    capabilitiesError = '';
-    try {
-      const api = await import('$lib/api/nebo');
-      await api.updateAgent(id, { interfaces: boundCapabilities });
-      capabilitiesSaved = true;
-      setTimeout(() => (capabilitiesSaved = false), 2000);
-    } catch (e) {
-      capabilitiesError = e instanceof Error ? e.message : String(e);
-    }
   }
 
   // --- Channels ---
@@ -1361,6 +1317,12 @@
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.role')}{#if managed} <span class="normal-case tracking-normal font-normal text-base-content/50">· {$t('agentSettings.fromPackage')}</span>{/if}</span>
         <textarea bind:value={editRole} oninput={debounceIdentitySave} disabled={managed} rows="3" class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed resize-none"></textarea>
       </label>
+      {#if jobEdit}
+        <div class="flex flex-wrap items-center gap-3 rounded-lg border border-base-300 bg-base-200/40 px-3 py-2.5">
+          <span class="flex-1 min-w-0 text-sm">{jobEdit.line}</span>
+          <button type="button" class="btn btn-sm btn-primary" onclick={addJobEdit}>{$t('permissions.addJobEdit')}</button>
+        </div>
+      {/if}
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.color')}</div>
         <div class="flex gap-2 items-center">
@@ -1682,69 +1644,6 @@
           {$t('agentQuestions.add')}
         </button>
       </div>
-
-    {:else if section === 'capabilities'}
-      <div class="flex items-center justify-between gap-3 mb-1">
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.capabilities')}</div>
-          <div class="text-xs text-base-content/70 mt-1">{$t('agentCapabilities.desc', { values: { name: agent?.name ?? '' } })}</div>
-        </div>
-        {#if capabilitiesSaved}
-          <span class="text-xs text-success flex items-center gap-1 shrink-0"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
-        {/if}
-      </div>
-
-      {#if capabilitiesError}
-        <div class="alert alert-error mt-3 py-2 text-xs">
-          <AlertTriangle class="w-4 h-4 shrink-0" />
-          <span>{capabilitiesError}</span>
-        </div>
-      {/if}
-
-      {#if capabilitiesLoading}
-        <div class="py-6 flex justify-center"><span class="loading loading-spinner loading-sm"></span></div>
-      {:else if capabilityRows.length === 0}
-        <!-- The honest empty state: nothing is connected, so there is nothing
-             this employee could be given to reach. -->
-        <div class="mt-4 rounded-lg border border-base-300 bg-base-200/40 px-4 py-6 text-center">
-          <div class="text-sm font-medium">{$t('agentCapabilities.emptyTitle')}</div>
-          <div class="text-xs text-base-content/60 mt-1.5 max-w-md mx-auto">{$t('agentCapabilities.emptyBody')}</div>
-        </div>
-      {:else}
-        <div class="flex flex-col gap-2 mt-3">
-          {#each capabilityRows as row (row.capability)}
-            <label class="flex items-start gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5 cursor-pointer hover:bg-base-200/50">
-              <input
-                type="checkbox"
-                checked={row.bound}
-                onchange={(e) => toggleCapability(row.capability, e.currentTarget.checked)}
-                class="checkbox checkbox-sm mt-0.5 shrink-0"
-              />
-              <span class="flex-1 min-w-0">
-                <span class="flex flex-wrap items-center gap-2">
-                  <span class="text-sm font-medium">{capabilityLabel(row.capability)}</span>
-                  {#if row.builtin}
-                    <span class="badge badge-ghost badge-xs">{$t('agentCapabilities.builtin')}</span>
-                  {/if}
-                  {#if row.gatedOperations > 0}
-                    <span class="badge badge-warning badge-xs">{$t('agentCapabilities.needsApproval', { values: { count: row.gatedOperations } })}</span>
-                  {/if}
-                </span>
-                <span class="block text-xs text-base-content/60 mt-0.5">
-                  {#if row.builtin}
-                    {$t('agentCapabilities.builtinDesc')}
-                  {:else if row.providers.length > 0}
-                    {$t('agentCapabilities.providedBy', { values: { providers: row.providers.join(', ') } })}
-                  {:else}
-                    {$t('agentCapabilities.noProvider')}
-                  {/if}
-                </span>
-              </span>
-            </label>
-          {/each}
-        </div>
-        <div class="text-xs text-base-content/50 mt-3">{$t('agentCapabilities.approvalsNote')}</div>
-      {/if}
 
     {:else if section === 'workflows'}
       <div class="flex items-center justify-between gap-3 mb-1">
@@ -2243,12 +2142,12 @@
         </div>
       {/if}
 
-    {:else if section === 'approvals'}
+    {:else if section === 'permissions'}
       <div class="mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.approvals')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.approvalsBlurb')}</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('permissions.title')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('permissions.employeeDescription', { values: { name: agent?.name ?? '' } })}</div>
       </div>
-      <ApprovalControls {agentId} />
+      <PermissionsSection {agentId} name={agent?.name ?? ''} />
 
     {:else if section === 'memory'}
       <MemoryManager {agentId} />

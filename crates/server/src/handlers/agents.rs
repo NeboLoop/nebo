@@ -4428,7 +4428,7 @@ pub async fn start_workflow_chat(
          Node types (ONLY these, ONLY inside call trees): \n\
          - greeting (params: text — spoken word-for-word; exactly one required)\n\
          - intent (params: name kebab-case unique, description, and the intent's grants as \
-           comma-separated strings — tools e.g. \"agent:memory, os:calendar\", workflows \
+           comma-separated strings — tools e.g. \"recall, os:calendar\", workflows \
            (this agent's workflow names), plugins (slugs), mcp (server names)). Grants are \
            ENFORCED: a caller in that intent can touch nothing else.\n\
          - transfer (params: when; to — WHO the caller is told they're being connected \
@@ -4565,6 +4565,20 @@ pub async fn handle_available(
     Ok(Json(HandleAvailableResponse { available }))
 }
 
+/// The capabilities the company has connected: every interface its active
+/// plugins bind, with the plugins that bind it.
+pub fn connected_capabilities(state: &AppState) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut by_capability: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for slug in tools::plugin_tool::active_plugin_slugs(&state.plugin_store, &state.store) {
+        if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
+            for capability in agent::agent_worker::interfaces_of(&manifest.interface_bindings) {
+                by_capability.entry(capability).or_default().push(slug.clone());
+            }
+        }
+    }
+    by_capability
+}
+
 /// GET /api/v1/agents/{id}/operations — the per-employee Approvals view.
 ///
 /// Lists every gated operation this employee can reach, with its three-state
@@ -4609,18 +4623,7 @@ pub async fn get_agent_operations(
     // runtime performs itself and every seat can reach. An empty list is the
     // honest answer — nothing is connected yet — not a menu of things that
     // would fail on the first call.
-    let mut providers_by_capability: std::collections::BTreeMap<String, Vec<String>> =
-        std::collections::BTreeMap::new();
-    for slug in tools::plugin_tool::active_plugin_slugs(&state.plugin_store, &state.store) {
-        if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
-            for capability in agent::agent_worker::interfaces_of(&manifest.interface_bindings) {
-                providers_by_capability
-                    .entry(capability)
-                    .or_default()
-                    .push(slug.clone());
-            }
-        }
-    }
+    let mut providers_by_capability = connected_capabilities(&state);
     for op in tools::interface_catalog::gated_operations() {
         let capability = op.split('.').next().unwrap_or("");
         if tools::interface_catalog::is_builtin_capability(capability) {
@@ -4917,11 +4920,11 @@ pub async fn resolve_learning(
         skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
         ..Default::default()
     };
-    let mut input = serde_json::json!({ "action": row.action, "name": row.target });
+    let mut input = serde_json::json!({ "name": row.target });
     if let Some(content) = body.content.as_deref().or(row.content.as_deref()) {
         input["content"] = serde_json::json!(content);
     }
-    let result = state.tools.execute(&ctx, "skill", input).await;
+    let result = state.tools.execute(&ctx, learned_write_tool(&row.action), input).await;
     if result.is_error {
         // Leave the row pending — the owner can retry after the cause clears.
         return Err(to_error_response(types::NeboError::Internal(format!(
@@ -4944,6 +4947,12 @@ pub async fn resolve_learning(
         );
     info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning approved and applied");
     Ok(Json(serde_json::json!({ "status": "approved" })))
+}
+
+/// The skill tool a learned write's action goes through: a create or an
+/// update is a save, a delete is a delete.
+fn learned_write_tool(action: &str) -> &'static str {
+    if action == "delete" { "delete_skill" } else { "save_skill" }
 }
 
 /// POST /api/v1/agents/learnings/{id}/revert — undo an APPLIED learned
@@ -5050,11 +5059,11 @@ pub async fn revert_learning(
         skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
         ..Default::default()
     };
-    let mut input = serde_json::json!({ "action": inverse_action, "name": row.target });
+    let mut input = serde_json::json!({ "name": row.target });
     if let Some(ref content) = inverse_content {
         input["content"] = serde_json::json!(content);
     }
-    let result = state.tools.execute(&ctx, "skill", input).await;
+    let result = state.tools.execute(&ctx, learned_write_tool(inverse_action), input).await;
     if result.is_error {
         return Err(to_error_response(types::NeboError::Internal(format!(
             "revert failed: {}",

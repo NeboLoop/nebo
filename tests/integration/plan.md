@@ -289,30 +289,30 @@ nebo chat "use web(resource: \"search\", action: \"search\", query: \"rust progr
 | Each result has URL | Valid URL starting with `http` | |
 | Each result has snippet | Description text present | |
 
-### AT-14: agent (memory) — Full Lifecycle: Store + Recall + Search + Update + Delete
+### AT-14: remember / recall / forget — Full Lifecycle: Store + Recall + Search + Update + Delete
 
 ```
-nebo chat "use agent(resource: \"memory\", action: \"store\", key: \"at_test\", value: \"AT_PASS_V1\")"
-```
-
-```
-nebo chat "use agent(resource: \"memory\", action: \"recall\", key: \"at_test\")"
+nebo chat "use remember(key: \"at_test\", value: \"AT_PASS_V1\")"
 ```
 
 ```
-nebo chat "use agent(resource: \"memory\", action: \"store\", key: \"at_test\", value: \"AT_PASS_V2\")"
+nebo chat "use recall(query: \"at_test\")"
 ```
 
 ```
-nebo chat "use agent(resource: \"memory\", action: \"recall\", key: \"at_test\")"
+nebo chat "use remember(key: \"at_test\", value: \"AT_PASS_V2\")"
 ```
 
 ```
-nebo chat "use agent(resource: \"memory\", action: \"delete\", key: \"at_test\")"
+nebo chat "use recall(query: \"at_test\")"
 ```
 
 ```
-nebo chat "use agent(resource: \"memory\", action: \"recall\", key: \"at_test\")"
+nebo chat "use forget(key: \"at_test\")"
+```
+
+```
+nebo chat "use recall(query: \"at_test\")"
 ```
 
 | Check | Expected | Result |
@@ -324,10 +324,10 @@ nebo chat "use agent(resource: \"memory\", action: \"recall\", key: \"at_test\")
 | Delete | Memory removed | |
 | Recall after delete | Returns "not found" or empty | |
 
-### AT-15: agent (session) — Verify Current Session Exists
+### AT-15: list_sessions — Verify Current Session Exists
 
 ```
-nebo chat "use agent(resource: \"session\", action: \"list\")"
+nebo chat "use list_sessions()"
 ```
 
 | Check | Expected | Result |
@@ -336,16 +336,18 @@ nebo chat "use agent(resource: \"session\", action: \"list\")"
 | Session has ID | UUID or integer ID present | |
 | Message count | At least 1 message (from this conversation) | |
 
-### AT-16: agent (context) — Verify Summary Has Content
+### AT-16: read_session — Verify This Conversation Has Content
 
 ```
-nebo chat "use agent(resource: \"context\", action: \"summary\")"
+nebo chat "use read_session()"
 ```
+
+(`session_id` left out reads this conversation.)
 
 | Check | Expected | Result |
 |-------|----------|--------|
-| Session info | Session ID present in output | |
-| Message count | Number of messages shown | |
+| Session info | This conversation's messages returned, not "No messages" | |
+| Message count | At least the test prompt itself is shown | |
 
 ### AT-17: event — Full CRUD: Create + List + Verify + Delete + Verify Gone
 
@@ -530,28 +532,23 @@ nebo chat "use work(action: \"uninstall\", id: \"at-test-workflow\")"
 | Output meaningful | Response related to prompt | |
 | Delete succeeds | Workflow removed from list | |
 
-### AT-23: message — Toggle DND + Verify State Change
+### AT-23: check_dnd — Read DND + Verify State Change
 
 ```
-nebo chat "use message(resource: \"notify\", action: \"dnd_status\")"
+nebo chat "use check_dnd()"
 ```
 
-Record current state, then toggle:
+Record current state, then turn Do Not Disturb / Focus ON in the OS (there is
+no tool that toggles it):
 
 ```
-nebo chat "use message(resource: \"notify\", action: \"dnd_on\")"
+nebo chat "use check_dnd()"
 ```
 
-```
-nebo chat "use message(resource: \"notify\", action: \"dnd_status\")"
-```
+Turn Do Not Disturb / Focus OFF in the OS:
 
 ```
-nebo chat "use message(resource: \"notify\", action: \"dnd_off\")"
-```
-
-```
-nebo chat "use message(resource: \"notify\", action: \"dnd_status\")"
+nebo chat "use check_dnd()"
 ```
 
 | Check | Expected | Result |
@@ -1523,7 +1520,7 @@ DELETE http://localhost:27895/api/v1/roles/{event-trigger-test-id}
 
 **Agent tool — Emit event:**
 ```
-agent(resource: "task", action: "spawn", prompt: "Emit a test event: calendar.changed")
+delegate(description: "emit a test event", prompt: "Emit a test event: calendar.changed")
 ```
 
 Or if emit_tool is available:
@@ -2021,7 +2018,7 @@ whole circle.
 |-------|----------|--------|
 | Organizer opens ONE room | ≥2 members, both experts present, never reuses a room | |
 | Organizer's first room reply | Addresses ONE expert with one specific ask (delegation, not narration) | |
-| Expert executes | With its OWN tools, in its run — never spawns sub-agents for a member's job | |
+| Expert executes | With its OWN tools, in its run — never starts helpers (delegate) for a member's job | |
 | Expert returns | Result addressed to the ORGANIZER's token | |
 | Organizer integrates | Second delegation or combined result; final reply addresses no one | |
 | Labels | Every row correctly attributed (name + color), zero UUIDs | |
@@ -2030,7 +2027,7 @@ whole circle.
 
 | Check | Expected | Result |
 |-------|----------|--------|
-| Organizer run tool scope | Coordination-only allowlist (loop/message/agent) | |
+| Organizer run tool scope | Coordination-only allowlist (loop/message/agent, the task list and assignments, recall/remember; no delegate) | |
 | Denied tool call | Denial hint steers BACK to delegation — organizer delegates, does not apologize or claim the account lacks the tool | |
 | Trivial step temptation | Even a one-call step goes to the owning expert | |
 
@@ -2484,7 +2481,7 @@ After all tests, remove test artifacts:
 
 | Artifact | Cleanup Action | Done |
 |----------|----------------|------|
-| `at_test` memory key | `agent(resource: "memory", action: "delete", key: "at_test")` | |
+| `at_test` memory key | `forget(key: "at_test")` | |
 | `at-test-event` | `event(action: "delete", name: "at-test-event")` | |
 | `at-run-test` event | `event(action: "delete", name: "at-run-test")` | |
 | `at-test-skill` | `skill(action: "delete", name: "at-test-skill")` | |
@@ -2497,7 +2494,7 @@ After all tests, remove test artifacts:
 | `test-role` | `curl -X DELETE http://localhost:27895/api/v1/roles/{id}` | |
 | `test-role-agent` | `rm -rf user/roles/test-role-agent/` | |
 | `trigger-test-role` | `curl -X DELETE http://localhost:27895/api/v1/roles/{id}` | |
-| Memory `test_key` | `agent(resource: "memory", action: "delete", key: "test_key")` | |
+| Memory `test_key` | `forget(key: "test_key")` | |
 | **Marketplace skill** (SKIL-RFBM-XCYT) | Uninstall or `rm -rf nebo/skills/` installed dir | |
 | **Marketplace workflow** (WORK-SW4Z-5XKN) | `work(action: "uninstall")` or `rm -rf nebo/workflows/` installed dir | |
 | **Marketplace role** (ROLE-KG82-KM2G) | `curl -X DELETE http://localhost:27895/api/v1/roles/{id}` or `rm -rf nebo/roles/` installed dir | |

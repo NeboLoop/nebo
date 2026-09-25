@@ -1056,7 +1056,7 @@ fn calls_since_unexecuted_skill_load(messages: &[ChatMessage]) -> Option<usize> 
         if arr.iter().any(|c| name_of(c) == "plugin") {
             return deepest; // plugin execution counts as producing
         }
-        if arr.iter().any(|c| name_of(c) == "skill") {
+        if arr.iter().any(|c| name_of(c) == tools::skill_tool::USE_SKILL) {
             deepest = Some(calls_since);
         }
         calls_since += arr.len();
@@ -1259,7 +1259,7 @@ impl Reminder for ResearchModeNudge {
         }
         Some(
             "This task calls for multi-source research. Use \
-             agent(resource: \"research\", action: \"deep_research\", query: \"<the user's research question>\") \
+             deep_research(query: \"<the user's research question>\") \
              to run the verified deep-research harness rather than searching ad-hoc."
                 .to_string(),
         )
@@ -1499,12 +1499,14 @@ fn last_discovery_query(messages: &[ChatMessage]) -> String {
         };
         for c in calls.iter().rev() {
             let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            if !matches!(name, "skill" | "plugin") {
-                continue;
-            }
             let input = c.get("input").cloned().unwrap_or(serde_json::Value::Null);
             let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            if !matches!(action, "discover" | "search" | "browse") {
+            let discovery = match name {
+                "find_skills" => true,
+                "plugin" => matches!(action, "discover" | "search" | "browse"),
+                _ => false,
+            };
+            if !discovery {
                 continue;
             }
             if let Some(q) = input.get("query").and_then(|v| v.as_str())
@@ -1595,9 +1597,9 @@ impl Reminder for TaskTrackingNudge {
 fn task_tracking_text() -> String {
     "This looks like a multi-stage request. If it will take many tool calls across \
      several distinct stages, track it so the user can see progress:\n\
-     1. Create tasks: agent(resource: \"task\", action: \"create\", subject: \"...\")\n\
-     2. Update as you work: agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
-     3. Mark complete with output: agent(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
+     1. Create tasks: create_task(subject: \"...\")\n\
+     2. Update as you work: update_task(task_id: N, status: \"in_progress\")\n\
+     3. Mark complete with output: update_task(task_id: N, status: \"completed\", output: \"...\")\n\
      If you can finish it in a handful of calls, skip the task list and just do the work."
         .to_string()
 }
@@ -1628,7 +1630,7 @@ impl Reminder for TaskCompletionNudge {
         Some(
             "You have tasks but none are marked in_progress or completed. \
              Update task status as you work: \
-             agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\") \
+             update_task(task_id: N, status: \"in_progress\") \
              before starting, then status: \"completed\" with output when done."
                 .to_string(),
         )
@@ -1665,8 +1667,8 @@ fn recent_tool_calls(messages: &[ChatMessage], limit: usize) -> Vec<(String, Str
 }
 
 /// Detects when the main agent is in an exploratory research loop —
-/// repeatedly calling discovery-flavored tools (`find_tools`, `skill
-/// discover`, repeated `plugin` probes) trying to figure out how to do
+/// repeatedly calling discovery-flavored tools (`find_tools`,
+/// `find_skills`, repeated `plugin` probes) trying to figure out how to do
 /// something — and nudges it to delegate the discovery to a sub-agent instead.
 ///
 /// Why: every exploratory tool call adds a user message + tool result pair
@@ -1674,8 +1676,8 @@ fn recent_tool_calls(messages: &[ChatMessage], limit: usize) -> Vec<(String, Str
 /// downstream turn. A sub-agent burns its OWN context on the research and
 /// returns one consolidated answer, keeping the main chat history clean.
 ///
-/// The prescribed chain `skill discover` → `skill load` → `plugin help` →
-/// `plugin exec` is not exploration: `skill load` and `plugin help` never
+/// The prescribed chain `find_skills` → `use_skill` → `plugin help` →
+/// `plugin exec` is not exploration: `use_skill` and `plugin help` never
 /// count. Triggers when RESEARCH_DELEGATION_THRESHOLD or more of the last
 /// RESEARCH_DELEGATION_WINDOW calls were discovery-flavored.
 struct ResearchDelegationNudge;
@@ -1698,8 +1700,8 @@ impl Reminder for ResearchDelegationNudge {
         let mut plugin_count = 0usize;
         for (name, action) in &window {
             match (name.as_str(), action.as_str()) {
-                ("skill", "load") | ("plugin", "help") => {} // the prescribed chain
-                ("find_tools", _) | ("skill", _) => discovery_count += 1,
+                ("use_skill", _) | ("plugin", "help") => {} // the prescribed chain
+                ("find_tools", _) | ("find_skills", _) => discovery_count += 1,
                 ("plugin", _) => plugin_count += 1,
                 _ => {}
             }
@@ -1716,9 +1718,9 @@ impl Reminder for ResearchDelegationNudge {
         Some(
             "You've made several discovery / how-to tool calls in your last few tool calls. \
              STOP exploring inline — it pollutes the main context. \
-             Spawn a sub-agent to do the research and report back: \
-             agent(resource: \"task\", action: \"spawn\", prompt: \"Figure out exactly how to <specific question>. Return the exact command / syntax / path as a single answer.\"). \
-             The sub-agent uses its own context for the exploration; you get one consolidated answer to act on."
+             Hand the research to a helper and have it report back: \
+             delegate(description: \"find how to <thing>\", prompt: \"Figure out exactly how to <specific question>. Return the exact command / syntax / path as a single answer.\"). \
+             The helper uses its own context for the exploration; you get one consolidated answer to act on."
                 .to_string(),
         )
     }
@@ -1896,9 +1898,9 @@ impl Reminder for SerialReadGrind {
             "You've read files one at a time for several turns, which fills your context. \
              Two fixes, both faster: (1) batch independent reads \
              into ONE message — Nebo runs read-only tools in parallel, so request every \
-             file you need at once; (2) for a whole directory or open-ended search, spawn \
-             an explore sub-agent: agent(resource: \"task\", action: \"spawn\", \
-             agent_type: \"explore\", prompt: \"Read <dir> and report <what you need> as a \
+             file you need at once; (2) for a whole directory or open-ended search, start \
+             an explore helper: delegate(description: \"survey <dir>\", helper_type: \"explore\", \
+             prompt: \"Read <dir> and report <what you need> as a \
              consolidated summary\"). It explores in its own context and hands you one \
              answer. Don't keep grinding file-by-file."
                 .to_string(),
@@ -2332,12 +2334,12 @@ mod tests {
 
     #[test]
     fn test_research_delegation_nudge_on_discovery_loop() {
-        let msgs = calls_as_msgs(&[("find_tools", ""), ("skill", "discover"), ("find_tools", "")]);
+        let msgs = calls_as_msgs(&[("find_tools", ""), ("find_skills", ""), ("find_tools", "")]);
         assert!(
             ResearchDelegationNudge
                 .check(&rctx_tools(&msgs, &[], 3))
                 .unwrap()
-                .contains("Spawn a sub-agent"),
+                .contains("Hand the research to a helper"),
             "fires after 3 discovery calls"
         );
         // Only one discovery call → no fire.
@@ -2350,8 +2352,8 @@ mod tests {
     #[test]
     fn test_research_delegation_nudge_spares_the_prescribed_chain() {
         let chain = calls_as_msgs(&[
-            ("skill", "discover"),
-            ("skill", "load"),
+            ("find_skills", ""),
+            ("use_skill", ""),
             ("plugin", "help"),
             ("plugin", "exec"),
         ]);
@@ -2361,18 +2363,18 @@ mod tests {
         );
         // Genuine probing around that chain still fires.
         let probing = calls_as_msgs(&[
-            ("skill", "discover"),
-            ("skill", "load"),
+            ("find_skills", ""),
+            ("use_skill", ""),
             ("plugin", "help"),
             ("find_tools", ""),
-            ("skill", "discover"),
+            ("find_skills", ""),
         ]);
         assert!(ResearchDelegationNudge.check(&rctx_tools(&probing, &[], 5)).is_some());
     }
 
     #[test]
     fn test_skill_execution_nudge_preparation_loop() {
-        let skill = r#"[{"name":"skill","input":{"action":"load","name":"pptx"}}]"#;
+        let skill = r#"[{"name":"use_skill","input":{"name":"pptx"}}]"#;
         let reads = r#"[{"name":"read_file","input":{"path":"a"}},{"name":"read_file","input":{"path":"b"}}]"#;
         let mut msgs = vec![
             make_msg("user", "make me a deck"),
