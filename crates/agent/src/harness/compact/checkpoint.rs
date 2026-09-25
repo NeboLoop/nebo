@@ -358,7 +358,8 @@ async fn summarize(cx: &CheckpointContext<'_>) -> Result<(String, bool), String>
     let (mut dropped, mut cuts) = (0, 0);
     loop {
         let start = rounds.get(dropped).copied().unwrap_or(cx.conversation.len());
-        let mut messages = crate::harness::conversation::convert_messages(&cx.conversation[start..]);
+        let model = format!("{}/{}", cx.provider.id(), cx.fork_of.model);
+        let mut messages = crate::harness::conversation::convert_messages(&cx.conversation[start..], &model);
         messages.push(Message {
             role: "user".into(),
             content: CHECKPOINT_INSTRUCTION.into(),

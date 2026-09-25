@@ -37,6 +37,9 @@ pub enum StreamEventType {
     Error,
     Done,
     Thinking,
+    /// One whole thinking block, as the provider must get it back with the
+    /// assistant turn it belongs to ([`StreamEvent::thinking_block`]).
+    ThinkingBlock,
     Usage,
     RateLimit,
     ApprovalRequest,
@@ -123,6 +126,22 @@ impl StreamEvent {
     /// The owner need a `terminal_tool_error` ControlNotice carries.
     pub fn owner_need(&self) -> Option<types::OwnerNeed> {
         if self.event_type != StreamEventType::ControlNotice {
+            return None;
+        }
+        self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
+    }
+
+    /// A whole thinking block (ThinkingBlock events), carried in `payload`.
+    pub fn thinking_block(block: ThinkingBlock) -> Self {
+        let mut event = Self::thinking("");
+        event.event_type = StreamEventType::ThinkingBlock;
+        event.payload = serde_json::to_value(block).ok();
+        event
+    }
+
+    /// The block a ThinkingBlock event carries.
+    pub fn block(&self) -> Option<ThinkingBlock> {
+        if self.event_type != StreamEventType::ThinkingBlock {
             return None;
         }
         self.payload.clone().and_then(|p| serde_json::from_value(p).ok())
@@ -452,6 +471,19 @@ pub struct ImageContent {
     pub data: String,
 }
 
+/// A block of the model's thinking in an assistant turn. A provider that
+/// signs its thinking (Anthropic) refuses a tool loop with thinking on unless
+/// each block comes back unchanged with the turn it belongs to, and a
+/// signature is bound to the model that wrote it (Claude Code keeps them in
+/// the assistant message and strips them when the model changes:
+/// `src/utils/messages.ts:5066` `stripSignatureBlocks`, `src/query.ts:924-929`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ThinkingBlock {
+    Thinking { thinking: String, signature: String },
+    RedactedThinking { data: String },
+}
+
 /// A message in a conversation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Message {
@@ -464,6 +496,10 @@ pub struct Message {
     pub tool_results: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<ImageContent>>,
+    /// An assistant turn's thinking blocks, in the order they came, when the
+    /// request goes to the model that wrote them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking: Vec<ThinkingBlock>,
 }
 
 /// What an LLM request is for and which Nebo run produced it. Every

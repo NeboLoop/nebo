@@ -78,6 +78,10 @@ pub struct Harness {
     pub(crate) active_turns: ActiveTurns,
     /// The owner's phone position, for the employees it is shared with.
     pub(crate) phone_locations: Arc<crate::phone_location::PhoneLocations>,
+    /// Jev, the permission judge asked first about a call the code can't
+    /// decide (PRD-Permissions §4.7); `None` goes straight to the aux
+    /// classifier.
+    pub(crate) decide: Option<Arc<ai::DecideClient>>,
 }
 
 impl Harness {
@@ -111,12 +115,19 @@ impl Harness {
             goal_check_ins: Default::default(),
             active_turns: Default::default(),
             phone_locations: Default::default(),
+            decide: None,
         }
     }
 
     /// The owner's answers to a tool's question reach it here.
     pub fn with_ask_channels(mut self, channels: tools::AskChannels) -> Self {
         self.ask_channels = Some(channels);
+        self
+    }
+
+    /// Jev: the permission judge's first reader.
+    pub fn with_decide(mut self, decide: Arc<ai::DecideClient>) -> Self {
+        self.decide = Some(decide);
         self
     }
 

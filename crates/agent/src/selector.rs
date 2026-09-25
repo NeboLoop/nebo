@@ -274,6 +274,13 @@ impl ModelSelector {
             .unwrap_or(DEFAULT_CONTEXT_WINDOW)
     }
 
+    /// Whether `model_id` ("provider/model") thinks: its catalog or synced
+    /// capabilities list "thinking".
+    pub fn thinks(&self, model_id: &str) -> bool {
+        self.get_model_info(model_id)
+            .is_some_and(|m| m.capabilities.iter().any(|c| c == "thinking"))
+    }
+
     /// Get the cheapest available model.
     pub fn get_cheapest_model(&self) -> String {
         let mut cheapest: Option<(String, f64)> = None;

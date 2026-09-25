@@ -1805,6 +1805,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(skill_loader.clone()),
     )
     .with_ask_channels(ask_channels.clone())
+    // Jev judges first the calls the permission check can't decide.
+    .with_decide(decide_client.clone())
     // Same adapter instance as the memory tool — one search pathway, one
     // TurboVec index cache — powering the turn's recall.
     .with_hybrid_searcher(hybrid_searcher);
