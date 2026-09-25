@@ -262,10 +262,10 @@ pub trait DynTool: Send + Sync {
         None
     }
     /// The call's result can be got again (a file read or change, a
-    /// search, a command, a web search or fetch), so the per-step trim may
-    /// clear it once the conversation has gone stale
+    /// command, a web search or fetch: Claude Code's compactable set), so it
+    /// may be cleared under context pressure
     /// (`agent::harness::compact::trim`).
-    fn cleared_when_stale(&self, _input: &serde_json::Value) -> bool {
+    fn clearable(&self, _input: &serde_json::Value) -> bool {
         false
     }
     /// An image this call returns is media the owner asked for, attached to
@@ -2229,10 +2229,11 @@ mod tests {
     }
 
 
-    /// Which results a stale conversation clears, and the taint a result
-    /// brings in, are each tool's own answers: file reads and changes,
-    /// commands, web searches and fetches are cleared (Claude Code's set);
-    /// memory, skills, mail and calendar never are; web content and mail are
+    /// Which results context pressure clears, and the taint a result brings
+    /// in, are each tool's own answers: file reads and changes, commands,
+    /// web searches and fetches are cleared (Claude Code's compactable set,
+    /// 2.1.280 m0460); memory, skills, plans, restore points, background
+    /// output, mail and calendar never are; web content and mail are
     /// untrusted.
     #[tokio::test]
     async fn trimming_and_taint_are_each_tools_answer() {
@@ -2241,7 +2242,7 @@ mod tests {
         let (registry, _dir) = full_registry().await;
         let cleared = |name: &'static str, input: serde_json::Value| {
             let registry = registry.clone();
-            async move { registry.get(name).await.unwrap().cleared_when_stale(&input) }
+            async move { registry.get(name).await.unwrap().clearable(&input) }
         };
         assert!(cleared("read_file", json!({"path": "/tmp/x"})).await);
         assert!(cleared("write_file", json!({"path": "/tmp/x", "content": "x"})).await);
@@ -2253,7 +2254,10 @@ mod tests {
         assert!(!cleared("os", json!({"resource": "calendar", "action": "today"})).await);
         assert!(!cleared("recall", json!({"query": "x"})).await);
         assert!(!cleared("use_skill", json!({"name": "x"})).await);
-        assert!(cleared("find_skills", json!({"query": "x"})).await);
+        assert!(!cleared("find_skills", json!({"query": "x"})).await);
+        assert!(!cleared("write_plan", json!({"content": "x"})).await);
+        assert!(!cleared("list_checkpoints", json!({})).await);
+        assert!(!cleared("read_output", json!({"task_id": "cmd-1"})).await);
         let taint = |name: &'static str, input: serde_json::Value| {
             let registry = registry.clone();
             async move { registry.get(name).await.unwrap().taint(&input) }
