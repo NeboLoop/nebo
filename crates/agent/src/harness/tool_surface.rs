@@ -212,7 +212,7 @@ pub struct SurfaceInputs<'a> {
     pub company_memory_sealed: bool,
     /// A workflow activity's scoped set: its declaration, deferred tools
     /// included, with the `exit` primitive.
-    pub workflow: Option<&'a crate::runner::WorkflowMode>,
+    pub workflow: Option<&'a crate::harness::WorkflowMode>,
     /// A helper's kind and depth take the helper tools off its surface.
     pub mode: &'a crate::harness::TurnMode,
 }
@@ -265,8 +265,8 @@ pub async fn surface(
     let mut listed = listed(&deferred, &declared);
     listed.retain(|n| crate::harness::delegation::on_surface(seat.mode, n));
     if let Some(allowlist) = seat.allowlist {
-        declared.retain(|d| crate::runner::allowlist_admits(allowlist, &d.name));
-        listed.retain(|n| crate::runner::allowlist_admits(allowlist, n));
+        declared.retain(|d| allowlist_admits(allowlist, &d.name));
+        listed.retain(|n| allowlist_admits(allowlist, n));
     }
     let announced: BTreeSet<String> =
         crate::harness::events::announced("tools_available", conversation).into_keys().collect();
@@ -302,6 +302,17 @@ pub fn withhold_memory_tools(
         })
         .collect();
     (kept, withheld)
+}
+
+/// Whether a restricted run's allowlist names this tool: by name, as the
+/// tool of a `tool:resource` entry, or by a `prefix*` family.
+fn allowlist_admits(allowlist: &HashSet<String>, name: &str) -> bool {
+    allowlist.contains(name)
+        || allowlist.iter().any(|e| {
+            e.split_once(':').is_some_and(|(tool, _)| tool == name)
+                || e.strip_suffix('*')
+                    .is_some_and(|prefix| !prefix.is_empty() && name.starts_with(prefix))
+        })
 }
 
 #[cfg(test)]

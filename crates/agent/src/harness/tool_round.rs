@@ -18,9 +18,9 @@ use tools::{Origin, Registry, ToolContext, ToolResult};
 use crate::concurrency::ConcurrencyController;
 use crate::harness::conversation::convert_messages;
 use crate::harness::session_gate::RunProgress;
-use crate::runner::{
-    WorkflowMode, WorkflowPark, desktop_evidence, simple_hash, truncate_str,
-};
+use crate::harness::simple_hash;
+use crate::harness::workflow_turn::{WorkflowMode, WorkflowPark};
+use tools::truncate_str;
 use crate::session::SessionManager;
 
 /// How often the tool clock checks whether the call is parked on the owner.
@@ -226,7 +226,6 @@ pub(crate) struct RoundGuards<'a> {
     pub error_streak: &'a mut crate::guardrails::ErrorStreak,
     pub files_read_this_session: &'a mut HashSet<String>,
     pub recent_result_content_hashes: &'a mut Vec<u64>,
-    pub readonly_result_hash_by_call: &'a mut HashMap<(u64, u64), u64>,
     pub read_ledger: &'a mut crate::read_ledger::ReadLedger,
     pub tool_doc_cache: &'a mut Vec<(String, String)>,
     pub plan_touch: &'a mut Option<(usize, String)>,
@@ -247,12 +246,6 @@ pub(crate) enum RoundOutcome {
 
 /// What a round that ran reports back to the loop.
 pub(crate) struct RoundResults {
-    pub all_errors_this_iteration: bool,
-    pub had_results: bool,
-    /// Per (name hash, args hash): whether that call made no progress.
-    pub unproductive_this_iteration: HashMap<(u64, u64), bool>,
-    /// The highest-signal rate-limit status seen this round (429/403).
-    pub iteration_rate_limited: Option<u16>,
     /// Short snapshots of the calls and results for the tool-summary label.
     pub summary_tool_calls: Vec<ai::ToolCall>,
     pub summary_tool_results: Vec<ToolResult>,
@@ -305,7 +298,6 @@ pub(crate) async fn run_tool_round(
         error_streak,
         files_read_this_session,
         recent_result_content_hashes,
-        readonly_result_hash_by_call,
         read_ledger,
         tool_doc_cache,
         plan_touch,
@@ -1005,29 +997,18 @@ pub(crate) async fn run_tool_round(
     // call itself once the owner answers.
     let parked = parked_call.and_then(|idx| results[idx].take().map(|(tc, _)| (idx, tc)));
 
-    // Save all tool results to session in deterministic order
-    // and track whether ALL results in this iteration were errors.
-    let mut all_errors_this_iteration = true;
-    // Per-call productivity, indexed alongside the hash push below, so the
-    // identical-args guard can count only the repeats that made no progress.
-    let mut unproductive_this_iteration: std::collections::HashMap<(u64, u64), bool> =
-        std::collections::HashMap::new();
-    let mut had_results = false;
+    // Save all tool results to session in deterministic order.
     // Terminal tool error (auth/permission/connection) → end the turn after
     // this batch and surface to the user, instead of feeding it back for the
     // model to retry/improvise (the death-spiral fix; FRAMES.md Phase 1).
     let mut terminal_error: Option<(String, Option<types::OwnerNeed>)> = None;
     let mut same_error_stop: Option<(String, String)> = None;
-    // Highest-signal rate-limit status seen this iteration (429/403) — feeds the
-    // RateLimit reminder so the model backs off instead of hammer-retrying a host.
-    let mut iteration_rate_limited: Option<u16> = None;
     // Lightweight snapshots for the background tool summary generator.
     let mut summary_tool_calls: Vec<ai::ToolCall> = Vec::new();
     let mut summary_tool_results: Vec<ToolResult> = Vec::new();
     for (idx, entry) in results.into_iter().enumerate() {
         let Some((tc, mut result)) = entry else { continue };
         let target = targets[idx].as_ref();
-        had_results = true;
         if let Some(t) = target
             && matches!(t.key.as_str(), "write_plan" | "check_plan")
             && let Some(p) = tc.input.get("path").and_then(|v| v.as_str()) {
@@ -1054,20 +1035,16 @@ pub(crate) async fn run_tool_round(
         if result.terminal && terminal_error.is_none() {
             terminal_error = Some((result.content.clone(), result.need.clone()));
         }
-        if matches!(result.http_status, Some(429) | Some(403)) {
-            iteration_rate_limited = result.http_status;
-        }
         // Capture pre-truncation snapshots for the summarizer (only name + short content)
         summary_tool_calls.push(tc.clone());
         summary_tool_results.push(ToolResult { payload: None, need: None, parked_ask: None,
-            content: crate::runner::truncate_str(&result.content, 300).to_string(),
+            content: truncate_str(&result.content, 300).to_string(),
             is_error: result.is_error,
             image_url: None,
             http_status: None,
             terminal: result.terminal,
         });
         if !result.is_error {
-            all_errors_this_iteration = false;
             // A successful read clears the failure count for that target.
             if let Some(p) = target.and_then(read_path) {
                 read_failures.remove(&p);
@@ -1146,22 +1123,6 @@ pub(crate) async fn run_tool_round(
             flagged_redundant,
         );
 
-        // Remember whether THIS call made progress, keyed the same way the
-        // identical-args guard looks calls up. A call that succeeded with a
-        // novel result is progress and must never count toward a block.
-        //
-        // For a READ-ONLY call, "novel" is checked against its own previous
-        // result under the same arguments: a browse that answers the same
-        // "no resources found" for the twentieth time is a loop even though
-        // every response was a success. (The general content-dedup above
-        // ignores results under 200 chars, which is exactly the size of
-        // such answers.) A mutating call is judged only by errors —
-        // re-running a build after editing its input legitimately repeats
-        // the same args AND the same "Created: <path>" result.
-        let call_key = (
-            simple_hash(tc.name.as_bytes()),
-            simple_hash(tc.input.to_string().as_bytes()),
-        );
         // Same-error streak: the identical-args block never sees a model
         // that varies its arguments against the same wall (2026-09-02:
         // "restore needs `checkpoint`" 49 times). Three identical error
@@ -1185,18 +1146,6 @@ pub(crate) async fn run_tool_round(
                 None => {}
             }
         }
-        let mut no_progress = result.is_error || flagged_redundant;
-        // Read-only per the registry's own classifier — the same verdict
-        // the concurrency scheduler trusts, so there is exactly one
-        // definition of "this call has no side effects".
-        if !no_progress && tools.concurrency_safe(&tc.name, &tc.input).await {
-            let own_hash = simple_hash(result.content.as_bytes());
-            if readonly_result_hash_by_call.get(&call_key) == Some(&own_hash) {
-                no_progress = true;
-            }
-            readonly_result_hash_by_call.insert(call_key, own_hash);
-        }
-        unproductive_this_iteration.insert(call_key, no_progress);
 
         // Arg-identity dedup (complements the content check above, which only
         // fires on byte-identical output): the model repeated a call it already
@@ -1339,10 +1288,6 @@ pub(crate) async fn run_tool_round(
     }
 
     RoundOutcome::Ran(RoundResults {
-        all_errors_this_iteration,
-        had_results,
-        unproductive_this_iteration,
-        iteration_rate_limited,
         summary_tool_calls,
         summary_tool_results,
     })
@@ -1487,7 +1432,7 @@ fn is_file_change(target: &types::permissions::Target) -> bool {
 /// A shell command that is a project check (`is_check_command`).
 fn is_check_run(target: &types::permissions::Target) -> bool {
     target.key == "run_command"
-        && matches!(&target.field, Some(types::permissions::RuleField::CommandPrefix(c)) if crate::runner::is_check_command(c))
+        && matches!(&target.field, Some(types::permissions::RuleField::CommandPrefix(c)) if is_check_command(c))
 }
 
 /// A desktop action whose result is the screen after it.
@@ -1699,6 +1644,31 @@ fn partition_tool_calls(calls: &[(usize, bool)]) -> Vec<Vec<usize>> {
         open_safe = safe;
     }
     batches
+}
+
+
+/// A shell command that IS a project check. Running one resets the edit
+/// count the done gate watches, exactly as a post-tool hook verdict does.
+/// Word-bounded so `rustc` is not `tsc`.
+static CHECK_VERB_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"\b(?:cargo (?:test|check|clippy)|pytest|go (?:test|vet)|pnpm (?:check|test|build)|npm (?:test|run)|npx tsc|tsc|vitest|jest|ruff|make (?:test|check))\b",
+    )
+    .expect("CHECK_VERB_RE is a literal")
+});
+
+pub(crate) fn is_check_command(command: &str) -> bool {
+    CHECK_VERB_RE.is_match(command)
+}
+
+/// What the last desktop act reported, cut to what a reply must agree with:
+/// its first line (what was done), the screen header, and the first lines of
+/// the element list.
+pub(crate) fn desktop_evidence(result: &str) -> String {
+    let mut lines = result.lines().filter(|l| !l.trim().is_empty());
+    let mut out: Vec<&str> = lines.by_ref().take(2).collect();
+    out.extend(lines.take_while(|l| !l.starts_with("Coordinates are")).take(12));
+    out.join("\n")
 }
 
 #[cfg(test)]

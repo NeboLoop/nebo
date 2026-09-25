@@ -24,8 +24,15 @@ running, so the same id can notify again after send_message.";
 
 /// The metadata of a notification row: the model reads it, the owner's
 /// transcript never shows it. The loader keeps these rows
-/// ([`is_notification_row`]); they are not attachments.
-pub const ROW_METADATA: &str = r#"{"notification":true,"isMeta":true}"#;
+/// ([`is_notification_row`]); they are not attachments. `taint` is the
+/// untrusted content the update carries: the run that reads it has read it.
+pub fn row_metadata(taint: &[types::provenance::ProvenanceClass]) -> String {
+    let mut meta = serde_json::json!({ "notification": true, "isMeta": true });
+    if !taint.is_empty() {
+        meta["provenance"] = serde_json::json!(taint);
+    }
+    meta.to_string()
+}
 
 /// The one format: status line, then the result.
 pub fn render_result(c: &Completion) -> String {
@@ -61,14 +68,37 @@ pub fn render_notification(c: &Completion) -> String {
     )
 }
 
+/// Any other update in the same format: a coworker's reply, a case event.
+/// `label` says what it is.
+pub fn render_update(label: &str, body: &str) -> String {
+    format!("<system-reminder>\n{HEADER}\n{GUARD}\n\n{label}:\n{body}\n</system-reminder>")
+}
+
 /// Write `text` into session `session_key` as a notification row: the
 /// session's next step loads it with the rest of its conversation.
-pub fn append_row(sessions: &SessionManager, session_key: &str, text: &str) -> Result<(), String> {
+pub fn append_row(
+    sessions: &SessionManager,
+    session_key: &str,
+    text: &str,
+    taint: &[types::provenance::ProvenanceClass],
+) -> Result<(), String> {
     let id = sessions.resolve_session_id_by_key(session_key).map_err(|e| e.to_string())?;
     sessions
-        .append_message(&id, "user", text, None, None, Some(ROW_METADATA))
+        .append_message(&id, "user", text, None, None, Some(&row_metadata(taint)))
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// The untrusted content a notification row carries.
+pub fn row_taint(msg: &db::models::ChatMessage) -> Vec<types::provenance::ProvenanceClass> {
+    if !is_notification_row(msg) {
+        return Vec::new();
+    }
+    msg.metadata
+        .as_deref()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| serde_json::from_value(v.get("provenance")?.clone()).ok())
+        .unwrap_or_default()
 }
 
 /// Whether a stored row is a notification.

@@ -219,8 +219,8 @@ pub trait GoalObserver: Send + Sync {
     /// Start a turn on the session with this hidden prompt, or queue it into
     /// the turn that is running.
     fn kickoff(&self, goal: &AgreedGoal, prompt: String);
-    /// The helpers and background work the session has running.
-    fn background(&self) -> Vec<String>;
+    /// The helpers and background work the session `session_id` has running.
+    fn background(&self, session_id: &str) -> Vec<String>;
 }
 
 /// One session's goal over the `session_goals` table. Storage only: the
@@ -559,7 +559,7 @@ impl CheckIns {
             let Ok(Some(goal)) = GoalStore::new(&sessions, &session_id).active() else {
                 return;
             };
-            let prompt = check_in_prompt(&goal.condition, delay, &observer.background(), last);
+            let prompt = check_in_prompt(&goal.condition, delay, &observer.background(&session_id), last);
             observer.kickoff(&goal, prompt);
         });
         state.timer = Some(handle.abort_handle());
@@ -648,7 +648,7 @@ impl EndCheck for GoalCheck {
         // Helpers or background work still running: nothing is judged on a
         // transcript still waiting on them. Their completion wakes the
         // session; until then the goal checks in at backed-off intervals.
-        if !self.observer.background().is_empty() {
+        if !self.observer.background(&self.session_id).is_empty() {
             info!(session_id = %self.session_id, "goal: check deferred, background work is running");
             self.check_ins
                 .defer(&self.sessions, &self.session_id, self.observer.clone());
@@ -894,7 +894,7 @@ mod tests {
         fn kickoff(&self, _goal: &AgreedGoal, prompt: String) {
             self.kickoffs.lock().unwrap().push(prompt);
         }
-        fn background(&self) -> Vec<String> {
+        fn background(&self, _session_id: &str) -> Vec<String> {
             self.running.lock().unwrap().clone()
         }
     }

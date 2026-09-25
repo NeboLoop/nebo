@@ -1,5 +1,5 @@
-//! Spend, cost, run classification and context accounting, moved here from
-//! `runner.rs` (WP1.5); the turn's token ledger is declared here too.
+//! Spend, cost, run classification and context accounting; the turn's
+//! token ledger is declared here too.
 
 use std::sync::Arc;
 
@@ -8,8 +8,31 @@ use db::Store;
 use tokio::sync::mpsc;
 
 use crate::read_ledger::LedgerStats;
-use crate::runner::RunState;
 use crate::selector::ModelSelector;
+
+/// A turn's token and cost counters across its calls, and the local
+/// estimate's calibration against what the provider reports.
+#[derive(Default)]
+pub(crate) struct RunState {
+    /// System prompt + tool-schema tokens (display estimate).
+    pub(crate) system_overhead_tokens: usize,
+    /// Local estimate (chars/4) of the message tokens sent in the last request.
+    /// Compared against API-reported usage to calibrate the checkpoint trigger.
+    pub(crate) last_request_estimate: usize,
+    /// Observed undercount of the local estimate vs API-reported usage.
+    pub(crate) estimate_correction: usize,
+    pub(crate) total_input_tokens: i32,
+    pub(crate) total_output_tokens: i32,
+    pub(crate) total_cache_read_tokens: i32,
+    pub(crate) total_cache_creation_tokens: i32,
+    /// Provider-reported cost this run, microdollars (Janus prices the model it
+    /// routed to). 0 when no provider said; then the price table estimates.
+    pub(crate) cost_microdollars: i64,
+    /// Janus quota warning, set when session or weekly usage passes 80%.
+    pub(crate) quota_warning: Option<String>,
+    /// Whether the quota warning was already sent this run (once).
+    pub(crate) quota_warning_sent: bool,
+}
 
 /// The tokens a turn has used across its calls.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -71,30 +94,6 @@ pub(crate) fn record_run_usage(
         // Loudly: this row is money. But the work is already done, and
         // failing a finished run over its receipt would be worse.
         tracing::error!(session_id, error = %e, "failed to record run usage");
-    }
-}
-
-/// What the owner's limit says about a run at this point in its loop.
-#[derive(Debug, PartialEq)]
-pub(crate) enum SpendCapVerdict {
-    Under,
-    /// Reached, and no wrap-up turn yet: give the model one to report.
-    WrapUp,
-    /// Reached after the wrap-up turn: stop.
-    Stop,
-}
-
-pub(crate) fn spend_cap_verdict(
-    spent_microcents: i64,
-    cap_microcents: i64,
-    wrap_up_issued: bool,
-) -> SpendCapVerdict {
-    if cap_microcents <= 0 || spent_microcents < cap_microcents {
-        SpendCapVerdict::Under
-    } else if wrap_up_issued {
-        SpendCapVerdict::Stop
-    } else {
-        SpendCapVerdict::WrapUp
     }
 }
 
@@ -220,20 +219,6 @@ mod tests {
                 cache_write: 10
             }
         );
-    }
-
-    #[test]
-    fn spend_cap_escalates_once_then_stops() {
-        // Off, or under: nothing.
-        assert_eq!(
-            spend_cap_verdict(5_000_000, 0, false),
-            SpendCapVerdict::Under
-        );
-        assert_eq!(spend_cap_verdict(99, 100, false), SpendCapVerdict::Under);
-        // Reached: one wrap-up turn first, never a silent kill.
-        assert_eq!(spend_cap_verdict(100, 100, false), SpendCapVerdict::WrapUp);
-        // Still reached after the wrap-up: stop.
-        assert_eq!(spend_cap_verdict(100, 100, true), SpendCapVerdict::Stop);
     }
 
     // classify_run feeds a money table: a wrong run_id joins someone's cost

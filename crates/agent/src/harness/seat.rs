@@ -1,7 +1,6 @@
 //! The seat a turn runs in: its permission grant, taint, memory scope,
-//! isolation and outside origins, resolved once per turn. WP1.3 moves the
-//! resolution here from `runner.rs`; the grant is resolved by
-//! `permissions::resolve_grant`.
+//! isolation and outside origins, resolved once per turn; the grant is
+//! resolved by `permissions::resolve_grant`.
 
 use std::collections::HashSet;
 
@@ -10,7 +9,6 @@ use tracing::{debug, info, warn};
 use db::Store;
 
 use crate::memory::MemoryScope;
-use crate::runner::RunRequest;
 
 /// What a seat is resolved from: who is running, for whom, and where the
 /// words came from.
@@ -66,7 +64,7 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // narrating comm-style, progress + action-confirm reminders, smaller streamed chunks — even
     // though the run itself is Autonomous. The person on the other end is waiting on a reply and
     // only sees messages, so they should get the same live experience as the local app.
-    let execution_mode = if crate::steering::channel_is_external(channel) {
+    let execution_mode = if channel_is_external(channel) {
         tools::ExecutionMode::Interactive
     } else {
         origin.into()
@@ -390,6 +388,12 @@ pub(crate) fn restricted_run_notice(
     Some(s)
 }
 
+/// An outside messaging channel (NeboLoop, Slack, …), not one of the app's
+/// own surfaces (web, cli, dm, voice). There the person only sees messages.
+fn channel_is_external(channel: &str) -> bool {
+    !matches!(channel, "" | "web" | "cli" | "dm" | "voice")
+}
+
 /// The last word on an outside conversation. Whatever the model wrote, a
 /// stranger never receives tool syntax, a function call as text, or a
 /// path on the machine, or anything shaped like a key or a credential: lines
@@ -461,8 +465,8 @@ pub(crate) fn restrict_outside_origin(
 }
 
 /// The grant a run holds: its employee's rules and mode (the run's own mode
-/// if it names one), the ceiling and fence it can only narrow, and the
-/// project folder it works in. A stranger's run never holds Full Access:
+/// if it names one), the ceiling it can only narrow (an isolated helper's
+/// fence rides on it), and the project folder it works in. A stranger's run never holds Full Access:
 /// that is an owner-surface concept.
 pub(crate) fn run_grant(store: &Store, req: GrantRequest<'_>) -> types::permissions::Grant {
     // A helper holds its parent's grant (mode, rules, money limits), under
@@ -481,7 +485,7 @@ pub(crate) fn run_grant(store: &Store, req: GrantRequest<'_>) -> types::permissi
         grant.mode = types::permissions::Mode::Automatic;
     }
     grant.ceiling = req.ceiling.cloned();
-    grant.fence = req.fence.cloned();
+    grant.fence = None;
     grant.run_folders = req.cwd.iter().map(std::path::PathBuf::from).collect();
     grant
 }
@@ -493,22 +497,7 @@ pub(crate) struct GrantRequest<'a> {
     /// A run override of the employee's mode.
     pub mode: Option<types::permissions::Mode>,
     pub ceiling: Option<&'a types::permissions::Ceiling>,
-    pub fence: Option<&'a Vec<std::path::PathBuf>>,
     pub cwd: Option<&'a str>,
-}
-
-impl RunRequest {
-    /// The grant request of a `Runner` run.
-    pub(crate) fn grant_request(&self) -> GrantRequest<'_> {
-        GrantRequest {
-            agent_id: &self.agent_id,
-            origin: self.origin,
-            mode: self.mode,
-            ceiling: self.ceiling.as_ref(),
-            fence: self.fence.as_ref(),
-            cwd: self.cwd.as_deref(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -527,24 +516,27 @@ mod tests {
         let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
         store.set_permission_mode(&Scope::Company, Mode::FullAccess).unwrap();
 
-        let mut req = RunRequest { origin: Origin::Visitor, ..Default::default() };
-        restrict_outside_origin(req.origin, &mut req.tool_allowlist, &mut req.tool_denial_hint);
-        assert_eq!(run_grant(&store, req.grant_request()).mode, Mode::Automatic, "Full Access is an owner-surface concept; a visitor never has it");
-        assert_eq!(req.tool_allowlist.as_ref().map(|s| s.len()), Some(0), "no channel policy = zero tools");
-        assert!(req.tool_denial_hint.as_deref().unwrap_or("").contains("conversation"));
+        let grant = |origin: Origin| {
+            run_grant(&store, GrantRequest { agent_id: "", origin, mode: None, ceiling: None, cwd: None }).mode
+        };
+
+        let (mut allowlist, mut hint) = (None, None);
+        restrict_outside_origin(Origin::Visitor, &mut allowlist, &mut hint);
+        assert_eq!(grant(Origin::Visitor), Mode::Automatic, "Full Access is an owner-surface concept; a visitor never has it");
+        assert_eq!(allowlist.as_ref().map(|s| s.len()), Some(0), "no channel policy = zero tools");
+        assert!(hint.as_deref().unwrap_or("").contains("conversation"));
 
         // A channel that enabled something keeps exactly that.
-        let mut caller = RunRequest { origin: Origin::Caller, ..Default::default() };
-        caller.tool_allowlist = Some(["agent:memory".to_string()].into_iter().collect());
-        restrict_outside_origin(caller.origin, &mut caller.tool_allowlist, &mut caller.tool_denial_hint);
-        assert_eq!(run_grant(&store, caller.grant_request()).mode, Mode::Automatic);
-        assert_eq!(caller.tool_allowlist.as_ref().map(|s| s.len()), Some(1));
+        let (mut allowlist, mut hint) = (Some(["agent:memory".to_string()].into_iter().collect()), None);
+        restrict_outside_origin(Origin::Caller, &mut allowlist, &mut hint);
+        assert_eq!(grant(Origin::Caller), Mode::Automatic);
+        assert_eq!(allowlist.as_ref().map(|s| s.len()), Some(1));
 
         // The owner's own surfaces are untouched.
-        let mut owner = RunRequest { origin: Origin::User, ..Default::default() };
-        restrict_outside_origin(owner.origin, &mut owner.tool_allowlist, &mut owner.tool_denial_hint);
-        assert_eq!(run_grant(&store, owner.grant_request()).mode, Mode::FullAccess);
-        assert!(owner.tool_allowlist.is_none());
+        let (mut allowlist, mut hint) = (None, None);
+        restrict_outside_origin(Origin::User, &mut allowlist, &mut hint);
+        assert_eq!(grant(Origin::User), Mode::FullAccess);
+        assert!(allowlist.is_none());
     }
 
     /// The scrub is the guarantee: tool syntax and machine paths never reach

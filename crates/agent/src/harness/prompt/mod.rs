@@ -76,6 +76,17 @@ impl SystemPrompt {
         }
     }
 
+    /// A workflow activity's prompt: the engine builds it (the activity's
+    /// context, inputs, skills and the employee's identity) and it is sent as
+    /// it is.
+    pub fn activity(system: &str) -> Self {
+        SystemPrompt {
+            fixed: system.to_string(),
+            boundary: crate::prompt::CACHE_BOUNDARY,
+            employee: String::new(),
+        }
+    }
+
     /// The prompt as sent.
     pub fn text(&self) -> String {
         format!("{}{}{}", self.fixed, self.boundary, self.employee)

@@ -235,7 +235,6 @@ pub struct RunProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::steering;
 
     fn progress() -> RunProgress {
         RunProgress {
@@ -271,11 +270,10 @@ mod tests {
         assert!(admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).is_ok(), "released when the guard drops");
     }
 
-    /// The engine knows a case turn by its own session; the runner marks
+    /// The engine knows a case turn by its own session; the harness marks
     /// the activity session under it. The live session under a key is the
     /// key itself or an activity beneath it — never a key that merely
-    /// shares a prefix — and the wakes queued under that activity drain by
-    /// the turn's key.
+    /// shares a prefix.
     #[test]
     fn the_live_session_under_a_turn_key_is_its_activity_session() {
         let turns: ActiveTurns = Default::default();
@@ -285,10 +283,6 @@ mod tests {
         assert_eq!(live_session_under(&turns, activity).as_deref(), Some(activity), "the key itself");
         assert_eq!(live_session_under(&turns, "agent:a:workflow:t"), None, "a shared prefix is not a session under it");
         assert!(session_is_busy(&turns, "agent:a:workflow:t1"), "busy by the turn's key");
-        steering::push_wake(activity, steering::WakeEntry { wake_id: Some(7), content: "11am".into(), taint: Default::default() });
-        let drained = steering::drain_wakes("agent:a:workflow:t1");
-        assert_eq!(drained.iter().map(|w| w.wake_id).collect::<Vec<_>>(), [Some(7)]);
-        assert!(steering::drain_wakes(activity).is_empty(), "drained once");
     }
 
     /// A turn whose loop has ended is closing: a message arriving then waits

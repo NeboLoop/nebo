@@ -1,5 +1,5 @@
-//! After the turn: memory extraction, personality synthesis, the chat title
-//! and the background tool summary.
+//! After the turn: memory extraction, personality synthesis, the chat title,
+//! the self-improvement review and the background tool summary.
 //!
 //! Memory extraction works the way Claude Code's extraction service works:
 //! after each turn, one background call over the messages since the
@@ -26,8 +26,8 @@ use crate::harness::model_call::{prefer_non_gateway, resolve_aux};
 use crate::memory;
 use crate::session::SessionManager;
 
-/// Sink for a freshly auto-generated chat title. The runner writes the title to
-/// the store itself; the server installs a sink (`set_title_sink`) that
+/// Sink for a freshly auto-generated chat title. The harness writes the title
+/// to the store itself; the server installs a sink (`Harness::bind`) that
 /// broadcasts the change to connected clients and propagates it to the loop —
 /// concerns the agent crate can't reach. ONE sink, set once at startup, used by
 /// every run path (replaces the per-path title generators + the skip_title_gen
@@ -39,9 +39,9 @@ pub trait ChatTitleSink: Send + Sync {
 /// The ONE chat-title generator body (CODE_AUDITOR Rule 8). Names the chat on
 /// its first user turn and refines once at the third — language-independent
 /// (message count, not a default-title string) — and never clobbers a title
-/// the user set. Entered from the run loop after each turn and from
-/// Runner::spawn_title_generation for chats whose turns are persisted outside
-/// a run (voice).
+/// the user set. Entered after each chat turn and from
+/// `Harness::spawn_title_generation` for chats whose turns are stored outside
+/// a turn (voice).
 pub(crate) fn spawn_chat_title_generation(
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     store: Arc<Store>,
@@ -397,6 +397,98 @@ pub(crate) async fn spawn_personality_synthesis(
     crate::memory_flush::track_extraction(handle).await;
 }
 
+/// The self-improvement review after a chat turn. Every
+/// `REVIEW_TURN_INTERVAL` turns without a skill the employee saved on its own,
+/// an employee that learns (`learning_mode` auto or staged) gets a forked
+/// turn over the conversation asking what should be learned. The fork runs
+/// in its own session, never touches the owner's thread, and can only save
+/// skills. One review runs per session at a time.
+pub(crate) fn start_review(h: &super::Harness, req: &super::TurnRequest, session_id: &str) {
+    let agent_id = req.seat.agent_id.as_str();
+    if agent_id.is_empty() {
+        return;
+    }
+    let learning = h
+        .store
+        .get_entity_config("agent", agent_id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.learning_mode)
+        .map(|m| m.to_ascii_lowercase())
+        .unwrap_or_default();
+    let staged = learning == "staged";
+    if !(staged || learning == "auto")
+        || !crate::review_fork::should_review(session_id)
+        || !crate::review_fork::try_begin(session_id)
+    {
+        return;
+    }
+    let h = h.clone();
+    let fork = super::TurnRequest {
+        session_key: format!("fork:{session_id}:review-{}", uuid::Uuid::new_v4()),
+        input: super::TurnInput::Platform {
+            text: crate::review_fork::REVIEW_PROMPT.to_string(),
+        },
+        seat: super::SeatRequest {
+            origin: tools::Origin::System,
+            ..req.seat.clone()
+        },
+        mode: super::TurnMode::Fork(super::ForkKind::Review { staged }),
+        delivery: super::Delivery {
+            channel: req.delivery.channel.clone(),
+            channel_ctx: req.delivery.channel_ctx.clone(),
+            mention_briefing: None,
+        },
+        cancel: tokio_util::sync::CancellationToken::new(),
+        progress: None,
+    };
+    let session_id = session_id.to_string();
+    tokio::spawn(async move {
+        info!(session_id = %session_id, "self-improvement review starting");
+        match review(&h, &session_id, fork).await {
+            Ok(summary) => {
+                let line: String = summary.trim().chars().take(300).collect();
+                info!(session_id = %session_id, summary = %line, "self-improvement review finished");
+            }
+            Err(e) => tracing::warn!(session_id = %session_id, error = %e, "self-improvement review failed"),
+        }
+        crate::review_fork::finish(&session_id);
+    });
+}
+
+/// Replay the conversation into the fork's session (so its request shares
+/// the parent's cached prefix) and run the review turn to its end.
+async fn review(h: &super::Harness, session_id: &str, fork: super::TurnRequest) -> Result<String, String> {
+    let fork_session = h
+        .sessions
+        .get_or_create(&fork.session_key, &fork.seat.user_id)
+        .map_err(|e| format!("the review session could not be created: {e}"))?;
+    let messages = h
+        .sessions
+        .get_messages_since_checkpoint(session_id)
+        .map_err(|e| format!("the conversation could not be read: {e}"))?;
+    for m in &messages {
+        h.sessions
+            .append_message(
+                &fork_session.id,
+                &m.role,
+                &m.content,
+                m.tool_calls.as_deref(),
+                m.tool_results.as_deref(),
+                m.metadata.as_deref(),
+            )
+            .map_err(|e| format!("the conversation could not be replayed: {e}"))?;
+    }
+    let mut handle = h.start_turn(fork).await.map_err(|e| e.to_string())?;
+    let mut text = String::new();
+    while let Some(ev) = handle.events.recv().await {
+        if ev.event_type == ai::StreamEventType::Text {
+            text.push_str(&ev.text);
+        }
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,14 +668,11 @@ mod tests {
         assert!(!prompts[0].contains("Remember that invoices"), "the written range is behind the cursor");
     }
 
-    /// Extraction reads the messages and the agreed goal. The session's
-    /// objective line never reaches it, and neither do attachment rows.
+    /// Extraction reads the messages and the agreed goal; attachment rows
+    /// never reach it.
     #[tokio::test]
-    async fn extraction_input_has_no_objective() {
+    async fn extraction_input_is_the_conversation_and_the_goal() {
         let f = Fixture::new().await;
-        f.sessions
-            .set_active_task(&f.session_id, "OBJECTIVE-LINE reconcile the ledger")
-            .unwrap();
         f.say("user", "Draft the renewal letter for the client.", None);
         let attachment = crate::harness::reminders::Attachment {
             kind: "relevant_memories",
@@ -607,7 +696,6 @@ mod tests {
         assert_eq!(prompts.len(), 1);
         assert!(prompts[0].contains("The agreed goal of this work: Send every renewal letter before Friday"));
         assert!(prompts[0].contains("Draft the renewal letter"));
-        assert!(!prompts[0].contains("OBJECTIVE-LINE"), "no objective in the extraction input");
         assert!(!prompts[0].contains("RECALLED-ROW"), "attachment rows are not the conversation");
 
         // No goal, no goal line.

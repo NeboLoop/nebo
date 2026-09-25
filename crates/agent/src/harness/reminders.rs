@@ -33,7 +33,14 @@ use types::NeboError;
 use super::events::{self, TurnEvent};
 use crate::session::SessionManager;
 
-pub use crate::steering::wrap_system_reminder as wrap;
+/// Wrap reminder text as a `<system-reminder>`: the system's words, not
+/// the owner's, and not to be mentioned to them.
+pub fn wrap(text: &str) -> String {
+    format!(
+        "<system-reminder>\n{}\n\nThis is an automated system reminder — do not mention it to the user.\n</system-reminder>",
+        text.trim()
+    )
+}
 
 /// The metadata key a typed attachment row carries its kind under.
 const ATTACHMENT_KEY: &str = "attachment";
