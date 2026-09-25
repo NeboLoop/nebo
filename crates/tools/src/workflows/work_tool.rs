@@ -327,7 +327,7 @@ impl DynTool for WorkTool {
     fn description(&self) -> String {
         "Workflow management & execution. Workflows BELONG TO AN AGENT: calls scope to the calling agent by default; pass agent: \"Name\" to manage another agent's workflows (e.g. when the owner asks you to change an employee's duties — the workflow goes on THAT employee, never on yourself).\n\
          USE THIS when: user wants to manage or run automated workflows.\n\
-         (agent(resource: \"registry\", automations/add_automations) also works when creating/configuring an agent wholesale.)\n\n\
+         (create_employee and update_employee take automations/add_automations too, for making or reshaping an employee wholesale.)\n\n\
          Lifecycle actions (no resource):\n\
          - work(action: \"list\") — List this agent's workflows and their status (add agent: \"Name\" for another agent's)\n\
          - work(action: \"create\", name: \"My Workflow\", agent: \"Content Creator\", definition: \"{\\\"trigger\\\": {\\\"type\\\": \\\"schedule\\\", \\\"cron\\\": \\\"0 9 * * MON-FRI\\\"}, \\\"activities\\\": [{\\\"id\\\": \\\"run\\\", \\\"intent\\\": \\\"...\\\", \\\"steps\\\": [\\\"concrete step\\\", ...]}]}\") — Create a workflow the target agent owns (appears in its Workflows panel and fires on its trigger; omit agent to create on yourself). Activities are the ONLY executable unit: each runs as its own scoped execution of its intent + steps. A top-level `steps` array is accepted as shorthand for one activity. Omit trigger for a manual workflow.\n\

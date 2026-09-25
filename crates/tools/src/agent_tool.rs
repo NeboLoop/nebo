@@ -1153,7 +1153,7 @@ impl PersonaTool {
             }
         }
 
-        let mut result = format!("Created agent '{}' (id: {})", name, id);
+        let mut result = format!("Created employee '{}' (id: {})", name, id);
         if app_fields.is_some() {
             result.push_str(&Self::app_created_note(&id, &ui_files));
         }
@@ -1836,12 +1836,12 @@ impl PersonaTool {
             // Only a real change reaches the live agent; an update that
             // changed nothing must not say it did.
             if !changes.is_empty() {
-                changes.push("live agent updated".to_string());
+                changes.push("live employee updated".to_string());
             }
         }
 
         if changes.is_empty() {
-            return ToolResult::ok(format!("No changes made to agent '{}'.", current_name));
+            return ToolResult::ok(format!("No changes made to employee '{}'.", current_name));
         }
 
         // A header that says "Updated" over a list of failures was read as
@@ -1858,7 +1858,7 @@ impl PersonaTool {
             ));
         }
         ToolResult::ok(format!(
-            "Updated agent '{}' (id: {}):\n- {}",
+            "Updated employee '{}' (id: {}):\n- {}",
             current_name,
             agent_id,
             changes.join("\n- ")
@@ -2141,7 +2141,7 @@ impl PersonaTool {
         }
 
         if changes.is_empty() {
-            return ToolResult::ok(format!("Agent '{}' is already in sync.", db_agent.name));
+            return ToolResult::ok(format!("{} is already in sync.", db_agent.name));
         }
 
         // Persist to DB
@@ -2171,7 +2171,7 @@ impl PersonaTool {
             active.name = current_name.clone();
             active.agent_md = current_md;
             active.config = napp::agent::parse_agent_config(&current_frontmatter).ok();
-            changes.push("live agent updated".to_string());
+            changes.push("live employee updated".to_string());
         }
 
         ToolResult::ok(format!(

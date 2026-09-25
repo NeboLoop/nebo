@@ -686,8 +686,8 @@ async fn resolve_coworker(state: &AppState, to: &str) -> Result<(String, String)
         }
     }
     Err(format!(
-        "No employee named '{}' is installed. Use agent(resource: \"registry\", action: \"list\") \
-         to see the roster — coworker messages go to installed employees only.",
+        "No employee named '{}' is installed. list_employees \
+         shows the roster — coworker messages go to installed employees only.",
         to
     ))
 }

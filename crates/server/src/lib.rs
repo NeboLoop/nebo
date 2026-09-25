@@ -2342,10 +2342,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_dispatch::ChannelDispatchImpl::new(state.clone()),
     ));
 
-    // Wire the canonical marketplace-code installer into the agent's `registry` install
-    // action (late, like the channel dispatcher above — both need `AppState`, built
-    // after tool registration). With this set, `agent(resource:"registry",
-    // action:"install", code:"<ANY>")` routes through `codes::handle_code`, so skills,
+    // Wire the canonical marketplace-code installer into `hire_employee` (late, like
+    // the channel dispatcher above — both need `AppState`, built after tool
+    // registration). With this set, `hire_employee(code:"<ANY>")` routes through `codes::handle_code`, so skills,
     // plugins (binary + re-registration), agents, apps, and collections all install AND
     // cascade through the ONE canonical pathway — no per-type bypass.
     state
