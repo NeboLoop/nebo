@@ -186,6 +186,10 @@ pub(crate) struct ModelCall<'a> {
     /// itself over /agent/mcp (the CLI providers). Revoked when the call ends.
     pub tool_credential:
         Option<&'a (dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)>,
+    /// Each tool call as its input completes in the stream, for the tool
+    /// executor to start while the reply streams. Dropped when the call
+    /// returns, which tells the executor the stream is over.
+    pub tool_calls_out: mpsc::UnboundedSender<ai::ToolCall>,
 }
 
 /// What a call came back with.
@@ -248,6 +252,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         model_override,
         context_limit,
         tool_credential,
+        tool_calls_out,
     } = call;
 
     // Acquire LLM permit before provider call (blocks if at capacity)
@@ -601,6 +606,10 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                     info!(session_id, tool = %tc.name, tool_id = %tc.id, "tool call received");
                     tool_calls.push(tc.clone());
                     block_order.push(("tool", Some(tool_calls.len() - 1)));
+                    // A CLI provider runs its own tools over /agent/mcp.
+                    if !cli_incremental {
+                        let _ = tool_calls_out.send(tc.clone());
+                    }
                 }
                 let _ = tx.send(event).await;
             }
