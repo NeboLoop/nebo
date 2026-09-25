@@ -32,7 +32,7 @@ prompt_assertions:
       text: "Model does NOT pivot to an unrelated task or invent a new goal (e.g. 'let's create a new agent')"
       severity: critical
     - id: uses-task-list
-      text: "Model tracks the multi-step work with agent(resource: 'task') rather than holding the plan only in prose"
+      text: "Model tracks the multi-step work with the task tools (create_task / update_task / list_tasks) rather than holding the plan only in prose"
       severity: important
   cost:
     - id: stays-efficient

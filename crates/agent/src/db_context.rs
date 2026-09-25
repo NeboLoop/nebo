@@ -321,8 +321,8 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
          Facts are automatically extracted from conversations.\n\
          Proactively save: user corrections, preferences, environment facts, recurring patterns.\n\
          Write as declarative facts (\"User prefers X\"), not directives (\"Always do X\").\n\
-         Use agent(resource: \"memory\", action: \"search\") to find memories.\n\
-         Use agent(resource: \"memory\", action: \"recall\", key: \"...\") for specific facts."
+         Use recall(query: \"...\") to search memories, or recall with a saved key for one fact.\n\
+         Use remember(key, value) to save one."
             .to_string(),
     );
 

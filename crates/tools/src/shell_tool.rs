@@ -213,8 +213,8 @@ impl ShellTool {
                  tracked files, clean -f, force push, branch -D) and is not available. \
                  To be able to undo a change, take a checkpoint first with \
                  checkpoint_files(paths: [...]) and put it back with restore_checkpoint. \
-                 For parallel edits use a worktree (agent spawn_parallel \
-                 with isolate: \"worktree\"). If the owner truly wants history rewritten, \
+                 For parallel edits give each helper its own copy \
+                 (delegate with isolation: \"worktree\"). If the owner truly wants history rewritten, \
                  tell them the exact command and let them run it."
                     .to_string(),
             );

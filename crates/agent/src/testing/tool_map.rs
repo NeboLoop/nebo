@@ -70,7 +70,7 @@ const ROWS: &[Row] = &[
     row("os", &["file"], &["plan"], "write_plan", &[]),
     row("os", &["file"], &["plan_check"], "check_plan", &[]),
     // agent: helpers and tasks
-    row("agent", &["task"], &["spawn", "spawn_parallel"], "delegate", &[("agent_type", "helper_type")]),
+    row("agent", &["task"], &["spawn", "spawn_parallel"], "delegate", &[("agent_type", "helper_type"), ("isolate", "isolation")]),
     row("agent", &["task"], &["orchestrate"], "orchestrate", &[]),
     row("agent", &["task"], &["send"], "send_message", &[("task_id", "to"), ("text", "message")]),
     row("agent", &["task"], &["status"], "read_output", &[]),
@@ -83,7 +83,8 @@ const ROWS: &[Row] = &[
     row("agent", &["task"], &["assignments"], "list_assignments", &[]),
     // agent: memory
     row("agent", &["memory"], &["store", "save"], "remember", &[]),
-    row("agent", &["memory"], &["recall", "search", "list"], "recall", &[]),
+    row("agent", &["memory"], &["recall"], "recall", &[("key", "query")]),
+    row("agent", &["memory"], &["search", "list"], "recall", &[]),
     row("agent", &["memory"], &["delete"], "forget", &[]),
     // agent: the rest
     row("agent", &["ask"], &["prompt", "confirm", "select"], "ask_owner", &[("text", "question")]),
@@ -91,6 +92,12 @@ const ROWS: &[Row] = &[
     row("agent", &["session"], &["history"], "read_session", &[]),
     row("agent", &["session"], &["list"], "list_sessions", &[]),
     row("agent", &["runs"], &["list"], "list_runs", &[]),
+    row("agent", &["runs"], &["cancel"], "stop_task", &[("run_id", "task_id")]),
+    row("agent", &["advisors"], &["deliberate"], "consult_advisors", &[("task", "question")]),
+    row("agent", &["advisors"], &["list"], "list_advisors", &[]),
+    row("agent", &["profile"], &["get"], "get_profile", &[]),
+    row("agent", &["profile"], &["update"], "update_profile", &[]),
+    row("agent", &["profile"], &["open_billing"], "open_billing", &[]),
     row("agent", &["research"], &["deep_research"], "deep_research", &[]),
     row("agent", &["research"], &["research"], "quick_research", &[]),
     row("agent", &["research"], &["submit_findings"], "submit_findings", &[]),
@@ -131,7 +138,7 @@ const ROWS: &[Row] = &[
     // messages
     row("message", &["coworker"], &["send"], "send_message", &[("text", "message")]),
     row("message", &["owner"], &["notify"], "message_owner", &[("text", "message")]),
-    row("message", &["notify"], &["send", "alert"], "push_notification", &[]),
+    row("message", &["notify"], &["send", "alert"], "push_notification", &[("text", "message")]),
     row("message", &["notify"], &["dnd_status"], "check_dnd", &[]),
     row("message", &["sms"], &["send"], "sms_message_send", &[]),
     // plugins other than exec, events and operations (below)
