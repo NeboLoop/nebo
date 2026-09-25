@@ -38,7 +38,7 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    let parked = state.store.list_workflow_suspensions().unwrap_or_default();
+    let asks = state.permission_asks.open(None).unwrap_or_default();
     let runs = state
         .store
         .list_workflow_runs_since(history_start, 2000)
@@ -55,7 +55,8 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
     let name_of: HashMap<String, String> = agents.iter().map(|a| (a.id.clone(), a.name.clone())).collect();
     let name = |id: &str| name_of.get(id).cloned().unwrap_or_else(|| id.to_string());
 
-    // ---- approvals: gated tool calls in chats, workflows parked at a step
+    // ---- approvals: gated tool calls in chats, and the asks (any step,
+    // chat or unattended, parked on the owner)
     let mut approvals: Vec<DashboardApproval> = tool_approvals
         .iter()
         .map(|(id, a)| DashboardApproval {
@@ -68,15 +69,15 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
             chat_id: Some(types::keyparser::parse_session_key(&a.session_key).chat_id).filter(|t| !t.is_empty()),
         })
         .collect();
-    for (run_id, agent_id, binding, display, created_at) in &parked {
+    for ask in &asks {
         approvals.push(DashboardApproval {
-            id: run_id.clone(),
-            kind: "workflow".into(),
-            agent_id: agent_id.clone(),
-            agent_name: name(agent_id),
-            summary: if display.is_empty() { binding.clone() } else { display.clone() },
-            since: *created_at,
-            chat_id: None,
+            id: ask.id.clone(),
+            kind: "permission_ask".into(),
+            agent_id: ask.agent_id.clone(),
+            agent_name: name(&ask.agent_id),
+            summary: ask.sentence.clone(),
+            since: ask.created_at,
+            chat_id: Some(types::keyparser::parse_session_key(&ask.session_key).chat_id).filter(|t| !t.is_empty()),
         });
     }
     approvals.sort_by_key(|a| a.since);

@@ -3147,5 +3147,16 @@
 		"moveTo": "Şuraya taşı",
 		"dropHere": "Bu çalışana bağlamak için buraya bırakın",
 		"cycleRefused": "Bu, bir çalışanı kendisine bağlı hâle getirirdi."
+	},
+	"permissionAsk": {
+		"title": "{name} onayını bekliyor",
+		"allowAlways": "Her zaman izin ver",
+		"thisOnce": "Yalnızca bu kez",
+		"no": "Hayır",
+		"allowedAlways": "Bundan sonra izinli",
+		"allowedOnce": "Bu kez izin verildi",
+		"declined": "Reddedildi",
+		"expired": "Süresi doldu, Hayır sayıldı",
+		"failed": "Yanıtın gönderilemedi. Tekrar dene."
 	}
 }

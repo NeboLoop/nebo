@@ -1,6 +1,7 @@
 /// Origin identifies the source of a request flowing through the agent.
 /// Used by Policy to enforce per-origin tool restrictions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Origin {
     /// Direct user interaction (web UI, CLI).
     User,
