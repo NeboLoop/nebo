@@ -156,7 +156,7 @@ pub const BOUNDARY_LEAD: &str = "This conversation continues from an earlier par
 /// stay stored, and the session search reads them.
 pub const HISTORY_POINTER: &str = "If you need a specific detail from before this summary (an exact snippet, an \
 error message, something you wrote), the earlier conversation is still stored: search it with \
-agent(resource: \"session\", action: \"query\", query: \"...\").";
+search_history(query: \"...\").";
 /// Added when the oldest part did not fit the summary call.
 pub const HEAD_CUT_NOTE: &str = "The earliest part of the conversation was too long to include and is not covered by \
 this summary (the stored conversation above still has it). If the work turns out to depend on it, say so plainly \

@@ -63,14 +63,17 @@ pub(crate) fn producer_slug(store: &Store, agent_id: &str) -> String {
 ///   through a legacy pre-STRAP name (`organizer(` → `os`, `gws(` →
 ///   `plugin`; see `tools::registry::legacy_tool_aliases`), so imported
 ///   workflows authored against old tool names still scope correctly;
-/// - or it is `message` (the delivery primitive — steps often say "alert"
-///   without naming it).
+/// - or it is a delivery primitive ([`DELIVERY_TOOLS`] — steps often say
+///   "alert" or "tell the owner" without naming a tool).
 ///
 /// When nothing is declared or referenced, fall back to the NON-DEFERRED
 /// roster only. Deferred tools (MCP proxies, heavyweight domain tools) are
 /// deferred precisely so their schemas don't ship until needed — the old
 /// fail-open-with-everything sent every connected MCP server's full schemas
 /// (~20k tokens/call) to activities whose agent.json declared `mcps: []`.
+/// What an activity always gets: the tools that deliver its result.
+const DELIVERY_TOOLS: [&str; 3] = ["message", "message_owner", "push_notification"];
+
 pub(crate) fn scoped_activity_tools<'a>(
     activity: &Activity,
     resolved_tools: &'a [Box<dyn DynTool>],
@@ -85,7 +88,7 @@ pub(crate) fn scoped_activity_tools<'a>(
             .iter()
             .filter(|t| {
                 let n = t.name();
-                n == "message"
+                DELIVERY_TOOLS.contains(&n)
                     || activity.tools.iter().any(|d| {
                         n == d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('.'))
                     })
@@ -139,7 +142,7 @@ pub(crate) fn scoped_activity_tools<'a>(
         .iter()
         .filter(|t| {
             let n = t.name();
-            n == "message"
+            DELIVERY_TOOLS.contains(&n)
                 || text.contains(&format!("{n}("))
                 || alias_targets.contains(n)
                 || (wants_plugin && n == "plugin")
@@ -147,7 +150,7 @@ pub(crate) fn scoped_activity_tools<'a>(
                 || activity.mcps.iter().any(|m| m == n)
         })
         .collect();
-    if referenced.iter().any(|t| t.name() != "message") {
+    if referenced.iter().any(|t| !DELIVERY_TOOLS.contains(&t.name())) {
         info!(
             activity = activity.id.as_str(),
             tools = referenced.len(),
@@ -1711,7 +1714,7 @@ mod engine_tests {
     }
 
     fn fake_registry() -> Vec<Box<dyn DynTool>> {
-        ["plugin", "agent", "message", "os", "web", "browser"]
+        ["plugin", "remember", "message", "message_owner", "push_notification", "os", "web", "browser"]
             .iter()
             .map(|n| Box::new(FakeTool(n)) as Box<dyn DynTool>)
             .collect()
@@ -1724,15 +1727,15 @@ mod engine_tests {
             "intent": "Mark noise read",
             "steps": [
                 "List: plugin(resource: \"gws\", action: \"exec\", command: \"gmail users messages list\")",
-                "Record ids: agent(resource: \"memory\", action: \"store\", key: \"x\")"
+                "Record ids: remember(key: \"x\", value: \"...\")"
             ]
         }))
         .unwrap();
         let registry = fake_registry();
         let scoped = scoped_activity_tools(&activity, &registry, None, None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        // plugin + agent referenced; message always rides along; os/web/browser stripped
-        assert_eq!(names, vec!["plugin", "agent", "message"]);
+        // plugin + remember referenced; delivery always rides along; os/web/browser stripped
+        assert_eq!(names, vec!["plugin", "remember", "message", "message_owner", "push_notification"]);
     }
 
     #[test]
@@ -1784,7 +1787,7 @@ mod engine_tests {
         let registry = fake_registry();
         let scoped = scoped_activity_tools(&activity, &registry, None, None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["message", "os"]);
+        assert_eq!(names, vec!["message", "message_owner", "push_notification", "os"]);
     }
 
         #[test]
@@ -1828,7 +1831,7 @@ mod engine_tests {
         // Step text never names a tool, but the skill doc shows plugin( usage
         let scoped = scoped_activity_tools(&activity, &registry, Some(&skills), None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["plugin", "message"]);
+        assert_eq!(names, vec!["plugin", "message", "message_owner", "push_notification"]);
     }
 
     fn prompt_with_tools(tool_names: &[&str]) -> String {

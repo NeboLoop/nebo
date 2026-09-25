@@ -349,17 +349,7 @@ pub struct RunRequest {
     /// is injected into the system prompt so the agent has instructions without
     /// needing to discover/load them. Used by sub-agent spawning.
     pub preload_skills: Vec<String>,
-    /// Plugin install codes to include in the sub-agent's system prompt.
-    /// The plugin inventory and usage docs are injected so the sub-agent
-    /// knows how to use these plugins from turn 1.
-    pub preload_plugins: Vec<String>,
-    /// STRAP domain tool names to include in the sub-agent's system prompt.
-    /// The tool's STRAP doc (resources, actions, examples) is injected so the
-    /// sub-agent knows how to use these tools without discovery.
-    pub preload_tools: Vec<String>,
     /// Tool names to pre-activate (bypass deferred-loading discovery).
-    /// Populated automatically from preload_plugins/preload_tools to ensure
-    /// sub-agents have the tools available from turn 1.
     pub preactivate_tools: Vec<String>,
     /// When true, agent presents a plan before executing any tool calls.
     /// The plan is sent via a PlanApproval event for user approval.
@@ -927,77 +917,6 @@ impl Runner {
                         warn!(skill = %skill_name, "pre-load skill not found");
                     }
                 }
-            }
-        }
-
-        // Pre-load plugin docs into the sub-agent's conversation.
-        // Plugin context (description, skills, usage) is injected as a user message
-        // so the sub-agent knows how to use these plugins from turn 1.
-        if !req.preload_plugins.is_empty() {
-            if let Some(ref loader) = self.skill_loader {
-                let plugin_context = loader.agent_plugin_context(&req.preload_plugins);
-                if !plugin_context.is_empty() {
-                    let meta = serde_json::json!({
-                        "isMeta": true,
-                        "pluginPreload": true,
-                    })
-                    .to_string();
-                    let _ = self.sessions.append_message(
-                        &session_id,
-                        "user",
-                        &format!("[Loading plugin context]\n\n{}", plugin_context),
-                        None,
-                        None,
-                        Some(&meta),
-                    );
-                    info!(
-                        plugins = ?req.preload_plugins,
-                        len = plugin_context.len(),
-                        "pre-loaded plugin context into sub-agent"
-                    );
-                }
-            }
-        }
-
-        // Pre-load STRAP tool docs into the sub-agent's conversation.
-        // Each tool's full documentation (resources, actions, examples) is injected
-        // so the sub-agent knows exactly how to call these tools.
-        if !req.preload_tools.is_empty() {
-            let mut tool_docs = String::new();
-            for tool_name in &req.preload_tools {
-                // Try core tool doc first, then OS sub-context doc
-                let doc = prompt::strap_tool_doc(tool_name)
-                    .or_else(|| prompt::strap_context_doc(tool_name));
-                if let Some(d) = doc {
-                    if !tool_docs.is_empty() {
-                        tool_docs.push_str("\n\n---\n\n");
-                    }
-                    tool_docs.push_str(d);
-                }
-            }
-            if !tool_docs.is_empty() {
-                let meta = serde_json::json!({
-                    "isMeta": true,
-                    "toolPreload": true,
-                })
-                .to_string();
-                let _ = self.sessions.append_message(
-                    &session_id,
-                    "user",
-                    &format!(
-                        "[Loading tool documentation for: {}]\n\n{}",
-                        req.preload_tools.join(", "),
-                        tool_docs,
-                    ),
-                    None,
-                    None,
-                    Some(&meta),
-                );
-                info!(
-                    tools = ?req.preload_tools,
-                    len = tool_docs.len(),
-                    "pre-loaded STRAP tool docs into sub-agent"
-                );
             }
         }
 
@@ -4044,31 +3963,11 @@ async fn run_loop(
             }
 
             // Pattern 12: skip post-run memory extraction when this iteration
-            // contained an explicit memory write (agent resource:"memory" action:"store").
-            // Re-extracting would duplicate facts the model just wrote.
-            if !skip_memory {
-                for tc in &tool_calls {
-                    if tc.name == "agent" {
-                        let resource = tc
-                            .input
-                            .get("resource")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let action = tc
-                            .input
-                            .get("action")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        if resource == "memory" && action == "store" {
-                            debug!(
-                                session_id,
-                                "memory write detected — skipping post-run extraction"
-                            );
-                            skip_memory = true;
-                            break;
-                        }
-                    }
-                }
+            // contained an explicit memory write (`remember`). Re-extracting
+            // would duplicate facts the model just wrote.
+            if !skip_memory && tool_calls.iter().any(|tc| tc.name == "remember") {
+                debug!(session_id, "memory write detected — skipping post-run extraction");
+                skip_memory = true;
             }
 
             // Pattern 13: background tool summary generation via cheap model.

@@ -342,11 +342,10 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
 }
 
 /// The tool surface an untrusted caller's delegated runs may use when no
-/// call tree is bound to the line: look things up in the agent's own
-/// memory/knowledge, and take a message for the owner. `tool:resource`
-/// entries — bare `agent` or `message` would expose far more than intended.
+/// call tree is bound to the line: look things up in the employee's own
+/// memory, and take a message for the owner.
 pub(crate) fn caller_floor_allowlist() -> std::collections::HashSet<String> {
-    ["agent:memory", "message:owner", "message:notify"]
+    ["recall", "message_owner", "push_notification"]
         .iter()
         .map(|s| s.to_string())
         .collect()

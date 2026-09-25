@@ -111,7 +111,7 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 				key: 'tools',
 				label: 'Allowed tools',
 				type: 'text',
-				placeholder: 'agent:memory, os:calendar',
+				placeholder: 'recall, os:calendar',
 				description: 'Comma-separated tool:resource grants for this intent only.',
 			},
 			{

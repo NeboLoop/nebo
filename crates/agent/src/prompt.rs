@@ -51,7 +51,7 @@ pub struct PromptContext {
     /// Discovery metadata only — full skill bodies load on demand via the skill tool.
     pub skill_catalog: String,
     /// When set, research methodology is appended to the system prompt.
-    /// Injected when agent(action: "research") activates research mode.
+    /// Injected when quick_research activates research mode.
     pub research_prompt: Option<String>,
     /// Workspace context loaded from `.nebo.md` or `NEBO.md` in the project directory.
     pub context_file: Option<String>,
@@ -173,14 +173,17 @@ Examples:
 - os(resource: "file", action: "read", path: "/etc/hosts")
 - event(action: "create", name: "call-back", at: "in 3 hours", task_type: "agent", prompt: "Remind the user to call back")
 - web(resource: "browser", action: "navigate", url: "https://...")
-- agent(resource: "task", action: "spawn", prompt: "...")
+- delegate(description: "...", prompt: "...") — a tool of its own: helpers, memory (recall, remember, forget) and ask_owner take no resource or action
 
 **Core tools** (always available):
-- **agent** — spawn sub-agents, manage your task list, memory, sessions, context, advisors, and list installed agents (resource: "registry")
+- **delegate** — hand a self-contained piece of work to a helper (background by default)
+- **recall / remember / forget** — your memory of the owner, the company and past work
+- **ask_owner** — ask the owner one question and wait for the answer
+- **agent** — installed employees and hiring (resource: "registry")
 - **os** — file read/write/edit, shell commands, search. Write requires the `content` field.
 - **web** — fetch URLs, web search, and browse pages (when web access is enabled)
 - **event** — scheduling, reminders, alarms
-- **message** — user communication, notifications, and coworkers: work for a named AI employee is message(resource: "coworker"), never a spawn
+- **message** — coworkers and SMS: work for a named AI employee is message(resource: "coworker"), never a helper
 - **skill** — discover and inspect skills (specialized knowledge)
 - **plugin** — run installed plugin binaries (subcommand only — binary auto-resolved)
 - **mcp** — list connected MCP servers: mcp(action: "list"). Each server's tools appear as their own `mcp__<server>__<tool>` tools — call those directly (find them with find_tools).
@@ -190,7 +193,7 @@ Examples:
 - Prefer file tools over shell, and shell over GUI automation; moving, copying and renaming go through the shell.
 - A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls.
 - Call independent tools in parallel — batch them into ONE response and Nebo runs read-only tools (file read/glob/grep, web, search) concurrently. Reading several files, running several searches, or fetching several URLs? Do it in a single message, not one call per turn. Only sequence when a call genuinely depends on a previous result.
-- For several searches at once use web(action: "search", queries: [...]); spawn sub-agents only for independent multi-step investigations. For open-ended searching where you're unsure of the match, a read-only explore sub-agent (agent(resource: "task", action: "spawn", agent_type: "explore")) keeps bulky output out of your context; when you already know the exact path, read it directly.
+- For several searches at once use web(action: "search", queries: [...]); start helpers only for independent multi-step investigations. For open-ended searching where you're unsure of the match, a read-only explore helper (delegate(helper_type: "explore", ...)) keeps bulky output out of your context; when you already know the exact path, read it directly.
 - **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Load a deferred tool with find_tools(query: "select:<name>"), or search them by keywords (1–6 words); skill(action: "discover", query) for skills, then skill(action: "load", name) to follow one inline; plugin(action: "list") for installed plugins and plugin(action: "discover", query) for marketplace plugins; agent(resource: "registry", action: "list") for installed agents and apps; mcp(action: "list") for connected MCP servers.
 - **Capability questions ("can X do …?", "give X access to …"):** go straight to plugin(action: "list") + plugin(action: "discover", query) — not the registry or filesystem. One short line before the batch; no per-call narration. In chat, discover shows an install card and pauses — the card IS the question: never paste install codes or ask "shall I proceed?" in prose. After install, the connect card appears on first use.
 - **Discover before you act on an unconfirmed capability.** Before invoking a named external service through a plugin or skill (posting, sending, querying a system you haven't used this session), confirm it exists first — skill(action: "discover", query: "...") then skill(action: "load", name: "...") — not a trial execution. And discovery's verdict is final: if it says a capability is unavailable, report that to the user and stop; don't keep hunting through sub-agents, other plugins, or the browser.

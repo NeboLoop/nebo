@@ -4322,7 +4322,7 @@ pub async fn start_workflow_chat(
          Node types (ONLY these, ONLY inside call trees): \n\
          - greeting (params: text — spoken word-for-word; exactly one required)\n\
          - intent (params: name kebab-case unique, description, and the intent's grants as \
-           comma-separated strings — tools e.g. \"agent:memory, os:calendar\", workflows \
+           comma-separated strings — tools e.g. \"recall, os:calendar\", workflows \
            (this agent's workflow names), plugins (slugs), mcp (server names)). Grants are \
            ENFORCED: a caller in that intent can touch nothing else.\n\
          - transfer (params: when; to — WHO the caller is told they're being connected \
