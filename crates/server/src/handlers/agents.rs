@@ -350,7 +350,8 @@ pub async fn list_agents(
         .collect();
 
     // Linked employees read "Offline" when their linked bot is, as the hub
-    // reports it — one hub call for the whole roster, only when one exists.
+    // reports it — one hub call for the whole roster, only when one exists —
+    // or, on this computer, when Nebo is not hosting their agent.
     let linked = linked_employees(&state, &db_rows);
     let offline = if linked.is_empty() {
         std::collections::HashMap::new()
@@ -359,7 +360,7 @@ pub async fn list_agents(
             Ok(api) => api.list_managed_bots().await.ok(),
             Err(_) => None,
         };
-        linked_offline(&linked, bots.as_deref())
+        linked_offline(&linked, bots.as_deref(), here(&state).as_ref())
     };
 
     let mut agents = Vec::with_capacity(fs_agents.len());
@@ -1581,6 +1582,17 @@ pub async fn delete_agent(
     // Unsubscribe event triggers from dispatcher
     state.event_dispatcher.unsubscribe_agent(&id).await;
 
+    // A coding agent Nebo hosted on this computer for this employee stops
+    // with it. Its folder stays: the work in it is the owner's.
+    if let Some(local) = &state.local_host
+        && let Some(model) = state.store.get_entity_config("agent", &id).ok().flatten().and_then(|c| c.model_preference)
+        && let Some((bot, agent)) = ai::LinkedProvider::target(&model)
+        && local.bot_id().as_deref() == Some(bot)
+        && let Err(e) = local.remove(agent)
+    {
+        warn!(agent = %id, error = %e, "the employee's coding agent was not removed");
+    }
+
     // DB cleanup only when the agent actually had DB rows. agent_workflows are
     // cascade-deleted via FK; chats before sessions (chats reference session names).
     // What goes is the employee's own: its row, configuration, memory,
@@ -1921,12 +1933,30 @@ fn linked_target(
 /// `kind = "linked"`, its name and description are the contract roster's,
 /// its name is locked, and its brain is `linked/<bot>/<agent>` on the
 /// employee's model preference. Soul and rules stay the runtime's.
+///
+/// `bot_id` is this bot's own for a coding agent on this computer:
+/// `agent_id` is then which agent (`claude-code`, `codex`, ...), and Nebo
+/// hosts a new one of it in its own folder, the employee's brain naming it.
 async fn create_linked_agent(
     state: AppState,
     bot_id: &str,
     agent_id: &str,
     mode: Option<types::permissions::Mode>,
 ) -> HandlerResult<serde_json::Value> {
+    if let Some(local) = state.local_host.clone().filter(|l| l.bot_id().as_deref() == Some(bot_id)) {
+        let hosted = local
+            .hire(agent_id)
+            .await
+            .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
+        let description = format!("Works in {}", hosted.acp.workdir.display());
+        let hired = hire_linked(&state, bot_id, &hosted.id, &hosted.label, &description, mode).await;
+        if hired.is_err()
+            && let Err(e) = local.remove(&hosted.id)
+        {
+            warn!(agent = %hosted.id, error = %e, "hire: the agent hosted for a failed hire was not removed");
+        }
+        return hired;
+    }
     let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
     let bots = api
         .list_managed_bots()
@@ -1954,13 +1984,25 @@ async fn create_linked_agent(
             bot.name
         )))
     })?;
+    hire_linked(&state, bot_id, agent_id, &linked.name, &linked.description, mode).await
+}
 
+/// The linked employee's row, locked name, brain and permission mode, and
+/// its activation: every linked hire, from any computer, ends here.
+async fn hire_linked(
+    state: &AppState,
+    bot_id: &str,
+    agent_id: &str,
+    name: &str,
+    description: &str,
+    mode: Option<types::permissions::Mode>,
+) -> HandlerResult<serde_json::Value> {
     let id = uuid::Uuid::new_v4().to_string();
-    let name = linked.name.trim();
+    let name = name.trim();
     let name = if name.is_empty() { agent_id } else { name };
     let agent_md = format!(
         "---\nname: {:?}\ndescription: {:?}\n---\n",
-        name, linked.description
+        name, description
     );
     let agent = state
         .store
@@ -1968,7 +2010,7 @@ async fn create_linked_agent(
             &id,
             Some("linked"),
             name,
-            &linked.description,
+            description,
             &agent_md,
             "{}",
             None,
@@ -1992,7 +2034,7 @@ async fn create_linked_agent(
     }
     info!(agent = %id, bot_id, agent_id, mode = ?mode, "hired a linked agent");
 
-    activate_hire(&state, &agent).await;
+    activate_hire(state, &agent).await;
 
     // No introduction ceremony: the name is the linked agent's, not one the
     // owner gave, and the runtime owns what it says first.
@@ -2003,19 +2045,20 @@ async fn create_linked_agent(
     })))
 }
 
-/// GET /agents/linked — every linked bot of the owner's that has agents to
-/// hire, and those agents: what "Hire from another app" offers. Not signed
-/// in to NeboAI = nothing to hire from.
+/// GET /agents/linked — what "Hire from another app" offers: the coding
+/// agents Nebo can host on this computer, and every linked bot of the
+/// owner's that has agents to hire, with those agents. Not signed in to
+/// NeboAI = nothing to hire from another computer.
 pub async fn list_linked_agents(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let mut sources: Vec<serde_json::Value> = local_source(&state).into_iter().collect();
     let Ok(api) = crate::codes::build_api_client(&state) else {
-        return Ok(Json(serde_json::json!({ "bots": [] })));
+        return Ok(Json(serde_json::json!({ "bots": sources })));
     };
     let bots = api
         .list_managed_bots()
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
     let self_id = config::read_bot_id().unwrap_or_default();
-    let mut sources = Vec::new();
     for bot in bots.iter().filter(|b| hire_source(b, &self_id)) {
         let agents = match api.linked_bot_agents(&bot.id).await {
             Ok(agents) => agents,
@@ -2053,24 +2096,75 @@ fn source_entry(
             "name": bot.name,
             "runtime": bot.runtime,
             "online": bot.online,
+            "local": false,
             "agents": agents,
         })
     })
 }
 
+/// This computer as a hire source: the coding agents installed here that
+/// Nebo can host, each hired into a folder of its own. Not listed without a
+/// bot to host them as, or while nebo-link hosts this computer's agents
+/// (its bot is listed with the others then).
+fn local_source(state: &AppState) -> Option<serde_json::Value> {
+    let local = state.local_host.as_ref()?;
+    let bot_id = local.bot_id()?;
+    let agents: Vec<comm::api_types::LinkedAgent> = local
+        .hireable()
+        .into_iter()
+        .map(|h| comm::api_types::LinkedAgent {
+            id: h.key.to_owned(),
+            name: h.name.to_owned(),
+            description: "Works in its own folder in ~/NeboAI".to_owned(),
+        })
+        .collect();
+    (!agents.is_empty()).then(|| {
+        serde_json::json!({
+            "id": bot_id,
+            "name": "This computer",
+            "runtime": "acp",
+            "online": true,
+            "local": true,
+            "agents": agents,
+        })
+    })
+}
+
+/// This computer's hosted agents as the roster reads them: the bot they are
+/// hired under, and the agents Nebo hosts now (none while nebo-link hosts
+/// this computer's agents).
+struct Here {
+    bot_id: String,
+    agents: Vec<String>,
+}
+
+fn here(state: &AppState) -> Option<Here> {
+    let local = state.local_host.as_ref()?;
+    Some(Here {
+        bot_id: local.bot_id()?,
+        agents: match local.contract() {
+            Some(_) => local.agents().into_iter().map(|a| a.id).collect(),
+            None => Vec::new(),
+        },
+    })
+}
+
 /// Whether the roster's linked employees can be reached right now, by agent
 /// id: a linked employee is offline when the hub reports its linked bot
-/// offline, and when the hub itself cannot be asked (`bots` = None).
+/// offline, and when the hub itself cannot be asked (`bots` = None); one on
+/// this computer, when Nebo is not hosting its agent.
 fn linked_offline(
     linked: &[(String, String)],
     bots: Option<&[comm::api_types::ManagedBot]>,
+    here: Option<&Here>,
 ) -> std::collections::HashMap<String, bool> {
     linked
         .iter()
         .map(|(agent_id, model)| {
-            let online = ai::LinkedProvider::target(model)
-                .zip(bots)
-                .is_some_and(|((bot_id, _), bots)| bots.iter().any(|b| b.id == bot_id && b.online));
+            let online = ai::LinkedProvider::target(model).is_some_and(|(bot_id, agent)| match here {
+                Some(here) if here.bot_id == bot_id => here.agents.iter().any(|a| a == agent),
+                _ => bots.is_some_and(|bots| bots.iter().any(|b| b.id == bot_id && b.online)),
+            });
             (agent_id.clone(), !online)
         })
         .collect()
@@ -5694,7 +5788,7 @@ mod frontmatter_save_tests {
 
 #[cfg(test)]
 mod linked_hire_tests {
-    use super::{hire_source, linked_offline, linked_persona_edit, linked_rename, linked_target, source_entry};
+    use super::{Here, hire_source, linked_offline, linked_persona_edit, linked_rename, linked_target, source_entry};
 
     fn agent_row(kind: Option<&str>, soul: Option<&str>) -> db::models::Agent {
         db::models::Agent {
@@ -5768,14 +5862,37 @@ mod linked_hire_tests {
             ("e-bad".to_owned(), "janus/nebo-1".to_owned()),
         ];
         let bots = [bot("b-up", true), bot("b-down", false)];
-        let offline = linked_offline(&linked, Some(&bots));
+        let offline = linked_offline(&linked, Some(&bots), None);
         assert_eq!(offline["e-up"], false);
         assert_eq!(offline["e-down"], true);
         assert_eq!(offline["e-gone"], true);
         assert_eq!(offline["e-bad"], true);
 
-        let unreachable = linked_offline(&linked, None);
+        let unreachable = linked_offline(&linked, None, None);
         assert!(unreachable.values().all(|off| *off));
+    }
+
+    /// An employee whose agent is on this computer reads Offline only when
+    /// Nebo does not host that agent (none hosted, or nebo-link hosts this
+    /// computer's agents); the hub is not asked about it.
+    #[test]
+    fn an_employee_on_this_computer_is_online_while_nebo_hosts_its_agent() {
+        let linked = vec![
+            ("e-here".to_owned(), "linked/self-bot/claude-code".to_owned()),
+            ("e-gone".to_owned(), "linked/self-bot/codex".to_owned()),
+        ];
+        let here = Here {
+            bot_id: "self-bot".into(),
+            agents: vec!["claude-code".into()],
+        };
+        let offline = linked_offline(&linked, None, Some(&here));
+        assert_eq!(offline["e-here"], false);
+        assert_eq!(offline["e-gone"], true);
+        let deferred = Here {
+            bot_id: "self-bot".into(),
+            agents: Vec::new(),
+        };
+        assert!(linked_offline(&linked, None, Some(&deferred)).values().all(|off| *off));
     }
 
     fn managed(id: &str, runtime: &str, chat: bool, shared: bool) -> comm::api_types::ManagedBot {
@@ -5818,6 +5935,7 @@ mod linked_hire_tests {
         let entry = source_entry(&bot, vec![agent]).unwrap();
         assert_eq!(entry["runtime"], "hermes");
         assert_eq!(entry["online"], false);
+        assert_eq!(entry["local"], false);
         assert_eq!(entry["agents"][0]["name"], "Hermes");
     }
 

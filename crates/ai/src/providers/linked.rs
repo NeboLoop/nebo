@@ -1,16 +1,20 @@
 //! The linked provider: the brain of an employee hired from a linked bot.
 //!
-//! A linked bot (an OpenClaw or Hermes install joined to the owner's account
-//! by `nebo-link`) serves Nebo's chat contract over its tunnel: the roster,
-//! chats and the streamed chat socket the phone speaks. This provider drives
-//! one of its agents through that contract, the way [`super::cli`] drives a
-//! CLI through a process: it reports `handles_tools`, sends the turn, and
-//! maps the contract's events into [`StreamEvent`]s.
+//! A linked bot (a computer's agents joined to the owner's account by
+//! `nebo-link`: OpenClaw, Hermes, Claude Code, Codex, ...) serves Nebo's chat
+//! contract over its tunnel: the roster, chats and the streamed chat socket
+//! the phone speaks. This provider drives one of its agents through that
+//! contract, the way [`super::cli`] drives a CLI through a process: it
+//! reports `handles_tools`, sends the turn, and maps the contract's events
+//! into [`StreamEvent`]s.
 //!
 //! The target rides in the model id, `linked/<linkedBotId>/<agentId>`, on the
 //! employee's `model_preference`; one provider serves every linked employee.
-//! It reaches the linked bot at `{NEBOAI_API_URL}/t/{linkedBotId}/…` with the
-//! Nebo bot's own token, which the hub admits for a bot of the same owner.
+//! It reaches another computer's linked bot at
+//! `{NEBOAI_API_URL}/t/{linkedBotId}/…` with the Nebo bot's own token, which
+//! the hub admits for a bot of the same owner. An agent on this computer is
+//! hosted by Nebo itself ([`super::local_host::LocalHost`]), under this bot's
+//! own id: the same contract, carried in memory, with no hub between.
 //!
 //! The runtime keeps the transcript. One Nebo chat is one runtime session: the
 //! first turn on a thread creates the runtime's chat and records its id on the
@@ -25,18 +29,23 @@
 //! with the runtime's own options, and the option chosen goes back as
 //! `ask_response`.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
+use link_core::phone::{Contract, Outbound};
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
+use tokio::net::TcpStream;
+use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{info, warn};
 
+use super::local_host::LocalHost;
 use crate::types::*;
 
 /// The provider id, and the prefix of every linked model id.
@@ -51,21 +60,25 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
 /// it on every comms connect). `None` = not signed in.
 pub type TokenSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct LinkedProvider {
     /// `NEBOAI_API_URL`, without a trailing slash.
     api_url: String,
     store: Arc<db::Store>,
     token: TokenSource,
     client: reqwest::Client,
+    /// This computer's host, when Nebo has a bot to host as.
+    local: Option<Arc<LocalHost>>,
 }
 
 impl LinkedProvider {
-    pub fn new(api_url: &str, store: Arc<db::Store>, token: TokenSource) -> Self {
+    pub fn new(api_url: &str, store: Arc<db::Store>, token: TokenSource, local: Option<Arc<LocalHost>>) -> Self {
         Self {
             api_url: api_url.trim_end_matches('/').to_owned(),
             store,
             token,
             client: crate::http::request_client(),
+            local,
         }
     }
 
@@ -92,13 +105,11 @@ impl LinkedProvider {
     ) -> Result<(), String> {
         let name = self.employee_name(req, agent_id);
         let offline = || format!("Could not connect to {name}. Try again.");
-        let Some(token) = (self.token)() else {
-            return Err(format!("Sign in to NeboAI to reach {name}."));
-        };
+        let route = self.route(bot_id, &name)?;
         let prompt = owners_message(&req.messages).ok_or_else(|| "Nothing to send.".to_owned())?;
 
         let linked_chat_id = self
-            .linked_chat(req, bot_id, agent_id, &token)
+            .linked_chat(req, bot_id, agent_id, &route)
             .await
             .map_err(|e| match e {
                 Reach::Offline => offline(),
@@ -106,27 +117,14 @@ impl LinkedProvider {
             })?;
         let session_id = format!("agent:{agent_id}:thread:{linked_chat_id}");
 
-        let url = format!("{}/t/{bot_id}/ws", ws_base(&self.api_url));
-        let mut request = url
-            .as_str()
-            .into_client_request()
-            .map_err(|e| format!("{}: {e}", offline()))?;
-        let bearer = format!("Bearer {token}")
-            .parse()
-            .map_err(|_| "The NeboAI token is not a valid header value.".to_owned())?;
-        request.headers_mut().insert(AUTHORIZATION, bearer);
-        let connect = tls::connect_ws(request);
-        let (mut ws, _) = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
-            Ok(Ok(connected)) => connected,
-            Ok(Err(e)) => {
-                info!(bot_id, error = %e, "linked: the chat socket did not connect");
-                return Err(offline());
-            }
-            Err(_) => return Err(offline()),
-        };
+        let mut ws = self.socket(&route, bot_id).await.ok_or_else(offline)?;
 
         // The phone's handshake: `auth` is answered with `auth_ok` before
         // anything else.
+        let token = match &route {
+            Route::Hub { token } => token.as_str(),
+            Route::Local(_) => "",
+        };
         send(
             &mut ws,
             json!({ "type": "auth", "data": { "token": token } }),
@@ -134,14 +132,10 @@ impl LinkedProvider {
         )
         .await?;
         loop {
-            let frame = match tokio::time::timeout(CONNECT_TIMEOUT, ws.next()).await {
-                Ok(Some(Ok(WsMessage::Text(text)))) => text,
-                Ok(Some(Ok(_))) => continue,
+            match tokio::time::timeout(CONNECT_TIMEOUT, ws.next()).await {
+                Ok(Some(frame)) if frame["type"] == "auth_ok" => break,
+                Ok(Some(_)) => continue,
                 _ => return Err(offline()),
-            };
-            match serde_json::from_str::<Value>(frame.as_str()) {
-                Ok(v) if v["type"] == "auth_ok" => break,
-                _ => continue,
             }
         }
 
@@ -187,17 +181,8 @@ impl LinkedProvider {
                     send(&mut ws, json!({ "type": "ask_response", "data": { "request_id": request_id, "value": value } }), &offline).await?;
                 }
                 frame = ws.next() => {
-                    let text = match frame {
-                        Some(Ok(WsMessage::Text(text))) => text,
-                        Some(Ok(WsMessage::Close(_))) | None => return Err(offline()),
-                        Some(Ok(_)) => continue,
-                        Some(Err(e)) => {
-                            info!(bot_id, error = %e, "linked: the chat socket failed");
-                            return Err(offline());
-                        }
-                    };
-                    let Ok(frame) = serde_json::from_str::<Value>(text.as_str()) else {
-                        continue;
+                    let Some(frame) = frame else {
+                        return Err(offline());
                     };
                     let data = &frame["data"];
                     if data["session_id"] != session_id {
@@ -286,6 +271,59 @@ impl LinkedProvider {
         }
     }
 
+    /// Where `bot_id` is reached: this computer's own host when it is this
+    /// bot, else through the hub. `Err` is the message the owner reads.
+    fn route(&self, bot_id: &str, name: &str) -> Result<Route, String> {
+        if let Some(local) = self.local.as_ref().filter(|l| l.bot_id().as_deref() == Some(bot_id)) {
+            return match local.contract() {
+                Some(contract) => Ok(Route::Local(contract)),
+                None => {
+                    info!(bot_id, "linked: nebo-link hosts this computer's agents, so Nebo does not");
+                    Err(format!("Could not connect to {name}. Try again."))
+                }
+            };
+        }
+        match (self.token)() {
+            Some(token) => Ok(Route::Hub { token }),
+            None => Err(format!("Sign in to NeboAI to reach {name}.")),
+        }
+    }
+
+    /// The chat socket, through the hub or on this computer.
+    async fn socket(&self, route: &Route, bot_id: &str) -> Option<Socket> {
+        let token = match route {
+            Route::Local(contract) => {
+                return Some(Socket::Local {
+                    frames: contract.subscribe(),
+                    contract: contract.clone(),
+                    replies: VecDeque::new(),
+                });
+            }
+            Route::Hub { token } => token,
+        };
+        let url = format!("{}/t/{bot_id}/ws", ws_base(&self.api_url));
+        let mut request = match url.as_str().into_client_request() {
+            Ok(request) => request,
+            Err(e) => {
+                info!(bot_id, error = %e, "linked: the chat socket's address is not valid");
+                return None;
+            }
+        };
+        let Ok(bearer) = format!("Bearer {token}").parse() else {
+            info!(bot_id, "linked: the NeboAI token is not a valid header value");
+            return None;
+        };
+        request.headers_mut().insert(AUTHORIZATION, bearer);
+        match tokio::time::timeout(CONNECT_TIMEOUT, tls::connect_ws(request)).await {
+            Ok(Ok((ws, _))) => Some(Socket::Hub(Box::new(ws))),
+            Ok(Err(e)) => {
+                info!(bot_id, error = %e, "linked: the chat socket did not connect");
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
     /// The runtime's chat behind this Nebo chat: recorded on the chat row, or
     /// created on the thread's first turn and recorded then.
     async fn linked_chat(
@@ -293,7 +331,7 @@ impl LinkedProvider {
         req: &ChatRequest,
         bot_id: &str,
         agent_id: &str,
-        token: &str,
+        route: &Route,
     ) -> Result<String, Reach> {
         if req.chat_id.is_empty() {
             return Err(Reach::Refused(
@@ -310,27 +348,33 @@ impl LinkedProvider {
         {
             return Ok(id);
         }
-        let url = format!("{}/t/{bot_id}/api/v1/agents/{agent_id}/chats", self.api_url);
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(token)
-            .json(&json!({}))
-            .send()
-            .await
-            .map_err(|e| {
-                info!(bot_id, error = %e, "linked: creating the runtime's chat did not connect");
-                Reach::Offline
-            })?;
-        let status = response.status();
-        let body: Value = response.json().await.unwrap_or(Value::Null);
-        if !status.is_success() {
+        let path = format!("/api/v1/agents/{agent_id}/chats");
+        let (status, body) = match route {
+            Route::Hub { token } => {
+                let response = self
+                    .client
+                    .post(format!("{}/t/{bot_id}{path}", self.api_url))
+                    .bearer_auth(token)
+                    .json(&json!({}))
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        info!(bot_id, error = %e, "linked: creating the runtime's chat did not connect");
+                        Reach::Offline
+                    })?;
+                let status = response.status().as_u16();
+                (status, response.json().await.unwrap_or(Value::Null))
+            }
+            Route::Local(contract) => match contract.rest("POST", &path).await {
+                Ok(body) => (200, body),
+                Err(refused) => (refused.status, json!({ "error": refused.message })),
+            },
+        };
+        if !(200..300).contains(&status) {
             // 502 is the link saying the runtime is not answering; anything
             // else is a refusal with its own words.
             return Err(match body["error"].as_str().filter(|e| !e.is_empty()) {
-                Some(error) if status != reqwest::StatusCode::BAD_GATEWAY => {
-                    Reach::Refused(error.to_owned())
-                }
+                Some(error) if status != 502 => Reach::Refused(error.to_owned()),
                 _ => Reach::Offline,
             });
         }
@@ -425,12 +469,7 @@ impl Provider for LinkedProvider {
         };
         let (bot_id, agent_id) = (bot_id.to_owned(), agent_id.to_owned());
         let (tx, rx) = mpsc::channel(100);
-        let this = Self {
-            api_url: self.api_url.clone(),
-            store: self.store.clone(),
-            token: self.token.clone(),
-            client: self.client.clone(),
-        };
+        let this = self.clone();
         let req = req.clone();
         tokio::spawn(async move {
             if let Err(message) = this.turn(&req, &bot_id, &agent_id, &tx).await {
@@ -439,6 +478,75 @@ impl Provider for LinkedProvider {
             }
         });
         Ok(rx)
+    }
+}
+
+/// Where a linked agent is reached.
+enum Route {
+    /// Another computer's linked bot, through the hub with the Nebo bot's
+    /// token.
+    Hub { token: String },
+    /// This computer's own host.
+    Local(Arc<Contract>),
+}
+
+/// The chat contract's socket: the phone's `{type, data}` frames, over the
+/// hub's tunnel or in memory on this computer.
+enum Socket {
+    Hub(Box<WebSocketStream<MaybeTlsStream<TcpStream>>>),
+    Local {
+        contract: Arc<Contract>,
+        frames: broadcast::Receiver<Outbound>,
+        /// Direct answers to frames sent (`auth_ok`), read before the rest.
+        replies: VecDeque<Value>,
+    },
+}
+
+impl Socket {
+    /// Sends one frame; `false` when the socket is gone.
+    async fn send(&mut self, frame: Value) -> bool {
+        match self {
+            Socket::Hub(ws) => ws.send(WsMessage::text(frame.to_string())).await.is_ok(),
+            Socket::Local { contract, replies, .. } => {
+                replies.extend(contract.inbound(&frame));
+                true
+            }
+        }
+    }
+
+    /// The next frame; `None` when the socket is gone.
+    async fn next(&mut self) -> Option<Value> {
+        match self {
+            Socket::Hub(ws) => loop {
+                match ws.next().await {
+                    Some(Ok(WsMessage::Text(text))) => {
+                        if let Ok(frame) = serde_json::from_str(text.as_str()) {
+                            return Some(frame);
+                        }
+                    }
+                    Some(Ok(WsMessage::Close(_))) | None => return None,
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => {
+                        info!(error = %e, "linked: the chat socket failed");
+                        return None;
+                    }
+                }
+            },
+            Socket::Local { frames, replies, .. } => {
+                if let Some(reply) = replies.pop_front() {
+                    return Some(reply);
+                }
+                loop {
+                    match frames.recv().await {
+                        Ok(Outbound { kind, data }) => return Some(json!({ "type": kind, "data": data })),
+                        // Fell behind: what comes next still arrives, as it
+                        // does to a phone over the tunnel.
+                        Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => return None,
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -482,17 +590,8 @@ fn ws_base(api_url: &str) -> String {
     }
 }
 
-async fn send<S>(
-    ws: &mut S,
-    frame: Value,
-    offline: &(dyn Fn() -> String + Sync),
-) -> Result<(), String>
-where
-    S: futures::Sink<WsMessage> + Unpin,
-{
-    ws.send(WsMessage::text(frame.to_string()))
-        .await
-        .map_err(|_| offline())
+async fn send(ws: &mut Socket, frame: Value, offline: &(dyn Fn() -> String + Sync)) -> Result<(), String> {
+    if ws.send(frame).await { Ok(()) } else { Err(offline()) }
 }
 
 #[cfg(test)]
@@ -738,7 +837,7 @@ mod tests {
     }
 
     fn provider(url: &str, store: Arc<db::Store>) -> LinkedProvider {
-        LinkedProvider::new(url, store, Arc::new(|| Some("bot-jwt".to_owned())))
+        LinkedProvider::new(url, store, Arc::new(|| Some("bot-jwt".to_owned())), None)
     }
 
     fn request(prompt: &str, chat_id: &str) -> ChatRequest {
@@ -979,5 +1078,217 @@ mod tests {
             events[0].error.as_deref(),
             Some("Could not connect to Danny. Try again.")
         );
+    }
+
+    // -- A coding agent on this computer ----------------------------------
+
+    /// This bot's id, under which Nebo hosts this computer's agents.
+    const SELF: &str = "5e1f0000-0000-4000-8000-000000000002";
+
+    /// Not a test when the harness runs it: the ACP agent a local hire
+    /// starts (this test binary again, with `NEBO_FAKE_ACP` naming the file
+    /// it writes what it was told to). It asks before it runs `git status`.
+    #[test]
+    fn fake_acp_agent() {
+        use std::io::{BufRead, Write};
+        let Ok(told) = std::env::var("NEBO_FAKE_ACP") else {
+            return;
+        };
+        let note = |line: Value| {
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&told).unwrap();
+            writeln!(file, "{line}").unwrap();
+        };
+        let send = |frame: Value| {
+            let mut out = std::io::stdout().lock();
+            writeln!(out, "{frame}").unwrap();
+            out.flush().unwrap();
+        };
+        let update = |update: Value| {
+            send(json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s-1", "update": update } }));
+        };
+        // The harness printed "test ... " without a newline: end that line,
+        // so every frame is a line of its own.
+        send(Value::Null);
+        let mut prompt_id = Value::Null;
+        for line in std::io::stdin().lock().lines() {
+            let Ok(message) = serde_json::from_str::<Value>(&line.unwrap()) else {
+                continue;
+            };
+            let id = message["id"].clone();
+            let reply = |result: Value| send(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+            match message["method"].as_str() {
+                Some("initialize") => reply(json!({
+                    "protocolVersion": 1,
+                    "agentCapabilities": { "loadSession": false },
+                    "agentInfo": { "name": "fake-acp" },
+                })),
+                Some("session/new") => reply(json!({
+                    "sessionId": "s-1",
+                    "modes": { "currentModeId": "default", "availableModes": [
+                        { "id": "default", "name": "Default", "_meta": { "kind": "standard" } },
+                        { "id": "acceptEdits", "name": "Accept edits", "_meta": { "kind": "standard" } },
+                    ] },
+                })),
+                Some("session/set_mode") => {
+                    note(json!({ "mode": message["params"]["modeId"] }));
+                    reply(json!({}));
+                }
+                Some("session/prompt") => {
+                    note(json!({ "prompt": message["params"]["prompt"][0]["text"] }));
+                    prompt_id = id.clone();
+                    update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Checking." } }));
+                    send(json!({ "jsonrpc": "2.0", "id": 900, "method": "session/request_permission", "params": {
+                        "sessionId": "s-1",
+                        "toolCall": { "toolCallId": "call_1", "title": "git status", "kind": "execute", "status": "pending", "rawInput": { "command": "git status" } },
+                        "options": [
+                            { "optionId": "allow", "name": "Allow", "kind": "allow_once" },
+                            { "optionId": "reject", "name": "Reject", "kind": "reject_once" },
+                        ],
+                    } }));
+                }
+                None if id == json!(900) => {
+                    note(json!({ "answer": message["result"]["outcome"] }));
+                    update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "call_1", "status": "completed",
+                        "content": [{ "type": "content", "content": { "type": "text", "text": "nothing to commit" } }] }));
+                    update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Ran it." } }));
+                    send(json!({ "jsonrpc": "2.0", "id": prompt_id, "result": { "stopReason": "end_turn", "usage": { "inputTokens": 7, "outputTokens": 3 } } }));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// How a local hire starts the fake agent.
+    fn fake_acp(told: &std::path::Path) -> nebo_runtimes::RuntimeCommand {
+        nebo_runtimes::RuntimeCommand {
+            program: std::env::current_exe().unwrap().to_string_lossy().into_owned(),
+            args: ["providers::linked::tests::fake_acp_agent", "--exact", "--nocapture", "--test-threads=1"]
+                .map(String::from)
+                .to_vec(),
+            env: vec![("NEBO_FAKE_ACP".into(), told.to_string_lossy().into_owned())],
+        }
+    }
+
+    fn local_host(root: &std::path::Path) -> Arc<LocalHost> {
+        LocalHost::open(
+            Arc::new(|| Some(SELF.to_owned())),
+            root.join("link"),
+            root.join("home"),
+            Some(root.join("nebo-link")),
+        )
+    }
+
+    /// A coding agent hired on this computer runs in Nebo, in its own
+    /// folder: a turn reaches it, its permission request is an ask on the
+    /// run's ask channels with its own options in the owner's words, the
+    /// answer goes back, and the turn completes in the employee's mode. No
+    /// hub is reachable and no NeboAI token exists: none is needed.
+    #[tokio::test]
+    async fn a_coding_agent_on_this_computer_runs_in_nebo_with_no_hub() {
+        let root = tempfile::tempdir().unwrap();
+        let told = root.path().join("told.jsonl");
+        let local = local_host(root.path());
+        let hosted = local.host(nebo_runtimes::acp::Agent::ClaudeCode, fake_acp(&told)).await.unwrap();
+        assert_eq!((hosted.id.as_str(), hosted.label.as_str()), ("claude-code", "Claude Code"));
+        let folder = root.path().join("home").join("NeboAI").join("claude-code").canonicalize().unwrap();
+        assert_eq!(hosted.acp.workdir, folder, "its own folder under ~/NeboAI");
+        let second = local.host(nebo_runtimes::acp::Agent::ClaudeCode, fake_acp(&told)).await.unwrap();
+        assert_eq!((second.id.as_str(), second.label.as_str()), ("claude-code-2", "Claude Code 2"));
+
+        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let hub = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let (_dir, store) = store();
+        let p = LinkedProvider::new(&hub, store.clone(), Arc::new(|| None), Some(local.clone()));
+        let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut req = request("check the repo", "chat-1");
+        req.model = format!("{SELF}/{}", hosted.id);
+        req.permission_mode = Some(types::permissions::Mode::Automatic);
+        req.ask_channels = Some(channels.clone());
+
+        let mut rx = p.stream(&req).await.unwrap();
+        let mut before = Vec::new();
+        let ask = loop {
+            let event = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
+            if event.event_type == StreamEventType::AskRequest {
+                break event;
+            }
+            assert_ne!(event.event_type, StreamEventType::Error, "{:?}", event.error);
+            before.push(event);
+        };
+        assert_eq!(kinds(&before), vec![StreamEventType::Text, StreamEventType::ToolCall]);
+        assert_eq!(before[0].text, "Checking.");
+        assert_eq!(before[1].tool_call.as_ref().unwrap().name, "git status");
+        assert_eq!(ask.error.as_deref(), Some("call_1"), "the question's id");
+        assert_eq!(ask.text, "git status");
+        assert_eq!(ask.widgets.as_ref().unwrap()[0]["options"], json!(["Allow once", "Deny"]));
+
+        // The ask card's answer, through the ONE pathway.
+        channels.lock().await.remove("call_1").expect("registered on the run").send("Allow once".to_owned()).unwrap();
+        let rest = tokio::time::timeout(Duration::from_secs(60), collect(rx)).await.unwrap();
+        assert_eq!(
+            kinds(&rest),
+            vec![StreamEventType::ToolResult, StreamEventType::Text, StreamEventType::Usage, StreamEventType::Done]
+        );
+        assert_eq!(rest[0].text, "nothing to commit");
+        assert_eq!(rest[1].text, "Ran it.");
+        let usage = rest[2].usage.as_ref().unwrap();
+        assert_eq!((usage.input_tokens, usage.output_tokens), (7, 3));
+
+        let told: Vec<Value> = std::fs::read_to_string(&told)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            told,
+            vec![
+                json!({ "mode": "acceptEdits" }),
+                json!({ "prompt": "check the repo" }),
+                json!({ "answer": { "outcome": "selected", "optionId": "allow" } }),
+            ],
+            "the employee's mode, then only the newest message, then the owner's answer"
+        );
+        assert_eq!(
+            store.get_chat("chat-1").unwrap().unwrap().linked_chat_id.as_deref(),
+            Some("claude-code~s-1"),
+            "the Nebo chat records the agent's session"
+        );
+
+        // Fired: the agent is no longer hosted, and its folder stays.
+        local.remove(&hosted.id).unwrap();
+        assert_eq!(local.agents().iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["claude-code-2"]);
+        assert!(folder.is_dir());
+        let reopened = local_host(root.path());
+        assert_eq!(reopened.agents(), local.agents(), "the record survives a restart");
+    }
+
+    /// One host per computer per OS user: while a nebo-link daemon is linked
+    /// for this user, Nebo hosts nothing, a local employee reads the plain
+    /// copy, and it never falls back to another brain.
+    #[tokio::test]
+    async fn nebo_hosts_nothing_while_nebo_link_hosts_this_computer() {
+        let root = tempfile::tempdir().unwrap();
+        let local = local_host(root.path());
+        let daemon = root.path().join("nebo-link").join("b1");
+        std::fs::create_dir_all(&daemon).unwrap();
+        std::fs::write(daemon.join("link.json"), r#"{"botId":"b1","name":"Studio Mac"}"#).unwrap();
+
+        assert_eq!(local.hosted_by_daemon().as_deref(), Some("Studio Mac"));
+        assert!(local.contract().is_none());
+        assert!(local.hireable().is_empty());
+        let refused = local
+            .host(nebo_runtimes::acp::Agent::Codex, fake_acp(&root.path().join("told")))
+            .await
+            .unwrap_err();
+        assert!(refused.contains("Studio Mac"), "{refused}");
+
+        let (_dir, store) = store();
+        let p = LinkedProvider::new("http://127.0.0.1:9", store, Arc::new(|| None), Some(local));
+        let mut req = request("hello", "chat-1");
+        req.model = format!("{SELF}/claude-code");
+        let events = collect(p.stream(&req).await.unwrap()).await;
+        assert_eq!(kinds(&events), vec![StreamEventType::Error, StreamEventType::Done]);
+        assert_eq!(events[0].error.as_deref(), Some("Could not connect to Danny. Try again."));
     }
 }

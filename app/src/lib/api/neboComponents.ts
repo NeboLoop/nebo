@@ -2621,6 +2621,8 @@ export interface LinkedBotEntry {
 	/** What runs the bot: "openclaw", "hermes". */
 	runtime: string
 	online: boolean
+	/** This computer: coding agents Nebo hosts itself, each hired into a folder of its own. */
+	local: boolean
 	agents: LinkedAgentEntry[]
 }
 

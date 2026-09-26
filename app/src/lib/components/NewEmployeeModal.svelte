@@ -11,7 +11,8 @@
   owner's joined through Nebo Link, each with the agents it hosts (OpenClaw
   and Hermes agents, Claude Code, Codex, Gemini CLI, OpenCode in their own
   folders): picking one makes it an employee here, with its own name and
-  brain.
+  brain. This computer comes first: the coding agents installed here, which
+  Nebo hosts itself, each hired into a folder of its own.
   A coding agent (Claude Code, Codex, ...) is hired with the permission mode
   the owner picks here, which it runs in on its computer; Settings changes
   it later.
@@ -155,7 +156,9 @@
   // A computer's bot hosting several agents (Claude Code and Codex in their
   // own folders, an OpenClaw install) is headed by its name alone: each
   // agent's row names what it is. One agent: the bot and the app it runs.
+  // This computer is headed as that.
   function botHeading(bot: LinkedBotEntry): string {
+    if (bot.local) return $t('newEmployee.thisComputer');
     return bot.agents.length === 1 ? `${bot.name} · ${appName(bot.runtime)}` : bot.name;
   }
 

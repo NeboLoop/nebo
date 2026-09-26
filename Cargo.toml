@@ -158,6 +158,12 @@ sandbox-runtime = { git = "https://github.com/NeboLoop/sandbox-runtime.git", bra
 vm = { path = "crates/vm", package = "nebo-vm" }
 syntax = { path = "crates/syntax", package = "nebo-syntax" }
 tls = { path = "crates/tls", package = "nebo-tls", version = "0.1" }
+# Hosting coding agents on this computer (Nebo is the host where it runs).
+# Pinned to a nebo-link commit, as nebo-link pins nebo-comm to a nebo one.
+link-core = { git = "https://github.com/NeboLoop/nebo-link", rev = "ff0224c7aa06a99e255effdf8b92634db3e492a7" }
+# Without `preserve-order`: Nebo never rewrites a runtime's config, and the
+# feature would turn every serde_json map in Nebo from sorted to insertion order.
+nebo-runtimes = { git = "https://github.com/NeboLoop/nebo-link", rev = "ff0224c7aa06a99e255effdf8b92634db3e492a7", default-features = false }
 
 # A2UI protocol
 a2ui-types = { path = "crates/a2ui/a2ui-types" }

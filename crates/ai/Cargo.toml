@@ -18,6 +18,10 @@ tokio-util = { workspace = true }
 reqwest = { workspace = true }
 tokio-tungstenite = { workspace = true }
 
+# Coding agents hosted on this computer
+link-core = { workspace = true }
+nebo-runtimes = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }

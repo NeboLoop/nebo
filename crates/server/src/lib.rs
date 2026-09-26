@@ -481,6 +481,7 @@ pub fn build_providers(
     store: &Arc<db::Store>,
     cfg: &Config,
     cli_statuses: Option<&config::AllCliStatuses>,
+    local_host: Option<&Arc<ai::LocalHost>>,
 ) -> Vec<Arc<dyn ai::Provider>> {
     let profiles = match store.list_auth_profiles() {
         Ok(p) => p,
@@ -696,14 +697,16 @@ pub fn build_providers(
     }
 
     // The linked provider: one for every employee hired from a linked bot,
-    // addressed by `linked/<bot>/<agent>` on the employee's model preference.
-    // Always registered — it resolves the NeboAI token per call through the
-    // ONE resolver — and never a default or a fallback (`retryable` = false).
+    // addressed by `linked/<bot>/<agent>` on the employee's model preference,
+    // this computer's own agents (hosted by Nebo) included. Always
+    // registered — it resolves the NeboAI token per call through the ONE
+    // resolver — and never a default or a fallback (`retryable` = false).
     let token_store = store.clone();
     providers.push(Arc::new(ai::LinkedProvider::new(
         &cfg.neboai.api_url,
         store.clone(),
         Arc::new(move || auth::neboai_token(&token_store)),
+        local_host.cloned(),
     )));
 
     providers
@@ -1106,8 +1109,22 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Err(_) => warn!("Janus model list sync timed out; catalog keeps its last copy"),
     }
 
+    // This computer's host. Where Nebo runs, Nebo hosts the coding agents the
+    // owner hires here, unless a nebo-link daemon of this OS user already
+    // does (one host per computer per OS user). One for the process: every
+    // provider build shares it, so a reload never restarts its agents.
+    let local_host = match (config::data_dir(), dirs::home_dir()) {
+        (Ok(data_dir), Some(home)) => Some(ai::LocalHost::open(
+            Arc::new(config::read_bot_id),
+            data_dir.join("link"),
+            home,
+            link_core::machine::daemon_home(),
+        )),
+        _ => None,
+    };
+
     // Build AI providers from database auth profiles + active CLI providers
-    let mut providers = build_providers(&store, &cfg, Some(&cli_statuses));
+    let mut providers = build_providers(&store, &cfg, Some(&cli_statuses), local_host.as_ref());
 
     // Build tool registry with default tools
     // No-op: Nebo uses the platform-native data directory (see config::data_dir).
@@ -1387,7 +1404,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     advisor_loader.watch();
 
     // Build a second provider set for advisor deliberation (includes CLI providers)
-    let advisor_providers = build_providers(&store, &cfg, Some(&cli_statuses));
+    let advisor_providers = build_providers(&store, &cfg, Some(&cli_statuses), local_host.as_ref());
     let shared_providers = Arc::new(advisor_providers);
     let advisor_runner: Option<Arc<dyn tools::AdvisorDeliberator>> = if shared_providers.is_empty() {
         None
@@ -2249,6 +2266,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         codes_in_flight: Arc::new(codes::InFlightCodes::default()),
+        local_host,
     };
 
     // An ask's card and its answers reach the owner through the hub, the
