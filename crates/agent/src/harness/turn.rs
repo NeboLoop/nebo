@@ -1526,6 +1526,13 @@ async fn checkpoint(
                 plan_mode: cx.plan_mode(),
             },
             instructions,
+            fit_under: (why != compact::checkpoint::CheckpointReason::OwnerAsked).then(|| {
+                compact::checkpoint::Trigger::threshold(
+                    h.selector.context_window(&st.model),
+                    usize::try_from(fork_of.max_tokens).unwrap_or_default(),
+                )
+            }),
+            overhead_tokens: st.usage.system_overhead_tokens,
         },
         why,
     )
@@ -4222,20 +4229,23 @@ mod tests {
         assert!(!stored(&h).iter().any(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)));
     }
 
-    /// A model whose real window is too small for the conversation (8,191
-    /// tokens) checkpoints once; the checkpoint doesn't bring the request
-    /// under the threshold, so the turn takes no more (the owner's chat
-    /// wrote 31 in ten minutes). A twelve-step turn writes one.
+    /// A model whose real window is too small for the conversation (the
+    /// embedding row's 8,191, or a small local model): the checkpoint
+    /// wouldn't bring the request under the threshold, so it isn't applied,
+    /// and after three the breaker trips. A twelve-step turn finishes on
+    /// its thirteen calls with three summary calls and no boundary, not a
+    /// checkpoint per step (the owner's chat wrote 31 in ten minutes).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_checkpoint_that_cannot_help_is_taken_once() {
+    async fn a_tiny_real_window_never_loops_checkpoints() {
         let mut steps: Vec<Step> = (0..12).map(|_| Step::Call("echo", serde_json::json!({}))).collect();
         steps.push(Step::Say("Done."));
         let model = Scripted::new(steps);
         let h = harness_selecting(&model, Vec::new(), gateway_selector("scripted/nebo-1", 8_191)).await;
         run_turn(&h, owner("Check it twelve times.")).await;
         assert_eq!(model.calls().len(), 13);
-        let checkpoints = model.side.lock().unwrap().iter().filter(|r| r.trace.purpose == "checkpoint").count();
-        assert_eq!(checkpoints, 1, "one checkpoint, not one per step");
+        let summaries = model.side.lock().unwrap().iter().filter(|r| r.trace.purpose == "checkpoint").count();
+        assert_eq!(summaries, compact::checkpoint::MAX_FAILURES as usize, "three tries, then the breaker");
+        assert!(!stored(&h).iter().any(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)), "none applied");
     }
 
     /// A stored model is never trusted as the turn's model: a conversation

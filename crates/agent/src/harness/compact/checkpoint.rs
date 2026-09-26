@@ -146,6 +146,17 @@ pub struct CheckpointContext<'a> {
     /// What the owner asked the summary to keep or focus on (`/compact
     /// <instructions>`, Claude Code's "Additional Instructions").
     pub instructions: Option<&'a str>,
+    /// For the turn's own checkpoints: the threshold the conversation after
+    /// the checkpoint must be under, or the checkpoint is not applied
+    /// (Claude Code's `trySessionMemoryCompaction` returns null when
+    /// `postCompactTokenCount >= autoCompactThreshold`,
+    /// `src/services/compact/sessionMemoryCompact.ts:602-614`). None for
+    /// the owner's `/compact`, which has no such check.
+    pub fit_under: Option<usize>,
+    /// What the next request carries besides the conversation (the system
+    /// prompt and the tools), counted with the checkpoint's rows against
+    /// `fit_under`.
+    pub overhead_tokens: usize,
 }
 
 /// The instruction the summary call ends with.
@@ -216,24 +227,20 @@ pub const MAX_FAILURES: u8 = 3;
 
 /// When the turn takes a checkpoint for itself. It is due when the request
 /// passes the window less the summary's output room (the model's output
-/// cap, at most 20k) and a 13k buffer (Claude Code's `getAutoCompactThreshold`,
-/// `src/services/compact/autoCompact.ts:33-49,72-91`). After three failures in a row the breaker trips and neither the threshold
-/// nor an overflow tries again until a checkpoint succeeds, as Claude Code's
-/// `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES` (the owner's `/compact` always
-/// runs). A checkpoint that leaves the next request still over the
-/// threshold did not help: the turn takes no more. Claude Code measures
-/// exactly this after every compaction (`willRetriggerNextTurn`,
-/// `src/services/compact/compact.ts:632-657`) and compacts at most once
-/// per query loop when the provider refuses the size
-/// (`hasAttemptedReactiveCompact`, `src/query.ts:1119-1157`).
+/// cap, at most 20k) and a 13k buffer: Claude Code's `getAutoCompactThreshold`
+/// on the model's own window (`src/services/compact/autoCompact.ts:33-49,
+/// 72-91`). After three failures in a row the breaker trips and neither the
+/// threshold nor an overflow tries again until a checkpoint succeeds
+/// (`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES`, `autoCompact.ts:70,259-264,
+/// 338-349`); a checkpoint that would leave the conversation at the
+/// threshold is not applied and is one of those failures. The owner's
+/// `/compact` always runs. The summary call itself goes straight to the
+/// provider, never through a step, so it can't trigger a checkpoint
+/// (Claude Code's recursion guard on the `compact` query source,
+/// `autoCompact.ts:169-173`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Trigger {
     failures: u8,
-    /// A checkpoint was just written: the next request shows whether it
-    /// helped.
-    just_checkpointed: bool,
-    /// A checkpoint did not bring the request under the threshold.
-    stalled: bool,
 }
 
 impl Trigger {
@@ -250,24 +257,13 @@ impl Trigger {
     }
 
     /// Whether a request of `request_tokens` should be checkpointed first.
-    pub fn due(&mut self, request_tokens: usize, context_window: usize, max_output: usize) -> bool {
-        let threshold = Self::threshold(context_window, max_output);
-        let over = request_tokens >= threshold;
-        if std::mem::take(&mut self.just_checkpointed) && over && !self.stalled {
-            self.stalled = true;
-            warn!(request_tokens, threshold, "the checkpoint left the request over the threshold; no more checkpoints this turn");
-        }
-        over && !self.tripped() && !self.stalled
+    pub fn due(&self, request_tokens: usize, context_window: usize, max_output: usize) -> bool {
+        !self.tripped() && request_tokens >= Self::threshold(context_window, max_output)
     }
 
     /// Count a checkpoint's outcome: a success resets the count.
     pub fn record(&mut self, outcome: &Result<Checkpoint, String>) {
-        if outcome.is_ok() {
-            self.failures = 0;
-            self.just_checkpointed = true;
-        } else {
-            self.failures = self.failures.saturating_add(1);
-        }
+        self.failures = if outcome.is_ok() { 0 } else { self.failures.saturating_add(1) };
     }
 }
 
@@ -322,6 +318,21 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
             .collect::<Vec<_>>()
     );
     let text = boundary_text(&summary, head_cut, why);
+    let restore = restore::restore(&stored, &cx.restore);
+    let restore_rows: Vec<crate::harness::reminders::Attachment> = restore.iter().flat_map(events::attachments_for).collect();
+    // The conversation after the checkpoint: the boundary, the restore
+    // rows and what every request carries. Still at the threshold, the
+    // checkpoint is not applied.
+    let after = cx.overhead_tokens
+        + text.len() / crate::CHARS_PER_TOKEN
+        + restore_rows.iter().map(|a| a.text.len() / crate::CHARS_PER_TOKEN).sum::<usize>();
+    if let Some(threshold) = cx.fit_under
+        && after >= threshold
+    {
+        return Err(format!(
+            "the checkpoint would leave the conversation at {after} tokens, not under the {threshold} threshold"
+        ));
+    }
     // The owner sees one quiet marker, Claude Code's `compact_boundary`
     // system message (`src/utils/messages.ts:4530-4555`). It is written
     // before the boundary, so the model's conversation never holds it.
@@ -337,7 +348,6 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
         warn!(error = %e, "could not count the checkpoint");
     }
 
-    let restore = restore::restore(&stored, &cx.restore);
     let restored: Vec<String> = restore
         .iter()
         .filter_map(events::attachment_for)
@@ -555,6 +565,9 @@ mod tests {
         sessions: SessionManager,
         sid: String,
         chat: String,
+        /// The threshold the turn's checkpoints must fit under (none by
+        /// default: the owner's `/compact`).
+        fit_under: std::cell::Cell<Option<usize>>,
     }
 
     impl Setup {
@@ -564,7 +577,7 @@ mod tests {
             let sessions = SessionManager::new(store.clone());
             let sid = sessions.get_or_create("agent:a:web", "").unwrap().id;
             let chat = sessions.active_chat_id(&sid);
-            Self { dir, store, sessions, sid, chat }
+            Self { dir, store, sessions, sid, chat, fit_under: std::cell::Cell::new(None) }
         }
 
         fn say(&self, role: &str, text: &str) {
@@ -619,6 +632,8 @@ mod tests {
                 hooks,
                 restore,
                 instructions: None,
+                fit_under: self.fit_under.get(),
+                overhead_tokens: 0,
             };
             checkpoint(&cx, why).await
         }
@@ -996,28 +1011,35 @@ mod tests {
         assert!(t.due(190_000, 200_000, 64_000));
     }
 
-    /// A checkpoint that leaves the request over the threshold is not taken
-    /// again on the next step: thirty steps over the threshold write one
-    /// checkpoint, not thirty (the owner's chat wrote 31 in ten minutes).
-    #[test]
-    fn a_checkpoint_that_did_not_help_is_not_repeated() {
+    /// A checkpoint whose result would still be at the threshold is not
+    /// applied (nothing is written) and counts as a failure: three in a row
+    /// trip the breaker, so thirty steps over the threshold make three
+    /// summary calls, not thirty checkpoints (the owner's chat wrote 31 in
+    /// ten minutes). The owner's `/compact` has no such check.
+    #[tokio::test]
+    async fn a_checkpoint_still_at_the_threshold_is_not_applied_and_trips_the_breaker() {
+        let s = Setup::new();
+        s.say("user", "Draft the letter.");
+        s.say("assistant", "Drafted.");
+        let provider = Scripted::new((0..4).map(|_| Reply::Say("summary ".repeat(400))).collect());
+        s.fit_under.set(Some(100));
         let mut t = Trigger::default();
-        let ok = || Ok(Checkpoint { boundary_id: "b".into(), summary: "s".into(), restore: vec![] });
-        let mut taken = 0;
         for _ in 0..30 {
-            if t.due(190_000, 200_000, 64_000) {
-                taken += 1;
-                t.record(&ok());
+            if !t.due(190_000, 200_000, 64_000) {
+                continue;
             }
+            let outcome = s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await;
+            let err = outcome.as_ref().unwrap_err();
+            assert!(err.contains("not under the 100 threshold"), "{err}");
+            t.record(&outcome);
         }
-        assert_eq!(taken, 1, "the second step shows the checkpoint did not help");
-        assert!(!t.due(195_000, 200_000, 64_000), "and the turn takes no more");
+        assert_eq!(provider.requests().len(), MAX_FAILURES as usize, "the breaker trips after three");
+        assert!(t.tripped());
+        assert_eq!(s.sessions.get_messages(&s.sid).unwrap().len(), 2, "nothing was written");
 
-        let mut t = Trigger::default();
-        assert!(t.due(190_000, 200_000, 64_000));
-        t.record(&ok());
-        assert!(!t.due(40_000, 200_000, 64_000), "a checkpoint that helped");
-        assert!(t.due(170_000, 200_000, 64_000), "leaves the trigger armed for real growth");
+        s.fit_under.set(None);
+        s.checkpoint(&provider, CheckpointReason::OwnerAsked, &[], RestoreState::default()).await.unwrap();
+        assert!(s.conversation()[0].content.starts_with(BOUNDARY_LEAD), "the owner's /compact is applied");
     }
 
     /// The checkpoint is a hidden row (the model's) and one quiet boundary
@@ -1068,6 +1090,8 @@ mod tests {
             hooks: &[],
             restore: RestoreState::default(),
             instructions: None,
+            fit_under: None,
+            overhead_tokens: 0,
         };
         send(&checkpoint(&cx, CheckpointReason::OwnerAsked));
     }
