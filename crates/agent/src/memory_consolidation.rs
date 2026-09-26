@@ -846,12 +846,15 @@ struct ConsolidationUpdate {
 mod tests {
     use super::*;
 
-    fn test_store(name: &str) -> (Arc<Store>, std::path::PathBuf) {
-        let path =
-            std::env::temp_dir().join(format!("nebo-consol-{}-{}.db", name, std::process::id()));
-        let _ = std::fs::remove_file(&path);
+    /// The directory outlives the store: bind it first (`let (_dir, store)`)
+    /// so it is removed only after the store is dropped. Never unlink a
+    /// database a live pool holds: the pool's next connection creates a new
+    /// file at the path and resets the old one's mapped `-shm` (SIGBUS).
+    fn test_store(name: &str) -> (tempfile::TempDir, Arc<Store>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("{name}.db"));
         let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
-        (store, path)
+        (dir, store)
     }
 
     fn mem(store: &Store, ns: &str, key: &str, value: &str, user_id: &str) -> Memory {
@@ -886,7 +889,7 @@ mod tests {
 
     #[test]
     fn test_activity_gate_small_active_scope_eligible_big_dormant_not() {
-        let (store, path) = test_store("gate");
+        let (_dir, store) = test_store("gate");
 
         // Small ctx scope (5 memories) written by 3 separated bursts →
         // eligible: activity, not size, is the gate.
@@ -919,8 +922,6 @@ mod tests {
                 < MIN_WRITE_BURSTS_FOR_CONSOLIDATION,
             "dormant scope must not pass the activity gate regardless of size"
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 
     // ── Contradiction candidate ────────────────────────────────────────
@@ -968,7 +969,7 @@ mod tests {
 
     #[test]
     fn test_contradiction_check_never_crosses_sibling_scopes() {
-        let (store, path) = test_store("isolation");
+        let (_dir, store) = test_store("isolation");
         let scope_a = "iso-owner:agent:a1:ctx:case-A";
         let scope_b = "iso-owner:agent:a1:ctx:case-B";
 
@@ -987,8 +988,6 @@ mod tests {
         // With only its own row visible, the new memory has no candidate —
         // Case A's near-identical fact is structurally unreachable.
         assert!(find_contradiction_candidate(&rows_b, mem_b.id, &mem_b.key).is_none());
-
-        let _ = std::fs::remove_file(&path);
     }
 
     // ── Relation from the typed answers ────────────────────────────────
@@ -1022,7 +1021,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_micro_verdict_merge_supersede_keep_both() {
-        let (store, path) = test_store("verdict");
+        let (_dir, store) = test_store("verdict");
         let scope = "verdict-owner:agent:a1:ctx:case-A";
 
         // merge: merged value lands on the oldest id, newer copy deleted.
@@ -1058,8 +1057,6 @@ mod tests {
         apply_micro_verdict(&store, &verdict, &a, &b, None, scope).await;
         assert!(store.get_memory(a.id).unwrap().is_some());
         assert!(store.get_memory(b.id).unwrap().is_some());
-
-        let _ = std::fs::remove_file(&path);
     }
 
     // ── Consolidation apply: scope safety + index freshness ────────────
@@ -1085,7 +1082,7 @@ mod tests {
     async fn test_apply_plan_invalidates_index_after_delete_and_skips_foreign_ids() {
         use tools::bot_tool::HybridSearcher;
 
-        let (store, path) = test_store("applyplan");
+        let (_dir, store) = test_store("applyplan");
         // Unique scope: the index cache is process-global, shared across tests.
         let scope = "applyplan-owner:agent:a1";
         let foreign_scope = "applyplan-owner:agent:OTHER";
@@ -1138,7 +1135,5 @@ mod tests {
             results.iter().any(|r| r.memory_id == Some(keep.id)),
             "kept memory still searchable"
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 }

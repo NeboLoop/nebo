@@ -414,10 +414,9 @@ mod tests {
 
     #[test]
     fn test_session_chat_id_derivation_chain() {
-        let path = std::env::temp_dir().join(format!("nebo-sessq-test-{}.db", std::process::id()));
-        let path_str = path.to_string_lossy().to_string();
-        let _ = std::fs::remove_file(&path);
-        let store = Store::new(&path_str).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessq-test.db");
+        let store = Store::new(&path.to_string_lossy()).unwrap();
 
         // No session row → no chat derivable (context-isolated memory fails
         // closed on this), while resolve_ keeps its synthetic fallback.
@@ -442,8 +441,6 @@ mod tests {
         store.create_session("s3", None, None, None, None).unwrap();
         assert_eq!(store.session_chat_id("s3"), None);
         assert_eq!(store.resolve_session_chat_id("s3"), "chat-s3");
-
-        let _ = std::fs::remove_file(&path);
     }
 }
 

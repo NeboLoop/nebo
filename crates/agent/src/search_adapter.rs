@@ -241,11 +241,8 @@ mod tests {
     /// ("storage locker code" recalled only after restart).
     #[tokio::test]
     async fn test_embed_refreshes_cached_index_same_process() {
-        let path = std::env::temp_dir().join(format!(
-            "nebo-index-freshness-test-{}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index-freshness-test.db");
         let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
         // Unique user id: the index cache is process-global, shared across tests.
         let user_id = "index-freshness-u1";
@@ -298,7 +295,5 @@ mod tests {
             "same-process vector search must see the newly embedded memory \
              (stale index cache); got: {results:?}"
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 }

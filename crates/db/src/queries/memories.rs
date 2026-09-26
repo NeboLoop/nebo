@@ -770,10 +770,9 @@ mod tests {
 
     #[test]
     fn test_delete_memories_by_namespace_prefix() {
-        let path = std::env::temp_dir().join(format!("nebo-memq-test-{}.db", std::process::id()));
-        let path_str = path.to_string_lossy().to_string();
-        let _ = std::fs::remove_file(&path);
-        let store = Store::new(&path_str).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memq-test.db");
+        let store = Store::new(&path.to_string_lossy()).unwrap();
 
         store
             .upsert_memory("daily/2026-04-14", "old-fact", "v", None, None, "u1")
@@ -790,17 +789,13 @@ mod tests {
         assert_eq!(deleted, 2);
         assert_eq!(store.count_memories_by_namespace("daily/").unwrap(), 0);
         assert_eq!(store.count_memories_by_namespace("tacit/").unwrap(), 1);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_memory_scope_activity_bursts() {
-        let path =
-            std::env::temp_dir().join(format!("nebo-memq-activity-test-{}.db", std::process::id()));
-        let path_str = path.to_string_lossy().to_string();
-        let _ = std::fs::remove_file(&path);
-        let store = Store::new(&path_str).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memq-activity-test.db");
+        let store = Store::new(&path.to_string_lossy()).unwrap();
 
         // Unwritten scope: zero events.
         assert_eq!(store.get_memory_scope_write_events("scope-a").unwrap(), 0);
@@ -832,17 +827,13 @@ mod tests {
             .unwrap();
         assert_eq!(store.get_memory_scope_write_events("scope-b").unwrap(), 1);
         assert_eq!(store.get_memory_scope_write_events("scope-a").unwrap(), 0);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_list_memories_missing_embeddings() {
-        let path =
-            std::env::temp_dir().join(format!("nebo-memq-embed-test-{}.db", std::process::id()));
-        let path_str = path.to_string_lossy().to_string();
-        let _ = std::fs::remove_file(&path);
-        let store = Store::new(&path_str).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memq-embed-test.db");
+        let store = Store::new(&path.to_string_lossy()).unwrap();
         store
             .upsert_memory("tacit/general", "embedded", "value a", None, None, "u1")
             .unwrap();
@@ -890,7 +881,5 @@ mod tests {
         assert!(store.get_memory_chunk(orphan_chunk).unwrap().is_none());
         let missing_after = store.list_memories_missing_embeddings().unwrap();
         assert_eq!(missing_after.len(), 2);
-
-        let _ = std::fs::remove_file(&path);
     }
 }

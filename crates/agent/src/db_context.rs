@@ -735,12 +735,15 @@ mod tests {
 
     /// Temp-file store: the r2d2 pool would give each `:memory:` connection
     /// its own database, so file-backed is required for cross-connection reads.
-    fn test_store(name: &str) -> (Arc<Store>, std::path::PathBuf) {
-        let path =
-            std::env::temp_dir().join(format!("nebo-{name}-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+    /// The directory outlives the store: bind it first (`let (_dir, store)`)
+    /// so it is removed only after the store is dropped. Never unlink a
+    /// database a live pool holds: the pool's next connection creates a new
+    /// file at the path and resets the old one's mapped `-shm` (SIGBUS).
+    fn test_store(name: &str) -> (tempfile::TempDir, Arc<Store>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("{name}.db"));
         let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
-        (store, path)
+        (dir, store)
     }
 
     /// No embedding provider → hybrid search degrades to FTS-only and results
@@ -750,7 +753,7 @@ mod tests {
     async fn test_prompt_recall_fts_only_degradation() {
         use tools::HybridSearcher;
 
-        let (store, path) = test_store("recall-degradation-test");
+        let (_dir, store) = test_store("recall-degradation-test");
         store
             .upsert_memory(
                 "tacit/general",
@@ -793,8 +796,6 @@ mod tests {
         let (text, ids) = format_prompt_relevant_memories(results, &existing, false);
         assert!(text.is_empty());
         assert!(ids.is_empty());
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// The injected slice is bounded by PROMPT_MEMORY_CHAR_BUDGET, not a bare
@@ -803,7 +804,7 @@ mod tests {
     async fn test_prompt_recall_respects_char_budget() {
         use tools::HybridSearcher;
 
-        let (store, path) = test_store("recall-budget-test");
+        let (_dir, store) = test_store("recall-budget-test");
         let long_value = format!("zebra fact {}", "x".repeat(400));
         for i in 0..8 {
             store
@@ -831,8 +832,6 @@ mod tests {
             ids.len()
         );
         assert!(!text.is_empty());
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// Budget-met path: the spawned search completes inside
@@ -840,7 +839,7 @@ mod tests {
     /// (no FTS fallback involvement — the store holds nothing FTS could find).
     #[tokio::test]
     async fn test_join_recall_within_budget_returns_hybrid_results() {
-        let (store, path) = test_store("recall-join-fast-test");
+        let (_dir, store) = test_store("recall-join-fast-test");
         let task = tokio::spawn(async {
             (
                 vec![tools::HybridSearchResult {
@@ -861,8 +860,6 @@ mod tests {
             "hybrid results must flow unchanged: {text:?}"
         );
         assert_eq!(ids, vec![42]);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     /// Budget-exceeded path: a slow vector leg (stubbed spawned search that
@@ -870,7 +867,7 @@ mod tests {
     /// FTS-matchable memory is returned, the late vector results are dropped.
     #[tokio::test]
     async fn test_join_recall_over_budget_degrades_to_fts() {
-        let (store, path) = test_store("recall-join-slow-test");
+        let (_dir, store) = test_store("recall-join-slow-test");
         store
             .upsert_memory(
                 "tacit/general",
@@ -907,8 +904,6 @@ mod tests {
         );
         assert_eq!(ids.len(), 1);
         assert_ne!(ids[0], 99);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

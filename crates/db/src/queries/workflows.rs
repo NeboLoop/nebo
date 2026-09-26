@@ -1004,8 +1004,8 @@ mod tests {
     /// the recorded output of every pass before it.
     #[test]
     fn test_activity_results_are_per_iteration() {
-        let path = std::env::temp_dir()
-            .join(format!("nebo-wf-iter-test-{}.db", uuid::Uuid::new_v4()));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wf-iter-test.db");
         let store = Store::new(&path.to_string_lossy()).unwrap();
         store
             .create_workflow_run("run1", "wf1", "manual", None, None, None, None)
@@ -1035,8 +1035,6 @@ mod tests {
         );
         // An iteration that never ran is absent, so it is not fast-forwarded.
         assert!(!done.contains_key(&("body".into(), "2".into())));
-
-        let _ = std::fs::remove_file(&path);
     }
 }
 
