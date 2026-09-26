@@ -3198,6 +3198,52 @@ mod tests {
         assert!(weather_result.contains("weather ran"), "{weather_result}");
     }
 
+    /// The tools array heads the cached prefix, so a load may only append
+    /// to it. Over two turns of one session, with loads mid-turn and in the
+    /// next turn, every request's serialized tools array is a byte prefix of
+    /// the next one's: nothing earlier is reordered, dropped or re-rendered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_tools_array_only_grows_at_its_end_across_steps_and_turns() {
+        let model = Scripted::new(vec![
+            Step::Call(tools::find_tools::FIND_TOOLS, serde_json::json!({"query": "select:weather"})),
+            Step::Call(tools::find_tools::FIND_TOOLS, serde_json::json!({"query": "select:beta,alpha"})),
+            Step::Call("alpha", serde_json::json!({})),
+            Step::Say("Done."),
+            Step::Call(tools::find_tools::FIND_TOOLS, serde_json::json!({"query": "select:gamma"})),
+            Step::Say("Loaded."),
+        ]);
+        let extra: Vec<Box<dyn tools::registry::DynTool>> = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .map(|name| Box::new(Echo { name, deferred: true, read_only: true }) as Box<dyn tools::registry::DynTool>)
+            .collect();
+        let h = harness_with(&model, extra).await;
+        run_turn(&h, owner("Weather, then alpha.")).await;
+        run_turn(&h, owner("Now gamma.")).await;
+        let calls = model.calls();
+        assert_eq!(calls.len(), 6, "four steps, then two");
+        // The array as the request carries it: one JSON object per tool, in
+        // order. Its open form (no closing bracket) is what a longer array
+        // must start with.
+        let open = |c: &ChatRequest| {
+            let each: Vec<String> = c.tools.iter().map(|t| serde_json::to_string(t).unwrap()).collect();
+            format!("[{}", each.join(","))
+        };
+        let names = |c: &ChatRequest| c.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        for pair in calls.windows(2) {
+            assert!(
+                open(&pair[1]).starts_with(&open(&pair[0])),
+                "the tools array changed before its end: {:?} then {:?}",
+                names(&pair[0]),
+                names(&pair[1])
+            );
+        }
+        let counts: Vec<usize> = calls.iter().map(|c| c.tools.len()).collect();
+        let core = counts[0];
+        assert_eq!(counts, vec![core, core + 1, core + 3, core + 3, core + 3, core + 4], "each load appends");
+        let loaded: Vec<String> = names(&calls[5]).split_off(core);
+        assert_eq!(loaded, ["weather", "beta", "alpha", "gamma"], "in load order, as the model asked");
+    }
+
     /// An app subscribed to `agent.should_continue` that answers `false`
     /// halts a running employee before its next step, as on main; `true`
     /// (or no answer) never keeps a finished turn going.
