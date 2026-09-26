@@ -21,7 +21,8 @@ import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { parseMessages } from '$lib/chat/history';
 import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
-import { isThinking } from '$lib/chat/progress';
+import { isThinking, latestThought } from '$lib/chat/progress';
+import type { Fold } from '$lib/chat/turnBlocks';
 import { formatTime } from '$lib/time';
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
@@ -105,7 +106,9 @@ export type ChatMessage =
   | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
   | { type: 'thinking'; content: string; duration: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
-  | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean }
+  /** `fold`: the server's verdict on this segment's text (`text_verdict`) —
+   *  prose or a note in the turn's work; `segment`: its index in the turn. */
+  | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean; fold?: Fold; segment?: number }
   /** The boundary the backend leaves where earlier conversation was summarized. */
   | { type: 'compactBoundary'; id?: string; time?: string };
 
@@ -231,6 +234,8 @@ export function createChatController(config: ChatControllerConfig) {
 
   // --- Internal tracking ---
   let phaseStartTime = 0;
+  /** What the model has thought since its last call or text (`thinking`). */
+  let thought = '';
   let usageClearTimer: ReturnType<typeof setTimeout> | null = null;
   let activeSessionKey: string | undefined = config.sessionKey;
 
@@ -369,6 +374,7 @@ export function createChatController(config: ChatControllerConfig) {
     if (aid === agentId && !isLoading) { isLoading = true; phaseStartTime = Date.now(); }
     const chunk = data.chunk || data.content || '';
     if (!chunk) return;
+    thought = '';
     // Narration resuming after this reply already ran tools starts a FRESH bubble,
     // so each segment owns exactly the tools that followed it — the same grouping
     // history rebuilds from contentBlocks, and the way NeboLoop renders a turn.
@@ -423,6 +429,7 @@ export function createChatController(config: ChatControllerConfig) {
       isLoading = false;
       phaseStartTime = 0;
       activityStatus = '';
+      thought = '';
       // The turn a queued message waited on is over: it is in the thread now.
       messages = messages.map((m) => (m.type === 'user' && m.pending ? { ...m, pending: false } : m));
       if (usageClearTimer) clearTimeout(usageClearTimer);
@@ -485,11 +492,44 @@ export function createChatController(config: ChatControllerConfig) {
     const duration = elapsed >= 60
       ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
       : `${elapsed}s`;
-    messages = [...messages, {
-      type: 'thinking' as const,
-      content: data.content || '',
-      duration,
-    }];
+    // The stream carries thinking in pieces: one row per stretch of it, and
+    // the live line reads its latest sentence.
+    const piece = data.content || '';
+    const lastIdx = messages.length - 1;
+    const prev = messages[lastIdx];
+    if (thought && prev?.type === 'thinking') {
+      messages[lastIdx] = { ...prev, content: prev.content + piece, duration };
+    } else {
+      messages = [...messages, { type: 'thinking' as const, content: piece, duration }];
+    }
+    thought += piece;
+    const line = latestThought(thought);
+    if (line && aid === agentId) activityStatus = line;
+  }
+
+  /** The server's verdict on a text segment: the one just closed by the
+   *  call about to start (the open reply), or — at the end of a turn that
+   *  folded everything — an earlier one it now shows. */
+  function handleTextVerdict(data: any) {
+    if (!isMyEvent(data)) return;
+    const fold: Fold | undefined = data.fold === 'shown' || data.fold === 'folded' ? data.fold : undefined;
+    const segment = typeof data.segment === 'number' ? data.segment : undefined;
+    if (!fold || segment === undefined) return;
+    const aid = data.agentId || agentId;
+    flushPending(aid);
+    let idx = replyIndex(aid);
+    const open = idx === -1 ? null : messages[idx];
+    if (!(open?.type === 'assistant' && open.content && !open.tools?.length && !open.fold)) {
+      idx = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.type === 'user' && !m.pending) break;
+        if (m.type === 'assistant' && m.segment === segment) { idx = i; break; }
+      }
+    }
+    if (idx === -1) return;
+    const m = messages[idx];
+    if (m.type === 'assistant') messages[idx] = { ...m, fold, segment };
   }
 
   function handleToolStart(data: any) {
@@ -500,6 +540,7 @@ export function createChatController(config: ChatControllerConfig) {
     // Flush buffered narration into the open reply, then attach the tool TO that
     // reply's timeline — tools live on the message, never as sibling entries.
     flushPending(aid);
+    thought = '';
     const idx = ensureReply(aid);
 
     let request: Record<string, unknown> = {};
@@ -700,6 +741,7 @@ export function createChatController(config: ChatControllerConfig) {
     resetStreaming();
     phaseStartTime = 0;
     activityStatus = '';
+    thought = '';
     // A question nobody answered dies with the run: the card says so instead
     // of offering choices the tool will never read.
     messages = messages.map((m) =>
@@ -740,6 +782,7 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(onServer('chat_cancelled', handleChatCancelled));
   unsubs.push(onServer('thinking', handleThinking));
   unsubs.push(onServer('tool_start', handleToolStart));
+  unsubs.push(onServer('text_verdict', handleTextVerdict));
   unsubs.push(onServer('tool_result', handleToolResult));
 
   function handleResearchProgress(data: any) {
@@ -766,7 +809,8 @@ export function createChatController(config: ChatControllerConfig) {
   // or ends a turn; its own events do. Not an `onServer` handler: a
   // broadcast every client gets proves nothing about this client's send.
   function handleAgentProgress(data: any) {
-    if (!isLoading || !isThinking(data?.runs, activeSessionKey ?? '')) return;
+    // The model's own thought, when the stream carries it, outranks the tick.
+    if (thought || !isLoading || !isThinking(data?.runs, activeSessionKey ?? '')) return;
     activityStatus = get(t)('chatInput.thinking');
   }
   unsubs.push(ws.on('agent_progress', handleAgentProgress));

@@ -197,6 +197,18 @@ pub(crate) struct ModelCall<'a> {
     /// executor to start while the reply streams. Dropped when the call
     /// returns, which tells the executor the stream is over.
     pub tool_calls_out: mpsc::UnboundedSender<ai::ToolCall>,
+    /// The turn's text segments: a tool call closing one sends its verdict.
+    pub folds: &'a mut super::text_fold::TurnFolds,
+}
+
+/// One content block of a reply, in stream order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Block {
+    /// Coalesced text, with its verdict once a tool call in this reply
+    /// closed it.
+    Text(Option<super::text_fold::Fold>),
+    /// The tool call at this index.
+    Tool(usize),
 }
 
 /// What a call came back with.
@@ -234,8 +246,8 @@ pub(crate) struct ModelReply {
     pub tool_calls: Vec<ai::ToolCall>,
     pub stop: Option<String>,
     pub stream_error: Option<String>,
-    /// The order of content blocks: "text" (coalesced) or a tool index.
-    pub block_order: Vec<(&'static str, Option<usize>)>,
+    /// The order of content blocks.
+    pub block_order: Vec<Block>,
     /// The provider that answered.
     pub provider: Arc<dyn Provider>,
     /// The reply's thinking blocks, in order, and the model that wrote them
@@ -265,6 +277,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         context_limit,
         tool_credential,
         tool_calls_out,
+        folds,
     } = call;
 
     // Acquire LLM permit before provider call (blocks if at capacity)
@@ -454,8 +467,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
     let mut stop_reason: Option<String> = None;
     let mut t_first_token: Option<std::time::Instant> = None;
     // Track the order of content blocks (text vs tool) for correct rehydration.
-    // Each entry is either "text" (coalesced) or a tool index.
-    let mut block_order: Vec<(&'static str, Option<usize>)> = Vec::new();
+    let mut block_order: Vec<Block> = Vec::new();
     let mut thinking: Vec<ai::ThinkingBlock> = Vec::new();
     // CLI providers run multi-turn tool loops — save each turn incrementally.
     let cli_incremental = provider.handles_tools();
@@ -542,9 +554,10 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                     block_order.clear();
                 }
                 assistant_content.push_str(&event.text);
+                folds.text(&event.text);
                 // Coalesce consecutive text events into one block
-                if block_order.last().is_none_or(|b| b.0 != "text") {
-                    block_order.push(("text", None));
+                if !matches!(block_order.last(), Some(Block::Text(_))) {
+                    block_order.push(Block::Text(None));
                 }
                 let _ = tx.send(event).await;
             }
@@ -559,7 +572,15 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 if let Some(ref tc) = event.tool_call {
                     info!(session_id, tool = %tc.name, tool_id = %tc.id, "tool call received");
                     tool_calls.push(tc.clone());
-                    block_order.push(("tool", Some(tool_calls.len() - 1)));
+                    // The call closes the text before it: its verdict goes
+                    // out first, so the clients fold it before the call row.
+                    if let Some((segment, fold)) = folds.tool_call() {
+                        if let Some(Block::Text(verdict)) = block_order.last_mut() {
+                            *verdict = Some(fold);
+                        }
+                        let _ = tx.send(StreamEvent::text_verdict(segment, fold.as_str())).await;
+                    }
+                    block_order.push(Block::Tool(tool_calls.len() - 1));
                     // A CLI provider runs its own tools over /agent/mcp.
                     if !cli_incremental {
                         let _ = tool_calls_out.send(tc.clone());
@@ -687,7 +708,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             }
             StreamEventType::ApprovalRequest
             | StreamEventType::AskRequest
-            | StreamEventType::ControlNotice => {
+            | StreamEventType::ControlNotice
+            | StreamEventType::TextVerdict => {
                 // Approval/Ask/ControlNotice: only sent by runner, not
                 // received from provider.
             }

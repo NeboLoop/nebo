@@ -386,7 +386,13 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
                     .iter()
                     .map(|b| {
                         if b.get("type").and_then(|v| v.as_str()) == Some("text") {
-                            serde_json::json!({"type": "text", "text": msg.content})
+                            // The verdict the stream gave the segment
+                            // (`text_fold`) replays with it.
+                            let mut text = serde_json::json!({"type": "text", "text": msg.content});
+                            if let Some(fold) = b.get("fold") {
+                                text["fold"] = fold.clone();
+                            }
+                            text
                         } else {
                             b.clone()
                         }
@@ -1065,6 +1071,24 @@ mod transcript_metadata_tests {
         assert_eq!(blocks[0]["type"], "tool"); // tool FIRST, as streamed
         assert_eq!(blocks[1]["type"], "text");
         assert_eq!(blocks[1]["text"], "Here's the file.");
+    }
+
+    /// A text block's stored verdict (`text_fold`) replays with its text, so
+    /// a reloaded thread folds the same paragraphs the live one did.
+    #[test]
+    fn a_stored_verdict_replays_on_its_text_block() {
+        let mut assistant = msg("assistant", "Let me check the workflows.");
+        assistant.tool_calls = Some(r#"[{"id":"t1","name":"os","input":{}}]"#.to_string());
+        assistant.metadata = Some(
+            r#"{"contentBlocks":[{"type":"text","fold":"folded"},{"type":"tool","toolCallIndex":0}]}"#.to_string(),
+        );
+        let mut messages = vec![assistant];
+        build_message_metadata(&mut messages);
+        let meta: serde_json::Value = serde_json::from_str(messages[0].metadata.as_deref().unwrap()).unwrap();
+        let blocks = meta["contentBlocks"].as_array().unwrap();
+        assert_eq!(blocks[0]["fold"], "folded");
+        assert_eq!(blocks[0]["text"], "Let me check the workflows.");
+        assert!(blocks[1].get("fold").is_none());
     }
 
     /// build_ui_tool_calls: string inputs pass through raw, object inputs are

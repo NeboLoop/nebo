@@ -32,7 +32,8 @@ use tracing::{info, warn};
 
 use super::conversation::{self, InputRow, MidTurnFrom};
 use super::events::{self, TurnEvent};
-use super::model_call::{self, CallOutcome, RetryWhy};
+use super::model_call::{self, Block, CallOutcome, RetryWhy};
+use super::text_fold;
 use super::prompt::{self, Identity, sections};
 use super::seat::{self, GrantRequest, Seat};
 use types::permissions::{Grant, Mode};
@@ -162,6 +163,8 @@ pub struct TurnState {
     /// When the turn checkpoints for itself, with its failure breaker.
     trigger: compact::checkpoint::Trigger,
     round: RoundCarry,
+    /// The turn's text segments and their verdicts (`text_fold`).
+    folds: text_fold::TurnFolds,
 }
 
 /// The last call that got a reply, as the recap forks it.
@@ -702,6 +705,7 @@ pub(crate) async fn prepare(
         clearable: compact::trim::Clearable::new(),
         trigger: compact::checkpoint::Trigger::default(),
         round: RoundCarry::default(),
+        folds: text_fold::TurnFolds::default(),
     };
     st.persisted_renderings = st.frozen_renderings.keys().cloned().collect();
 
@@ -1046,6 +1050,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                     .as_ref()
                     .map(|issue| issue as &(dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)),
                 tool_calls_out,
+                folds: &mut st.folds,
             },
             &mut st.call,
             &mut st.usage,
@@ -1120,7 +1125,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             // Calls that arrived on a broken stream are not run or stored.
             tool_calls.clear();
         }
-        save_reply(cx, &text, &tool_calls, &block_order, (&thinking, &thinking_model)).await;
+        save_reply(cx, &mut st.folds, &text, &tool_calls, &block_order, (&thinking, &thinking_model)).await;
 
         if !tool_calls.is_empty() {
             // A CLI provider ran its tools itself over /agent/mcp.
@@ -1578,13 +1583,14 @@ async fn post_receive(cx: &TurnContext, text: String, tool_calls: usize) -> Stri
         .unwrap_or(text)
 }
 
-/// Store the reply with its tool calls, its block order and its thinking
-/// blocks with the model that wrote them.
+/// Store the reply with its tool calls, its block order (each text block
+/// with its verdict) and its thinking blocks with the model that wrote them.
 async fn save_reply(
     cx: &TurnContext,
+    folds: &mut text_fold::TurnFolds,
     text: &str,
     tool_calls: &[ai::ToolCall],
-    block_order: &[(&'static str, Option<usize>)],
+    block_order: &[Block],
     (thinking, thinking_model): (&[ai::ThinkingBlock], &str),
 ) {
     if text.is_empty() && tool_calls.is_empty() {
@@ -1592,12 +1598,13 @@ async fn save_reply(
     }
     let calls = (!tool_calls.is_empty()).then(|| serde_json::to_string(tool_calls).ok()).flatten();
     let mut metadata = serde_json::Map::new();
-    if block_order.len() > 1 || block_order.first().is_some_and(|b| b.0 == "tool") {
+    if block_order.len() > 1 || matches!(block_order.first(), Some(Block::Tool(_))) {
         let blocks: Vec<serde_json::Value> = block_order
             .iter()
-            .map(|(kind, idx)| match (*kind, idx) {
-                ("tool", Some(i)) => serde_json::json!({"type": "tool", "toolCallIndex": i}),
-                _ => serde_json::json!({"type": "text"}),
+            .map(|block| match block {
+                Block::Tool(i) => serde_json::json!({"type": "tool", "toolCallIndex": i}),
+                Block::Text(Some(fold)) => serde_json::json!({"type": "text", "fold": fold.as_str()}),
+                Block::Text(None) => serde_json::json!({"type": "text"}),
             })
             .collect();
         metadata.insert("contentBlocks".into(), serde_json::json!(blocks));
@@ -1605,8 +1612,14 @@ async fn save_reply(
     conversation::mark_thinking(&mut metadata, thinking, thinking_model);
     let metadata = (!metadata.is_empty()).then(|| serde_json::Value::Object(metadata).to_string());
     let h = &cx.harness;
-    if let Err(e) = h.sessions.append_message(&cx.session_id, "assistant", text, calls.as_deref(), None, metadata.as_deref()) {
-        warn!(session_id = %cx.session_id, error = %e, "failed to save the reply");
+    match h.sessions.append_message(&cx.session_id, "assistant", text, calls.as_deref(), None, metadata.as_deref()) {
+        Ok(row) => {
+            // The segment this reply's tool call closed is stored here.
+            if let Some(block) = block_order.iter().rposition(|b| matches!(b, Block::Text(Some(_)))) {
+                folds.stored(text_fold::StoredRow { message_id: row.id, block });
+            }
+        }
+        Err(e) => warn!(session_id = %cx.session_id, error = %e, "failed to save the reply"),
     }
     if h.hooks.has_subscribers("session.message_append") {
         let payload = serde_json::to_vec(&crate::hooks::MessageAppendPayload {
@@ -1742,6 +1755,7 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
 /// the background work.
 pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit) {
     let h = &cx.harness;
+    show_a_folded_answer(cx, &mut st.folds).await;
     if *exit == TurnExit::Cancelled {
         let why = if cx.progress.stalled.load(std::sync::atomic::Ordering::SeqCst) {
             conversation::Interrupt::Stalled
@@ -1821,6 +1835,23 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     }
 }
 
+/// The turn ended with every text segment folded and no answer after them:
+/// the longest is shown, on the stream and where it is stored, so the turn
+/// leaves something to read.
+async fn show_a_folded_answer(cx: &TurnContext, folds: &mut text_fold::TurnFolds) {
+    let Some((segment, row)) = folds.safety_net() else {
+        return;
+    };
+    let shown = text_fold::Fold::Shown.as_str();
+    let _ = cx.tx.send(StreamEvent::text_verdict(segment, shown)).await;
+    if let Some(row) = row {
+        let path = format!("$.contentBlocks[{}].fold", row.block);
+        if let Err(e) = cx.harness.store.set_chat_message_metadata(&row.message_id, &path, &serde_json::json!(shown)) {
+            warn!(session_id = %cx.session_id, error = %e, "failed to store the shown segment");
+        }
+    }
+}
+
 /// Write the recap of the turn just finished, in the background. The call
 /// forks the turn's last request, extended by what was stored after it (the
 /// answer), so it reads the turn's cached prefix: the same system prompt,
@@ -1892,6 +1923,8 @@ mod tests {
     enum Step {
         Say(&'static str),
         Call(&'static str, serde_json::Value),
+        /// Text, then a call to this tool.
+        Narrated(&'static str, &'static str),
         /// Text the output cap cut off.
         Cut(&'static str),
         /// A dropped connection.
@@ -2053,6 +2086,17 @@ mod tests {
                     name: name.into(),
                     input,
                 })],
+                None,
+            ),
+            Step::Narrated(text, name) => (
+                vec![
+                    StreamEvent::text(text),
+                    StreamEvent::tool_call(ai::ToolCall {
+                        id: format!("call-{}", uuid::Uuid::new_v4()),
+                        name: name.into(),
+                        input: serde_json::json!({}),
+                    }),
+                ],
                 None,
             ),
             Step::Cut(text) => (vec![StreamEvent::text(text)], Some("max_tokens")),
@@ -2232,6 +2276,87 @@ mod tests {
 
     fn texts(req: &ChatRequest) -> Vec<String> {
         req.messages.iter().map(|m| m.content.clone()).collect()
+    }
+
+    /// The verdicts the stream gave, in order: (segment, fold).
+    fn verdicts(events: &[StreamEvent]) -> Vec<(u64, String)> {
+        events
+            .iter()
+            .filter(|e| e.event_type == ai::StreamEventType::TextVerdict)
+            .map(|e| (e.payload.as_ref().and_then(|p| p["segment"].as_u64()).unwrap(), e.text.clone()))
+            .collect()
+    }
+
+    /// The folds stored on the assistant rows' text blocks, in order.
+    fn stored_folds(h: &Harness) -> Vec<String> {
+        stored(h)
+            .iter()
+            .filter(|m| m.role == "assistant")
+            .filter_map(|m| m.metadata.as_deref().and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok()))
+            .flat_map(|meta| {
+                meta["contentBlocks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|b| b["fold"].as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Text between calls gets its verdict before the call that closed it,
+    /// on the stream and stored with its row: the owner's example stays in
+    /// the reply deep in the turn, a short next step folds, the answer has
+    /// none.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn text_between_calls_is_shown_or_folded_and_stored() {
+        const REPORT: &str = "That worked — the workflow was created with 2 activities and proper steps. The problem is \
+            that update_employee with automations stored them as metadata… I need to recreate all 10 workflows properly \
+            through create_workflow. Let me delete the bad ones first, then rebuild";
+        let model = Scripted::new(vec![
+            Step::Narrated("Your workflows are stored as metadata.", "echo"),
+            Step::Call("echo", serde_json::json!({})),
+            Step::Call("echo", serde_json::json!({})),
+            Step::Call("echo", serde_json::json!({})),
+            Step::Narrated("Let me check the workflows.", "echo"),
+            Step::Narrated(REPORT, "echo"),
+            Step::Say("Done: all ten are rebuilt."),
+        ]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Fix my workflows")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(
+            verdicts(&events),
+            vec![(0, "shown".to_string()), (1, "folded".to_string()), (2, "shown".to_string())]
+        );
+        // Each verdict comes right before the call that closed its segment.
+        for (i, e) in events.iter().enumerate() {
+            if e.event_type == ai::StreamEventType::TextVerdict {
+                assert_eq!(events[i + 1].event_type, ai::StreamEventType::ToolCall);
+            }
+        }
+        assert_eq!(stored_folds(&h), vec!["shown", "folded", "shown"]);
+    }
+
+    /// A turn that folded every paragraph and ended with no answer shows the
+    /// longest, on the stream and in its stored row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_turn_that_folded_everything_shows_its_longest_paragraph() {
+        let model = Scripted::new(vec![
+            Step::Narrated("Let me check the first file.", "echo"),
+            Step::Narrated("Now the second file, which holds the rest of the invoices.", "echo"),
+            Step::Say(""),
+            Step::Say(""),
+            Step::Say(""),
+            Step::Say(""),
+        ]);
+        let h = harness(&model).await;
+        let events = run_turn(&h, owner("Check the invoices")).await;
+        assert_eq!(
+            verdicts(&events),
+            vec![(0, "folded".to_string()), (1, "folded".to_string()), (1, "shown".to_string())]
+        );
+        assert_eq!(stored_folds(&h), vec!["folded", "shown"]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

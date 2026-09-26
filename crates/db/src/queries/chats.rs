@@ -915,6 +915,25 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Set one value inside a stored message's metadata, at a JSON path
+    /// (`$.contentBlocks[2].fold`), leaving the rest of it as it is.
+    pub fn set_chat_message_metadata(
+        &self,
+        id: &str,
+        path: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE chat_messages
+             SET metadata = json_set(COALESCE(NULLIF(metadata, ''), '{}'), ?2, json(?3))
+             WHERE id = ?1",
+            params![id, path, value.to_string()],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn attach_artifacts_to_latest_assistant_message(
         &self,
         chat_id: &str,

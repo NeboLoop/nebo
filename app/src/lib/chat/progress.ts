@@ -12,3 +12,14 @@ export function isThinking(runs: unknown, sessionKey: string): boolean {
 	const run = (runs as RunSnapshot[]).find((r) => r?.sessionKey === sessionKey);
 	return !!run && !run.currentTool;
 }
+
+/** The live line for what the model has thought so far this stretch of the
+ *  turn (the `thinking` stream): the last line with words on it, from its
+ *  last sentence break on. */
+export function latestThought(thought: string): string {
+	const lines = thought.split('\n').map((l) => l.trim()).filter(Boolean);
+	if (!lines.length) return '';
+	const last = lines[lines.length - 1];
+	const sentences = last.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean);
+	return sentences.length ? sentences[sentences.length - 1] : last;
+}
