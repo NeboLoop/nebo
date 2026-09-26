@@ -660,8 +660,12 @@ struct ListingWords {
     removed: &'static str,
 }
 
+/// The skill listing sits beside the names when the model picks what to
+/// load, so it carries the loading rule (2026-09-26: 28 skills loaded one
+/// per step): only what the task needs, together, and a survey of many to
+/// helpers.
 const SKILL_WORDS: ListingWords = ListingWords {
-    available: "These skills are available through use_skill:",
+    available: "These skills are available through use_skill. Load only the ones the task needs, several in one response. To learn what many of them cover, start helpers with delegate to read them and send back a digest:",
     removed: "These skills are no longer available:",
 };
 
@@ -1201,6 +1205,8 @@ mod tests {
         let delta = LinedDelta::between(&Listing::new(), &now).unwrap();
         let skills = attachment_for(&TurnEvent::SkillListing(delta)).unwrap();
         assert_eq!(skills.text, format!("{}\n- invoice: Draft an invoice", SKILL_WORDS.available));
+        assert!(skills.text.contains("Load only the ones the task needs, several in one response."), "{}", skills.text);
+        assert!(skills.text.contains("start helpers with delegate to read them and send back a digest"), "{}", skills.text);
         let gone = LinedDelta::between(&now, &Listing::new()).unwrap();
         let helpers = attachment_for(&TurnEvent::HelperTypes(gone)).unwrap();
         assert_eq!(helpers.text, format!("{}\n- invoice", HELPER_WORDS.removed));

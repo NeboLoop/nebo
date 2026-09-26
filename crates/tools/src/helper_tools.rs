@@ -271,19 +271,26 @@ impl DynTool for HelperTool {
     /// by default, never predicting a pending result, how to write the
     /// brief, and its two worked examples (a survey launched in the
     /// background with the report in a later turn, and "Still waiting on the
-    /// audit" when asked mid-wait), in our words.
+    /// audit" when asked mid-wait), in our words. Its "Launch multiple agents
+    /// concurrently whenever possible … a single message with multiple tool
+    /// uses" gets a third example, the 2026-09-26 billing employee that loaded
+    /// 28 skills one per step: a survey of many skills is helpers' reading,
+    /// started together, and the parent builds from their digests. What the
+    /// schema already says (the default type, `background`, `isolation`) is
+    /// said there only.
     fn description(&self) -> String {
         match self.op {
-            HelperOp::Delegate => "Starts a helper on a piece of work, so the conversation stays open while it runs. Helper types, and when each fits, are listed in reminders; general is the default.\n\
-                 When to use: the work matches a helper type, independent pieces can run side by side, or answering means reading across many files or pages. You keep the conclusion, not the raw output. When the owner asks for a helper, start it first.\n\
-                 When not to use: the target is known (a path, a name, a value): use read_file or run_command. Once a search is delegated, don't also run it yourself.\n\
-                 - It runs in the background: only its final report comes back, as a notification. Set background: false only when your very next step needs the result.\n\
+            HelperOp::Delegate => "Starts a helper on a piece of work, so the conversation stays open while it runs. Helper types, and when each fits, are listed in reminders.\n\
+                 When to use: the work matches a helper type, independent pieces can run side by side, or answering means reading across many files, pages or skills. You keep the conclusion, not the raw output. When the owner asks for a helper, start it first.\n\
+                 When not to use: the target is known (a path, a name, a value, one skill): use read_file, run_command or use_skill. Once a search is delegated, don't also run it yourself.\n\
+                 - It runs in the background: only its final report comes back, as a notification.\n\
                  - Until then you know nothing about the result. Never predict it; if the owner asks, say it's still running.\n\
                  - It hasn't seen this conversation. Brief it: the goal, what you know or ruled out, what to report. For a lookup, the exact command; for an investigation, the question.\n\
-                 - Several pieces: several delegate calls in one response. Helpers editing one project: isolation: \"worktree\".\n\
+                 - Several pieces: several delegate calls in one response.\n\
                  - To continue a helper, send_message with its id. Work for a named employee is a message to them.\n\
                  Example: owner: \"Find every place the retry setting is used.\" → delegate(helper_type: \"explore\", ...), reply \"A helper is searching; I'll report when it's back.\", and the turn ends. The report comes in a later turn.\n\
-                 Example: owner, before it's back: \"Is billing one?\" → \"Still waiting on the search; that's one of the things it checks.\""
+                 Example: owner, before it's back: \"Is billing one?\" → \"Still waiting on the search; that's one of the things it checks.\"\n\
+                 Example: twenty skills to learn before building → two delegate(helper_type: \"explore\") calls in one response, each reading half and sending back a digest."
                 .to_string(),
             HelperOp::SendMessage => "Sends a message to a helper you started (by its id), a coworker (another employee on this Nebo, by name) or a team (by name).\n\
                  - A running helper sees it at its next step; a finished one continues with it, keeping its context.\n\
@@ -788,8 +795,8 @@ mod tests {
         let rig = Rig::new();
         let delegate = rig.tools.iter().find(|t| t.name() == "delegate").unwrap().description();
         for part in [
-            "When to use: the work matches a helper type, independent pieces can run side by side, or answering means reading across many files or pages.",
-            "When not to use: the target is known (a path, a name, a value): use read_file or run_command.",
+            "When to use: the work matches a helper type, independent pieces can run side by side, or answering means reading across many files, pages or skills.",
+            "When not to use: the target is known (a path, a name, a value, one skill): use read_file, run_command or use_skill.",
             "Once a search is delegated, don't also run it yourself.",
             "Never predict it; if the owner asks, say it's still running.",
             "delegate(helper_type: \"explore\", ...)",
@@ -799,5 +806,22 @@ mod tests {
         }
         assert!(!delegate.contains("If you already know the file or answer, use the direct tool instead."));
         assert!(delegate.chars().count() <= 1_600, "a lean description: {}", delegate.chars().count());
+    }
+
+    /// 2026-09-26: asked for a billing employee with all its workflows, an
+    /// employee loaded 28 skills one step at a time and never delegated. The
+    /// description now shows that survey as helpers started together in one
+    /// response, each sending back a digest (Claude Code's Agent tool:
+    /// "Launch multiple agents concurrently whenever possible").
+    #[test]
+    fn delegate_shows_a_skill_survey_fanned_out() {
+        let rig = Rig::new();
+        let delegate = rig.tools.iter().find(|t| t.name() == "delegate").unwrap().description();
+        for part in [
+            "Several pieces: several delegate calls in one response.",
+            "twenty skills to learn before building → two delegate(helper_type: \"explore\") calls in one response, each reading half and sending back a digest.",
+        ] {
+            assert!(delegate.contains(part), "{part:?} missing from:\n{delegate}");
+        }
     }
 }

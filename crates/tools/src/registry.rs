@@ -2147,10 +2147,14 @@ pub(crate) mod tests {
     /// gave delegate its `speed` (fix plan E8, +124: delegate 1,826) and took
     /// the server note off os on server bots. Fix plan D16 gave delegate
     /// Claude Code's when-to-use guidance and worked examples (+630: delegate
-    /// 2,456) and D19 deferred os on every bot (−9,134): 10,908. Each package
-    /// that lands lowers the numbers; they never rise without an owner
-    /// decision.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 10_908;
+    /// 2,456) and D19 deferred os on every bot (−9,134): 10,908. The owner,
+    /// 2026-09-26, after an employee loaded 28 skills one per step: "Go look
+    /// at how Claude does it. It should have fanned out and acted in
+    /// parallel." delegate got a skill-survey example (schema restatements
+    /// moved out: delegate 2,495) and use_skill its loading rule (674):
+    /// 11,036. Each package that lands lowers the numbers; they never rise
+    /// without an owner decision.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 11_036;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

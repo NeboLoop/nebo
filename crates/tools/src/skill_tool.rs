@@ -913,6 +913,7 @@ impl Kind {
         match self {
             Kind::UseSkill => "Loads a skill: packaged instructions for a kind of work. Available skills are listed in reminders, one line each.\n\
                 - When the task matches a listed skill, load it first and follow its instructions.\n\
+                - Load only the skills the task needs, several in one response. To learn many, delegate.\n\
                 - Only listed names are valid; find_skills searches them by what they do.\n\
                 - A skill loaded earlier in this conversation is already here: follow it instead of loading it again.",
             Kind::FindSkills => "Searches the installed skills by what they do and returns matching names with one line each.\n\
@@ -1177,7 +1178,9 @@ mod tests {
     }
 
     /// One tool loads, the rest are deferred, and each is one purpose with
-    /// no action enum.
+    /// no action enum. use_skill loads only what the task needs, several in
+    /// one response (they run together: it only reads), and a survey of
+    /// many skills goes to a helper.
     #[test]
     fn use_skill_is_core_and_the_family_is_deferred() {
         let dir = tempfile::tempdir().unwrap();
@@ -1195,6 +1198,12 @@ mod tests {
             assert!(t.schema()["properties"].get("action").is_none(), "{}", t.name());
         }
         let use_skill = tool(&family, USE_SKILL);
+        let d = use_skill.description();
+        for rule in [
+            "Load only the skills the task needs, several in one response. To learn many, delegate.",
+        ] {
+            assert!(d.contains(rule), "{rule:?} missing from:\n{d}");
+        }
         assert!(use_skill.read_only(&json!({"name": "x"})));
         assert!(use_skill.concurrency_safe(&json!({"name": "x"})));
         assert_eq!(use_skill.max_result_chars(&json!({})), None);

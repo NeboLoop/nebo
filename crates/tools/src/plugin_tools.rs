@@ -118,8 +118,10 @@ impl PluginCliTool {
                 String::new()
             };
             out.push_str(&format!(
-                "- `command` is the subcommand and flags, as its skills document them. Load the \
-                 skill with use_skill before the first command; don't guess flags: {named}{more}.\n"
+                "- `command` is the subcommand and flags, as its skills document them; don't guess \
+                 flags. Before the first command, load the skills this task needs with use_skill, \
+                 several in one response. To survey many of them, delegate a helper to read them and \
+                 report back. Its skills: {named}{more}.\n"
             ));
         }
         out.push_str(
@@ -599,6 +601,44 @@ mod tests {
             "Send invoice 1041"
         );
         assert_eq!(tool.rule_key(&serde_json::json!({})), "plugin__ledgerly");
+    }
+
+    /// A plugin with twenty skills (2026-09-26: 28 loaded one per step, on
+    /// the owner's desktop). Its tool says to load only the skills the task
+    /// needs, several in one response, and to hand a survey to a helper; and
+    /// every load, tool load and file read of one response is
+    /// concurrency-safe in the registry, so the round runs them together.
+    #[tokio::test]
+    async fn many_skills_load_together_or_go_to_a_helper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (registry, _store) = registry(tmp.path()).await;
+        registry.register(Box::new(crate::find_tools::FindToolsTool::new(registry.clone()))).await;
+        let skills: Vec<String> = (1..=20).map(|i| format!("ledgerly-job-{i:02}")).collect();
+        let names: Vec<&str> = skills.iter().map(String::as_str).collect();
+        install(tmp.path(), "ledgerly", serde_json::json!({"name": "Ledgerly"}), &names);
+        registry.refresh_plugin_tools().await;
+        let d = registry.get("plugin__ledgerly").await.expect("the plugin's tool").description();
+        for part in [
+            "Before the first command, load the skills this task needs with use_skill, several in one response.",
+            "To survey many of them, delegate a helper to read them and report back.",
+            "(and 8 more)",
+        ] {
+            assert!(d.contains(part), "{part:?} missing from:\n{d}");
+        }
+        assert!(!d.contains("Load the skill with use_skill before the first command"), "{d}");
+
+        for skill in &skills {
+            let call = serde_json::json!({"name": skill});
+            assert!(registry.concurrency_safe("use_skill", &call).await, "use_skill {skill}");
+        }
+        for (tool, call) in [
+            ("find_tools", serde_json::json!({"query": "select:plugin__ledgerly"})),
+            ("find_skills", serde_json::json!({"query": "invoices"})),
+            ("read_skill_file", serde_json::json!({"name": "ledgerly-job-01"})),
+            ("read_file", serde_json::json!({"path": "/tmp/notes.md"})),
+        ] {
+            assert!(registry.concurrency_safe(tool, &call).await, "{tool} {call}");
+        }
     }
 
     /// find_plugins may park on an install card, so it never runs beside

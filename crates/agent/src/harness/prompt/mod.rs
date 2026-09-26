@@ -219,6 +219,26 @@ mod tests {
         }
     }
 
+    /// 2026-09-26: an employee loaded 28 skills one step at a time and never
+    /// delegated. The prompt says independent calls go in one response, with
+    /// a worked example (Claude Code's "Maximize use of parallel tool
+    /// calls"), and that learning across many skills or files is a helper's
+    /// reading that comes back as a digest, while one known file or skill is
+    /// read directly (its Agent section and "When NOT to use").
+    #[test]
+    fn independent_calls_go_together_and_surveys_go_to_helpers() {
+        let text = system_prompt();
+        for line in [
+            "- You can call several tools in one response. When calls don't depend on each other, make them all at once: they run at the same time. When one needs another's result, call them in order.\n",
+            "- Example: to learn three skills and read two files, send one response with five calls, not five steps of one call each.\n",
+            "load the ones the task needs with use_skill before starting.\n",
+            "- Learning before you act, across many skills, files or pages, is a helper's reading: it reads them all and sends back a digest, and this conversation keeps only the digest. Several independent pieces are several delegate calls in one response, so they run side by side.\n",
+            "- One known file or skill, or a quick lookup, is yours: read it directly.\n",
+        ] {
+            assert!(text.contains(line), "{line:?} missing from:\n{text}");
+        }
+    }
+
     /// The size snapshot. Update the number when the text changes on
     /// purpose; the prompt must stay a small fraction of the 39k-char prompt
     /// it replaced.
@@ -229,5 +249,5 @@ mod tests {
         assert!(chars < 8_000);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 6_023;
+    const SYSTEM_PROMPT_CHARS: usize = 6_525;
 }
