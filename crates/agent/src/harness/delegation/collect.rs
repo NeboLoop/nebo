@@ -20,6 +20,10 @@ pub const STOP_MAX_STEPS: &str = "max_steps";
 /// The `stop_reason` of the `Done` event when the turn ended at its spending
 /// limit (`TurnExit::SpendCap`).
 pub const STOP_SPEND_CAP: &str = "spend_cap";
+/// The `stop_reason` of the `Done` event when the turn saw its cancel and
+/// stopped (`TurnExit::Cancelled`): the helper was stopped, whichever of the
+/// cancel and this event the collector wakes to first.
+pub const STOP_CANCELLED: &str = "cancelled";
 
 /// Marks a result that is not a final report.
 pub const NO_FINAL_REPORT: &str = "[no final report; last words before it stopped]";
@@ -137,6 +141,7 @@ pub async fn collect(
                     }
                     StreamEventType::Done => {
                         out.taint = event.provenance.clone().unwrap_or_default();
+                        out.cancelled = event.stop_reason.as_deref() == Some(STOP_CANCELLED);
                         out.limit = match event.stop_reason.as_deref() {
                             Some(STOP_MAX_STEPS) => Some("hit its step limit"),
                             Some(STOP_SPEND_CAP) => Some("hit its spending limit"),
@@ -267,6 +272,19 @@ mod tests {
         cancel.cancel();
         let got = collect(rx, &cancel, Duration::from_secs(5), |_| {}).await;
         assert_eq!(got.into_completion("h-1", "d", dir.path()).status, CompletionStatus::Stopped);
+    }
+
+    /// A turn that saw its cancel ends with `Done` saying so. The collector
+    /// can read that event before it wakes to the cancel itself (both are
+    /// ready, one is picked): the helper was stopped either way, never
+    /// completed with a partial report its parent is woken for.
+    #[tokio::test]
+    async fn a_turn_that_ended_on_its_cancel_is_stopped_whichever_arrives_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = run(vec![tool_call(), StreamEvent::text("Got through March."), StreamEvent::done_with_reason(STOP_CANCELLED)]).await;
+        let c = got.into_completion("h-1", "find it", dir.path());
+        assert_eq!(c.status, CompletionStatus::Stopped);
+        assert_eq!(c.result, "Got through March.", "its last words, not a report");
     }
 
     #[tokio::test(start_paused = true)]

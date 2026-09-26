@@ -244,7 +244,8 @@ impl TurnExit {
     pub fn label(&self) -> String {
         match self {
             TurnExit::Answered => "text_response".into(),
-            TurnExit::Cancelled => "cancelled".into(),
+            // What a helper's collector reads as stopped.
+            TurnExit::Cancelled => super::delegation::collect::STOP_CANCELLED.into(),
             // What a helper's collector reads as a partial result.
             TurnExit::MaxSteps { .. } => super::delegation::collect::STOP_MAX_STEPS.into(),
             TurnExit::BudgetReached => super::delegation::collect::STOP_SPEND_CAP.into(),
