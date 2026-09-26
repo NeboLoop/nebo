@@ -1953,8 +1953,8 @@ async fn show_a_folded_answer(cx: &TurnContext, folds: &mut text_fold::TurnFolds
 /// built from; that turn has no cached prefix to fork and gets no recap.
 fn spawn_recap(cx: &TurnContext, last: LastCall) {
     let h = &cx.harness;
-    let stored = conversation::order_as_heard(h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default());
-    let Some(after) = last
+    let stored = h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default();
+    let Some(heard) = last
         .heard_through
         .as_deref()
         .and_then(|id| stored.iter().position(|m| m.id == id))
@@ -1962,9 +1962,13 @@ fn spawn_recap(cx: &TurnContext, last: LastCall) {
         info!(session_id = %cx.session_id, "a checkpoint followed the turn's last call: no recap");
         return;
     };
+    // The rows stored after the last call's, as the model reads them: the
+    // request already holds every row stored before, wherever it reads.
+    let unsent: HashSet<String> = stored[heard + 1..].iter().map(|m| m.id.clone()).collect();
+    let unsent: Vec<ChatMessage> = conversation::order_as_heard(stored).into_iter().filter(|m| unsent.contains(&m.id)).collect();
     let mut fork_of = last.request;
     let model = format!("{}/{}", last.provider.id(), fork_of.model);
-    fork_of.messages.extend(conversation::convert_messages(&stored[after + 1..], &model));
+    fork_of.messages.extend(conversation::convert_messages(&unsent, &model));
     let recap = super::recap::RecapRequest {
         chat_id: h.sessions.active_chat_id(&cx.session_id),
         turn_id: cx.progress.run_id.clone(),
@@ -4944,5 +4948,91 @@ mod tests {
         assert!(!sent.iter().any(|m| m.contains("embed")), "never the embedding model: {sent:?}");
         assert_eq!(sent[0], "nebo-1");
         assert_eq!(sent[2], "nebo-1", "another chat runs on the default");
+    }
+    /// One request as the provider caches it: the system prompt, each tool
+    /// definition, each message, byte for byte.
+    fn wire(req: &ChatRequest) -> (String, Vec<String>, Vec<String>) {
+        (
+            req.system.clone(),
+            req.tools.iter().map(|t| serde_json::to_string(t).unwrap()).collect(),
+            req.messages.iter().map(|m| serde_json::to_string(m).unwrap()).collect(),
+        )
+    }
+
+    /// Provider prompt caches reuse the longest byte-identical prefix of an
+    /// earlier request. So every step's request starts with the previous
+    /// step's request, byte for byte: the same system prompt, the tools
+    /// array only growing at its end (a `find_tools` load), and the earlier
+    /// messages untouched, with this step's rows after them. That holds
+    /// within a turn, through a message queued into the running turn and a
+    /// thinking block, and from one turn to the next.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn each_request_starts_with_the_one_before_it() {
+        let model = Arc::new(Scripted::default());
+        let h = harness_selecting(&model, Vec::new(), thinking_selector()).await;
+        let h2 = h.clone();
+        let queued: Hook = Box::pin(async move {
+            let mut queued = h2.start_turn(on("scripted/deep", "Also check the weather.")).await.expect("queued");
+            while queued.events.recv().await.is_some() {}
+        });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), queued),
+            Step::Thought(Box::new(Step::Call("find_tools", serde_json::json!({"query": "select:weather"}))), signed("load it")),
+            Step::Call("weather", serde_json::json!({})),
+            Step::Say("Done."),
+            Step::Call("echo", serde_json::json!({})),
+            Step::Say("Again."),
+        ]);
+        run_turn(&h, on("scripted/deep", "Echo something.")).await;
+        let first_turn = model.calls().len();
+        run_turn(&h, on("scripted/deep", "Once more.")).await;
+        let calls = model.calls();
+        assert_eq!((first_turn, calls.len()), (4, 6), "four steps, then two");
+
+        let mut grew = Vec::new();
+        for (n, pair) in calls.windows(2).enumerate() {
+            let ((system, tools, messages), (next_system, next_tools, next_messages)) = (wire(&pair[0]), wire(&pair[1]));
+            assert_eq!(system, next_system, "request {n} → {}: the system prompt changed", n + 1);
+            assert!(next_tools.starts_with(&tools), "request {n} → {}: the tools array was rewritten, not appended to", n + 1);
+            if next_tools.len() > tools.len() {
+                grew.push(n + 1);
+            }
+            assert!(
+                next_messages.len() > messages.len(),
+                "request {n} → {}: nothing was added to the conversation",
+                n + 1
+            );
+            if let Some(at) = messages.iter().zip(&next_messages).position(|(a, b)| a != b) {
+                panic!(
+                    "request {n} → {}: message {at} changed under the cache\nwas: {}\nnow: {}",
+                    n + 1,
+                    messages[at],
+                    next_messages[at]
+                );
+            }
+        }
+        assert_eq!(grew, vec![2], "the tools array grows once: the step after the load");
+
+        // Each turn's recap forks its last request: that request's messages,
+        // then the answer and the instruction after them.
+        let mut recaps = Vec::new();
+        for _ in 0..200 {
+            recaps = model.side.lock().unwrap().iter().filter(|r| r.trace.purpose == "owner_recap").cloned().collect();
+            if recaps.len() == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(recaps.len(), 2, "one recap per turn");
+        for last in [&calls[first_turn - 1], &calls[calls.len() - 1]] {
+            let (_, _, sent) = wire(last);
+            assert!(
+                recaps.iter().any(|r| {
+                    let (_, _, forked) = wire(r);
+                    forked.len() == sent.len() + 2 && forked.starts_with(&sent)
+                }),
+                "a recap forks the turn's last request exactly"
+            );
+        }
     }
 }
