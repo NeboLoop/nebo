@@ -73,13 +73,13 @@ impl DynTool for DesktopTool {
          - shortcut: list, run\n\
          - tts: speak\n\
          - dock: badges, recent, is_running (macOS only)\n\n\
-         Workflow: capture(action: see, app) returns the window as an image plus the elements it found, \
+         Workflow: os(resource: \"capture\", action: \"see\", app) returns the window as an image plus the elements it found, \
          with refs and positions in that image's pixels. Every input action on that app then returns the \
          window as it looks AFTER the action (image + what changed) — read it before the next step. \
          Act by ref when the element is listed, by image pixel (coordinate: [x, y]) when it is not; a pixel \
          click on an app you have not captured is refused, capture first. Text the accessibility tree does not \
          expose is read from the image and listed as OCRText elements, clickable by ref. \
-         scroll(until: \"text\") pages until that text is on screen; drag(ref, to_ref | coordinate) reports where \
+         An input scroll with until: \"text\" pages until that text is on screen; an input drag (ref, to_ref | coordinate) reports where \
          the dragged element ended up.\n\n\
          Examples:\n  \
          os(resource: \"capture\", action: \"see\", app: \"Safari\") — snapshot + element IDs\n  \
@@ -130,7 +130,7 @@ impl DynTool for DesktopTool {
                 "index": { "type": "integer", "description": "Index for space/menu item" },
                 "voice": { "type": "string", "description": "TTS voice name" },
                 "rate": { "type": "integer", "description": "TTS speaking rate (words per minute)" },
-                "ref": { "type": "string", "description": "Element ref from capture(action: see) (e.g. B1, T2)" },
+                "ref": { "type": "string", "description": "Element ref from a capture see (e.g. B1, T2)" },
                 "snapshot_id": { "type": "string", "description": "Snapshot ID from a previous see action" },
                 "max_elements": { "type": "integer", "description": "Max elements returned by see (default: 60)" },
                 "until": { "type": "string", "description": "For input scroll: keep scrolling a page at a time until an element whose label contains this text is on screen (case-insensitive), up to max_pages" },
@@ -2655,7 +2655,7 @@ async fn observe(
     ));
 
     Ok(Observed {
-        result: ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), content: text, is_error: false, image_url: shot.image_url, http_status: None, terminal: false },
+        result: ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(), content: text, is_error: false, image_url: shot.image_url, http_status: None, terminal: false },
         snapshot,
     })
 }
@@ -3107,7 +3107,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, dims: Option<(u32, u32)>, summary:
         image_url: Some(data_uri),
         http_status: None,
         terminal: false,
-        need: None, parked_ask: None, taint: Vec::new(),
+        need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
     }
 }
 
@@ -3356,7 +3356,7 @@ end tell"#,
     }
     #[cfg(target_os = "linux")]
     {
-        return ToolResult::error("UI click is not available on Linux. Use capture(action: see) for a screenshot and input(action: click, coordinate: [x,y]) instead.");
+        return ToolResult::error("UI click is not available on Linux. Use os(resource: \"capture\", action: \"see\") for a screenshot and os(resource: \"input\", action: \"click\", coordinate: [x,y]) instead.");
     }
     #[cfg(target_os = "windows")]
     {
@@ -3404,7 +3404,7 @@ end tell"#,
     #[cfg(target_os = "linux")]
     {
         return ToolResult::error(
-            "UI get_value is not available on Linux. Use capture(action: see) for a screenshot and read the value from it.",
+            "UI get_value is not available on Linux. Use os(resource: \"capture\", action: \"see\") for a screenshot and read the value from it.",
         );
     }
     #[cfg(target_os = "windows")]
@@ -3452,7 +3452,7 @@ end tell"#,
     #[cfg(target_os = "linux")]
     {
         return ToolResult::error(
-            "UI set_value is not available on Linux. Use input(action: click, coordinate: [x,y]) then input(action: type, text: ...) instead.",
+            "UI set_value is not available on Linux. Use os(resource: \"input\", action: \"click\", coordinate: [x,y]) then os(resource: \"input\", action: \"type\", text: ...) instead.",
         );
     }
     #[cfg(target_os = "windows")]
@@ -3644,7 +3644,7 @@ end tell"#,
         // The old PowerShell script only proved the process existed and then
         // answered "Menu bar found" with no menus in it.
         return ToolResult::error(
-            "Menu enumeration is not implemented on Windows; use ui(action: tree) to read the window's controls.",
+            "Menu enumeration is not implemented on Windows; use os(resource: \"ui\", action: \"tree\") to read the window's controls.",
         );
     }
     #[cfg(target_os = "linux")]
@@ -4101,7 +4101,7 @@ async fn space_list() -> ToolResult {
         // old `defaults read` script printed two unrelated integers that read
         // as space numbers.
         ToolResult::error(
-            "Listing Mission Control spaces is not available on macOS. Switch by number with space(action: \"switch\", index: N), 1 to 9.",
+            "Listing Mission Control spaces is not available on macOS. Switch by number with os(resource: \"space\", action: \"switch\", index: N), 1 to 9.",
         )
     }
     #[cfg(target_os = "linux")]
@@ -4115,7 +4115,7 @@ async fn space_list() -> ToolResult {
     {
         // PowerShell has no supported API for enumerating virtual desktops.
         return ToolResult::error(
-            "Virtual desktop enumeration is not available on Windows; space(action: switch, index: N) moves N desktops to the right.",
+            "Virtual desktop enumeration is not available on Windows; os(resource: \"space\", action: \"switch\", index: N) moves N desktops to the right.",
         );
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

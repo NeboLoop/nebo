@@ -400,11 +400,11 @@ mod tests {
     fn listing_rows_store_what_they_announced() {
         let c = Conversation::new();
         let mut r = Reminders::default();
-        r.add(&TurnEvent::ToolsAvailable(ListingDelta::all(["mail_send".to_string()].into())));
+        r.add(&TurnEvent::ToolsAvailable(ListingDelta::all([("mail_send".to_string(), "send an email".to_string())].into())));
         c.write(&mut r);
         let fields = attachment_fields(&c.load()[0]).unwrap();
         assert_eq!(fields["kind"], "tools_available");
-        assert_eq!(fields["added"], serde_json::json!({"mail_send": ""}));
+        assert_eq!(fields["added"], serde_json::json!({"mail_send": "send an email"}));
         assert_eq!(fields["removed"], serde_json::json!([]));
         assert_eq!(events::announced("tools_available", &c.load()).into_keys().collect::<Vec<_>>(), ["mail_send"]);
     }

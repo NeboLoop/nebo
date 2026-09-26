@@ -373,7 +373,7 @@ impl ShellTool {
                 result.push_str(&msg);
             }
             if is_error {
-                return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(),
+                return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                     content: format!("{}\n{}", exit_header(&output.status), result),
                     is_error: true,
                     image_url: None,
@@ -1160,7 +1160,7 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str, nothing_sear
                 Some(
                     "stderr reports something missing; read the message above before acting. \
                      If it names a file, the working directory may be wrong or the file may \
-                     live elsewhere: one glob for its name settles that. Do not substitute a \
+                     live elsewhere: one find for its name settles that. Do not substitute a \
                      different file or name; if none matches, say so."
                         .to_string(),
                 )

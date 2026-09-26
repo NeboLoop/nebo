@@ -7,14 +7,16 @@ description: |
   `path` is missing`, with the
   smallest valid call when nothing was sent. A deferred tool the model calls
   before loading it runs when the call is valid; when it is not, the error
-  adds "This tool wasn't loaded, so its
-  definition was never sent. Call find_tools with query
-  "select:checkpoint_files", then retry this call." These replace the old
-  os tool's "Failed to parse input: missing field `action`" and its action
-  inference. This fixture asks for both mistakes on purpose, then pins the
-  recovery: find_tools loads checkpoint_files, the checkpoint lands, the
-  file is read with its path, and the answer comes from the file. The two
-  induced errors are the test, not a failure.
+  adds "checkpoint_files wasn't loaded, so its definition was never sent.
+  This error loads it: its definition is below, and your next call can use
+  it." with the definition, so the retry needs no find_tools step (proof
+  runs of 2026-09-26: 22 find_tools steps spent after such errors). These
+  replace the old os tool's "Failed to parse input: missing field `action`"
+  and its action inference. This fixture asks for both mistakes on purpose,
+  then pins the recovery: checkpoint_files is retried with the definition
+  the error loaded, the checkpoint lands, the file is read with its path,
+  and the answer comes from the file. The two induced errors are the test,
+  not a failure.
 induced_errors: 2  # the empty read_file and the empty, unloaded checkpoint_files
 target_component: read_file
 
@@ -44,10 +46,10 @@ prompt_assertions:
       text: "The errors are the two induced input errors and nothing else: no old os parse error ('Failed to parse input', 'missing field') and no third error from a repeated bad shape"
       severity: critical
       check: { max_errors: 2, no_error_contains: ["Failed to parse input", "missing field"] }
-    - id: loads-the-deferred-tool
-      text: "After the unloaded-tool error, the model calls find_tools with query \"select:checkpoint_files\" as the error told it to"
+    - id: the-error-loaded-it
+      text: "After the unloaded-tool error, the next call is the retry (or the read): no find_tools step, because the error loaded checkpoint_files"
       severity: critical
-      check: { tool: find_tools, arg: query, contains: "select:checkpoint_files" }
+      check: { call: 3, tool: [checkpoint_files, read_file] }
     - id: checkpoint-lands
       text: "The model then calls checkpoint_files with paths naming {{scratch}}/memo.txt and the checkpoint is taken"
       severity: critical
@@ -62,17 +64,16 @@ prompt_assertions:
       check: { reply_matches: "AMBER-4471" }
   cost:
     - id: bounded
-      text: "At most 7 tool calls: the two induced errors, find_tools, checkpoint_files, read_file, and a spare"
+      text: "At most 5 tool calls: the two induced errors, checkpoint_files, read_file, and a spare"
       severity: important
-      check: { max_tool_calls: 7 }
+      check: { max_tool_calls: 5 }
 
 ideal_behavior:
-  tool_calls: 5
+  tool_calls: 4
   total_tokens: 4000
   narrative: |
     read_file({}) returns "The required parameter `path` is missing";
-    checkpoint_files(paths) returns the same error shape plus "Call
-    find_tools with query "select:checkpoint_files""; find_tools loads it;
-    checkpoint_files(paths: ["{{scratch}}/memo.txt"]) succeeds;
+    checkpoint_files({}) returns the same error shape plus its definition,
+    which loads it; checkpoint_files(paths: ["{{scratch}}/memo.txt"]) succeeds;
     read_file(path: "{{scratch}}/memo.txt"); then "The approval code is
     AMBER-4471."

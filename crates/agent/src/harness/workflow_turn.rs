@@ -222,12 +222,17 @@ impl WorkflowTurns {
         {
             return Err(WorkflowError::Exited(reason.to_string()));
         }
-        let tr = serde_json::json!([{
-            "tool_call_id": tc.id,
-            "content": result.content,
-            "is_error": result.is_error,
-        }])
-        .to_string();
+        let row = crate::harness::tool_round::ToolResultRow {
+            tool_call_id: tc.id.clone(),
+            content: result.content,
+            is_error: result.is_error,
+            image_url: None,
+            payload: None,
+            outcome: None,
+            duration_ms: None,
+            loaded_tools: result.loads.iter().map(tools::find_tools::function_entry).collect(),
+        };
+        let tr = serde_json::json!([row]).to_string();
         let _ = self.harness.sessions.append_message(session_id, "tool", "", None, Some(&tr), None);
         Ok(())
     }

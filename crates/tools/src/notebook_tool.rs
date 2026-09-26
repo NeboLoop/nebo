@@ -61,7 +61,7 @@ impl DynTool for NotebookTool {
 
     fn description(&self) -> String {
         "Edit or inspect Jupyter notebook (.ipynb) cells. Notebooks are JSON — use this, \
-         not os(file, edit), for cell changes.\n\
+         not edit_file, for cell changes.\n\
          - notebook(action: \"read\", notebook_path: \"/path/nb.ipynb\") — list cells (index, id, type, preview)\n\
          - notebook(action: \"edit\", notebook_path, cell_id, new_source) — replace a cell's source\n\
          - notebook(action: \"edit\", notebook_path, cell_id, new_source, cell_type, edit_mode: \"insert\") — insert a new cell after cell_id (cell_type required)\n\

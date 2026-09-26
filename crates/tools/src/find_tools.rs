@@ -1,8 +1,8 @@
-//! `find_tools`: loads deferred tools. A deferred tool is listed by name
-//! until this tool returns its definition; from the next model call that
-//! definition is in the request and it is called like any other tool. The
-//! loaded set is re-derived from history each step ([`loaded_in_result`]
-//! reads the definitions back out of a result).
+//! `find_tools`: loads deferred tools. A deferred tool is listed by name,
+//! with what it is for, until a result loads its definition
+//! ([`ToolResult::loads`]); from the next model call that definition is in
+//! the request and it is called like any other tool. The loaded set is
+//! re-derived from the stored results each step.
 
 use std::sync::Arc;
 
@@ -13,12 +13,25 @@ use crate::registry::{DynTool, Registry, ToolResult};
 
 pub const FIND_TOOLS: &str = "find_tools";
 
-/// Score weights: a query word equal to a word of the name,
-/// part of one, a word of the search hint, found in the description.
+/// Score weights: a query word equal to a word of the name, part of one,
+/// a word of the search hint, a word of the description. Hint and
+/// description words also match by stem ("remind" finds "reminder"), for
+/// a little less than the word itself.
 const NAME_PART_EXACT: i32 = 10;
 const NAME_PART_PARTIAL: i32 = 5;
 const HINT_WORD: i32 = 4;
+const HINT_STEM: i32 = 3;
 const DESCRIPTION_HIT: i32 = 2;
+const DESCRIPTION_STEM: i32 = 1;
+
+/// Shortest word that matches the words it begins (a stem).
+const STEM_MIN: usize = 4;
+
+/// Words of an owner's request that say nothing about which tool.
+const FILLER: &[&str] = &[
+    "a", "an", "and", "any", "at", "be", "can", "do", "for", "from", "have", "i", "in", "is", "it", "me", "my",
+    "of", "on", "or", "please", "set", "that", "the", "this", "to", "up", "what", "with", "you", "your",
+];
 
 const DEFAULT_MAX_RESULTS: usize = 5;
 
@@ -45,9 +58,9 @@ impl DynTool for FindToolsTool {
     }
 
     fn description(&self) -> String {
-        "Loads the full definitions of deferred tools so they can be called.\n\
-         Deferred tools are listed by name in reminders; until loaded, only the name is known.\n\
-         When a reminder, instruction or another tool's description names a deferred tool, load it with \"select:<name>\" first.\n\
+        "Loads deferred tools' full definitions so they can be called.\n\
+         Deferred tools are listed by name and purpose in reminders; until loaded, only that is known.\n\
+         When a reminder, instruction or a tool description names a deferred tool, load it with \"select:<name>\" first.\n\
          Query forms: \"select:mail_message_send,calendar_event_create\" loads exact names · \"invoice create\" searches by keywords · \"+shopify order\" requires \"shopify\" in the name."
             .to_string()
     }
@@ -106,36 +119,38 @@ impl DynTool for FindToolsTool {
                 ctx.withheld_tools.as_deref(),
                 crate::desktop_available(),
             );
-            ToolResult::ok(answer(&catalog, query, max_results))
+            answer(&catalog, query, max_results)
         })
     }
 }
 
-/// The deferred tools this run may load: never one its tool scope leaves
-/// out, and the desktop tool only where a desktop exists, as the listing
-/// offers it (D19). What isn't listed can't be loaded.
+/// The deferred tools this run may load ([`may_load`]).
 fn loadable(
     mut catalog: Vec<DeferredEntry>,
     withheld: Option<&std::collections::HashSet<String>>,
     desktop: bool,
 ) -> Vec<DeferredEntry> {
-    catalog.retain(|e| {
-        let name = &e.definition.name;
-        withheld.is_none_or(|w| !w.contains(name)) && (desktop || name != crate::DESKTOP_TOOL)
-    });
+    catalog.retain(|e| may_load(&e.definition.name, withheld, desktop));
     catalog
+}
+
+/// Whether a run may load the deferred tool `name`: never one its tool
+/// scope leaves out, and the desktop tool only where a desktop exists, as
+/// the listing offers it (D19). What isn't listed can't be loaded.
+pub fn may_load(name: &str, withheld: Option<&std::collections::HashSet<String>>, desktop: bool) -> bool {
+    withheld.is_none_or(|w| !w.contains(name)) && (desktop || name != crate::DESKTOP_TOOL)
 }
 
 /// The result for `query` over `catalog`: the matched definitions in a
 /// `<functions>` block (the encoding of the tools array), then the names
-/// loaded. Nothing matched: what to try instead.
-pub fn answer(catalog: &[DeferredEntry], query: &str, max_results: usize) -> String {
+/// loaded; the result loads them. Nothing matched: what to try instead.
+pub fn answer(catalog: &[DeferredEntry], query: &str, max_results: usize) -> ToolResult {
     let (found, missing) = search(catalog, query, max_results);
     if found.is_empty() {
-        return format!(
+        return ToolResult::ok(format!(
             "No deferred tool matches \"{query}\". Deferred tools are listed by name in \
              reminders: load one with \"select:<name>\", or try other keywords."
-        );
+        ));
     }
     let mut out = functions_block(found.iter().map(|e| &e.definition));
     out.push('\n');
@@ -144,7 +159,10 @@ pub fn answer(catalog: &[DeferredEntry], query: &str, max_results: usize) -> Str
     if !missing.is_empty() {
         out.push_str(&format!(" Not found: {}.", missing.join(", ")));
     }
-    out
+    ToolResult {
+        loads: found.iter().map(|e| e.definition.clone()).collect(),
+        ..ToolResult::ok(out)
+    }
 }
 
 /// The entries `query` selects, best first, and the `select:` names that
@@ -179,7 +197,11 @@ fn search<'a>(
     {
         return (vec![e], Vec::new());
     }
-    let mut words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let mut words: Vec<String> = query
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !(c.is_alphanumeric() || c == '+' || c == '_')).to_lowercase())
+        .filter(|w| !w.is_empty() && !FILLER.contains(&w.as_str()))
+        .collect();
     let required: Vec<String> = words
         .iter()
         .filter_map(|w| w.strip_prefix('+').map(str::to_string))
@@ -204,12 +226,8 @@ fn search<'a>(
 
 fn score(e: &DeferredEntry, words: &[String]) -> i32 {
     let parts = name_parts(&e.definition.name);
-    let hint: Vec<String> = e
-        .search_hint
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .collect();
-    let description = e.definition.description.to_lowercase();
+    let hint = text_words(&e.search_hint);
+    let description = text_words(&e.definition.description);
     let mut total = 0;
     for w in words {
         if parts.iter().any(|p| p == w) {
@@ -219,12 +237,31 @@ fn score(e: &DeferredEntry, words: &[String]) -> i32 {
         }
         if hint.iter().any(|h| h == w) {
             total += HINT_WORD;
+        } else if hint.iter().any(|h| same_stem(h, w)) {
+            total += HINT_STEM;
         }
-        if description.contains(w.as_str()) {
+        if description.iter().any(|d| d == w) {
             total += DESCRIPTION_HIT;
+        } else if description.iter().any(|d| same_stem(d, w)) {
+            total += DESCRIPTION_STEM;
         }
     }
     total
+}
+
+/// A text's words, lowercased, without punctuation.
+fn text_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Whether one word is a stem of the other ("remind", "reminder",
+/// "reminders").
+fn same_stem(a: &str, b: &str) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    short.len() >= STEM_MIN && long.starts_with(short)
 }
 
 /// A tool name's words: split on `_`, `-` and lower-to-upper case changes.
@@ -281,21 +318,6 @@ pub fn functions_block<'a>(definitions: impl IntoIterator<Item = &'a ai::ToolDef
     out
 }
 
-/// The definitions a `find_tools` result loaded (its `<function>` entries),
-/// as the result showed them.
-pub fn loaded_in_result(content: &str) -> Vec<ai::ToolDefinition> {
-    content
-        .lines()
-        .filter_map(|line| {
-            line.trim()
-                .strip_prefix("<function>")?
-                .strip_suffix("</function>")
-        })
-        .filter_map(|body| serde_json::from_str::<serde_json::Value>(body).ok())
-        .filter_map(|v| definition_of(&v))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,8 +342,8 @@ mod tests {
         ]
     }
 
-    fn names(result: &str) -> Vec<String> {
-        loaded_in_result(result).into_iter().map(|d| d.name).collect()
+    fn names(result: &ToolResult) -> Vec<String> {
+        result.loads.iter().map(|d| d.name.clone()).collect()
     }
 
     /// A server with no desktop session lists no desktop tool, so it can't
@@ -344,22 +366,24 @@ mod tests {
     fn select_loads_exact_names_case_insensitively_and_says_what_is_missing() {
         let out = answer(&catalog(), "select:Mail_Message_Send, calendar_event_create,nope", 5);
         assert_eq!(names(&out), ["mail_message_send", "calendar_event_create"]);
-        assert!(out.starts_with("<functions>\n<function>{"), "{out}");
-        assert!(out.contains("\"parameters\":{"), "definitions carry the schema: {out}");
-        assert!(out.ends_with("Loaded: mail_message_send, calendar_event_create. Call them directly. Not found: nope."));
+        let text = &out.content;
+        assert!(text.starts_with("<functions>\n<function>{"), "{text}");
+        assert!(text.contains("\"parameters\":{"), "definitions carry the schema: {text}");
+        assert!(text.ends_with("Loaded: mail_message_send, calendar_event_create. Call them directly. Not found: nope."));
     }
 
-    /// What a result loaded reads back byte for byte: the request declares
-    /// the definition the model was shown.
+    /// What a result loads is the definition it showed, byte for byte: the
+    /// request declares the definition the model was shown.
     #[test]
-    fn a_loaded_definition_reads_back_as_it_was_shown() {
+    fn a_result_loads_the_definitions_it_shows() {
         let schema = json!({"type": "object", "properties": {"to": {"type": "string"}}, "required": ["to"]});
         let catalog = vec![DeferredEntry {
             definition: ai::ToolDefinition { name: "mail_message_send".into(), description: "Sends an email.".into(), input_schema: schema },
             search_hint: String::new(),
         }];
-        let loaded = loaded_in_result(&answer(&catalog, "select:mail_message_send", 5));
-        assert_eq!(serde_json::to_string(&loaded).unwrap(), serde_json::to_string(&[&catalog[0].definition]).unwrap());
+        let out = answer(&catalog, "select:mail_message_send", 5);
+        assert_eq!(serde_json::to_string(&out.loads).unwrap(), serde_json::to_string(&[&catalog[0].definition]).unwrap());
+        assert!(out.content.starts_with(&functions_block(&out.loads)), "{}", out.content);
     }
 
     #[test]
@@ -386,6 +410,29 @@ mod tests {
         assert_eq!(names(&answer(&catalog, "Fetch_URL", 5)), ["fetch_url"]);
     }
 
+    /// The owner's own words find the tool on the real roster. Proof runs
+    /// of 2026-09-26: "Remind me in 3 hours" never reached the schedule
+    /// tools, whose words were "reminder", "reminders": "remind" matched no
+    /// word of them, and "in" matched every description.
+    #[tokio::test]
+    async fn the_owners_own_words_find_the_tool() {
+        let (registry, _dir) = crate::registry::tests::full_registry().await;
+        let catalog = registry.deferred_entries().await;
+        for (words, tool) in [
+            ("show my reminders", "list_schedules"),
+            ("what reminders do I have", "list_schedules"),
+            ("pause the reminder", "set_schedule_paused"),
+            ("cancel that reminder", "delete_schedule"),
+        ] {
+            let found = names(&answer(&catalog, words, 5));
+            assert_eq!(found.first().map(String::as_str), Some(tool), "{words:?} found {found:?}");
+        }
+        for words in ["remind", "remind me in 3 hours"] {
+            let found = names(&answer(&catalog, words, 5));
+            assert!(found.first().is_some_and(|t| t.contains("schedule")), "{words:?} found {found:?}");
+        }
+    }
+
     #[test]
     fn a_plus_word_must_be_in_the_name() {
         assert_eq!(names(&answer(&catalog(), "+shopify orders", 5)), ["plugin__shopify"]);
@@ -397,7 +444,7 @@ mod tests {
     fn no_match_says_how_to_find_one_without_naming_other_tools() {
         let out = answer(&catalog(), "teleport", 5);
         assert!(names(&out).is_empty());
-        assert!(out.contains("select:<name>"));
+        assert!(out.content.contains("select:<name>"));
     }
 
     #[test]

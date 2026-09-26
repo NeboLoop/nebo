@@ -419,6 +419,13 @@ impl DynTool for EmployeeTool {
         self.kind.search_hint()
     }
 
+    /// list_employees and get_employee are always loaded: the proof runs of 2026-09-26 loaded it mid-conversation in the most runs, and each mid-conversation load rewrites the cached prompt (the
+    /// core budget test in the registry has the counts). The rest of the
+    /// family is deferred.
+    fn should_defer(&self) -> bool {
+        !matches!(self.kind, Kind::ListEmployees | Kind::GetEmployee)
+    }
+
     fn read_only(&self, _input: &serde_json::Value) -> bool {
         self.kind.read_only()
     }
@@ -503,7 +510,7 @@ mod tests {
 
     /// The family is the design's group C, every one deferred.
     #[test]
-    fn the_family_is_group_c_and_deferred() {
+    fn the_family_is_group_c_and_deferred_but_the_roster_reads() {
         let (family, _dir) = family();
         let names: Vec<&str> = family.iter().map(|t| t.name()).collect();
         assert_eq!(
@@ -514,7 +521,9 @@ mod tests {
                 "repair_employee", "reload_employee", "employee_stats"
             ]
         );
-        assert!(family.iter().all(|t| t.should_defer()));
+        for t in &family {
+            assert_eq!(t.should_defer(), !matches!(t.name(), "list_employees" | "get_employee"), "{}", t.name());
+        }
     }
 
     /// The model reads these, and the owner hears it back: employees, never

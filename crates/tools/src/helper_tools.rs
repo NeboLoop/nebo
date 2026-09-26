@@ -333,10 +333,11 @@ impl DynTool for HelperTool {
         }
     }
 
-    /// `delegate` is always loaded (handing off is always an option); the rest are found
-    /// with find_tools.
+    /// Both are always loaded: handing off is always an option, and
+    /// send_message is how work reaches a coworker; the proof runs of 2026-09-26 loaded it mid-conversation in the most runs, and each mid-conversation load rewrites the cached prompt (the core
+    /// budget test in the registry has the counts).
     fn should_defer(&self) -> bool {
-        self.op != HelperOp::Delegate
+        false
     }
 
     /// Starting a helper changes nothing by itself (read-only and
@@ -577,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn delegate_is_core_and_the_rest_are_deferred() {
+    fn delegate_and_send_message_are_core() {
         let rig = Rig::new();
         let names: Vec<(&str, bool)> = rig
             .tools
@@ -588,7 +589,7 @@ mod tests {
             names,
             [
                 ("delegate", false),
-                ("send_message", true)
+                ("send_message", false)
             ]
         );
     }

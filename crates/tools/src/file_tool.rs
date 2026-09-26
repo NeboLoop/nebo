@@ -614,11 +614,12 @@ impl FileTool {
 
         if over_budget {
             return ToolResult::error(format!(
-                "Too much to read at once: {} bytes from line {}, and the file has {} lines. The read budget is {} bytes (about 25,000 tokens). Read one part with offset and limit, or grep for what you need, rather than the whole file.",
+                "Too much to read at once: {} bytes from line {}, and the file has {} lines. The read budget is {} bytes (about 25,000 tokens). Read one part with offset and limit, or search it with run_command(command: \"grep -n '<text>' {}\"), rather than the whole file.",
                 result.len(),
                 offset,
                 total_lines.unwrap_or(line_num),
-                FILE_READ_MAX_BYTES
+                FILE_READ_MAX_BYTES,
+                path
             ));
         }
         if let Some(ref callback) = self.on_file_read {
@@ -1068,9 +1069,9 @@ impl FileTool {
         result.push_str(&paths.join("\n"));
 
         if pattern_was_defaulted {
-            result.push_str(
-                "\n\nTo filter by type, add pattern: os(action: \"glob\", pattern: \"*.json\", path: \".\")"
-            );
+            result.push_str(&format!(
+                "\n\nTo filter by type: run_command(command: \"find '{base_path}' -maxdepth 1 -name '*.json'\")"
+            ));
         }
 
         ToolResult::ok(result)
@@ -2917,6 +2918,10 @@ mod tests {
         assert!(r.is_error, "{}", crate::truncate_str(&r.content, 200));
         assert!(r.content.contains("the file has 1200 lines"), "{}", r.content);
         assert!(r.content.contains("Read one part with offset and limit"), "{}", r.content);
+        // The search it points at is a real tool (proof run 2026-09-26: "or
+        // grep for what you need" sent a run to a grep tool that doesn't exist).
+        assert!(r.content.contains("run_command(command: \"grep -n '<text>' "), "{}", r.content);
+        assert!(!r.content.contains("grep for"), "{}", r.content);
         assert!(r.content.len() < 600, "an error, not a clipped payload: {} bytes", r.content.len());
         // A ranged read that fits is served whole.
         let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap(), "offset": 600, "limit": 300}));

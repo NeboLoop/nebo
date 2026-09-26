@@ -3238,6 +3238,77 @@ mod tests {
         assert!(weather_result.contains("weather ran"), "{weather_result}");
     }
 
+    /// A deferred tool with a required field and a search hint, so a call
+    /// made without its definition fails validation.
+    struct Remind;
+
+    impl tools::registry::DynTool for Remind {
+        fn name(&self) -> &str {
+            "remind"
+        }
+        fn description(&self) -> String {
+            "Sets a reminder.".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]})
+        }
+        fn search_hint(&self) -> &str {
+            "set a reminder for later"
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::ok(format!("reminder set: {}", input["text"].as_str().unwrap_or(""))) })
+        }
+    }
+
+    /// A deferred tool costs one step, never two: a call made without its
+    /// definition fails validation, and that error loads the tool, so the
+    /// next step declares it and the retry needs no find_tools step. Proof
+    /// runs of 2026-09-26: the error carried the schema but still asked for
+    /// a find_tools call first, 22 times across three runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_invalid_call_to_an_unloaded_tool_loads_it() {
+        let model = Scripted::new(vec![
+            Step::Call("remind", serde_json::json!({})),
+            Step::Call("remind", serde_json::json!({"text": "call Kristi"})),
+            Step::Say("Set."),
+        ]);
+        let h = harness_with(&model, vec![Box::new(Remind)]).await;
+        let events = run_turn(&h, owner("Remind me to call Kristi.")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3, "no find_tools step between the error and the retry");
+        let declared = |c: &ChatRequest| c.tools.iter().any(|t| t.name == "remind");
+        assert!(!declared(&calls[0]), "deferred before the call");
+        assert!(declared(&calls[1]) && declared(&calls[2]), "the error loaded it");
+        let error = calls[1].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+        assert!(error.contains("The required parameter `text` is missing"), "{error}");
+        assert!(error.contains("Sets a reminder."), "the error shows the definition: {error}");
+        assert!(!error.contains("find_tools"), "no second step is asked for: {error}");
+        let retried = calls[2].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+        assert!(retried.contains("reminder set: call Kristi"), "{retried}");
+    }
+
+    /// The deferred listing says what each tool is for, so the owner's own
+    /// words find it. Proof runs of 2026-09-26: "Remind me in 3 hours" never
+    /// found create_schedule, listed by name only, and one run told the
+    /// owner there was no scheduling tool.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_deferred_listing_says_what_each_tool_is_for() {
+        let model = Scripted::new(vec![Step::Say("Noted.")]);
+        let h = harness_with(&model, vec![Box::new(Remind)]).await;
+        run_turn(&h, owner("Remind me in 3 hours.")).await;
+        let listing = texts(&model.calls()[0]).into_iter().find(|t| t.contains("available through find_tools")).expect("the listing");
+        assert!(listing.contains("\nremind: set a reminder for later"), "{listing}");
+        assert!(listing.contains("\nweather\n") || listing.ends_with("\nweather"), "a tool with no hint is its name: {listing}");
+    }
+
     /// The tools array heads the cached prefix, so a load may only append
     /// to it. Over two turns of one session, with loads mid-turn and in the
     /// next turn, every request's serialized tools array is a byte prefix of
