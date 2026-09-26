@@ -290,11 +290,18 @@ pub struct BackgroundSession {
     pub command: String,
     pub exited: bool,
     pub exit_code: Option<i32>,
+    /// It runs in a terminal (`pty: true`): its output is one stream, kept
+    /// as plain text in `output` and `pending_stdout` and as the program
+    /// wrote it in `pending_raw`.
+    pub terminal: bool,
     output: Arc<Mutex<String>>,
     pending_stdout: Arc<Mutex<Vec<u8>>>,
     pending_stderr: Arc<Mutex<Vec<u8>>>,
+    pending_raw: Arc<Mutex<Vec<u8>>>,
     lifecycle: Arc<std::sync::Mutex<Lifecycle>>,
     stdin_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+    /// The terminal while the command runs.
+    pty: Option<Arc<crate::terminal::Control>>,
 }
 
 impl BackgroundSession {
@@ -302,10 +309,14 @@ impl BackgroundSession {
         self.output.lock().await.clone()
     }
 
-    pub async fn drain_pending(&self) -> (Vec<u8>, Vec<u8>) {
+    /// What it printed since the last read: (stdout, stderr). A terminal's
+    /// output is all stdout, as plain text, or with `raw` as the program
+    /// wrote it, escape codes and all.
+    pub async fn drain_pending(&self, raw: bool) -> (Vec<u8>, Vec<u8>) {
         let stdout = std::mem::take(&mut *self.pending_stdout.lock().await);
         let stderr = std::mem::take(&mut *self.pending_stderr.lock().await);
-        (stdout, stderr)
+        let terminal = std::mem::take(&mut *self.pending_raw.lock().await);
+        if raw && self.terminal { (terminal, stderr) } else { (stdout, stderr) }
     }
 
     fn lifecycle(&self) -> std::sync::MutexGuard<'_, Lifecycle> {
@@ -341,9 +352,10 @@ impl ProcessRegistry {
     }
 
     /// Start `cmd` (the shell running `command`, its env and cwd already
-    /// set) as a session. A background start is refused past the session
-    /// cap; a foreground one never is, since its call is waiting on it.
-    pub async fn spawn(&self, mut cmd: Command, command: &str, spawn: Spawn) -> std::io::Result<Started> {
+    /// set) as a session, in a terminal of its own when `pty`. A background
+    /// start is refused past the session cap; a foreground one never is,
+    /// since its call is waiting on it.
+    pub async fn spawn(&self, mut cmd: Command, command: &str, spawn: Spawn, pty: bool) -> std::io::Result<Started> {
         let (foreground, notify) = match spawn {
             Spawn::Foreground => (true, None),
             Spawn::Background(caller) => {
@@ -364,6 +376,9 @@ impl ProcessRegistry {
                 (false, caller)
             }
         };
+        if pty {
+            return self.spawn_terminal(&cmd, command, foreground, notify).await;
+        }
         hide_window(&mut cmd);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -389,11 +404,14 @@ impl ProcessRegistry {
             command: command.to_string(),
             exited: false,
             exit_code: None,
+            terminal: false,
             output: Arc::default(),
             pending_stdout: Arc::default(),
             pending_stderr: Arc::default(),
+            pending_raw: Arc::default(),
             lifecycle: Arc::new(std::sync::Mutex::new(Lifecycle { foreground, notify, ended: false })),
             stdin_tx: Some(stdin_tx),
+            pty: None,
         });
 
         self.running.lock().await.insert(session_id, session.clone());
@@ -403,6 +421,97 @@ impl ProcessRegistry {
         tokio::spawn(async move { registry.handle_process(child, s, stdin_rx, exit_tx).await });
 
         Ok(Started { session, exited })
+    }
+
+    /// Start `cmd` in a terminal: the same session as a pipe's, its output
+    /// read from the terminal and typed input written to it.
+    async fn spawn_terminal(&self, cmd: &Command, command: &str, foreground: bool, notify: Option<Caller>) -> std::io::Result<Started> {
+        let opened = crate::terminal::open(cmd)?;
+        let pid = opened.child.process_id().unwrap_or(0);
+        napp::child_guard::register_child(pid);
+        let session_id = format!("{SESSION_ID_PREFIX}{}", &Uuid::new_v4().to_string()[..8]);
+        let (stdin_tx, stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+        let (exit_tx, exited) = tokio::sync::oneshot::channel();
+        let session = Arc::new(BackgroundSession {
+            id: session_id.clone(),
+            pid,
+            command: command.to_string(),
+            exited: false,
+            exit_code: None,
+            terminal: true,
+            output: Arc::default(),
+            pending_stdout: Arc::default(),
+            pending_stderr: Arc::default(),
+            pending_raw: Arc::default(),
+            lifecycle: Arc::new(std::sync::Mutex::new(Lifecycle { foreground, notify, ended: false })),
+            stdin_tx: Some(stdin_tx),
+            pty: Some(opened.control.clone()),
+        });
+        self.running.lock().await.insert(session_id, session.clone());
+        let registry = self.clone();
+        let s = session.clone();
+        tokio::spawn(async move { registry.handle_terminal(opened, s, stdin_rx, exit_tx).await });
+        Ok(Started { session, exited })
+    }
+
+    /// A terminal session's life: read the terminal until the command ends,
+    /// writing what is typed, then settle it as a pipe's session is settled.
+    async fn handle_terminal(
+        self,
+        opened: crate::terminal::Opened,
+        session: Arc<BackgroundSession>,
+        mut stdin_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        exit_tx: tokio::sync::oneshot::Sender<Option<std::process::ExitStatus>>,
+    ) {
+        let crate::terminal::Opened { control, mut reader, writer, child } = opened;
+        // The terminal answers some of the program's questions itself (see
+        // `terminal::Plain`); the answers go in as typed input does.
+        let replies = session.stdin_tx.clone();
+        let (output, pending, pending_raw) = (session.output.clone(), session.pending_stdout.clone(), session.pending_raw.clone());
+        let mut plain = crate::terminal::Plain::new(&control);
+        // Terminal reads block: they get a thread of their own.
+        let reader_handle = tokio::task::spawn_blocking(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match std::io::Read::read(&mut reader, &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let (text, answer) = plain.feed(&buf[..n]);
+                        output.blocking_lock().push_str(&text);
+                        pending.blocking_lock().extend_from_slice(text.as_bytes());
+                        pending_raw.blocking_lock().extend_from_slice(&buf[..n]);
+                        if let (false, Some(tx)) = (answer.is_empty(), replies.as_ref()) {
+                            let _ = tx.try_send(answer);
+                        }
+                    }
+                }
+            }
+        });
+        let writer = Arc::new(std::sync::Mutex::new(writer));
+        let stdin_handle = tokio::spawn(async move {
+            while let Some(bytes) = stdin_rx.recv().await {
+                let writer = writer.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
+                    w.write_all(&bytes).and_then(|()| w.flush())
+                })
+                .await;
+            }
+        });
+
+        let status = tokio::task::spawn_blocking(move || crate::terminal::wait(child)).await.ok().flatten();
+        let exit_code = status.and_then(|s| s.code());
+        debug!(session = %session.id, exit_code = ?exit_code, "terminal command exited");
+        kill_group(session.pid);
+        napp::child_guard::unregister_child(session.pid);
+        // Closing the terminal is what ends the reader on Windows; closing a
+        // pseudo console can block, so it gets a thread.
+        if let Some(master) = control.close() {
+            tokio::task::spawn_blocking(move || drop(master));
+        }
+        let _ = tokio::time::timeout(REAP_BOUND, reader_handle).await;
+        stdin_handle.abort();
+        self.settle(session, status, exit_code, exit_tx).await;
     }
 
     /// Hand a foreground command, still running, to the background: it keeps
@@ -480,7 +589,20 @@ impl ProcessRegistry {
         let _ = tokio::time::timeout_at(drained_by, stdout_handle).await;
         let _ = tokio::time::timeout_at(drained_by, stderr_handle).await;
         stdin_handle.abort();
+        self.settle(session, status, exit_code, exit_tx).await;
+    }
 
+    /// A session whose command has ended: a foreground command's status goes
+    /// to its call, a background one is kept for read_output and its caller
+    /// is told.
+    async fn settle(
+        &self,
+        session: Arc<BackgroundSession>,
+        status: Option<std::process::ExitStatus>,
+        exit_code: Option<i32>,
+        exit_tx: tokio::sync::oneshot::Sender<Option<std::process::ExitStatus>>,
+    ) {
+        let session_id = session.id.clone();
         let (foreground, notify) = {
             let mut life = session.lifecycle();
             life.ended = true;
@@ -496,11 +618,14 @@ impl ProcessRegistry {
                 command: sess.command.clone(),
                 exited: true,
                 exit_code,
+                terminal: sess.terminal,
                 output: sess.output.clone(),
                 pending_stdout: sess.pending_stdout.clone(),
                 pending_stderr: sess.pending_stderr.clone(),
+                pending_raw: sess.pending_raw.clone(),
                 lifecycle: sess.lifecycle.clone(),
                 stdin_tx: None,
+                pty: None,
             });
             self.finished.lock().await.insert(session_id.clone(), finished_sess);
         }
@@ -585,6 +710,22 @@ impl ProcessRegistry {
             .map_err(|e| format!("write error: {}", e))
     }
 
+    /// A running session's terminal, for its size and keys. A command started
+    /// without one has none to give.
+    pub async fn terminal(&self, id: &str) -> Result<Arc<crate::terminal::Control>, String> {
+        let running = self.running.lock().await;
+        let Some(sess) = running.get(id) else {
+            drop(running);
+            return Err(self.not_running(id).await);
+        };
+        sess.pty.clone().ok_or_else(|| {
+            format!(
+                "session {id} has no terminal: keys and a size need one. Start the command with \
+                 run_command(pty: true, background: true); plain text still goes to this one."
+            )
+        })
+    }
+
     /// Stop a running session. Its caller is not told it ended: the caller
     /// asked for the stop (Claude Code's `notified` flag, set by TaskStop).
     pub async fn kill_session(&self, id: &str) -> Result<(), String> {
@@ -597,6 +738,9 @@ impl ProcessRegistry {
         // The group dies by pid; the session's own task sees the end and
         // tidies up.
         kill_group(sess.pid);
+        if let Some(pty) = &sess.pty {
+            pty.kill();
+        }
         Ok(())
     }
 }
@@ -928,7 +1072,7 @@ mod group_tests {
         let file = pid_file();
         let reg = ProcessRegistry::new();
         let started = reg
-            .spawn(sh(&format!("sleep 30 & echo $! > {}; wait", file.display())), "sleep", Spawn::Background(None))
+            .spawn(sh(&format!("sleep 30 & echo $! > {}; wait", file.display())), "sleep", Spawn::Background(None), false)
             .await
             .unwrap();
         let pid = grandchild_pid(&file).await;
@@ -944,11 +1088,11 @@ mod group_tests {
         let reg = ProcessRegistry::new();
         let mut ids = Vec::new();
         for _ in 0..MAX_BACKGROUND_SESSIONS {
-            ids.push(reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None)).await.unwrap().session.id.clone());
+            ids.push(reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None), false).await.unwrap().session.id.clone());
         }
-        let err = reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None)).await.err().expect("capped");
+        let err = reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None), false).await.err().expect("capped");
         assert!(err.to_string().contains("stop one first"), "{err}");
-        let fg = reg.spawn(sh("echo still-runs"), "echo", Spawn::Foreground).await.expect("a foreground command is never capped");
+        let fg = reg.spawn(sh("echo still-runs"), "echo", Spawn::Foreground, false).await.expect("a foreground command is never capped");
         assert!(fg.exited.await.unwrap().is_some_and(|s| s.success()));
         for id in ids {
             reg.kill_session(&id).await.unwrap();
@@ -961,7 +1105,7 @@ mod group_tests {
     async fn a_finished_background_command_tells_its_caller() {
         let (reg, mut rx) = reported();
         let started = reg
-            .spawn(sh("echo built 12 pages; exit 3"), "make site", Spawn::Background(Some(caller())))
+            .spawn(sh("echo built 12 pages; exit 3"), "make site", Spawn::Background(Some(caller())), false)
             .await
             .unwrap();
         let exit = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("told in time").expect("told");
@@ -983,9 +1127,9 @@ mod group_tests {
     #[tokio::test]
     async fn a_stopped_or_foreground_command_tells_nobody() {
         let (reg, mut rx) = reported();
-        let started = reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(Some(caller()))).await.unwrap();
+        let started = reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(Some(caller())), false).await.unwrap();
         reg.kill_session(&started.session.id).await.unwrap();
-        let fg = reg.spawn(sh("echo done"), "echo done", Spawn::Foreground).await.unwrap();
+        let fg = reg.spawn(sh("echo done"), "echo done", Spawn::Foreground, false).await.unwrap();
         assert!(fg.exited.await.unwrap().is_some());
         assert!(reg.get_any_session(&fg.session.id).await.is_none(), "a foreground result is its call's alone");
         settle().await;
@@ -997,7 +1141,7 @@ mod group_tests {
     #[tokio::test]
     async fn a_moved_command_is_reported_when_it_ends() {
         let (reg, mut rx) = reported();
-        let fg = reg.spawn(sh("sleep 0.5; echo finally"), "slow", Spawn::Foreground).await.unwrap();
+        let fg = reg.spawn(sh("sleep 0.5; echo finally"), "slow", Spawn::Foreground, false).await.unwrap();
         assert!(reg.list_running().await.is_empty(), "a foreground command is not listed as background work");
         assert!(reg.move_to_background(&fg.session, Some(caller())));
         let exit = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("told in time").expect("told");

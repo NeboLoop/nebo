@@ -38,10 +38,23 @@ struct ShellInput {
     session_id: String,
     #[serde(default)]
     data: String,
+    /// `write`: named keys typed after `data` (a terminal session's only).
+    #[serde(default)]
+    keys: Vec<String>,
+    /// `write`: a new terminal size; a dimension left out keeps its value.
+    #[serde(default)]
+    cols: Option<u16>,
+    #[serde(default)]
+    rows: Option<u16>,
+    /// `exec`: run the command in a terminal of its own.
+    #[serde(default)]
+    pty: bool,
     /// Machine-consumer mode: on success return stdout ONLY (no STDERR
     /// section, no "(no output)" placeholder, no truncation footer); on a
     /// non-zero exit return an error carrying stderr. Used by deterministic
-    /// workflow nodes whose output is parsed, not read by a model.
+    /// workflow nodes whose output is parsed, not read by a model. On
+    /// `poll`, a terminal session's output as the program wrote it, escape
+    /// codes and all.
     #[serde(default)]
     raw: bool,
 }
@@ -254,7 +267,7 @@ impl ShellTool {
             120
         };
         let started_at = std::time::SystemTime::now();
-        let started = match self.registry.spawn(cmd, &input.command, process::Spawn::Foreground).await {
+        let started = match self.registry.spawn(cmd, &input.command, process::Spawn::Foreground, input.pty).await {
             Ok(s) => s,
             Err(e) => return spawn_failure(&input.command, &e),
         };
@@ -280,8 +293,13 @@ impl ShellTool {
                         "Command exceeded its timeout ({timeout_secs}s) and was moved to the background \
                          with ID: {id}. It is still running; you'll be notified when it completes. Read \
                          what it has printed so far with read_output(task_id: \"{id}\"); stop it with \
-                         stop_task(task_id: \"{id}\").",
-                        id = started.session.id
+                         stop_task(task_id: \"{id}\").{typed}",
+                        id = started.session.id,
+                        typed = if input.pty {
+                            " If it is waiting for input, type into it with send_input."
+                        } else {
+                            ""
+                        }
                     ));
                 }
                 // It ended in the same instant: its status is on the way.
@@ -295,7 +313,7 @@ impl ShellTool {
                 crate::truncate_str(&input.command, 80)
             ));
         };
-        let (stdout, stderr) = started.session.drain_pending().await;
+        let (stdout, stderr) = started.session.drain_pending(false).await;
         let output = std::process::Output { status, stdout, stderr };
         if input.raw {
             if !output.status.success() {
@@ -446,13 +464,13 @@ impl ShellTool {
 
     async fn execute_background(&self, cmd: tokio::process::Command, input: &ShellInput, caller: Option<process::Caller>) -> ToolResult {
         let told = if caller.is_some() { " You'll be notified when it ends." } else { "" };
-        match self.registry.spawn(cmd, &input.command, process::Spawn::Background(caller)).await {
+        match self.registry.spawn(cmd, &input.command, process::Spawn::Background(caller), input.pty).await {
             Ok(started) => ToolResult::ok(format!(
                 "Background session started: **{}** (PID {})\n\nCommand: `{}`\n\n{}{told}\n",
                 started.session.id,
                 started.session.pid,
                 input.command,
-                session_next_steps(&started.session.id)
+                session_next_steps(&started.session.id, input.pty)
             )),
             Err(e) => ToolResult::error(format!("Failed to start background process: {}", e)),
         }
@@ -660,9 +678,9 @@ impl ShellTool {
         }
         match action {
             "list" => self.list_sessions().await,
-            "poll" => self.poll_session(&input.session_id).await,
+            "poll" => self.poll_session(&input.session_id, input.raw).await,
             "log" => self.get_session_log(&input.session_id).await,
-            "write" => self.write_to_session(&input.session_id, &input.data).await,
+            "write" => self.write_to_session(input).await,
             "kill" => self.kill_session(&input.session_id).await,
             "info" => self.session_info(&input.session_id).await,
             other => ToolResult::error(format!(
@@ -734,7 +752,7 @@ impl ShellTool {
         ToolResult::ok(result)
     }
 
-    async fn poll_session(&self, session_id: &str) -> ToolResult {
+    async fn poll_session(&self, session_id: &str, raw: bool) -> ToolResult {
         let sess = match self.registry.get_any_session(session_id).await {
             Some(s) => s,
             None => return ToolResult::error(format!("Session not found: {}", session_id)),
@@ -747,7 +765,7 @@ impl ShellTool {
             session_status(sess.exited, sess.exit_code)
         );
 
-        let (stdout, stderr) = sess.drain_pending().await;
+        let (stdout, stderr) = sess.drain_pending(raw).await;
         if !stdout.is_empty() || !stderr.is_empty() {
             result.push_str("\nNew output:\n");
             if !stdout.is_empty() {
@@ -793,13 +811,37 @@ impl ShellTool {
         }
     }
 
-    async fn write_to_session(&self, session_id: &str, data: &str) -> ToolResult {
-        match self.registry.write_stdin(session_id, data.as_bytes()).await {
-            Ok(()) => ToolResult::ok(format!(
-                "Wrote {} bytes to session {}",
-                data.len(),
-                session_id
-            )),
+    /// Type into a session: text, then named keys, after resizing its
+    /// terminal when a size is given. Keys and a size need a terminal.
+    async fn write_to_session(&self, input: &ShellInput) -> ToolResult {
+        let session_id = input.session_id.as_str();
+        let resize = input.cols.is_some() || input.rows.is_some();
+        if input.data.is_empty() && input.keys.is_empty() && !resize {
+            return ToolResult::error("Nothing to send: give text, keys, or a size (cols, rows).");
+        }
+        let mut bytes = input.data.clone().into_bytes();
+        let mut resized = String::new();
+        if !input.keys.is_empty() || resize {
+            let terminal = match self.registry.terminal(session_id).await {
+                Ok(t) => t,
+                Err(e) => return ToolResult::error(format!("Error writing to session: {e}")),
+            };
+            if resize {
+                match terminal.resize(input.cols, input.rows) {
+                    Ok((cols, rows)) => resized = format!("; terminal is now {cols}x{rows}"),
+                    Err(e) => return ToolResult::error(format!("Error resizing session {session_id}: {e}")),
+                }
+            }
+            match crate::terminal::encode_keys(&input.keys, terminal.app_cursor()) {
+                Ok(keys) => bytes.extend(keys),
+                Err(e) => return ToolResult::error(e),
+            }
+        }
+        if bytes.is_empty() {
+            return ToolResult::ok(format!("Resized session {session_id}{resized}"));
+        }
+        match self.registry.write_stdin(session_id, &bytes).await {
+            Ok(()) => ToolResult::ok(format!("Wrote {} bytes to session {session_id}{resized}", bytes.len())),
             Err(e) => ToolResult::error(format!("Error writing to session: {}", e)),
         }
     }
@@ -846,11 +888,20 @@ fn session_status(exited: bool, exit_code: Option<i32>) -> String {
     }
 }
 
-/// The calls that manage a background command, spelled out with its id.
-fn session_next_steps(session_id: &str) -> String {
+/// The calls that manage a background command, spelled out with its id; a
+/// terminal session is also typed into.
+fn session_next_steps(session_id: &str, terminal: bool) -> String {
+    let typed = if terminal {
+        format!(
+            " Type into it with send_input(task_id: \"{session_id}\", text: \"…\", keys: [\"Enter\"]); \
+             read_output shows what the terminal printed."
+        )
+    } else {
+        String::new()
+    };
     format!(
         "Running. Read its output with read_output(task_id: \"{session_id}\"); stop it with \
-         stop_task(task_id: \"{session_id}\")."
+         stop_task(task_id: \"{session_id}\").{typed}"
     )
 }
 

@@ -97,6 +97,7 @@ pub mod web_tool;
 pub mod task_tools;
 pub mod team;
 pub mod team_tool;
+pub mod terminal;
 pub mod workflows;
 
 /// True when this Nebo runs as a cloud/container server rather than on a user's

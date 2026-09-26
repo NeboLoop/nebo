@@ -88,6 +88,7 @@ impl DynTool for RunCommandTool {
                 "description": { "type": "string", "description": "What this command does, in plain words the owner will read (5–10 words). Don't repeat the command." },
                 "timeout": { "type": "integer", "description": "Milliseconds to wait before it moves to the background (default 120000, max 600000)." },
                 "background": { "type": "boolean", "description": "Run detached; you're told when it ends. Read output with read_output." },
+                "pty": { "type": "boolean", "description": "Run in a terminal; type into it with send_input." },
                 "cwd": { "type": "string", "description": "Folder to run in. Default: the conversation's working folder." }
             },
             "required": ["command", "description"]
@@ -153,6 +154,7 @@ impl DynTool for RunCommandTool {
                 "command": command,
                 "timeout": timeout_secs(&input),
                 "background": input.get("background").and_then(Value::as_bool).unwrap_or(false),
+                "pty": input.get("pty").and_then(Value::as_bool).unwrap_or(false),
                 "description": str_arg(&input, "description").unwrap_or(""),
             });
             if let Some(cwd) = str_arg(&input, "cwd") {
@@ -283,7 +285,8 @@ impl DynTool for ReadOutputTool {
     fn description(&self) -> String {
         "Reads the output of a background command or a helper.\n\
          - `task_id` is the id run_command (background: true) or delegate gave you.\n\
-         - A command's output is what it printed since you last read it, with whether it is still running."
+         - A command's output is what it printed since you last read it, with whether it is still running.\n\
+         - A terminal command's output comes without its escape codes; `raw: true` keeps them."
             .to_string()
     }
 
@@ -291,7 +294,8 @@ impl DynTool for ReadOutputTool {
         json!({
             "type": "object",
             "properties": {
-                "task_id": { "type": "string", "description": "The background command's or helper's id." }
+                "task_id": { "type": "string", "description": "The background command's or helper's id." },
+                "raw": { "type": "boolean", "description": "A terminal command's output as the program wrote it, escape codes and all." }
             },
             "required": ["task_id"]
         })
@@ -332,7 +336,8 @@ impl DynTool for ReadOutputTool {
         Box::pin(async move {
             let id = task_id(&input);
             if is_command_id(id) {
-                return self.machine.shell.execute(ctx, json!({"action": "poll", "session_id": id})).await;
+                let raw = input.get("raw").and_then(Value::as_bool).unwrap_or(false);
+                return self.machine.shell.execute(ctx, json!({"action": "poll", "session_id": id, "raw": raw})).await;
             }
             self.helpers.status(ctx, id).await
         })
@@ -465,8 +470,9 @@ impl DynTool for SendInputTool {
     }
 
     fn description(&self) -> String {
-        "Sends text to a background command's input, as if typed.\n\
-         - End the text with a newline to submit a line."
+        "Types into a background command: text, then named keys.\n\
+         - End the text with a newline to submit a line.\n\
+         - A command started with pty: true also takes keys (Enter, Tab, Up, Ctrl-C, …) and a new size."
             .to_string()
     }
 
@@ -475,9 +481,16 @@ impl DynTool for SendInputTool {
             "type": "object",
             "properties": {
                 "task_id": { "type": "string", "description": "The background command's id (bg-…)." },
-                "text": { "type": "string", "description": "The text to send." }
+                "text": { "type": "string", "description": "The text to send." },
+                "keys": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Keys pressed after the text, in order: Enter, Tab, Shift-Tab, Escape, Backspace, Space, Up, Down, Left, Right, Home, End, PageUp, PageDown, Insert, Delete, F1–F12, Ctrl-<key>, Alt-<key>. Terminal commands only."
+                },
+                "cols": { "type": "integer", "description": "Resize the terminal to this many columns. Terminal commands only." },
+                "rows": { "type": "integer", "description": "Resize the terminal to this many rows. Terminal commands only." }
             },
-            "required": ["task_id", "text"]
+            "required": ["task_id"]
         })
     }
 
@@ -499,11 +512,22 @@ impl DynTool for SendInputTool {
 
     fn execute_dyn<'a>(&'a self, ctx: &'a ToolContext, input: Value) -> Fut<'a> {
         Box::pin(async move {
-            let call = json!({
+            let mut call = json!({
                 "action": "write",
                 "session_id": task_id(&input),
                 "data": input.get("text").and_then(Value::as_str).unwrap_or(""),
+                // One key may come as a plain string.
+                "keys": match input.get("keys") {
+                    Some(Value::String(key)) => json!([key]),
+                    Some(keys @ Value::Array(_)) => keys.clone(),
+                    _ => json!([]),
+                },
             });
+            for dim in ["cols", "rows"] {
+                if let Some(n) = input.get(dim).and_then(Value::as_u64) {
+                    call[dim] = json!(n.min(u64::from(u16::MAX)));
+                }
+            }
             self.0.shell.execute(ctx, call).await
         })
     }
@@ -645,5 +669,123 @@ mod tests {
             .execute_dyn(&ctx, json!({"path": path.to_string_lossy(), "old_string": "hello", "new_string": "bye"}))
             .await;
         assert!(!e.is_error && !e.content.contains("WARNING"), "{}", e.content);
+    }
+
+    /// A terminal command's session: started in the background with
+    /// `pty: true`, typed into, read, until `want` shows up in what it printed.
+    #[cfg(unix)]
+    mod terminal {
+        use super::*;
+
+        fn ctx() -> ToolContext {
+            ToolContext::new(crate::origin::Origin::User)
+        }
+
+        async fn start(m: &Arc<Machine>, command: &str) -> String {
+            let r = RunCommandTool(m.clone())
+                .execute_dyn(&ctx(), json!({"command": command, "description": "Terminal", "background": true, "pty": true}))
+                .await;
+            assert!(!r.is_error && r.content.contains("send_input"), "{}", r.content);
+            r.content.split("**").nth(1).expect("session id between ** markers").to_string()
+        }
+
+        async fn send(m: &Arc<Machine>, input: Value) -> ToolResult {
+            SendInputTool(m.clone()).execute_dyn(&ctx(), input).await
+        }
+
+        /// Read until `want` is in what the command printed, or ten seconds pass.
+        async fn read_until(m: &Arc<Machine>, id: &str, raw: bool, want: &str) -> String {
+            let read = ReadOutputTool { machine: m.clone(), helpers: helpers() };
+            let mut seen = String::new();
+            for _ in 0..200 {
+                let r = read.execute_dyn(&ctx(), json!({"task_id": id, "raw": raw})).await;
+                assert!(!r.is_error, "{}", r.content);
+                seen.push_str(&r.content);
+                if seen.contains(want) {
+                    return seen;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            panic!("never printed {want:?}; printed:\n{seen}");
+        }
+
+        async fn stop(m: &Arc<Machine>, id: &str) {
+            let _ = StopTaskTool { machine: m.clone(), helpers: helpers() }.execute_dyn(&ctx(), json!({"task_id": id})).await;
+        }
+
+        #[tokio::test]
+        async fn an_interactive_program_is_typed_into_and_read() {
+            let m = machine();
+            let id = start(&m, "python3 -c 'print(\"hello \" + input(\"name? \"))'").await;
+            read_until(&m, &id, false, "name? ").await;
+            let typed = send(&m, json!({"task_id": id, "text": "nebo", "keys": ["Enter"]})).await;
+            assert!(!typed.is_error && typed.content.starts_with("Wrote 5 bytes"), "{}", typed.content);
+            let out = read_until(&m, &id, false, "hello nebo").await;
+            assert!(out.contains("nebo\n"), "the terminal echoes what was typed: {out}");
+            read_until(&m, &id, false, "Status: Exited (code 0)").await;
+        }
+
+        #[tokio::test]
+        async fn a_terminal_is_a_tty_and_a_pipe_is_not() {
+            let m = machine();
+            let check = |pty: bool| {
+                let m = m.clone();
+                async move {
+                    let r = RunCommandTool(m)
+                        .execute_dyn(&ctx(), json!({"command": "test -t 1 && echo tty || echo pipe; echo $TERM", "description": "Check", "pty": pty}))
+                        .await;
+                    assert!(!r.is_error, "{}", r.content);
+                    r.content
+                }
+            };
+            assert_eq!(check(true).await, "tty\nxterm-256color\n");
+            assert!(check(false).await.starts_with("pipe\n"));
+        }
+
+        #[tokio::test]
+        async fn ctrl_c_ends_a_running_program() {
+            let m = machine();
+            let id = start(&m, "echo ready; sleep 30").await;
+            read_until(&m, &id, false, "ready").await;
+            let r = send(&m, json!({"task_id": id, "keys": ["Ctrl-C"]})).await;
+            assert!(!r.is_error, "{}", r.content);
+            read_until(&m, &id, false, "Status: Exited (code ?)").await;
+        }
+
+        #[tokio::test]
+        async fn a_terminal_is_resized_and_the_program_sees_it() {
+            let m = machine();
+            let id = start(&m, "stty size; read x; stty size").await;
+            read_until(&m, &id, false, "30 120").await;
+            let r = send(&m, json!({"task_id": id, "cols": 100, "rows": 40, "keys": ["Enter"]})).await;
+            assert!(!r.is_error && r.content.ends_with("terminal is now 100x40"), "{}", r.content);
+            read_until(&m, &id, false, "40 100").await;
+        }
+
+        #[tokio::test]
+        async fn escape_codes_are_stripped_unless_asked_for() {
+            let m = machine();
+            let id = start(&m, "sleep 0.3; printf '\\033[31mred\\033[0m\\n'; sleep 30").await;
+            let plain = read_until(&m, &id, false, "red").await;
+            assert!(!plain.contains('\x1b'), "{plain:?}");
+            stop(&m, &id).await;
+            let id = start(&m, "sleep 0.3; printf '\\033[31mred\\033[0m\\n'; sleep 30").await;
+            read_until(&m, &id, true, "\x1b[31mred").await;
+            stop(&m, &id).await;
+        }
+
+        #[tokio::test]
+        async fn keys_and_a_size_need_a_terminal() {
+            let m = machine();
+            let r = RunCommandTool(m.clone())
+                .execute_dyn(&ctx(), json!({"command": "sleep 30", "description": "Wait", "background": true}))
+                .await;
+            let id = r.content.split("**").nth(1).unwrap().to_string();
+            let r = send(&m, json!({"task_id": id, "keys": ["Enter"]})).await;
+            assert!(r.is_error && r.content.contains("pty: true"), "{}", r.content);
+            let r = send(&m, json!({"task_id": id})).await;
+            assert!(r.is_error && r.content.contains("Nothing to send"), "{}", r.content);
+            stop(&m, &id).await;
+        }
     }
 }
