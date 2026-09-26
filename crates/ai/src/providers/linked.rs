@@ -18,10 +18,12 @@
 //! user message, never the flattened history the CLI provider builds. Nebo's
 //! system prompt and steering are not sent — the runtime owns its persona.
 //!
-//! An approval the runtime stops for (`ask_request`) becomes a
-//! [`StreamEvent::approval_request`] registered on the run's approval
-//! channels, the ONE tool-approval pathway, so the ApprovalGate, the phone and
-//! the comm relay answer it; the decision goes back as `ask_response`.
+//! A question the runtime stops for (`ask_request`, e.g. its permission to
+//! run a command) becomes a [`StreamEvent::ask_request`] registered on the
+//! run's ask channels, the ONE way a parked question is answered: the app's
+//! ask card, the phone (live and on reload), and a loop reply all show it
+//! with the runtime's own options, and the option chosen goes back as
+//! `ask_response`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -159,7 +161,7 @@ impl LinkedProvider {
         .await?;
         info!(bot_id, agent_id, %session_id, prompt_len = prompt.len(), "linked: turn sent");
 
-        // Decisions on the runtime's asks arrive here from the approval door.
+        // Answers to the runtime's questions arrive here from the ask door.
         let (answers_tx, mut answers_rx) = mpsc::channel::<(String, String)>(8);
         let cancel = req.cancel_token.clone().unwrap_or_default();
         let mut cancel_deadline: Option<tokio::time::Instant> = None;
@@ -338,9 +340,9 @@ impl LinkedProvider {
         Ok(id.to_owned())
     }
 
-    /// The runtime stopped for the owner: register the request on the run's
-    /// approval channels and raise `approval_request`; the decision comes back
-    /// through `answers` as the label of one of the ask's options.
+    /// The runtime stopped to ask the owner: register the question on the
+    /// run's ask channels and raise `ask_request` with the runtime's own
+    /// options; the option chosen comes back through `answers`.
     async fn ask(
         &self,
         data: &Value,
@@ -349,42 +351,32 @@ impl LinkedProvider {
         answers: &mpsc::Sender<(String, String)>,
     ) {
         let request_id = data["request_id"].as_str().unwrap_or("").to_owned();
-        let prompt = data["prompt"].as_str().unwrap_or("").to_owned();
-        let options: Vec<String> = data["widgets"][0]["options"]
-            .as_array()
-            .map(|opts| {
-                opts.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let Some(channels) = req.approval_channels.as_ref() else {
-            // No approval door on this run (nothing could answer): the ask
+        let Some(channels) = req.ask_channels.as_ref() else {
+            // No ask door on this run (nothing could answer): the question
             // stays open for the linked bot's own chat and the phone.
-            warn!(
-                request_id,
-                "linked: an ask with no approval door on the run"
-            );
+            warn!(request_id, "linked: an ask with no ask door on the run");
             return;
         };
         if request_id.is_empty() {
             return;
         }
+        info!(request_id, "linked: the runtime asks the owner");
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
         channels.lock().await.insert(request_id.clone(), resp_tx);
         let _ = tx
-            .send(StreamEvent::approval_request(ToolCall {
-                id: request_id.clone(),
-                name: prompt,
-                input: json!({ "options": options }),
-            }))
+            .send(StreamEvent::ask_request(
+                request_id.clone(),
+                data["prompt"].as_str().unwrap_or(""),
+                Some(data["widgets"].clone()),
+            ))
             .await;
         let answers = answers.clone();
         tokio::spawn(async move {
-            let decision = resp_rx.await.unwrap_or_else(|_| "deny".to_owned());
-            let value = option_for(&decision, &options);
-            let _ = answers.send((request_id, value)).await;
+            // A question nobody answers (the run ended) is not answered: the
+            // runtime cancels it with its turn.
+            if let Ok(value) = resp_rx.await {
+                let _ = answers.send((request_id, value)).await;
+            }
         });
     }
 
@@ -451,26 +443,6 @@ enum Reach {
     Offline,
     /// A refusal with its own words.
     Refused(String),
-}
-
-/// The ask option a Nebo decision (`once` / `always` / `deny`) answers with.
-/// The options are the contract's labels ("Allow once", "Always allow",
-/// "Deny"); a runtime that offers no "always" gets "once".
-fn option_for(decision: &str, options: &[String]) -> String {
-    let find = |word: &str| {
-        options
-            .iter()
-            .find(|o| o.to_lowercase().contains(word))
-            .cloned()
-    };
-    match decision {
-        "deny" => find("deny").or_else(|| options.last().cloned()),
-        "always" => find("always")
-            .or_else(|| find("once"))
-            .or_else(|| options.first().cloned()),
-        _ => find("once").or_else(|| options.first().cloned()),
-    }
-    .unwrap_or_else(|| decision.to_owned())
 }
 
 /// The owner's newest message: the newest user message that is not a
@@ -835,19 +807,6 @@ mod tests {
         assert_eq!(owners_message(&[say("user", "  ")]), None);
     }
 
-    #[test]
-    fn decisions_pick_the_contracts_labels() {
-        let full: Vec<String> = ["Allow once", "Always allow", "Deny"]
-            .map(String::from)
-            .into();
-        assert_eq!(option_for("once", &full), "Allow once");
-        assert_eq!(option_for("always", &full), "Always allow");
-        assert_eq!(option_for("deny", &full), "Deny");
-        let smart: Vec<String> = ["Allow once", "Deny"].map(String::from).into();
-        assert_eq!(option_for("always", &smart), "Allow once");
-        assert_eq!(option_for("deny", &[]), "deny");
-    }
-
     /// The first turn creates the runtime's chat with the bot token and
     /// records it; the second reuses it, and each turn sends exactly the
     /// newest user message — never the history, never the system prompt.
@@ -928,32 +887,32 @@ mod tests {
         }
     }
 
-    /// An ask becomes an `approval_request` on the run's approval channels;
-    /// the decision answered there goes back as the option's label.
+    /// An ask becomes an `ask_request` on the run's ask channels with the
+    /// runtime's own options; the option answered there goes back as it is.
     #[tokio::test]
-    async fn an_ask_round_trips_through_the_approval_channels() {
+    async fn an_ask_round_trips_through_the_ask_channels() {
         let (url, rec) = fake_link(Script::Ask).await;
         let (_dir, store) = store();
         let p = provider(&url, store);
-        let channels: ApprovalChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let mut req = request("clean the build", "chat-1");
-        req.approval_channels = Some(channels.clone());
+        req.ask_channels = Some(channels.clone());
 
         let mut rx = p.stream(&req).await.unwrap();
         let ask = rx.recv().await.unwrap();
-        assert_eq!(ask.event_type, StreamEventType::ApprovalRequest);
-        let call = ask.tool_call.as_ref().unwrap();
-        assert_eq!(call.id, "req-9");
-        assert_eq!(call.name, "Run `rm -rf build`?");
-        assert_eq!(call.input["options"][1], "Always allow");
+        assert_eq!(ask.event_type, StreamEventType::AskRequest);
+        assert_eq!(ask.error.as_deref(), Some("req-9"), "the question's id");
+        assert_eq!(ask.text, "Run `rm -rf build`?");
+        let widgets = ask.widgets.as_ref().unwrap();
+        assert_eq!(widgets[0]["options"], json!(["Allow once", "Always allow", "Deny"]));
 
-        // The ApprovalGate's answer, through the ONE pathway.
+        // The ask card's answer, through the ONE pathway.
         let sender = channels
             .lock()
             .await
             .remove("req-9")
             .expect("registered on the run");
-        sender.send("always".to_owned()).unwrap();
+        sender.send("Always allow".to_owned()).unwrap();
 
         let rest = collect(rx).await;
         assert_eq!(

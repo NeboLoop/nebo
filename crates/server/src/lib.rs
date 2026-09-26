@@ -1784,7 +1784,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(skill_loader.clone()),
     )
     .with_ask_channels(ask_channels.clone())
-    .with_approval_channels(approval_channels.clone())
     // Jev judges first the calls the permission check can't decide.
     .with_decide(decide_client.clone())
     // Same adapter instance as the memory tool — one search pathway, one
