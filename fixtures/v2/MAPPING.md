@@ -58,7 +58,7 @@ Two checks fail on v2 where they passed on the original, and both catch real mis
 
 **Judgement calls, for the owner:**
 
-- **`correction-os-glob-no-action`:** the owner message still says "Call the os tool with glob…". The scenario is kept verbatim, but P's `os` has no glob. v2 expects the listing through `run_command`. P made no call in any of 3 runs, so it fails.
+- **`correction-os-glob-no-action`:** the owner message used to say "Call the os tool with glob…", a call P's `os` (desktop control only) cannot make, so P made no call in any of 3 runs and the check measured the prompt, not the listing. The message now asks for the listing itself ("List the *.md files in {{scratch}}, then tell me which ones are there."); `os` stays enabled beside `run_command`, and the checks are unchanged.
 - **`correction-event-reminder-shape`:** `uses-event` is now `[find_tools, create_schedule]`. P's runs 1–2 first called `reminders`, a name the model invented. The call errors, so the check still fails there.
 - **`no_error_contains` in two fixtures:** `plugin-discover-installed` and `quickbooks-payment-dry-run` now list P's wording of the same first-call misses: `input error`, `There is no tool named`, `is missing`, `No skill named`. They replace the old tool's `Resource is required` and `Unknown action`.
 - **Checks the branch added are not carried over.** The branch turned several judged assertions into program checks (in agent-spawn-*, empty-output, web-*) and replaced some scenarios (web-browser-interaction's page, event-reminder-shape → schedule-reminder-once). v2 keeps main's scenarios and each assertion's kind, so A and P are measured by the same list.
@@ -350,6 +350,7 @@ Changed:
 - `answer` [important, judged, recovery]: 'sub-agent's result' → 'helper's result' (prose-vocab)
 Unchanged: `no-tool-errors`
 Other: description v2 line (+delegate), tool_config agent/os→delegate/read_file, narrative
+- setup data (both arms, `fixtures/correction/` too): the Corner Cafe purchase (Id 2) had `"Line": []`, while `answer` expects "no account on its line". It now has one line with no `AccountRef` (`{"Amount":19,"DetailType":"AccountBasedExpenseLineDetail","AccountBasedExpenseLineDetail":{}}`); the rubric is unchanged (data-fix)
 
 #### correction-quickbooks-payment-dry-run (`fixtures/v2/correction/quickbooks-payment-dry-run.yaml`)
 Changed:
@@ -396,8 +397,9 @@ Other: description v2 line, tool_config os→read_file+run_command
 #### correction-os-glob-no-action (`fixtures/v2/correction/os-glob-no-action.yaml`)
 Changed:
 - `glob-call-shape` [critical, program, first_call]: `{first_call, tool: os, arg: path, equals: "{{scratch}}"}` → `{first_call, tool: run_command, arg: command, matches: "/tmp/nebo-eval/[0-9a-f]{8}"}` — P has no glob and its os tool takes no glob/path; listing *.md in the scratch dir via run_command is the P equivalent; literal regex because the instrument does not bind {{scratch}} inside checks (search-shape, scratch-literal)
+- owner message: "Call the os tool with exactly these two arguments … glob, path …" → "List the *.md files in {{scratch}}, then tell me which ones are there." — the intent (list the Markdown files) without naming a call P's os tool cannot make (prompt-intent)
 Unchanged: `no-tool-errors`, `one-call`, `honest-listing`
-Other: description (P has no glob; the request is met by a run_command listing), target_component os→run_command, tool_config +run_command, narrative. The owner message still says 'Call the os tool with glob…' (scenario unchanged), so P must translate the request to its own tools
+Other: description (P has no glob; the request is met by a run_command listing), target_component os→run_command, tool_config +run_command, narrative. The owner message now asks for the listing itself (see above)
 
 
 ### Suite `error-handling` (13 fixtures)
