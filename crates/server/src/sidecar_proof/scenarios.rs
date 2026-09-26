@@ -108,3 +108,16 @@ async fn a_clean_shutdown_is_not_a_crash() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(w.app.launches(), 1, "nothing relaunched it");
 }
+
+/// Each app keeps its data in its own folder, keyed by its agent id — never
+/// the folder named after its code folder's parent that every app under
+/// `user/agents/` used to share. Its `sidecar.log` is there too.
+#[tokio::test]
+async fn each_app_keeps_its_data_in_its_own_folder() {
+    let w = World::new("sc-own-data", quick(), |_| {}).await;
+    assert_eq!(w.get("me").await.expect("served"), "GET me");
+    let own = w.app.home.join("appdata/agents/sc-own-data");
+    assert!(own.join("sidecar.log").is_file(), "the sidecar's log is in {}", own.display());
+    assert!(!w.app.home.join("appdata/plugins/agents").exists(), "nothing in the old shared folder");
+    w.lifecycle.shutdown().await;
+}

@@ -125,6 +125,8 @@ pub struct AppLifecycle {
 impl AppLifecycle {
     /// Put an app's sidecar under its supervisor. Returns once supervision has
     /// begun; the launch itself is published as state (see [`Self::settled`]).
+    /// Its data dir is its own, keyed by its agent id
+    /// (`napp::app_data::data_dir`); `None` for an id that is not a folder name.
     #[allow(clippy::too_many_arguments)]
     pub async fn start(
         agent: &db::models::Agent,
@@ -135,8 +137,12 @@ impl AppLifecycle {
         skill_loader: Arc<tools::skills::Loader>,
         api_port: u16,
         policy: RestartPolicy,
-    ) -> Self {
-        let runtime = Arc::new(napp::Runtime::new(home));
+    ) -> Option<Self> {
+        let Some(data_dir) = napp::app_data::data_dir(home, napp::app_data::DataKind::App, &agent.id) else {
+            warn!(agent = %agent.id, "app id is not a folder name — app sidecar not started");
+            return None;
+        };
+        let runtime = Arc::new(napp::Runtime::new(data_dir));
         let supervisor = Supervisor::start(runtime, tool_dir.clone(), api_port, policy);
         let latest = Arc::new(tokio::sync::RwLock::new(None));
         let follower = tokio::spawn(follow(
@@ -149,14 +155,14 @@ impl AppLifecycle {
             latest.clone(),
         ));
         let loaded_skill_names = skill_loader.load_app_skills(&tool_dir).await;
-        Self {
+        Some(Self {
             agent_id: agent.id.clone(),
             supervisor,
             follower: tokio::sync::Mutex::new(Some(follower)),
             latest,
             skill_loader,
             loaded_skill_names,
-        }
+        })
     }
 
     pub fn state(&self) -> SidecarState {
@@ -377,7 +383,7 @@ pub(crate) async fn start(
             state.config.port,
             RestartPolicy::default(),
         )
-        .await,
+        .await?,
     );
     lifecycles.insert(agent.id.clone(), lifecycle.clone());
     Some(lifecycle)

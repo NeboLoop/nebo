@@ -1215,6 +1215,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Must run AFTER seeding so newly seeded .napp files are picked up.
     migration::migrate_napp_extraction(&data_dir);
 
+    // Sidecar data out of the folders apps used to share, into each app's own,
+    // before any sidecar starts (one-time).
+    migration::migrate_app_data_per_app(&data_dir, &store);
+
     // Stored shapes that name tools move onto the current tool set once,
     // before anything loads an employee, a skill or a workflow.
     stored_tool_names::upgrade(&store, &data_dir)?;

@@ -15,3 +15,4 @@ fixtures:
   - ../fixtures/app-sidecars/a-crash-loop-ends-failed-with-its-reason.yaml
   - ../fixtures/app-sidecars/a-boot-failure-recovers-when-the-program-appears.yaml
   - ../fixtures/app-sidecars/a-clean-shutdown-is-not-a-crash.yaml
+  - ../fixtures/app-sidecars/each-app-keeps-its-data-in-its-own-folder.yaml
