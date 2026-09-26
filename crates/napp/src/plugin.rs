@@ -1691,8 +1691,20 @@ impl PluginStore {
 
         // The previous install goes under this lock, so a concurrent caller
         // waits (above) instead of deleting the files this one is extracting.
-        let _ = self.remove(slug);
-        let result = self.install_from_napp_inner(slug, version, napp_data).await;
+        // The same bytes as what is installed change nothing, so nothing is
+        // removed: the remove-then-extract left the plugin gone for the
+        // length of the extraction, and a "Sign in" tap in that window found
+        // no plugin (2026-09-26, a reinstall of the version already on disk).
+        let result = match self.installed_copy_of(slug, napp_data) {
+            Some(binary) => {
+                info!(plugin = slug, path = %binary.display(), "same .napp already installed; kept in place");
+                Ok(binary)
+            }
+            None => {
+                let _ = self.remove(slug);
+                self.install_from_napp_inner(slug, version, napp_data).await
+            }
+        };
 
         // Release install lock
         {
@@ -1701,6 +1713,32 @@ impl PluginStore {
         }
 
         result
+    }
+
+    /// The binary of an install of exactly these `.napp` bytes, if one is in
+    /// place: a retained `<version>.napp` under the slug with the same bytes,
+    /// beside a version dir that still has its binary and is not quarantined.
+    fn installed_copy_of(&self, slug: &str, napp_data: &[u8]) -> Option<PathBuf> {
+        let slug_dir = self.installed_dir.join(slug);
+        for entry in std::fs::read_dir(&slug_dir).ok()?.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(version) = name.strip_suffix(".napp") else {
+                continue;
+            };
+            if entry.metadata().map(|m| m.len()).ok() != Some(napp_data.len() as u64)
+                || std::fs::read(entry.path()).ok().as_deref() != Some(napp_data)
+            {
+                continue;
+            }
+            let version_dir = slug_dir.join(version);
+            if version_dir.join(".quarantined").exists() {
+                continue;
+            }
+            if let Some(binary) = self.find_binary_in_version_dir(&version_dir) {
+                return Some(binary);
+            }
+        }
+        None
     }
 
     /// Inner implementation of .napp-based plugin install.
@@ -3898,5 +3936,41 @@ mod tests {
         let plugin: PluginManifest = serde_json::from_str(json).expect("plugin with setup must parse");
         assert!(plugin.setup.is_some());
         assert_eq!(plugin.setup.unwrap().steps.len(), 1);
+    }
+
+    /// A reinstall of the very bytes already installed keeps the plugin in
+    /// place: the same binary path comes back and the version dir is never
+    /// removed. The bytes here are no archive at all, so an install that
+    /// removed first and extracted second (the old order) fails and leaves
+    /// the plugin gone — which is what the owner's "Sign in" tap found.
+    #[tokio::test]
+    async fn a_reinstall_of_the_same_napp_keeps_the_plugin_in_place() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plugins_dir = tmp.path().to_path_buf();
+        let user_dir = tmp.path().join("user_plugins");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        let napp = b"the retained napp bytes, not an archive".to_vec();
+        let slug_dir = plugins_dir.join("xero");
+        let version_dir = slug_dir.join("0.1.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(slug_dir.join("0.1.0.napp"), &napp).unwrap();
+        let binary = version_dir.join("xero");
+        std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let store = PluginStore::new(plugins_dir, user_dir, None);
+
+        let kept = store.install_from_napp("xero", "0.1.0", &napp).await.expect("the same bytes are a no-op");
+        assert_eq!(kept, binary);
+        assert!(binary.is_file(), "the plugin never left the disk");
+        assert!(store.resolve("xero", "*").is_some());
+
+        // Different bytes for the same version are a real reinstall, which
+        // extracts: these are no archive, so it fails.
+        let changed = b"other bytes".to_vec();
+        assert!(store.install_from_napp("xero", "0.1.0", &changed).await.is_err());
     }
 }
