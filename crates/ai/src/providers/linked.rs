@@ -93,14 +93,7 @@ impl LinkedProvider {
         let Some(token) = (self.token)() else {
             return Err(format!("Sign in to NeboAI to reach {name}."));
         };
-        let prompt = req
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == "user")
-            .map(|m| m.content.trim())
-            .filter(|p| !p.is_empty())
-            .ok_or_else(|| "Nothing to send.".to_owned())?;
+        let prompt = owners_message(&req.messages).ok_or_else(|| "Nothing to send.".to_owned())?;
 
         let linked_chat_id = self
             .linked_chat(req, bot_id, agent_id, &token)
@@ -480,6 +473,20 @@ fn option_for(decision: &str, options: &[String]) -> String {
     .unwrap_or_else(|| decision.to_owned())
 }
 
+/// The owner's newest message: the newest user message that is not a
+/// system reminder. Reminder rows are Nebo's context for Nebo's model (the
+/// harness writes them as user rows opening with `<system-reminder>`) and
+/// never reach another runtime.
+fn owners_message(messages: &[Message]) -> Option<&str> {
+    messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == "user")
+        .map(|m| m.content.trim())
+        .find(|c| !c.starts_with("<system-reminder>"))
+        .filter(|c| !c.is_empty())
+}
+
 /// `<bot>/<agent>`, both present.
 fn split(model: &str) -> Option<(&str, &str)> {
     let (bot, agent) = model.split_once('/')?;
@@ -809,6 +816,23 @@ mod tests {
         assert_eq!(LinkedProvider::target(""), None);
         assert_eq!(ws_base("https://api.neboai.com"), "wss://api.neboai.com");
         assert_eq!(ws_base("http://127.0.0.1:1"), "ws://127.0.0.1:1");
+    }
+
+    #[test]
+    fn the_owners_message_is_sent_never_a_reminder() {
+        let say = |role: &str, content: &str| Message {
+            role: role.into(),
+            content: content.into(),
+            ..Default::default()
+        };
+        let reminder = "<system-reminder>\nIt is 6:04 AM.\n\nThis is an automated system reminder — do not mention it to the user.\n</system-reminder>";
+        assert_eq!(owners_message(&[say("user", "hello"), say("user", reminder)]), Some("hello"));
+        assert_eq!(
+            owners_message(&[say("user", "hello"), say("assistant", "hi"), say("user", "and now?"), say("user", reminder)]),
+            Some("and now?")
+        );
+        assert_eq!(owners_message(&[say("user", reminder)]), None);
+        assert_eq!(owners_message(&[say("user", "  ")]), None);
     }
 
     #[test]
