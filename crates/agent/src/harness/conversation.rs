@@ -224,26 +224,39 @@ pub(crate) const HEARD_THROUGH: &str = "heardThrough";
 /// model reads it after that answer and the answer's tool results, as new,
 /// never before an answer that could not have seen it. Rows stay stored in
 /// the order they arrived; only what the model reads is ordered.
-pub(crate) fn order_as_heard(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+///
+/// A call heard every row stored up to its reply's `heardThrough`, so the
+/// rows it never heard are the ones stored after that row, counted in the
+/// order the rows were stored, not where an earlier reply already moved
+/// them. Counted by position instead, a queued message moved after one
+/// answer read as unheard by the next answer too and moved again, so every
+/// request after it rewrote the conversation the one before it sent, and
+/// the provider's cached prefix ended at the queued message.
+pub(crate) fn order_as_heard(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let stored_at: HashMap<String, usize> =
+        messages.iter().enumerate().map(|(n, m)| (m.id.clone(), n)).collect();
+    let mut rows: Vec<(usize, ChatMessage)> = messages.into_iter().enumerate().collect();
     let mut i = 0;
-    while i < messages.len() {
-        let heard = (messages[i].role == "assistant")
-            .then(|| heard_through(&messages[i]))
+    while i < rows.len() {
+        let heard = (rows[i].1.role == "assistant")
+            .then(|| heard_through(&rows[i].1))
             .flatten()
-            .and_then(|id| messages[..i].iter().position(|m| m.id == id));
+            .and_then(|id| stored_at.get(&id).copied());
         let Some(heard) = heard else {
             i += 1;
             continue;
         };
-        let unheard = i - heard - 1;
         let mut end = i + 1;
-        while end < messages.len() && messages[end].role == "tool" {
+        while end < rows.len() && rows[end].1.role == "tool" {
             end += 1;
         }
-        messages[heard + 1..end].rotate_left(unheard);
-        i = end - unheard;
+        let after: Vec<(usize, ChatMessage)> = rows.split_off(end);
+        let reply: Vec<(usize, ChatMessage)> = rows.split_off(i);
+        let (before, unheard): (Vec<_>, Vec<_>) = rows.into_iter().partition(|(n, _)| *n <= heard);
+        i = before.len() + reply.len();
+        rows = before.into_iter().chain(reply).chain(unheard).chain(after).collect();
     }
-    messages
+    rows.into_iter().map(|(_, m)| m).collect()
 }
 
 /// The last row the call that wrote `reply` was built from.
@@ -688,10 +701,35 @@ mod tests {
             reply("call", "ask"),
             make_msg("result", "tool", "result"),
             make_msg("question", "user", "question"),
-            reply("answer", "update"),
+            reply("answer", "result"),
         ];
         let read: Vec<String> = order_as_heard(rows).into_iter().map(|m| m.id).collect();
         assert_eq!(read, ["ask", "call", "result", "update", "answer", "question"]);
+    }
+
+    /// A row moved after one answer stays where the next call heard it: the
+    /// next answer heard everything stored through its call's last row, so
+    /// what the model reads for that call is what the call before it sent,
+    /// with the new rows after it (the provider's cached prefix).
+    #[test]
+    fn a_row_moved_after_one_answer_is_not_moved_again() {
+        let reply = |id: &str, heard: &str| ChatMessage {
+            metadata: Some(serde_json::json!({ HEARD_THROUGH: heard }).to_string()),
+            ..make_msg(id, "assistant", id)
+        };
+        let first = vec![
+            make_msg("ask", "user", "ask"),
+            make_msg("queued", "user", "queued"),
+            reply("call", "ask"),
+            make_msg("result", "tool", "result"),
+        ];
+        let mut then = first.clone();
+        then.extend([reply("next", "result"), make_msg("next-result", "tool", "next-result")]);
+        let ids = |rows: Vec<ChatMessage>| -> Vec<String> { order_as_heard(rows).into_iter().map(|m| m.id).collect() };
+        let (sent, sent_next) = (ids(first), ids(then));
+        assert_eq!(sent, ["ask", "call", "result", "queued"]);
+        assert_eq!(sent_next, ["ask", "call", "result", "queued", "next", "next-result"]);
+        assert!(sent_next.starts_with(&sent), "the next call's conversation starts with this one's");
     }
 
     /// The owner's words are stored whole, however long: no summary stands
