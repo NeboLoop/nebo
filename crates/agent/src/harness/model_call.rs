@@ -283,7 +283,11 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
 
     // Acquire LLM permit before provider call (blocks if at capacity)
     let t_permit_start = std::time::Instant::now();
+    // `biased`: a stop that already happened wins over a free permit, a
+    // stream that opened and an event already buffered, so a stopped turn
+    // never sends another request or runs what it streamed.
     let llm_permit = tokio::select! {
+        biased;
         _ = cancel_token.cancelled() => {
             info!(session_id, "run cancelled waiting for LLM permit");
             return CallOutcome::Cancelled;
@@ -357,6 +361,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
 
     let t_stream_start = std::time::Instant::now();
     let stream_result = tokio::select! {
+        biased;
         _ = cancel_token.cancelled() => {
             info!(session_id, "run cancelled during provider.stream() call");
             return CallOutcome::Cancelled;
@@ -478,6 +483,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
 
     loop {
         let mut event = tokio::select! {
+            biased;
             _ = cancel_token.cancelled() => {
                 info!(session_id, "run cancelled during LLM stream");
                 // Best-effort: save whatever content we accumulated before cancellation

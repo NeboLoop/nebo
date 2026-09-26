@@ -86,6 +86,9 @@ pub enum TurnEvent {
     StreamCut,
     /// The last reply had no visible output.
     EmptyReply,
+    /// The last reply answered the owner's mid-turn message, with tools
+    /// off: the work goes on after it unless they asked it to stop.
+    MidTurnAnswered,
     /// The unmet workflow contract term (workflow mode only).
     WorkflowContract(String),
     /// A helper whose answer is read as data answered in the wrong shape:
@@ -191,6 +194,7 @@ pub const NAMES: &[&str] = &[
     "cutoff_resume",
     "stream_cut",
     "empty_reply",
+    "mid_turn_answered",
     "workflow_contract",
     "answer_shape",
     "app_hook",
@@ -371,6 +375,12 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::EmptyReply => (
             "empty_reply",
             "Your last reply had no visible output. Continue.".to_string(),
+        ),
+        TurnEvent::MidTurnAnswered => (
+            "mid_turn_answered",
+            "You answered the owner's message. If they asked you to stop, the work ends here: end the turn \
+             without another reply. Otherwise, carry on with the work where you left off."
+                .to_string(),
         ),
         TurnEvent::WorkflowContract(text) => ("workflow_contract", non_empty(text)?),
         TurnEvent::AnswerShape(text) => ("answer_shape", non_empty(text)?),
@@ -998,6 +1008,7 @@ mod tests {
             TurnEvent::TeamsListing(lined.clone()),
             TurnEvent::StreamCut,
             TurnEvent::EmptyReply,
+            TurnEvent::MidTurnAnswered,
             TurnEvent::DateChanged(chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap()),
             TurnEvent::RunBriefing("team: Ann".into()),
             TurnEvent::RestrictedRun("outside origin".into()),
