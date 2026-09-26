@@ -22,6 +22,11 @@ pub struct ActiveTurn {
     /// Its loop has ended (`TurnGuard::close`): nothing reads the thread for
     /// it any more, and the slot frees in a moment.
     pub closing: bool,
+    /// It reads input that arrives while it runs. The owner's `/compact`
+    /// does not: it summarizes the conversation it started with and makes
+    /// no model turn, so input arriving meanwhile waits for it and starts a
+    /// turn of its own.
+    pub takes_input: bool,
 }
 
 pub type ActiveTurns = Arc<std::sync::Mutex<HashMap<String, ActiveTurn>>>;
@@ -34,13 +39,23 @@ pub fn admit_turn(
     progress: RunProgress,
     cancel_token: CancellationToken,
 ) -> Result<TurnGuard, String> {
+    admit(turns, session_key, progress, cancel_token, true)
+}
+
+fn admit(
+    turns: &ActiveTurns,
+    session_key: &str,
+    progress: RunProgress,
+    cancel_token: CancellationToken,
+    takes_input: bool,
+) -> Result<TurnGuard, String> {
     let mut map = turns.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(active) = map.get(session_key) {
         return Err(busy_status_line(active));
     }
     map.insert(
         session_key.to_string(),
-        ActiveTurn { started: std::time::Instant::now(), progress, cancel_token, closing: false },
+        ActiveTurn { started: std::time::Instant::now(), progress, cancel_token, closing: false, takes_input },
     );
     Ok(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() })
 }
@@ -67,7 +82,9 @@ const SLOT_WAIT_STEP: std::time::Duration = std::time::Duration::from_millis(50)
 /// A turn that is closing (its loop ended, or the owner stopped it) will not
 /// read a queued row, so the new turn waits for its slot, briefly, and runs
 /// itself; past the wait the input is queued after all and the thread keeps
-/// it for the next turn.
+/// it for the next turn. A turn that takes no input (the owner's
+/// `/compact`) is waited for as long as it runs, unless the new turn is
+/// stopped while it waits.
 pub async fn admit_or_queue(
     turns: &ActiveTurns,
     session_key: &str,
@@ -76,18 +93,28 @@ pub async fn admit_or_queue(
     queue: impl FnOnce(),
 ) -> Admission {
     let mut queue = Some(queue);
-    for step in 0..=SLOT_WAIT_STEPS {
+    let mut step = 0;
+    loop {
         {
             let mut map = turns.lock().unwrap_or_else(|p| p.into_inner());
             match map.get(session_key) {
                 None => {
                     map.insert(
                         session_key.to_string(),
-                        ActiveTurn { started: std::time::Instant::now(), progress, cancel_token, closing: false },
+                        ActiveTurn {
+                            started: std::time::Instant::now(),
+                            progress,
+                            cancel_token,
+                            closing: false,
+                            takes_input: true,
+                        },
                     );
                     return Admission::Admitted(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() });
                 }
-                Some(active) if step == SLOT_WAIT_STEPS || !(active.closing || active.cancel_token.is_cancelled()) => {
+                Some(active)
+                    if active.hears_new_input()
+                        || (step >= SLOT_WAIT_STEPS && (active.takes_input || cancel_token.is_cancelled())) =>
+                {
                     let status = busy_status_line(active);
                     if let Some(queue) = queue.take() {
                         queue();
@@ -98,13 +125,14 @@ pub async fn admit_or_queue(
             }
         }
         tokio::time::sleep(SLOT_WAIT_STEP).await;
+        step += 1;
     }
-    unreachable!("the last step always admits or queues")
 }
 
-/// Admit a turn on `session_key` once no turn holds it: the turn waits for
-/// the running one to finish rather than joining it. `None` when it is
-/// cancelled while it waits.
+/// Admit a turn that takes no input on `session_key` once no turn holds it:
+/// the turn waits for the running one to finish rather than joining it, and
+/// input arriving while it runs waits for it in turn (`admit_or_queue`).
+/// `None` when it is cancelled while it waits.
 pub async fn admit_when_free(
     turns: &ActiveTurns,
     session_key: &str,
@@ -112,7 +140,7 @@ pub async fn admit_when_free(
     cancel_token: CancellationToken,
 ) -> Option<TurnGuard> {
     loop {
-        if let Ok(guard) = admit_turn(turns, session_key, progress.clone(), cancel_token.clone()) {
+        if let Ok(guard) = admit(turns, session_key, progress.clone(), cancel_token.clone(), false) {
             return Some(guard);
         }
         tokio::select! {
@@ -122,15 +150,16 @@ pub async fn admit_when_free(
     }
 }
 
-/// True when the turn holding `session_key` is on its way out — cancelled, or
-/// its loop has ended — so the next message should wait for the slot rather
-/// than be queued into a loop that will not read it.
+/// True when the turn holding `session_key` will not read a row written now
+/// — cancelled, its loop ended, or it takes no input — so the next message
+/// should wait for the slot rather than be queued into a loop that will not
+/// read it.
 pub fn turn_is_closing(turns: &ActiveTurns, session_key: &str) -> bool {
     turns
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .get(session_key)
-        .is_some_and(|t| t.closing || t.cancel_token.is_cancelled())
+        .is_some_and(|t| !t.hears_new_input())
 }
 
 /// The typed stop reason a busy session answers with. Consumers render it as
@@ -201,6 +230,11 @@ pub fn active_turn_status(turns: &ActiveTurns, session_key: &str) -> Option<Acti
 }
 
 impl ActiveTurn {
+    /// A row written now reaches this turn at its next step.
+    fn hears_new_input(&self) -> bool {
+        self.takes_input && !self.closing && !self.cancel_token.is_cancelled()
+    }
+
     fn status(&self) -> ActiveTurnStatus {
         ActiveTurnStatus {
             elapsed_secs: self.started.elapsed().as_secs(),
@@ -357,6 +391,27 @@ mod tests {
         })
         .await;
         assert!(matches!(admission, Admission::Admitted(_)), "the new turn runs once the slot frees");
+        released.await.unwrap();
+    }
+
+    /// The owner's `/compact` takes no input: a message arriving while it
+    /// runs is never written into it (it would sit before the checkpoint,
+    /// read by no call), however long the summary takes. The message waits
+    /// for the slot and its turn runs itself.
+    #[tokio::test(start_paused = true)]
+    async fn input_waits_for_a_turn_that_takes_none() {
+        let turns: ActiveTurns = Default::default();
+        let compact = admit_when_free(&turns, "k", progress(), CancellationToken::new()).await.unwrap();
+        assert!(turn_is_closing(&turns, "k"), "a row written now would not be read");
+        let released = tokio::spawn(async move {
+            tokio::time::sleep(SLOT_WAIT_STEP * (SLOT_WAIT_STEPS as u32 * 4)).await;
+            drop(compact);
+        });
+        let admission = admit_or_queue(&turns, "k", progress(), CancellationToken::new(), || {
+            panic!("input queued into a turn that takes none")
+        })
+        .await;
+        assert!(matches!(admission, Admission::Admitted(_)), "the message's turn runs once the compact ends");
         released.await.unwrap();
     }
 
