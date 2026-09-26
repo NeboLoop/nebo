@@ -912,7 +912,14 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
 
         // 4-5. The request and the call.
         let selected = st.model.clone();
-        let (provider_id, model_name) = model_parts(&selected);
+        let (provider_id, mut model_name) = model_parts(&selected);
+        // The model's provider isn't loaded: the call goes to the first
+        // provider with that provider's own model (`model_call`), and the
+        // request says so, so what forks it (the recap, a checkpoint) sends
+        // what was sent.
+        if !h.providers.read().await.iter().any(|p| p.id() == provider_id) {
+            model_name.clear();
+        }
         let request = build_request(cx, st, &window, surface.declared, &model_name);
         let request_tokens =
             st.usage.last_request_estimate + st.usage.system_overhead_tokens + st.usage.estimate_correction;
@@ -929,13 +936,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 }
             };
         }
-        let pressure = compact::checkpoint::Pressure {
-            request_tokens,
-            fresh_tokens: compact::checkpoint::fresh_tokens(&conversation),
-            context_window,
-            max_output,
-        };
-        if st.trigger.due(&pressure) {
+        if st.trigger.due(request_tokens, context_window, max_output) {
             if clear_old_results(cx, st, &conversation).await {
                 st.step -= 1;
                 continue;
@@ -1759,7 +1760,7 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
             h.store.clone(),
             h.sessions.active_chat_id(&cx.session_id),
             cx.session_id.clone(),
-            h.selector.get_cheapest_model(),
+            h.selector.background_model(),
             h.title_sink(),
         );
     }
@@ -4221,19 +4222,20 @@ mod tests {
         assert!(!stored(&h).iter().any(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)));
     }
 
-    /// A chosen chat model that reports a tiny window (8,191) is not
-    /// believed: Claude Code takes a reported window only from 100k up and
-    /// otherwise assumes its 200k default (`src/utils/context.ts:75`). A
-    /// many-step turn on it never checkpoints.
+    /// A model whose real window is too small for the conversation (8,191
+    /// tokens) checkpoints once; the checkpoint doesn't bring the request
+    /// under the threshold, so the turn takes no more (the owner's chat
+    /// wrote 31 in ten minutes). A twelve-step turn writes one.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_tiny_reported_window_never_loops_checkpoints() {
+    async fn a_checkpoint_that_cannot_help_is_taken_once() {
         let mut steps: Vec<Step> = (0..12).map(|_| Step::Call("echo", serde_json::json!({}))).collect();
         steps.push(Step::Say("Done."));
         let model = Scripted::new(steps);
         let h = harness_selecting(&model, Vec::new(), gateway_selector("scripted/nebo-1", 8_191)).await;
         run_turn(&h, owner("Check it twelve times.")).await;
         assert_eq!(model.calls().len(), 13);
-        assert!(model.side_call("checkpoint").await.is_none(), "no checkpoint: the window is not believed");
+        let checkpoints = model.side.lock().unwrap().iter().filter(|r| r.trace.purpose == "checkpoint").count();
+        assert_eq!(checkpoints, 1, "one checkpoint, not one per step");
     }
 
     /// A stored model is never trusted as the turn's model: a conversation

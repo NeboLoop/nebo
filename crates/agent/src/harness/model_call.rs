@@ -124,6 +124,17 @@ pub(crate) fn resolve_aux(
         return None;
     }
     let (provider_id, model) = spec.split_once('/')?;
+    // Background work runs on a chat model only: an embedding or audio
+    // model named as the aux route is passed over.
+    let (capabilities, kind) = cfg
+        .providers
+        .get(provider_id)
+        .and_then(|models| models.iter().find(|m| m.id == model))
+        .map(|m| (m.capabilities.clone(), m.kind.clone()))
+        .unwrap_or_default();
+    if !crate::selector::is_chat_model(model, &capabilities, &kind) {
+        return None;
+    }
     let provider = providers.iter().find(|p| p.id() == provider_id)?.clone();
     Some((provider, model.to_string()))
 }
@@ -1052,6 +1063,13 @@ mod tests {
         // Bare model id without a provider prefix cannot be routed → fallback.
         let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
         assert!(resolve_aux(&aux_config("gpt-4o-mini"), &providers).is_none());
+    }
+
+    /// An embedding model named as the aux route is never used.
+    #[test]
+    fn test_resolve_aux_never_an_embedding_model() {
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("janus"))];
+        assert!(resolve_aux(&aux_config("janus/nebo-embed-small"), &providers).is_none());
     }
 
     #[test]

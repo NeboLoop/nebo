@@ -217,7 +217,7 @@ impl Harness {
             self.store.clone(),
             chat_id.to_string(),
             session_id.to_string(),
-            self.selector.get_cheapest_model(),
+            self.selector.background_model(),
             self.title_sink(),
         );
     }

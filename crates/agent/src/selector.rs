@@ -25,12 +25,6 @@ pub const DEFAULT_CHAT_MODEL: &str = "janus/nebo-1";
 /// every Janus pool reports.
 pub const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
 
-/// The smallest reported window that is believed. Claude Code takes a
-/// model's reported `max_input_tokens` only from 100k up and otherwise
-/// assumes its default (src/utils/context.ts:75); a smaller number is a
-/// wrong row (an embedding model's 8,191), not a chat window.
-pub const MIN_CONTEXT_WINDOW: usize = 100_000;
-
 /// Capabilities or kinds that mark a model as not for chat.
 const NOT_CHAT: &[&str] = &[
     "embeddings",
@@ -95,7 +89,8 @@ fn chat_models(models: &HashMap<String, Vec<ModelInfo>>) -> HashMap<String, Vec<
 /// Model routing configuration.
 #[derive(Debug, Clone, Default)]
 pub struct ModelRoutingConfig {
-    /// The configured routes ("general" is the one a turn reads).
+    /// The configured routes: "general" (a turn with no chosen model) and
+    /// "aux" (background work).
     pub task_routing: HashMap<String, String>,
     /// Default primary model.
     pub default_model: String,
@@ -150,10 +145,12 @@ impl ModelRoutingConfig {
         }
 
         let mut task_routing = HashMap::new();
-        if let Some(general) = models_cfg.task_routing.as_ref().map(|tr| &tr.general)
-            && !general.is_empty()
-        {
-            task_routing.insert("general".to_string(), general.clone());
+        if let Some(tr) = models_cfg.task_routing.as_ref() {
+            for (route, model) in [("general", &tr.general), ("aux", &tr.aux)] {
+                if !model.is_empty() {
+                    task_routing.insert(route.to_string(), model.clone());
+                }
+            }
         }
 
         // Default model from config
@@ -254,12 +251,12 @@ impl ModelSelector {
 
     /// The context window of `model_id` ("provider/model"): what the provider
     /// reported for it (Janus's `/v1/models` `context_window`, synced into the
-    /// runtime models) or the catalog's number for a direct provider, when it
-    /// is at least [`MIN_CONTEXT_WINDOW`]; else [`DEFAULT_CONTEXT_WINDOW`].
+    /// runtime models) or the catalog's number for a direct provider, else
+    /// [`DEFAULT_CONTEXT_WINDOW`].
     pub fn context_window(&self, model_id: &str) -> usize {
         self.get_model_info(model_id)
             .and_then(|m| usize::try_from(m.context_window).ok())
-            .filter(|&w| w >= MIN_CONTEXT_WINDOW)
+            .filter(|&w| w > 0)
             .unwrap_or(DEFAULT_CONTEXT_WINDOW)
     }
 
@@ -270,61 +267,12 @@ impl ModelSelector {
             .is_some_and(|m| m.capabilities.iter().any(|c| c == "thinking"))
     }
 
-    /// Get the cheapest available chat model.
-    pub fn get_cheapest_model(&self) -> String {
-        let mut cheapest: Option<(String, f64)> = None;
-
-        for (provider_id, models) in &self.config.provider_models {
-            // Skip providers without credentials
-            if !self
-                .config
-                .provider_credentials
-                .get(provider_id)
-                .copied()
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            for model in models {
-                if !model.active || !model.chats() {
-                    continue;
-                }
-                let cost = model.input_price + model.output_price * 2.0;
-                let model_id = format!("{}/{}", provider_id, model.id);
-                if cheapest.is_none() || cost < cheapest.as_ref().unwrap().1 {
-                    cheapest = Some((model_id, cost));
-                }
-            }
-        }
-
-        if let Some((id, _)) = cheapest {
-            return id;
-        }
-
-        // Fallback: find any chat model with "cheap" or "fast" kind
-        for (provider_id, models) in &self.config.provider_models {
-            for model in models {
-                if model.active
-                    && model.chats()
-                    && (model.kind.contains(&"cheap".to_string())
-                        || model.kind.contains(&"fast".to_string()))
-                {
-                    return format!("{}/{}", provider_id, model.id);
-                }
-            }
-        }
-
-        self.config.default_model.clone()
-    }
-
     /// The model a turn is sent to, resolved once at the turn's start:
     /// `chosen` (the owner's pick, the job's or a helper's speed; a fuzzy
     /// name resolves) when it is a chat model this bot can send to, else,
-    /// when nothing was chosen, the configured default. Any discrepancy
-    /// sends [`DEFAULT_CHAT_MODEL`]. A bot that can't send to it (a CLI
-    /// provider with no configured default it can send to, or no gateway
-    /// loaded) gets the empty model: the call uses the first provider (the
-    /// CLI, the owner's own key) and that provider's own model.
+    /// when nothing was chosen, the configured default (Settings → Routing
+    /// → General, which ships as [`DEFAULT_CHAT_MODEL`]). Any discrepancy
+    /// sends [`DEFAULT_CHAT_MODEL`].
     pub fn resolve(&self, chosen: &str) -> String {
         let chosen = chosen.trim();
         if !chosen.is_empty() {
@@ -335,9 +283,8 @@ impl ModelSelector {
             if self.sendable(&id) {
                 return id;
             }
-            let fallback = self.fallback();
-            warn!(chosen, resolved = %id, fallback = %fallback, "the chosen model is not a chat model this bot can send to");
-            return fallback;
+            warn!(chosen, resolved = %id, "the chosen model is not a chat model this bot can send to; sending {DEFAULT_CHAT_MODEL}");
+            return DEFAULT_CHAT_MODEL.to_string();
         }
         let configured = self
             .config
@@ -348,20 +295,17 @@ impl ModelSelector {
         if self.sendable(configured) {
             return configured.clone();
         }
-        self.fallback()
+        DEFAULT_CHAT_MODEL.to_string()
     }
 
-    /// Where a discrepancy goes: [`DEFAULT_CHAT_MODEL`] when the gateway is
-    /// loaded and no CLI provider is (a CLI bot never falls to the paid
-    /// gateway), else the first provider's own model.
-    fn fallback(&self) -> String {
-        let loaded = self.loaded_providers.read().unwrap();
-        let cli = loaded.iter().any(|p| CLI_PROVIDERS.contains(&p.as_str()));
-        let (gateway, _) = parse_model_id(DEFAULT_CHAT_MODEL);
-        if !cli && (loaded.is_empty() || loaded.iter().any(|p| p == gateway)) {
-            DEFAULT_CHAT_MODEL.to_string()
-        } else {
-            String::new()
+    /// The model background work runs on (chat titles and the other chores
+    /// that don't fork a turn's request): the configured aux route when it
+    /// is a chat model this bot can send to, else [`DEFAULT_CHAT_MODEL`].
+    /// Never the cheapest row: the embedding models are the cheapest rows.
+    pub fn background_model(&self) -> String {
+        match self.config.task_routing.get("aux").filter(|m| self.sendable(m)) {
+            Some(aux) => aux.clone(),
+            None => DEFAULT_CHAT_MODEL.to_string(),
         }
     }
 
@@ -494,7 +438,7 @@ mod tests {
         let misconfigured = ModelSelector::new(config);
         misconfigured.set_loaded_providers(vec!["janus".into()]);
         assert_eq!(misconfigured.resolve(""), DEFAULT_CHAT_MODEL, "an embedding model configured as the chat model");
-        assert_eq!(misconfigured.get_cheapest_model(), "", "the side-call model is never an embedding model");
+        assert_eq!(misconfigured.background_model(), DEFAULT_CHAT_MODEL, "background work never runs on an embedding model");
     }
 
     /// The speeds a helper or an employee may name are chat models only.
@@ -517,15 +461,28 @@ mod tests {
         assert_eq!(DEFAULT_CHAT_MODEL, "janus/nebo-1");
     }
 
-    /// A reported window under 100k is not believed (Claude Code,
-    /// src/utils/context.ts:75): an 8,191-token row is not a chat window.
+    /// Background work runs on the configured aux route when it is a chat
+    /// model, else the default chat model; never the cheapest row (the
+    /// embedding models are priced lowest).
     #[test]
-    fn a_tiny_reported_window_is_the_default() {
+    fn background_work_runs_on_a_chat_model() {
         let selector = gateway();
-        assert_eq!(selector.context_window("janus/nebo-embed-small"), DEFAULT_CONTEXT_WINDOW);
-        selector.inject_provider_models("ollama", vec![info("small", 32_768), info("big", 131_072)]);
-        assert_eq!(selector.context_window("ollama/small"), DEFAULT_CONTEXT_WINDOW);
-        assert_eq!(selector.context_window("ollama/big"), 131_072);
+        assert_eq!(selector.background_model(), DEFAULT_CHAT_MODEL);
+        let mut config = ModelRoutingConfig {
+            task_routing: [("aux".to_string(), "janus/nebo-1-flash".to_string())].into(),
+            ..Default::default()
+        };
+        config.provider_models.insert("janus".into(), vec![ModelInfo { capabilities: vec!["tools".into()], ..info("nebo-1-flash", 200_000) }]);
+        assert_eq!(ModelSelector::new(config).background_model(), "janus/nebo-1-flash");
+    }
+
+    /// A model's real window is used, however small: a 32k local model
+    /// checkpoints at 32k.
+    #[test]
+    fn a_small_real_window_is_the_models_window() {
+        let selector = gateway();
+        selector.inject_provider_models("ollama", vec![info("small", 32_768)]);
+        assert_eq!(selector.context_window("ollama/small"), 32_768);
     }
 
     #[test]
@@ -636,64 +593,14 @@ mod tests {
         );
     }
 
+    /// Nothing configured this bot can send to: the default chat model,
+    /// whatever else is loaded (no roaming to whichever provider is first).
     #[test]
-    fn test_cli_preferred_over_janus() {
-        // When only CLI + Janus are loaded (no direct API keys), the selector
-        // should return empty string so the runner defers to index 0 (CLI)
-        // instead of selecting a Janus model that burns Nebo credits.
-        let mut provider_models = HashMap::new();
-        provider_models.insert(
-            "janus".to_string(),
-            vec![ModelInfo {
-                id: "nebo-1".to_string(),
-                display_name: "Nebo 1".to_string(),
-                context_window: 200000,
-                input_price: 0.0,
-                output_price: 0.0,
-                cached_input_price: 0.0,
-                capabilities: vec![],
-                kind: vec![],
-                preferred: true,
-                active: true,
-            }],
-        );
-        provider_models.insert(
-            "anthropic".to_string(),
-            vec![ModelInfo {
-                id: "claude-sonnet-4-5".to_string(),
-                display_name: "Sonnet".to_string(),
-                context_window: 200000,
-                input_price: 3.0,
-                output_price: 15.0,
-                cached_input_price: 0.0,
-                capabilities: vec![],
-                kind: vec![],
-                preferred: true,
-                active: true,
-            }],
-        );
-
-        let mut creds = HashMap::new();
-        creds.insert("janus".into(), true);
-        creds.insert("anthropic".into(), false); // No API key
-
-        let config = ModelRoutingConfig {
-            task_routing: HashMap::new(),
-            default_model: "anthropic/claude-sonnet-4-5".into(),
-            provider_models,
-            provider_credentials: creds,
-        };
-
+    fn nothing_sendable_configured_sends_the_default_chat_model() {
+        let mut config = ModelRoutingConfig { default_model: "anthropic/claude-sonnet-4-5".into(), ..Default::default() };
+        config.provider_models.insert("anthropic".into(), vec![info("claude-sonnet-4-5", 200_000)]);
         let selector = ModelSelector::new(config);
-        // Only janus + CLI loaded — no direct anthropic provider
         selector.set_loaded_providers(vec!["claude-code".into(), "janus".into()]);
-
-        let selected = selector.resolve("");
-        // Should return empty (defer to runner index 0 = CLI), NOT "janus/nebo-1"
-        assert!(
-            selected.is_empty(),
-            "Expected empty string (defer to CLI), got: {}",
-            selected
-        );
+        assert_eq!(selector.resolve(""), DEFAULT_CHAT_MODEL);
     }
 }
