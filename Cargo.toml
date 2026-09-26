@@ -180,6 +180,52 @@ opt-level = 3
 [profile.dev.package.miniz_oxide]
 opt-level = 3
 
+# Every TurboVec index load builds a 1536x1536 rotation matrix by QR
+# decomposition (faer + gemm on every core through rayon). Optimized that is
+# 0.6 s; unoptimized it took 20-77 s on a loaded desktop and stalled the whole
+# process — the hub's 3 s tunnel probe failed and the phone showed the bot
+# offline (2026-09-26). Only the linear-algebra stack, like the codecs above.
+[profile.dev.package.turbovec]
+opt-level = 3
+[profile.dev.package.faer]
+opt-level = 3
+[profile.dev.package.faer-entity]
+opt-level = 3
+[profile.dev.package.gemm]
+opt-level = 3
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3
+[profile.dev.package.gemm-f64]
+opt-level = 3
+[profile.dev.package.gemm-f16]
+opt-level = 3
+[profile.dev.package.gemm-c32]
+opt-level = 3
+[profile.dev.package.gemm-c64]
+opt-level = 3
+[profile.dev.package.nano-gemm]
+opt-level = 3
+[profile.dev.package.nano-gemm-core]
+opt-level = 3
+[profile.dev.package.nano-gemm-f32]
+opt-level = 3
+[profile.dev.package.nano-gemm-f64]
+opt-level = 3
+[profile.dev.package.nano-gemm-c32]
+opt-level = 3
+[profile.dev.package.nano-gemm-c64]
+opt-level = 3
+[profile.dev.package.pulp]
+opt-level = 3
+[profile.dev.package.dyn-stack]
+opt-level = 3
+[profile.dev.package.matrixmultiply]
+opt-level = 3
+[profile.dev.package.ndarray]
+opt-level = 3
+
 [profile.release]
 # Thin LTO across 16 codegen units: fat LTO with one unit optimized the whole
 # program on ONE thread for ~16 minutes per binary per target (v0.14.0 on the
