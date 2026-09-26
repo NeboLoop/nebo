@@ -19,7 +19,7 @@ pub mod rules;
 use std::sync::Arc;
 
 use tools::{GateVerdict, PermissionGate, ResolvedCall, ToolContext, ToolResult};
-use types::permissions::{AskCase, Decision, Effect, Grant, JudgementMode, Mode, Target, Verdict, Why};
+use types::permissions::{AskCase, CallEffects, Decision, Effect, Grant, JudgementMode, Mode, Target, Verdict, Why};
 
 pub use ask::{Answer, AnsweredVia, Ask, AskError, AskStatus, AskSurfaces, Asks};
 pub use rules::RuleSet;
@@ -108,7 +108,7 @@ impl PermissionGate for Check {
         match decision {
             Decision::Allow { why } => {
                 spend(&cx, t);
-                GateVerdict::Run(why)
+                GateVerdict::Run { why, offline: offline(&cx, t) }
             }
             Decision::Deny { reason, .. } => GateVerdict::Refuse(ToolResult::error(reason)),
             Decision::Ask { case } => {
@@ -322,6 +322,29 @@ fn beyond(ceiling: &Grant, cx: &CheckCx<'_>, t: &Target) -> Option<String> {
         Some(up) => beyond(up.grant(), cx, t),
         None => None,
     }
+}
+
+/// Whether the command a call starts must run with no network: a shell
+/// call in a run whose web access is refused, by a deny rule of its own or
+/// by the grant it can only narrow (a helper's employee). The web tools are
+/// refused there by the same rules; the shell is not the way around them
+/// (2026-09-26: a helper refused `fetch_url` ran `curl` and got the page).
+pub fn offline(cx: &CheckCx<'_>, t: &Target) -> bool {
+    if t.key != "run_command" {
+        return false;
+    }
+    let web = Target {
+        tool: String::new(),
+        key: String::new(),
+        operation: None,
+        capability: Some("web".into()),
+        field: None,
+        subject: None,
+        read_only: true,
+        effects: CallEffects::unknown(),
+    };
+    matches!(RuleSet::of(cx.grant).decide(&web), Some((_, Effect::Deny)))
+        || cx.grant.ceiling.as_ref().is_some_and(|c| beyond(c.grant(), cx, &web).is_some())
 }
 
 /// The plain-words refusal for a deny rule.

@@ -38,6 +38,8 @@ mod staffed_proof;
 mod sidecar_proof;
 #[cfg(test)]
 mod harness;
+#[cfg(test)]
+mod nebo_files_proof;
 mod spa;
 mod state;
 pub mod workflow_manager;

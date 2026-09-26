@@ -205,6 +205,11 @@ pub struct Check {
     /// "not a valid install code", "timed out".
     #[serde(default, deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
     pub no_error_contains: Vec<String>,
+    /// No tool result, error or not, may contain any of these
+    /// (case-insensitive). The way to pin what must never reach the model:
+    /// a secret's field name, another run's marker.
+    #[serde(default, deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
+    pub no_result_contains: Vec<String>,
     /// Regex that must match the run's reply text: every owner turn's
     /// streamed reply joined, with the harness's card notes. The way to pin
     /// what was said: a question asked, a fact reported.

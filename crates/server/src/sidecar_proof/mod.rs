@@ -145,7 +145,7 @@ fn run_everything() -> Arc<dyn tools::PermissionGate> {
     #[async_trait::async_trait]
     impl tools::PermissionGate for RunEverything {
         async fn check(&self, _ctx: &tools::origin::ToolContext, _call: &tools::ResolvedCall<'_>) -> tools::GateVerdict {
-            tools::GateVerdict::Run(types::permissions::Why::BasicWork)
+            tools::GateVerdict::Run { why: types::permissions::Why::BasicWork, offline: false }
         }
     }
     Arc::new(RunEverything)

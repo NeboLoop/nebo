@@ -237,6 +237,19 @@ mod tests {
         }
     }
 
+    /// Nebo's own machinery is not the work, and signing in is the owner's.
+    #[test]
+    fn nebo_itself_is_not_the_work() {
+        let text = system_prompt();
+        for line in [
+            "- Nebo's own folder, settings, logs, database and source code are not part of your work: what Nebo knows reaches you through your tools and these reminders.",
+            "say so and tell them where they handle it instead of searching this computer for it.",
+            "Signing in to a connected service is the owner's to do, in Settings; you can't do it for them.\n",
+        ] {
+            assert!(text.contains(line), "{line:?} missing from:\n{text}");
+        }
+    }
+
     /// The size snapshot. Update the number when the text changes on
     /// purpose; the prompt must stay a small fraction of the 39k-char prompt
     /// it replaced.
@@ -247,5 +260,5 @@ mod tests {
         assert!(chars < 8_000);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 6_525;
+    const SYSTEM_PROMPT_CHARS: usize = 6_939;
 }

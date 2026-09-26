@@ -291,7 +291,7 @@ impl ScheduleTool {
             // safeguard here at creation time so a scheduled job can't
             // smuggle a command the shell tool would refuse.
             if let Some(block) =
-                crate::safeguard::check_safeguard("run_command", &serde_json::json!({ "command": command }))
+                crate::safeguard::check_safeguard("run_command", &serde_json::json!({ "command": command }), ctx)
             {
                 return ToolResult::error(format!("Refusing to schedule this command: {block}"));
             }

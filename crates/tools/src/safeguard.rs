@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::nebo_files::NeboFiles;
+
 /// Rule keys whose calls read or change files on this machine: the file
 /// safeguard and the folder fence apply to them.
 const FILE_KEYS: &[&str] = &[
@@ -18,20 +20,52 @@ const FILE_KEYS: &[&str] = &[
 
 /// Validate a tool call against hard safety limits, keyed on the call's
 /// rule key (`DynTool::rule_key`) so every shape of a job meets the same
-/// limit. Returns None if safe, or Some(error_message) if blocked.
+/// limit. `ctx` is the run the call belongs to: Nebo's own files are fenced
+/// but for the parts that run works in. Returns None if safe, or
+/// Some(error_message) if blocked.
 /// This check is unconditional — cannot be bypassed by any setting.
-pub fn check_safeguard(rule_key: &str, input: &serde_json::Value) -> Option<String> {
+pub fn check_safeguard(rule_key: &str, input: &serde_json::Value, ctx: &crate::origin::ToolContext) -> Option<String> {
+    let fence = NeboFiles::of(&ctx.session_id);
+    let run = Run { fence: fence.as_ref(), cwd: ctx.cwd.as_deref().map(Path::new) };
     match rule_key {
-        "run_command" => check_shell_safeguard(input),
+        "run_command" => check_shell_safeguard(input, &run),
         // Text typed into a running command may be typed into a shell (a
         // terminal running `bash`): it meets the same limits as a command.
         "send_input" => input
             .get("text")
             .and_then(|v| v.as_str())
-            .and_then(|text| scan_command_text(text.trim())),
-        key if FILE_KEYS.contains(&key) => check_file_safeguard(key, input),
+            .and_then(|text| scan_command_text(text.trim(), &run)),
+        key if FILE_KEYS.contains(&key) || key == "edit_notebook" => check_file_safeguard(key, input, &run),
         _ => None,
     }
+}
+
+/// What the safeguard reads about the run a call belongs to.
+struct Run<'a> {
+    /// Nebo's own files, fenced for this run.
+    fence: Option<&'a NeboFiles>,
+    /// The folder the run's relative paths are taken from.
+    cwd: Option<&'a Path>,
+}
+
+impl Run<'_> {
+    /// The refusal for a call that reaches `path`, one of Nebo's own files.
+    fn nebo_file(&self, path: &str) -> Option<String> {
+        let fence = self.fence?;
+        fence.closes(Path::new(path), self.cwd).then(|| nebo_file_refusal(path, fence))
+    }
+}
+
+/// The refusal for reaching one of Nebo's own files, in the one wording
+/// every door uses.
+pub fn nebo_file_refusal(path: &str, fence: &NeboFiles) -> String {
+    format!(
+        "BLOCKED: {path:?} is one of Nebo's own files (its settings, logs, database and other internals). \
+         An employee never reads or changes them, and they are not where your work is: what Nebo knows \
+         reaches you through your tools. Your working files are under {}. \
+         This is a hard safety limit that cannot be overridden",
+        fence.workspace().display()
+    )
 }
 
 /// Check if a tool call respects the allowed_paths restriction.
@@ -185,29 +219,21 @@ fn verb(rule_key: &str) -> &'static str {
     }
 }
 
-fn check_file_safeguard(rule_key: &str, input: &serde_json::Value) -> Option<String> {
+fn check_file_safeguard(rule_key: &str, input: &serde_json::Value, run: &Run<'_>) -> Option<String> {
     let action = verb(rule_key);
     let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
-    // The database directory is off-limits for EVERY action, reads included:
-    // sessions and auth material live there, and out-of-band access bypasses
-    // every tool gate (2026-08-01: a cloud agent "fixed" its schedules with raw
-    // sqlite3 INSERTs into its own DB). Legitimate state access goes through
-    // the memory/workflow/settings tools.
-    if !path.is_empty() {
-        if let Ok(abs) = std::path::absolute(Path::new(path)) {
-            let abs_str = abs.to_string_lossy();
-            if nebo_db_paths().iter().any(|p| {
-                abs_str.as_ref() == p || abs_str.starts_with(&format!("{}/", p))
-            }) {
-                return Some(format!(
-                    "BLOCKED: cannot {} {:?} — this is the Nebo database directory. \
-                     The agent must never access its own database; use the memory, \
-                     workflow, and settings tools instead. \
-                     This is a hard safety limit that cannot be overridden",
-                    action, path
-                ));
-            }
+    // Nebo's own files are off-limits for EVERY action, reads included: the
+    // settings file holds the server's secret, the database holds sessions
+    // and auth material, and out-of-band access bypasses every tool gate
+    // (2026-08-01: a cloud agent "fixed" its schedules with raw sqlite3
+    // INSERTs into its own DB; 2026-09-26: an employee read the settings
+    // file's secret into its context). Every path the call names is checked.
+    let notebook = input.get("notebook_path").and_then(|v| v.as_str());
+    let listed = input.get("paths").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|p| p.as_str());
+    for named in std::iter::once(path).chain(notebook).chain(listed).filter(|p| !p.is_empty()) {
+        if let Some(refusal) = run.nebo_file(named) {
+            return Some(refusal);
         }
     }
 
@@ -250,7 +276,7 @@ fn check_file_safeguard(rule_key: &str, input: &serde_json::Value) -> Option<Str
     None
 }
 
-fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
+fn check_shell_safeguard(input: &serde_json::Value, run: &Run<'_>) -> Option<String> {
     let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
     // The caller dispatched on the rule key (`run_command`): this call runs
@@ -262,7 +288,7 @@ fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
     let cmd = command.trim();
 
     // Scan the command string itself.
-    if let Some(reason) = scan_command_text(cmd) {
+    if let Some(reason) = scan_command_text(cmd, run) {
         return Some(reason);
     }
 
@@ -273,7 +299,7 @@ fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
     // (rm -rf /, sudo, dd-to-device); it cannot beat obfuscation/indirection, so
     // it's a speed bump, not a guarantee. The command still requires approval
     // anyway (interpreters are never allowlisted).
-    if let Some(reason) = scan_referenced_script(cmd) {
+    if let Some(reason) = scan_referenced_script(cmd, run) {
         return Some(reason);
     }
 
@@ -283,19 +309,15 @@ fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
 /// Run the unconditional dangerous-pattern checks over a piece of command text
 /// (the command itself, or a script's contents). Returns a BLOCK reason if any
 /// hard-safety pattern is present.
-fn scan_command_text(text: &str) -> Option<String> {
-    // Shell is the easy way around the file tool's database guard (sqlite3,
-    // cp, strings, …) — block any command that references the DB directory.
-    for p in nebo_db_paths() {
-        if text.contains(&p) {
-            return Some(format!(
-                "BLOCKED: this command references {:?} — the Nebo database directory. \
-                 The agent must never access its own database; use the memory, \
-                 workflow, and settings tools instead. \
-                 This is a hard safety limit that cannot be overridden",
-                p
-            ));
-        }
+fn scan_command_text(text: &str, run: &Run<'_>) -> Option<String> {
+    // Shell is the easy way around the file tools' fence (sqlite3, cat,
+    // grep, …): a command that names one of Nebo's own files is refused
+    // before it runs. The command itself runs confined as well (`confine`),
+    // so a path spelled another way still can't be read.
+    if let Some(fence) = run.fence
+        && let Some(path) = fence.named_in(text, run.cwd)
+    {
+        return Some(nebo_file_refusal(&path, fence));
     }
     let lower = text.to_lowercase();
     if has_sudo(&lower) {
@@ -328,7 +350,7 @@ fn scan_command_text(text: &str) -> Option<String> {
 
 /// If `cmd` invokes a local shell script, read it and scan its contents. Returns
 /// a BLOCK reason naming the script when dangerous content is found.
-fn scan_referenced_script(cmd: &str) -> Option<String> {
+fn scan_referenced_script(cmd: &str, run: &Run<'_>) -> Option<String> {
     let parts: Vec<&str> = cmd.split_whitespace().collect();
     let path = referenced_script_path(&parts)?;
     let content = std::fs::read_to_string(&path).ok()?;
@@ -336,7 +358,7 @@ fn scan_referenced_script(cmd: &str) -> Option<String> {
     if content.len() > 1_000_000 {
         return None;
     }
-    scan_command_text(&content)
+    scan_command_text(&content, run)
         .map(|reason| format!("{} (found inside the script {})", reason, path))
 }
 
@@ -606,23 +628,6 @@ fn is_protected_user_path(abs_path: &str) -> Option<String> {
     None
 }
 
-/// The database directory in every spelling a command might use: absolute
-/// (honors `NEBO_DATA_DIR`) and `~`-relative. Used for the total access ban —
-/// unlike `nebo_data_dirs`, which only guards writes/deletes.
-fn nebo_db_paths() -> Vec<String> {
-    let Ok(base) = config::data_dir() else {
-        return vec![];
-    };
-    let abs = base.join("data").to_string_lossy().into_owned();
-    let mut paths = vec![abs.clone()];
-    if let Some(home) = dirs::home_dir() {
-        if let Some(rest) = abs.strip_prefix(home.to_string_lossy().as_ref()) {
-            paths.push(format!("~{}", rest));
-        }
-    }
-    paths
-}
-
 /// Returns the Nebo data directory paths that must be protected from writes/deletes.
 ///
 /// Derived from `config::data_dir()` so this stays consistent with the actual
@@ -685,59 +690,45 @@ mod tests {
         assert!(!is_root_wipe("rm -rf /tmp/test"));
     }
 
-    #[test]
-    fn test_nebo_data_dir_protected() {
-        // The protected path is derived from config::data_dir() — build the
-        // expected DB path the same way so this stays correct on every platform.
-        let nebo_data = config::data_dir()
-            .unwrap()
-            .join("data")
-            .join("nebo.db")
-            .to_string_lossy()
-            .into_owned();
-
-        let input = serde_json::json!({ "path": nebo_data });
-        let result = check_file_safeguard("write_file", &input);
-        assert!(
-            result.is_some(),
-            "should block writes to Nebo data directory"
-        );
-        assert!(
-            result.unwrap().contains("Nebo database directory"),
-            "should mention Nebo database"
-        );
+    /// A run with no fence: the limits that hold whatever the folder.
+    fn bare() -> Run<'static> {
+        Run { fence: None, cwd: None }
     }
 
+    /// Nebo's own files are closed to every file action and every command
+    /// that names them, reads included; the workspace stays open.
     #[test]
-    fn test_db_dir_blocked_for_all_access() {
-        let db = config::data_dir()
-            .unwrap()
-            .join("data")
-            .join("nebo.db")
-            .to_string_lossy()
-            .into_owned();
+    fn nebo_own_files_are_closed_to_every_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("nebo-home");
+        std::fs::create_dir_all(root.join("files")).unwrap();
+        let fence = NeboFiles::at(&root, &root.join("sessions/s1"));
+        let run = Run { fence: Some(&fence), cwd: None };
+        let at = |rel: &str| root.join(rel).to_string_lossy().into_owned();
 
-        // File reads of the DB are blocked, not just writes
-        let input = serde_json::json!({"path": db});
-        assert!(check_file_safeguard("read_file", &input).is_some());
+        for key in ["read_file", "write_file", "edit_file", "share_file", "convert_file"] {
+            for closed in ["data/nebo.db", "settings.json", "logs/nebo.log"] {
+                let r = check_file_safeguard(key, &serde_json::json!({ "path": at(closed) }), &run);
+                assert!(r.as_deref().is_some_and(|m| m.contains("Nebo's own files")), "{key} {closed}: {r:?}");
+            }
+            assert!(check_file_safeguard(key, &serde_json::json!({ "path": at("files/draft.md") }), &run).is_none(), "{key}");
+        }
+        let r = check_file_safeguard("edit_notebook", &serde_json::json!({ "notebook_path": at("logs/x.ipynb") }), &run);
+        assert!(r.is_some(), "a notebook path");
+        let r = check_file_safeguard("checkpoint_files", &serde_json::json!({ "paths": [at("files/a"), at("settings.json")] }), &run);
+        assert!(r.is_some(), "any of a checkpoint's paths");
 
-        // Shell commands referencing the DB path are blocked (the sqlite3 hole)
-        let cmd = format!("sqlite3 {} \"INSERT INTO workflows VALUES ('x')\"", db);
-        let input = serde_json::json!({"action": "exec", "command": cmd});
-        assert!(check_shell_safeguard(&input).is_some());
-
-        // Sibling dirs stay usable: files/ is the agent's workspace
-        let files = config::data_dir()
-            .unwrap()
-            .join("files")
-            .join("draft.md")
-            .to_string_lossy()
-            .into_owned();
-        let input = serde_json::json!({"path": files});
-        assert!(check_file_safeguard("read_file", &input).is_none());
-        let input =
-            serde_json::json!({"action": "exec", "command": format!("cat {}", files)});
-        assert!(check_shell_safeguard(&input).is_none());
+        // The sqlite3 hole, and the settings file read through the shell.
+        for cmd in [
+            format!("sqlite3 {} \"INSERT INTO workflows VALUES ('x')\"", at("data/nebo.db")),
+            format!("cat {} | head -50", at("settings.json")),
+            format!("grep -ri gmail {}", at("logs/nebo.log")),
+        ] {
+            let r = check_shell_safeguard(&serde_json::json!({ "command": cmd }), &run);
+            assert!(r.is_some(), "{cmd}");
+        }
+        let r = check_shell_safeguard(&serde_json::json!({ "command": format!("cat {}", at("files/draft.md")) }), &run);
+        assert!(r.is_none(), "{r:?}");
     }
 
     #[test]
@@ -747,20 +738,22 @@ mod tests {
             "action": "exec",
             "command": "sudo rm -rf /tmp"
         });
-        assert!(check_shell_safeguard(&input).is_some());
+        assert!(check_shell_safeguard(&input, &bare()).is_some());
 
         let safe = serde_json::json!({
             "resource": "bash",
             "action": "exec",
             "command": "ls -la"
         });
-        assert!(check_shell_safeguard(&safe).is_none());
+        assert!(check_shell_safeguard(&safe, &bare()).is_none());
     }
 
     #[test]
     fn safeguards_follow_the_rule_key() {
         // The registry passes the call's rule key, so every tool shape that
         // runs a command or writes a file meets the same guard.
+        let run = crate::origin::ToolContext::default();
+        let check_safeguard = |key: &str, input: &serde_json::Value| check_safeguard(key, input, &run);
         let shell_sudo = serde_json::json!({
             "resource": "shell", "action": "exec", "command": "sudo rm -rf /tmp"
         });

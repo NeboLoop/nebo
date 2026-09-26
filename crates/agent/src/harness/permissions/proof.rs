@@ -203,3 +203,93 @@ async fn company_deny_beats_employee_allow() {
     let input = serde_json::json!({});
     assert!(matches!(decide(&CheckCx { ctx: &ctx, input: &input, grant: &grant, store: &store }, &t), Decision::Deny { .. }));
 }
+
+/// A server on this computer that answers every request with a page titled
+/// "Example Domain", and counts the connections it took.
+fn page_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = hits.clone();
+    std::thread::spawn(move || {
+        for mut conn in listener.incoming().flatten() {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 1024];
+            let _ = conn.read(&mut buf);
+            let body = "<html><title>Example Domain</title></html>";
+            let _ = write!(conn, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        }
+    });
+    (port, hits)
+}
+
+/// `web-off-shell-reaches-no-network` (helper-cannot-exceed-parent, E8): an
+/// employee whose web access the owner turned off can't reach the network
+/// through the shell either, and neither can its helpers, whether the
+/// refusal is the employee's own rule or only the grant a helper runs under.
+/// On 2026-09-26 a helper refused `browser_open` and `fetch_url` ran `curl`
+/// through run_command and got the page, in all three runs. The same
+/// command from an employee with web access reaches the page, so the
+/// command and the server are real.
+#[tokio::test]
+async fn web_off_shell_reaches_no_network() {
+    use std::sync::atomic::Ordering;
+    let (_d, store) = store();
+    let owner = types::permissions::Writer::Owner;
+    let rule = |scope: Scope, cap: &str, effect: Effect| types::permissions::Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope,
+        key: RuleKey::Capability(cap.into()),
+        field: None,
+        effect,
+        money: None,
+        source: RuleSource::Owner,
+        locked: false,
+        created_at: 0,
+    };
+    // Every job has the shell and the web; the owner turned web off for the clerk.
+    for cap in ["shell", "web"] {
+        store.write_permission_rule(&rule(Scope::Company, cap, Effect::Allow), &owner).unwrap();
+    }
+    store.write_permission_rule(&rule(Scope::Employee("clerk".into()), "web", Effect::Deny), &owner).unwrap();
+    let registry = tools::Registry::new(Arc::new(super::Check::new(store.clone())));
+    registry.register_defaults().await;
+    let (port, hits) = page_server();
+    let fetch = serde_json::json!({ "command": format!("curl -s -m 5 http://127.0.0.1:{port}/"), "description": "Fetch the page" });
+
+    let clerk = resolve_grant(&store, "clerk", None);
+    let run = |key: &str, grant: types::permissions::Grant, door: types::permissions::Door| ToolContext {
+        origin: Origin::System,
+        session_key: key.into(),
+        session_id: key.replace(':', "_"),
+        door,
+        grant: Some(Arc::new(grant)),
+        ..Default::default()
+    };
+    // The clerk's own run, its helper as delegation seats one (its grant,
+    // under it as the ceiling), and a helper whose own rules would allow the
+    // web but whose employee's don't.
+    let mut helper = clerk.clone();
+    helper.ceiling = Some(types::permissions::Ceiling::Parent { grant: Box::new(clerk.clone()) });
+    let mut narrowed = resolve_grant(&store, "", None);
+    narrowed.ceiling = Some(types::permissions::Ceiling::Parent { grant: Box::new(clerk.clone()) });
+    use types::permissions::Door;
+    for (who, ctx) in [
+        ("the clerk", run("agent:clerk:web", clerk.clone(), Door::Chat)),
+        ("the clerk's helper", run("subagent:agent:clerk:web:sa-1", helper, Door::Helper)),
+        ("a helper under the clerk's grant", run("subagent:agent:clerk:web:sa-2", narrowed, Door::Helper)),
+    ] {
+        let r = registry.execute(&ctx, "run_command", fetch.clone()).await;
+        assert!(!r.content.contains("Example Domain"), "{who} reached the page: {}", r.content);
+        assert!(r.content.contains("web access is off"), "{who} was not told why: {}", r.content);
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "a web-off run reached the server");
+
+    // An employee with web access runs the same command and gets the page.
+    let analyst = run("agent:analyst:web", resolve_grant(&store, "analyst", None), Door::Chat);
+    let r = registry.execute(&analyst, "run_command", fetch).await;
+    assert!(r.content.contains("Example Domain"), "the command itself works: {}", r.content);
+    assert!(!r.content.contains("web access is off"), "{}", r.content);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
