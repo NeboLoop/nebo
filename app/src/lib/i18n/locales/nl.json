@@ -246,6 +246,7 @@
 		"working": "Werkt"
 	},
 	"chat": {
+		"compactBoundary": "Eerder gesprek samengevat",
 		"goalLine": "Doel: {condition} ({turns} beurten)",
 		"goalLastCheck": "laatste controle: {reason}",
 		"goalPaused": "Gepauzeerd. Je volgende bericht hervat het.",

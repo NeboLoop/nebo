@@ -246,6 +246,7 @@
 		"working": "กำลังทำงาน"
 	},
 	"chat": {
+		"compactBoundary": "สรุปบทสนทนาก่อนหน้าแล้ว",
 		"goalLine": "เป้าหมาย: {condition} ({turns} รอบ)",
 		"goalLastCheck": "ตรวจล่าสุด: {reason}",
 		"goalPaused": "หยุดชั่วคราว ข้อความถัดไปของคุณจะทำต่อ",

@@ -144,10 +144,11 @@ pub struct TurnState {
     pub seen: Vec<ChatMessage>,
     /// The model every step of the turn runs on (`provider/model`), chosen
     /// once at Prepare: the one the owner, the job or the helper's speed
-    /// chose, else the selector's default. It never changes mid-turn, so the
-    /// provider's cache for it holds; a failed provider hands the call to
-    /// the next one (`model_call`), as Claude Code changes model only on
-    /// fallback (`src/query.ts:572-575,893-922`).
+    /// chose, else the configured default (`ModelSelector::resolve`). It
+    /// never changes, mid-turn or after an error: a failed call is retried
+    /// on it (`model_call`), as Claude Code retries its main loop model and
+    /// changes it only for a configured fallback model
+    /// (`src/query.ts:572-575,893-922`), which Nebo has none of.
     pub model: String,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
@@ -625,7 +626,7 @@ pub(crate) async fn prepare(
     .filter(|p| !p.trim().is_empty())
     .collect::<Vec<_>>()
     .join("\n\n");
-    let turn_model = if model.is_empty() { h.selector.select() } else { model.clone() };
+    let turn_model = h.selector.resolve(&model);
     let mode_facts = events::ModeFacts {
         model: turn_model.clone(),
         permission_mode: permission_mode_name(grant.mode).to_string(),
@@ -928,7 +929,13 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 }
             };
         }
-        if st.trigger.due(request_tokens, context_window, max_output) {
+        let pressure = compact::checkpoint::Pressure {
+            request_tokens,
+            fresh_tokens: compact::checkpoint::fresh_tokens(&conversation),
+            context_window,
+            max_output,
+        };
+        if st.trigger.due(&pressure) {
             if clear_old_results(cx, st, &conversation).await {
                 st.step -= 1;
                 continue;
@@ -3882,7 +3889,23 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_helper_at_its_own_speed_runs_every_step_on_it() {
         let model = Scripted::new(vec![Step::Call("echo", serde_json::json!({})), Step::Say("Found it.")]);
-        let h = harness(&model).await;
+        let info = |id: &str| crate::selector::ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            context_window: 200_000,
+            input_price: 1.0,
+            output_price: 1.0,
+            cached_input_price: 0.1,
+            capabilities: vec!["tools".into()],
+            kind: Vec::new(),
+            preferred: false,
+            active: true,
+        };
+        let selector = crate::selector::ModelSelector::new(crate::selector::ModelRoutingConfig {
+            provider_models: [("scripted".to_string(), vec![info("steady"), info("quick")])].into(),
+            ..Default::default()
+        });
+        let h = harness_selecting(&model, Vec::new(), selector).await;
         let parent = crate::harness::SeatRequest { model_override: "scripted/steady".into(), ..owner("x").seat };
         let spec = crate::harness::delegation::HelperSpec {
             speed: Some("scripted/quick".into()),
@@ -4130,5 +4153,121 @@ mod tests {
         let summary = model.side_call("checkpoint").await.expect("the checkpoint's summary call");
         assert_prefix(&calls[4], &summary, false, "the summary call forks the step it checkpoints");
         assert_eq!(summary.messages.len(), calls[4].messages.len() + 1, "the step's messages and the instruction");
+    }
+
+    /// A selector over the `scripted` provider: two chat speeds with a 200k
+    /// window, and the gateway's embedding model with its 8,191-token
+    /// window (the owner's provider_models rows on 2026-09-25).
+    fn gateway_selector(default: &str, chat_window: i32) -> crate::selector::ModelSelector {
+        let info = |id: &str, window: i32, caps: &[&str]| crate::selector::ModelInfo {
+            id: id.into(),
+            display_name: id.into(),
+            context_window: window,
+            input_price: 0.0,
+            output_price: 0.0,
+            cached_input_price: 0.0,
+            capabilities: caps.iter().map(|c| c.to_string()).collect(),
+            kind: Vec::new(),
+            preferred: false,
+            active: true,
+        };
+        let chat = ["vision", "tools", "streaming", "code", "reasoning"];
+        let selector = crate::selector::ModelSelector::new(crate::selector::ModelRoutingConfig {
+            task_routing: [("general".to_string(), default.to_string())].into(),
+            default_model: default.into(),
+            provider_models: [(
+                "scripted".to_string(),
+                vec![
+                    info("nebo-1", chat_window, &chat),
+                    info("nebo-embed-small", 8_191, &["embeddings"]),
+                    info("nebo-1-flash", chat_window, &chat),
+                ],
+            )]
+            .into(),
+            provider_credentials: [("scripted".to_string(), true)].into(),
+            ..Default::default()
+        });
+        selector.set_loaded_providers(vec!["scripted".into()]);
+        selector
+    }
+
+    /// The owner's 2026-09-25 chat with Nanna: a few seconds of network
+    /// errors to the gateway, and every later turn went out on the gateway's
+    /// embedding model (8,191 tokens), checkpointing on every step. A
+    /// dropped connection is retried on the same model; the next turn runs
+    /// on the chosen model; nothing is ever sent to an embedding model, and
+    /// a conversation this small is never checkpointed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_network_blip_keeps_the_chosen_model_and_never_checkpoints_a_small_chat() {
+        let model = Scripted::new(vec![
+            Step::Transient,
+            Step::Transient,
+            Step::Say("Here is the plan."),
+            Step::Call("echo", serde_json::json!({})),
+            Step::Call("echo", serde_json::json!({})),
+            Step::Call("echo", serde_json::json!({})),
+            Step::Say("Done."),
+            Step::Say("Next."),
+        ]);
+        let h = harness_selecting(&model, Vec::new(), gateway_selector("scripted/nebo-1", 200_000)).await;
+        run_turn(&h, owner("Plan the billing employee.")).await;
+        run_turn(&h, owner("Build it.")).await;
+        run_turn(&h, owner("And the next one.")).await;
+
+        let sent: Vec<String> = model.calls().iter().map(|c| c.model.clone()).collect();
+        assert_eq!(sent.len(), 8);
+        assert!(sent.iter().all(|m| m == "nebo-1"), "every call, retries and later turns, on the chosen model: {sent:?}");
+        assert!(model.side_call("checkpoint").await.is_none(), "no checkpoint of a three-message chat");
+        assert!(!stored(&h).iter().any(|m| m.content.starts_with(compact::checkpoint::BOUNDARY_LEAD)));
+    }
+
+    /// A chosen chat model that reports a tiny window (8,191) is not
+    /// believed: Claude Code takes a reported window only from 100k up and
+    /// otherwise assumes its 200k default (`src/utils/context.ts:75`). A
+    /// many-step turn on it never checkpoints.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tiny_reported_window_never_loops_checkpoints() {
+        let mut steps: Vec<Step> = (0..12).map(|_| Step::Call("echo", serde_json::json!({}))).collect();
+        steps.push(Step::Say("Done."));
+        let model = Scripted::new(steps);
+        let h = harness_selecting(&model, Vec::new(), gateway_selector("scripted/nebo-1", 8_191)).await;
+        run_turn(&h, owner("Check it twelve times.")).await;
+        assert_eq!(model.calls().len(), 13);
+        assert!(model.side_call("checkpoint").await.is_none(), "no checkpoint: the window is not believed");
+    }
+
+    /// A stored model is never trusted as the turn's model: a conversation
+    /// whose hidden mode row names the embedding model (the owner's chat
+    /// after 2026-09-25 22:09) and whose stored choice is the embedding
+    /// model is sent on a chat model next turn, and another chat is never
+    /// touched by it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stored_embedding_model_is_never_the_next_turns_model() {
+        let model = Scripted::new(vec![Step::Say("One."), Step::Say("Two."), Step::Say("Three.")]);
+        let h = harness_selecting(&model, Vec::new(), gateway_selector("scripted/nebo-1", 200_000)).await;
+        run_turn(&h, owner("Start.")).await;
+        let sid = h.sessions.resolve_session_id_by_key(KEY).unwrap();
+        h.sessions
+            .append_message(
+                &sid,
+                "user",
+                "<system-reminder>Model: scripted/nebo-embed-small. Permission mode: Full Access.</system-reminder>",
+                None,
+                None,
+                Some(r#"{"attachment":{"kind":"mode","mode":"Full Access","model":"scripted/nebo-embed-small"},"isMeta":true}"#),
+            )
+            .unwrap();
+        let mut stored_choice = owner("Keep going.");
+        stored_choice.seat.model_override = "scripted/nebo-embed-small".into();
+        run_turn(&h, stored_choice).await;
+        let mut other = owner("A new chat.");
+        other.session_key = "agent:ops:web:other".into();
+        run_turn(&h, other).await;
+
+        let sent: Vec<String> = model.calls().iter().map(|c| c.model.clone()).collect();
+        assert_eq!(sent.len(), 3);
+        assert!(!sent.iter().any(|m| m.contains("embed")), "never the embedding model: {sent:?}");
+        assert_eq!(sent[0], "nebo-1");
+        assert_eq!(sent[2], "nebo-1", "another chat runs on the default");
     }
 }

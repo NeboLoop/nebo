@@ -246,6 +246,7 @@
 		"working": "Arbetar"
 	},
 	"chat": {
+		"compactBoundary": "Tidigare konversation sammanfattad",
 		"goalLine": "Mål: {condition} ({turns} omgångar)",
 		"goalLastCheck": "senaste kontroll: {reason}",
 		"goalPaused": "Pausad. Ditt nästa meddelande återupptar den.",

@@ -246,6 +246,7 @@
 		"working": "일하는 중"
 	},
 	"chat": {
+		"compactBoundary": "이전 대화가 요약되었습니다",
 		"goalLine": "목표: {condition} ({turns}턴)",
 		"goalLastCheck": "마지막 확인: {reason}",
 		"goalPaused": "일시 중지됨. 다음 메시지를 보내면 다시 시작합니다.",

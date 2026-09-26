@@ -246,6 +246,7 @@
 		"working": "Bekerja"
 	},
 	"chat": {
+		"compactBoundary": "Perbualan terdahulu diringkaskan",
 		"goalLine": "Matlamat: {condition} ({turns} giliran)",
 		"goalLastCheck": "semakan terakhir: {reason}",
 		"goalPaused": "Dijeda. Mesej anda seterusnya menyambungnya.",

@@ -372,6 +372,44 @@ mod idempotency_tests {
         assert!(store.engine_queued_runs("main", 10).unwrap().is_empty(), "nothing waits on the old orchestrator");
     }
 
+    /// Every visible checkpoint row becomes a hidden boundary and one
+    /// owner-visible marker just before it; the model's conversation still
+    /// opens on the boundary and never holds a marker. Running it again
+    /// changes nothing.
+    #[test]
+    fn visible_checkpoint_rows_become_hidden_with_one_marker_each() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 182).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chats (id, title) VALUES ('c', 'C');
+             INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('u1', 'c', 'user', 'Build the billing employee.', 100);
+             INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES ('b1', 'c', 'user', 'This conversation continues from an earlier part that was summarized:\n\nfirst', '{\"checkpoint\":true,\"reason\":\"threshold\"}', 200);
+             INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('a1', 'c', 'assistant', 'Working.', 201);
+             INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at) VALUES ('b2', 'c', 'user', 'This conversation continues from an earlier part that was summarized:\n\nsecond', '{\"checkpoint\":true,\"reason\":\"overflow\"}', 300);
+             INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ('u2', 'c', 'user', 'Keep going.', 301);",
+        )
+        .unwrap();
+
+        run_migrations_to(&conn, 183).unwrap();
+        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        let visible = "COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')";
+        assert_eq!(count(&format!("SELECT COUNT(*) FROM chat_messages WHERE content LIKE 'This conversation continues%' AND {visible}")), 0, "no summary is visible");
+        assert_eq!(count("SELECT COUNT(*) FROM chat_messages WHERE role = 'system' AND json_extract(metadata, '$.compactBoundary') = 1"), 2, "one marker per checkpoint");
+        assert_eq!(count("SELECT COUNT(*) FROM chat_messages WHERE json_extract(metadata, '$.reason') = 'overflow' AND role = 'system'"), 1, "the marker keeps the reason");
+        // Idempotent: the migration's statements, run again, change nothing.
+        conn.execute_batch(include_str!("../migrations/0183_checkpoint_summaries_hidden.sql")).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM chat_messages"), 7);
+        drop(conn);
+
+        let store = crate::Store::new(&path.to_string_lossy()).unwrap();
+        let loaded = store.get_chat_messages_since_checkpoint("c").unwrap();
+        assert_eq!(loaded.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["b2", "u2"], "the model opens on the boundary, no marker");
+        let thread: Vec<String> = store.get_chat_messages("c").unwrap().iter().map(|m| format!("{}:{}", m.role, m.content.lines().next().unwrap_or(""))).collect();
+        assert_eq!(thread[0], "user:Build the billing employee.");
+        assert_eq!(thread[1], "system:Earlier conversation summarized", "the marker sits before its boundary: {thread:?}");
+    }
+
     /// Each rolling summary becomes one checkpoint boundary row in its
     /// session's active chat, placed before the last 80 visible rows (the
     /// most the sliding window held) or before every row when there are
@@ -426,7 +464,7 @@ mod idempotency_tests {
         let short = store.get_chat_messages_since_checkpoint("short").unwrap();
         assert_eq!(short.len(), 4, "every row stays after the boundary");
         assert!(short[0].content.contains("Owner asked for a haiku."));
-        assert_eq!(store.get_chat_messages("long").unwrap().len(), 101, "the thread keeps every row");
+        assert_eq!(store.get_chat_messages("long").unwrap().len(), 102, "the thread keeps every row, and 0183 marks the boundary");
     }
 
     /// Owner rule (09-25): an employee reachable from outside is a

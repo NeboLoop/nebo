@@ -246,6 +246,7 @@
 		"working": "Trabalhando"
 	},
 	"chat": {
+		"compactBoundary": "Conversa anterior resumida",
 		"goalLine": "Meta: {condition} ({turns} turnos)",
 		"goalLastCheck": "última verificação: {reason}",
 		"goalPaused": "Pausada. Sua próxima mensagem a retoma.",

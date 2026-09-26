@@ -246,6 +246,7 @@
 		"working": "Pracuje"
 	},
 	"chat": {
+		"compactBoundary": "Wcześniejsza rozmowa została podsumowana",
 		"goalLine": "Cel: {condition} ({turns} tur)",
 		"goalLastCheck": "ostatnie sprawdzenie: {reason}",
 		"goalPaused": "Wstrzymano. Twoja następna wiadomość to wznowi.",

@@ -246,6 +246,7 @@
 		"working": "Працює"
 	},
 	"chat": {
+		"compactBoundary": "Попередню розмову підсумовано",
 		"goalLine": "Мета: {condition} ({turns} ходів)",
 		"goalLastCheck": "остання перевірка: {reason}",
 		"goalPaused": "Призупинено. Ваше наступне повідомлення відновить.",

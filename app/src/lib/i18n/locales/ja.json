@@ -246,6 +246,7 @@
 		"working": "作業中"
 	},
 	"chat": {
+		"compactBoundary": "以前の会話を要約しました",
 		"goalLine": "目標: {condition}（{turns} ターン）",
 		"goalLastCheck": "前回の確認: {reason}",
 		"goalPaused": "一時停止中。次のメッセージで再開します。",

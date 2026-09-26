@@ -83,6 +83,20 @@ fn retry_backoff(attempt: usize, retry_after_secs: Option<u64>) -> Duration {
     Duration::from_millis(base_ms + jitter_ms)
 }
 
+/// What the owner reads when the connection to the model kept failing.
+fn could_not_connect(selector: &ModelSelector, model: &str) -> String {
+    let name = selector
+        .get_model_info(model)
+        .map(|m| m.display_name)
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| model.rsplit('/').next().unwrap_or(model).to_string());
+    if name.is_empty() {
+        "Could not connect. Try again.".to_string()
+    } else {
+        format!("Could not connect to {name}. Try again.")
+    }
+}
+
 /// Pick a non-gateway provider when available.  Falls back to first provider
 /// (which may be Janus) only when no other option exists.  This prevents
 /// background operations (memory extraction, compaction, summarisation) from
@@ -118,8 +132,6 @@ pub(crate) fn resolve_aux(
 /// failover position, the retry counters and the output-cap escalation.
 #[derive(Debug, Default)]
 pub struct CallState {
-    /// Round-robin offset into the providers once a call has failed over.
-    pub provider_idx: usize,
     pub transient_retries: usize,
     pub retryable_retries: usize,
     pub overflow_retries: usize,
@@ -271,19 +283,13 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             return CallOutcome::Failed("No AI providers available".to_string());
         }
 
-        // Find provider: use model-based lookup on first attempt,
-        // but after retries (provider_idx > 0) use round-robin so we
-        // actually fall through to the next provider (e.g. CLI agent).
-        let idx = if st.provider_idx > 0 {
-            st.provider_idx % prov_lock.len()
-        } else if !selected_provider_id.is_empty() {
-            prov_lock
-                .iter()
-                .position(|p| p.id() == selected_provider_id)
-                .unwrap_or(0)
-        } else {
-            0
-        };
+        // The chosen model's provider, every attempt: a failed call is
+        // retried on the same model, never handed to another provider.
+        // Without one (a CLI bot's empty model) the first provider serves.
+        let idx = prov_lock
+            .iter()
+            .position(|p| p.id() == selected_provider_id)
+            .unwrap_or(0);
 
         info!(
             iteration,
@@ -301,8 +307,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         prov_lock[idx].clone()
     };
 
-    // If we fell through to a different provider (e.g. CLI after Janus rate limit),
-    // clear the model so the fallback provider uses its own default.
+    // The chosen model's provider isn't loaded (a bot without the gateway):
+    // the first provider serves with its own default model.
     let mut chat_req = chat_req;
     if provider.id() != selected_provider_id {
         chat_req.model = String::new();
@@ -384,30 +390,15 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
 
             if ai::is_transient_error(&e) {
                 st.transient_retries += 1;
-                selector.mark_failed(selected_model);
                 if st.transient_retries > MAX_TRANSIENT_RETRIES {
-                    return CallOutcome::Failed(format!("Too many transient errors: {}", e));
+                    warn!(session_id, error = %e, "the connection kept failing; ending the turn");
+                    return CallOutcome::Failed(could_not_connect(selector, selected_model));
                 }
-                // A reconnect is silent: the turn goes on, and the owner's
-                // screen still shows it working.
-                // Try next provider on transient error — but never
-                // silently fall from CLI to Janus (burns Nebo credits).
-                let prov_lock = providers.read().await;
-                let prov_count = prov_lock.len();
-                if prov_count > 1 {
-                    let next_idx = (st.provider_idx + 1) % prov_count;
-                    if prov_lock[next_idx].id() == "janus" {
-                        drop(prov_lock);
-                        return CallOutcome::Failed(format!(
-                            "Provider error (no fallback to Janus): {}",
-                            e
-                        ));
-                    }
-                    drop(prov_lock);
-                    st.provider_idx += 1;
-                } else {
-                    drop(prov_lock);
-                }
+                // A dropped connection is nobody's model failing: the same
+                // model is asked again after a backoff (Claude Code retries
+                // an APIConnectionError on the same model,
+                // `src/services/api/withRetry.ts:753`). A reconnect is
+                // silent: the owner's screen still shows the turn working.
                 tokio::select! {
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.transient_retries, None)) => {}
@@ -425,29 +416,14 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
 
             if e.is_retryable() {
                 st.retryable_retries += 1;
-                selector.mark_failed(selected_model);
                 if st.retryable_retries > MAX_RETRYABLE_RETRIES {
                     return CallOutcome::Failed(format!(
                         "Service temporarily unavailable after {} retries: {}",
                         MAX_RETRYABLE_RETRIES, e
                     ));
                 }
-                let prov_lock = providers.read().await;
-                let prov_count = prov_lock.len();
-                if prov_count > 1 {
-                    let next_idx = (st.provider_idx + 1) % prov_count;
-                    if prov_lock[next_idx].id() == "janus" {
-                        drop(prov_lock);
-                        return CallOutcome::Failed(format!(
-                            "Provider error (no fallback to Janus): {}",
-                            e
-                        ));
-                    }
-                    drop(prov_lock);
-                    st.provider_idx += 1;
-                } else {
-                    drop(prov_lock);
-                }
+                // Busy or rate-limited: the same model again after the
+                // wait the provider asked for.
                 tokio::select! {
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.retryable_retries, retry_after)) => {}
@@ -781,10 +757,6 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             st.transient_retries += 1;
             if st.transient_retries <= MAX_TRANSIENT_RETRIES {
                 let why = save_partial();
-                let prov_count = providers.read().await.len();
-                if prov_count > 1 {
-                    st.provider_idx += 1;
-                }
                 tokio::select! {
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                     _ = tokio::time::sleep(retry_backoff(st.transient_retries, None)) => {}
@@ -819,13 +791,9 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
             warn!(
                 reason,
                 retryable_retries = st.retryable_retries,
-                "retryable stream error, trying next provider"
+                "retryable stream error, retrying the same model"
             );
             let why = save_partial();
-            let prov_count = providers.read().await.len();
-            if prov_count > 1 {
-                st.provider_idx += 1;
-            }
             tokio::select! {
                 _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,
                 _ = tokio::time::sleep(retry_backoff(st.retryable_retries, last_retry_after)) => {}

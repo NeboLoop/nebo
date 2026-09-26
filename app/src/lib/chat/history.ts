@@ -34,6 +34,9 @@ interface MessageMeta {
    * to the envelope the model read; the list derives {teamId, teamName, from,
    * text} at read time. Only the derived object is carried onto the bubble. */
   teamPost?: boolean | TeamPost;
+  /** The owner-visible marker left where earlier conversation was summarized
+   * (role "system"). Every other system row stays hidden. */
+  compactBoundary?: boolean;
 }
 
 
@@ -108,6 +111,11 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
         ...(meta?.attachments?.length ? { attachments: meta.attachments } : {}),
         ...(teamPost ? { teamPost } : {}),
       });
+      continue;
+    }
+    if (m.role === 'system' && meta?.compactBoundary === true) {
+      open = null;
+      result.push({ type: 'compactBoundary' as const, id: m.id, time: formatTime(m.createdAt) });
       continue;
     }
     if (m.role !== 'assistant') continue;

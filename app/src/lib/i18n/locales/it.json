@@ -246,6 +246,7 @@
 		"working": "Al lavoro"
 	},
 	"chat": {
+		"compactBoundary": "Conversazione precedente riassunta",
 		"goalLine": "Obiettivo: {condition} ({turns} turni)",
 		"goalLastCheck": "ultimo controllo: {reason}",
 		"goalPaused": "In pausa. Il tuo prossimo messaggio lo riprende.",

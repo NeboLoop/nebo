@@ -246,6 +246,7 @@
 		"working": "עובד"
 	},
 	"chat": {
+		"compactBoundary": "השיחה הקודמת סוכמה",
 		"goalLine": "יעד: {condition} ({turns} סבבים)",
 		"goalLastCheck": "בדיקה אחרונה: {reason}",
 		"goalPaused": "מושהה. ההודעה הבאה שלך תחדש אותו.",

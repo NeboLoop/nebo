@@ -246,6 +246,7 @@
 		"working": "工作中"
 	},
 	"chat": {
+		"compactBoundary": "已总结之前的对话",
 		"goalLine": "目标：{condition}（{turns} 轮）",
 		"goalLastCheck": "上次检查：{reason}",
 		"goalPaused": "已暂停。你的下一条消息会恢复它。",
