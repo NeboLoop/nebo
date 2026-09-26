@@ -7,10 +7,11 @@
   able to do (the one needs step, `POST /agents/needs`), shown above Create
   in plain words. Each item is removable; Create grants what is left.
 
-  Below the name, "Hire from another app" lists every OpenClaw, Hermes or
-  ACP agent (Claude Code, Codex, Gemini CLI, OpenCode) install of the
-  owner's joined through Nebo Link, each with the agents it
-  offers: picking one makes it an employee here, with its own name and brain.
+  Below the name, "Hire from another app" lists every computer of the
+  owner's joined through Nebo Link, each with the agents it hosts (OpenClaw
+  and Hermes agents, Claude Code, Codex, Gemini CLI, OpenCode in their own
+  folders): picking one makes it an employee here, with its own name and
+  brain.
   A coding agent (Claude Code, Codex, ...) is hired with the permission mode
   the owner picks here, which it runs in on its computer; Settings changes
   it later.
@@ -151,6 +152,13 @@
     return APP_NAMES[runtime] ?? runtime.charAt(0).toUpperCase() + runtime.slice(1);
   }
 
+  // A computer's bot hosting several agents (Claude Code and Codex in their
+  // own folders, an OpenClaw install) is headed by its name alone: each
+  // agent's row names what it is. One agent: the bot and the app it runs.
+  function botHeading(bot: LinkedBotEntry): string {
+    return bot.agents.length === 1 ? `${bot.name} · ${appName(bot.runtime)}` : bot.name;
+  }
+
   function onkeydown(e: KeyboardEvent) {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -243,7 +251,7 @@
         {/if}
         {#each linkedBots as bot (bot.id)}
           <div class="mt-3">
-            <h3 class="text-xs font-medium text-base-content/70">{bot.name} · {appName(bot.runtime)}{bot.online ? '' : ` · ${$t('newEmployee.offline')}`}</h3>
+            <h3 class="text-xs font-medium text-base-content/70">{botHeading(bot)}{bot.online ? '' : ` · ${$t('newEmployee.offline')}`}</h3>
             <ul class="mt-1 flex flex-col gap-1">
               {#each bot.agents as agent (agent.id)}
                 <li>
