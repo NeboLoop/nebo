@@ -264,6 +264,10 @@ pub struct ToolContext {
     /// unless its name is here — the fork must write against actual on-disk
     /// content, never a recollection inferred from the transcript.
     pub skills_read: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Set by the permission check for one call (`GateVerdict::Run`): the
+    /// run's web access is off, so the command this call starts may not
+    /// reach the network either (`confine`). Never set by a door.
+    pub offline: bool,
     /// Default working directory for shell commands and relative file paths
     /// (a worktree or scratch copy for isolated sub-agents). None = the
     /// process cwd, exactly as before.
@@ -377,6 +381,16 @@ pub fn workflow_session_key(agent_id: &str, run_id: &str) -> String {
 }
 
 impl ToolContext {
+    /// This context for one call the permission check let run, offline when
+    /// the check said so (`GateVerdict::Run`).
+    pub fn confined(&self, offline: bool) -> std::borrow::Cow<'_, ToolContext> {
+        if offline && !self.offline {
+            std::borrow::Cow::Owned(ToolContext { offline: true, ..self.clone() })
+        } else {
+            std::borrow::Cow::Borrowed(self)
+        }
+    }
+
     pub fn new(origin: Origin) -> Self {
         Self {
             origin,

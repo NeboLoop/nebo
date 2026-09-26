@@ -18,6 +18,7 @@ pub mod installed;
 pub mod channel_bridge;
 pub mod code_tool;
 pub mod command_tools;
+pub mod confine;
 pub mod coworker;
 
 /// A subprocess result (shell exec, plugin exec) longer than this, in
@@ -61,6 +62,7 @@ pub mod memory_guard;
 pub mod memory_tools;
 pub mod message_tool;
 pub mod music_tool;
+pub mod nebo_files;
 pub mod needs;
 pub mod notebook_tool;
 pub mod operation_tools;

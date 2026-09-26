@@ -651,7 +651,7 @@ async fn park_again(
             },
             None => release(store, run_id, false, "the ask was not written"),
         },
-        tools::GateVerdict::Run(_) => release(store, run_id, true, "the owner's rules allow it"),
+        tools::GateVerdict::Run { .. } => release(store, run_id, true, "the owner's rules allow it"),
         tools::GateVerdict::Refuse(result) => release(store, run_id, false, &result.content),
     }
 }

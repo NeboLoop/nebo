@@ -95,6 +95,11 @@ impl ShellTool {
         }
 
         match si.resource.as_str() {
+            "bash" if ctx.offline => {
+                let mut result = self.handle_bash(&si, ctx).await;
+                result.content.push_str(OFFLINE_NOTE);
+                result
+            }
             "bash" => self.handle_bash(&si, ctx).await,
             "process" => self.handle_process(&si).await,
             "session" => self.handle_session(&si).await,
@@ -249,7 +254,7 @@ impl ShellTool {
             );
         }
 
-        let cmd = match self.command(input, ctx.trusted_plugin_env, ctx.cwd.as_deref()) {
+        let cmd = match self.command(input, ctx) {
             Ok(cmd) => cmd,
             Err(refusal) => return refusal,
         };
@@ -421,12 +426,29 @@ impl ShellTool {
     }
 
     /// The one command every run_command call runs: the shell with the
-    /// command, its folder, and the environment (sanitized, git's prompts off,
-    /// installed plugins on the PATH, and plugin auth for a workflow's
-    /// command step alone).
-    fn command(&self, input: &ShellInput, trusted_plugin_env: bool, default_cwd: Option<&str>) -> Result<tokio::process::Command, ToolResult> {
+    /// command, confined (`confine`: Nebo's own files closed, no network for
+    /// a run whose web access is off), its folder, and the environment
+    /// (sanitized, Nebo's own settings left out, git's prompts off, installed
+    /// plugins on the PATH, and plugin auth for a workflow's command step
+    /// alone).
+    fn command(&self, input: &ShellInput, ctx: &ToolContext) -> Result<tokio::process::Command, ToolResult> {
+        let trusted_plugin_env = ctx.trusted_plugin_env;
+        let default_cwd = ctx.cwd.as_deref();
+        // A workflow's command step runs installed plugins, which keep their
+        // data in Nebo's folder: it is the owner's own step, not fenced.
+        let fence = if trusted_plugin_env { None } else { crate::nebo_files::NeboFiles::of(&ctx.session_id) };
+        let prefix = crate::confine::Confinement { offline: ctx.offline, fence: fence.as_ref() }
+            .prefix()
+            .map_err(|_| ToolResult::error(OFFLINE_UNAVAILABLE))?;
         let (shell, shell_args) = process::shell_command();
-        let mut cmd = tokio::process::Command::new(&shell);
+        let mut cmd = match prefix.split_first() {
+            Some((program, args)) => {
+                let mut cmd = tokio::process::Command::new(program);
+                cmd.args(args).arg(&shell);
+                cmd
+            }
+            None => tokio::process::Command::new(&shell),
+        };
         for arg in &shell_args {
             cmd.arg(arg);
         }
@@ -451,7 +473,7 @@ impl ShellTool {
         }
 
         cmd.env_clear();
-        for (k, v) in process::sanitized_env() {
+        for (k, v) in process::sanitized_env().into_iter().filter(|(k, _)| !nebo_own_env(k)) {
             cmd.env(k, v);
         }
         // An unattended agent can never answer a credential prompt: a `git
@@ -882,6 +904,25 @@ impl Drop for KillOnDrop {
 }
 
 /// Why the shell could not start the command.
+/// Nebo's own settings in its environment: the bot's tokens and keys, the
+/// server's secret, where its folder is. A command an employee runs never
+/// sees them (`env` would put them in its context).
+fn nebo_own_env(key: &str) -> bool {
+    let key = key.to_ascii_uppercase();
+    key.starts_with("NEBO_") || key.starts_with("NEBOAI_") || matches!(key.as_str(), "JWT_SECRET" | "MCP_ENCRYPTION_KEY")
+}
+
+/// Told after every command of a run whose web access is off.
+const OFFLINE_NOTE: &str = "\n\n(This ran with no network access: web access is off for this work, so nothing a command \
+runs reaches the internet or a server on this computer. Don't look for another way online; tell the owner what you \
+needed.)";
+
+/// A run whose web access is off, on a computer that can't keep a command
+/// off the network.
+const OFFLINE_UNAVAILABLE: &str = "Commands can't run for this work here: web access is off for it, and this computer \
+has no way to run a command without the network. Tell the owner what you needed the command for; web access is turned \
+on in the employee's settings.";
+
 fn spawn_failure(command: &str, e: &std::io::Error) -> ToolResult {
     let err_str = e.to_string();
     if err_str.contains("No such file or directory") || err_str.contains("not found") {

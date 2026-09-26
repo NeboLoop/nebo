@@ -956,10 +956,12 @@ impl Registry {
             input: &input,
             target: target_of(tool.as_ref(), &input),
         };
-        match self.gate.check(ctx, &call).await {
-            GateVerdict::Run(_) => {}
+        let offline = match self.gate.check(ctx, &call).await {
+            GateVerdict::Run { offline, .. } => offline,
             GateVerdict::Refuse(result) | GateVerdict::Parked(result) => return result,
-        }
+        };
+        let confined = ctx.confined(offline);
+        let ctx: &ToolContext = &confined;
 
         // Lease gate: while this bot's lease is not held (a cloud bot
         // that lost its NeboAI connection, or was replaced by another

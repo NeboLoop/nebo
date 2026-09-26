@@ -115,6 +115,8 @@ impl RunToolScope<'_> {
             answered_ask: None,
             untrusted_input,
             judgement: None,
+            // The permission check sets it per call (`GateVerdict::Run`).
+            offline: false,
             cwd: run_cwd.map(str::to_string),
             cancel_token: cancel_token.clone(),
             stream_tx: Some(tx.clone()),

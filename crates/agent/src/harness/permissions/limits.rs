@@ -235,7 +235,7 @@ fn deny(limit: &str, reason: String) -> Decision {
 /// allowlist, the tool scope's narrowing, credentials in an outbound call.
 /// `None`: none applies.
 pub fn hard_limits(cx: &CheckCx<'_>, t: &Target) -> Option<Decision> {
-    if let Some(err) = tools::safeguard::check_safeguard(&t.key, cx.input) {
+    if let Some(err) = tools::safeguard::check_safeguard(&t.key, cx.input, cx.ctx) {
         return Some(deny("safeguard", err));
     }
     if denied_for_origin(cx.ctx.origin, &t.key) || denied_operation_for_origin(cx.ctx.origin, t) {

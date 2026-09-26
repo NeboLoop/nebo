@@ -35,6 +35,9 @@ fixtures:
   - ../fixtures/turn/helper-cannot-exceed-parent.yaml
   - ../fixtures/permissions/employee-made-employee-capped-one-card.yaml
   - ../fixtures/permissions/coworker-runs-with-own-permissions.yaml
+  - ../fixtures/permissions/web-off-shell-reaches-no-network.yaml
+  # Nebo's own files: closed to every employee, the employee's own open
+  - ../fixtures/permissions/nebo-own-files-stay-closed.yaml
   # Doors: every entry through the one check (§4.8; technical design §2.12.8)
   - ../fixtures/permissions/every-door-goes-through-the-check.yaml
   - ../fixtures/permissions/foreign-host-refused.yaml
