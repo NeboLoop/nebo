@@ -359,7 +359,8 @@ impl ProcessRegistry {
     /// set) as a session, in a terminal of its own when `pty`. A background
     /// start is refused past the session cap; a foreground one never is,
     /// since its call is waiting on it.
-    pub async fn spawn(&self, mut cmd: Command, command: &str, spawn: Spawn, pty: bool) -> std::io::Result<Started> {
+    /// `closed_ports`: ports it may not connect to (`confine::spawn_with`).
+    pub async fn spawn(&self, mut cmd: Command, command: &str, spawn: Spawn, pty: bool, closed_ports: &[u16]) -> std::io::Result<Started> {
         let (foreground, notify) = match spawn {
             Spawn::Foreground => (true, None),
             Spawn::Background(caller) => {
@@ -381,7 +382,7 @@ impl ProcessRegistry {
             }
         };
         if pty {
-            return self.spawn_terminal(&cmd, command, foreground, notify).await;
+            return self.spawn_terminal(&cmd, command, foreground, notify, closed_ports).await;
         }
         hide_window(&mut cmd);
         cmd.stdout(Stdio::piped());
@@ -391,7 +392,7 @@ impl ProcessRegistry {
         // send_input.
         cmd.stdin(if foreground { Stdio::null() } else { Stdio::piped() });
         in_own_group(&mut cmd);
-        let child = cmd.spawn()?;
+        let child = crate::confine::spawn_with(closed_ports, || cmd.spawn())?;
 
         let pid = child.id().unwrap_or(0);
         // The shutdown handler kills registered children, so a Nebo restart
@@ -429,8 +430,15 @@ impl ProcessRegistry {
 
     /// Start `cmd` in a terminal: the same session as a pipe's, its output
     /// read from the terminal and typed input written to it.
-    async fn spawn_terminal(&self, cmd: &Command, command: &str, foreground: bool, notify: Option<Caller>) -> std::io::Result<Started> {
-        let opened = crate::terminal::open(cmd)?;
+    async fn spawn_terminal(
+        &self,
+        cmd: &Command,
+        command: &str,
+        foreground: bool,
+        notify: Option<Caller>,
+        closed_ports: &[u16],
+    ) -> std::io::Result<Started> {
+        let opened = crate::confine::spawn_with(closed_ports, || crate::terminal::open(cmd))?;
         let pid = opened.child.process_id().unwrap_or(0);
         napp::child_guard::register_child(pid);
         let session_id = format!("{SESSION_ID_PREFIX}{}", &Uuid::new_v4().to_string()[..8]);
@@ -1079,7 +1087,7 @@ mod group_tests {
         let file = pid_file();
         let reg = ProcessRegistry::new();
         let started = reg
-            .spawn(sh(&format!("sleep 30 & echo $! > {}; wait", file.display())), "sleep", Spawn::Background(None), false)
+            .spawn(sh(&format!("sleep 30 & echo $! > {}; wait", file.display())), "sleep", Spawn::Background(None), false, &[])
             .await
             .unwrap();
         let pid = grandchild_pid(&file).await;
@@ -1095,11 +1103,11 @@ mod group_tests {
         let reg = ProcessRegistry::new();
         let mut ids = Vec::new();
         for _ in 0..MAX_BACKGROUND_SESSIONS {
-            ids.push(reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None), false).await.unwrap().session.id.clone());
+            ids.push(reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None), false, &[]).await.unwrap().session.id.clone());
         }
-        let err = reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None), false).await.err().expect("capped");
+        let err = reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(None), false, &[]).await.err().expect("capped");
         assert!(err.to_string().contains("stop one first"), "{err}");
-        let fg = reg.spawn(sh("echo still-runs"), "echo", Spawn::Foreground, false).await.expect("a foreground command is never capped");
+        let fg = reg.spawn(sh("echo still-runs"), "echo", Spawn::Foreground, false, &[]).await.expect("a foreground command is never capped");
         assert!(fg.exited.await.unwrap().is_some_and(|s| s.success()));
         for id in ids {
             reg.kill_session(&id).await.unwrap();
@@ -1112,7 +1120,7 @@ mod group_tests {
     async fn a_finished_background_command_tells_its_caller() {
         let (reg, mut rx) = reported();
         let started = reg
-            .spawn(sh("echo built 12 pages; exit 3"), "make site", Spawn::Background(Some(caller())), false)
+            .spawn(sh("echo built 12 pages; exit 3"), "make site", Spawn::Background(Some(caller())), false, &[])
             .await
             .unwrap();
         let exit = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("told in time").expect("told");
@@ -1136,7 +1144,7 @@ mod group_tests {
     async fn a_stopped_command_tells_its_caller_at_once() {
         let (reg, mut rx) = reported();
         let started = reg
-            .spawn(sh("echo tick 1; sleep 120"), "sleep 120", Spawn::Background(Some(caller())), false)
+            .spawn(sh("echo tick 1; sleep 120"), "sleep 120", Spawn::Background(Some(caller())), false, &[])
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1158,7 +1166,7 @@ mod group_tests {
     #[tokio::test]
     async fn a_foreground_command_tells_nobody() {
         let (reg, mut rx) = reported();
-        let fg = reg.spawn(sh("echo done"), "echo done", Spawn::Foreground, false).await.unwrap();
+        let fg = reg.spawn(sh("echo done"), "echo done", Spawn::Foreground, false, &[]).await.unwrap();
         assert!(fg.exited.await.unwrap().is_some());
         assert!(reg.get_any_session(&fg.session.id).await.is_none(), "a foreground result is its call's alone");
         settle().await;
@@ -1170,7 +1178,7 @@ mod group_tests {
     #[tokio::test]
     async fn a_moved_command_is_reported_when_it_ends() {
         let (reg, mut rx) = reported();
-        let fg = reg.spawn(sh("sleep 0.5; echo finally"), "slow", Spawn::Foreground, false).await.unwrap();
+        let fg = reg.spawn(sh("sleep 0.5; echo finally"), "slow", Spawn::Foreground, false, &[]).await.unwrap();
         assert!(reg.list_running().await.is_empty(), "a foreground command is not listed as background work");
         assert!(reg.move_to_background(&fg.session, Some(caller())));
         let exit = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("told in time").expect("told");

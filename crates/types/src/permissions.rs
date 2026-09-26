@@ -354,6 +354,9 @@ pub enum Why {
     Declined { ask_id: String },
     Judged { by: String, reason: String },
     Unreviewed { reason: String },
+    /// It needed the owner's OK and nothing in the run could wait for one
+    /// (a scheduled command): refused, not asked.
+    CannotWait { case: AskCase },
 }
 
 /// Which judge answered a question the code could not decide.

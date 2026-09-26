@@ -117,6 +117,8 @@ impl RunToolScope<'_> {
             judgement: None,
             // The permission check sets it per call (`GateVerdict::Run`).
             offline: false,
+            // A turn's asks park: the owner answers the card.
+            cannot_wait: false,
             cwd: run_cwd.map(str::to_string),
             cancel_token: cancel_token.clone(),
             stream_tx: Some(tx.clone()),

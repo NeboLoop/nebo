@@ -780,6 +780,10 @@ fn why_sentence(store: &db::Store, decision: &str, why: &str) -> (String, bool) 
             _ => "A safety limit".into(),
         },
         Why::Ceiling => "It can't do more than the employee or run it works for".into(),
+        Why::CannotWait { case } => format!(
+            "It needed your OK, and a scheduled command can't wait for one, so it didn't run: {}",
+            lower_first(&ask_sentence(store, &case))
+        ),
     };
     (s, false)
 }

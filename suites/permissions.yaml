@@ -38,6 +38,9 @@ fixtures:
   - ../fixtures/permissions/web-off-shell-reaches-no-network.yaml
   # Nebo's own files: closed to every employee, the employee's own open
   - ../fixtures/permissions/nebo-own-files-stay-closed.yaml
+  - ../fixtures/permissions/nebo-own-server-closed.yaml
+  # Scheduled commands: the one door, never waiting on an ask
+  - ../fixtures/permissions/scheduled-command-meets-employee-limits.yaml
   # Doors: every entry through the one check (§4.8; technical design §2.12.8)
   - ../fixtures/permissions/every-door-goes-through-the-check.yaml
   - ../fixtures/permissions/foreign-host-refused.yaml

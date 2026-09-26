@@ -3087,6 +3087,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .map_err(|e| NeboError::Server(format!("failed to bind: {e}")))?;
+    // The local API: no command an employee runs connects to it.
+    if let Ok(addr) = listener.local_addr() {
+        types::own_ports::open(addr.port());
+    }
 
     // Connect info: the boundary tells this machine from the network by the
     // peer address.

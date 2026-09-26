@@ -1,9 +1,11 @@
-//! Nebo's own files, proven through the real server: an employee's file
-//! tools and commands reach its workspace, its helpers' copies and its own
-//! conversation's saved results, and never the rest of Nebo's folder (the
-//! settings file with the server's secret, the logs, the database, other
-//! conversations' files), however the path is spelled. Nebo's own settings
-//! are not in its commands' environment either.
+//! Nebo's own files and server, proven through the real server: an
+//! employee's file tools and commands reach its workspace, its helpers'
+//! copies and its own conversation's saved results, and never the rest of
+//! Nebo's folder (the settings file with the server's secret, the logs, the
+//! database, other conversations' files), however the path is spelled.
+//! Nebo's own settings are not in its commands' environment, its commands
+//! never reach Nebo's own API, and a scheduled command meets every one of
+//! those limits and its employee's permissions.
 
 use std::path::Path;
 
@@ -131,4 +133,177 @@ async fn an_employee_never_reaches_nebo_own_files() {
         .await;
     assert!(!r.is_error && r.content.contains("built"), "a helper's copy: {}", r.content);
     assert!(Path::new(&copy.join("out.txt")).exists());
+}
+
+/// An owner rule of `effect` on `key` in `agent`'s own scope.
+fn own_rule(nebo: &Nebo, agent: &str, key: RuleKey, effect: Effect) {
+    let rule = Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope: Scope::Employee(agent.to_string()),
+        key,
+        field: None,
+        effect,
+        money: None,
+        source: RuleSource::Owner,
+        locked: false,
+        created_at: 0,
+    };
+    nebo.store().write_permission_rule(&rule, &Writer::Owner).unwrap();
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+/// `nebo-own-server-closed`: Nebo's local API trusts a caller on this
+/// computer, so an employee's `curl` to it could do what the owner's app
+/// does, permissions or not. A command never connects to it, by any
+/// address; a server the employee started itself (a dev server) still
+/// answers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_employee_command_never_reaches_nebo_own_server() {
+    let nebo = session().await;
+    if !tools::confine::available() {
+        eprintln!("no confinement on this computer: Nebo's own server is reachable from an employee's commands");
+        return;
+    }
+    let agent = format!("dev-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    own_rule(&nebo, &agent, RuleKey::Capability("shell".into()), Effect::Allow);
+    let ctx = Nebo::ctx(&agent, Origin::User);
+    let run = |command: String| json!({ "command": command, "description": "Check the server" });
+    assert!(types::own_ports::list().contains(&nebo.port), "the server's port is one of Nebo's own");
+
+    for host in ["127.0.0.1", "localhost"] {
+        let r = nebo
+            .tool(&ctx, "run_command", run(format!("curl -s -m 5 -o /dev/null -w 'code=%{{http_code}}' http://{host}:{}/health", nebo.port)))
+            .await;
+        assert!(!r.content.contains("code=200"), "a command reached Nebo's API on {host}: {}", r.content);
+    }
+
+    // A dev server the employee starts answers it.
+    let files = nebo.home.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(files.join("proof-dev.txt"), "DEV-OK").unwrap();
+    let dev = free_port();
+    let started = nebo
+        .tool(
+            &ctx,
+            "run_command",
+            json!({
+                "command": format!("python3 -m http.server {dev} --bind 127.0.0.1 --directory '{}'", files.display()),
+                "description": "Start the dev server",
+                "background": true,
+            }),
+        )
+        .await;
+    assert!(!started.is_error, "{}", started.content);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::net::TcpStream::connect(("127.0.0.1", dev)).is_err() {
+        assert!(std::time::Instant::now() < deadline, "the dev server never came up: {}", started.content);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let r = nebo.tool(&ctx, "run_command", run(format!("curl -s -m 5 http://127.0.0.1:{dev}/proof-dev.txt"))).await;
+    let _ = nebo.tool(&ctx, "run_command", run(format!("pkill -f 'http.server {dev}'"))).await;
+    assert!(r.content.contains("DEV-OK"), "the employee's own server: {}", r.content);
+}
+
+/// A server on this computer that answers with a page titled "Example
+/// Domain", and counts the connections it took.
+fn page_server() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = hits.clone();
+    std::thread::spawn(move || {
+        for mut conn in listener.incoming().flatten() {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 1024];
+            let _ = conn.read(&mut buf);
+            let body = "<html><title>Example Domain</title></html>";
+            let _ = write!(conn, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        }
+    });
+    (port, hits)
+}
+
+/// A job that runs `command` as `agent`'s scheduled command.
+fn scheduled(agent: &str, name: &str, command: String) -> db::models::CronJob {
+    db::models::CronJob {
+        id: 0,
+        name: name.to_string(),
+        schedule: "0 9 * * *".to_string(),
+        command,
+        task_type: "bash".to_string(),
+        message: None,
+        deliver: None,
+        enabled: Some(1),
+        last_run: None,
+        run_count: None,
+        last_error: None,
+        created_at: None,
+        instructions: None,
+        agent_id: Some(agent.to_string()),
+        channel_ctx_json: None,
+        overlap_policy: "skip".to_string(),
+    }
+}
+
+/// `scheduled-command-meets-employee-limits`: a scheduled command ran as
+/// `sh -c` with Nebo's whole environment and no check, the one command no
+/// limit reached: a web-off employee could schedule `curl`, and any
+/// employee could schedule a read of Nebo's settings file. It now runs
+/// through run_command under its employee's grant: web off means no
+/// network, Nebo's own files stay closed, and a step that needs the owner's
+/// OK is refused (nothing waits for an answer), recorded, and reported as
+/// the fire's failure, never parked and never run unchecked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_scheduled_command_meets_its_employee_limits() {
+    use std::sync::atomic::Ordering;
+    let nebo = session().await;
+    let agent = format!("sched-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    own_rule(&nebo, &agent, RuleKey::Capability("shell".into()), Effect::Allow);
+    own_rule(&nebo, &agent, RuleKey::Capability("web".into()), Effect::Deny);
+
+    // Web off: the scheduled curl reaches nothing.
+    let (port, hits) = page_server();
+    let job = scheduled(&agent, "Morning fetch", format!("curl -s -m 5 http://127.0.0.1:{port}/"));
+    let (_, output, err) = crate::scheduler::execute_job(&nebo.state, &job).await;
+    let said = format!("{output}{}", err.unwrap_or_default());
+    assert!(!said.contains("Example Domain"), "a web-off employee's scheduled curl got the page: {said}");
+    assert!(said.contains("web access is off"), "{said}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "the scheduled command reached the server");
+
+    // Nebo's settings file: refused.
+    let settings = nebo.home.join("settings.json");
+    if !settings.exists() {
+        std::fs::write(&settings, "{\"accessSecret\": \"SECRET-accessSecret-canary\"}").unwrap();
+    }
+    let secret = std::fs::read_to_string(&settings).unwrap();
+    let job = scheduled(&agent, "Read settings", format!("cat {}", settings.display()));
+    let (ok, output, err) = crate::scheduler::execute_job(&nebo.state, &job).await;
+    let err = err.unwrap_or_default();
+    assert!(!ok && err.contains("Nebo's own files"), "{output}{err}");
+    assert!(!output.contains(secret.trim()) && !err.contains(secret.trim()));
+
+    // A step that needs the owner's OK is refused, not parked, and recorded.
+    let careful = format!("ask-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    own_rule(&nebo, &careful, RuleKey::Capability("shell".into()), Effect::Allow);
+    own_rule(&nebo, &careful, RuleKey::Tool("run_command".into()), Effect::Ask);
+    let marker = nebo.home.join("files").join(format!("{careful}.marker"));
+    let job = scheduled(&careful, "Touch a marker", format!("touch {}", marker.display()));
+    let (ok, _, err) = crate::scheduler::execute_job(&nebo.state, &job).await;
+    let err = err.unwrap_or_default();
+    assert!(!ok && err.contains("needs the owner's OK"), "{err}");
+    assert!(!marker.exists(), "the step that needed an OK ran");
+    let open = nebo.state.permission_asks.open(None).unwrap();
+    assert!(open.iter().all(|a| a.agent_id != careful), "the step was parked on a card: {open:?}");
+    let (rows, _) = nebo
+        .store()
+        .permission_activity(&db::PermissionActivityFilter { agent_id: Some(careful.clone()), limit: 10, ..Default::default() })
+        .unwrap();
+    let refused = rows.iter().find(|r| r.tool == "run_command").expect("the decision is recorded");
+    assert_eq!(refused.decision, "deny");
+    assert!(refused.why.contains("cannot_wait"), "{}", refused.why);
+    assert_eq!(refused.door, "schedule");
 }

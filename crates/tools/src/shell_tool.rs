@@ -254,8 +254,8 @@ impl ShellTool {
             );
         }
 
-        let cmd = match self.command(input, ctx) {
-            Ok(cmd) => cmd,
+        let (cmd, closed_ports) = match self.command(input, ctx) {
+            Ok(launch) => launch,
             Err(refusal) => return refusal,
         };
         let caller = (!ctx.session_key.is_empty()).then(|| process::Caller {
@@ -263,7 +263,7 @@ impl ShellTool {
             description: input.description.clone(),
         });
         if input.background {
-            return self.execute_background(cmd, input, caller).await;
+            return self.execute_background(cmd, &closed_ports, input, caller).await;
         }
 
         let timeout_secs = if input.timeout > 0 {
@@ -272,7 +272,7 @@ impl ShellTool {
             120
         };
         let started_at = std::time::SystemTime::now();
-        let started = match self.registry.spawn(cmd, &input.command, process::Spawn::Foreground, input.pty).await {
+        let started = match self.registry.spawn(cmd, &input.command, process::Spawn::Foreground, input.pty, &closed_ports).await {
             Ok(s) => s,
             Err(e) => return spawn_failure(&input.command, &e),
         };
@@ -426,18 +426,24 @@ impl ShellTool {
     }
 
     /// The one command every run_command call runs: the shell with the
-    /// command, confined (`confine`: Nebo's own files closed, no network for
-    /// a run whose web access is off), its folder, and the environment
-    /// (sanitized, Nebo's own settings left out, git's prompts off, installed
-    /// plugins on the PATH, and plugin auth for a workflow's command step
-    /// alone).
-    fn command(&self, input: &ShellInput, ctx: &ToolContext) -> Result<tokio::process::Command, ToolResult> {
+    /// command, confined (`confine`: Nebo's own files and ports closed, no
+    /// network for a run whose web access is off), its folder, and the
+    /// environment (sanitized, Nebo's own settings left out, git's prompts
+    /// off, installed plugins on the PATH, and plugin auth for a workflow's
+    /// command step alone). With it, the ports its spawn must close
+    /// (`confine::spawn_with`).
+    fn command(&self, input: &ShellInput, ctx: &ToolContext) -> Result<(tokio::process::Command, Vec<u16>), ToolResult> {
         let trusted_plugin_env = ctx.trusted_plugin_env;
         let default_cwd = ctx.cwd.as_deref();
         // A workflow's command step runs installed plugins, which keep their
-        // data in Nebo's folder: it is the owner's own step, not fenced.
-        let fence = if trusted_plugin_env { None } else { crate::nebo_files::NeboFiles::of(&ctx.session_id) };
-        let prefix = crate::confine::Confinement { offline: ctx.offline, fence: fence.as_ref() }
+        // data in Nebo's folder and may call its API: it is the owner's own
+        // step, not fenced.
+        let (fence, closed_ports) = if trusted_plugin_env {
+            (None, Vec::new())
+        } else {
+            (crate::nebo_files::NeboFiles::of(&ctx.session_id), types::own_ports::list())
+        };
+        let prefix = crate::confine::Confinement { offline: ctx.offline, fence: fence.as_ref(), closed_ports: &closed_ports }
             .prefix()
             .map_err(|_| ToolResult::error(OFFLINE_UNAVAILABLE))?;
         let (shell, shell_args) = process::shell_command();
@@ -496,12 +502,18 @@ impl ShellTool {
                 }
             }
         }
-        Ok(cmd)
+        Ok((cmd, closed_ports))
     }
 
-    async fn execute_background(&self, cmd: tokio::process::Command, input: &ShellInput, caller: Option<process::Caller>) -> ToolResult {
+    async fn execute_background(
+        &self,
+        cmd: tokio::process::Command,
+        closed_ports: &[u16],
+        input: &ShellInput,
+        caller: Option<process::Caller>,
+    ) -> ToolResult {
         let told = if caller.is_some() { " You'll be notified when it ends." } else { "" };
-        match self.registry.spawn(cmd, &input.command, process::Spawn::Background(caller), input.pty).await {
+        match self.registry.spawn(cmd, &input.command, process::Spawn::Background(caller), input.pty, closed_ports).await {
             Ok(started) => ToolResult::ok(format!(
                 "Background session started: **{}** (PID {})\n\nCommand: `{}`\n\n{}{told}\n",
                 started.session.id,

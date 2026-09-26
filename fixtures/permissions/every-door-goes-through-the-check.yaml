@@ -17,5 +17,5 @@ description: |
   Zero gate bypasses is PRD-Permissions §6's hard target; this is the test
   named for it there and again in technical design §2.12.11.
 target_component: permissions
-proof: harness::permissions::proof::every_door_goes_through_the_check
+proof: harness::permissions::tests::every_door_goes_through_the_check
 conversation: []

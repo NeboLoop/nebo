@@ -205,20 +205,25 @@ impl Ask {
 
     /// Why it asked, in plain words for the card.
     pub fn reason(&self) -> &'static str {
-        match &self.case {
-            AskCase::Money { .. } => "It's over this employee's money limit.",
-            AskCase::CompanyMoney { .. } => {
-                "It's over what the company may spend unattended today."
-            }
-            AskCase::NewCounterparty { .. } => "It's the first time it would contact them.",
-            AskCase::Irreversible { .. } => "It can't be undone.",
-            AskCase::OutsideJob { .. } => "It's outside this employee's job.",
-            AskCase::UntrustedInput { .. } => "It acts on something that came from outside.",
-            AskCase::AskRule { .. } => "This needs your OK every time.",
-            AskCase::AskMode => "This employee asks before it changes anything.",
-            AskCase::Widens => "Only you can give an employee more room.",
-            AskCase::CreatedExtras { .. } => "It was made by another employee and needs more than that employee has.",
+        reason_of(&self.case)
+    }
+}
+
+/// Why a call asks, in plain words.
+pub fn reason_of(case: &AskCase) -> &'static str {
+    match case {
+        AskCase::Money { .. } => "It's over this employee's money limit.",
+        AskCase::CompanyMoney { .. } => {
+            "It's over what the company may spend unattended today."
         }
+        AskCase::NewCounterparty { .. } => "It's the first time it would contact them.",
+        AskCase::Irreversible { .. } => "It can't be undone.",
+        AskCase::OutsideJob { .. } => "It's outside this employee's job.",
+        AskCase::UntrustedInput { .. } => "It acts on something that came from outside.",
+        AskCase::AskRule { .. } => "This needs your OK every time.",
+        AskCase::AskMode => "This employee asks before it changes anything.",
+        AskCase::Widens => "Only you can give an employee more room.",
+        AskCase::CreatedExtras { .. } => "It was made by another employee and needs more than that employee has.",
     }
 }
 
@@ -761,6 +766,15 @@ pub fn parked_text(sentence: &str, case: &AskCase) -> String {
     format!(
         "Waiting for the owner to allow: {sentence}.{why} Carry on with anything else; the answer \
          arrives as a notification. Don't retry this action."
+    )
+}
+
+/// Why a call that needed the owner's OK didn't run in a run nothing can
+/// wait in (a scheduled command). The owner reads it in the job's failure.
+pub fn cannot_wait_text(sentence: &str, case: &AskCase) -> String {
+    format!(
+        "Didn't run: {sentence}. It needs the owner's OK, and a scheduled command can't wait for one. {}",
+        reason_of(case)
     )
 }
 

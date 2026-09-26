@@ -264,6 +264,10 @@ pub struct ToolContext {
     /// unless its name is here — the fork must write against actual on-disk
     /// content, never a recollection inferred from the transcript.
     pub skills_read: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Engine-set: nothing in this run can wait for the owner's answer (a
+    /// scheduled command). A call that would ask is refused instead, and
+    /// the refusal says why; it is never parked and never runs unchecked.
+    pub cannot_wait: bool,
     /// Set by the permission check for one call (`GateVerdict::Run`): the
     /// run's web access is off, so the command this call starts may not
     /// reach the network either (`confine`). Never set by a door.

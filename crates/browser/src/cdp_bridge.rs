@@ -74,6 +74,14 @@ struct CdpCore {
     /// Seconds-since-launch of the most recent use (touched on every
     /// [`CdpBridge::get_core`]). Read by the idle reaper.
     last_used_s: AtomicU64,
+    /// The debugging port it listens on: one of Nebo's own while it runs.
+    port: u16,
+}
+
+impl Drop for CdpCore {
+    fn drop(&mut self) {
+        types::own_ports::close(self.port);
+    }
 }
 
 impl CdpCore {
@@ -196,6 +204,8 @@ impl CdpBridge {
     async fn launch(&self) -> Result<CdpCore, BrowserError> {
         // Random high loopback port — zero collisions across concurrent instances.
         let port = random_high_port()?;
+        // Nebo's own from now: no command an employee runs connects to it.
+        types::own_ports::open(port);
         info!(port, binary = %self.config.binary.display(), "launching Obscura (CDP tier-2)");
 
         let mut cmd = Command::new(&self.config.binary);
@@ -284,6 +294,7 @@ impl CdpBridge {
             alive,
             started: std::time::Instant::now(),
             last_used_s: AtomicU64::new(0),
+            port,
         })
     }
 

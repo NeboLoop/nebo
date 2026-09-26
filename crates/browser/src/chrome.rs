@@ -148,6 +148,8 @@ impl RunningChrome {
 
         let pid = child.id().unwrap_or(0);
         info!(pid, port = cdp_port, "launched Chrome");
+        // Nebo's own while it runs: no command an employee runs connects to it.
+        types::own_ports::open(cdp_port);
 
         let chrome = Self {
             pid,
@@ -204,5 +206,6 @@ impl Drop for RunningChrome {
     fn drop(&mut self) {
         // Best-effort kill on drop
         let _ = self.child.start_kill();
+        types::own_ports::close(self.cdp_port);
     }
 }

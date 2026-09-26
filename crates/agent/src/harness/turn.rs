@@ -4487,7 +4487,7 @@ mod tests {
             let mut cmd = tokio::process::Command::new("sleep");
             cmd.arg("30");
             let caller = tools::process::Caller { session_key: key.into(), description: what.into() };
-            h.tools.process_registry().spawn(cmd, "sleep 30", tools::process::Spawn::Background(Some(caller)), false)
+            h.tools.process_registry().spawn(cmd, "sleep 30", tools::process::Spawn::Background(Some(caller)), false, &[])
         };
         let ours = spawn(KEY, "wait for the build").await.unwrap().session.id.clone();
         let theirs = spawn("agent:other:web", "someone else's").await.unwrap().session.id.clone();

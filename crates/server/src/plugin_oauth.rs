@@ -83,11 +83,20 @@ pub fn begin(bot_id: &str) -> std::io::Result<StartedRelay> {
     Ok(StartedRelay { state, port })
 }
 
+/// While a sign-in waits, its callback port is one of Nebo's own: no command
+/// an employee runs connects to it, so none can hand the plugin a code.
 fn register(nonce: String, port: u16, ttl: Duration) {
     let mut pending = PENDING.lock().unwrap();
     let now = Instant::now();
-    pending.retain(|_, p| p.expires_at > now);
+    pending.retain(|_, p| {
+        let live = p.expires_at > now;
+        if !live {
+            types::own_ports::close(p.port);
+        }
+        live
+    });
     pending.insert(nonce, Pending { port, expires_at: now + ttl });
+    types::own_ports::open(port);
 }
 
 /// Consume a pending auth: returns its loopback port if the nonce is known and
@@ -95,6 +104,7 @@ fn register(nonce: String, port: u16, ttl: Duration) {
 fn take(nonce: &str) -> Option<u16> {
     let mut pending = PENDING.lock().unwrap();
     let entry = pending.remove(nonce)?;
+    types::own_ports::close(entry.port);
     (entry.expires_at > Instant::now()).then_some(entry.port)
 }
 

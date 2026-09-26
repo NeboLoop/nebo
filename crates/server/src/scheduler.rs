@@ -6,7 +6,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::process::Command;
 use tracing::{error, info, warn};
 
 use db::Store;
@@ -104,7 +103,7 @@ fn sweep(store: &Arc<Store>, workflow_manager: &Arc<dyn tools::workflows::Workfl
 /// Execute one fire of a job. Returns (success, output, error).
 pub(crate) async fn execute_job(state: &AppState, job: &CronJob) -> (bool, String, Option<String>) {
     match job.task_type.as_str() {
-        "bash" | "shell" | "" => execute_shell(&job.command).await,
+        "bash" | "shell" | "" => execute_shell(state, job).await,
         "agent" => execute_agent(state, job).await,
         "workflow" => execute_workflow_task(&*state.workflow_manager, &job.command).await,
         "agent_workflow" | "role_workflow" => {
@@ -119,23 +118,34 @@ pub(crate) async fn execute_job(state: &AppState, job: &CronJob) -> (bool, Strin
 }
 
 
-async fn execute_shell(command: &str) -> (bool, String, Option<String>) {
-    match Command::new("sh").arg("-c").arg(command).output().await {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            if output.status.success() {
-                (true, stdout, None)
-            } else {
-                let err = if stderr.is_empty() {
-                    format!("exit code: {}", output.status.code().unwrap_or(-1))
-                } else {
-                    stderr
-                };
-                (false, stdout, Some(err))
-            }
-        }
-        Err(e) => (false, String::new(), Some(e.to_string())),
+/// A scheduled command runs as its employee's command, through the one door
+/// every command goes through (`run_command` in the registry): the
+/// permission check under the employee's grant, Nebo's own files and server
+/// closed to it, Nebo's own settings out of its environment, and no network
+/// when the employee's web access is off. Nothing waits on an ask here: a
+/// step that needs the owner's OK is refused and recorded, and the failed
+/// fire tells the owner (`engine::settle_task`). It was `sh -c` with Nebo's
+/// whole environment and no check, the one command no fence reached.
+async fn execute_shell(state: &AppState, job: &CronJob) -> (bool, String, Option<String>) {
+    let agent_id = job.agent_id.as_deref().unwrap_or("");
+    let mut ctx = tools::ToolContext::new(Origin::System);
+    // No session key: nobody hears from a command that outlives its call,
+    // so a long one stops at its timeout instead of moving to the background.
+    ctx.session_id = format!("cron-{}", job.id);
+    ctx.door = types::permissions::Door::Schedule;
+    ctx.grant = Some(Arc::new(agent::harness::permissions::resolve_grant(&state.store, agent_id, None)));
+    ctx.cannot_wait = true;
+    let input = serde_json::json!({
+        "command": job.command,
+        "description": job.name,
+        // As long as run_command waits for any command.
+        "timeout": u64::MAX,
+    });
+    let result = state.tools.execute(&ctx, "run_command", input).await;
+    if result.is_error {
+        (false, String::new(), Some(result.content))
+    } else {
+        (true, result.content, None)
     }
 }
 
