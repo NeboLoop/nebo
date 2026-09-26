@@ -348,6 +348,9 @@ struct Recorder {
     /// Calls that started work which reports later: a background helper or
     /// command, in either arm's vocabulary.
     background_launches: usize,
+    /// Background commands the model itself stopped: their end is heard in
+    /// the turn that stopped them, so no turn wakes for them.
+    commands_stopped: usize,
     woken_turns: usize,
     /// A helper finished and no turn of the session has ended since, so its
     /// report is not heard yet.
@@ -439,6 +442,9 @@ impl Recorder {
                 let is_error = data["is_error"].as_bool().unwrap_or(false);
                 if !is_error && launches_background_work(&call.tool, &call.arguments) {
                     self.background_launches += 1;
+                }
+                if !is_error && stops_background_command(&call.tool, &call.arguments) {
+                    self.commands_stopped += 1;
                 }
                 let turn = self.active_turn();
                 turn.metrics.tool_calls += 1;
@@ -553,8 +559,14 @@ impl Recorder {
     fn settled(&self) -> bool {
         self.turn.is_none()
             && self.helpers_running.is_empty()
-            && self.background_launches <= self.helpers_finished.max(self.woken_turns)
+            && self.background_launches <= self.heard()
             && !self.unheard
+    }
+
+    /// Background launches accounted for: by a finished helper or a turn the
+    /// session woke for, plus the commands the model stopped.
+    fn heard(&self) -> usize {
+        self.helpers_finished.max(self.woken_turns) + self.commands_stopped
     }
 
     /// What is still out, for the transcript note when the wait runs out.
@@ -566,7 +578,7 @@ impl Recorder {
         if !self.helpers_running.is_empty() {
             parts.push(format!("{} helper(s) still running", self.helpers_running.len()));
         }
-        let heard = self.helpers_finished.max(self.woken_turns);
+        let heard = self.heard();
         if self.background_launches > heard {
             parts.push(format!("{} background launch(es) not reported back", self.background_launches - heard));
         }
@@ -626,6 +638,17 @@ fn launches_background_work(tool: &str, args: &Value) -> bool {
         "agent" => action == Some("spawn") && flag("wait") == Some(false),
         "run_command" => flag("background") == Some(true),
         "os" => action == Some("exec") && flag("background") == Some(true),
+        _ => false,
+    }
+}
+
+/// Whether a call stops a background command, in either arm's vocabulary: a
+/// stopped helper reports its own end (`subagent_complete`).
+fn stops_background_command(tool: &str, args: &Value) -> bool {
+    let is_command = |k: &str| args.get(k).and_then(Value::as_str).is_some_and(|id| id.starts_with("bg-"));
+    match tool {
+        "stop_task" => is_command("task_id"),
+        "os" => args.get("action").and_then(Value::as_str) == Some("kill"),
         _ => false,
     }
 }
@@ -1193,6 +1216,33 @@ mod recording_tests {
         let trace = record(&["kick it off"], vec![turn]).await;
         assert!(trace.final_response.content.contains("rates fell"), "{}", trace.final_response.content);
         assert_eq!(trace.turns.len(), 2);
+    }
+
+    /// A background command the model stopped is over: the run ends at the
+    /// owner's last turn instead of waiting out the settle cap for a report
+    /// the stop already gave.
+    #[tokio::test]
+    async fn a_background_command_the_model_stopped_is_not_waited_for() {
+        let turn = vec![
+            start("c1", "run_command", json!({"command": "sleep 120", "background": true})),
+            result("c1", "run_command", "Started in the background as bg-1a2b3c4d."),
+            start("s1", "stop_task", json!({"task_id": "bg-1a2b3c4d"})),
+            result("s1", "stop_task", "Stopped bg-1a2b3c4d"),
+            text(0, "Stopped it."),
+            complete(0),
+        ];
+        let begun = Instant::now();
+        let trace = record(&["start it, then stop it"], vec![turn]).await;
+        assert!(begun.elapsed() < Duration::from_secs(2), "{:?}", begun.elapsed());
+        assert!(!trace.final_response.content.contains("stopped waiting"), "{}", trace.final_response.content);
+    }
+
+    #[test]
+    fn stops_of_background_commands_in_either_vocabulary() {
+        assert!(stops_background_command("stop_task", &json!({"task_id": "bg-1a2b3c4d"})));
+        assert!(!stops_background_command("stop_task", &json!({"task_id": "h-7"})), "a helper reports its own end");
+        assert!(stops_background_command("os", &json!({"resource": "shell", "action": "kill", "session_id": "bg-1"})));
+        assert!(!stops_background_command("read_output", &json!({"task_id": "bg-1a2b3c4d"})));
     }
 
     /// With nothing started in the background the run ends at the owner's

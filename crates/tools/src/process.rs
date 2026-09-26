@@ -226,6 +226,8 @@ pub struct CommandExit {
     pub command: String,
     /// `None`: ended by a signal.
     pub exit_code: Option<i32>,
+    /// Ended by a stop (`stop_task`), not on its own.
+    pub stopped: bool,
     /// Everything it printed, stdout and stderr as they came.
     pub output: String,
 }
@@ -239,6 +241,7 @@ impl CommandExit {
     /// where the rest is.
     pub fn render(&self) -> String {
         let status = match self.exit_code {
+            _ if self.stopped => "was stopped".to_string(),
             Some(0) => "completed (exit code 0)".to_string(),
             Some(code) => format!("failed with exit code {code}"),
             None => "was ended by a signal".to_string(),
@@ -275,9 +278,11 @@ pub type ExitSink = Arc<dyn Fn(CommandExit) + Send + Sync>;
 struct Lifecycle {
     /// A call is waiting on it; it is nobody's background work yet.
     foreground: bool,
-    /// Told when it ends. Cleared by a stop the caller asked for: nobody
-    /// needs telling what they did themselves.
+    /// Told when it ends, however it ends: a stop included, so whatever
+    /// waits on the command hears that it is over.
     notify: Option<Caller>,
+    /// Ended by a stop (`kill_session`).
+    stopped: bool,
     ended: bool,
 }
 
@@ -408,7 +413,7 @@ impl ProcessRegistry {
             pending_stdout: Arc::default(),
             pending_stderr: Arc::default(),
             pending_raw: Arc::default(),
-            lifecycle: Arc::new(std::sync::Mutex::new(Lifecycle { foreground, notify, ended: false })),
+            lifecycle: Arc::new(std::sync::Mutex::new(Lifecycle { foreground, notify, stopped: false, ended: false })),
             stdin_tx: Some(stdin_tx),
             pty: None,
         });
@@ -442,7 +447,7 @@ impl ProcessRegistry {
             pending_stdout: Arc::default(),
             pending_stderr: Arc::default(),
             pending_raw: Arc::default(),
-            lifecycle: Arc::new(std::sync::Mutex::new(Lifecycle { foreground, notify, ended: false })),
+            lifecycle: Arc::new(std::sync::Mutex::new(Lifecycle { foreground, notify, stopped: false, ended: false })),
             stdin_tx: Some(stdin_tx),
             pty: Some(opened.control.clone()),
         });
@@ -529,7 +534,7 @@ impl ProcessRegistry {
     /// Read the session's output until it ends, then settle it: a
     /// foreground command's status goes to its call, a background one is
     /// kept for read_output and its caller is told. A stop (`kill_session`)
-    /// ends it the same way, with nobody told.
+    /// ends it the same way, and its caller is told it was stopped.
     async fn handle_process(
         self,
         mut child: Child,
@@ -602,15 +607,16 @@ impl ProcessRegistry {
         exit_tx: tokio::sync::oneshot::Sender<Option<std::process::ExitStatus>>,
     ) {
         let session_id = session.id.clone();
-        let (foreground, notify) = {
+        let (foreground, notify, stopped) = {
             let mut life = session.lifecycle();
             life.ended = true;
-            (life.foreground, life.notify.take())
+            (life.foreground, life.notify.take(), life.stopped)
         };
-        // A stopped session is already out of `running`; a foreground
-        // command's result goes to its call alone.
+        // A stopped session is already out of `running` and is kept all the
+        // same; a foreground command's result goes to its call alone.
         let removed = self.running.lock().await.remove(&session_id);
-        if let (Some(sess), false) = (removed, foreground) {
+        let kept = removed.or_else(|| stopped.then(|| session.clone()));
+        if let (Some(sess), false) = (kept, foreground) {
             let finished_sess = Arc::new(BackgroundSession {
                 id: sess.id.clone(),
                 pid: sess.pid,
@@ -637,6 +643,7 @@ impl ProcessRegistry {
                 task_id: session_id,
                 command: session.command.clone(),
                 exit_code,
+                stopped,
                 output: session.get_output().await,
             });
         }
@@ -725,15 +732,16 @@ impl ProcessRegistry {
         })
     }
 
-    /// Stop a running session. Its caller is not told it ended: the caller
-    /// asked for the stop, so a notification would only repeat it.
+    /// Stop a running session. It settles as any end does, at once: kept
+    /// for read_output, and its caller told it was stopped, so nothing that
+    /// waits on it waits past the stop.
     pub async fn kill_session(&self, id: &str) -> Result<(), String> {
         let mut running = self.running.lock().await;
         let Some(sess) = running.remove(id) else {
             drop(running);
             return Err(self.not_running(id).await);
         };
-        sess.lifecycle().notify = None;
+        sess.lifecycle().stopped = true;
         // The group dies by pid; the session's own task sees the end and
         // tidies up.
         kill_group(sess.pid);
@@ -1121,13 +1129,35 @@ mod group_tests {
         assert!(kept.exited && kept.get_output().await.contains("built 12 pages"));
     }
 
-    /// A stop the caller asked for is not reported back to it, and a
-    /// foreground command belongs to its call alone: neither is told.
+    /// A stopped background command reports its end at once, like any end:
+    /// whatever waits on it hears "stopped" within a second, not at its own
+    /// timeout, and read_output still finds it.
     #[tokio::test]
-    async fn a_stopped_or_foreground_command_tells_nobody() {
+    async fn a_stopped_command_tells_its_caller_at_once() {
         let (reg, mut rx) = reported();
-        let started = reg.spawn(sh("sleep 30"), "sleep 30", Spawn::Background(Some(caller())), false).await.unwrap();
+        let started = reg
+            .spawn(sh("echo tick 1; sleep 120"), "sleep 120", Spawn::Background(Some(caller())), false)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
         reg.kill_session(&started.session.id).await.unwrap();
+        let exit = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.expect("told within a second").expect("told");
+        assert_eq!(exit.task_id, started.session.id);
+        assert!(exit.stopped);
+        let body = exit.render();
+        assert!(
+            body.starts_with(&format!("Background command {} \"build the site\" was stopped.\nIts output:\ntick 1", started.session.id)),
+            "{body}"
+        );
+        let kept = reg.get_any_session(&started.session.id).await.expect("kept for read_output");
+        assert!(kept.exited && kept.get_output().await.contains("tick 1"));
+        assert!(reg.list_running().await.is_empty());
+    }
+
+    /// A foreground command belongs to its call alone: nobody else is told.
+    #[tokio::test]
+    async fn a_foreground_command_tells_nobody() {
+        let (reg, mut rx) = reported();
         let fg = reg.spawn(sh("echo done"), "echo done", Spawn::Foreground, false).await.unwrap();
         assert!(fg.exited.await.unwrap().is_some());
         assert!(reg.get_any_session(&fg.session.id).await.is_none(), "a foreground result is its call's alone");
@@ -1155,6 +1185,7 @@ mod group_tests {
             task_id: "bg-1".into(),
             command: "npm run dev".into(),
             exit_code: None,
+            stopped: false,
             output: format!("{}END", "x".repeat(5000)),
         };
         let body = exit.render();
