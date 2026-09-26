@@ -409,6 +409,103 @@ async fn an_overwrite_inside_the_jobs_folders_is_its_own_work() {
     assert_eq!(r.content, "RAN", "{}", r.content);
 }
 
+/// A capability rule the owner set for this employee on its settings page.
+fn owner_set(store: &db::Store, agent: &str, capability: &str, effect: Effect) {
+    let rule = Rule {
+        id: uuid::Uuid::new_v4().to_string(),
+        scope: Scope::Employee(agent.into()),
+        key: RuleKey::Capability(capability.into()),
+        field: None,
+        effect,
+        money: None,
+        source: RuleSource::Owner,
+        locked: false,
+        created_at: 0,
+    };
+    store.write_permission_rule(&rule, &Writer::Owner).unwrap();
+}
+
+/// fixtures/permissions/owner-chat-edit-is-consent.yaml: the owner typed
+/// the edit in his own chat, and his message is his consent, so replacing
+/// a file the employee didn't make runs with no card. A delete is not the
+/// edit he typed: it still asks.
+#[tokio::test]
+async fn the_owners_own_chat_request_is_consent_to_replace() {
+    let (_d, store) = store();
+    let (work, ran) = Act::new("work", None);
+    let reg = registry(&store, vec![work]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let theirs = format!("file:{}", dir.path().join("theirs.txt").display());
+    let mut c = ctx(&store, "admin");
+    c.owner_request = true;
+    let r = reg.execute(&c, "work", json!({ "overwrites": [theirs] })).await;
+    assert_eq!(r.content, "RAN", "{}", r.content);
+    let r = reg.execute(&c, "work", json!({ "overwrites": ["agent:Front Desk"] })).await;
+    assert_eq!(r.content, "RAN", "an employee the owner made, changed at his word: {}", r.content);
+    let r = reg.execute(&c, "work", json!({ "deletes": [theirs] })).await;
+    assert!(matches!(asked(&store, &r), AskCase::Irreversible { .. }), "{}", r.content);
+    assert_eq!(ran.load(Ordering::SeqCst), 2);
+}
+
+/// The same replacement nobody asked for in the owner's own chat still
+/// asks: an unattended run, a coworker, a chat channel, a visitor, and an
+/// owner-chat turn his message didn't start.
+#[tokio::test]
+async fn a_replacement_the_owner_did_not_ask_for_still_asks() {
+    use types::permissions::Door;
+    let (_d, store) = store();
+    let (work, ran) = Act::new("work", None);
+    let reg = registry(&store, vec![work]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let theirs = format!("file:{}", dir.path().join("theirs.txt").display());
+    let runs = [
+        (Origin::Workflow, Door::Workflow),
+        (Origin::System, Door::Schedule),
+        (Origin::System, Door::Heartbeat),
+        (Origin::Comm, Door::Coworker { from: "ops".into() }),
+        (Origin::Comm, Door::Chat),
+        (Origin::Visitor, Door::Chat),
+        (Origin::User, Door::Chat),
+    ];
+    for (origin, door) in runs {
+        let mut c = ctx(&store, "admin");
+        c.origin = origin;
+        c.door = door.clone();
+        let r = reg.execute(&c, "work", json!({ "overwrites": [theirs] })).await;
+        assert!(
+            matches!(asked(&store, &r), AskCase::Irreversible { .. }),
+            "{origin:?} through {door:?}: {}",
+            r.content
+        );
+    }
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+}
+
+/// The owner's settings stay his word over his chat: a capability he set
+/// to Blocked is refused and one he set to Needs approval asks, even for
+/// an edit he typed.
+#[tokio::test]
+async fn the_owners_settings_outrank_his_chat_request() {
+    let (_d, store) = store();
+    let dir = tempfile::tempdir().unwrap();
+    let theirs = format!("file:{}", dir.path().join("theirs.txt").display());
+    owner_set(&store, "blocked", "file", Effect::Deny);
+    owner_set(&store, "supervised", "file", Effect::Ask);
+    let (work, ran) = Act::new("work", Some("file"));
+    let reg = registry(&store, vec![work]).await;
+
+    let mut c = ctx(&store, "blocked");
+    c.owner_request = true;
+    let r = reg.execute(&c, "work", json!({ "overwrites": [theirs] })).await;
+    assert!(r.is_error && r.parked_ask.is_none() && r.content.contains("permission is off"), "{}", r.content);
+
+    let mut c = ctx(&store, "supervised");
+    c.owner_request = true;
+    let r = reg.execute(&c, "work", json!({ "overwrites": [theirs] })).await;
+    assert!(matches!(asked(&store, &r), AskCase::AskRule { .. }), "{}", r.content);
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+}
+
 // ── Case 4: outside its job ─────────────────────────────────────────────
 
 /// fixtures/permissions/outside-its-job-asks.yaml: a bookkeeper with no web

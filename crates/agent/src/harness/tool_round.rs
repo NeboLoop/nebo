@@ -40,6 +40,8 @@ pub(crate) struct RunToolScope<'a> {
     pub grant: &'a Arc<types::permissions::Grant>,
     /// The entry the run came through.
     pub door: &'a types::permissions::Door,
+    /// The owner's own chat message started the turn (`ToolContext::owner_request`).
+    pub owner_request: bool,
     /// The run's input arrived from outside (a workflow started by an
     /// inbound payload).
     pub untrusted_input: bool,
@@ -75,6 +77,7 @@ impl RunToolScope<'_> {
             handoff_depth,
             grant,
             door,
+            owner_request,
             untrusted_input,
             run_cwd,
             cancel_token,
@@ -108,6 +111,7 @@ impl RunToolScope<'_> {
             handoff_depth,
             grant: Some(grant.clone()),
             door: door.clone(),
+            owner_request,
             answered_ask: None,
             untrusted_input,
             judgement: None,
