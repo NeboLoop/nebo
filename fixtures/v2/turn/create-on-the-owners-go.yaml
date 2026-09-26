@@ -9,9 +9,9 @@ description: |
   The create tool drafts first and makes the draft on a second call with
   its draft_id. When the owner's latest message already told the employee
   to create it, the second call follows in the same turn and nothing is
-  asked again in chat. The owner never saw the job's line before saying it,
-  so it is not consent to the job: whatever the new employee needs beyond
-  what its creator holds goes to the owner as the one approval card
+  asked again in chat. His own request in his own chat is his consent (the
+  one rule the permission check applies, ToolContext::owner_request), so the
+  new employee gets the whole drafted job and no approval card is raised
   (PRD-Permissions §4.3, technical design §2.12.6-2.12.7).
   The owner's words are kept as he typed them; the business is renamed.
   v2 only: the rewrite's create_employee; there is no arm A twin.
@@ -61,7 +61,6 @@ ideal_behavior:
     create_employee, then create_employee with its name, description and
     workflows), says the one line of what it will be able to do and asks to
     create it. Turn two, on "just create it now": create_employee(draft_id)
-    at once, then a short confirmation that names anything still waiting on
-    the owner's approval card. If turn one asked something else instead of
+    at once, then a short confirmation of what it can do. If turn one asked something else instead of
     drafting, turn two drafts and creates in the same turn, with no question
     between the two calls.

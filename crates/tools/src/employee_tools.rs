@@ -192,7 +192,8 @@ impl Kind {
                 - `automations` replaces ALL its workflows. To change some, use add_automations, remove_automations, update_automation or toggle_automation.\n\
                 - `input_values` sets the values its workflows read; `inputs` changes the form that asks for them.\n\
                 - `new_name` renames it.\n\
-                - An edit that adds to its job drafts first: tell the owner only what is new, and on their yes (or at once when they already told you to make the change) call again with only the `draft_id`."
+                - The owner's own request in this chat is their yes: a change they asked for is made in the one call, whatever it adds to its job. Don't make one they didn't ask for without asking.\n\
+                - Anywhere else, an edit that adds to its job drafts first: tell the owner only what is new, and on their yes call again with only the `draft_id`."
                 .to_string(),
             Kind::DeleteEmployee => "Permanently deletes an employee: its record, workflows, schedules and the files it was made with.\n\
                 - It can't be undone; only when the owner asked for it."

@@ -317,6 +317,13 @@ fn chat(reads: Vec<&'static str>) -> Chat {
 }
 
 impl Chat {
+    /// The turn is the owner's own message in his own chat, as the harness
+    /// marks it (`owner_speaks`).
+    fn owner_turn(mut self) -> Self {
+        self.ctx.owner_request = true;
+        self
+    }
+
     /// A call to one of the employee tools, as the registry runs it.
     async fn call(&self, tool: &str, input: serde_json::Value) -> tools::ToolResult {
         use tools::registry::DynTool;
@@ -388,7 +395,7 @@ async fn chat_create_grants_only_after_an_owner_message() {
     let id = c.agent_id("Invoice Chaser");
     assert_eq!(employee_caps(&c.store, &id), vec!["mail"]);
     assert!(resolve_grant(&c.store, &id, None).ceiling.is_some());
-    assert!(unasked.content.contains("Waiting on one card"), "{}", unasked.content);
+    assert!(unasked.content.contains("One approval card went to the owner"), "{}", unasked.content);
     // A draft is acted on once.
     let again = c.call("create_employee", json!({ "draft_id": Chat::draft_of(&drafted) })).await;
     assert!(again.is_error && again.content.contains("already used"), "{}", again.content);
@@ -408,12 +415,12 @@ async fn chat_create_grants_only_after_an_owner_message() {
 }
 
 /// The owner's "just create it now" came before the draft: the create runs
-/// in the same turn with no second ask in chat. The owner never saw the line
-/// before saying it, so it is not consent to the job: the new employee gets
-/// what its creator holds and the rest is the one approval card.
+/// in the same turn with no second ask in chat. His own request in his own
+/// chat is his yes (`ToolContext::owner_request`), so the new employee gets
+/// the whole drafted job as his, with no ceiling and no card.
 #[tokio::test]
-async fn an_owners_go_before_the_draft_creates_at_once_with_one_card() {
-    let c = chat(vec!["mail", "calendar"]);
+async fn an_owners_go_before_the_draft_creates_the_whole_job_at_once() {
+    let c = chat(vec!["mail", "calendar"]).owner_turn();
     c.says_at("just create it now", Some(&json!({ db::OWNER_MARK: true }).to_string()), -5);
     let drafted = c
         .call("create_employee", json!({ "name": "invoice-chaser", "description": "Reads the inbox and books follow-ups." }))
@@ -428,14 +435,15 @@ async fn an_owners_go_before_the_draft_creates_at_once_with_one_card() {
         "the draft tells the model to create at once on the owner's go: {}",
         drafted.content
     );
+    assert!(!drafted.content.contains("card"), "no card is promised before one exists: {}", drafted.content);
     let created = c.call("create_employee", json!({ "draft_id": draft_id })).await;
     assert!(!created.is_error, "{}", created.content);
     let id = c.agent_id("Invoice Chaser");
-    assert_eq!(employee_caps(&c.store, &id), vec!["mail"], "only what the creator holds");
-    let ceiling = c.store.employee_ceiling(&id).unwrap().expect("the extras wait on the owner");
-    assert!(!ceiling.ask_id.is_empty(), "the calendar is one approval card");
-    assert!(created.content.contains("has not said yes to this line"), "{}", created.content);
-    assert!(created.content.contains("Waiting on one card"), "{}", created.content);
+    assert_eq!(employee_caps(&c.store, &id), vec!["calendar", "mail"], "the whole drafted job");
+    assert!(c.store.employee_ceiling(&id).unwrap().is_none(), "no ceiling");
+    assert!(c.store.open_permission_asks(None).unwrap().is_empty(), "no card");
+    assert!(created.content.contains("The owner agreed to this job"), "{}", created.content);
+    assert!(!created.content.contains("card"), "{}", created.content);
 }
 
 /// Another employee's "yes", or one from Slack, Discord or a loop, is not
@@ -478,7 +486,7 @@ async fn a_yes_from_anyone_but_the_owner_is_no_consent() {
         "it works under its creator"
     );
     assert!(
-        created.content.contains("Waiting on one card"),
+        created.content.contains("One approval card went to the owner"),
         "{}",
         created.content
     );
@@ -536,6 +544,82 @@ async fn job_edit_surfaces_only_added_needs() {
     // An edit that adds nothing runs at once.
     let plain = c.call("update_employee", json!({ "name": "Order Support", "description": "Replies by email." })).await;
     assert!(!plain.is_error && plain.payload.is_none(), "{}", plain.content);
+}
+
+/// A blank employee, as the Employees page's blank create makes it: no
+/// description, no instructions, no job.
+fn blank(c: &Chat, name: &str) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    c.store.create_agent(&id, None, name, "", "", "{}", None, None).unwrap();
+    id
+}
+
+/// correction-agent-update-description and -instructions: the owner dictates
+/// a blank employee's new description or instructions word for word. His own
+/// message is his consent (`ToolContext::owner_request`, the one rule the
+/// permission check already applies): the edit lands in the one call, what
+/// it adds to the job is granted as his, and nothing is drafted, asked again
+/// or put on a card.
+#[tokio::test]
+async fn an_edit_the_owner_dictates_is_made_in_one_call() {
+    let cases = [
+        ("description", "Answers inbound calls for NeboAI and takes messages for the team.", "description updated"),
+        (
+            "instructions",
+            "You answer inbound calls for NeboAI. Use only what is in local memory; never search the web. Never \
+             transfer to a person. Take the caller's name, direct number and company, and say we will call back as \
+             soon as possible.",
+            "instructions (AGENT.md body) replaced",
+        ),
+    ];
+    for (field, text, lands) in cases {
+        let c = chat(vec!["telephony"]).owner_turn();
+        let id = blank(&c, "front-desk-t1");
+        let mut edit = json!({ "name": "front-desk-t1" });
+        edit[field] = json!(text);
+        let r = c.call("update_employee", edit).await;
+        assert!(!r.is_error, "{field}: {}", r.content);
+        assert!(r.payload.is_none(), "{field}: nothing is drafted: {}", r.content);
+        assert!(r.content.contains(lands), "{field}: the result names what changed: {}", r.content);
+        for second_step in ["draft_id", "Nothing is changed yet", "confirm", "card"] {
+            assert!(!r.content.contains(second_step), "{field}: no second step ({second_step}): {}", r.content);
+        }
+        let row = c.store.get_agent(&id).unwrap().unwrap();
+        match field {
+            "description" => assert_eq!(row.description, text),
+            _ => assert!(row.agent_md.contains(text), "{field}: {}", row.agent_md),
+        }
+        assert_eq!(employee_caps(&c.store, &id), vec!["telephony"], "{field}: the addition is granted");
+        let sources: Vec<RuleSource> =
+            c.store.permission_rules_in(&Scope::Employee(id)).unwrap().into_iter().map(|r| r.source).collect();
+        assert_eq!(sources, vec![RuleSource::JobEdit], "{field}: as the owner's job edit");
+        assert!(c.store.open_permission_asks(None).unwrap().is_empty(), "{field}: no card");
+    }
+}
+
+/// The same edit in a run the owner didn't start with his request (an
+/// employee's own work, a workflow, a coworker): it drafts, and nothing
+/// changes before his yes. Made without it, the edit lands, the addition is
+/// one card, and the result says a card went to the owner only because one
+/// did.
+#[tokio::test]
+async fn an_edit_nobody_asked_for_drafts_and_its_card_is_named() {
+    let c = chat(vec!["telephony"]);
+    let id = blank(&c, "front-desk-t1");
+    let edit = json!({ "name": "front-desk-t1", "description": "Answers inbound calls." });
+    let drafted = c.call("update_employee", edit).await;
+    assert!(!drafted.is_error, "{}", drafted.content);
+    assert!(drafted.content.contains("Nothing is changed yet"), "{}", drafted.content);
+    assert!(!drafted.content.contains("card"), "no card is promised before one exists: {}", drafted.content);
+    assert_eq!(c.store.get_agent(&id).unwrap().unwrap().description, "", "nothing changes before the yes");
+    assert!(c.store.open_permission_asks(None).unwrap().is_empty());
+
+    let applied = c.call("update_employee", json!({ "draft_id": Chat::draft_of(&drafted) })).await;
+    assert!(!applied.is_error, "{}", applied.content);
+    assert_eq!(c.store.get_agent(&id).unwrap().unwrap().description, "Answers inbound calls.");
+    assert!(employee_caps(&c.store, &id).is_empty(), "an employee never widens another");
+    assert_eq!(c.store.open_permission_asks(None).unwrap().len(), 1, "the addition is one card");
+    assert!(applied.content.contains("One approval card went to the owner"), "{}", applied.content);
 }
 
 #[test]

@@ -471,8 +471,10 @@ pub struct JobGrant<'a> {
     pub agent_id: &'a str,
     pub name: &'a str,
     pub needs: &'a Needs,
+    /// The draft it came from; empty for an edit made at once on the
+    /// owner's own request.
     pub draft_id: &'a str,
-    /// The owner said yes to this draft's line.
+    /// The owner said yes to this job.
     pub consented: bool,
     /// A new employee (held under its creator until the owner answers);
     /// otherwise an edit to an existing one, which only the owner widens.
@@ -488,9 +490,12 @@ pub type JobConsentCell = std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc
 /// whether the owner said yes, and writing the job.
 #[async_trait::async_trait]
 pub trait JobConsent: DescriptionReader {
-    /// Whether an owner message arrived in the draft's chat after its line
-    /// was shown: the owner's "yes, create it".
-    fn owner_consented(&self, draft_id: &str) -> bool;
+    /// Whether the owner said yes to this job. His own message in his own
+    /// chat started this turn (`ToolContext::owner_request`, the signal the
+    /// permission check reads for what he asked to have changed): what he
+    /// asked for is his yes. Or, for a draft, an owner message arrived in its chat after its
+    /// line was shown.
+    fn owner_consented(&self, ctx: &ToolContext, draft_id: Option<&str>) -> bool;
     /// Grant a job. With the owner's consent every need becomes a standing
     /// allow; without it the employee whose run this is hands over no more
     /// than it holds, and the rest goes to the owner as one card.
