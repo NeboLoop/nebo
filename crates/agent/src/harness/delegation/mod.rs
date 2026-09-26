@@ -1943,6 +1943,43 @@ mod tests {
         assert!(_child.request.cancel.is_cancelled());
     }
 
+    /// `stop_task` on a running helper: within a second the owner's screen
+    /// hears it ended (not successfully), its parent's conversation says
+    /// "stopped", and it no longer counts as running. Nothing waits out a
+    /// timeout for a helper that was stopped.
+    #[tokio::test]
+    async fn a_stopped_helper_reports_stopped_within_a_second() {
+        let mut rig = Rig::new(FOREGROUND_BUDGET);
+        let key = "agent:bookkeeper:web";
+        let owner = rig.owner_turn(key);
+        let id = task_id_of(&rig.helpers.delegate(&owner, None, &[], &call("Long job.", None)).await.unwrap());
+        let _child = rig.next_turn().await;
+        assert_eq!(rig.helpers.stop(key, &id).unwrap(), format!("Stopping helper {id}."));
+        let done = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let ev = rig.ui.recv().await.expect("the helper's events");
+                if ev.event.event_type == ai::StreamEventType::SubagentComplete {
+                    return ev;
+                }
+            }
+        })
+        .await
+        .expect("the stop is heard within a second");
+        assert_eq!(done.parent_session_key, key);
+        assert_eq!(done.event.widgets.as_ref().map(|w| w["success"].clone()), Some(serde_json::json!(false)), "{:?}", done.event);
+        // The row follows the event at once.
+        for _ in 0..20 {
+            if !rig.notification_rows(key).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let rows = rig.notification_rows(key);
+        assert!(rows.len() == 1 && rows[0].contains(&format!("helper {id} \"read the ledger\": stopped")), "{rows:?}");
+        assert!(!rig.helpers.list(key).iter().any(|h| h.running));
+        assert!(rig.wake.try_recv().is_err(), "a stopped helper starts no turn");
+    }
+
     #[tokio::test]
     async fn a_running_helper_hears_a_message_and_one_landing_late_gets_a_turn() {
         let mut rig = Rig::new(FOREGROUND_BUDGET);
