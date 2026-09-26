@@ -214,6 +214,44 @@ pub(crate) fn mid_turn_message_landed(fresh: &[ChatMessage], seen: &[ChatMessage
         .any(|m| m.role == "user" && arrived_mid_turn(m).is_some())
 }
 
+/// The metadata key on a stored reply naming the last row its call was
+/// built from.
+pub(crate) const HEARD_THROUGH: &str = "heardThrough";
+
+/// The conversation as each call heard it. A row stored while a call was in
+/// flight (the owner's message queued into the running turn, a notification)
+/// was not in that call, yet it is stored before the call's answer; the
+/// model reads it after that answer and the answer's tool results, as new,
+/// never before an answer that could not have seen it. Rows stay stored in
+/// the order they arrived; only what the model reads is ordered.
+pub(crate) fn order_as_heard(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let mut i = 0;
+    while i < messages.len() {
+        let heard = (messages[i].role == "assistant")
+            .then(|| heard_through(&messages[i]))
+            .flatten()
+            .and_then(|id| messages[..i].iter().position(|m| m.id == id));
+        let Some(heard) = heard else {
+            i += 1;
+            continue;
+        };
+        let unheard = i - heard - 1;
+        let mut end = i + 1;
+        while end < messages.len() && messages[end].role == "tool" {
+            end += 1;
+        }
+        messages[heard + 1..end].rotate_left(unheard);
+        i = end - unheard;
+    }
+    messages
+}
+
+/// The last row the call that wrote `reply` was built from.
+fn heard_through(reply: &ChatMessage) -> Option<String> {
+    let meta: serde_json::Value = serde_json::from_str(reply.metadata.as_deref()?).ok()?;
+    meta.get(HEARD_THROUGH)?.as_str().map(str::to_string)
+}
+
 /// The taint the parent's messages and the notifications in this thread
 /// carry: the run that reads them has read their content.
 pub(crate) fn received_taint(messages: &[ChatMessage]) -> Vec<types::provenance::ProvenanceClass> {
@@ -634,6 +672,26 @@ mod tests {
             token_estimate: None,
             html: None,
         }
+    }
+
+    /// Rows stored while a call was in flight read after its answer and the
+    /// answer's tool results; a reply that heard everything moves nothing.
+    #[test]
+    fn rows_a_call_never_heard_read_after_its_answer() {
+        let reply = |id: &str, heard: &str| ChatMessage {
+            metadata: Some(serde_json::json!({ HEARD_THROUGH: heard }).to_string()),
+            ..make_msg(id, "assistant", id)
+        };
+        let rows = vec![
+            make_msg("ask", "user", "ask"),
+            make_msg("update", "user", "update"),
+            reply("call", "ask"),
+            make_msg("result", "tool", "result"),
+            make_msg("question", "user", "question"),
+            reply("answer", "update"),
+        ];
+        let read: Vec<String> = order_as_heard(rows).into_iter().map(|m| m.id).collect();
+        assert_eq!(read, ["ask", "call", "result", "update", "answer", "question"]);
     }
 
     /// The owner's words are stored whole, however long: no summary stands

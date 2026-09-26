@@ -109,9 +109,7 @@ impl Thread<'_> {
     }
 
     /// Every `*-RESULT` word the thread has brought in and the model has not
-    /// said yet, in order, once. A row that lands while a call is in flight
-    /// is stored before that call's answer, so "since the last answer"
-    /// would miss it; a model reads the whole thread.
+    /// said yet, in order, once: a model reads the whole thread.
     fn unreported_results(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for m in self.req.messages.iter().filter(|m| m.role != "assistant") {
