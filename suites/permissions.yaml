@@ -23,6 +23,7 @@ fixtures:
   - ../fixtures/permissions/first-message-to-new-recipient-asks.yaml
   - ../fixtures/permissions/reply-in-thread-does-not-ask.yaml
   - ../fixtures/permissions/delete-not-its-own-asks.yaml
+  - ../fixtures/permissions/owner-chat-edit-is-consent.yaml
   - ../fixtures/permissions/outside-its-job-asks.yaml
   - ../fixtures/permissions/send-after-hostile-page-asks.yaml
   # Growth: "Allow always" and job edits (PRD-Permissions §4.5, §4.3)

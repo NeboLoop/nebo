@@ -212,6 +212,12 @@ pub struct ToolContext {
     /// heartbeat, coworker, voice, MCP, the local API). Recorded with every
     /// decision.
     pub door: types::permissions::Door,
+    /// The owner's own message, in the owner's own chat, started this turn:
+    /// the call serves his request, so his words are his consent to
+    /// replacing what he asked to have changed. Set only by the turn
+    /// (`owner_speaks`); every other run, helper, coworker, channel,
+    /// visitor, caller and unattended door leaves it false.
+    pub owner_request: bool,
     /// Engine-set only: the owner already answered the ask this exact call
     /// parked on (a workflow resuming the approved call). The check still
     /// applies the hard limits, the ceiling and deny rules.

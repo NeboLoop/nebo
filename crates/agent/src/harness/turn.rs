@@ -999,6 +999,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             handoff_depth: cx.request.seat.handoff_depth,
             grant: &cx.grant,
             door: &cx.request.seat.door,
+            owner_request: owner_speaks(&cx.request),
             untrusted_input: cx.workflow().is_some_and(|m| m.tainted),
             run_cwd: cx.request.seat.cwd.as_deref(),
             channel_ctx: cx.request.delivery.channel_ctx.as_ref(),
@@ -3416,6 +3417,73 @@ mod tests {
         assert!(model.side_call("owner_recap").await.is_none(), "no owner, no recap");
         run_turn(&h, owner("Anything new?")).await;
         assert!(model.side_call("owner_recap").await.is_some(), "the owner's turn is recapped");
+    }
+
+    /// A tool that replaces the owner's price list, which the employee
+    /// didn't make, and counts the calls that ran.
+    struct Replace(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tools::registry::DynTool for Replace {
+        fn name(&self) -> &str {
+            "replace"
+        }
+        fn description(&self) -> String {
+            "replaces a file".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn should_defer(&self) -> bool {
+            false
+        }
+        fn effects(&self, _input: &serde_json::Value) -> types::permissions::CallEffects {
+            types::permissions::CallEffects {
+                overwrites: vec!["file:/srv/owner/prices.md".into()],
+                publishes: types::permissions::Knowable::No,
+                ..Default::default()
+            }
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { tools::ToolResult::ok("replaced") })
+        }
+    }
+
+    /// The edit the owner types in his own chat runs with no card: his
+    /// message is his consent. The same edit asked by a coworker or a
+    /// schedule parks on the owner.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_owners_chat_message_is_consent_to_the_edit_it_asks_for() {
+        use std::sync::atomic::Ordering;
+        let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let automatic = |mut req: TurnRequest| {
+            req.seat.mode = Some(Mode::Automatic);
+            req
+        };
+        let mut coworker = automatic(owner("Fix the price list"));
+        coworker.seat.origin = tools::Origin::Comm;
+        coworker.seat.door = types::permissions::Door::Coworker { from: "sales".into() };
+        let mut schedule = automatic(owner("Fix the price list"));
+        schedule.seat.origin = tools::Origin::System;
+        schedule.seat.door = types::permissions::Door::Schedule;
+        for req in [coworker, schedule] {
+            let model = Scripted::new(vec![Step::Call("replace", serde_json::json!({})), Step::Say("Asked.")]);
+            let h = harness_with(&model, vec![Box::new(Replace(ran.clone()))]).await;
+            run_turn(&h, req).await;
+            let result = model.calls()[1].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+            assert!(result.contains("Waiting for the owner to allow"), "{result}");
+        }
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "nobody but the owner consents");
+        let model = Scripted::new(vec![Step::Call("replace", serde_json::json!({})), Step::Say("Fixed.")]);
+        let h = harness_with(&model, vec![Box::new(Replace(ran.clone()))]).await;
+        run_turn(&h, automatic(owner("Fix the price list"))).await;
+        let result = model.calls()[1].messages.last().unwrap().tool_results.as_ref().unwrap().to_string();
+        assert_eq!(ran.load(Ordering::SeqCst), 1, "{result}");
+        assert!(result.contains("replaced"), "{result}");
     }
 
     /// The recap forks the turn's last request, extended by the answer, so

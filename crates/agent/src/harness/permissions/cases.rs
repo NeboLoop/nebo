@@ -53,6 +53,9 @@ pub struct Facts<'a> {
     pub outside_source: Option<&'a str>,
     /// The call's input (the job's folders are matched on it).
     pub input: &'a serde_json::Value,
+    /// The owner's own chat message started the turn: replacing what he
+    /// asked to have changed is his request, not case 3.
+    pub owner_request: bool,
 }
 
 /// A call the code could not decide: whether it publishes, or speaks for
@@ -190,7 +193,9 @@ fn known(recipient: &str, rules: &RuleSet, f: &Facts<'_>) -> bool {
 }
 
 /// Case 3: deleting what the employee didn't create, or replacing it
-/// outside the folders its job works in.
+/// outside the folders its job works in. The owner asking for the change
+/// in his own chat is his consent to the replacement: he is not asked
+/// again for the edit he just typed. A delete still asks.
 pub fn irreversible(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> Option<AskCase> {
     // "Allow always" on an earlier ask for this key and field.
     if rules.answered_always(t) {
@@ -206,6 +211,9 @@ pub fn irreversible(t: &Target, rules: &RuleSet, f: &Facts<'_>) -> Option<AskCas
             folders.iter().any(|folder| abs(Path::new(p)).starts_with(abs(folder)))
         })
     };
+    if f.owner_request {
+        return None;
+    }
     t.effects
         .overwrites
         .iter()
@@ -273,6 +281,7 @@ pub struct Gathered {
     pub created: CreatedLedger,
     pub thread: Option<ThreadRef>,
     pub outside_source: Option<String>,
+    pub owner_request: bool,
 }
 
 impl Gathered {
@@ -303,7 +312,7 @@ impl Gathered {
         } else {
             None
         };
-        Gathered { spend, company, counterparties, created, thread, outside_source }
+        Gathered { spend, company, counterparties, created, thread, outside_source, owner_request: cx.ctx.owner_request }
     }
 
     pub fn facts<'a>(&'a self, taint: &'a [ProvenanceClass], input: &'a serde_json::Value) -> Facts<'a> {
@@ -316,6 +325,7 @@ impl Gathered {
             thread: self.thread.as_ref(),
             outside_source: self.outside_source.as_deref(),
             input,
+            owner_request: self.owner_request,
         }
     }
 }
