@@ -40,6 +40,7 @@ regex = { workspace = true }
 which = "7"
 sysinfo = { workspace = true }
 turbovec = "0.5"
+rayon = "1"
 
 # turbovec's ndarray uses the BLAS backend but never `use`s its provider crate,
 # so rustc drops blas-src (and its `-framework Accelerate` link directive) from

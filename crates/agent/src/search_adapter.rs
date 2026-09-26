@@ -4,40 +4,69 @@ use std::sync::{Arc, OnceLock, RwLock};
 use db::Store;
 use tools::bot_tool::{HybridSearchResult, HybridSearcher, MemoryEmbedder};
 use tracing::{debug, info};
-use turbovec::IdMapIndex;
 
-use crate::search;
+use crate::search::{self, VectorIndex};
 
-/// Process-wide per-user TurboVec index cache. Module-level (not per-adapter)
-/// so the ONE chunk+embed pathway (`memory::embed_memories`) can invalidate a
-/// user's entry when it persists new vectors — a per-instance cache went stale
-/// within a server lifetime, making freshly stored memories invisible to
-/// vector recall until restart. One Store per process, so keying by
-/// memory-scope user_id is unambiguous (tests use unique user ids).
-fn index_cache() -> &'static RwLock<HashMap<String, Arc<IdMapIndex>>> {
-    static CACHE: OnceLock<RwLock<HashMap<String, Arc<IdMapIndex>>>> = OnceLock::new();
+/// Process-wide TurboVec indexes, ONE per embedding model, each shared by
+/// every memory scope and updated in place for the process lifetime (see
+/// [`VectorIndex`]). Module-level (not per-adapter) so the ONE chunk+embed
+/// pathway (`memory::embed_memories`) can mark a scope stale when it persists
+/// new vectors — a per-instance cache went stale within a server lifetime,
+/// making freshly stored memories invisible to vector recall until restart.
+fn index_cache() -> &'static RwLock<HashMap<String, Arc<VectorIndex>>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, Arc<VectorIndex>>>> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-/// Drop a user's cached vector index so the next search rebuilds it from the
-/// DB. Called by `memory::embed_memories` — the single point every write path
-/// (auto-extraction, explicit tool store, flush, backfill) funnels through.
-/// Rebuilds are cheap: TurboVec quantization is data-oblivious (no training),
-/// so a rebuild is one SQLite scan of the user's embeddings.
-pub fn invalidate_index(user_id: &str) {
-    if let Ok(mut map) = index_cache().write() {
-        if map.remove(user_id).is_some() {
-            debug!(user_id, "invalidated TurboVec index after embed");
+/// The long-lived index for `model`, created empty on first use.
+fn model_index(model: &str) -> Arc<VectorIndex> {
+    if let Ok(map) = index_cache().read() {
+        if let Some(idx) = map.get(model) {
+            return idx.clone();
         }
     }
+    let mut map = index_cache()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    map.entry(model.to_string()).or_default().clone()
+}
+
+/// Tell the cached indexes that a scope's vectors changed in the DB, so its
+/// next search reconciles them in place (adds new chunk ids, removes deleted
+/// ones — never a rebuild). Called by `memory::embed_memories` — the single
+/// point every write path (auto-extraction, explicit tool store, flush,
+/// backfill) funnels through — and by every delete path.
+pub fn invalidate_index(user_id: &str) {
+    if let Ok(map) = index_cache().read() {
+        for idx in map.values() {
+            idx.mark_stale(user_id);
+        }
+    }
+}
+
+/// Load (first use) or reconcile (stale) `user_id`'s scope of the `model`
+/// index. Blocking SQLite scan + quantization, so off the runtime workers: run
+/// inline it pins a runtime worker, and on a single-worker runtime (1-vCPU
+/// cloud pod) that starves the HTTP accept loop until the liveness probe
+/// kills the healthy server (2026-07-22 incident).
+async fn sync_scope(store: &Arc<Store>, model: &str, user_id: &str) -> Arc<VectorIndex> {
+    let index = model_index(model);
+    let (idx, store, uid, model) = (
+        index.clone(),
+        store.clone(),
+        user_id.to_string(),
+        model.to_string(),
+    );
+    let _ = tokio::task::spawn_blocking(move || idx.sync_scope(&store, &uid, &model)).await;
+    index
 }
 
 /// Boot pre-warm so the first chat's recall pays neither cold cost:
 /// 1. one embedding call to spin up the provider (a cold provider — local
 ///    model load / gateway spin-up — dominated the observed ~19s first
 ///    recall; steady-state calls are ~hundreds of ms), and
-/// 2. eager per-user ANN index builds for every user with stored embeddings
-///    (otherwise built lazily inside the first search).
+/// 2. an eager load of every scope with stored embeddings into the model's
+///    ANN index (otherwise loaded lazily inside the scope's first search).
 /// Called after the boot backfill completes — including when the backfill had
 /// nothing to do.
 pub async fn prewarm(store: &Arc<Store>, provider: &dyn ai::EmbeddingProvider) {
@@ -59,36 +88,18 @@ pub async fn prewarm(store: &Arc<Store>, provider: &dyn ai::EmbeddingProvider) {
             return;
         }
     };
-    let mut built = 0usize;
+    let scopes = users.len();
     for user_id in users {
-        // spawn_blocking: the load is a full SQLite embedding scan plus
-        // per-vector quantization — tens of seconds of sync CPU for a large
-        // user. Run inline it pins a runtime worker, and on a single-worker
-        // runtime (1-vCPU cloud pod) that starves the HTTP accept loop until
-        // the liveness probe kills the healthy server (2026-07-22 incident).
-        let store_b = store.clone();
-        let model_b = model.to_string();
-        let uid = user_id.clone();
-        let index = tokio::task::spawn_blocking(move || {
-            search::load_vector_index(&store_b, &uid, &model_b)
-        })
-        .await
-        .ok()
-        .flatten();
-        if let Some(index) = index {
-            if let Ok(mut map) = index_cache().write() {
-                map.insert(user_id, Arc::new(index));
-                built += 1;
-            }
-        }
+        sync_scope(store, model, &user_id).await;
     }
-    info!(indexes = built, "vector index prewarm complete");
+    info!(scopes, "vector index prewarm complete");
 }
 
 /// Adapter that bridges agent::search::hybrid_search to the HybridSearcher trait
 /// defined in the tools crate, avoiding circular dependencies.
-/// Lazy-loads a TurboVec index per user_id on first search (boot prewarm
-/// usually gets there first); the shared cache is refreshed on embed writes.
+/// Lazy-loads a user_id's scope into the model's TurboVec index on first
+/// search (boot prewarm usually gets there first); embed and delete writes
+/// mark the scope stale and its next search reconciles it in place.
 pub struct HybridSearchAdapter {
     store: Arc<Store>,
     embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
@@ -105,32 +116,9 @@ impl HybridSearchAdapter {
         }
     }
 
-    async fn get_or_load_index(&self, user_id: &str) -> Option<Arc<IdMapIndex>> {
-        // Fast path: index already loaded
-        if let Ok(map) = index_cache().read() {
-            if let Some(idx) = map.get(user_id) {
-                return Some(idx.clone());
-            }
-        }
-
-        // Slow path: load from DB — sync scan + quantization, off the runtime
-        // workers for the same reason as prewarm() above.
-        let model = self.embedding_provider.as_ref()?.id().to_string();
-        let store = self.store.clone();
-        let uid = user_id.to_string();
-        let index =
-            tokio::task::spawn_blocking(move || search::load_vector_index(&store, &uid, &model))
-                .await
-                .ok()
-                .flatten()?;
-        let index = Arc::new(index);
-
-        if let Ok(mut map) = index_cache().write() {
-            debug!(user_id, "cached TurboVec index");
-            map.insert(user_id.to_string(), index.clone());
-        }
-
-        Some(index)
+    async fn get_or_load_index(&self, user_id: &str) -> Option<Arc<VectorIndex>> {
+        let model = self.embedding_provider.as_ref()?.id();
+        Some(sync_scope(&self.store, model, user_id).await)
     }
 }
 
@@ -156,7 +144,6 @@ impl HybridSearcher for HybridSearchAdapter {
                 self.embedding_provider.as_deref();
 
             let index = self.get_or_load_index(user_id).await;
-            let index_ref = index.as_deref();
 
             let results = search::hybrid_search(
                 &self.store,
@@ -164,7 +151,7 @@ impl HybridSearcher for HybridSearchAdapter {
                 query,
                 user_id,
                 &config,
-                index_ref,
+                index,
             )
             .await;
 
@@ -295,5 +282,144 @@ mod tests {
             "same-process vector search must see the newly embedded memory \
              (stale index cache); got: {results:?}"
         );
+    }
+
+    /// Same constant vector for any text, under a caller-chosen model id so a
+    /// test owns its model's process-wide index.
+    struct NamedEmbedder(&'static str);
+
+    #[async_trait::async_trait]
+    impl ai::EmbeddingProvider for NamedEmbedder {
+        fn id(&self) -> &str {
+            self.0
+        }
+        fn dimensions(&self) -> usize {
+            8
+        }
+        async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, ai::ProviderError> {
+            Ok(texts.iter().map(|_| vec![1.0; 8]).collect())
+        }
+    }
+
+    async fn store_and_embed(
+        store: &Arc<Store>,
+        provider: &dyn ai::EmbeddingProvider,
+        user_id: &str,
+        key: &str,
+    ) -> Vec<u64> {
+        store
+            .upsert_memory("tacit/general", key, &format!("{key} value"), None, None, user_id)
+            .unwrap();
+        crate::memory::embed_memories(
+            store,
+            provider,
+            &[("tacit/general".to_string(), key.to_string())],
+            user_id,
+        )
+        .await;
+        let mem = store
+            .get_memory_by_key_and_user("tacit/general", key, user_id)
+            .unwrap()
+            .unwrap();
+        store
+            .get_all_embeddings_by_user(user_id, provider.id())
+            .unwrap()
+            .into_iter()
+            .filter(|(chunk_id, _)| {
+                store
+                    .get_memory_chunk(*chunk_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|(_, mid, _, _)| mid == Some(mem.id))
+            })
+            .map(|(chunk_id, _)| chunk_id as u64)
+            .collect()
+    }
+
+    fn ann_ids(index: &VectorIndex, user_id: &str) -> Vec<u64> {
+        index
+            .search(user_id, &[1.0; 8], 100)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect()
+    }
+
+    /// The rotation matrix lives inside the index instance, so "built once"
+    /// means ONE instance per model for the whole process: loading many
+    /// scopes and embedding after each load must keep serving from the same
+    /// instance. The old per-scope cache dropped and rebuilt an index (and its
+    /// 1536x1536 QR rotation) on every load and after every embed.
+    #[tokio::test]
+    async fn test_one_index_instance_across_scope_loads_and_embeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("once.db").to_string_lossy()).unwrap());
+        let provider: Arc<dyn ai::EmbeddingProvider> = Arc::new(NamedEmbedder("rotation-once-test"));
+        let adapter = HybridSearchAdapter::new(store.clone(), Some(provider.clone()));
+
+        let first = store_and_embed(&store, provider.as_ref(), "once-u0", "fact/seed").await;
+        adapter.search("seed", "once-u0", 10, Some(0.0)).await;
+        let index = model_index(provider.id());
+        assert_eq!(ann_ids(&index, "once-u0"), first);
+
+        let mut scope_ids = Vec::new();
+        for n in 1..=5 {
+            let user = format!("once-u{n}");
+            let ids = store_and_embed(&store, provider.as_ref(), &user, "fact/a").await;
+            adapter.search("zzzq", &user, 10, Some(0.0)).await;
+            let more = store_and_embed(&store, provider.as_ref(), &user, "fact/b").await;
+            adapter.search("zzzq", &user, 10, Some(0.0)).await;
+            assert!(
+                Arc::ptr_eq(&index, &model_index(provider.id())),
+                "scope load / embed #{n} replaced the model's index (rotation rebuilt)"
+            );
+            scope_ids.push((user, [ids, more].concat()));
+        }
+
+        // Scopes share the instance but never see each other's vectors.
+        for (user, ids) in &scope_ids {
+            let mut got = ann_ids(&index, user);
+            got.sort_unstable();
+            let mut want = ids.clone();
+            want.sort_unstable();
+            assert_eq!(got, want, "scope {user} must return exactly its own chunks");
+        }
+    }
+
+    /// Embed → the cached instance serves the new chunk without a reload;
+    /// delete → the chunk is gone from the index, not just filtered later.
+    #[tokio::test]
+    async fn test_index_updates_in_place_on_embed_and_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("incr.db").to_string_lossy()).unwrap());
+        let provider: Arc<dyn ai::EmbeddingProvider> = Arc::new(NamedEmbedder("incremental-test"));
+        let adapter = HybridSearchAdapter::new(store.clone(), Some(provider.clone()));
+        let user = "incr-u1";
+
+        let a = store_and_embed(&store, provider.as_ref(), user, "fact/alpha").await;
+        adapter.search("alpha", user, 10, Some(0.0)).await;
+        let index = model_index(provider.id());
+        assert_eq!(ann_ids(&index, user), a);
+
+        let b = store_and_embed(&store, provider.as_ref(), user, "fact/locker").await;
+        let results = adapter.search("zzzq qqzz", user, 10, Some(0.0)).await;
+        assert!(Arc::ptr_eq(&index, &model_index(provider.id())), "embed must not reload");
+        let got = ann_ids(&index, user);
+        assert!(b.iter().all(|id| got.contains(id)), "new chunk missing: {got:?} vs {b:?}");
+        assert!(a.iter().all(|id| got.contains(id)));
+        let b_mem = store
+            .get_memory_by_key_and_user("tacit/general", "fact/locker", user)
+            .unwrap()
+            .unwrap();
+        assert!(results.iter().any(|r| r.memory_id == Some(b_mem.id)));
+
+        // Delete the way the memory handler does, then let the next search
+        // reconcile the scope.
+        store.delete_memory(b_mem.id).unwrap();
+        store.delete_chunks_for_memory(b_mem.id).unwrap();
+        invalidate_index(user);
+        adapter.search("zzzq qqzz", user, 10, Some(0.0)).await;
+        assert!(Arc::ptr_eq(&index, &model_index(provider.id())), "delete must not reload");
+        assert_eq!(ann_ids(&index, user), a, "deleted chunk must leave the index");
     }
 }
