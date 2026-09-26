@@ -97,6 +97,8 @@ impl Harness {
         agent_registry: tools::AgentRegistry,
         skill_loader: Option<Arc<tools::skills::Loader>>,
     ) -> Self {
+        // The selector resolves a turn's model against what is loaded.
+        selector.set_loaded_providers(providers.iter().map(|p| p.id().to_string()).collect());
         Self {
             sessions: SessionManager::new(store.clone()),
             store,
@@ -215,7 +217,7 @@ impl Harness {
             self.store.clone(),
             chat_id.to_string(),
             session_id.to_string(),
-            self.selector.get_cheapest_model(),
+            self.selector.background_model(),
             self.title_sink(),
         );
     }

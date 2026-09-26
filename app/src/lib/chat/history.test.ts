@@ -102,3 +102,32 @@ describe('parseMessages team posts', () => {
     expect((msg as { teamPost?: unknown }).teamPost).toBeUndefined();
   });
 });
+
+// A checkpoint leaves ONE owner-visible system row flagged compactBoundary: it
+// reads as a divider between the rows around it and ends the open assistant
+// bubble. Any other system row stays out of the thread.
+describe('parseMessages compact boundary', () => {
+  const toolRow = (id: string, callId: string) => ({
+    id, role: 'assistant', content: '', createdAt: 0,
+    toolCalls: JSON.stringify([{ id: callId }]),
+    metadata: JSON.stringify({ toolCalls: [{ name: 'os', input: { resource: 'shell', action: 'exec' } }], contentBlocks: [{ type: 'tool', toolCallIndex: 0 }] }),
+  });
+  const boundary = {
+    id: 's1', role: 'system', content: 'Earlier conversation summarized', createdAt: 0,
+    metadata: JSON.stringify({ compactBoundary: true, reason: 'threshold' }),
+  };
+  const plainSystem = { id: 's2', role: 'system', content: 'internal', createdAt: 0 };
+
+  it('renders the boundary as one divider, drops plain system rows, and starts a new bubble after it', () => {
+    const msgs = parseMessages([
+      { id: 'u1', role: 'user', content: 'hi', createdAt: 0 },
+      toolRow('a1', 'c1'),
+      plainSystem,
+      boundary,
+      toolRow('a2', 'c2'),
+    ] as never);
+    const shape = msgs.map((m) => m.type === 'assistant' ? `${m.id}:${m.tools?.length ?? 0}` : m.type);
+    expect(shape).toEqual(['user', 'a1-0:1', 'compactBoundary', 'a2-0:1']);
+    expect(msgs[2]).toMatchObject({ type: 'compactBoundary', id: 's1' });
+  });
+});

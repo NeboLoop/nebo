@@ -182,6 +182,11 @@ content from the latest messages.
 last asked for. Quote the owner's last instruction and your last progress word for word, so the work \
 carries on without drifting. If the last task was finished, write \"None\" unless the owner asked for more.";
 
+/// The owner-visible marker a checkpoint leaves in the thread: a `system`
+/// row the apps render as a quiet divider.
+pub const BOUNDARY_MARKER: &str = "Earlier conversation summarized";
+/// The marker row's metadata flag.
+pub const MARKER_KEY: &str = "compactBoundary";
 /// Opens every boundary row.
 pub const BOUNDARY_LEAD: &str = "This conversation continues from an earlier part that was summarized:";
 /// Where the conversation before the boundary can still be read: its rows
@@ -211,12 +216,24 @@ pub const MAX_FAILURES: u8 = 3;
 
 /// When the turn takes a checkpoint for itself. It is due when the request
 /// passes the window less the summary's output room (the model's output
-/// cap, at most 20k) and a 13k buffer. After three failures in a row the
-/// breaker trips and neither the threshold nor an overflow tries again until
-/// a checkpoint succeeds (the owner's `/compact` always runs).
+/// cap, at most 20k) and a 13k buffer (Claude Code's `getAutoCompactThreshold`,
+/// `src/services/compact/autoCompact.ts:33-49,72-91`). After three failures in a row the breaker trips and neither the threshold
+/// nor an overflow tries again until a checkpoint succeeds, as Claude Code's
+/// `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES` (the owner's `/compact` always
+/// runs). A checkpoint that leaves the next request still over the
+/// threshold did not help: the turn takes no more. Claude Code measures
+/// exactly this after every compaction (`willRetriggerNextTurn`,
+/// `src/services/compact/compact.ts:632-657`) and compacts at most once
+/// per query loop when the provider refuses the size
+/// (`hasAttemptedReactiveCompact`, `src/query.ts:1119-1157`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Trigger {
     failures: u8,
+    /// A checkpoint was just written: the next request shows whether it
+    /// helped.
+    just_checkpointed: bool,
+    /// A checkpoint did not bring the request under the threshold.
+    stalled: bool,
 }
 
 impl Trigger {
@@ -233,13 +250,24 @@ impl Trigger {
     }
 
     /// Whether a request of `request_tokens` should be checkpointed first.
-    pub fn due(&self, request_tokens: usize, context_window: usize, max_output: usize) -> bool {
-        !self.tripped() && request_tokens >= Self::threshold(context_window, max_output)
+    pub fn due(&mut self, request_tokens: usize, context_window: usize, max_output: usize) -> bool {
+        let threshold = Self::threshold(context_window, max_output);
+        let over = request_tokens >= threshold;
+        if std::mem::take(&mut self.just_checkpointed) && over && !self.stalled {
+            self.stalled = true;
+            warn!(request_tokens, threshold, "the checkpoint left the request over the threshold; no more checkpoints this turn");
+        }
+        over && !self.tripped() && !self.stalled
     }
 
     /// Count a checkpoint's outcome: a success resets the count.
     pub fn record(&mut self, outcome: &Result<Checkpoint, String>) {
-        self.failures = if outcome.is_ok() { 0 } else { self.failures.saturating_add(1) };
+        if outcome.is_ok() {
+            self.failures = 0;
+            self.just_checkpointed = true;
+        } else {
+            self.failures = self.failures.saturating_add(1);
+        }
     }
 }
 
@@ -278,8 +306,12 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
     let summary = extract_checkpoint(&reply)?;
 
     // The deferred tools loaded so far carry over on the boundary.
+    // The summary is the model's, never a message from the owner: the row
+    // is hidden from his thread (`isMeta`), as Claude Code's summary message
+    // is `isVisibleInTranscriptOnly` (`src/services/compact/compact.ts:612-622`).
     let mut metadata = serde_json::json!({
         "checkpoint": true,
+        "isMeta": true,
         "reason": why.as_str(),
         "headCut": head_cut,
     });
@@ -290,6 +322,13 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
             .collect::<Vec<_>>()
     );
     let text = boundary_text(&summary, head_cut, why);
+    // The owner sees one quiet marker, Claude Code's `compact_boundary`
+    // system message (`src/utils/messages.ts:4530-4555`). It is written
+    // before the boundary, so the model's conversation never holds it.
+    let marker = serde_json::json!({ MARKER_KEY: true, "reason": why.as_str() });
+    cx.sessions
+        .append_message(cx.session_id, "system", BOUNDARY_MARKER, None, None, Some(&marker.to_string()))
+        .map_err(|e| format!("could not write the checkpoint marker: {e}"))?;
     let boundary = cx
         .sessions
         .append_message(cx.session_id, "user", &text, None, None, Some(&metadata.to_string()))
@@ -680,7 +719,7 @@ mod tests {
         assert_eq!(loaded.first().unwrap().id, first.boundary_id);
         assert_eq!(loaded.last().unwrap().content, "Now send it.");
         assert!(loaded[0].content.ends_with(RESUME_LINE));
-        assert_eq!(s.sessions.get_messages(&s.sid).unwrap().len(), 4, "the thread keeps every row");
+        assert_eq!(s.sessions.get_messages(&s.sid).unwrap().len(), 5, "the thread keeps every row, and the marker");
 
         let second = s
             .checkpoint(&provider, CheckpointReason::Overflow, &[], RestoreState::default())
@@ -953,7 +992,64 @@ mod tests {
         assert!(t.tripped());
         assert!(!t.due(190_000, 200_000, 64_000), "a tripped breaker takes no more checkpoints");
         t.record(&Ok(Checkpoint { boundary_id: "b".into(), summary: "s".into(), restore: vec![] }));
-        assert!(t.due(190_000, 200_000, 64_000), "a success resets it");
+        assert!(!t.due(40_000, 200_000, 64_000), "a success resets it");
+        assert!(t.due(190_000, 200_000, 64_000));
+    }
+
+    /// A checkpoint that leaves the request over the threshold is not taken
+    /// again on the next step: thirty steps over the threshold write one
+    /// checkpoint, not thirty (the owner's chat wrote 31 in ten minutes).
+    #[test]
+    fn a_checkpoint_that_did_not_help_is_not_repeated() {
+        let mut t = Trigger::default();
+        let ok = || Ok(Checkpoint { boundary_id: "b".into(), summary: "s".into(), restore: vec![] });
+        let mut taken = 0;
+        for _ in 0..30 {
+            if t.due(190_000, 200_000, 64_000) {
+                taken += 1;
+                t.record(&ok());
+            }
+        }
+        assert_eq!(taken, 1, "the second step shows the checkpoint did not help");
+        assert!(!t.due(195_000, 200_000, 64_000), "and the turn takes no more");
+
+        let mut t = Trigger::default();
+        assert!(t.due(190_000, 200_000, 64_000));
+        t.record(&ok());
+        assert!(!t.due(40_000, 200_000, 64_000), "a checkpoint that helped");
+        assert!(t.due(170_000, 200_000, 64_000), "leaves the trigger armed for real growth");
+    }
+
+    /// The checkpoint is a hidden row (the model's) and one quiet boundary
+    /// marker (the owner's), as Claude Code writes a `compact_boundary`
+    /// system message the transcript shows and a summary message it hides
+    /// (`src/services/compact/compact.ts:596-622`,
+    /// `src/utils/messages.ts:4530-4555`). The marker sits before the
+    /// boundary, so the model never reads it; the summary is never shown to
+    /// the owner as a message from him.
+    #[tokio::test]
+    async fn the_summary_is_hidden_and_the_owner_sees_one_marker() {
+        let s = Setup::new();
+        s.say("user", "Draft the letter.");
+        s.say("assistant", "Drafted.");
+        let provider = Scripted::new(vec![Reply::Say("first summary".into()), Reply::Say("second summary".into())]);
+        s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
+        s.say("user", "Now send it.");
+        s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
+
+        let all = s.sessions.get_messages(&s.sid).unwrap();
+        let hidden = |m: &ChatMessage| metadata(m).is_some_and(|v| v["isMeta"] == true);
+        let owner_sees: Vec<&ChatMessage> = all.iter().filter(|m| !hidden(m)).collect();
+        assert!(owner_sees.iter().all(|m| !m.content.contains("summary")), "no summary reaches the owner's thread");
+        let markers: Vec<&&ChatMessage> = owner_sees.iter().filter(|m| metadata(m).is_some_and(|v| v["compactBoundary"] == true)).collect();
+        assert_eq!(markers.len(), 2, "one marker per checkpoint");
+        for m in &markers {
+            assert_eq!((m.role.as_str(), m.content.as_str()), ("system", BOUNDARY_MARKER));
+        }
+        assert!(all.iter().filter(|m| is_boundary(m)).all(|m| hidden(m)), "the boundary rows are hidden");
+        let loaded = s.conversation();
+        assert!(is_boundary(&loaded[0]), "the model's conversation opens on the boundary");
+        assert!(loaded.iter().all(|m| m.role != "system"), "the model never reads a marker");
     }
 
     /// The owner's `/compact` runs it on a spawned task.

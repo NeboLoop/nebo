@@ -249,6 +249,7 @@
 		"deleteChatBody": "This chat and all its messages are removed. This can't be undone."
 	},
 	"chat": {
+		"compactBoundary": "Earlier conversation summarized",
 		"goalLine": "Goal: {condition} ({turns} turns)",
 		"goalLastCheck": "last check: {reason}",
 		"goalPaused": "Paused. Your next message resumes it.",

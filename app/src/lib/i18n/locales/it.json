@@ -249,6 +249,7 @@
 		"deleteChatBody": "Questa chat e tutti i suoi messaggi verranno rimossi. L'operazione non può essere annullata."
 	},
 	"chat": {
+		"compactBoundary": "Conversazione precedente riassunta",
 		"goalLine": "Obiettivo: {condition} ({turns} turni)",
 		"goalLastCheck": "ultimo controllo: {reason}",
 		"goalPaused": "In pausa. Il tuo prossimo messaggio lo riprende.",

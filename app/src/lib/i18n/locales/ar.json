@@ -249,6 +249,7 @@
 		"deleteChatBody": "ستُحذف هذه المحادثة وجميع رسائلها. لا يمكن التراجع عن ذلك."
 	},
 	"chat": {
+		"compactBoundary": "تم تلخيص المحادثة السابقة",
 		"goalLine": "الهدف: {condition} ({turns} جولات)",
 		"goalLastCheck": "آخر تحقق: {reason}",
 		"goalPaused": "متوقف مؤقتًا. رسالتك التالية تستأنفه.",

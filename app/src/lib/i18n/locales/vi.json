@@ -249,6 +249,7 @@
 		"deleteChatBody": "Cuộc trò chuyện này và tất cả tin nhắn của nó sẽ bị xóa. Không thể hoàn tác."
 	},
 	"chat": {
+		"compactBoundary": "Đã tóm tắt cuộc trò chuyện trước đó",
 		"goalLine": "Mục tiêu: {condition} ({turns} lượt)",
 		"goalLastCheck": "lần kiểm tra gần nhất: {reason}",
 		"goalPaused": "Đã tạm dừng. Tin nhắn tiếp theo của bạn sẽ tiếp tục.",

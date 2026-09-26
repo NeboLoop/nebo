@@ -105,7 +105,9 @@ export type ChatMessage =
   | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
   | { type: 'thinking'; content: string; duration: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
-  | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean };
+  | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean }
+  /** The boundary the backend leaves where earlier conversation was summarized. */
+  | { type: 'compactBoundary'; id?: string; time?: string };
 
 export interface ChatControllerConfig {
   agentId: string;

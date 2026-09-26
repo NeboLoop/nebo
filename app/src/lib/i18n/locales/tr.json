@@ -249,6 +249,7 @@
 		"deleteChatBody": "Bu sohbet ve tüm mesajları kaldırılacak. Bu işlem geri alınamaz."
 	},
 	"chat": {
+		"compactBoundary": "Önceki konuşma özetlendi",
 		"goalLine": "Hedef: {condition} ({turns} tur)",
 		"goalLastCheck": "son kontrol: {reason}",
 		"goalPaused": "Duraklatıldı. Bir sonraki mesajınız devam ettirir.",

@@ -249,6 +249,7 @@
 		"deleteChatBody": "הצ'אט הזה וכל ההודעות שבו יימחקו. אי אפשר לבטל פעולה זו."
 	},
 	"chat": {
+		"compactBoundary": "השיחה הקודמת סוכמה",
 		"goalLine": "יעד: {condition} ({turns} סבבים)",
 		"goalLastCheck": "בדיקה אחרונה: {reason}",
 		"goalPaused": "מושהה. ההודעה הבאה שלך תחדש אותו.",

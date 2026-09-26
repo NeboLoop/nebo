@@ -249,6 +249,7 @@
 		"deleteChatBody": "此聊天及其所有訊息將被刪除，且無法復原。"
 	},
 	"chat": {
+		"compactBoundary": "已摘要先前的對話",
 		"goalLine": "目標：{condition}（{turns} 輪）",
 		"goalLastCheck": "上次檢查：{reason}",
 		"goalPaused": "已暫停。你的下一則訊息會恢復它。",

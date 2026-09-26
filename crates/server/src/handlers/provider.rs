@@ -497,23 +497,17 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
     }
 }
 
-/// GET /api/v1/models — returns model catalog from DB + routing config from YAML.
-pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    // Opening the list is the moment it has to be current: pull from Janus first.
-    if let Err(e) = crate::sync_janus_models(&state.store, &state.config).await {
-        warn!(error = %e, "Janus model list sync failed; showing the last copy");
-    }
-    // Read models from the database (source of truth for model availability)
-    let all_models = state
-        .store
-        .list_all_provider_models()
-        .map_err(to_error_response)?;
-
-    // Group models by provider
+/// The models every picker reads (the composer's model menu, an employee's
+/// model, Settings → Routing, the phone), grouped by provider: chat models
+/// only. An embedding, audio or image model is never offered where a chat
+/// model is chosen; the embedding code path reads its own model.
+fn picker_models(
+    all_models: &[db::models::ProviderModel],
+) -> std::collections::HashMap<String, Vec<serde_json::Value>> {
     let mut models: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
 
-    for m in &all_models {
+    for m in all_models {
         let capabilities: Vec<String> = m
             .capabilities
             .as_ref()
@@ -525,6 +519,9 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
             .and_then(|k| serde_json::from_str(k).ok())
             .unwrap_or_default();
 
+        if !agent::selector::is_chat_model(&m.model_id, &capabilities, &kind) {
+            continue;
+        }
         let mut info = serde_json::json!({
             "id": m.model_id,
             "displayName": m.display_name,
@@ -546,6 +543,22 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
 
         models.entry(m.provider.clone()).or_default().push(info);
     }
+    models
+}
+
+/// GET /api/v1/models — returns model catalog from DB + routing config from YAML.
+pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    // Opening the list is the moment it has to be current: pull from Janus first.
+    if let Err(e) = crate::sync_janus_models(&state.store, &state.config).await {
+        warn!(error = %e, "Janus model list sync failed; showing the last copy");
+    }
+    // Read models from the database (source of truth for model availability)
+    let all_models = state
+        .store
+        .list_all_provider_models()
+        .map_err(to_error_response)?;
+
+    let models = picker_models(&all_models);
 
     // Routing config comes from the YAML catalog (not per-model data).
     // Load fresh from disk so toggling CLI providers / models is reflected immediately.
@@ -973,4 +986,48 @@ pub async fn local_models_status(
         "available": true,
         "models": model_names,
     })))
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+
+    fn row(provider: &str, id: &str, caps: &str) -> db::models::ProviderModel {
+        db::models::ProviderModel {
+            id: format!("{provider}/{id}"),
+            provider: provider.into(),
+            model_id: id.into(),
+            display_name: id.into(),
+            description: None,
+            is_active: Some(1),
+            is_default: None,
+            context_window: Some(200_000),
+            input_price: None,
+            output_price: None,
+            capabilities: Some(caps.into()),
+            kind: None,
+            preferred: None,
+            seeded_version: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    /// The owner's provider_models rows: the list every picker reads holds
+    /// the chat speeds and never an embedding model.
+    #[test]
+    fn the_picker_list_holds_no_embedding_model() {
+        let chat = r#"["vision","tools","streaming","code","reasoning"]"#;
+        let rows = [
+            row("janus", "nebo-1", chat),
+            row("janus", "nebo-embed-small", r#"["embeddings"]"#),
+            row("janus", "nebo-embed-large", r#"["embeddings"]"#),
+            row("janus", "nebo-1-pro", chat),
+            row("openai", "text-embedding-3-small", "[]"),
+        ];
+        let listed = picker_models(&rows);
+        let ids: Vec<&str> = listed.values().flatten().filter_map(|m| m["id"].as_str()).collect();
+        assert_eq!(listed["janus"].len(), 2, "{ids:?}");
+        assert!(ids.iter().all(|id| !id.contains("embed")), "{ids:?}");
+    }
 }

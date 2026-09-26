@@ -90,7 +90,8 @@
     | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
-    | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean };
+    | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean }
+    | { type: 'compactBoundary'; id?: string; time?: string };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
@@ -1727,6 +1728,9 @@
           {/if}
         </div>
 
+      {:else if msg.type === 'compactBoundary'}
+        <div class="divider my-4 text-xs text-base-content/50">{$t('chat.compactBoundary')}</div>
+
       {:else if msg.type === 'assistant'}
         {@const isTurnStart = idx === 0 || groupedMessages[idx - 1]?.type !== 'assistant'}
         <!-- One assistant TURN is one container, rendered from its first
@@ -1740,7 +1744,7 @@
           {@const lastIdx = idx + segs.length - 1}
           {@const lastOrigIdx = originalIndices[lastIdx]}
           {@const nextGroup = groupedMessages[lastIdx + 1]}
-          {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask') : !isLoading}
+          {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask' || nextGroup.type === 'compactBoundary') : !isLoading}
           {@const keyId = msg.id ?? `m${origIdx}`}
           {@const turnTools = segs.flatMap((sg) => shownTools(sg.tools))}
           {@const steps = activitySteps(segs, keyId)}

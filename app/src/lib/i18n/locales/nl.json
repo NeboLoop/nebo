@@ -249,6 +249,7 @@
 		"deleteChatBody": "Deze chat en al zijn berichten worden verwijderd. Dit kan niet ongedaan worden gemaakt."
 	},
 	"chat": {
+		"compactBoundary": "Eerder gesprek samengevat",
 		"goalLine": "Doel: {condition} ({turns} beurten)",
 		"goalLastCheck": "laatste controle: {reason}",
 		"goalPaused": "Gepauzeerd. Je volgende bericht hervat het.",

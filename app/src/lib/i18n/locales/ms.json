@@ -249,6 +249,7 @@
 		"deleteChatBody": "Sembang ini dan semua mesejnya akan dipadam. Tindakan ini tidak boleh dibatalkan."
 	},
 	"chat": {
+		"compactBoundary": "Perbualan terdahulu diringkaskan",
 		"goalLine": "Matlamat: {condition} ({turns} giliran)",
 		"goalLastCheck": "semakan terakhir: {reason}",
 		"goalPaused": "Dijeda. Mesej anda seterusnya menyambungnya.",

@@ -249,6 +249,7 @@
 		"deleteChatBody": "Ten czat i wszystkie jego wiadomości zostaną usunięte. Tej operacji nie można cofnąć."
 	},
 	"chat": {
+		"compactBoundary": "Wcześniejsza rozmowa została podsumowana",
 		"goalLine": "Cel: {condition} ({turns} tur)",
 		"goalLastCheck": "ostatnie sprawdzenie: {reason}",
 		"goalPaused": "Wstrzymano. Twoja następna wiadomość to wznowi.",
