@@ -23,6 +23,12 @@ const FILE_KEYS: &[&str] = &[
 pub fn check_safeguard(rule_key: &str, input: &serde_json::Value) -> Option<String> {
     match rule_key {
         "run_command" => check_shell_safeguard(input),
+        // Text typed into a running command may be typed into a shell (a
+        // terminal running `bash`): it meets the same limits as a command.
+        "send_input" => input
+            .get("text")
+            .and_then(|v| v.as_str())
+            .and_then(|text| scan_command_text(text.trim())),
         key if FILE_KEYS.contains(&key) => check_file_safeguard(key, input),
         _ => None,
     }
@@ -775,6 +781,13 @@ mod tests {
             "resource": "shell", "action": "exec", "command": "ls -la"
         });
         assert!(check_safeguard("run_command", &safe).is_none());
+        // Typing into a running command meets the command limits: a
+        // terminal running a shell is a shell.
+        let typed = |text: &str| serde_json::json!({ "task_id": "bg-1", "text": text });
+        assert!(check_safeguard("send_input", &typed("sudo rm -rf /tmp\n")).is_some());
+        assert!(check_safeguard("send_input", &typed("rm -rf /\n")).is_some());
+        assert!(check_safeguard("send_input", &typed("yes\n")).is_none());
+        assert!(check_safeguard("send_input", &serde_json::json!({ "task_id": "bg-1", "keys": ["Enter"] })).is_none());
     }
 
     #[test]

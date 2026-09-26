@@ -55,6 +55,8 @@ rayon = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 pdf-extract = "0.12"
 jsonschema = { workspace = true }
+portable-pty = "0.9"
+vte = "0.15"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

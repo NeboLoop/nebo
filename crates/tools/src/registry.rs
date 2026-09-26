@@ -2152,9 +2152,11 @@ pub(crate) mod tests {
     /// at how Claude does it. It should have fanned out and acted in
     /// parallel." delegate got a skill-survey example (schema restatements
     /// moved out: delegate 2,495) and use_skill its loading rule (674):
-    /// 11,036. Each package that lands lowers the numbers; they never rise
+    /// 11,036. The owner, 2026-09-26: employees drive interactive terminal
+    /// programs; run_command's `pty` (90) is the one line that needs:
+    /// 11,126. Each package that lands lowers the numbers; they never rise
     /// without an owner decision.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 11_036;
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 11_126;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {

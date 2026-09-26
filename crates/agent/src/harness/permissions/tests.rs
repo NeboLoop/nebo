@@ -438,6 +438,22 @@ async fn a_chat_channel_cannot_poll_or_stop_a_shell_session() {
     }
 }
 
+/// Text typed into a running command meets the command safeguard: a
+/// terminal running a shell is a shell, and Full Access does not lift it.
+#[tokio::test]
+async fn typing_into_a_command_meets_the_command_safeguard() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("shell"), None, Effect::Allow));
+    let reg = registry(&store, vec![]).await;
+    reg.register_defaults().await;
+    let full = with_mode(ctx(&store, "", Origin::User), Mode::FullAccess);
+    let r = reg.execute(&full, "send_input", json!({ "task_id": "bg-0000aaaa", "text": "sudo whoami\n" })).await;
+    assert!(r.is_error && r.content.contains("BLOCKED: sudo"), "{}", r.content);
+    // Anything else reaches the tool, which has no such session.
+    let r = reg.execute(&full, "send_input", json!({ "task_id": "bg-0000aaaa", "text": "yes\n" })).await;
+    assert!(r.is_error && r.content.contains("no session bg-0000aaaa"), "{}", r.content);
+}
+
 #[tokio::test]
 async fn helper_cannot_exceed_parent() {
     let (_d, store) = store();
