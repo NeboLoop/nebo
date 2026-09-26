@@ -1159,6 +1159,15 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         }
         let heard_through = st.seen.last().map(|m| m.id.as_str());
         save_reply(cx, &mut st.folds, &text, &tool_calls, &block_order, (&thinking, &thinking_model), heard_through).await;
+        // A stream error the call did not retry has been shown to the owner
+        // once, and the call's ladder decided it is final: the step ends
+        // with it. Taking the step again as an empty reply would send what
+        // the ladder chose not to send, and show the error again (a linked
+        // bot that can't be reached was dialled again after each 20 s
+        // connect timeout).
+        if let Some(error) = stream_error {
+            return TurnExit::ProviderFailed(error);
+        }
 
         if !tool_calls.is_empty() {
             // A CLI provider ran its tools itself over /agent/mcp.
@@ -2441,10 +2450,13 @@ mod tests {
         assert_eq!(stored_folds(&h), vec!["folded", "shown"]);
     }
 
-    /// A linked bot's stand-in: answers every turn and records it.
+    /// A linked bot's stand-in: answers every turn and records it, or, when
+    /// `offline`, says what the linked provider says when its bot can't be
+    /// reached.
     #[derive(Default)]
     struct LinkedBot {
         calls: Mutex<Vec<ChatRequest>>,
+        offline: bool,
     }
 
     #[async_trait::async_trait]
@@ -2460,6 +2472,9 @@ mod tests {
         }
         async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
             self.calls.lock().unwrap().push(req.clone());
+            if self.offline {
+                return Ok(events(vec![StreamEvent::error("Could not connect to Hermes. Try again.")], None));
+            }
             Ok(events(vec![StreamEvent::text("Hey, Hermes here.")], None))
         }
     }
@@ -2568,6 +2583,27 @@ mod tests {
         assert!(other.calls().is_empty(), "no other provider answers as Hermes");
         let answered_as_hermes = other.side.lock().unwrap().iter().any(|r| r.trace.purpose == "agent_turn");
         assert!(!answered_as_hermes);
+    }
+
+    /// A linked bot that can't be reached is told once, in the linked
+    /// provider's words, and the turn ends: no second dial (each one waits
+    /// out a 20 s connect timeout), no "empty reply", and no other provider
+    /// answers as Hermes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreachable_linked_bot_is_told_once_and_ends_the_turn() {
+        let other = Scripted::new(Vec::new());
+        let bot = Arc::new(LinkedBot { offline: true, ..Default::default() });
+        let h = hired_linked(vec![other.clone() as Arc<dyn ai::Provider>, bot.clone() as Arc<dyn ai::Provider>]);
+        let events = run_turn(&h, to_hermes("yo")).await;
+        let errors: Vec<&str> = events
+            .iter()
+            .filter(|e| e.event_type == ai::StreamEventType::Error)
+            .filter_map(|e| e.error.as_deref())
+            .collect();
+        assert_eq!(errors, ["Could not connect to Hermes. Try again."], "{events:?}");
+        assert_eq!(bot.calls.lock().unwrap().len(), 1, "the linked bot is dialled once");
+        assert_eq!(exit_of(&events), "provider_failed");
+        assert!(other.calls().is_empty(), "no other provider answers as Hermes");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
