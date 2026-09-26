@@ -35,6 +35,7 @@
   import PermissionAskCard from '$lib/components/PermissionAskCard.svelte';
   import type { HelperLine } from '$lib/chat/helpers';
   import { stepMeta } from '$lib/chat/stepMeta';
+  import { turnBlocks, turnProse, noteLabel, LIVE_PREVIEW_ROWS, type Fold, type TurnBlock, type TurnStep } from '$lib/chat/turnBlocks';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -90,7 +91,7 @@
     | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
-    | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean }
+    | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean; fold?: Fold }
     | { type: 'compactBoundary'; id?: string; time?: string };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
@@ -1015,20 +1016,18 @@
 
   // Tool timeline collapse state, keyed by the owning reply's id (stable across
   // re-renders — index keys would drift as new messages stream in).
-  // ── The activity panel: one per assistant turn ──────────────────────────
-  // A turn is every assistant segment between two user messages. Everything
-  // the model did before its answer — the one-line note it wrote before each
-  // tool call, and the tool calls themselves — is one panel, folded under a
-  // summary line ("Searched the web, read a page, ran a command"); the answer
-  // is the last segment's text and stands alone below it. Rows open on click.
+  // ── Activity groups: the work inside an assistant turn ──────────────────
+  // A turn is every assistant segment between two user messages. Its text
+  // segments read as prose or fold into the work as notes — the server's
+  // verdict (`turnBlocks`) — and each run of notes and tool calls between two
+  // paragraphs is one group under a summary line ("Searched the web, read a
+  // page, ran a command"). Rows open on click.
   type AssistantMsg = Extract<Message, { type: 'assistant' }>;
-  type ActivityStep =
-    | { kind: 'note'; key: string; lines: string[] }
-    | { kind: 'tool'; key: string; tool: ToolMsg };
+  type ActivityStep = TurnStep<ToolMsg>;
 
-  /** Open state per turn; unset means folded. A live turn stays folded too —
-   *  the summary line shimmers while the work happens, and the work is read
-   *  by whoever opens it. */
+  /** Open state per group; unset means folded. While the turn is live its
+   *  last group shows its latest rows under the shimmering summary line, so
+   *  a paragraph that folds is seen moving into the work. */
   let activityOpen = $state<Record<string, boolean>>({});
 
   function turnSegments(idx: number): AssistantMsg[] {
@@ -1040,23 +1039,9 @@
     }
     return out;
   }
-  /** The text of a segment that ran tools is a note about the next step; the
-   *  text of the segment that ran none is the answer. Consecutive notes fold
-   *  into one row whose label is the latest. */
-  function activitySteps(segs: AssistantMsg[], keyId: string): ActivityStep[] {
-    const steps: ActivityStep[] = [];
-    segs.forEach((seg, si) => {
-      const tools = shownTools(seg.tools);
-      const isAnswer = si === segs.length - 1 && nonCoworkerTools(seg.tools).length === 0;
-      const note = seg.content?.trim();
-      if (note && !isAnswer) {
-        const prev = steps[steps.length - 1];
-        if (prev?.kind === 'note') prev.lines.push(note);
-        else steps.push({ kind: 'note', key: `${keyId}-n${si}`, lines: [note] });
-      }
-      tools.forEach((tool, ti) => steps.push({ kind: 'tool', key: `${keyId}-${si}-${ti}`, tool }));
-    });
-    return steps;
+  /** The turn's prose and activity groups, in order. */
+  function blocksOf(segs: AssistantMsg[], keyId: string): TurnBlock<ToolMsg>[] {
+    return turnBlocks(segs, keyId, shownTools, (tools) => nonCoworkerTools(tools).length > 0);
   }
   /** The calls a user should see. A call that failed and was retried is the
    *  employee's business — nothing the user can act on — so it is left out,
@@ -1064,10 +1049,6 @@
   function shownTools(tools: ToolMsg[] | undefined): ToolMsg[] {
     const all = nonCoworkerTools(tools);
     return $devMode ? all : all.filter((t) => t.status !== 'error');
-  }
-  function turnAnswer(segs: AssistantMsg[]): string {
-    const last = segs[segs.length - 1];
-    return last && nonCoworkerTools(last.tools).length === 0 ? last.content : '';
   }
   /** A note's row shows plain words; markdown marks are for the answer. */
   function plainNote(line: string): string {
@@ -1380,11 +1361,12 @@
       </div>
     {/if}
 
-    <!-- The activity panel for one turn: notes and tool calls in order,
-         folded under a summary line. Rows open on click; a page's address
-         is a link. keyId = the turn's first segment id. -->
+    <!-- One activity group: notes and tool calls in order, folded under a
+         summary line; while live, its latest rows show under it. Rows open
+         on click; a page's address is a link. -->
     {#snippet activityPanel(steps: ActivityStep[], tools: ToolMsg[], keyId: string, live: boolean)}
       {@const open = activityOpen[keyId] ?? false}
+      {@const rows = open ? steps : live ? steps.slice(-LIVE_PREVIEW_ROWS) : []}
       <div class="max-w-[640px] my-1.5">
         <button
           type="button"
@@ -1396,11 +1378,13 @@
           <span class="shrink-0 transition-transform {open ? 'rotate-90' : ''}">&rsaquo;</span>
         </button>
 
-        {#if open}
+        {#if rows.length}
           <div class="mt-1.5 rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
-            {#each steps as step (step.key)}
+            {#each rows as step (step.key)}
               {#if step.kind === 'note'}
-                {@const expandable = step.lines.length > 1}
+                {@const latest = step.lines[step.lines.length - 1]}
+                {@const label = noteLabel(latest)}
+                {@const expandable = step.lines.length > 1 || label !== latest.trim()}
                 {@const isExpanded = !!expandedResults[step.key]}
                 <div class="px-3 py-2 text-xs">
                   <button
@@ -1410,7 +1394,7 @@
                     aria-expanded={expandable ? isExpanded : undefined}
                     onclick={() => toggleResult(step.key)}
                   >
-                    <span class="truncate flex-1">{plainNote(step.lines[step.lines.length - 1])}</span>
+                    <span class="truncate flex-1">{plainNote(label)}</span>
                     {#if expandable}<span class="shrink-0 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
                   </button>
                   {#if expandable && isExpanded}
@@ -1746,9 +1730,8 @@
           {@const nextGroup = groupedMessages[lastIdx + 1]}
           {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask' || nextGroup.type === 'compactBoundary') : !isLoading}
           {@const keyId = msg.id ?? `m${origIdx}`}
-          {@const turnTools = segs.flatMap((sg) => shownTools(sg.tools))}
-          {@const steps = activitySteps(segs, keyId)}
-          {@const answer = turnAnswer(segs)}
+          {@const blocks = blocksOf(segs, keyId)}
+          {@const answer = turnProse(blocks)}
           {@const turnAttachments = segs.flatMap((sg) => sg.attachments ?? [])}
           <div class="max-w-[640px] mt-3">
             {#if msg.delegateAgentName}
@@ -1758,15 +1741,16 @@
                 <span class="text-xs font-medium">{msg.delegateAgentName}</span>
               </div>
             {/if}
-            {#if steps.length}
-              {@render activityPanel(steps, turnTools, keyId, !isTurnEnd)}
-            {/if}
-            {#if answer}
-              <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-              <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
-                {@html linkWorkMentions(renderMarkdown(answer), (last as any).workItems)}
-              </div>
-            {/if}
+            {#each blocks as block, bi (block.key)}
+              {#if block.kind === 'group'}
+                {@render activityPanel(block.steps, block.tools, block.key, !isTurnEnd && bi === blocks.length - 1)}
+              {:else}
+                <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
+                  {@html linkWorkMentions(renderMarkdown(block.text), (last as any).workItems)}
+                </div>
+              {/if}
+            {/each}
             {#each segs.flatMap((sg) => coworkerEvents(sg.tools)) as ev, evIdx (evIdx)}
               <a
                 href={ev.threadKey ? cwHref(ev.threadKey) : undefined}

@@ -53,6 +53,11 @@ pub enum StreamEventType {
     /// accumulated into reply text (`text` is the human-readable status line;
     /// `stop_reason` is the typed machine reason, e.g. "max_steps").
     ControlNotice,
+    /// Whether the text segment the next tool call closed stays in the reply
+    /// or folds into the turn's work (`text`: "shown" | "folded"; `payload`:
+    /// `{"segment": n}`, the segment's index in the turn). Sent by the
+    /// harness, never by a provider ([`StreamEvent::text_verdict`]).
+    TextVerdict,
 }
 
 /// Token usage statistics from a streaming response.
@@ -135,6 +140,14 @@ impl StreamEvent {
         let mut event = Self::thinking("");
         event.event_type = StreamEventType::ThinkingBlock;
         event.payload = serde_json::to_value(block).ok();
+        event
+    }
+
+    /// The verdict on the turn's text segment `segment` ("shown" | "folded").
+    pub fn text_verdict(segment: usize, fold: &str) -> Self {
+        let mut event = Self::text(fold);
+        event.event_type = StreamEventType::TextVerdict;
+        event.payload = Some(serde_json::json!({ "segment": segment }));
         event
     }
 

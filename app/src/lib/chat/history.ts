@@ -6,6 +6,7 @@ import type { ChatMessage, TeamPost } from '$lib/chat/controller.svelte';
 import { formatTime } from '$lib/time';
 import type { ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
 import type { UploadedAttachment } from '$lib/types/attachment';
+import type { Fold } from '$lib/chat/turnBlocks';
 
 // --- Metadata shapes embedded in API ChatMessage.metadata ---
 interface ToolCallMeta {
@@ -18,6 +19,8 @@ interface ContentBlockMeta {
   type: 'text' | 'tool';
   text?: string;
   toolCallIndex?: number;
+  /** The verdict the stream gave this text segment (`text_verdict`). */
+  fold?: Fold;
 }
 
 interface MessageMeta {
@@ -172,6 +175,7 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
           // Text after this bubble ran tools starts a fresh bubble.
           if (!cur || cur.tools?.length) cur = newBubble(text);
           else cur.content = cur.content ? `${cur.content}\n${text}` : text;
+          if (block.fold === 'shown' || block.fold === 'folded') cur.fold = block.fold;
         } else if (block.type === 'tool' && block.toolCallIndex != null) {
           const tc = toolCalls[block.toolCallIndex];
           if (tc) { if (!cur) cur = newBubble(''); pushTool(cur, tc, block.toolCallIndex); }

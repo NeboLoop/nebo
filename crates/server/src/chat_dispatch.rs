@@ -1238,6 +1238,23 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                             hub.broadcast("subagent_complete", payload);
                         }
+                        StreamEventType::TextVerdict => {
+                            // The segment's text reaches the clients before
+                            // its verdict, and the verdict before the call
+                            // that closed it.
+                            if !text_buffer.is_empty() {
+                                hub.broadcast("chat_stream", ws_payload!("content": &text_buffer,));
+                                text_buffer.clear();
+                                last_flush = tokio::time::Instant::now();
+                            }
+                            hub.broadcast(
+                                "text_verdict",
+                                ws_payload!(
+                                    "segment": event.payload.as_ref().and_then(|p| p.get("segment")).cloned(),
+                                    "fold": &event.text,
+                                ),
+                            );
+                        }
                         StreamEventType::ToolSummary => {
                             hub.broadcast(
                                 "tool_summary",

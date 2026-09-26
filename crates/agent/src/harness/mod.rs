@@ -18,6 +18,7 @@ pub mod reminders;
 pub mod seat;
 pub mod session_gate;
 pub mod telemetry;
+pub mod text_fold;
 pub mod tool_round;
 pub mod tool_surface;
 pub mod turn;
