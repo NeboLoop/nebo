@@ -1511,11 +1511,8 @@ mod tests {
         // Extraction parity: with context_isolated + a chat-derived ctx, the
         // debounced-extraction/flush write path (store_facts) lands facts
         // under the exact ctx scope — invisible to sibling contexts.
-        let path = std::env::temp_dir().join(format!(
-            "nebo-ctx-extract-test-{}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ctx-extract-test.db");
         let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
 
         let scope = resolve_memory_scope("local", "a1", true, None, Some("chat-A"));
@@ -1558,7 +1555,5 @@ mod tests {
                 "fact leaked to scope {other}"
             );
         }
-
-        let _ = std::fs::remove_file(&path);
     }
 }
