@@ -2040,6 +2040,8 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     config.insert("platform".into(), std::env::consts::OS.to_string());
     config.insert("hostname".into(), host_label());
     config.insert("runtime".into(), RUNTIME.to_string());
+    // Nebo serves its own chat contract over the tunnel (bots.chat).
+    config.insert("chat".into(), "true".into());
 
     // Pin the PRIMARY agent's identity on CONNECT so the loop's default agent is
     // deterministically "Nebo" (the local `assistant` row) and can never be
