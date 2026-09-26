@@ -201,7 +201,13 @@ impl ModelSelector {
     }
 
     /// Resolve a fuzzy model name (e.g. "sonnet", "opus") to a full model ID.
+    /// A linked agent's id (`linked/<bot>/<agent>`) is exact: it resolves to
+    /// itself, and a malformed one to nothing — never scored against the
+    /// model aliases, which would hand the employee another brain.
     pub fn resolve_fuzzy(&self, input: &str) -> Option<String> {
+        if parse_model_id(input).0 == ai::providers::linked::ID {
+            return ai::LinkedProvider::target(input).map(|_| input.to_string());
+        }
         let lock = self.fuzzy.read().unwrap();
         lock.as_ref().and_then(|f| f.resolve(input))
     }
@@ -273,8 +279,16 @@ impl ModelSelector {
     /// when nothing was chosen, the configured default (Settings → Routing
     /// → General, which ships as [`DEFAULT_CHAT_MODEL`]). Any discrepancy
     /// sends [`DEFAULT_CHAT_MODEL`].
+    ///
+    /// A linked agent's id is not a model choice: it is the employee a
+    /// linked bot runs, sent as it is, and never replaced by the default —
+    /// answered by anything else, the employee would be impersonated. When
+    /// its provider can't take it, the turn fails plainly.
     pub fn resolve(&self, chosen: &str) -> String {
         let chosen = chosen.trim();
+        if ai::LinkedProvider::target(chosen).is_some() {
+            return chosen.to_string();
+        }
         if !chosen.is_empty() {
             if self.sendable(chosen) {
                 return chosen.to_string();
@@ -459,6 +473,22 @@ mod tests {
         assert_eq!(selector.resolve("gibberish"), DEFAULT_CHAT_MODEL);
         assert_eq!(selector.resolve("anthropic/claude-sonnet-4-5"), DEFAULT_CHAT_MODEL, "a provider this bot hasn't loaded");
         assert_eq!(DEFAULT_CHAT_MODEL, "janus/nebo-1");
+    }
+
+    /// A linked employee's id is sent as it is: never fuzzy-matched onto a
+    /// model, never replaced by the default. Every other chosen name that
+    /// isn't a chat model this bot can send to still sends the default.
+    #[test]
+    fn a_linked_agent_is_sent_as_itself() {
+        let selector = gateway();
+        selector.set_loaded_providers(vec!["janus".into(), "linked".into()]);
+        selector.rebuild_fuzzy(&HashMap::new());
+        let hermes = ai::LinkedProvider::model_id("a736730b-86e3-4a70-9a44-5e51724acf6e", "hermes");
+        assert_eq!(selector.resolve(&hermes), hermes);
+        assert_eq!(selector.resolve_fuzzy(&hermes).as_deref(), Some(hermes.as_str()));
+        assert_eq!(selector.resolve_fuzzy("linked/nebo-1"), None, "a malformed linked id names nothing");
+        assert_eq!(selector.resolve("linked/nebo-1"), DEFAULT_CHAT_MODEL);
+        assert_eq!(selector.resolve("nebo-2-ultra-bogus"), DEFAULT_CHAT_MODEL, "a bogus preference");
     }
 
     /// Background work runs on the configured aux route when it is a chat

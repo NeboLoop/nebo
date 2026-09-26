@@ -569,13 +569,13 @@ fn spawn_plugin_login(
                         // setups) work without it.
                         let cloud_client = match (
                             config::read_bot_id(),
-                            profile_store.list_all_active_auth_profiles_by_provider("neboai"),
+                            auth::neboai_token(&profile_store),
                         ) {
-                            (Some(bot_id), Ok(profiles)) if !profiles.is_empty() => {
+                            (Some(bot_id), Some(token)) => {
                                 let api = comm::api::NeboAIApi::new(
                                     neboai_api_url.clone(),
                                     bot_id,
-                                    profiles[0].api_key.clone(),
+                                    token,
                                 );
                                 api.plugin_oauth_client(&slug_owned).await.ok()
                             }
@@ -931,28 +931,17 @@ pub async fn oauth_token(
                 .to_string(),
         );
     };
-    let profile = match state.store.list_all_active_auth_profiles_by_provider("neboai") {
-        Ok(profiles) => match profiles.into_iter().next() {
-            Some(p) => p,
-            None => {
-                return err(
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    "not connected to NeboAI — redeem a NEBO code first".to_string(),
-                )
-            }
-        },
-        Err(e) => {
-            return err(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to query auth profiles: {e}"),
-            )
-        }
+    let Some(token) = crate::codes::neboai_token(&state) else {
+        return err(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "not connected to NeboAI — redeem a NEBO code first".to_string(),
+        );
     };
 
     let api = comm::api::NeboAIApi::new(
         state.config.neboai.api_url.clone(),
         bot_id,
-        profile.api_key.clone(),
+        token,
     );
     match api.plugin_oauth_token(&body).await {
         Ok(tokens) => (axum::http::StatusCode::OK, Json(tokens)),
@@ -1640,22 +1629,11 @@ pub async fn plugin_proxy(
                 .to_string(),
         );
     };
-    let profile = match state.store.list_all_active_auth_profiles_by_provider("neboai") {
-        Ok(profiles) => match profiles.into_iter().next() {
-            Some(p) => p,
-            None => {
-                return refuse(
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    "not connected to NeboAI — redeem a NEBO code first".to_string(),
-                )
-            }
-        },
-        Err(e) => {
-            return refuse(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to query auth profiles: {e}"),
-            )
-        }
+    let Some(token) = crate::codes::neboai_token(&state) else {
+        return refuse(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "not connected to NeboAI — redeem a NEBO code first".to_string(),
+        );
     };
 
     // The plugin's own headers travel; the local hop's framing and anything
@@ -1676,7 +1654,7 @@ pub async fn plugin_proxy(
     let api = comm::api::NeboAIApi::new(
         state.config.neboai.api_url.clone(),
         bot_id,
-        profile.api_key.clone(),
+        token,
     );
     match api
         .plugin_proxy(method, &slug, &path, uri.query(), forwarded, body.to_vec())

@@ -185,7 +185,7 @@ Give exactly one verdict per call. \"ask\": true means it reaches someone outsid
 async fn aux_classify(cx: &JudgeCx<'_>, questions: &[&Question]) -> Option<Vec<Verdict>> {
     let (provider, model) = match super::super::model_call::resolve_aux(&config::ModelsConfig::load(), cx.providers) {
         Some(routed) => routed,
-        None => (crate::summarizer::pick_cheapest(cx.providers)?, String::new()),
+        None => (crate::harness::model_call::prefer_non_gateway(cx.providers)?, String::new()),
     };
     let ids: Vec<String> = (0..questions.len()).map(|i| format!("c{i}")).collect();
     let body = serde_json::json!({

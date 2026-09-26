@@ -76,7 +76,7 @@ WRONG_CONTINUATION = {
 }
 
 VM_FETCH = ("ssh -o ConnectTimeout=20 stadium 'export PATH=/opt/homebrew/bin:$PATH; "
-            "limactl shell ci -- tar -C ~/harness-runs -cz {id}' | tar -xz -C {dest}")
+            "limactl shell ci -- bash -c \"tar -C ~/harness-runs -cz {id}\"' | tar -xz -C {dest}")
 REPLAYS = os.path.expanduser("~/.cache/nebo-replays")
 JUDGE_MODEL = "claude-opus-5"
 JUDGE_PROMPT = """You are judging two assistants that each received the same messages from the owner of a small business, one message per turn, in order. You see the owner's messages and each assistant's replies (all turns, joined). Tool calls are not shown.
@@ -186,6 +186,26 @@ def iso(t):
 
 # ---------------------------------------------------------------- scoring
 
+def judged_traces(run):
+    """How many completed runs a judge graded, by which model, and how many
+    judge attempts failed: read from the traces, since a run dispatched with
+    judge off is judged afterwards by `nebo-cli test grade`."""
+    done = judged = failed = 0
+    models = collections.Counter()
+    for _, _, t in run.all():
+        if t.get("failure_reason"):
+            continue
+        done += 1
+        g = t.get("grade") or {}
+        if g.get("judge_error"):
+            failed += 1
+        elif g.get("judge") or any(a.get("mode", "judged") != "verified" for a in g.get("assertions") or []):
+            judged += 1
+            models[g.get("judge") or "in the run"] += 1
+    by = ", ".join(f"{m} {c}" for m, c in models.most_common())
+    return f"{judged} / {done}" + (f" ({by})" if by else "") + (f", judge failed {failed}" if failed else "")
+
+
 def grade(t, sev, fx):
     """(verified pass, verified total, judged pass, judged total, critical fails)"""
     vp = vt = jp = jt = 0
@@ -241,7 +261,10 @@ def num(x, unit=""):
 
 
 def per_turn(run):
-    first, steps, tools, prompt, cards, approvals, turns = [], [], [], [], 0, 0, 0
+    """Owner turns for latency and the turn count; every turn, woken ones
+    included (the session's own turns after a helper reported), for steps,
+    prompt size and cards: those are the task's cost."""
+    first, steps, tools, prompt, cards, approvals, turns, woken = [], [], [], [], 0, 0, 0, 0
     runs_with_turns = 0
     for _, _, t in run.all():
         rows = t.get("turns") or []
@@ -250,14 +273,17 @@ def per_turn(run):
             steps.append(sum(r.get("model_calls", 0) for r in rows))
         tools.append(t["metrics"].get("total_tool_calls", 0))
         for r in rows:
-            turns += 1
-            if r.get("first_reply_ms") is not None:
+            if r.get("woken"):
+                woken += 1
+            else:
+                turns += 1
+            if r.get("first_reply_ms") is not None and not r.get("woken"):
                 first.append(r["first_reply_ms"] / 1000)
             prompt.append(r.get("max_prompt_tokens", 0))
             cards += r.get("cards", 0)
             approvals += r.get("approvals", 0)
     return dict(first=first, steps=steps, tools=tools, prompt=[p for p in prompt if p],
-                cards=cards, approvals=approvals, turns=turns, runs_with_turns=runs_with_turns)
+                cards=cards, approvals=approvals, turns=turns, woken=woken, runs_with_turns=runs_with_turns)
 
 
 def thread_counts(run, sev):
@@ -398,6 +424,7 @@ def main():
         if key.endswith("sha"):
             va, vp = str(va)[:10], str(vp)[:10]
         w(f"| {name} | {va} | {vp} |")
+    w(f"| judged traces (in the run or by `nebo-cli test grade`) | {judged_traces(A)} | {judged_traces(P)} |")
     w("")
 
     # ---- per suite
@@ -455,7 +482,8 @@ def main():
         ("largest request per turn, p90 (tokens)", p90(ta["prompt"]), p90(tp["prompt"]), "", True),
     ]:
         w(f"| {name} | {num(xa)} | {num(xp)} | {delta(xa, xp, '{:+,.1f}', lower)} |")
-    w(f"| turns | {ta['turns']} | {tp['turns']} | |")
+    w(f"| owner turns | {ta['turns']} | {tp['turns']} | |")
+    w(f"| turns woken by the run's own background work | {ta['woken']} | {tp['woken']} | |")
     w(f"| permission asks (approval cards) | {ta['approvals']} | {tp['approvals']} | |")
     w(f"| other cards (install, connect, plan) | {ta['cards']} | {tp['cards']} | |\n")
 

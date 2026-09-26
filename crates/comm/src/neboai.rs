@@ -401,6 +401,8 @@ impl CommPlugin for NeboAIPlugin {
                 .cloned(),
             platform: config.get("platform").filter(|v| !v.is_empty()).cloned(),
             hostname: config.get("hostname").filter(|v| !v.is_empty()).cloned(),
+            runtime: config.get("runtime").filter(|v| !v.is_empty()).cloned(),
+            chat: config.get("chat").is_some_and(|v| v == "true"),
             // The read loop acks every delivery it dispatches, so the gateway
             // may safely backfill this connection's agent spaces.
             acks_offsets: true,
@@ -464,6 +466,10 @@ impl CommPlugin for NeboAIPlugin {
                 warn!(bot_id = %bot_id, instance = %lease.instance_id(), "neboai: another running copy of this bot holds its lease; this process stays off");
                 lease.lost();
                 return Err(CommError::LeaseHeld);
+            }
+            if result.reason == crate::REVOKED_REASON {
+                warn!(bot_id = %bot_id, "neboai: this bot was removed from NeboAI");
+                return Err(CommError::Revoked);
             }
             return Err(CommError::Other(format!("auth failed: {}", result.reason)));
         }
@@ -2010,5 +2016,47 @@ mod tests {
             "the JOIN result maps the stream it names"
         );
         plugin.disconnect().await.unwrap();
+    }
+
+    /// The hub's refusal of a removed bot is `Revoked`; any other refusal
+    /// stays an ordinary failure the caller retries.
+    #[tokio::test]
+    async fn a_revoked_bot_is_told_apart_from_other_refusals() {
+        async fn connect_refused_with(reason: &str) -> CommError {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let reason = reason.to_string();
+            tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let (connect, _) = client_frame(ws.next().await.unwrap().unwrap());
+                assert_eq!(connect.frame_type, frame::TYPE_CONNECT);
+                ws.send(server_frame(
+                    frame::TYPE_AUTH_FAIL,
+                    [0; 16],
+                    0,
+                    serde_json::json!({"ok": false, "reason": reason}),
+                ))
+                .await
+                .unwrap();
+            });
+            let plugin = NeboAIPlugin::new(Arc::new(MemOffsets::default()));
+            let config = HashMap::from([
+                ("gateway".to_string(), format!("ws://{addr}/ws")),
+                ("bot_id".to_string(), "bot-under-test".to_string()),
+                ("token".to_string(), "test-token".to_string()),
+                ("api_server".to_string(), "http://127.0.0.1:9".to_string()),
+            ]);
+            plugin.connect(config).await.unwrap_err()
+        }
+
+        assert!(matches!(
+            connect_refused_with(crate::REVOKED_REASON).await,
+            CommError::Revoked
+        ));
+        assert!(matches!(
+            connect_refused_with("stale token").await,
+            CommError::Other(reason) if reason == "auth failed: stale token"
+        ));
     }
 }

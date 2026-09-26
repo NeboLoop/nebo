@@ -342,7 +342,7 @@ impl DoneJudge {
         let cfg = config::ModelsConfig::load();
         let (provider, model) = match super::model_call::resolve_aux(&cfg, providers) {
             Some(routed) => routed,
-            None => (crate::summarizer::pick_cheapest(providers)?, String::new()),
+            None => (crate::harness::model_call::prefer_non_gateway(providers)?, String::new()),
         };
         let window_tokens = selector.context_window(&format!("{}/{}", provider.id(), model));
         Some(Self {

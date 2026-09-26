@@ -377,8 +377,11 @@
           status: activeIds.has(a.id) ? 'online' : 'paused',
           color: colors[a.id],
           handle: a.handle,
-          editable: !a.nappPath,
+          // A linked employee's persona is the linked bot's: read there, not edited here.
+          editable: !a.nappPath && a.kind !== 'linked',
           isApp: a.isApp ?? false,
+          kind: a.kind,
+          offline: a.offline ?? false,
           loopExposed: a.loopExposed ?? false,
           loopAgentId: a.loopAgentId,
           voice: a.voice || '',
@@ -1597,6 +1600,10 @@
                 <!-- Working: the live verb replaces the last line, so the row
                      says what is happening, not what was said. -->
                 <div class="text-xs text-success truncate flex items-center gap-1.5"><span class="loading loading-dots loading-xs shrink-0"></span><span class="truncate">{workingLabel(a.id) || $t('sidebar.working')}</span></div>
+              {:else if a.offline}
+                <!-- A linked employee whose linked bot cannot be reached: a
+                     state, said plainly, in place of the last line. -->
+                <div class="text-xs text-base-content/60 truncate">{$t('sidebar.offline')}</div>
               {:else}
                 <div class="text-xs text-base-content/60 truncate">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs mr-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
               {/if}

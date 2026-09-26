@@ -60,6 +60,7 @@ pub fn run_migrations_to(conn: &Connection, max_version: i64) -> Result<(), Nebo
 
     // Check for goose's table and reconcile if needed
     reconcile_goose_versions(conn)?;
+    reconcile_renumbered(conn)?;
 
     // Get list of already-applied migrations
     let applied: Vec<i64> = {
@@ -188,6 +189,41 @@ fn reconcile_goose_versions(conn: &Connection) -> Result<(), NeboError> {
     Ok(())
 }
 
+/// A migration is its name; its number is only its order. When a file is
+/// renumbered (a parallel branch had taken the number), a database that
+/// applied it under the old number keeps it applied under the new one: the
+/// record moves with the file, so the migration never runs twice and the old
+/// number is free for the migration that owns it now. A record moves only
+/// when nothing is recorded at the new number yet.
+fn reconcile_renumbered(conn: &Connection) -> Result<(), NeboError> {
+    for filename in iter_files() {
+        let (Some(version), Some(slug)) = (extract_version(&filename), migration_slug(&filename)) else {
+            continue;
+        };
+        let moved = conn
+            .execute(
+                "UPDATE _nebo_migrations SET version = ?1, name = ?2
+                 WHERE version = (
+                     SELECT MIN(version) FROM _nebo_migrations
+                     WHERE substr(name, instr(name, '_') + 1) = ?3 AND version != ?1
+                 )
+                 AND NOT EXISTS (SELECT 1 FROM _nebo_migrations WHERE version = ?1)",
+                rusqlite::params![version, filename, slug],
+            )
+            .map_err(|e| NeboError::Migration(format!("failed to reconcile renumbered {filename}: {e}")))?;
+        if moved > 0 {
+            info!(version, filename, "migration renumbered; its applied record follows it");
+        }
+    }
+    Ok(())
+}
+
+/// The name of a migration without its number.
+/// "0184_chat_linked_chat_id.sql" -> Some("chat_linked_chat_id.sql")
+fn migration_slug(filename: &str) -> Option<&str> {
+    filename.split_once('_').map(|(_, slug)| slug)
+}
+
 /// Extract the version number from a migration filename.
 /// "0001_initial_schema.sql" -> Some(1)
 fn extract_version(filename: &str) -> Option<i64> {
@@ -247,6 +283,19 @@ mod tests {
             let v = extract_version(&f).unwrap_or_else(|| panic!("invalid migration filename: {f}"));
             if let Some(prev) = seen.insert(v, f.clone()) {
                 panic!("migration version {v} is used twice: {prev} and {f} — renumber the newer one");
+            }
+        }
+    }
+
+    /// A migration is identified by its name when it is renumbered
+    /// (`reconcile_renumbered`), so no two files may share one.
+    #[test]
+    fn no_two_migrations_share_a_name() {
+        let mut seen = std::collections::HashMap::new();
+        for f in iter_files() {
+            let slug = migration_slug(&f).unwrap_or_else(|| panic!("invalid migration filename: {f}")).to_string();
+            if let Some(prev) = seen.insert(slug, f.clone()) {
+                panic!("migration name is used twice: {prev} and {f} — name the newer one for what it does");
             }
         }
     }
@@ -629,6 +678,57 @@ Date
             objects_1,
             "second run must not create duplicate schema objects"
         );
+    }
+
+    /// A database that applied `chat_linked_chat_id` as 0166 (before it was
+    /// renumbered to 0184) opens with its record moved to 0184: the column is
+    /// not added twice, 0166 is free for the migration that owns that number,
+    /// and every migration this binary carries is recorded once.
+    #[test]
+    fn a_migration_applied_under_its_old_number_is_not_applied_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("renumbered.db")).unwrap();
+        run_migrations_to(&conn, 165).unwrap();
+        // What the old 0166 did, recorded under its old number.
+        conn.execute_batch(
+            "ALTER TABLE chats ADD COLUMN linked_chat_id TEXT;
+             INSERT INTO _nebo_migrations (version, name) VALUES (166, '0166_chat_linked_chat_id.sql');",
+        )
+        .unwrap();
+
+        run_migrations(&conn).expect("the renumbered migration must not run again");
+
+        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'linked_chat_id'"), 1);
+        let owner: String = conn
+            .query_row("SELECT name FROM _nebo_migrations WHERE version = 166", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(owner, "0166_permissions.sql", "0166 went to the migration that owns it, and ran");
+        assert_eq!(count("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'permission_rules'"), 1);
+        let name: String = conn
+            .query_row("SELECT name FROM _nebo_migrations WHERE version = 184", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "0184_chat_linked_chat_id.sql");
+        for v in versions() {
+            assert_eq!(count(&format!("SELECT COUNT(*) FROM _nebo_migrations WHERE version = {v}")), 1, "{v} applied");
+        }
+    }
+
+    /// A database at 0183 (the branch's last before main's linked-chat
+    /// migration landed) gets 0184 on top, and every other record stays.
+    #[test]
+    fn a_database_at_0183_gets_0184() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("at-0183.db")).unwrap();
+        run_migrations_to(&conn, 183).unwrap();
+        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'linked_chat_id'"), 0);
+
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'linked_chat_id'"), 1);
+        assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 184"), 1);
+        assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 166 AND name = '0166_permissions.sql'"), 1, "another migration's record is untouched");
     }
 
     /// A migration file without goose markers is applied verbatim — the

@@ -106,8 +106,10 @@ impl From<RunBoundError> for String {
     }
 }
 
-/// Run a fixture `runs` times, each run bound to its own scratch directory and
-/// its own tag before its setup runs. Every caller that runs a fixture goes
+/// Run a fixture once per run number in `runs` (`1..=3` is run-1 to run-3),
+/// each run bound to its own scratch directory and its own tag before its
+/// setup runs. A caller that gives every run a server of its own asks for one
+/// run at a time (`2..=2`), so the run keeps its number. Every caller that runs a fixture goes
 /// through here: the engine runs the fixture it is handed, and deciding that
 /// there are several runs is what makes a run need a scratch of its own.
 ///
@@ -120,11 +122,11 @@ pub async fn run_bound(
     fixture: &Fixture,
     server: &str,
     model: Option<&str>,
-    runs: usize,
+    runs: std::ops::RangeInclusive<usize>,
 ) -> Result<Vec<Trace>, RunBoundError> {
     let mut traces = Vec::new();
-    for run_idx in 0..runs {
-        let run_id = format!("run-{}", run_idx + 1);
+    for run in runs {
+        let run_id = format!("run-{}", run);
         let bound = match prepare(fixture, &run_id) {
             Ok(b) => b,
             Err(e) => {
@@ -217,7 +219,7 @@ conversation:
         // Port 1 is reserved for tcpmux and nothing binds it in test
         // environments: the connection is refused immediately rather than
         // timing out, so this stays fast without a real server.
-        let err = run_bound(&fix, "127.0.0.1:1", None, 2)
+        let err = run_bound(&fix, "127.0.0.1:1", None, 1..=2)
             .await
             .expect_err("an unreachable server must fail the run");
 
@@ -246,6 +248,19 @@ conversation:
             Some(reason.as_str()),
             "the saved trace file must carry the failure reason"
         );
+    }
+
+    /// A run asked for on its own keeps its number: the gate gives each
+    /// replay run a fresh server and asks for run 2 as `2..=2`, and its trace
+    /// is filed as run-2, beside run-1's, not over it.
+    #[tokio::test]
+    async fn a_run_asked_for_alone_keeps_its_number() {
+        let fix = fixture("run-number-test");
+        let err = run_bound(&fix, "127.0.0.1:1", None, 2..=2)
+            .await
+            .expect_err("an unreachable server must fail the run");
+        assert_eq!(err.traces.len(), 1);
+        assert_eq!(err.traces[0].run_id, "run-2");
     }
 
     #[test]

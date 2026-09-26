@@ -242,25 +242,10 @@ impl WorkflowManagerImpl {
 
     fn build_api_client(&self) -> Result<comm::api::NeboAIApi, String> {
         let bot_id = config::read_bot_id().ok_or_else(|| "no bot_id configured".to_string())?;
-        let profiles = match self
-            .store
-            .list_all_active_auth_profiles_by_provider("neboai")
-        {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(error = %e, "failed to list auth profiles for neboai");
-                return Err("failed to query auth profiles".to_string());
-            }
-        };
-        let profile = profiles
-            .first()
-            .ok_or_else(|| "not connected to NeboAI".to_string())?;
+        let token =
+            auth::neboai_token(&self.store).ok_or_else(|| "not connected to NeboAI".to_string())?;
         let api_server = self.config.neboai.api_url.clone();
-        Ok(comm::api::NeboAIApi::new(
-            api_server,
-            bot_id,
-            profile.api_key.clone(),
-        ))
+        Ok(comm::api::NeboAIApi::new(api_server, bot_id, token))
     }
 
     fn workflow_to_info(&self, wf: &db::models::Workflow) -> WorkflowInfo {
@@ -2322,8 +2307,8 @@ async fn review_failed_workflow_run(
 ) {
     let provider = {
         let guard = providers.read().await;
-        match guard.first() {
-            Some(p) => p.clone(),
+        match ai::default_provider(&guard) {
+            Some(p) => p,
             None => return,
         }
     };
@@ -2354,6 +2339,8 @@ async fn review_failed_workflow_run(
 
     let req = ai::ChatRequest {
         tool_credential: None,
+        chat_id: String::new(),
+        approval_channels: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),
@@ -3047,13 +3034,15 @@ async fn workflow_tuning_sweep(
 
         let provider = {
             let guard = providers.read().await;
-            match guard.first() {
-                Some(p) => p.clone(),
+            match ai::default_provider(&guard) {
+                Some(p) => p,
                 None => return,
             }
         };
         let req = ai::ChatRequest {
             tool_credential: None,
+            chat_id: String::new(),
+            approval_channels: None,
             tool_choice: Default::default(),
             messages: vec![ai::Message {
                 role: "user".into(),
@@ -3313,5 +3302,113 @@ mod run_end_tests {
         let failed = RunEnd::of(&workflow::WorkflowError::ActivityFailed("triage".into(), "boom".into()));
         assert_eq!(failed.status(), "failed");
         assert!(failed.message().contains("boom"));
+    }
+}
+
+#[cfg(test)]
+mod employee_model_tests {
+    use std::sync::{Arc, Mutex};
+
+    use ai::{ChatRequest, EventReceiver, Provider, ProviderError, StreamEvent};
+
+    /// A provider that records the model of every call it takes and answers
+    /// with its own id.
+    struct Recording {
+        id: &'static str,
+        retryable: bool,
+        models: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Recording {
+        fn id(&self) -> &str {
+            self.id
+        }
+        fn retryable(&self) -> bool {
+            self.retryable
+        }
+        async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+            self.models.lock().unwrap().push(req.model.clone());
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            let _ = tx.send(StreamEvent::text(format!("answered by {}", self.id))).await;
+            let _ = tx.send(StreamEvent::done()).await;
+            Ok(rx)
+        }
+    }
+
+    /// A workflow step on a linked employee runs at that employee's model,
+    /// as a chat turn does: it reaches the linked provider addressed to its
+    /// linked agent, and the default provider never sees it (B2: the step
+    /// fell back to janus/nebo-1 and the run failed). The step names no
+    /// model; the turn reads the employee's own.
+    #[tokio::test]
+    async fn a_workflow_step_on_a_linked_employee_reaches_its_linked_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        store
+            .upsert_entity_config(
+                "agent",
+                "emp-linked",
+                &serde_json::json!({ "modelPreference": ai::LinkedProvider::model_id("bot-1", "assistant") }),
+            )
+            .unwrap();
+        let janus = Arc::new(Mutex::new(Vec::new()));
+        let linked = Arc::new(Mutex::new(Vec::new()));
+        let providers: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(Recording { id: "janus", retryable: true, models: janus.clone() }),
+            Arc::new(Recording { id: "linked", retryable: false, models: linked.clone() }),
+        ];
+        let harness = agent::Harness::new(
+            store.clone(),
+            Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone())))),
+            providers,
+            agent::selector::ModelSelector::new(Default::default()),
+            Arc::new(agent::ConcurrencyController::new(Some(2))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        );
+        let activity: workflow::parser::Activity = serde_json::from_value(serde_json::json!({
+            "id": "run",
+            "intent": "Reply with one line.",
+        }))
+        .unwrap();
+        let turn = workflow::LoopTurn {
+            activity: &activity,
+            instructions: "You are an employee.".into(),
+            seed_messages: vec![ai::Message {
+                role: "user".into(),
+                content: "Reply with exactly one line: scheduled ping.".into(),
+                ..Default::default()
+            }],
+            workflow_name: "proof-ping",
+            advertised_tools: Vec::new(),
+            agent_id: "emp-linked",
+            user_id: "",
+            memory_writes_disabled: true,
+            trace: ai::RequestTrace {
+                run_id: "run-1".into(),
+                ..ai::RequestTrace::new("workflow_activity")
+            },
+            checkpoint: None,
+            pending: None,
+            iteration: "",
+            step_index: None,
+            max_iterations: 3,
+            min_iterations: 0,
+            requires_tools: Vec::new(),
+            spend_cap_microcents: 0,
+            model: String::new(),
+            cancel: None,
+            turn_key: "run:".into(),
+        };
+
+        let workflow_loop = agent::harness::workflow_turn::WorkflowTurns::new(harness);
+        let out = workflow::ActivityLoop::run_turn(&workflow_loop, turn).await.expect("the step runs");
+
+        assert_eq!(linked.lock().unwrap().as_slice(), ["bot-1/assistant"]);
+        assert!(janus.lock().unwrap().is_empty(), "the default provider stood in for the linked agent");
+        assert_eq!(out.text, "answered by linked");
     }
 }

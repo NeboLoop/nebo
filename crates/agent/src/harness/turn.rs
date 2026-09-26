@@ -68,6 +68,8 @@ pub struct TurnContext {
     /// (`provider/model`); empty when none did and the turn runs on the
     /// selector's default (`TurnState::model`).
     pub model: String,
+    /// A linked employee's turn: its linked bot answers it, or nothing does.
+    pub linked: bool,
     /// Who the turn is for, told as the `identity` row; built once per turn.
     pub identity: String,
     /// The employee's name, for its memory's heading.
@@ -556,10 +558,18 @@ pub(crate) async fn prepare(
             audience: req.seat.audience.as_deref(),
         },
     );
-    let raw_model = if !req.seat.model_override.is_empty() {
+    // The employee's own model preference, from its hire or its settings,
+    // for every run kind (the owner's chat, a workflow, a schedule, a
+    // coworker, the phone) when the request names none. A linked employee
+    // runs as its linked agent: that is not a model choice, so a request's
+    // model never replaces it and nothing else answers for it.
+    let employee = employee_model(&h.store, &req.seat.agent_id);
+    let raw_model = if employee.linked {
+        employee.preference.clone().unwrap_or_default()
+    } else if !req.seat.model_override.is_empty() {
         req.seat.model_override.clone()
     } else {
-        req.seat.model_preference.clone().unwrap_or_default()
+        req.seat.model_preference.clone().or(employee.preference).unwrap_or_default()
     };
     let model = if raw_model.is_empty() {
         String::new()
@@ -739,6 +749,7 @@ pub(crate) async fn prepare(
         channel,
         timezone: memory_timezone,
         model,
+        linked: employee.linked,
         identity,
         name,
         environment,
@@ -918,11 +929,20 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         // 4-5. The request and the call.
         let selected = st.model.clone();
         let (provider_id, mut model_name) = model_parts(&selected);
+        let loaded = h.providers.read().await.iter().any(|p| p.id() == provider_id);
+        // A linked employee is answered by its linked bot or not at all:
+        // any other provider answering would speak as the employee.
+        if cx.linked && !(loaded && provider_id == ai::providers::linked::ID) {
+            warn!(session_id = sid, model = %selected, "a linked employee's provider can't take the turn");
+            let message = format!("Could not connect to {}. Try again.", cx.name);
+            let _ = cx.tx.send(StreamEvent::error(message.clone())).await;
+            return TurnExit::ProviderFailed(message);
+        }
         // The model's provider isn't loaded: the call goes to the first
         // provider with that provider's own model (`model_call`), and the
         // request says so, so what forks it (the recap, a checkpoint) sends
         // what was sent.
-        if !h.providers.read().await.iter().any(|p| p.id() == provider_id) {
+        if !loaded {
             model_name.clear();
         }
         let request = build_request(cx, st, &window, surface.declared, &model_name);
@@ -941,7 +961,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 }
             };
         }
-        if st.trigger.due(request_tokens, context_window, max_output) {
+        // A linked employee's runtime keeps its own transcript and is sent
+        // only the newest message: there is nothing here to checkpoint, and a
+        // checkpoint forks the turn's provider.
+        if !cx.linked && st.trigger.due(request_tokens, context_window, max_output) {
             if clear_old_results(cx, st, &conversation).await {
                 st.step -= 1;
                 continue;
@@ -1427,6 +1450,34 @@ async fn clear_old_results(cx: &TurnContext, st: &mut TurnState, conversation: &
 }
 
 /// The provider and model name of the turn's model.
+/// An employee's own model, as its entity config stores it.
+struct EmployeeModel {
+    /// Its model preference (`provider/model`, or a linked agent's id).
+    preference: Option<String>,
+    /// A linked employee (hired from a linked bot, or whose preference names
+    /// a linked agent): its linked bot answers its turns, or nothing does.
+    linked: bool,
+}
+
+fn employee_model(store: &db::Store, agent_id: &str) -> EmployeeModel {
+    if agent_id.is_empty() {
+        return EmployeeModel { preference: None, linked: false };
+    }
+    let preference = store
+        .get_entity_config("agent", agent_id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.model_preference)
+        .filter(|m| !m.trim().is_empty());
+    let hired_linked = store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .is_some_and(|a| a.kind.as_deref() == Some(ai::providers::linked::ID));
+    let linked = hired_linked || preference.as_deref().is_some_and(|m| ai::LinkedProvider::target(m).is_some());
+    EmployeeModel { preference, linked }
+}
+
 fn model_parts(model: &str) -> (String, String) {
     if model.is_empty() {
         return (String::new(), String::new());
@@ -1446,6 +1497,11 @@ fn build_request(
 ) -> ChatRequest {
     ChatRequest {
         tool_credential: None,
+        // The conversation and the approval door, for a provider that keeps
+        // one remote chat per Nebo chat and relays its runtime's own approval
+        // prompts (the linked provider).
+        chat_id: cx.harness.store.resolve_session_chat_id(&cx.session_id),
+        approval_channels: cx.harness.approval_channels.clone(),
         tool_choice: Default::default(),
         messages: conversation::convert_messages(window, &st.model),
         tools: declared,
@@ -1489,7 +1545,7 @@ async fn checkpoint(
     let h = &cx.harness;
     let provider = match &st.last_call {
         Some(last) => last.provider.clone(),
-        None => h.providers.read().await.first().cloned().ok_or("no provider to checkpoint with")?,
+        None => ai::default_provider(&h.providers.read().await).ok_or("no provider to checkpoint with")?,
     };
     let taint: Vec<types::provenance::ProvenanceClass> =
         cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied().collect();
@@ -1794,8 +1850,12 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
     if *exit == TurnExit::Cancelled {
         return;
     }
+    // A provider that takes no call it did not build (the linked one: its
+    // runtime would read the recap's instruction as the owner's message)
+    // gets no recap.
     if owner_in_turn(&cx.request)
         && let Some(last) = st.last_call.take()
+        && last.provider.retryable()
     {
         spawn_recap(cx, last);
     }
@@ -2363,6 +2423,114 @@ mod tests {
             vec![(0, "folded".to_string()), (1, "folded".to_string()), (1, "shown".to_string())]
         );
         assert_eq!(stored_folds(&h), vec!["folded", "shown"]);
+    }
+
+    /// A linked bot's stand-in: answers every turn and records it.
+    #[derive(Default)]
+    struct LinkedBot {
+        calls: Mutex<Vec<ChatRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ai::Provider for LinkedBot {
+        fn id(&self) -> &str {
+            ai::providers::linked::ID
+        }
+        fn handles_tools(&self) -> bool {
+            true
+        }
+        fn retryable(&self) -> bool {
+            false
+        }
+        async fn stream(&self, req: &ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+            self.calls.lock().unwrap().push(req.clone());
+            Ok(events(vec![StreamEvent::text("Hey, Hermes here.")], None))
+        }
+    }
+
+    const HERMES: &str = "9295191e-0f2d-4254-a3dc-8de2c52d975f";
+
+    /// A harness on `providers`, with Hermes hired from a linked bot.
+    fn hired_linked(providers: Vec<Arc<dyn ai::Provider>>) -> Harness {
+        let path = std::env::temp_dir().join(format!("nebo-turn-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(db::Store::new(path.to_str().unwrap()).expect("store"));
+        store.create_agent(HERMES, Some("linked"), "Hermes", "", "---\nname: Hermes\n---\n", "{}", None, None).expect("hire");
+        let brain = ai::LinkedProvider::model_id("a736730b-86e3-4a70-9a44-5e51724acf6e", "hermes");
+        store.upsert_entity_config("agent", HERMES, &serde_json::json!({ "modelPreference": brain })).expect("brain");
+        let registry = Arc::new(tools::Registry::new(Arc::new(crate::harness::permissions::Check::new(store.clone()))));
+        let selector = crate::selector::ModelSelector::new(Default::default());
+        Harness::new(
+            store,
+            registry,
+            providers,
+            selector,
+            Arc::new(crate::concurrency::ConcurrencyController::new(Some(4))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        )
+    }
+
+    /// The owner's chat with Hermes, with a composer pick that is not his.
+    fn to_hermes(text: &str) -> TurnRequest {
+        let mut req = owner(text);
+        req.seat.agent_id = HERMES.into();
+        req.seat.model_override = "janus/nebo-1".into();
+        req
+    }
+
+    /// A linked employee's turn goes to its linked agent, whatever model the
+    /// request named, and no other provider is asked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_linked_employee_is_answered_by_its_linked_bot() {
+        let other = Scripted::new(Vec::new());
+        let bot = Arc::new(LinkedBot::default());
+        let h = hired_linked(vec![other.clone() as Arc<dyn ai::Provider>, bot.clone() as Arc<dyn ai::Provider>]);
+        let events = run_turn(&h, to_hermes("yo")).await;
+        let calls = bot.calls.lock().unwrap().clone();
+        let purposes: Vec<&str> = calls.iter().map(|c| &*c.trace.purpose).collect();
+        assert_eq!(purposes, ["agent_turn"], "{events:?}");
+        assert_eq!(calls[0].model, "a736730b-86e3-4a70-9a44-5e51724acf6e/hermes", "the provider's own model id");
+        assert!(!calls[0].chat_id.is_empty(), "the conversation rides with the turn");
+        assert!(other.calls().is_empty(), "nothing else answers as Hermes");
+        assert!(events.iter().any(|e| e.text == "Hey, Hermes here."));
+    }
+
+    /// A turn that names no model (a schedule, a coworker's post) still
+    /// reaches a linked employee's linked bot: the turn reads the employee's
+    /// own model, never the default.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_scheduled_turn_reaches_the_linked_bot_too() {
+        let other = Scripted::new(Vec::new());
+        let bot = Arc::new(LinkedBot::default());
+        let h = hired_linked(vec![other.clone() as Arc<dyn ai::Provider>, bot.clone() as Arc<dyn ai::Provider>]);
+        let mut req = owner("check the inbox");
+        req.seat.agent_id = HERMES.into();
+        req.seat.door = types::permissions::Door::Schedule;
+        req.seat.origin = tools::Origin::System;
+        run_turn(&h, req).await;
+        assert_eq!(bot.calls.lock().unwrap().len(), 1);
+        assert!(other.calls().is_empty());
+    }
+
+    /// Without its linked bot's provider a linked employee's turn fails in
+    /// plain words, and nothing else is asked to answer: Nebo's own model
+    /// answering as Hermes would be impersonation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_linked_employee_without_its_bot_fails_plainly() {
+        let other = Scripted::new(Vec::new());
+        let h = hired_linked(vec![other.clone() as Arc<dyn ai::Provider>]);
+        let events = run_turn(&h, to_hermes("yo")).await;
+        let errors: Vec<&str> = events
+            .iter()
+            .filter(|e| e.event_type == ai::StreamEventType::Error)
+            .filter_map(|e| e.error.as_deref())
+            .collect();
+        assert_eq!(errors, ["Could not connect to Hermes. Try again."], "{events:?}");
+        assert!(other.calls().is_empty(), "no other provider answers as Hermes");
+        let answered_as_hermes = other.side.lock().unwrap().iter().any(|r| r.trace.purpose == "agent_turn");
+        assert!(!answered_as_hermes);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

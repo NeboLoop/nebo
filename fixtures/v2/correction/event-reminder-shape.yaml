@@ -1,0 +1,49 @@
+id: correction-event-reminder-shape
+name: "Correction: a reminder-shaped event call gets one error, not three"
+description: |
+  From the audit of 2026-09-05 (class B, F): the system prompt once taught
+  a reminder-shaped scheduling call (title, when), which failed the name
+  check, then the cron/at check, then the command check, three errors in a
+  row for the first scheduling call a model ever sees. The scheduling tool
+  is create_schedule now; it names its fields in its schema: `name`, a time
+  (`at` once, or `cron`), and the work (`prompt`, or `command`). It is
+  deferred, so loading it with find_tools first is the expected path. This
+  fixture pins the outcome: at most one error, then a created reminder.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+# The one taught error is the point of this fixture.
+induced_errors: 1
+target_component: create_schedule
+
+teardown:
+  - "python3 -c \"import json,urllib.request as u; jobs=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/tasks')).get('tasks',[]); [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/tasks/'+j['name'], method='DELETE')) for j in jobs if 'kristi' in j.get('name','').lower()]\" || true"
+
+conversation:
+  - role: user
+    content: "Remind me in 3 hours to call Kristi back."
+
+tool_config:
+  create_schedule:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-event
+      text: "The first call is create_schedule, or find_tools loading it"
+      severity: critical
+      check: { first_call: true, tool: [find_tools, create_schedule] }
+  recovery:
+    - id: at-most-one-error
+      text: "At most one tool result is an error, and if there is one it names name, at or cron, and prompt or command together"
+      severity: critical
+      check: { max_errors: 1 }
+    - id: reminder-lands
+      text: "A tool result says a scheduled task was created and when it fires"
+      severity: critical
+    - id: bounded
+      text: "At most 4 tool calls (find_tools to load create_schedule counts as one)"
+      severity: critical
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: "find_tools(query: \"select:create_schedule\") → create_schedule(name, at: \"in 3 hours\", prompt), then a one-line confirmation of when it fires."

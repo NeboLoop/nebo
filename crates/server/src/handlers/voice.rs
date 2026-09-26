@@ -2296,6 +2296,7 @@ mod voice_prompt_tests {
             session_name: Some(key.into()),
             title_custom: false,
             model: None,
+            linked_chat_id: None,
         }
     }
 

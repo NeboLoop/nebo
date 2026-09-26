@@ -70,6 +70,9 @@ pub struct Harness {
     pub(crate) agent_registry: tools::AgentRegistry,
     pub(crate) skill_loader: Option<Arc<tools::skills::Loader>>,
     pub(crate) ask_channels: Option<tools::AskChannels>,
+    /// The tool-approval door (`tools::ApprovalChannels`), for a provider
+    /// whose runtime stops for the owner's decision (the linked provider).
+    pub(crate) approval_channels: Option<tools::ApprovalChannels>,
     pub(crate) embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
     /// The hybrid search the memory tool uses: the turn's recall runs on it.
     pub(crate) hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
@@ -112,6 +115,7 @@ impl Harness {
             agent_registry,
             skill_loader,
             ask_channels: None,
+            approval_channels: None,
             embedding_provider: None,
             hybrid_searcher: None,
             outlets: Default::default(),
@@ -125,6 +129,13 @@ impl Harness {
     /// The owner's answers to a tool's question reach it here.
     pub fn with_ask_channels(mut self, channels: tools::AskChannels) -> Self {
         self.ask_channels = Some(channels);
+        self
+    }
+
+    /// The owner's decisions on a provider's own approval prompts reach it
+    /// here.
+    pub fn with_approval_channels(mut self, channels: tools::ApprovalChannels) -> Self {
+        self.approval_channels = Some(channels);
         self
     }
 

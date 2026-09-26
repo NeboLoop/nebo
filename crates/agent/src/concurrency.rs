@@ -384,6 +384,9 @@ impl Provider for BackgroundProvider {
     fn handles_tools(&self) -> bool {
         self.inner.handles_tools()
     }
+    fn retryable(&self) -> bool {
+        self.inner.retryable()
+    }
     fn supports_tool_result_images(&self) -> bool {
         self.inner.supports_tool_result_images()
     }

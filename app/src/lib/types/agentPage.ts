@@ -120,6 +120,10 @@ export interface AgentDisplay {
 	handle?: string
 	editable?: boolean
 	isApp?: boolean
+	/** "linked" for an employee hired from a linked bot. */
+	kind?: string
+	/** Linked employees only: the linked bot cannot be reached right now. */
+	offline?: boolean
 	/** Whether this agent is exposed on the user's personal loop. */
 	loopExposed?: boolean
 	/** Hub identity UUID — the wire's mention tokens may carry this id. */

@@ -1,0 +1,49 @@
+id: correction-read-over-budget-ranged
+name: "Correction — a read over the 100 KB budget is an error, and the model pages"
+description: |
+  A blind read of a 300 KB file exceeds the read budget. The tool answers
+  with an ERROR that names the file's line count and points at offset/limit
+  and grep — never a clipped payload (the error costs ~100 bytes, a
+  truncated result costs the whole budget). The model must take the hint: one targeted grep or ranged read,
+  then the answer. Not a loop of blind re-reads. On the rewrite the read is
+  read_file (offset/limit) and the grep is run_command grep or rg.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: tool
+
+setup:
+  - "mkdir -p {{scratch}} && python3 -c \"lines=['Record %05d: routine entry with enough words to make the file large, status nominal, no action required.' % i for i in range(1, 3000)]; lines[2500]='Record 02501: ANOMALY escalation code ESC-7741 assigned to the night shift.'; open('{{scratch}}/records.log','w').write('\\n'.join(lines)+'\\n')\""
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Read {{scratch}}/records.log and tell me the escalation code on the ANOMALY record."
+
+tool_config:
+  read_file:
+    enabled: true
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: read-first
+      text: "The first call is read_file of {{scratch}}/records.log or a run_command grep of it"
+      severity: important
+      check: { first_call: true, tool: [read_file, run_command] }
+  recovery:
+    - id: takes-the-hint
+      text: "After the budget error (if the model read blind), the next call is a run_command grep for ANOMALY or a read_file with offset/limit — not another blind read of the whole file"
+      severity: critical
+      check: { max_tool_calls: 4 }
+    - id: at-most-one-error
+      text: "At most one tool result is an error (the budget error itself)"
+      severity: critical
+      check: { max_errors: 1 }
+    - id: answer
+      text: "The reply gives ESC-7741 as the escalation code"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 2
+  narrative: "A blind read comes back as a budget error naming 2999 lines and offset/limit/grep; one run_command grep for ANOMALY; the answer ESC-7741."

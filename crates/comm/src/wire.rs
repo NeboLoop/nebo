@@ -29,6 +29,15 @@ pub struct ConnectPayload {
     /// The machine's hostname (".local" stripped) — "which computer is this?".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
+    /// What the bot runs: "nebo", "openclaw" or "hermes".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    /// The bot serves Nebo's chat contract (roster, chats, messages, streamed
+    /// chat events, asks) over its tunnel. Nebo itself always does; Nebo Link
+    /// announces it for a linked install it can translate for, and says
+    /// nothing when it can't (`bots.chat` on the hub).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chat: bool,
     /// This client ACKs deliveries, so its subscriber offset actually tracks
     /// what it has processed. The gateway only backfills an agent space for
     /// clients that set this: replaying to a client that never acks would
@@ -262,6 +271,8 @@ mod tests {
             agent_color: Some("violet".into()),
             platform: Some("linux".into()),
             hostname: Some("devbox".into()),
+            runtime: Some("nebo".into()),
+            chat: true,
             acks_offsets: true,
             instance_id: Some("8f0c7d1e-0000-4000-8000-000000000001".into()),
             lease_epoch: 4,
@@ -274,7 +285,10 @@ mod tests {
         assert!(json.contains("\"agentHandle\":\"atlas\""));
         assert!(json.contains("\"agentColor\":\"violet\""));
         assert!(json.contains("\"acksOffsets\":true"));
+        assert!(json.contains("\"runtime\":\"nebo\""));
+        assert!(json.contains("\"chat\":true"));
         let p2: ConnectPayload = serde_json::from_str(&json).unwrap();
+        assert!(p2.chat);
         assert_eq!(p2.bot_id.as_deref(), Some("bot-123"));
         assert_eq!(p2.agent_name.as_deref(), Some("Atlas"));
         assert!(p2.acks_offsets);

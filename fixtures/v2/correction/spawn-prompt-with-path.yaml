@@ -1,0 +1,50 @@
+id: correction-spawn-prompt-with-path
+name: "Correction — a sub-agent prompt that mentions a Nebo file path is not naming an employee"
+description: |
+  Replayed from the Auto-Categorizer's live thread on 2026-09-06. A large
+  QuickBooks result was written to a file under
+  ".../Application Support/Nebo/sessions/..." and the model asked a sub-agent
+  to parse it. The spawn guard saw "Nebo" inside the path, decided the prompt
+  named the employee called Nebo, and refused. Names now match as whole
+  words outside path tokens. This fixture pins that the spawn is accepted.
+  On the rewrite a sub-agent is a helper started with delegate(prompt, ...).
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: tool
+
+setup:
+  - "mkdir -p {{scratch}}/Nebo/sessions && printf '{\"QueryResponse\":{\"Purchase\":[{\"Id\":\"1\",\"TotalAmt\":42.5,\"EntityRef\":{\"name\":\"Acme Supply\"},\"Line\":[{\"DetailType\":\"AccountBasedExpenseLineDetail\",\"AccountBasedExpenseLineDetail\":{\"AccountRef\":{\"name\":\"Office Supplies\"}}}]},{\"Id\":\"2\",\"TotalAmt\":19,\"EntityRef\":{\"name\":\"Corner Cafe\"},\"Line\":[]}]}}' > {{scratch}}/Nebo/sessions/purchases.txt"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Use a sub-agent to read {{scratch}}/Nebo/sessions/purchases.txt (QuickBooks Purchase JSON) and report which purchases have no account on their lines. Hand the whole file-reading job to the sub-agent; just relay its findings."
+
+tool_config:
+  delegate:
+    enabled: true
+  read_file:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: spawn-first
+      text: "The first call is delegate with a prompt that names the file"
+      severity: critical
+      check: { first_call: true, tool: delegate }
+  recovery:
+    - id: spawn-accepted
+      text: "No tool result says the delegate call names an employee or tells the model to message a coworker instead"
+      severity: critical
+      check: { no_error_contains: ["named employee"] }
+    - id: no-tool-errors
+      text: "Every call is accepted"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: answer
+      text: "The reply says the Corner Cafe purchase (Id 2) has no account on its line, from the helper's result"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  narrative: "One delegate call with the file path in the prompt, one wait for or read of the helper's result, then a two-line answer naming purchase 2 as uncategorized."

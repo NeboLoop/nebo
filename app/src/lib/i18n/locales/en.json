@@ -246,7 +246,8 @@
 		"working": "Working",
 		"chatActions": "Chat actions",
 		"deleteChatTitle": "Delete \"{name}\"?",
-		"deleteChatBody": "This chat and all its messages are removed. This can't be undone."
+		"deleteChatBody": "This chat and all its messages are removed. This can't be undone.",
+		"offline": "Offline"
 	},
 	"chat": {
 		"compactBoundary": "Earlier conversation summarized",
@@ -2985,7 +2986,11 @@
 		"working": "Working out what they'll need…",
 		"willDo": "{name} will:",
 		"thisEmployee": "This employee",
-		"removeItem": "Remove {item}"
+		"removeItem": "Remove {item}",
+		"hireFromApps": "Hire from another app",
+		"linkedLede": "They keep working on the computer they run on.",
+		"offline": "Offline",
+		"linkedFailed": "Couldn't hire from {bot}. Try again."
 	},
 	"runLimit": {
 		"title": "Spending limit per run",

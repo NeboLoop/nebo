@@ -6,6 +6,31 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// The bearer an HTTP provider presents, resolved on every request. A fixed
+/// key (a user's own OpenAI key) converts from `String`; a key that rotates
+/// (the NeboAI token Janus takes, which the hub rotates on every comms
+/// connect) is `ApiKey::live`, so a provider built once never presents a
+/// token that has since been rotated out.
+#[derive(Clone)]
+pub struct ApiKey(Arc<dyn Fn() -> String + Send + Sync>);
+
+impl ApiKey {
+    pub fn live(resolve: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        Self(Arc::new(resolve))
+    }
+
+    /// The key to present right now.
+    pub fn current(&self) -> String {
+        (self.0)()
+    }
+}
+
+impl From<String> for ApiKey {
+    fn from(key: String) -> Self {
+        Self::live(move || key.clone())
+    }
+}
+
 /// Rate limit metadata extracted from provider response headers.
 #[derive(Debug, Clone, Default)]
 pub struct RateLimitMeta {
@@ -592,7 +617,29 @@ pub struct ChatRequest {
     /// back so they execute as this run. Never serialized.
     #[serde(skip)]
     pub tool_credential: Option<String>,
+    /// The Nebo conversation this turn belongs to (the chat row's id), for a
+    /// provider that keeps one remote conversation per Nebo chat (the linked
+    /// provider). Empty for calls that are not a conversation's turn. Never
+    /// serialized.
+    #[serde(skip)]
+    pub chat_id: String,
+    /// The run's tool-approval channels — `tools::ApprovalChannels`, the ONE
+    /// tool-approval pathway — for a `handles_tools` provider whose runtime
+    /// stops for the owner's decision (the linked provider): it registers the
+    /// runtime's request under the same map the runner's own gate uses, so
+    /// the ApprovalGate, the phone and the comm relay all answer it. Never
+    /// serialized.
+    #[serde(skip)]
+    pub approval_channels: Option<ApprovalChannels>,
 }
+
+/// The run's tool-approval channels, keyed by request id; the value is the
+/// decision (`"once"`, `"always"`, `"deny"`). The same type as
+/// `tools::ApprovalChannels`, spelled here because `tools` depends on this
+/// crate.
+pub type ApprovalChannels = Arc<
+    tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
+>;
 
 impl ChatRequest {
     /// An empty request for `trace`. Fill the rest with struct update syntax:
@@ -612,6 +659,8 @@ impl ChatRequest {
             cancel_token: None,
             trace,
             tool_credential: None,
+            chat_id: String::new(),
+            approval_channels: None,
         }
     }
 }
@@ -642,6 +691,16 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether the runner may send this provider a call it did not build for
+    /// it: a failed call again, or a call another provider failed. False for
+    /// a provider whose runtime keeps the conversation and answers only for
+    /// the agent addressed (the linked provider): a message is delivered once,
+    /// so the runner shows its error as it is and ends the step, and never
+    /// rotates another employee's failed call onto it.
+    fn retryable(&self) -> bool {
+        true
+    }
+
     /// Whether this provider supports images in tool result content blocks.
     /// When true, the runner will pass screenshot images directly to the model
     /// instead of converting them to text via the sidecar vision model.
@@ -659,6 +718,14 @@ pub trait Provider: Send + Sync {
 
     /// Send a request and return a channel of streaming events.
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError>;
+}
+
+/// The first provider, in priority order, that takes any call: where a call
+/// no employee's model names goes (a summary, a compaction, a review). Never
+/// the linked provider (`retryable` = false), which answers only for the
+/// agent it is addressed to.
+pub fn default_provider(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
+    providers.iter().find(|p| p.retryable()).cloned()
 }
 
 /// Optional trait for providers that support HTTP/2 connection reset recovery.
@@ -968,6 +1035,10 @@ impl Provider for ProfiledProvider {
 
     fn handles_tools(&self) -> bool {
         self.inner.handles_tools()
+    }
+
+    fn retryable(&self) -> bool {
+        self.inner.retryable()
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {

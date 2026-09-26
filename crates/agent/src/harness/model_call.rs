@@ -97,16 +97,17 @@ fn could_not_connect(selector: &ModelSelector, model: &str) -> String {
     }
 }
 
-/// Pick a non-gateway provider when available.  Falls back to first provider
-/// (which may be Janus) only when no other option exists.  This prevents
-/// background operations (memory extraction, compaction, summarisation) from
-/// burning Janus credits when a CLI or direct-API provider is loaded.
+/// Pick a non-gateway provider when available.  Falls back to the default
+/// provider (which may be Janus) only when no other option exists.  This
+/// prevents background operations (memory extraction, compaction,
+/// summarisation) from burning Janus credits when a CLI or direct-API
+/// provider is loaded. Never the linked provider (`ai::default_provider`).
 pub(crate) fn prefer_non_gateway(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
     providers
         .iter()
-        .find(|p| p.id() != "janus")
+        .find(|p| p.retryable() && p.id() != "janus")
         .cloned()
-        .or_else(|| providers.first().cloned())
+        .or_else(|| ai::default_provider(providers))
 }
 
 /// Resolve the (provider, model) for auxiliary side-tasks — chat title
@@ -309,11 +310,9 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
 
         // The chosen model's provider, every attempt: a failed call is
         // retried on the same model, never handed to another provider.
-        // Without one (a CLI bot's empty model) the first provider serves.
-        let idx = prov_lock
-            .iter()
-            .position(|p| p.id() == selected_provider_id)
-            .unwrap_or(0);
+        let Some(idx) = pick_provider(&prov_lock, selected_provider_id) else {
+            return CallOutcome::Failed(no_provider(selected_provider_id));
+        };
 
         info!(
             iteration,
@@ -389,6 +388,12 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 debug!(iteration, session_id, "deduplicated provider error");
             } else {
                 warn!(iteration, session_id, error = %e, "provider error");
+            }
+
+            // A provider that will not take the call again (the linked
+            // provider): its answer is final, in its own words.
+            if !provider.retryable() {
+                return CallOutcome::Failed(err_str);
             }
 
             if ai::is_context_overflow(&e) {
@@ -706,12 +711,19 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 // the runner synthesizes it after executing tools itself.
                 let _ = tx.send(event).await;
             }
-            StreamEventType::ApprovalRequest
-            | StreamEventType::AskRequest
+            StreamEventType::ApprovalRequest => {
+                // A provider that runs tools itself relays its runtime's own
+                // approval prompt (the linked provider), registered on the
+                // run's approval channels like the runner's own gate; relay
+                // so chat_dispatch broadcasts approval_request. API
+                // providers never emit this event.
+                let _ = tx.send(event).await;
+            }
+            StreamEventType::AskRequest
             | StreamEventType::ControlNotice
             | StreamEventType::TextVerdict => {
-                // Approval/Ask/ControlNotice: only sent by runner, not
-                // received from provider.
+                // Ask/ControlNotice: only sent by runner, not received from
+                // provider.
             }
             StreamEventType::ToolSummary => {
                 // Tool execution summary — relay to parent for display.
@@ -786,7 +798,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         };
 
         // Layer 1: Transient errors (connection reset, timeout, EOF)
-        if !deterministic && ai::is_transient_error(&err) {
+        if provider.retryable() && !deterministic && ai::is_transient_error(&err) {
             st.transient_retries += 1;
             if st.transient_retries <= MAX_TRANSIENT_RETRIES {
                 let why = save_partial();
@@ -804,7 +816,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         }
 
         // Layer 2: Retryable errors (rate_limit, billing, provider errors)
-        let is_retryable = !deterministic
+        let is_retryable = provider.retryable()
+            && !deterministic
             && (err.is_retryable()
                 || reason == "rate_limit"
                 || reason == "billing"
@@ -874,6 +887,32 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         thinking,
         thinking_model,
     })
+}
+
+/// The provider a call goes to, by index: the provider the model names.
+/// A named provider that is not registered, or no name (a CLI bot's empty
+/// model), falls back to the first one that takes calls it did not build
+/// (`ai::default_provider`). A provider that answers only for the agent it
+/// is addressed to (the linked one) is never that fallback and never stood
+/// in for: a call named for it that it cannot take, or a call with nowhere
+/// to go, is `None`.
+fn pick_provider(providers: &[Arc<dyn Provider>], selected: &str) -> Option<usize> {
+    if let Some(idx) = providers.iter().position(|p| p.id() == selected) {
+        return Some(idx);
+    }
+    if selected == ai::providers::linked::ID {
+        return None;
+    }
+    providers.iter().position(|p| p.retryable())
+}
+
+/// What the owner reads when no provider can take the call.
+fn no_provider(selected: &str) -> String {
+    if selected.is_empty() {
+        "No AI provider is connected.".to_string()
+    } else {
+        format!("No AI provider is connected for {selected}.")
+    }
 }
 
 /// What a reply without tool calls asks of the next step.
@@ -1040,6 +1079,59 @@ mod tests {
         async fn stream(&self, _req: &ChatRequest) -> Result<ai::EventReceiver, ProviderError> {
             Err(ProviderError::Request("stub".into()))
         }
+    }
+
+    /// A provider that answers only for the agent it is addressed to.
+    struct Addressed;
+
+    #[async_trait::async_trait]
+    impl Provider for Addressed {
+        fn id(&self) -> &str {
+            "linked"
+        }
+        fn retryable(&self) -> bool {
+            false
+        }
+        async fn stream(&self, _req: &ChatRequest) -> Result<ai::EventReceiver, ProviderError> {
+            Err(ProviderError::Request("stub".into()))
+        }
+    }
+
+    /// A call goes to the provider its model names. When that provider is
+    /// not registered it goes to the first one that takes any call, never to
+    /// the linked provider; with nowhere else to go it goes nowhere, and a
+    /// linked call is never stood in for.
+    #[test]
+    fn a_missing_provider_never_lands_on_the_linked_one() {
+        let only_linked: Vec<Arc<dyn Provider>> = vec![Arc::new(Addressed)];
+        assert_eq!(pick_provider(&only_linked, "janus"), None);
+        assert_eq!(pick_provider(&only_linked, ""), None);
+        assert_eq!(pick_provider(&only_linked, "linked"), Some(0));
+
+        let both: Vec<Arc<dyn Provider>> = vec![Arc::new(Addressed), Arc::new(StubProvider("anthropic"))];
+        assert_eq!(pick_provider(&both, "janus"), Some(1));
+        assert_eq!(pick_provider(&both, ""), Some(1));
+        assert_eq!(pick_provider(&both, "linked"), Some(0));
+
+        let no_linked: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
+        assert_eq!(pick_provider(&no_linked, "linked"), None);
+        assert_eq!(no_provider("janus"), "No AI provider is connected for janus.");
+    }
+
+    /// A background call (summary, compaction, review) on a NeboAI-only bot
+    /// goes to Janus, never to the linked provider listed after it; with
+    /// only the linked provider there is nowhere to send it.
+    #[test]
+    fn a_background_call_never_goes_to_the_linked_provider() {
+        let janus_only: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("janus")), Arc::new(Addressed)];
+        assert_eq!(prefer_non_gateway(&janus_only).unwrap().id(), "janus");
+        let with_key: Vec<Arc<dyn Provider>> =
+            vec![Arc::new(Addressed), Arc::new(StubProvider("anthropic")), Arc::new(StubProvider("janus"))];
+        assert_eq!(prefer_non_gateway(&with_key).unwrap().id(), "anthropic");
+        assert_eq!(ai::default_provider(&with_key).unwrap().id(), "anthropic");
+        let only_linked: Vec<Arc<dyn Provider>> = vec![Arc::new(Addressed)];
+        assert!(prefer_non_gateway(&only_linked).is_none());
+        assert!(ai::default_provider(&only_linked).is_none());
     }
 
     fn aux_config(aux: &str) -> config::ModelsConfig {

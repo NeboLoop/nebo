@@ -655,7 +655,7 @@ pub async fn update_check(State(state): State<AppState>) -> HandlerResult<serde_
             cloud_update_check(&state).await.map_err(to_error_response)?,
         ));
     }
-    let result = updater::check(crate::VERSION)
+    let result = updater::check(&updater::NEBO, crate::VERSION)
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
     Ok(Json(serde_json::json!(result)))
@@ -683,16 +683,16 @@ pub async fn update_apply(State(state): State<AppState>) -> HandlerResult<serde_
         path
     } else {
         // No staged binary — download fresh
-        let result = updater::check(crate::VERSION)
+        let result = updater::check(&updater::NEBO, crate::VERSION)
             .await
             .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
         if !result.available {
             return Ok(Json(serde_json::json!({"status": "no_update"})));
         }
-        let path = updater::download(&result.latest_version, None)
+        let path = updater::download(&updater::NEBO, &result.latest_version, None)
             .await
             .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
-        updater::verify_checksum(&path, &result.latest_version)
+        updater::verify_checksum(&updater::NEBO, &path, &result.latest_version)
             .await
             .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
         path
@@ -710,7 +710,9 @@ pub async fn update_apply(State(state): State<AppState>) -> HandlerResult<serde_
         // Run apply in a blocking thread with a timeout
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            tokio::task::spawn_blocking(move || updater::apply_update(&binary_path, &data_dir)),
+            tokio::task::spawn_blocking(move || {
+                updater::apply_update(&binary_path, &data_dir, updater::ApplyMode::Restart)
+            }),
         )
         .await;
 

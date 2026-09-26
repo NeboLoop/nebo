@@ -1,0 +1,46 @@
+id: os-file-search-loop
+name: "OS file search — single pattern match, no directory-by-directory loop"
+description: |
+  The user asks to find a specific file type. The model should use a single
+  find (or rg --files) command with a pattern through run_command — not
+  individually check directories one by one in a loop.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: run_command
+
+conversation:
+  - role: user
+    content: "Can you locate 1 markdown file for me? Any markdown file is okay"
+
+tool_config:
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-pattern-search
+      text: "Model uses find (or rg --files) with a *.md pattern — not individual ls commands on separate directories"
+      severity: critical
+    - id: correct-tool
+      text: "Model uses run_command with a find/ls/rg pattern search"
+      severity: critical
+  recovery:
+    - id: no-directory-loop
+      text: "Model does NOT check directories one by one (ls ~/Documents, ls ~/Desktop, ls ~/Downloads, etc.)"
+      severity: critical
+    - id: no-repeated-options
+      text: "Model does NOT repeat the same response or options list if the first search returns results"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+    - id: max-two-calls
+      text: "Task completes in no more than 2 tool calls"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single run_command(command: "find ~ -maxdepth 3 -name '*.md' -print -quit")
+    call. Model returns the first match found. No directory-by-directory enumeration.
