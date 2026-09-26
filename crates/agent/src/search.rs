@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use ai::EmbeddingProvider;
 use db::Store;
@@ -35,15 +35,15 @@ impl Default for SearchConfig {
 }
 
 /// Perform hybrid search combining FTS5 text search and vector similarity.
-/// When a `vector_index` is provided, uses TurboVec ANN search instead of
-/// brute-force cosine scan over all embeddings.
+/// When a `vector_index` holding vectors for `user_id` is provided, uses
+/// TurboVec ANN search instead of brute-force cosine scan over all embeddings.
 pub async fn hybrid_search(
     store: &Arc<Store>,
     embedding_provider: Option<&dyn EmbeddingProvider>,
     query: &str,
     user_id: &str,
     config: &SearchConfig,
-    vector_index: Option<&IdMapIndex>,
+    vector_index: Option<Arc<VectorIndex>>,
 ) -> Vec<SearchResult> {
     let query_class = classify_query(query);
     // Embed the query up front: fusion weights depend on whether the vector
@@ -162,16 +162,25 @@ pub async fn hybrid_search(
 
     // 3. Vector search (when the query embedded above)
     if let Some(query_vec) = &query_vec {
-        if let Some(index) = vector_index.filter(|idx| !idx.is_empty()) {
-            // Fast path: ANN search via TurboVec
-            let k = config.limit * 3;
-            let (scores, ids) = index.search(query_vec, k);
-            for (score, id) in scores.iter().zip(ids.iter()) {
-                let sim = *score as f64;
+        // Fast path: ANN search via TurboVec. Off the runtime workers — the
+        // index lock can be held by a scope sync (see VectorIndex::sync_scope).
+        let ann_hits = match vector_index {
+            Some(index) => {
+                let (uid, q, k) = (user_id.to_string(), query_vec.clone(), config.limit * 3);
+                tokio::task::spawn_blocking(move || index.search(&uid, &q, k))
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            None => None,
+        };
+        if let Some(hits) = ann_hits {
+            for (score, id) in hits {
+                let sim = score as f64;
                 if sim < config.min_score {
                     continue;
                 }
-                let chunk_id = *id as i64;
+                let chunk_id = id as i64;
                 merge_vector_hit(store, &mut merged, &mut strength, chunk_id, sim, vector_weight);
             }
         } else {
@@ -330,40 +339,183 @@ fn merge_vector_hit(
     }
 }
 
-/// Build a TurboVec index from all embeddings stored in the DB for a user.
-/// The index maps chunk_id (as u64) to quantized vectors for fast ANN search.
-pub fn load_vector_index(store: &Arc<Store>, user_id: &str, model: &str) -> Option<IdMapIndex> {
-    let all_embeddings = store.get_all_embeddings_by_user(user_id, model).ok()?;
-    if all_embeddings.is_empty() {
-        return None;
-    }
+/// Threads the vector-index math may use. Building an index's rotation
+/// matrix is a 1536x1536 QR decomposition (faer + gemm through rayon); on
+/// rayon's global pool it took every core, and at machine load 94 the process
+/// froze 22-49 s with rayon workers spinning — the tokio runtime starved, the
+/// hub's 3 s tunnel probe failed and the tunnel reset (2026-09-26). Ceiling:
+/// index work gets at most TWO cores, whatever the machine has.
+pub const INDEX_THREADS: usize = 2;
 
-    // Infer dimensionality from the first embedding
-    let first_blob = &all_embeddings[0].1;
-    let dims = first_blob.len() / 4; // f32 = 4 bytes
-    if dims == 0 {
-        return None;
-    }
+/// The ONE pool every TurboVec call runs in (encode, rotation, search), so
+/// faer/gemm/turbovec see `rayon::current_num_threads() == INDEX_THREADS`.
+/// Dedicated rather than capping the global pool: other crates (the skills
+/// loader) use rayon's global pool for their own work.
+pub fn index_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(INDEX_THREADS)
+            .thread_name(|i| format!("nebo-vecindex-{i}"))
+            .build()
+            .expect("build vector index thread pool")
+    })
+}
 
-    let mut index = IdMapIndex::new(dims, 4); // 4-bit quantization, 8x compression
+/// ONE long-lived TurboVec index per embedding model, shared by every memory
+/// scope (user_id). TurboVec builds its rotation matrix once per index
+/// instance and keeps it for the index's lifetime, so a single instance that
+/// is only ever updated in place pays that build once per process. The old
+/// per-scope indexes, dropped and rebuilt after every embed, rebuilt it on
+/// every load (31 scopes at boot, again after each new memory).
+///
+/// The DB stays the source of truth: a scope is loaded from it on first use,
+/// and a scope marked stale (`mark_stale`, after any embed or delete) is
+/// reconciled against it on its next use — only the changed chunk ids are
+/// added or removed, the index itself is never rebuilt.
+///
+/// Every method but `mark_stale` blocks: call them from `spawn_blocking`.
+pub struct VectorIndex {
+    inner: RwLock<ScopedIndex>,
+    stale: Mutex<HashSet<String>>,
+}
 
-    for (chunk_id, blob) in &all_embeddings {
-        let vec = ai::bytes_to_f32(blob);
-        if vec.len() != dims {
-            continue;
+struct ScopedIndex {
+    /// 4-bit quantization, 8x compression. Dimension is locked by the first
+    /// vector added.
+    index: IdMapIndex,
+    /// Chunk ids per memory scope. Chunk ids are global primary keys, so
+    /// scopes never collide inside the shared index.
+    scopes: HashMap<String, HashSet<u64>>,
+}
+
+impl Default for VectorIndex {
+    fn default() -> Self {
+        Self {
+            inner: RwLock::new(ScopedIndex {
+                index: IdMapIndex::new_lazy(4),
+                scopes: HashMap::new(),
+            }),
+            stale: Mutex::new(HashSet::new()),
         }
-        if let Err(e) = index.add_with_ids(&vec, &[*chunk_id as u64]) {
-            warn!(chunk_id, error = ?e, "failed to add vector to index");
+    }
+}
+
+impl VectorIndex {
+    /// Mark a scope's vectors as changed in the DB. Cheap and non-blocking;
+    /// the reconcile happens on the scope's next `sync_scope`.
+    pub fn mark_stale(&self, user_id: &str) {
+        if let Ok(mut stale) = self.stale.lock() {
+            stale.insert(user_id.to_string());
         }
     }
 
-    debug!(
-        user_id,
-        vectors = index.len(),
-        dims,
-        "loaded TurboVec index from DB"
-    );
-    Some(index)
+    /// Bring `user_id`'s slice of the index in line with the DB: a no-op when
+    /// the scope is loaded and not stale, otherwise one scan of the scope's
+    /// embeddings and an in-place add/remove of the differences.
+    pub fn sync_scope(&self, store: &Store, user_id: &str, model: &str) {
+        let was_stale = self
+            .stale
+            .lock()
+            .map(|mut s| s.remove(user_id))
+            .unwrap_or(false);
+        let Ok(mut inner) = self.inner.write() else {
+            return;
+        };
+        if !was_stale && inner.scopes.contains_key(user_id) {
+            return;
+        }
+        // The DB read happens under the write lock so two syncs of one scope
+        // can never apply snapshots out of order.
+        let rows = match store.get_all_embeddings_by_user(user_id, model) {
+            Ok(rows) => rows,
+            Err(e) => {
+                warn!(user_id, error = %e, "vector index: failed to read embeddings");
+                if was_stale {
+                    self.mark_stale(user_id);
+                }
+                return;
+            }
+        };
+        let scoped: &mut ScopedIndex = &mut inner;
+        index_pool().install(|| scoped.reconcile(user_id, rows));
+    }
+
+    /// Top-`k` (score, chunk_id) hits within `user_id`'s scope, or `None`
+    /// when the scope holds no vectors (callers fall back to a brute scan).
+    pub fn search(&self, user_id: &str, query: &[f32], k: usize) -> Option<Vec<(f32, u64)>> {
+        let inner = self.inner.read().ok()?;
+        if inner.index.dim_opt() != Some(query.len()) {
+            return None;
+        }
+        let allow: Vec<u64> = inner.scopes.get(user_id)?.iter().copied().collect();
+        if allow.is_empty() {
+            return None;
+        }
+        let index = &inner.index;
+        let (scores, ids) =
+            index_pool().install(|| index.search_with_allowlist(query, k, Some(&allow)));
+        Some(scores.into_iter().zip(ids).collect())
+    }
+}
+
+impl ScopedIndex {
+    fn reconcile(&mut self, user_id: &str, rows: Vec<(i64, Vec<u8>)>) {
+        let mut scope = self.scopes.remove(user_id).unwrap_or_default();
+        let db_ids: HashSet<u64> = rows.iter().map(|(id, _)| *id as u64).collect();
+
+        let gone: Vec<u64> = scope.difference(&db_ids).copied().collect();
+        for id in &gone {
+            self.index.remove(*id);
+            scope.remove(id);
+        }
+
+        // Batch every new vector into one add. The dimension checks happen
+        // here because turbovec records ids before validating the dimension.
+        let mut ids = Vec::new();
+        let mut flat = Vec::new();
+        let mut dims = self.index.dim_opt();
+        for (chunk_id, blob) in &rows {
+            let id = *chunk_id as u64;
+            if scope.contains(&id) {
+                continue;
+            }
+            let vec = ai::bytes_to_f32(blob);
+            // TurboVec needs a non-zero multiple of 8; the first usable
+            // vector locks the dimension.
+            let usable = match dims {
+                Some(d) => vec.len() == d,
+                None if !vec.is_empty() && vec.len() % 8 == 0 => {
+                    dims = Some(vec.len());
+                    true
+                }
+                None => false,
+            };
+            if !usable {
+                warn!(chunk_id, dims = vec.len(), "vector index: skipping vector with unusable dimension");
+                continue;
+            }
+            ids.push(id);
+            flat.extend_from_slice(&vec);
+        }
+        let added = ids.len();
+        if let Some(d) = dims.filter(|_| added > 0) {
+            match self.index.add_with_ids_2d(&flat, d, &ids) {
+                Ok(()) => scope.extend(ids),
+                Err(e) => warn!(user_id, error = ?e, "vector index: failed to add vectors"),
+            }
+        }
+
+        debug!(
+            user_id,
+            added,
+            removed = gone.len(),
+            scope_vectors = scope.len(),
+            total_vectors = self.index.len(),
+            "synced TurboVec index scope"
+        );
+        self.scopes.insert(user_id.to_string(), scope);
+    }
 }
 
 /// Adaptive weights: (vector_weight, text_weight) based on query class.
@@ -467,5 +619,32 @@ mod tests {
             let (v, t) = adaptive_weights(&class);
             assert!((v + t - 1.0).abs() < 1e-6);
         }
+    }
+
+    /// Index math runs in a pool that can never use more than INDEX_THREADS
+    /// cores — faer/gemm size their work by `rayon::current_num_threads()`
+    /// and every parallel iterator inside `install` stays in the pool.
+    #[test]
+    fn test_index_pool_caps_parallelism() {
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let threads = index_pool().install(|| {
+            (0..64).into_par_iter().for_each(|_| {
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                active.fetch_sub(1, Ordering::SeqCst);
+            });
+            rayon::current_num_threads()
+        });
+        assert_eq!(threads, INDEX_THREADS);
+        assert!(
+            peak.load(Ordering::SeqCst) <= INDEX_THREADS,
+            "index work ran on {} threads at once",
+            peak.load(Ordering::SeqCst)
+        );
     }
 }
