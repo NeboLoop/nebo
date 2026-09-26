@@ -234,7 +234,8 @@
 		"searchChats": "Search chats…",
 		"upgrade": "Upgrade",
 		"restarted": "Interrupted",
-		"working": "Working"
+		"working": "Working",
+		"offline": "Offline"
 	},
 	"chat": {
 		"contextStats": "Context this turn: {files} files were re-read {times} times, {passes} compaction passes.",
@@ -3028,7 +3029,10 @@
 		"placeholder": "e.g. Dispatch, Piper, Sam…",
 		"create": "Hire them",
 		"failed": "Couldn't create the employee. Try again.",
-		"marketplaceHint": "Want a pre-built expert instead? Browse the Marketplace."
+		"marketplaceHint": "Want a pre-built expert instead? Browse the Marketplace.",
+		"hireFrom": "Hire from {bot}",
+		"linkedLede": "Runs on {bot}. Its tools run there, under that bot's own approvals. Both bots need to be online.",
+		"linkedFailed": "Couldn't hire from {bot}. Try again."
 	},
 	"runLimit": {
 		"title": "Spending limit per run",

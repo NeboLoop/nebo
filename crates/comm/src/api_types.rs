@@ -929,3 +929,33 @@ pub struct BotStateCommitResponse {
     #[serde(default)]
     pub expires_at: Option<String>,
 }
+
+// ── Managed bots (the owner's account) ───────────────────────────────
+
+/// One bot on the owner's account, as `GET /api/v1/manage/bots` lists it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ManagedBot {
+    pub id: String,
+    pub name: String,
+    /// The hub's presence for the bot right now.
+    pub online: bool,
+    /// What runs the bot: "nebo", or a linked runtime ("openclaw", "hermes").
+    pub runtime: String,
+    /// The bot serves Nebo's chat contract over its tunnel (a linked bot
+    /// whose agents can be hired as employees).
+    pub chat: bool,
+    /// Shared with this account by another owner (never a hire source: a
+    /// bot token reaches a linked bot only for a bot of the same owner).
+    pub shared: bool,
+}
+
+/// One agent a linked bot serves on its chat contract
+/// (`GET /t/{botId}/api/v1/agents`): an OpenClaw agent, a Hermes profile.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LinkedAgent {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}

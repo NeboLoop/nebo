@@ -36,6 +36,9 @@ var typeOverrides = map[string]string{
 	// ── Agents roster (enriched rows: display name, source, isolation, setup) ──
 	"list_agents.agents": "AgentListEntry[]",
 	"list_agents.primaryChristened": "boolean",
+	// Linked bots (OpenClaw, Hermes) with chat, and the agents each serves:
+	// what "Hire from <linked bot>" offers.
+	"list_linked_agents.bots": "LinkedBotEntry[]",
 	// Blank-create (the Hire flow) returns the introduction thread so the
 	// UI can land the owner where the new employee is speaking.
 	"create_agent.threadId": "string | null",
@@ -128,6 +131,25 @@ export interface RunDisplay {
 	nappPath?: string
 	appWindowConfig?: AppWindowConfig
 	loadError?: string
+	/** "linked" for an employee hired from a linked bot; unset otherwise. */
+	kind?: string
+	/** Linked employees only: the linked bot cannot be reached right now. */
+	offline?: boolean
+}`,
+
+	"LinkedBotEntry": `export interface LinkedBotEntry {
+	id: string
+	name: string
+	/** What runs the bot: "openclaw", "hermes". */
+	runtime: string
+	online: boolean
+	agents: LinkedAgentEntry[]
+}`,
+
+	"LinkedAgentEntry": `export interface LinkedAgentEntry {
+	id: string
+	name: string
+	description: string
 }`,
 
 	"AppWindowConfig": `export interface AppWindowConfig {

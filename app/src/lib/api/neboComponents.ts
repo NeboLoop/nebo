@@ -1773,6 +1773,10 @@ export interface ListIntegrationsResponse {
 	integrations: McpIntegration[]
 }
 
+export interface ListLinkedAgentsResponse {
+	bots: LinkedBotEntry[]
+}
+
 export interface ListMemoriesResponse {
 	memories: Memory[]
 	total: number
@@ -2351,6 +2355,10 @@ export interface AgentListEntry {
 	nappPath?: string
 	appWindowConfig?: AppWindowConfig
 	loadError?: string
+	/** "linked" for an employee hired from a linked bot; unset otherwise. */
+	kind?: string
+	/** Linked employees only: the linked bot cannot be reached right now. */
+	offline?: boolean
 }
 
 export interface AgentRunEntry {
@@ -2471,6 +2479,21 @@ export interface ImportOutcome {
 	agentId: string | null
 	agentName: string | null
 	skipped: string[]
+}
+
+export interface LinkedAgentEntry {
+	id: string
+	name: string
+	description: string
+}
+
+export interface LinkedBotEntry {
+	id: string
+	name: string
+	/** What runs the bot: "openclaw", "hermes". */
+	runtime: string
+	online: boolean
+	agents: LinkedAgentEntry[]
 }
 
 export interface RunDisplayFact {

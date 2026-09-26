@@ -349,6 +349,19 @@ pub async fn list_agents(
         })
         .collect();
 
+    // Linked employees read "Offline" when their linked bot is, as the hub
+    // reports it — one hub call for the whole roster, only when one exists.
+    let linked = linked_employees(&state, &db_rows);
+    let offline = if linked.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let bots = match crate::codes::build_api_client(&state) {
+            Ok(api) => api.list_managed_bots().await.ok(),
+            Err(_) => None,
+        };
+        linked_offline(&linked, bots.as_deref())
+    };
+
     let mut agents = Vec::with_capacity(fs_agents.len());
     let mut matched_db_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for loaded in &fs_agents {
@@ -447,6 +460,8 @@ pub async fn list_agents(
             // the latest thread's status line, and whether a restart cut it.
             "latestPreview": latest_thread.as_ref().and_then(|t| t.preview.clone()),
             "restarted": latest_thread.as_ref().is_some_and(|t| t.restarted),
+            "kind": db_row.and_then(|r| r.kind.clone()),
+            "offline": offline.get(&agent_id).copied(),
         });
         // Derive needsSetup from config inputs vs stored input_values
         let needs_setup = if let Some(ref cfg) = loaded.config {
@@ -524,6 +539,8 @@ pub async fn list_agents(
             "needsSetup": false,
             "latestPreview": latest_thread.as_ref().and_then(|t| t.preview.clone()),
             "restarted": latest_thread.as_ref().is_some_and(|t| t.restarted),
+            "kind": r.kind,
+            "offline": offline.get(&r.id).copied(),
             "loadError": if files_expected {
                 serde_json::Value::String("agent files failed to load — this employee cannot run correctly; delete it or repair its files".into())
             } else {
@@ -662,6 +679,12 @@ pub async fn create_agent(
     if body.get("blank").and_then(|v| v.as_bool()).unwrap_or(false) {
         let name = body["name"].as_str().filter(|n| !n.trim().is_empty());
         return create_blank_agent(state, name).await;
+    }
+    // Hire from a linked bot: the employee's brain is an agent on a linked
+    // OpenClaw or Hermes install, driven through the link's chat contract.
+    if let Some(linked) = body.get("linked") {
+        let (bot_id, agent_id) = linked_target(linked).map_err(to_error_response)?;
+        return create_linked_agent(state, &bot_id, &agent_id).await;
     }
 
     let agent_md = body["agentMd"].as_str().ok_or_else(|| {
@@ -1126,6 +1149,13 @@ pub async fn update_agent(
         .get_agent(&id)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    if linked_persona_edit(&existing, &body) {
+        return Err(to_error_response(types::NeboError::Validation(format!(
+            "{}'s soul and rules are set on the linked bot.",
+            existing.name
+        ))));
+    }
 
     let agent_md = body["agentMd"].as_str().unwrap_or(&existing.agent_md);
     let (fm, _body) = parse_agent_md(agent_md).map_err(to_error_response)?;
@@ -1692,31 +1722,7 @@ async fn create_blank_agent(
         .create_agent(&id, None, name, "", &agent_md, "{}", None, None)
         .map_err(to_error_response)?;
 
-    // Auto-activate: insert into agent_registry so it shows in sidebar
-    let active = tools::ActiveAgent {
-        agent_id: id.clone(),
-        name: agent.name.clone(),
-        agent_md: agent.agent_md.clone(),
-        config: None,
-        channel_id: None,
-        degraded: None,
-                    soul: agent.soul.clone(),
-                    rules: agent.rules.clone(),
-    };
-    state
-        .agent_registry
-        .write()
-        .await
-        .insert(id.clone(), active);
-    state.agent_workers.start_agent(&id, &agent.name, None).await;
-
-    // The ONE post-persist routine (Rule 8.1) — it owns the agent_installed
-    // broadcast and the seeds; activation is a separate event, kept here.
-    crate::codes::finalize_agent_install(&state, &id, &agent.name).await;
-    state.hub.broadcast(
-        "agent_activated",
-        serde_json::json!({ "agentId": &id, "name": &agent.name }),
-    );
+    activate_hire(&state, &agent).await;
 
     // Every hire introduces itself — the ONE intro ceremony.
     let thread_id = spawn_agent_intro(&state, &id, &agent.name, true)
@@ -1728,6 +1734,205 @@ async fn create_blank_agent(
         "activated": true,
         "threadId": thread_id,
     })))
+}
+
+/// Auto-activate a hire: the registry row that puts it on the roster, its
+/// worker, the ONE post-persist routine, and the activation event. The blank
+/// hire and the linked hire both come through here (Rule 8.1).
+async fn activate_hire(state: &AppState, agent: &db::models::Agent) {
+    let active = tools::ActiveAgent {
+        agent_id: agent.id.clone(),
+        name: agent.name.clone(),
+        agent_md: agent.agent_md.clone(),
+        config: None,
+        channel_id: None,
+        degraded: None,
+        soul: agent.soul.clone(),
+        rules: agent.rules.clone(),
+    };
+    state
+        .agent_registry
+        .write()
+        .await
+        .insert(agent.id.clone(), active);
+    state.agent_workers.start_agent(&agent.id, &agent.name, None).await;
+
+    // The ONE post-persist routine (Rule 8.1) — it owns the agent_installed
+    // broadcast and the seeds; activation is a separate event, kept here.
+    crate::codes::finalize_agent_install(state, &agent.id, &agent.name).await;
+    state.hub.broadcast(
+        "agent_activated",
+        serde_json::json!({ "agentId": &agent.id, "name": &agent.name }),
+    );
+}
+
+/// The `linked: {botId, agentId}` option of the create-agent body.
+fn linked_target(linked: &serde_json::Value) -> Result<(String, String), types::NeboError> {
+    let field = |key: &str| {
+        linked[key]
+            .as_str()
+            .map(str::trim)
+            .filter(|v| !v.is_empty() && !v.contains('/'))
+            .map(str::to_owned)
+            .ok_or_else(|| types::NeboError::Validation(format!("linked.{key} required")))
+    };
+    Ok((field("botId")?, field("agentId")?))
+}
+
+/// Hire an agent of a linked bot as an employee of this bot: the row is
+/// `kind = "linked"`, its name and description are the contract roster's,
+/// its name is locked, and its brain is `linked/<bot>/<agent>` on the
+/// employee's model preference. Soul and rules stay the runtime's.
+async fn create_linked_agent(
+    state: AppState,
+    bot_id: &str,
+    agent_id: &str,
+) -> HandlerResult<serde_json::Value> {
+    let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
+    let bots = api
+        .list_managed_bots()
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+    let bot = bots
+        .iter()
+        .find(|b| b.id == bot_id && b.chat && !b.shared)
+        .ok_or_else(|| {
+            to_error_response(types::NeboError::Validation(
+                "That bot is not a linked bot of yours with chat.".into(),
+            ))
+        })?;
+    let roster = api.linked_bot_agents(bot_id).await.map_err(|e| {
+        info!(bot_id, error = %e, "hire: the linked bot's roster did not answer");
+        to_error_response(types::NeboError::Internal(format!(
+            "Could not connect to {}. Try again.",
+            bot.name
+        )))
+    })?;
+    let linked = roster.iter().find(|a| a.id == agent_id).ok_or_else(|| {
+        to_error_response(types::NeboError::Validation(format!(
+            "No agent {agent_id} on {}.",
+            bot.name
+        )))
+    })?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let name = linked.name.trim();
+    let name = if name.is_empty() { agent_id } else { name };
+    let agent_md = format!(
+        "---\nname: {:?}\ndescription: {:?}\n---\n",
+        name, linked.description
+    );
+    let agent = state
+        .store
+        .create_agent(
+            &id,
+            Some("linked"),
+            name,
+            &linked.description,
+            &agent_md,
+            "{}",
+            None,
+            None,
+        )
+        .map_err(to_error_response)?;
+    state.store.lock_agent_name(&id).map_err(to_error_response)?;
+    state
+        .store
+        .upsert_entity_config(
+            "agent",
+            &id,
+            &serde_json::json!({ "modelPreference": ai::LinkedProvider::model_id(bot_id, agent_id) }),
+        )
+        .map_err(to_error_response)?;
+    info!(agent = %id, bot_id, agent_id, "hired a linked agent");
+
+    activate_hire(&state, &agent).await;
+
+    // No introduction ceremony: the name is the linked agent's, not one the
+    // owner gave, and the runtime owns what it says first.
+    Ok(Json(serde_json::json!({
+        "agent": { "id": id, "name": agent.name },
+        "activated": true,
+        "threadId": serde_json::Value::Null,
+    })))
+}
+
+/// GET /agents/linked — every linked bot of the owner's with chat, and the
+/// agents it serves: what "Hire from <linked bot>" offers. Not signed in to
+/// NeboAI = nothing to hire from.
+pub async fn list_linked_agents(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let Ok(api) = crate::codes::build_api_client(&state) else {
+        return Ok(Json(serde_json::json!({ "bots": [] })));
+    };
+    let bots = api
+        .list_managed_bots()
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+    let mut sources = Vec::new();
+    for bot in bots.into_iter().filter(|b| b.chat && !b.shared) {
+        let agents = match api.linked_bot_agents(&bot.id).await {
+            Ok(agents) => agents,
+            Err(e) => {
+                info!(bot_id = %bot.id, error = %e, "linked bot's roster did not answer");
+                Vec::new()
+            }
+        };
+        sources.push(serde_json::json!({
+            "id": bot.id,
+            "name": bot.name,
+            "runtime": bot.runtime,
+            "online": bot.online,
+            "agents": agents,
+        }));
+    }
+    Ok(Json(serde_json::json!({ "bots": sources })))
+}
+
+/// Whether the roster's linked employees can be reached right now, by agent
+/// id: a linked employee is offline when the hub reports its linked bot
+/// offline, and when the hub itself cannot be asked (`bots` = None).
+fn linked_offline(
+    linked: &[(String, String)],
+    bots: Option<&[comm::api_types::ManagedBot]>,
+) -> std::collections::HashMap<String, bool> {
+    linked
+        .iter()
+        .map(|(agent_id, model)| {
+            let online = ai::LinkedProvider::target(model)
+                .zip(bots)
+                .is_some_and(|((bot_id, _), bots)| bots.iter().any(|b| b.id == bot_id && b.online));
+            (agent_id.clone(), !online)
+        })
+        .collect()
+}
+
+/// The roster's linked employees and the linked agent each one runs as.
+fn linked_employees(state: &AppState, rows: &[db::models::Agent]) -> Vec<(String, String)> {
+    rows.iter()
+        .filter(|r| r.kind.as_deref() == Some("linked"))
+        .filter_map(|r| {
+            let model = state
+                .store
+                .get_entity_config("agent", &r.id)
+                .ok()
+                .flatten()
+                .and_then(|c| c.model_preference)?;
+            Some((r.id.clone(), model))
+        })
+        .collect()
+}
+
+/// A write that would change a linked employee's soul or rules: those are
+/// the runtime's, read on the linked bot and never written here.
+fn linked_persona_edit(existing: &db::models::Agent, body: &serde_json::Value) -> bool {
+    existing.kind.as_deref() == Some("linked")
+        && [("soul", &existing.soul), ("rules", &existing.rules)]
+            .iter()
+            .any(|(key, current)| {
+                body[*key]
+                    .as_str()
+                    .is_some_and(|v| v != current.as_deref().unwrap_or(""))
+            })
 }
 
 /// GET /agents/event-sources — every event source a trigger can subscribe to:
@@ -5298,5 +5503,95 @@ mod frontmatter_save_tests {
         );
         assert!(saved.get("memory").is_none());
         assert_eq!(saved["requires"], serde_json::json!({}));
+    }
+}
+
+#[cfg(test)]
+mod linked_hire_tests {
+    use super::{linked_offline, linked_persona_edit, linked_target};
+
+    fn agent_row(kind: Option<&str>, soul: Option<&str>) -> db::models::Agent {
+        db::models::Agent {
+            id: "emp-1".into(),
+            kind: kind.map(str::to_owned),
+            name: "Danny".into(),
+            description: String::new(),
+            agent_md: String::new(),
+            frontmatter: "{}".into(),
+            pricing_model: None,
+            pricing_cost: None,
+            is_enabled: 1,
+            installed_at: 0,
+            updated_at: 0,
+            napp_path: None,
+            input_values: "{}".into(),
+            is_app: None,
+            app_ui_path: None,
+            app_binary_path: None,
+            app_window_config: None,
+            soul: soul.map(str::to_owned),
+            rules: None,
+            handle: None,
+            color: None,
+            loop_exposed: 0,
+            loop_agent_id: None,
+            department: None,
+            voice: String::new(),
+            name_locked: 1,
+            context_stamp: None,
+            reports_to: None,
+            department_locked: 0,
+        }
+    }
+
+    /// The hire body names the linked bot and its agent, both plain ids.
+    #[test]
+    fn a_linked_hire_names_its_bot_and_agent() {
+        let (bot, agent) =
+            linked_target(&serde_json::json!({ "botId": " b1 ", "agentId": "coder" })).unwrap();
+        assert_eq!((bot.as_str(), agent.as_str()), ("b1", "coder"));
+        assert!(linked_target(&serde_json::json!({ "botId": "b1" })).is_err());
+        assert!(linked_target(&serde_json::json!({ "botId": "", "agentId": "a" })).is_err());
+        assert!(linked_target(&serde_json::json!({ "botId": "b/1", "agentId": "a" })).is_err());
+        assert!(linked_target(&serde_json::Value::Null).is_err());
+    }
+
+    /// A linked employee reads Offline when the hub says its bot is, when
+    /// the hub does not list the bot, and when the hub cannot be asked.
+    #[test]
+    fn a_linked_employee_is_offline_with_its_bot() {
+        let bot = |id: &str, online: bool| comm::api_types::ManagedBot {
+            id: id.into(),
+            online,
+            ..Default::default()
+        };
+        let linked = vec![
+            ("e-up".to_owned(), "linked/b-up/assistant".to_owned()),
+            ("e-down".to_owned(), "linked/b-down/assistant".to_owned()),
+            ("e-gone".to_owned(), "linked/b-gone/assistant".to_owned()),
+            ("e-bad".to_owned(), "janus/nebo-1".to_owned()),
+        ];
+        let bots = [bot("b-up", true), bot("b-down", false)];
+        let offline = linked_offline(&linked, Some(&bots));
+        assert_eq!(offline["e-up"], false);
+        assert_eq!(offline["e-down"], true);
+        assert_eq!(offline["e-gone"], true);
+        assert_eq!(offline["e-bad"], true);
+
+        let unreachable = linked_offline(&linked, None);
+        assert!(unreachable.values().all(|off| *off));
+    }
+
+    /// Soul and rules belong to the runtime: a change is refused on a linked
+    /// employee, an unchanged value passes, and other employees are untouched.
+    #[test]
+    fn a_linked_employees_persona_is_not_written_here() {
+        let linked = agent_row(Some("linked"), Some("calm"));
+        assert!(linked_persona_edit(&linked, &serde_json::json!({ "soul": "loud" })));
+        assert!(linked_persona_edit(&linked, &serde_json::json!({ "rules": "never" })));
+        assert!(!linked_persona_edit(&linked, &serde_json::json!({ "soul": "calm" })));
+        assert!(!linked_persona_edit(&linked, &serde_json::json!({ "name": "Dan" })));
+        let plain = agent_row(None, Some("calm"));
+        assert!(!linked_persona_edit(&plain, &serde_json::json!({ "soul": "loud" })));
     }
 }

@@ -2,10 +2,17 @@
   NewEmployeeModal — hire an additional employee. Same doctrine as the
   christening: hiring starts with a name. Unlike christening this is
   dismissible — the workforce already exists.
+
+  Below the name, every linked bot of the owner's with chat (an OpenClaw or
+  Hermes install joined through Nebo Link) offers its agents: "Hire from
+  <linked bot>" makes one of them an employee here, with the linked agent's
+  own name and brain.
 -->
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
-  import { createAgent } from '$lib/api/nebo';
+  import { createAgent, listLinkedAgents } from '$lib/api/nebo';
+  import type { LinkedBotEntry } from '$lib/api/neboComponents';
 
   let { onclose, oncreated }: {
     onclose: () => void;
@@ -15,8 +22,20 @@
   let name = $state('');
   let busy = $state(false);
   let errorMsg = $state('');
+  let linkedBots = $state<LinkedBotEntry[]>([]);
 
   const valid = $derived(name.trim().length > 0 && name.trim().length <= 40);
+
+  onMount(async () => {
+    try {
+      const resp = await listLinkedAgents();
+      linkedBots = (resp.bots ?? []).filter((b) => b.agents.length > 0);
+    } catch {
+      // Nothing to hire from is the same as no linked bots: the section
+      // stays hidden.
+      linkedBots = [];
+    }
+  });
 
   async function create() {
     if (!valid || busy) return;
@@ -27,6 +46,20 @@
       oncreated(resp.agent.id, resp.agent.name, resp.threadId);
     } catch (e: unknown) {
       errorMsg = e instanceof Error ? e.message : $t('newEmployee.failed');
+      busy = false;
+    }
+  }
+
+  async function hireLinked(bot: LinkedBotEntry, agentId: string) {
+    if (busy) return;
+    busy = true;
+    errorMsg = '';
+    try {
+      const resp = await createAgent({ linked: { botId: bot.id, agentId } });
+      oncreated(resp.agent.id, resp.agent.name, resp.threadId);
+    } catch (e: unknown) {
+      errorMsg =
+        e instanceof Error ? e.message : $t('newEmployee.linkedFailed', { values: { bot: bot.name } });
       busy = false;
     }
   }
@@ -75,6 +108,30 @@
         {/if}
       </button>
     </div>
+
+    {#each linkedBots as bot (bot.id)}
+      <div class="w-full mt-5 pt-4 border-t border-base-300 text-left">
+        <h2 class="text-sm font-semibold">{$t('newEmployee.hireFrom', { values: { bot: bot.name } })}</h2>
+        <p class="text-xs text-base-content/60 mt-1 leading-relaxed">{$t('newEmployee.linkedLede', { values: { bot: bot.name } })}</p>
+        <ul class="mt-2 flex flex-col gap-1">
+          {#each bot.agents as agent (agent.id)}
+            <li>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm rounded-field w-full justify-start gap-2 font-normal"
+                disabled={busy}
+                onclick={() => hireLinked(bot, agent.id)}
+              >
+                <span class="font-medium truncate">{agent.name}</span>
+                {#if agent.description}
+                  <span class="text-xs text-base-content/60 truncate">{agent.description}</span>
+                {/if}
+              </button>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/each}
 
     <p class="text-xs text-base-content/50 mt-4">{$t('newEmployee.marketplaceHint')}</p>
   </div>
