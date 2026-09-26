@@ -92,6 +92,15 @@ impl PermissionGate for Check {
                 why: Why::Declined { ask_id },
             };
         }
+        // Nothing can wait for the answer: the call is refused, not asked.
+        if let Decision::Ask { case } = &decision
+            && ctx.cannot_wait
+        {
+            decision = Decision::Deny {
+                reason: ask::cannot_wait_text(&call.tool.activity(call.input), case),
+                why: Why::CannotWait { case: case.clone() },
+            };
+        }
         let ask_id = match &decision {
             Decision::Ask { case } => Some(self.asks.park(&cx, call, case)),
             _ => None,

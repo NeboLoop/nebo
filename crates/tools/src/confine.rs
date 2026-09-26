@@ -1,7 +1,10 @@
 //! What a command an employee runs may reach, enforced by the operating
 //! system around the command itself: Nebo's own files (`nebo_files`) can't
-//! be read or changed, and a run whose web access is off can't reach the
-//! network. Everything else the command does runs as it would anyway.
+//! be read or changed, Nebo's own ports (`types::own_ports`: its local API,
+//! its browser's debugging port) can't be connected to, and a run whose web
+//! access is off can't reach the network. Everything else the command does
+//! runs as it would anyway, a server the employee started on this computer
+//! included.
 //!
 //! A limit on the command's words can be walked around (`curl`, then
 //! `python -c "urllib…"`, then `nc`); a limit on the process can't, whatever
@@ -9,10 +12,13 @@
 //! under it:
 //!
 //! - macOS: `sandbox-exec` with a profile that allows everything but those
-//!   paths and, offline, every IP socket (the network and this computer's
-//!   own servers alike).
+//!   paths, connections to those ports on any address, and offline every IP
+//!   socket (the network and this computer's own servers alike).
 //! - Linux: `bwrap` over the whole filesystem, those paths covered, and
-//!   offline in a network namespace of its own with nothing in it.
+//!   offline in a network namespace of its own with nothing in it. The
+//!   ports: the command is started from a thread Landlock keeps from
+//!   connecting to them (`spawn_with`), which needs Linux 6.7; an older
+//!   kernel leaves them reachable, and says so once.
 //!
 //! The skill-script sandbox (`sandbox_policy`) is a different confinement:
 //! deny-by-default for marketplace code, network only through its filtering
@@ -45,6 +51,9 @@ pub struct Confinement<'a> {
     /// workflow's command step, which runs installed plugins that keep their
     /// data in Nebo's folder).
     pub fence: Option<&'a NeboFiles>,
+    /// Ports the command may not connect to, on any address: Nebo's own.
+    /// On Linux the spawn carries it (`spawn_with`), not the prefix.
+    pub closed_ports: &'a [u16],
 }
 
 /// This computer can't run a command offline.
@@ -57,14 +66,14 @@ impl Confinement<'_> {
     /// with. `Err` only for an offline run on a computer that can't keep a
     /// command off the network: such a command must not run.
     pub fn prefix(&self) -> Result<Vec<OsString>, Unconfinable> {
-        if !self.offline && self.fence.is_none() {
+        if !self.offline && self.fence.is_none() && self.closed_ports.is_empty() {
             return Ok(Vec::new());
         }
         match platform() {
             Some(Platform::Seatbelt) => Ok(vec![
                 SANDBOX_EXEC.into(),
                 "-p".into(),
-                profile(self.offline, self.fence).into(),
+                profile(self.offline, self.fence, self.closed_ports).into(),
             ]),
             Some(Platform::Bubblewrap) => Ok(bwrap_args(self.offline, self.fence)),
             None if self.offline => Err(Unconfinable),
@@ -121,7 +130,7 @@ fn platform() -> Option<Platform> {
 
 /// The Seatbelt profile: everything allowed, but for what this run may not
 /// reach.
-fn profile(offline: bool, fence: Option<&NeboFiles>) -> String {
+fn profile(offline: bool, fence: Option<&NeboFiles>, closed_ports: &[u16]) -> String {
     let mut p = vec!["(version 1)".to_string(), "(allow default)".to_string()];
     if let Some(fence) = fence {
         let root = fence.real_root();
@@ -135,6 +144,9 @@ fn profile(offline: bool, fence: Option<&NeboFiles>) -> String {
             p.push(format!("(deny file-write-unlink {})", ancestors.join(" ")));
         }
     }
+    for port in closed_ports {
+        p.push(format!("(deny network-outbound (remote ip \"*:{port}\"))"));
+    }
     if offline {
         p.extend([
             "(deny network-outbound (remote ip))".to_string(),
@@ -143,6 +155,118 @@ fn profile(offline: bool, fence: Option<&NeboFiles>) -> String {
         ]);
     }
     p.join("\n")
+}
+
+/// Start a command (`spawn`: the fork) so it can't connect to
+/// `closed_ports`. On Linux the fork happens on a thread of its own that
+/// Landlock keeps from connecting to them, and what it starts inherits
+/// that; a pipe and a terminal start alike. Elsewhere the ports are in the
+/// prefix's profile, and `spawn` runs as it is.
+pub fn spawn_with<R: Send>(closed_ports: &[u16], spawn: impl FnOnce() -> R + Send) -> R {
+    #[cfg(target_os = "linux")]
+    if !closed_ports.is_empty()
+        && let Some(rules) = landlock::ruleset(closed_ports)
+    {
+        let runtime = tokio::runtime::Handle::try_current().ok();
+        return std::thread::scope(|s| {
+            s.spawn(|| {
+                let _entered = runtime.as_ref().map(|r| r.enter());
+                if !landlock::restrict_self(&rules) {
+                    tracing::warn!("Landlock refused the spawner thread: Nebo's own ports stay reachable from this command");
+                }
+                spawn()
+            })
+            .join()
+            .expect("the spawner thread panicked")
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = closed_ports;
+    spawn()
+}
+
+/// Landlock's TCP-connect rules (Linux 6.7, ABI 4): a ruleset that lets a
+/// thread connect to every port but Nebo's own, built once per set of
+/// ports and applied to the thread that forks a command.
+#[cfg(target_os = "linux")]
+mod landlock {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::sync::{Arc, Mutex};
+
+    const CREATE_RULESET_VERSION: libc::c_uint = 1;
+    const ACCESS_NET_CONNECT_TCP: u64 = 1 << 1;
+    const RULE_NET_PORT: libc::c_uint = 2;
+
+    #[repr(C)]
+    struct RulesetAttr {
+        handled_access_fs: u64,
+        handled_access_net: u64,
+    }
+
+    #[repr(C, packed)]
+    struct NetPortAttr {
+        allowed_access: u64,
+        port: u64,
+    }
+
+    /// The ruleset closing `closed`, or `None` when this kernel has no
+    /// TCP rules (told once).
+    pub fn ruleset(closed: &[u16]) -> Option<Arc<OwnedFd>> {
+        static BUILT: Mutex<Option<(Vec<u16>, Arc<OwnedFd>)>> = Mutex::new(None);
+        let mut built = BUILT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((ports, rules)) = built.as_ref()
+            && ports == closed
+        {
+            return Some(rules.clone());
+        }
+        let rules = Arc::new(build(closed)?);
+        *built = Some((closed.to_vec(), rules.clone()));
+        Some(rules)
+    }
+
+    fn build(closed: &[u16]) -> Option<OwnedFd> {
+        // SAFETY: the documented version query: no attribute, size 0.
+        let abi = unsafe {
+            libc::syscall(libc::SYS_landlock_create_ruleset, std::ptr::null::<RulesetAttr>(), 0usize, CREATE_RULESET_VERSION)
+        };
+        if abi < 4 {
+            static TOLD: std::sync::Once = std::sync::Once::new();
+            TOLD.call_once(|| {
+                tracing::warn!(abi, "this Linux has no Landlock TCP rules (6.7+): employee commands can reach Nebo's own ports")
+            });
+            return None;
+        }
+        let attr = RulesetAttr { handled_access_fs: 0, handled_access_net: ACCESS_NET_CONNECT_TCP };
+        // SAFETY: `attr` outlives the call and its size is passed.
+        let fd = unsafe {
+            libc::syscall(libc::SYS_landlock_create_ruleset, &attr as *const RulesetAttr, std::mem::size_of::<RulesetAttr>(), 0)
+        };
+        if fd < 0 {
+            return None;
+        }
+        // SAFETY: a new descriptor the kernel just returned, owned here alone.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+        for port in (0..=u16::MAX).filter(|p| !closed.contains(p)) {
+            let rule = NetPortAttr { allowed_access: ACCESS_NET_CONNECT_TCP, port: port as u64 };
+            // SAFETY: `rule` outlives the call; the ruleset fd is open.
+            let added = unsafe {
+                libc::syscall(libc::SYS_landlock_add_rule, fd.as_raw_fd(), RULE_NET_PORT, &rule as *const NetPortAttr, 0)
+            };
+            if added != 0 {
+                return None;
+            }
+        }
+        Some(fd)
+    }
+
+    /// Hold the calling thread, and everything it starts, to `rules`.
+    pub fn restrict_self(rules: &OwnedFd) -> bool {
+        // SAFETY: plain prctl and syscall on the calling thread; the fd is open.
+        unsafe {
+            libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0
+                && libc::syscall(libc::SYS_landlock_restrict_self, rules.as_raw_fd(), 0) == 0
+        }
+    }
 }
 
 /// A path as a Seatbelt string.
@@ -199,7 +323,8 @@ mod tests {
             }
             None => std::process::Command::new("bash"),
         };
-        let out = cmd.arg("-c").arg(command).output().unwrap();
+        cmd.arg("-c").arg(command);
+        let out = spawn_with(c.closed_ports, || cmd.output()).unwrap();
         let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         (out.status.success(), text)
     }
@@ -207,7 +332,7 @@ mod tests {
     /// Nothing to confine: the shell runs as it is.
     #[test]
     fn nothing_to_confine_adds_nothing() {
-        assert!(Confinement { offline: false, fence: None }.prefix().unwrap().is_empty());
+        assert!(Confinement { offline: false, fence: None, closed_ports: &[] }.prefix().unwrap().is_empty());
     }
 
     /// The command can't read or change Nebo's own files however it names
@@ -220,7 +345,7 @@ mod tests {
         }
         let (_d, root) = home();
         let fence = NeboFiles::at(&root, &root.join("sessions/s1"));
-        let c = Confinement { offline: false, fence: Some(&fence) };
+        let c = Confinement { offline: false, fence: Some(&fence), closed_ports: &[] };
         let r = root.to_string_lossy();
         let (_, out) = run(&c, &format!("cat {r}/settings.json; cat {r}/logs/nebo.log; cd {r}/files && cat ../settings.json; cat {r}/sessions/s2/r.txt; grep -r SECRET {r}"));
         assert!(!out.contains("SECRET") && !out.contains("LOGLINE") && !out.contains("THEIRS"), "{out}");
@@ -236,17 +361,38 @@ mod tests {
     #[test]
     fn an_offline_command_reaches_no_server() {
         if platform().is_none() {
-            assert_eq!(Confinement { offline: true, fence: None }.prefix(), Err(Unconfinable));
+            assert_eq!(Confinement { offline: true, fence: None, closed_ports: &[] }.prefix(), Err(Unconfinable));
             return;
         }
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
         let probe = format!("exec 3<>/dev/tcp/127.0.0.1/{port} && echo CONNECTED");
-        let (_, out) = run(&Confinement { offline: true, fence: None }, &probe);
+        let (_, out) = run(&Confinement { offline: true, fence: None, closed_ports: &[] }, &probe);
         assert!(!out.contains("CONNECTED"), "{out}");
         assert!(listener.accept().is_err(), "the server was reached");
-        let (ok, out) = run(&Confinement { offline: false, fence: None }, &probe);
+        let (ok, out) = run(&Confinement { offline: false, fence: None, closed_ports: &[] }, &probe);
         assert!(ok && out.contains("CONNECTED"), "online the same command connects: {out}");
+    }
+
+    /// Nebo's own ports are closed to the command on every address; a
+    /// server the employee started on this computer still answers it.
+    #[test]
+    fn a_command_cannot_reach_nebo_own_ports() {
+        if platform().is_none() {
+            eprintln!("no confinement on this computer: Nebo's own ports are reachable");
+            return;
+        }
+        let nebo = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dev = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (nebo_port, dev_port) = (nebo.local_addr().unwrap().port(), dev.local_addr().unwrap().port());
+        nebo.set_nonblocking(true).unwrap();
+        let c = Confinement { offline: false, fence: None, closed_ports: &[nebo_port] };
+        let probe = |port: u16| format!("exec 3<>/dev/tcp/127.0.0.1/{port} && echo CONNECTED");
+        let (_, out) = run(&c, &probe(nebo_port));
+        assert!(!out.contains("CONNECTED"), "Nebo's own port: {out}");
+        assert!(nebo.accept().is_err(), "Nebo's own port took the connection");
+        let (ok, out) = run(&c, &probe(dev_port));
+        assert!(ok && out.contains("CONNECTED"), "the employee's own server: {out}");
     }
 }

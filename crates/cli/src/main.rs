@@ -1339,22 +1339,45 @@ async fn grade_kept_run(
     Ok(())
 }
 
-/// Run one deterministic proof — a named test in the crate that owns it:
-/// `harness::…` proofs live in `nebo-agent` (the harness), every other in
-/// `nebo-server` — from the workspace root, in the check target directory so
-/// it never contends with a running `make dev`. The proof passes when the
-/// test does.
+/// Run one deterministic proof — a named test in the crate that owns it —
+/// from the workspace root, in the check target directory so it never
+/// contends with a running `make dev`. Both crates have a
+/// `harness::permissions` module, so a proof is looked for in the crate its
+/// prefix suggests (`harness::…` in `nebo-agent`, every other in
+/// `nebo-server`) and then in the other. It passes when exactly its test ran
+/// and passed: a name that matches no test runs nothing, and a proof that
+/// runs nothing proves nothing, so that fails.
 fn run_proof(proof: &str) -> anyhow::Result<()> {
     let root = workspace_root().ok_or_else(|| anyhow::anyhow!("not inside the Nebo workspace; proofs run from a checkout"))?;
     let target = std::env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| root.join("target-check").into());
-    let package = if proof.starts_with("harness::") { "nebo-agent" } else { "nebo-server" };
-    let status = std::process::Command::new("cargo")
-        .args(["test", "-p", package, "--lib", "--quiet", "--", proof, "--exact"])
-        .env("CARGO_TARGET_DIR", target)
-        .current_dir(&root)
-        .status()
-        .map_err(|e| anyhow::anyhow!("could not run cargo: {e}"))?;
-    if status.success() { Ok(()) } else { anyhow::bail!("{proof} failed ({status})") }
+    let order = if proof.starts_with("harness::") { ["nebo-agent", "nebo-server"] } else { ["nebo-server", "nebo-agent"] };
+    for package in order {
+        let out = std::process::Command::new("cargo")
+            .args(["test", "-p", package, "--lib", "--", proof, "--exact"])
+            .env("CARGO_TARGET_DIR", &target)
+            .current_dir(&root)
+            .stderr(std::process::Stdio::inherit())
+            .output()
+            .map_err(|e| anyhow::anyhow!("could not run cargo: {e}"))?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        print!("{stdout}");
+        if !out.status.success() {
+            anyhow::bail!("{proof} failed in {package} ({})", out.status);
+        }
+        if proofs_passed(&stdout) > 0 {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("no test named {proof} in nebo-agent or nebo-server: the fixture proves nothing")
+}
+
+/// How many tests a libtest run passed, from its `test result:` lines.
+fn proofs_passed(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("test result: ok. "))
+        .filter_map(|rest| rest.split(' ').next()?.parse::<usize>().ok())
+        .sum()
 }
 
 /// The Cargo workspace this binary was run inside, by walking up from the
@@ -1406,6 +1429,16 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use clap::error::ErrorKind;
+
+    /// A proof run that matched no test passed nothing: it must not count.
+    #[test]
+    fn a_proof_that_ran_no_test_passed_nothing() {
+        let none = "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 680 filtered out; finished in 0.00s\n";
+        assert_eq!(proofs_passed(none), 0);
+        let one = "\nrunning 1 test\ntest harness::permissions::proof::x ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 679 filtered out; finished in 0.20s\n";
+        assert_eq!(proofs_passed(one), 1);
+        assert_eq!(proofs_passed(""), 0);
+    }
 
     /// INVARIANT: the entire clap command tree is internally consistent — no
     /// conflicting ids, broken defaults, or invalid arg configurations in any

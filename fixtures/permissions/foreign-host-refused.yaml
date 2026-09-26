@@ -14,5 +14,5 @@ description: |
   Pure HTTP-layer behaviour with no model involved, so it is a deterministic
   proof rather than a conversation.
 target_component: permissions
-proof: harness::permissions::proof::foreign_host_refused
+proof: middleware::boundary_tests::a_foreign_host_is_refused
 conversation: []
