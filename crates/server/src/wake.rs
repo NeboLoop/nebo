@@ -193,7 +193,7 @@ async fn deliver_to_session(state: &AppState, session_key: &str) {
     // The woken turn replies where the session's work came from.
     let route = crate::reply_route::of(state, session_key);
     if let Some(ReplyRoute::Coworker(route)) = route {
-        if let Err(e) = crate::coworker::run_in_thread(state, session_key, route, String::new(), None, seed_taint).await {
+        if let Err(e) = crate::coworker::run_in_thread(state, session_key, route, String::new(), None, seed_taint, false).await {
             warn!(error = %e, session = %session_key, "wake: coworker thread not woken; its rows wait for its next message");
         }
         return;

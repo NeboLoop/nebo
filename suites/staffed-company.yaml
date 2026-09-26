@@ -48,3 +48,6 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc43-a-woken-turn-replies-in-the-chat-channel-it-came-from.yaml
   - ../fixtures/staffed-company/connections/sc44-the-hubs-echo-of-a-card-install-installs-nothing-twice.yaml
   - ../fixtures/staffed-company/connections/sc45-two-taps-on-one-install-card-start-one-install.yaml
+  - ../fixtures/staffed-company/conversation/sc46-a-team-member-acknowledges-in-the-thread-before-it-works.yaml
+  - ../fixtures/staffed-company/conversation/sc47-a-silent-team-member-is-announced-as-working.yaml
+  - ../fixtures/staffed-company/conversation/sc48-a-linked-team-member-acknowledges-and-an-unreachable-one-says-so.yaml

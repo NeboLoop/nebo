@@ -1,0 +1,11 @@
+# v2 (new harness): teams. Fixtures written for the rewrite's tools
+# (fixtures/v2/MAPPING.md); no arm-A twin, because the old loop posted no
+# acknowledgement to compare.
+name: teams
+description: |
+  A team member asked to act takes the work in the team thread before it
+  works, and its result comes back to the thread (owner, 2026-09-26: the lead
+  asked Hermes for research and the thread showed nothing from Hermes until
+  it finished).
+fixtures:
+  - ../../fixtures/v2/teams/team-assignee-acknowledges-then-reports.yaml

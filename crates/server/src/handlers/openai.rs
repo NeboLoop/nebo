@@ -308,6 +308,7 @@ async fn park_for_owner(state: &AppState, run: &EmployeeRun, key_label: &str, ev
         agent_name: &run.agent_name,
         from_name: &from,
         session_key: &run.session_key,
+        team_id: None,
     };
     match ev.event_type {
         ai::StreamEventType::ApprovalRequest => {

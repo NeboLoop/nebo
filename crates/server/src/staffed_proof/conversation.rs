@@ -658,6 +658,302 @@ async fn a_team_reply_reaches_the_poster() {
     );
 }
 
+/// What a member says before it starts, then the call that starts its work.
+fn takes_it(said: &str, tool: &str, input: Value) -> Step {
+    Step {
+        gate: None,
+        events: vec![
+            ai::StreamEvent::text(said),
+            ai::StreamEvent::tool_call(ai::ToolCall {
+                id: format!("call-{}", uuid::Uuid::new_v4().simple()),
+                name: tool.to_string(),
+                input,
+            }),
+        ],
+    }
+}
+
+/// The team thread as the owner reads it: (sender, words), oldest first.
+fn team_rows(nebo: &Nebo, team_id: &str) -> Vec<(String, String)> {
+    nebo.store()
+        .list_team_messages(team_id, 100)
+        .unwrap()
+        .into_iter()
+        .map(|m| (m.from, m.content))
+        .collect()
+}
+
+/// The owner's live case (2026-09-26): the owner asks the team for research,
+/// the lead hands it to a member by name, and the member takes it. The team
+/// thread hears the member take the work, in the member's own words, before
+/// the work is done; the member reads the lead's ask with its name written
+/// out, never an id token; the result comes back to the thread without the
+/// acknowledgement repeated; and the lead, who asked, hears the result and
+/// sums it up in the thread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_team_member_acknowledges_in_the_thread_before_it_works() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof Ack Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof Ack Researcher", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-ack";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof Growth",
+            "grow the pipeline",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&member)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| {
+            if !(t.opener().contains("MARK-ACK") && t.says("You are Proof Ack Lead.")) {
+                return None;
+            }
+            if t.new_text().contains("ACK-RESEARCH-RESULT") {
+                return Some(Step::say("ACK-LEAD-SUMMARY: the research is in; three tiers it is."));
+            }
+            (!t.answered("@Proof Ack Researcher"))
+                .then(|| Step::say("@Proof Ack Researcher please research how rivals price their plans."))
+        }),
+        Box::new(|t| {
+            if !(t.opener().contains("MARK-ACK") && t.says("You are Proof Ack Researcher.")) {
+                return None;
+            }
+            Some(if t.has_tool_results() {
+                Step::held("researcher", "ACK-RESEARCH-RESULT: rivals sell three tiers.")
+            } else {
+                takes_it("On it: researching how rivals price their plans.", "recall", json!({"query": "rival pricing"}))
+            })
+        }),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    nebo.post_ok(
+        &format!("/teams/{TEAM}/messages"),
+        &json!({"text": "MARK-ACK have the researcher look into how rivals price their plans"}),
+    )
+    .await;
+
+    rig.until(30, "the researcher acknowledges in the team thread while it works", || {
+        team_rows(&nebo, TEAM)
+            .iter()
+            .any(|(from, text)| from == "Proof Ack Researcher" && text.contains("On it: researching"))
+    })
+    .await;
+    assert!(
+        !team_rows(&nebo, TEAM).iter().any(|(_, text)| text.contains("ACK-RESEARCH-RESULT")),
+        "the acknowledgement came before the work was done"
+    );
+
+    // The lead's ask reached the member with the member's name written out.
+    let seat = format!("agent:{member}:coworker:team:{TEAM}");
+    let asked: Vec<String> = rig
+        .thread(&seat)
+        .into_iter()
+        .filter(|m| m.role == "user" && m.content.contains("research how rivals price"))
+        .map(|m| m.content)
+        .collect();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].contains("@Proof Ack Researcher please research"), "{}", asked[0]);
+    assert!(!asked[0].contains("<@"), "no id token reaches the member: {}", asked[0]);
+
+    rig.company.open("researcher");
+    rig.until(30, "the result and the lead's summary land in the thread", || {
+        team_rows(&nebo, TEAM).iter().any(|(_, text)| text.contains("ACK-LEAD-SUMMARY"))
+    })
+    .await;
+    let rows = team_rows(&nebo, TEAM);
+    let at = |needle: &str| rows.iter().position(|(_, text)| text.contains(needle)).unwrap_or_else(|| panic!("no row with {needle}: {rows:?}"));
+    assert!(at("MARK-ACK") < at("please research"), "{rows:?}");
+    assert!(at("please research") < at("On it: researching"), "{rows:?}");
+    assert!(at("On it: researching") < at("ACK-RESEARCH-RESULT"), "{rows:?}");
+    assert!(at("ACK-RESEARCH-RESULT") < at("ACK-LEAD-SUMMARY"), "{rows:?}");
+    let result = &rows[at("ACK-RESEARCH-RESULT")];
+    assert_eq!(result.0, "Proof Ack Researcher");
+    assert!(!result.1.contains("On it"), "the acknowledgement is not repeated in the result: {}", result.1);
+    assert_eq!(rows[at("ACK-LEAD-SUMMARY")].0, "Proof Ack Lead");
+}
+
+/// A member that starts working without a word is still seen taking the
+/// work: the thread says it is working on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_silent_member_is_announced_as_working() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof Quiet Lead", json!({ "workflows": {} })).await;
+    let member = nebo.hire("Proof Quiet Clerk", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-quiet";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof Back Office",
+            "keep the books",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&member)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    let rules: Vec<Rule> = vec![Box::new(|t| {
+        if !(t.opener().contains("MARK-QUIET") && t.says("You are Proof Quiet Clerk.")) {
+            return None;
+        }
+        Some(if t.has_tool_results() {
+            Step::held("clerk", "QUIET-RESULT: the ledger balances.")
+        } else {
+            Step::call(vec![("recall", json!({"query": "ledger"}))])
+        })
+    })];
+    let rig = Rig::new(&nebo, rules).await;
+    nebo.post_ok(
+        &format!("/teams/{TEAM}/messages"),
+        &json!({"text": "MARK-QUIET @Proof Quiet Clerk check the ledger"}),
+    )
+    .await;
+    rig.until(30, "the clerk is announced as working", || {
+        team_rows(&nebo, TEAM)
+            .iter()
+            .any(|(from, text)| from == "Proof Quiet Clerk" && text == "Proof Quiet Clerk is working on this.")
+    })
+    .await;
+    rig.company.open("clerk");
+    rig.until(30, "the clerk's result lands in the thread", || {
+        team_rows(&nebo, TEAM).iter().any(|(_, text)| text.contains("QUIET-RESULT"))
+    })
+    .await;
+}
+
+/// A linked employee's turn streams from another runtime. Hermes taking
+/// a team ask is acknowledged in the thread from its first streamed words,
+/// before its runtime's first tool call, and its answer comes back to the
+/// thread. When its runtime cannot be reached, the thread shows that
+/// instead, in the owner's words for it, and no acknowledgement.
+struct LinkedRuntime {
+    offline: std::sync::atomic::AtomicBool,
+    hold: Arc<tokio::sync::Semaphore>,
+    prompts: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl ai::Provider for LinkedRuntime {
+    fn id(&self) -> &str {
+        ai::providers::linked::ID
+    }
+    fn handles_tools(&self) -> bool {
+        true
+    }
+    fn retryable(&self) -> bool {
+        false
+    }
+    async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let last = req.messages.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()).unwrap_or_default();
+        self.prompts.lock().unwrap().push(last);
+        if self.offline.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::spawn(async move {
+                let _ = tx.send(ai::StreamEvent::error("Could not connect to Proof Hermes. Try again.")).await;
+                let _ = tx.send(ai::StreamEvent::done()).await;
+            });
+            return Ok(rx);
+        }
+        let hold = self.hold.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(ai::StreamEvent::text("I'll research how rivals position their agents.")).await;
+            let _ = tx
+                .send(ai::StreamEvent::tool_call(ai::ToolCall {
+                    id: "run_1-tool-1".into(),
+                    name: "browser_navigate".into(),
+                    input: json!({"input": "https://example.com"}),
+                }))
+                .await;
+            if let Ok(permit) = hold.acquire().await {
+                permit.forget();
+            }
+            let _ = tx.send(ai::StreamEvent::text("HERMES-RESULT: lead with the gateway.")).await;
+            let _ = tx.send(ai::StreamEvent::done()).await;
+        });
+        Ok(rx)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_linked_member_acknowledges_in_the_thread_and_an_unreachable_one_says_so() {
+    let nebo = session().await;
+    let lead = nebo.hire("Proof Link Lead", json!({ "workflows": {} })).await;
+    let hermes = "proof-hermes-linked";
+    nebo.store()
+        .create_agent(hermes, Some("linked"), "Proof Hermes", "", "---\nname: Proof Hermes\n---\n", "{}", None, None)
+        .unwrap();
+    nebo.store()
+        .upsert_entity_config("agent", hermes, &json!({ "modelPreference": ai::LinkedProvider::model_id("proof-bot", "hermes") }))
+        .unwrap();
+    const TEAM: &str = "proof-team-linked";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof Positioning",
+            "say what we are",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(hermes)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    let rig = Rig::new(&nebo, Vec::new()).await;
+    let runtime = Arc::new(LinkedRuntime {
+        offline: Default::default(),
+        hold: Arc::new(tokio::sync::Semaphore::new(0)),
+        prompts: Default::default(),
+    });
+    nebo.state
+        .harness
+        .reload_providers(vec![Arc::new(Model(rig.company.clone())), runtime.clone() as Arc<dyn ai::Provider>])
+        .await;
+
+    nebo.post_ok(
+        &format!("/teams/{TEAM}/messages"),
+        &json!({"text": "MARK-LINK @Proof Hermes research how rivals position their agents"}),
+    )
+    .await;
+    rig.until(30, "Hermes acknowledges in the thread from its first streamed words", || {
+        team_rows(&nebo, TEAM)
+            .iter()
+            .any(|(from, text)| from == "Proof Hermes" && text == "I'll research how rivals position their agents.")
+    })
+    .await;
+    let prompts = runtime.prompts.lock().unwrap().clone();
+    assert!(prompts.iter().any(|p| p.contains("@Proof Hermes research")), "{prompts:?}");
+    assert!(!prompts.iter().any(|p| p.contains("<@")), "no id token reaches the runtime: {prompts:?}");
+    assert!(!team_rows(&nebo, TEAM).iter().any(|(_, text)| text.contains("HERMES-RESULT")));
+    runtime.hold.add_permits(10_000);
+    rig.until(30, "Hermes's answer comes back to the thread", || {
+        team_rows(&nebo, TEAM)
+            .iter()
+            .any(|(from, text)| from == "Proof Hermes" && text.contains("HERMES-RESULT") && !text.contains("I'll research"))
+    })
+    .await;
+
+    // The runtime goes away: the thread says so, and nothing claims Hermes
+    // took the work.
+    runtime.offline.store(true, std::sync::atomic::Ordering::SeqCst);
+    let before = team_rows(&nebo, TEAM).len();
+    nebo.post_ok(
+        &format!("/teams/{TEAM}/messages"),
+        &json!({"text": "MARK-LINK @Proof Hermes and one more pass on pricing"}),
+    )
+    .await;
+    rig.until(30, "the thread says Hermes could not be reached", || {
+        team_rows(&nebo, TEAM)
+            .iter()
+            .skip(before)
+            .any(|(from, text)| from == "Proof Hermes" && text.contains("Could not connect to Proof Hermes. Try again."))
+    })
+    .await;
+    let after: Vec<(String, String)> = team_rows(&nebo, TEAM).into_iter().skip(before).collect();
+    assert!(
+        !after.iter().any(|(from, text)| from == "Proof Hermes" && !text.contains("Could not connect")),
+        "no acknowledgement for work that never started: {after:?}"
+    );
+}
+
 /// B3: an employee holds no fixed number of turn slots: three of its
 /// conversations run at once, each waiting on its own work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -1,0 +1,66 @@
+id: team-assignee-acknowledges-then-reports
+name: "Team: the member asked to act acknowledges in the thread before it works, and its result comes back to the thread"
+description: |
+  Owner, 2026-09-26: the lead asked Hermes for research in the team thread, Hermes started
+  working in its own chat at once, and the thread showed nothing from Hermes — "I wish it would
+  have acknowledged before starting." A member asked to act in a team now takes the work in the
+  thread first: what it says before its first tool call is posted there as its acknowledgement
+  (or "<Name> is working on this." when it said nothing), and its result is posted there when it
+  finishes. The ask reaches the member with its name written out ("@desk-researcher-…"), never
+  as an id token.
+  Setup hires a lead and a researcher, puts them in a team, and writes a brief only the
+  researcher reads. The owner has the team ask the researcher, asks something unrelated while it
+  works, then has the conversation read back. The judge reads the team_messages result.
+  No arm-A twin: the old loop had no acknowledgement to compare.
+target_component: team
+
+setup:
+  - "mkdir -p {{scratch}} && printf 'Reply in one line with the code name of the spring campaign: cobalt harbor.\\n' > {{scratch}}/brief.txt"
+  - "python3 -c \"import json,urllib.request as u; B='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'; p=lambda path,b: json.load(u.urlopen(u.Request(B+path, data=json.dumps(b).encode(), headers={'Content-Type':'application/json'}, method='POST'))); a=p('/agents',{'blank':True,'name':'desk-lead-{{tag}}'})['agent']['id']; r=p('/agents',{'blank':True,'name':'desk-researcher-{{tag}}'})['agent']['id']; p('/teams',{'name':'Research Desk-{{tag}}','mission':'answer research asks','members':[{'agentId':a},{'agentId':r}],'organizerAgentId':a})\""
+teardown:
+  - "python3 -c \"import json,urllib.request as u; ts=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/teams'))['teams']; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/teams/'+t['id'], method='DELETE')) for t in ts if t.get('name')=='Research Desk-{{tag}}']\" || true"
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name') in ('desk-lead-{{tag}}','desk-researcher-{{tag}}')]; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Post this in the Research Desk-{{tag}} team: \"@desk-researcher-{{tag}} read {{scratch}}/brief.txt and give the team the one-line answer it asks for.\""
+  - role: user
+    content: "While that runs: one good name for a shared folder of signed contracts. Just the name."
+  - role: user
+    content: "Now read me the Research Desk-{{tag}} team's conversation: who said what, in order."
+
+tool_config:
+  send_message:
+    enabled: true
+  team_messages:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: posted-to-the-team
+      text: "The first message is posted into the Research Desk-{{tag}} team (send_message to the team, after at most a find_tools load) with the ask addressed to desk-researcher-{{tag}}"
+      severity: critical
+    - id: acknowledged-before-working
+      text: "The team conversation the employee reads back (the team_messages result) has a row from desk-researcher-{{tag}} that takes the work — its own words saying what it is about to do, or \"desk-researcher-{{tag}} is working on this.\" — placed after the ask and before that member's result row. If the read-back shows no result row yet, the acknowledgement row alone is present"
+      severity: critical
+    - id: result-came-back-to-the-thread
+      text: "The team conversation holds desk-researcher-{{tag}}'s result as its own row: the one-line answer from brief.txt (cobalt harbor), without the acknowledgement repeated in it. If the read-back came before the result, the final reply says the researcher is still working rather than inventing an answer"
+      severity: critical
+    - id: names-not-ids
+      text: "No row or reply shows a raw mention token like <@…>; members are named"
+      severity: important
+    - id: owner-answered-at-once
+      text: "The folder-name question is answered directly with one name; it does not wait on or talk about the team's work"
+      severity: important
+    - id: honest-read-back
+      text: "The final reply reports the team's rows as the team_messages result shows them, in order, and claims nothing the result does not hold"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 4
+  narrative: |
+    find_tools loads send_message → send_message(to: "Research Desk-{{tag}}", message: "@desk-researcher-{{tag}} read … brief.txt …");
+    "Posted." Turn 2: "Signed Contracts." Turn 3: find_tools loads team_messages → team_messages(team: "Research Desk-{{tag}}"),
+    then: the owner's ask (posted by the employee), desk-researcher-{{tag}}: "I'll read the brief…" (the acknowledgement),
+    desk-researcher-{{tag}}: "cobalt harbor" (the result).

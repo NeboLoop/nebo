@@ -1,0 +1,11 @@
+id: sc46-a-team-member-acknowledges-in-the-thread-before-it-works
+name: "SC46 — A team member acknowledges in the thread before it works"
+description: |
+  The owner asks the team for research, the lead hands it to a member by name, and the member
+  takes it: the team thread hears the member take the work, in its own words, before the work is
+  done. The member reads the ask with its name written out, never an id token; the result comes
+  back to the thread without the acknowledgement repeated; the lead hears it and sums it up
+  (owner, 2026-09-26: "I wish it would have acknowledged before starting").
+target_component: staffed-company
+proof: staffed_proof::conversation::a_team_member_acknowledges_in_the_thread_before_it_works
+conversation: []

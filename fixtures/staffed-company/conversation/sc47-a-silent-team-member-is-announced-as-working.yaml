@@ -1,0 +1,8 @@
+id: sc47-a-silent-team-member-is-announced-as-working
+name: "SC47 — A team member that starts without a word is announced as working"
+description: |
+  A member asked in a team whose first act is a tool call, with nothing said: the thread says
+  "<Name> is working on this." before the result lands.
+target_component: staffed-company
+proof: staffed_proof::conversation::a_silent_member_is_announced_as_working
+conversation: []
