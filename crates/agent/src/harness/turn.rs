@@ -912,7 +912,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         st.usage.system_overhead_tokens = overhead_tokens(&surface.declared);
         let window = trim(st, &conversation);
         st.usage.last_request_estimate = pruning::estimate_total_tokens(&window);
-        let window = conversation::sanitize_message_order(window);
+        let window = conversation::sanitize_message_order(conversation::order_as_heard(window));
 
         // 4-5. The request and the call.
         let selected = st.model.clone();
@@ -1125,7 +1125,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             // Calls that arrived on a broken stream are not run or stored.
             tool_calls.clear();
         }
-        save_reply(cx, &mut st.folds, &text, &tool_calls, &block_order, (&thinking, &thinking_model)).await;
+        let heard_through = st.seen.last().map(|m| m.id.as_str());
+        save_reply(cx, &mut st.folds, &text, &tool_calls, &block_order, (&thinking, &thinking_model), heard_through).await;
 
         if !tool_calls.is_empty() {
             // A CLI provider ran its tools itself over /agent/mcp.
@@ -1592,6 +1593,7 @@ async fn save_reply(
     tool_calls: &[ai::ToolCall],
     block_order: &[Block],
     (thinking, thinking_model): (&[ai::ThinkingBlock], &str),
+    heard_through: Option<&str>,
 ) {
     if text.is_empty() && tool_calls.is_empty() {
         return;
@@ -1610,6 +1612,9 @@ async fn save_reply(
         metadata.insert("contentBlocks".into(), serde_json::json!(blocks));
     }
     conversation::mark_thinking(&mut metadata, thinking, thinking_model);
+    if let Some(id) = heard_through {
+        metadata.insert(conversation::HEARD_THROUGH.into(), serde_json::json!(id));
+    }
     let metadata = (!metadata.is_empty()).then(|| serde_json::Value::Object(metadata).to_string());
     let h = &cx.harness;
     match h.sessions.append_message(&cx.session_id, "assistant", text, calls.as_deref(), None, metadata.as_deref()) {
@@ -1860,7 +1865,7 @@ async fn show_a_folded_answer(cx: &TurnContext, folds: &mut text_fold::TurnFolds
 /// built from; that turn has no cached prefix to fork and gets no recap.
 fn spawn_recap(cx: &TurnContext, last: LastCall) {
     let h = &cx.harness;
-    let stored = h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default();
+    let stored = conversation::order_as_heard(h.sessions.get_messages_since_checkpoint(&cx.session_id).unwrap_or_default());
     let Some(after) = last
         .heard_through
         .as_deref()
@@ -2605,6 +2610,40 @@ mod tests {
         assert_eq!(calls.len(), 2, "heard inside the same turn");
         assert!(!texts(&calls[0]).iter().any(|t| t.contains("Also check the calendar")));
         assert!(texts(&calls[1]).iter().any(|t| t.contains("Also check the calendar")), "heard at the next step");
+    }
+
+    /// The owner writes while the model is answering: the answer never saw
+    /// their message, so the next call reads the message after that answer,
+    /// as the newest thing in the conversation, never before an answer that
+    /// reads as the reply to it (CI 2026-09-26: the owner's question sat
+    /// above a "noted" meant for a coworker's update, and went unanswered).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_sent_while_the_model_answers_is_read_after_that_answer() {
+        let model = Arc::new(Scripted::default());
+        let h = harness(&model).await;
+        let h2 = h.clone();
+        let hook: Hook = Box::pin(async move {
+            let mut handle = h2.start_turn(owner("What time do we open?")).await.expect("queued");
+            let _ = handle.events.recv().await;
+        });
+        *model.script.lock().unwrap() = VecDeque::from(vec![
+            Step::During(Box::new(Step::Say("Started on the books.")), hook),
+            Step::Say("We open at nine."),
+        ]);
+        let events = run_turn(&h, owner("Start on the books")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "the message gets a call of its own");
+        let read = texts(&calls[1]);
+        let answer = read.iter().position(|t| t == "Started on the books.").expect("the first answer is in the thread");
+        let message = read.iter().position(|t| t.contains("What time do we open?")).expect("the message is in the thread");
+        assert!(message > answer, "the message reads after the answer that never saw it: {read:#?}");
+        let stored = stored(&h);
+        let stored_at = |text: &str| stored.iter().position(|m| m.content == text).expect("stored");
+        assert!(
+            stored_at("What time do we open?") < stored_at("Started on the books."),
+            "rows stay stored in the order they arrived"
+        );
     }
 
     /// A message from someone who isn't the owner, as its door sends it.
