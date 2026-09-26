@@ -36,7 +36,7 @@ pub async fn summarize_tool_batch(
 
     let (provider, aux_model) = match crate::harness::model_call::resolve_aux(&ModelsConfig::load(), providers) {
         Some(routed) => routed,
-        None => (pick_cheapest(providers)?, String::new()),
+        None => (crate::harness::model_call::prefer_non_gateway(providers)?, String::new()),
     };
 
     // Build user prompt content
@@ -217,13 +217,3 @@ pub async fn one_line(
     }
 }
 
-/// Pick the cheapest available provider. Prefer non-gateway (non-Janus) providers,
-/// then fall back to whatever is available.
-pub(crate) fn pick_cheapest(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
-    // Prefer non-gateway providers (local/direct API are cheapest)
-    providers
-        .iter()
-        .find(|p| p.id() != "janus")
-        .cloned()
-        .or_else(|| providers.first().cloned())
-}

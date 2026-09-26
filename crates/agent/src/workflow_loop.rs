@@ -66,18 +66,25 @@ fn step_task(
     (objective, instruction)
 }
 
+/// The employee's model preference, by agent id. The server resolves it
+/// through the ONE entity resolver chat uses (this crate cannot name it), so
+/// a workflow turn runs at the model a chat turn with that employee would.
+pub type EmployeeModel = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 pub struct RunnerActivityLoop {
     runner: Arc<Runner>,
     store: Arc<db::Store>,
+    employee_model: EmployeeModel,
     /// run_id → scratch session ids created for it (cleanup).
     sessions_by_run: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl RunnerActivityLoop {
-    pub fn new(runner: Arc<Runner>, store: Arc<db::Store>) -> Self {
+    pub fn new(runner: Arc<Runner>, store: Arc<db::Store>, employee_model: EmployeeModel) -> Self {
         Self {
             runner,
             store,
+            employee_model,
             sessions_by_run: Mutex::new(HashMap::new()),
         }
     }
@@ -374,6 +381,9 @@ impl ActivityLoop for RunnerActivityLoop {
             max_iterations: turn.max_iterations as usize,
             min_iterations: turn.min_iterations as usize,
             model_override: turn.model.clone(),
+            // The activity's own model wins (above); otherwise the employee's,
+            // as in chat — a linked employee's turn reaches its linked agent.
+            model_preference: (self.employee_model)(turn.agent_id),
             cancel_token: cancel.clone(),
             operation_policy: turn.checkpoint.and_then(|c| c.operation_policy.clone()),
             // Old-engine parity: the engine executed tools directly with no

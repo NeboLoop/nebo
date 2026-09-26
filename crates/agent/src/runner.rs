@@ -1684,7 +1684,10 @@ impl Runner {
             trace,
         };
 
-        let mut rx = prov_lock[0].stream(&req).await?;
+        let provider = ai::default_provider(&prov_lock).ok_or_else(|| {
+            ProviderError::Request("No providers configured".to_string())
+        })?;
+        let mut rx = provider.stream(&req).await?;
         drop(prov_lock); // Release lock before consuming stream
         let mut response = String::new();
 
@@ -4456,9 +4459,9 @@ async fn run_loop(
             // One toolless call asked for the summary on the one steering channel.
             pending_stream_reminders.push(steering::wrap_system_reminder(BUDGET_SUMMARY_REQUEST));
 
-            // Pick first available provider for the summary call
+            // The summary call goes to the default provider
             let prov_lock = providers.read().await;
-            if let Some(summary_provider) = prov_lock.first() {
+            if let Some(summary_provider) = ai::default_provider(&prov_lock) {
                 let mut summary_messages =
                     convert_messages(&sessions.get_messages(session_id).unwrap_or_default());
                 attach_stream_reminders(&mut summary_messages, &pending_stream_reminders);

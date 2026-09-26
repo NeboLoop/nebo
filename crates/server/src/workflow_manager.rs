@@ -458,6 +458,20 @@ impl WorkflowManagerImpl {
 /// Split a binding-scoped workflow id (`agent:{agent_id}:{binding_name}`) —
 /// the id shape `resolve()` returns for agent bindings, matching the command
 /// format the cron scheduler already uses for them.
+/// The ONE agentic loop for workflow activities: the chat Runner, adapted
+/// (see `agent::workflow_loop`), with every turn at the employee's model as
+/// the entity resolver chat uses gives it.
+pub(crate) fn activity_loop(runner: Arc<agent::Runner>, store: Arc<db::Store>) -> Arc<dyn workflow::ActivityLoop> {
+    let entities = store.clone();
+    let employee_model: agent::workflow_loop::EmployeeModel = Arc::new(move |agent_id: &str| {
+        let (_, _, model_preference, _, _, _) = crate::chat_dispatch::entity_run_params(
+            crate::entity_config::resolve_for_chat(&entities, "agent", agent_id).as_ref(),
+        );
+        model_preference
+    });
+    Arc::new(agent::workflow_loop::RunnerActivityLoop::new(runner, store, employee_model))
+}
+
 fn split_binding_id(id: &str) -> Option<(&str, &str)> {
     id.strip_prefix("agent:")?.split_once(':')
 }
@@ -2326,8 +2340,8 @@ async fn review_failed_workflow_run(
 ) {
     let provider = {
         let guard = providers.read().await;
-        match guard.first() {
-            Some(p) => p.clone(),
+        match ai::default_provider(&guard) {
+            Some(p) => p,
             None => return,
         }
     };
@@ -2971,8 +2985,8 @@ async fn workflow_tuning_sweep(
 
         let provider = {
             let guard = providers.read().await;
-            match guard.first() {
-                Some(p) => p.clone(),
+            match ai::default_provider(&guard) {
+                Some(p) => p,
                 None => return,
             }
         };
@@ -3240,5 +3254,111 @@ mod run_end_tests {
         let failed = RunEnd::of(&workflow::WorkflowError::ActivityFailed("triage".into(), "boom".into()));
         assert_eq!(failed.status(), "failed");
         assert!(failed.message().contains("boom"));
+    }
+}
+
+#[cfg(test)]
+mod employee_model_tests {
+    use std::sync::{Arc, Mutex};
+
+    use ai::{ChatRequest, EventReceiver, Provider, ProviderError, StreamEvent};
+
+    /// A provider that records the model of every call it takes and answers
+    /// with its own id.
+    struct Recording {
+        id: &'static str,
+        retryable: bool,
+        models: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Recording {
+        fn id(&self) -> &str {
+            self.id
+        }
+        fn retryable(&self) -> bool {
+            self.retryable
+        }
+        async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
+            self.models.lock().unwrap().push(req.model.clone());
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            let _ = tx.send(StreamEvent::text(format!("answered by {}", self.id))).await;
+            let _ = tx.send(StreamEvent::done()).await;
+            Ok(rx)
+        }
+    }
+
+    /// A workflow step on a linked employee runs at that employee's model,
+    /// as a chat turn does: it reaches the linked provider addressed to its
+    /// linked agent, and the default provider never sees it (B2: the step
+    /// fell back to janus/nebo-1 and the run failed).
+    #[tokio::test]
+    async fn a_workflow_step_on_a_linked_employee_reaches_its_linked_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        store
+            .upsert_entity_config(
+                "agent",
+                "emp-linked",
+                &serde_json::json!({ "modelPreference": ai::LinkedProvider::model_id("bot-1", "assistant") }),
+            )
+            .unwrap();
+        let janus = Arc::new(Mutex::new(Vec::new()));
+        let linked = Arc::new(Mutex::new(Vec::new()));
+        let providers: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(Recording { id: "janus", retryable: true, models: janus.clone() }),
+            Arc::new(Recording { id: "linked", retryable: false, models: linked.clone() }),
+        ];
+        let runner = Arc::new(agent::Runner::new(
+            store.clone(),
+            Arc::new(tools::Registry::new(tools::Policy::new())),
+            providers,
+            agent::selector::ModelSelector::new(Default::default()),
+            Arc::new(agent::ConcurrencyController::new(Some(2))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        ));
+        let activity: workflow::parser::Activity = serde_json::from_value(serde_json::json!({
+            "id": "run",
+            "intent": "Reply with one line.",
+        }))
+        .unwrap();
+        let turn = workflow::LoopTurn {
+            activity: &activity,
+            system: "You are an employee.".into(),
+            seed_messages: vec![ai::Message {
+                role: "user".into(),
+                content: "Reply with exactly one line: scheduled ping.".into(),
+                ..Default::default()
+            }],
+            workflow_name: "proof-ping",
+            advertised_tools: Vec::new(),
+            agent_id: "emp-linked",
+            user_id: "",
+            memory_writes_disabled: true,
+            trace: ai::RequestTrace {
+                run_id: "run-1".into(),
+                ..ai::RequestTrace::new("workflow_activity")
+            },
+            checkpoint: None,
+            pending: None,
+            iteration: "",
+            step_index: None,
+            max_iterations: 3,
+            min_iterations: 0,
+            requires_tools: Vec::new(),
+            spend_cap_microcents: 0,
+            model: String::new(),
+            cancel: None,
+            turn_key: "run:".into(),
+        };
+
+        let out = super::activity_loop(runner, store).run_turn(turn).await.expect("the step runs");
+
+        assert_eq!(linked.lock().unwrap().as_slice(), ["bot-1/assistant"]);
+        assert!(janus.lock().unwrap().is_empty(), "the default provider stood in for the linked agent");
+        assert_eq!(out.text, "answered by linked");
     }
 }
