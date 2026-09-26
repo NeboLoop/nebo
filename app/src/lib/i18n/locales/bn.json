@@ -243,7 +243,10 @@
 		"searchChats": "চ্যাট অনুসন্ধান করুন…",
 		"upgrade": "আপগ্রেড",
 		"restarted": "আবার চালু হয়েছে",
-		"working": "কাজ করছেন"
+		"working": "কাজ করছেন",
+		"chatActions": "চ্যাট অ্যাকশন",
+		"deleteChatTitle": "\"{name}\" মুছবেন?",
+		"deleteChatBody": "এই চ্যাট এবং এর সব বার্তা মুছে ফেলা হবে। এটি আর ফেরানো যাবে না।"
 	},
 	"chat": {
 		"goalLine": "লক্ষ্য: {condition} ({turns} দফা)",

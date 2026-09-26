@@ -243,7 +243,10 @@
 		"searchChats": "Cerca chat…",
 		"upgrade": "Fai l'upgrade",
 		"restarted": "Riavviato",
-		"working": "Al lavoro"
+		"working": "Al lavoro",
+		"chatActions": "Azioni chat",
+		"deleteChatTitle": "Eliminare \"{name}\"?",
+		"deleteChatBody": "Questa chat e tutti i suoi messaggi verranno rimossi. L'operazione non può essere annullata."
 	},
 	"chat": {
 		"goalLine": "Obiettivo: {condition} ({turns} turni)",

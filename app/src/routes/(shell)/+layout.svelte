@@ -24,6 +24,7 @@
   import NewTeamModal from '$lib/components/teams/NewTeamModal.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
+  import { menuAnchor, deleteChatRow } from '$lib/chat/chatMenu';
   import NewEmployeeModal from '$lib/components/NewEmployeeModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { slide } from 'svelte/transition';
@@ -1022,6 +1023,126 @@
     }
   }
 
+  // Chat row context menu: Rename / Delete for one conversation.
+  let chatCtxMenu = $state<{ x: number; y: number; agentId: string; chatId: string; row: HTMLElement } | null>(null);
+  let chatMenuEl = $state<HTMLElement | null>(null);
+  let chatRenaming = $state<{ agentId: string; chatId: string; value: string } | null>(null);
+  let chatRenameInput = $state<HTMLInputElement | null>(null);
+  let chatDeleteTarget = $state<{ agentId: string; chatId: string; name: string } | null>(null);
+  let chatDeleting = $state(false);
+
+  function chatName(c: EnrichedChat) {
+    return c.title || c.name;
+  }
+
+  function handleChatContext(e: MouseEvent, aid: string, chatId: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    const row = e.currentTarget as HTMLElement;
+    chatCtxMenu = { ...menuAnchor(e, row), agentId: aid, chatId, row };
+  }
+
+  function closeChatCtxMenu(restoreFocus = false) {
+    const row = chatCtxMenu?.row;
+    chatCtxMenu = null;
+    if (restoreFocus) row?.focus();
+  }
+
+  // The menu takes focus when it opens so the keyboard can drive it.
+  $effect(() => {
+    if (chatCtxMenu && chatMenuEl) chatMenuEl.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  });
+
+  function handleChatMenuKeydown(e: KeyboardEvent) {
+    const items = Array.from(chatMenuEl?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeChatCtxMenu(true);
+    } else if (e.key === 'Tab') {
+      closeChatCtxMenu();
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      items[(at + step + items.length) % items.length]?.focus();
+    }
+  }
+
+  function startChatRename() {
+    if (!chatCtxMenu) return;
+    const { agentId: aid, chatId } = chatCtxMenu;
+    closeChatCtxMenu();
+    const chat = apiThreads[aid]?.find((c) => c.id === chatId);
+    if (!chat) return;
+    chatRenaming = { agentId: aid, chatId, value: chatName(chat) };
+  }
+
+  $effect(() => {
+    if (chatRenaming && chatRenameInput) {
+      chatRenameInput.focus();
+      chatRenameInput.select();
+    }
+  });
+
+  async function commitChatRename() {
+    if (!chatRenaming) return;
+    const { agentId: aid, chatId, value } = chatRenaming;
+    const trimmed = value.trim();
+    chatRenaming = null;
+    const chats = apiThreads[aid] ?? [];
+    const chat = chats.find((c) => c.id === chatId);
+    if (!chat || !trimmed || trimmed === chatName(chat)) return;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateChat(chatId, { title: trimmed });
+      apiThreads[aid] = chats.map((c) => (c.id === chatId ? { ...c, title: trimmed, name: trimmed } : c));
+    } catch (e) {
+      console.error('[nebo] Failed to rename chat:', e);
+    }
+  }
+
+  function handleChatRenameKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitChatRename();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      chatRenaming = null;
+    }
+  }
+
+  function askDeleteChat() {
+    if (!chatCtxMenu) return;
+    const { agentId: aid, chatId } = chatCtxMenu;
+    closeChatCtxMenu();
+    const chat = apiThreads[aid]?.find((c) => c.id === chatId);
+    if (chat) chatDeleteTarget = { agentId: aid, chatId, name: chatName(chat) };
+  }
+
+  async function confirmDeleteChat() {
+    const target = chatDeleteTarget;
+    if (!target || chatDeleting) return;
+    chatDeleting = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      await deleteChatRow({
+        chatId: target.chatId,
+        openChatId: agentId === target.agentId ? ($page.params.threadId ?? '') : '',
+        chats: apiThreads[target.agentId] ?? [],
+        remove: api.deleteChat,
+        apply: (chats) => (apiThreads[target.agentId] = chats),
+        leave: () => goto(`/${target.agentId}/threads`, { replaceState: true }),
+      });
+      chatDeleteTarget = null;
+    } catch (e) {
+      // The row stays; the owner can retry from the dialog.
+      console.error('[nebo] Failed to delete chat:', e);
+    }
+    chatDeleting = false;
+  }
+
   // Provide agent data to all children
   setContext('agentPage', {
     get agentId() { return agentId; },
@@ -1139,6 +1260,41 @@
       {$t('teams.remove')}
     </button>
   </div>
+{/if}
+
+<!-- Chat row context menu — Rename / Delete one conversation. -->
+{#if chatCtxMenu}
+  <div class="fixed inset-0 z-50" onclick={() => closeChatCtxMenu()} oncontextmenu={(e) => { e.preventDefault(); closeChatCtxMenu(); }} role="presentation"></div>
+  <div
+    bind:this={chatMenuEl}
+    class="fixed z-50 w-[160px] py-1 rounded-lg border border-base-300 bg-base-100 shadow-xl"
+    style="left: {chatCtxMenu.x}px; top: {chatCtxMenu.y}px;"
+    role="menu"
+    tabindex="-1"
+    aria-label={$t('sidebar.chatActions')}
+    onkeydown={handleChatMenuKeydown}
+  >
+    <button role="menuitem" class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 focus:bg-base-200 focus:outline-none transition-colors" onclick={startChatRename}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50" aria-hidden="true"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+      {$t('sidebar.rename')}
+    </button>
+    <div class="h-px bg-base-300 my-1"></div>
+    <button role="menuitem" class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-error/10 focus:bg-error/10 focus:outline-none text-error transition-colors" onclick={askDeleteChat}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      {$t('common.delete')}
+    </button>
+  </div>
+{/if}
+
+{#if chatDeleteTarget}
+  <ConfirmModal
+    title={$t('sidebar.deleteChatTitle', { values: { name: chatDeleteTarget.name || $t('sidebar.newChat') } })}
+    message={$t('sidebar.deleteChatBody')}
+    confirmLabel={$t('common.delete')}
+    busy={chatDeleting}
+    onConfirm={confirmDeleteChat}
+    onCancel={() => { if (!chatDeleting) chatDeleteTarget = null; }}
+  />
 {/if}
 
 {#if removeTeamObj}
@@ -1484,18 +1640,36 @@
             <span class="text-sm font-medium">{$t('agent.newChat')}</span>
           </a>
           {#each apiThreads[drilledAgent.id] ?? [] as c (c.id)}
-            <a
-              href={`/${drilledAgent.id}/threads/${c.id}`}
-              class="block py-2 px-2.5 mx-1.5 rounded-box {$page.params.threadId === c.id
-                ? 'bg-primary/10 border border-primary/30 shadow-sm'
-                : 'border border-transparent hover:bg-base-100/70'}"
-            >
-              <div class="flex items-baseline gap-2">
-                <span class="text-sm truncate flex-1 min-w-0">{c.title || c.name}</span>
-                <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
+            {#if chatRenaming?.chatId === c.id}
+              <!-- Renaming: the row becomes the title field (not a link, so
+                   typing and clicking in it never navigate). -->
+              <div class="py-2 px-2.5 mx-1.5 rounded-box bg-primary/10 border border-primary/30 shadow-sm">
+                <input
+                  bind:this={chatRenameInput}
+                  bind:value={chatRenaming.value}
+                  class="input input-xs w-full text-sm"
+                  aria-label={$t('sidebar.rename')}
+                  onkeydown={handleChatRenameKeydown}
+                  onblur={commitChatRename}
+                />
               </div>
-              <div class="text-xs text-base-content/55 truncate">{#if c.restarted}<span class="badge badge-ghost badge-xs mr-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{c.preview}</div>
-            </a>
+            {:else}
+              <a
+                href={`/${drilledAgent.id}/threads/${c.id}`}
+                class="block py-2 px-2.5 mx-1.5 rounded-box {$page.params.threadId === c.id
+                  ? 'bg-primary/10 border border-primary/30 shadow-sm'
+                  : 'border border-transparent hover:bg-base-100/70'}"
+                oncontextmenu={(e) => handleChatContext(e, drilledAgent.id, c.id)}
+                data-context-menu
+                aria-haspopup="menu"
+              >
+                <div class="flex items-baseline gap-2">
+                  <span class="text-sm truncate flex-1 min-w-0">{c.title || c.name}</span>
+                  <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
+                </div>
+                <div class="text-xs text-base-content/55 truncate">{#if c.restarted}<span class="badge badge-ghost badge-xs mr-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{c.preview}</div>
+              </a>
+            {/if}
           {/each}
         </div>
       {/if}

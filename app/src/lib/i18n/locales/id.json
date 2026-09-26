@@ -243,7 +243,10 @@
 		"searchChats": "Cari obrolan…",
 		"upgrade": "Tingkatkan",
 		"restarted": "Dimulai ulang",
-		"working": "Bekerja"
+		"working": "Bekerja",
+		"chatActions": "Tindakan obrolan",
+		"deleteChatTitle": "Hapus \"{name}\"?",
+		"deleteChatBody": "Obrolan ini dan semua pesannya akan dihapus. Tindakan ini tidak dapat dibatalkan."
 	},
 	"chat": {
 		"goalLine": "Tujuan: {condition} ({turns} giliran)",

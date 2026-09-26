@@ -243,7 +243,10 @@
 		"searchChats": "Rechercher des conversations…",
 		"upgrade": "Améliorer",
 		"restarted": "Redémarré",
-		"working": "Au travail"
+		"working": "Au travail",
+		"chatActions": "Actions du chat",
+		"deleteChatTitle": "Supprimer « {name} » ?",
+		"deleteChatBody": "Ce chat et tous ses messages seront supprimés. Cette action est irréversible."
 	},
 	"chat": {
 		"goalLine": "Objectif : {condition} ({turns} tours)",

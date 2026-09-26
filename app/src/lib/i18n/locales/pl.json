@@ -243,7 +243,10 @@
 		"searchChats": "Szukaj czatów…",
 		"upgrade": "Ulepsz",
 		"restarted": "Uruchomiono ponownie",
-		"working": "Pracuje"
+		"working": "Pracuje",
+		"chatActions": "Działania czatu",
+		"deleteChatTitle": "Usunąć „{name}”?",
+		"deleteChatBody": "Ten czat i wszystkie jego wiadomości zostaną usunięte. Tej operacji nie można cofnąć."
 	},
 	"chat": {
 		"goalLine": "Cel: {condition} ({turns} tur)",

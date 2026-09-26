@@ -243,7 +243,10 @@
 		"searchChats": "Chats zoeken…",
 		"upgrade": "Upgraden",
 		"restarted": "Opnieuw gestart",
-		"working": "Werkt"
+		"working": "Werkt",
+		"chatActions": "Chatacties",
+		"deleteChatTitle": "\"{name}\" verwijderen?",
+		"deleteChatBody": "Deze chat en al zijn berichten worden verwijderd. Dit kan niet ongedaan worden gemaakt."
 	},
 	"chat": {
 		"goalLine": "Doel: {condition} ({turns} beurten)",
