@@ -8,6 +8,11 @@
 --
 -- Same shape as chats.model (0161): one nullable TEXT column on the chat,
 -- because the conversation is the thing being mapped.
+--
+-- First shipped as 0166 while a parallel branch had already taken 0166–0183,
+-- so databases migrated by that branch never ran it. Renumbered after that
+-- branch's last; a database that applied it as 0166 keeps it applied (the
+-- migrator matches a renumbered file by name, `reconcile_renumbered`).
 -- +goose Up
 ALTER TABLE chats ADD COLUMN linked_chat_id TEXT;
 
