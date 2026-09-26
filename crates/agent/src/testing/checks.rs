@@ -84,6 +84,16 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
         }
         evidence.push(format!("tool_calls {} ≤ {}", got, max));
     }
+    if let Some(max) = check.max_model_calls {
+        if trace.turns.is_empty() {
+            return Ok((false, "the trace has no per-turn metrics, so its steps can't be counted".to_string()));
+        }
+        let got: usize = trace.turns.iter().map(|t| t.model_calls).sum();
+        if got > max {
+            return Ok((false, format!("expected ≤{} model call(s), the run made {}", max, got)));
+        }
+        evidence.push(format!("model_calls {} ≤ {}", got, max));
+    }
     if let Some(max) = check.max_errors {
         let errors: Vec<&TracedToolCall> = trace.tool_calls.iter().filter(|c| c.response.is_error).collect();
         if errors.len() > max {
@@ -296,6 +306,7 @@ fn validate(check: &Check) -> Result<(), String> {
     let has_arg_predicate = check.arg.is_some();
     let has_trace_predicate = check.tool_calls.is_some()
         || check.max_tool_calls.is_some()
+        || check.max_model_calls.is_some()
         || check.max_total_tokens.is_some()
         || check.max_errors.is_some()
         || !check.no_error_contains.is_empty()
@@ -478,6 +489,25 @@ prompt_assertions:
         assert!(!p && why.contains("trace has 1"));
         assert!(evaluate(&check("{ max_total_tokens: 1500 }"), &t).unwrap().0);
         assert!(!evaluate(&check("{ max_total_tokens: 1000 }"), &t).unwrap().0);
+    }
+
+    /// Steps, not calls: twenty loads in one response are one model call,
+    /// the same loads one per response are twenty. A trace with no turn
+    /// rows (a run that never completed) fails rather than passing empty.
+    #[test]
+    fn model_call_ceiling_counts_steps() {
+        let loads: Vec<(&str, serde_json::Value)> = (0..20).map(|_| ("use_skill", serde_json::json!({"name": "s"}))).collect();
+        let mut t = trace_with(loads, 0);
+        let (p, why) = evaluate(&check("{ max_model_calls: 16 }"), &t).unwrap();
+        assert!(!p && why.contains("no per-turn metrics"), "{why}");
+        t.turns = vec![TurnMetrics { turn: 1, model_calls: 3, tool_calls: 20, ..Default::default() }];
+        assert!(evaluate(&check("{ max_model_calls: 16 }"), &t).unwrap().0, "batched: three steps");
+        t.turns = vec![
+            TurnMetrics { turn: 1, model_calls: 12, ..Default::default() },
+            TurnMetrics { turn: 2, model_calls: 10, ..Default::default() },
+        ];
+        let (p, why) = evaluate(&check("{ max_model_calls: 16 }"), &t).unwrap();
+        assert!(!p && why.contains("the run made 22"), "{why}");
     }
 
     #[test]

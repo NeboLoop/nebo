@@ -1,0 +1,102 @@
+id: plugin-many-skills-fan-out
+name: "Many skills — a survey is fanned out, never one load per step"
+description: |
+  Found live on 2026-09-26 (owner's desktop, session 9d1b5984): asked to
+  build a billing employee with all its workflows on an accounting plugin,
+  the employee made 28 use_skill calls, one per model step at ~3 s each,
+  loading every skill body into its own conversation, then did the
+  employee and workflow calls itself. delegate was offered the whole night
+  and never called. The owner: "Why isn't it using the subagents? … It
+  should have fanned out and acted in parallel."
+
+  The tool round already runs independent calls of one response together
+  (use_skill, find_tools and file reads are concurrency-safe), so the
+  cost was the model's shape, not the executor. What is right, as Claude
+  Code does it: learning across many skills is a helper's reading that
+  comes back as a digest (several delegate calls in one response for
+  independent slices), or the skills the job needs are loaded several per
+  response. Either way the conversation stays open and the steps stay
+  few.
+
+  Setup installs quickbooks through the one install pathway, the way
+  correction-quickbooks-payment-dry-run does; installing it installs its
+  28 quickbooks-* skills, the machine a customer has. The gate bot has no
+  connected company, so nothing is posted; the job here is building the
+  employee and its workflows, which needs no connection. Teardown removes
+  the employee (its workflows are bound to it) and the plugin.
+
+  max_model_calls counts steps (usage events), so it separates a batched
+  run from the same calls one per step: the incident's shape is 34+ steps,
+  a run that delegates the survey is 3 to 6, and one that loads the
+  skills it needs in batches and builds is about 8 to 12.
+target_component: delegate
+
+setup:
+  - "python3 -c \"import json,urllib.request as u; s='${NEBO_TEST_SERVER:-localhost:27895}'; ps=json.load(u.urlopen('http://'+s+'/api/v1/store/products?type=plugin&q=quickbooks'))['products']; p=[x for x in ps if x.get('slug')=='quickbooks'][0]; u.urlopen(u.Request('http://'+s+'/api/v1/store/products/'+p['id']+'/install', method='POST'), timeout=180).read()\""
+teardown:
+  - "python3 -c \"import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'; ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','').startswith('billing-desk-{{tag}}')]; [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for i in ids]\""
+  - "curl -s -X DELETE http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/plugins/quickbooks > /dev/null"
+
+conversation:
+  - role: user
+    content: "Create an employee named billing-desk-{{tag}} with all the workflows it needs to handle our billing using QuickBooks."
+
+tool_config:
+  delegate:
+    enabled: true
+  use_skill:
+    enabled: true
+  plugin__quickbooks:
+    enabled: true
+  create_employee:
+    enabled: true
+  create_workflow:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: fans-out-or-batches
+      text: "Learning what the quickbooks skills cover is done one of two ways: one or more delegate calls in a single response whose prompts each name a slice of the skills and ask for a digest (steps and commands per billing job), or use_skill calls for the skills the job needs, several in one response. Never one skill per step"
+      severity: critical
+  recovery:
+    - id: no-sequential-single-loads
+      text: "The run never makes a long chain of single use_skill loads, one per response: no more than three responses in the whole run carry exactly one use_skill call and nothing else"
+      severity: critical
+    - id: loads-only-what-it-needs
+      text: "The employee itself loads only skills a billing job needs (invoices, payments, customers, bills, credit notes, reminders or the like), not every quickbooks skill; skills it hands to a helper are the helper's reading and don't count"
+      severity: important
+    - id: owner-gets-an-answer
+      text: "The final reply answers the owner: it names the employee and the workflows it created, or says plainly that helpers are reading the QuickBooks skills and that it will build the employee and its workflows when they report. It never lists workflows it has not created or states what a helper found before its result arrived"
+      severity: critical
+    - id: no-tool-errors
+      text: "No call is rejected for its shape: no 'is required', 'is missing', 'No such tool' or 'No skill named'"
+      severity: important
+      check:
+        no_error_contains:
+          - "is required"
+          - "is missing"
+          - "No such tool"
+          - "No skill named"
+  cost:
+    - id: few-steps
+      text: "At most 16 model calls (steps) in the whole run. Twenty-eight skills loaded one per step cannot fit; a delegated survey (3 to 6) or batched loads and a build (about 8 to 12) do"
+      severity: critical
+      check: { max_model_calls: 16 }
+    - id: lean-steps
+      text: "At most 10 model calls: the survey is delegated or the loads come in one or two batches, and the workflow creates are batched too"
+      severity: important
+      check: { max_model_calls: 10 }
+
+ideal_behavior:
+  tool_calls: 4
+  narrative: |
+    One response: delegate(helper_type: "explore", prompt: "Load the
+    quickbooks skills for invoices, customers and payments; send back each
+    billing job's steps and the commands it uses") and a second delegate
+    for bills, credit notes and reminders. Reply: "Two helpers are reading
+    the QuickBooks skills; I'll build billing-desk-<tag> and its workflows
+    when they report." When the digests arrive, find_tools loads
+    create_employee and create_workflow, then the employee and its
+    workflows are created, the workflows together in one response.
+    Or, without helpers: the six to eight skills billing needs loaded in
+    one response, then the employee and its workflows.

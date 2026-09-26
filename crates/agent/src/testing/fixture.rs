@@ -189,6 +189,11 @@ pub struct Check {
     pub tool_calls: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_calls: Option<usize>,
+    /// Ceiling on the model calls (steps) of the whole run, every owner
+    /// turn's summed. Independent calls in one response are one step, so
+    /// this is what tells a batched run from the same calls one per step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_model_calls: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_total_tokens: Option<usize>,
     /// Ceiling on tool results that came back as errors, whole trace.

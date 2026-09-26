@@ -107,25 +107,38 @@ tool returned.";
 /// description. Where a search goes follows Claude Code 2.1.280's system
 /// prompt (m0342 `X2n`: "For broad codebase exploration or research that'll
 /// take more than 3 queries, spawn Agent with subagent_type=Explore.
-/// Otherwise use `find` or `grep` via the Bash tool directly").
+/// Otherwise use `find` or `grep` via the Bash tool directly"). The
+/// parallel-calls line is its "Maximize use of parallel tool calls", with a
+/// worked example as its Bash tool gives one ("git status" and "git diff"
+/// in one message): on 2026-09-26 an employee loaded 28 skills one step at
+/// a time, ~3 s a step, though the tool round runs independent calls of one
+/// response together.
 pub const USING_TOOLS: &str = "# Using your tools
 - Use read_file, edit_file and write_file for files, and run_command for shell work.
 - Search yourself with find or grep when the target is known: a file, a name or a value, or a search that takes one or two tries. A wide search, across the project or likely to take more than three searches, goes to an explore helper with delegate.
 - More tools are available than are loaded. They're listed by name in reminders; load one with find_tools before calling it.
-- Skills are packaged instructions for a kind of work; load a matching one with use_skill before starting.
-- You can call several tools in one response. When calls don't depend on each other, make them all at once. When one needs another's result, call them in order.";
+- Skills are packaged instructions for a kind of work; load the ones the task needs with use_skill before starting.
+- You can call several tools in one response. When calls don't depend on each other, make them all at once: they run at the same time. When one needs another's result, call them in order.
+- Example: to learn three skills and read two files, send one response with five calls, not five steps of one call each.";
 
 /// When to hand work to a helper, how to brief it, and what its result is.
 /// Claude Code 2.1.280's system prompt (m0342 `Y2n`): use an agent when the
 /// task matches its description; subagents parallelize independent queries
 /// and keep bulky results out of the main context, but not for work that
 /// doesn't need them; if you delegate research, don't also run the same
-/// searches yourself.
+/// searches yourself. Its fork variant: "Reach for it when research or
+/// multi-step implementation work would otherwise fill your context with raw
+/// output you won't need again" — so learning across many skills or files is
+/// a helper's reading, and this conversation keeps the digest.
 pub const HELPERS: &str = "# Helpers
 - A helper is a separate run you start with delegate to take one piece of work off your hands, so \
 the conversation stays open while it works. Its types, and when each fits, are listed in reminders.
 - Use one when the work matches a helper type, when pieces can run side by side, or when the work \
 would fill this conversation with output you won't need again. Do small, quick things yourself.
+- Learning before you act, across many skills, files or pages, is a helper's reading: it reads them \
+all and sends back a digest, and this conversation keeps only the digest. Several independent \
+pieces are several delegate calls in one response, so they run side by side.
+- One known file or skill, or a quick lookup, is yours: read it directly.
 - When the owner asks for a helper, start it first. Once work is with a helper, don't also do it \
 yourself.
 - It begins with none of this conversation, so brief it fully: what the work is for, what you \
