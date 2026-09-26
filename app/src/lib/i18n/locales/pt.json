@@ -243,7 +243,10 @@
 		"searchChats": "Pesquisar conversas…",
 		"upgrade": "Atualizar plano",
 		"restarted": "Reiniciado",
-		"working": "A trabalhar"
+		"working": "A trabalhar",
+		"chatActions": "Ações do chat",
+		"deleteChatTitle": "Eliminar \"{name}\"?",
+		"deleteChatBody": "Este chat e todas as suas mensagens serão removidos. Não é possível anular."
 	},
 	"chat": {
 		"compactBoundary": "Conversa anterior resumida",

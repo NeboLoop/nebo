@@ -60,7 +60,7 @@ impl Kind {
             Kind::List => "list workflows and automations",
             Kind::Install => "install a workflow from a code",
             Kind::Uninstall => "uninstall a marketplace workflow",
-            Kind::Create => "create an automated workflow",
+            Kind::Create => "create a workflow: temporary work across employees, teams or days, or saved automation",
             Kind::Update => "change an existing workflow",
             Kind::Delete => "delete a workflow",
             Kind::Run => "run a workflow now",
@@ -76,13 +76,19 @@ impl Kind {
             Kind::Install => "Installs a workflow from a marketplace code (WORK-XXXX-XXXX).".to_string(),
             Kind::Uninstall => "Uninstalls a marketplace-installed workflow by its install id (from list_workflows), not its name.".to_string(),
             Kind::Create => format!(
-                "Creates a workflow: automated work that runs on its trigger or on demand.\n\
+                "Creates a workflow: work the engine carries until it has an outcome, through waits, answers and restarts.\n\
+                When to use: the owner gives a direction that spans employees, teams or days (\"have marketing work with sales and bring me a recommendation\"). Make it temporary: its activities ask each employee or team, wait for the results, follow up on a stated day, and bring one outcome back. You hear the outcome; don't track it by hand.\n\
+                When not to use: a quick question you can answer from a coworker or two in this conversation (send_message, or a helper with delegate), or a single step you can take yourself.\n\
                 - `definition` is the workflow JSON: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}}, \"activities\": [{{\"id\": \"run\", \"intent\": \"what this accomplishes\", \"steps\": [\"concrete step\"]}}]}}. Leave out the trigger for a workflow run by hand.\n\
                 - Activities are the only executable unit; each runs its intent and steps on its own. A top-level `steps` array is one activity.\n\
                 - The name goes in `name`, or as \"name\" inside the definition.\n\
                 - `lifetime: \"temporary\"` makes it for one piece of work: it runs once (at once when it has no trigger; on its first fire otherwise), and after it ends and its outcome reaches the owner it is deleted. Its runs, receipts and cost stay, and you hear the outcome. Left out, it is saved and runs on its trigger until deleted.\n\
+                - \"Tell me when the order ships\": a temporary workflow with {{\"trigger\": {{\"type\": \"event\", \"sources\": [\"<the event>\"]}}}}. It fires once, reports and disappears; nothing polls.\n\
+                - Waiting on someone's reply for days: add {{\"case\": {{\"key\": \"email\"}}}} and put the person in `inputs`. The work waits on their reply as a signal, with any follow-up day as the turn's deadline, and ends when the case closes.\n\
                 - `from_run` saves the work a past run did (a temporary workflow that already finished) under this name, with `definition` adding to it, e.g. a schedule trigger.\n\
-                - {EMPLOYEE_NOTE}"
+                - {EMPLOYEE_NOTE}\n\
+                Example: owner: \"Check with the bookkeeper what my marketing budget is, and have them work out with marketing what we can afford.\" → create_workflow(name: \"Marketing budget\", lifetime: \"temporary\", definition with an activity for the Bookkeeper's number and one for Marketing's plan), reply that it's under way, and the turn ends. The outcome comes back in a later turn.\n\
+                Example: owner, after that outcome: \"Give me this report every Monday at 8.\" → create_workflow(name: \"Weekly marketing budget\", from_run: \"<its run id>\", definition: {{\"trigger\": {{\"type\": \"schedule\", \"cron\": \"0 8 * * MON\"}}}}). Nothing is rebuilt."
             ),
             Kind::Update => format!(
                 "Replaces an existing workflow's definition (same shape as create_workflow; not a partial patch). Its run history stays attached. `lifetime: \"saved\"` keeps a temporary workflow for good. {EMPLOYEE_NOTE}"
@@ -714,6 +720,31 @@ pub(crate) mod tests {
         assert!(bad.is_error && rig.calls().is_empty(), "{}", bad.content);
         let empty = rig.call("create_workflow", json!({"name": "Nothing"})).await;
         assert!(empty.is_error && empty.content.contains("from_run") && rig.calls().is_empty(), "{}", empty.content);
+    }
+
+    /// The guidance for long-running work sits where the model decides: in
+    /// the deferred listing's hint and in create_workflow's own text. A
+    /// direction that spans employees, teams or days becomes a temporary
+    /// workflow; a quick question stays a message or a helper; "every
+    /// Monday at 8" saves the same work on a schedule; "tell me when"
+    /// is a temporary event workflow; waiting on someone's reply is a case.
+    #[test]
+    fn create_workflow_says_when_work_is_temporary_saved_or_not_a_workflow() {
+        let hint = Kind::Create.search_hint();
+        assert!(hint.contains("temporary") && hint.contains("days"), "{hint}");
+        let d = Kind::Create.description();
+        for words in [
+            "When to use: the owner gives a direction that spans employees, teams or days",
+            "When not to use: a quick question",
+            "send_message",
+            "every Monday at 8",
+            "from_run",
+            "Tell me when",
+            "\"type\": \"event\"",
+            "case",
+        ] {
+            assert!(d.contains(words), "missing {words:?} in: {d}");
+        }
     }
 
     /// A status answer for a run in flight says checking again is useless,

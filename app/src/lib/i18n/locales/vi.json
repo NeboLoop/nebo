@@ -243,7 +243,10 @@
 		"searchChats": "Tìm cuộc trò chuyện…",
 		"upgrade": "Nâng cấp",
 		"restarted": "Đã khởi động lại",
-		"working": "Đang làm việc"
+		"working": "Đang làm việc",
+		"chatActions": "Thao tác trò chuyện",
+		"deleteChatTitle": "Xóa \"{name}\"?",
+		"deleteChatBody": "Cuộc trò chuyện này và tất cả tin nhắn của nó sẽ bị xóa. Không thể hoàn tác."
 	},
 	"chat": {
 		"compactBoundary": "Đã tóm tắt cuộc trò chuyện trước đó",

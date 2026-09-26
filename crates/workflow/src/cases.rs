@@ -99,6 +99,9 @@ pub enum Routed {
     /// or declined. Nothing reopens; the signal is recorded and the owner
     /// is told.
     Refused { case_id: String, reason: String },
+    /// A temporary workflow works one case, and this signal names someone
+    /// else. Nothing opens; the signal is recorded as such.
+    Taken { case_id: String },
 }
 
 /// Closure reasons a later signal reactivates the same case from — the
@@ -358,6 +361,14 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
         return Ok(Routed::Signaled { case_id: case.id });
     }
 
+    // A temporary workflow works one case (owner, 09-25): once it has it,
+    // a signal for anyone else opens nothing.
+    let temporary = store.temporary_work(db::TemporaryKind::Workflow, b.agent_id, b.binding_name)?;
+    if let Some(first) = temporary.as_ref().and_then(|w| w.run_id.clone()) {
+        store.engine_supersede_event(event_id, t, "temporary workflow already works its one case")?;
+        return Ok(Routed::Taken { case_id: first });
+    }
+
     // No open case. What the person's LAST case of this type closed as
     // decides what happens now (owner's reopen rules, 2026-09-07).
     let previous = store.engine_last_closed_run_for_key(&key_type, &subject)?;
@@ -403,6 +414,15 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
     }
 
     let case_id = uuid::Uuid::new_v4().to_string();
+    if temporary.is_some() {
+        match store.claim_temporary_run(db::TemporaryKind::Workflow, b.agent_id, b.binding_name, &case_id)? {
+            db::TemporaryClaim::AlreadyRan(first) => {
+                store.engine_supersede_event(event_id, t, "temporary workflow already works its one case")?;
+                return Ok(Routed::Taken { case_id: first });
+            }
+            db::TemporaryClaim::Claimed | db::TemporaryClaim::NotTemporary => {}
+        }
+    }
     let session_key = format!("agent:{}:case:{}", b.agent_id, case_id);
     let mut inputs = b.base_inputs.clone();
     inputs["_case"] = serde_json::json!({

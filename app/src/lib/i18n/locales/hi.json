@@ -243,7 +243,10 @@
 		"searchChats": "चैट खोजें…",
 		"upgrade": "अपग्रेड करें",
 		"restarted": "फिर से शुरू हुआ",
-		"working": "काम पर"
+		"working": "काम पर",
+		"chatActions": "चैट कार्रवाइयाँ",
+		"deleteChatTitle": "\"{name}\" हटाएँ?",
+		"deleteChatBody": "यह चैट और इसके सभी संदेश हटा दिए जाएँगे। इसे पूर्ववत नहीं किया जा सकता।"
 	},
 	"chat": {
 		"compactBoundary": "पिछली बातचीत का सारांश बनाया गया",

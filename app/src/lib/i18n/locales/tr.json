@@ -243,7 +243,10 @@
 		"searchChats": "Sohbetlerde ara…",
 		"upgrade": "Yükselt",
 		"restarted": "Yeniden başlatıldı",
-		"working": "Çalışıyor"
+		"working": "Çalışıyor",
+		"chatActions": "Sohbet işlemleri",
+		"deleteChatTitle": "\"{name}\" silinsin mi?",
+		"deleteChatBody": "Bu sohbet ve tüm mesajları kaldırılacak. Bu işlem geri alınamaz."
 	},
 	"chat": {
 		"compactBoundary": "Önceki konuşma özetlendi",

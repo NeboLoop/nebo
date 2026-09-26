@@ -243,7 +243,10 @@
 		"searchChats": "ค้นหาแชท…",
 		"upgrade": "อัปเกรด",
 		"restarted": "เริ่มใหม่แล้ว",
-		"working": "กำลังทำงาน"
+		"working": "กำลังทำงาน",
+		"chatActions": "การดำเนินการแชท",
+		"deleteChatTitle": "ลบ \"{name}\" ใช่ไหม",
+		"deleteChatBody": "แชทนี้และข้อความทั้งหมดจะถูกลบ ไม่สามารถเลิกทำได้"
 	},
 	"chat": {
 		"compactBoundary": "สรุปบทสนทนาก่อนหน้าแล้ว",

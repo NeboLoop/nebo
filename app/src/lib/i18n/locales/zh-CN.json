@@ -243,7 +243,10 @@
 		"searchChats": "搜索对话…",
 		"upgrade": "升级",
 		"restarted": "已重新开始",
-		"working": "工作中"
+		"working": "工作中",
+		"chatActions": "聊天操作",
+		"deleteChatTitle": "删除“{name}”？",
+		"deleteChatBody": "此聊天及其所有消息将被删除，且无法撤销。"
 	},
 	"chat": {
 		"compactBoundary": "已总结之前的对话",

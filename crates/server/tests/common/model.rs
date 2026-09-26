@@ -13,7 +13,8 @@ use super::TestServer;
 /// What the scripted model answers a call with.
 pub enum Reply {
     Text(&'static str),
-    Call(&'static str, Value),
+    /// Tool calls, in one response.
+    Call(Vec<(&'static str, Value)>),
 }
 
 /// Given a call's purpose and its messages, the reply.
@@ -62,11 +63,17 @@ pub async fn fake_model(script: Script) -> (u16, Calls) {
                 };
                 let (delta, finish) = match reply {
                     Reply::Text(text) => (json!({"role": "assistant", "content": text}), "stop"),
-                    Reply::Call(name, args) => (
-                        json!({"role": "assistant", "tool_calls": [{"index": 0, "id": format!("call_{}", uuid::Uuid::new_v4().simple()), "type": "function",
-                               "function": {"name": name, "arguments": args.to_string()}}]}),
-                        "tool_calls",
-                    ),
+                    Reply::Call(calls) => {
+                        let calls: Vec<Value> = calls
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, (name, args))| {
+                                json!({"index": i, "id": format!("call_{}", uuid::Uuid::new_v4().simple()), "type": "function",
+                                       "function": {"name": name, "arguments": args.to_string()}})
+                            })
+                            .collect();
+                        (json!({"role": "assistant", "tool_calls": calls}), "tool_calls")
+                    }
                 };
                 let sse = format!("{}{}data: [DONE]\n\n", chunk(delta, Value::Null), chunk(json!({}), json!(finish)));
                 let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse}");

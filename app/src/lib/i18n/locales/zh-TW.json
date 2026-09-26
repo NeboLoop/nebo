@@ -243,7 +243,10 @@
 		"searchChats": "搜尋聊天…",
 		"upgrade": "升級",
 		"restarted": "已重新開始",
-		"working": "工作中"
+		"working": "工作中",
+		"chatActions": "聊天操作",
+		"deleteChatTitle": "刪除「{name}」？",
+		"deleteChatBody": "此聊天及其所有訊息將被刪除，且無法復原。"
 	},
 	"chat": {
 		"compactBoundary": "已摘要先前的對話",

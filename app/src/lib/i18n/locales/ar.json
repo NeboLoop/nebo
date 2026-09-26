@@ -243,7 +243,10 @@
 		"searchChats": "البحث في المحادثات...",
 		"upgrade": "ترقية",
 		"restarted": "أُعيد التشغيل",
-		"working": "يعمل"
+		"working": "يعمل",
+		"chatActions": "إجراءات المحادثة",
+		"deleteChatTitle": "حذف \"{name}\"؟",
+		"deleteChatBody": "ستُحذف هذه المحادثة وجميع رسائلها. لا يمكن التراجع عن ذلك."
 	},
 	"chat": {
 		"compactBoundary": "تم تلخيص المحادثة السابقة",

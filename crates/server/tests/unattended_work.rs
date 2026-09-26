@@ -61,7 +61,7 @@ async fn a_parked_workflow_step_resumes_when_answered_from_the_web_inbox_or_the_
     let path = target.to_string_lossy().into_owned();
     let (server, _) = server_with(Arc::new(move |purpose, messages| {
         if main_call(purpose) && !has_result(messages) {
-            Reply::Call("write_file", json!({"path": path, "content": "approved"}))
+            Reply::Call(vec![("write_file", json!({"path": path, "content": "approved"}))])
         } else if main_call(purpose) {
             Reply::Text("Done.")
         } else {
@@ -114,7 +114,7 @@ async fn a_scheduled_job_runs_as_its_employee_with_its_rules_and_instructions() 
     let path = out.path().join("overnight.txt").to_string_lossy().into_owned();
     let (server, calls) = server_with(Arc::new(move |purpose, messages| {
         if main_call(purpose) && says(messages, "Check the overnight entries.") && !has_result(messages) {
-            Reply::Call("write_file", json!({"path": path, "content": "checked"}))
+            Reply::Call(vec![("write_file", json!({"path": path, "content": "checked"}))])
         } else if main_call(purpose) {
             Reply::Text("Checked.")
         } else {
@@ -179,16 +179,16 @@ async fn a_coworker_acts_under_its_own_permissions_not_the_askers() {
             if has_result(messages) {
                 return Reply::Text("I can't write that file from a coworker's request.");
             }
-            return Reply::Call("write_file", json!({"path": path, "content": "VAT 20%"}));
+            return Reply::Call(vec![("write_file", json!({"path": path, "content": "VAT 20%"}))]);
         }
         if says(messages, "Ask Field Researcher to note the VAT rate.") {
             if has_result(messages) {
                 return Reply::Text("I've asked Field Researcher.");
             }
-            return Reply::Call(
+            return Reply::Call(vec![(
                 "send_message",
                 json!({"to": "Field Researcher", "message": "Please write the VAT rate to the rates file.", "wait": false}),
-            );
+            )]);
         }
         Reply::Text("Hello.")
     }))

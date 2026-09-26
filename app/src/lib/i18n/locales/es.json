@@ -243,7 +243,10 @@
 		"searchChats": "Buscar chats…",
 		"upgrade": "Mejorar plan",
 		"restarted": "Reiniciado",
-		"working": "Trabajando"
+		"working": "Trabajando",
+		"chatActions": "Acciones del chat",
+		"deleteChatTitle": "¿Eliminar \"{name}\"?",
+		"deleteChatBody": "Se eliminarán este chat y todos sus mensajes. No se puede deshacer."
 	},
 	"chat": {
 		"compactBoundary": "Conversación anterior resumida",
