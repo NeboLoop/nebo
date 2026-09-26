@@ -5638,6 +5638,7 @@ dependencies = [
  "nebo-types",
  "nebo-workflow",
  "notify",
+ "rayon",
  "regex",
  "reqwest 0.12.28",
  "rusqlite",
