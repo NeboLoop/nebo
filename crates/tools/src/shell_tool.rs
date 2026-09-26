@@ -351,10 +351,21 @@ impl ShellTool {
         // found" on stderr, and the hint below never fired. The shell
         // named a missing program; that is the failure, whatever the code.
         let missing_in_pipeline = output.status.success() && missing_command_name(&stderr).is_some();
+        // A search that printed nothing over a folder with no files in it
+        // searched nothing: say so, whatever the exit code (`grep … | head`
+        // launders grep's 1 into 0).
+        let run_cwd = if input.cwd.is_empty() { ctx.cwd.as_deref().unwrap_or("") } else { input.cwd.as_str() };
+        let nothing_searched = if stdout.trim().is_empty() {
+            nothing_searched_note(&input.command, std::path::Path::new(run_cwd))
+        } else {
+            None
+        };
+        let mut noted = false;
         if !output.status.success() || missing_in_pipeline {
             let code = output.status.code().unwrap_or(-1);
             let (is_error, semantic_msg) =
-                interpret_exit_code(&input.command, code, &result);
+                interpret_exit_code(&input.command, code, &result, nothing_searched.as_deref());
+            noted = semantic_msg.is_some() && semantic_msg == nothing_searched;
             if let Some(msg) = semantic_msg {
                 if !result.is_empty() {
                     result.push('\n');
@@ -375,6 +386,10 @@ impl ShellTool {
 
         if result.is_empty() {
             result = "(exit 0, no output)".to_string();
+        }
+        if let (Some(note), false) = (&nothing_searched, noted) {
+            result.push('\n');
+            result.push_str(note);
         }
 
         // Long output is persisted by the registry (the one spill
@@ -1004,12 +1019,81 @@ fn detect_unbounded_follow(command: &str) -> Option<&'static str> {
     None
 }
 
-fn interpret_exit_code(command: &str, exit_code: i32, output: &str) -> (bool, Option<String>) {
+/// Programs whose empty output means "nothing matched" only when they had
+/// files to look at.
+const SEARCH_PROGRAMS: &[&str] = &["grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "fd"];
+
+/// Most entries looked at to decide a folder holds no files; past it the
+/// folder is taken to have some.
+const EMPTY_FOLDER_SCAN: usize = 2_000;
+
+/// When `command` runs a search over folders that hold no files at all,
+/// the note that says nothing was searched. Folders are the search
+/// programs' arguments that name existing directories (relative ones
+/// against `cwd`).
+fn nothing_searched_note(command: &str, cwd: &std::path::Path) -> Option<String> {
+    let tokens = shlex::split(command).unwrap_or_else(|| command.split_whitespace().map(str::to_string).collect());
+    let mut searching = false;
+    let mut empty: Vec<String> = Vec::new();
+    for token in &tokens {
+        if matches!(token.as_str(), "|" | "||" | "&&" | ";" | "&") {
+            searching = false;
+            continue;
+        }
+        let program = std::path::Path::new(token).file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !searching && SEARCH_PROGRAMS.contains(&program) {
+            searching = true;
+            continue;
+        }
+        if !searching || token.starts_with('-') || token.contains('>') {
+            continue;
+        }
+        let path = cwd.join(crate::file_tool::expand_path(token));
+        if path.is_dir() && !holds_a_file(&path) && !empty.contains(token) {
+            empty.push(token.clone());
+        }
+    }
+    if empty.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{} holds no files, so this searched nothing: the empty result says nothing about whether what you \
+         looked for exists. Tell the owner the folder is empty and ask where the files are.",
+        empty.join(" and ")
+    ))
+}
+
+/// Whether `dir` holds at least one file anywhere below it (a folder too
+/// big to scan counts as holding one).
+fn holds_a_file(dir: &std::path::Path) -> bool {
+    let mut pending = vec![dir.to_path_buf()];
+    let mut seen = 0;
+    while let Some(d) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > EMPTY_FOLDER_SCAN {
+                return true;
+            }
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => pending.push(entry.path()),
+                _ => return true,
+            }
+        }
+    }
+    false
+}
+
+/// `nothing_searched`: the note for a search over folders with no files,
+/// which replaces grep's "no matches" (there was nothing to match against).
+fn interpret_exit_code(command: &str, exit_code: i32, output: &str, nothing_searched: Option<&str>) -> (bool, Option<String>) {
     let base = extract_base_command(command);
     match base.as_str() {
         // grep/rg: 0=matches found, 1=no matches, 2+=error
         "grep" | "rg" | "egrep" | "fgrep" => {
-            if exit_code == 1 {
+            if let (1, Some(note)) = (exit_code, nothing_searched) {
+                (false, Some(note.to_string()))
+            } else if exit_code == 1 {
                 (false, Some("No matches found. This is not an error — the pattern does not appear in the searched files. Do not retry the same search.".to_string()))
             } else {
                 (true, None)
@@ -1322,6 +1406,44 @@ mod tests {
 
         let r = t.execute(&ctx(), json!({"action": "frobnicate", "pid": 1})).await;
         assert!(r.content.contains("for a PID-based call. Valid: list, kill, info"), "{}", r.content);
+    }
+
+    // Gate 2026-09-26 (correction-grep-no-files): `grep -rn x empty-src
+    // 2>/dev/null | head` came back "(exit 0, no output)", and runs spent
+    // four more commands finding out the folder was empty, one then telling
+    // the owner the function "is not defined anywhere". A search over a
+    // folder with no files says it searched nothing, on either exit code.
+    #[tokio::test]
+    async fn a_search_over_an_empty_folder_says_nothing_was_searched() {
+        let t = tool();
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty-src");
+        std::fs::create_dir_all(empty.join("nested")).unwrap();
+        let empty = empty.to_string_lossy().into_owned();
+
+        let piped = format!("grep -rn handle_login {empty} 2>/dev/null | head -20");
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": piped})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.starts_with("(exit 0, no output)\n"), "{}", r.content);
+        assert!(r.content.contains(&format!("{empty} holds no files, so this searched nothing")), "{}", r.content);
+
+        let bare = format!("grep -rn handle_login {empty}");
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": bare})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("holds no files"), "{}", r.content);
+        assert!(!r.content.contains("No matches found"), "nothing was there to match: {}", r.content);
+
+        // Relative to the call's folder, and `find` counts as a search.
+        let r = t
+            .execute(&ctx(), json!({"action": "exec", "command": "find empty-src -name '*.py'", "cwd": dir.path()}))
+            .await;
+        assert!(r.content.contains("empty-src holds no files"), "{}", r.content);
+
+        // A folder with files and no match is a real "no matches".
+        std::fs::write(dir.path().join("empty-src/nested/app.py"), "def other(): pass\n").unwrap();
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": format!("grep -rn handle_login {empty}")})).await;
+        assert!(r.content.contains("No matches found"), "{}", r.content);
+        assert!(!r.content.contains("holds no files"), "{}", r.content);
     }
 
     // The background start names the poll call; an empty session log says

@@ -233,11 +233,18 @@ fn shell() -> String {
     }
 }
 
-/// What a server bot's `os` tool can't reach. Told in the environment, not
-/// in the tool's description: the tools array is the same on every bot.
-pub const SERVER_DESKTOP: &str = "none: this Nebo runs on a server in the cloud. The os tool has no mail, contacts, \
-calendar, reminders, shortcut, tts or dock here (never call them); window, input, clipboard, capture, ui, menu, dialog \
-and space work only while a desktop session is up. Keychain, settings and search work normally.";
+/// What a server bot has no desktop for. Told in the environment, not in the
+/// tool's description: the tools array is the same on every bot. The os tool
+/// is listed only while a desktop session is up (D19), so this names what it
+/// drives then, and says plainly what the missing desktop does NOT take away:
+/// on 2026-09-26 the old line ("the os tool has no … reminders here, never
+/// call them") read as "this bot can't set reminders", and runs asked to be
+/// reminded in three hours answered that no reminder tool existed.
+pub const SERVER_DESKTOP: &str = "none: this Nebo runs on a server in the cloud, with no screen and none of a \
+computer's own apps (Mail, Contacts, Calendar, Reminders, Shortcuts, speech). Files, commands, the web, schedules \
+(a reminder for the owner is one) and connected services all work normally. The os tool is offered only while a \
+desktop session is up, and then drives just that session's windows, input, clipboard, capture, ui, menu, dialog and \
+space.";
 
 /// The environment's fields after the date, in the order they are told:
 /// the platform, the shell, the desktop a server bot lacks, the working

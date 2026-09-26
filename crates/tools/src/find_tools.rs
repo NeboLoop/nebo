@@ -101,14 +101,29 @@ impl DynTool for FindToolsTool {
                 .get("max_results")
                 .and_then(|v| v.as_u64())
                 .map_or(DEFAULT_MAX_RESULTS, |n| n.max(1) as usize);
-            let mut catalog = self.registry.deferred_entries().await;
-            // A tool the run's tool scope leaves out can't be loaded.
-            if let Some(withheld) = &ctx.withheld_tools {
-                catalog.retain(|e| !withheld.contains(&e.definition.name));
-            }
+            let catalog = loadable(
+                self.registry.deferred_entries().await,
+                ctx.withheld_tools.as_deref(),
+                crate::desktop_available(),
+            );
             ToolResult::ok(answer(&catalog, query, max_results))
         })
     }
+}
+
+/// The deferred tools this run may load: never one its tool scope leaves
+/// out, and the desktop tool only where a desktop exists, as the listing
+/// offers it (D19). What isn't listed can't be loaded.
+fn loadable(
+    mut catalog: Vec<DeferredEntry>,
+    withheld: Option<&std::collections::HashSet<String>>,
+    desktop: bool,
+) -> Vec<DeferredEntry> {
+    catalog.retain(|e| {
+        let name = &e.definition.name;
+        withheld.is_none_or(|w| !w.contains(name)) && (desktop || name != crate::DESKTOP_TOOL)
+    });
+    catalog
 }
 
 /// The result for `query` over `catalog`: the matched definitions in a
@@ -307,6 +322,22 @@ mod tests {
 
     fn names(result: &str) -> Vec<String> {
         loaded_in_result(result).into_iter().map(|d| d.name).collect()
+    }
+
+    /// A server with no desktop session lists no desktop tool, so it can't
+    /// load one either: on 2026-09-26 a gate run loaded `os` on a server and
+    /// then refused the owner's request because of what `os` can't do there.
+    #[test]
+    fn what_the_listing_hides_cannot_be_loaded() {
+        let mut all = catalog();
+        all.push(entry(crate::DESKTOP_TOOL, "Local machine operations.", "desktop apps"));
+        let withheld: std::collections::HashSet<String> = ["plugin__shopify".to_string()].into();
+        let names_of = |c: Vec<DeferredEntry>| c.into_iter().map(|e| e.definition.name).collect::<Vec<_>>();
+        let server = names_of(loadable(all.clone(), Some(&withheld), false));
+        assert_eq!(server, ["mail_message_send", "calendar_event_create", "mcp__github__create_issue"]);
+        let desktop = names_of(loadable(all, None, true));
+        assert!(desktop.contains(&crate::DESKTOP_TOOL.to_string()), "{desktop:?}");
+        assert_eq!(desktop.len(), 5);
     }
 
     #[test]
