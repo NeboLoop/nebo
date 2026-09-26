@@ -79,6 +79,13 @@ pub struct PluginManifest {
     /// Trigger keywords for search matching (e.g., ["payment", "invoice", "billing"]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<String>,
+    /// The skills a task starts from, in the order the publisher lists them:
+    /// the ones that find records and run reports across the plugin's data,
+    /// and its command basics. The plugin's tool names these before its
+    /// other skills, so a plugin with dozens of skills still shows where to
+    /// begin. Names that match no bundled skill are ignored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entry_skills: Vec<String>,
     /// Channel bridge capability. When present, this plugin can act as a
     /// bidirectional messaging bridge (e.g., Slack, Discord, Telegram).
     /// The user enables it per-agent in Settings → Plugins → Channel Routing.
@@ -3306,6 +3313,7 @@ mod tests {
             permissions: None,
             category: String::new(),
             triggers: vec![],
+            entry_skills: vec![],
             channel: None,
             setup: None,
             interface_bindings: HashMap::new(),
@@ -3471,6 +3479,7 @@ mod tests {
             permissions: None,
             category: String::new(),
             triggers: vec![],
+            entry_skills: vec![],
             channel: None,
             setup: None,
             interface_bindings: HashMap::new(),

@@ -110,19 +110,34 @@ impl PluginCliTool {
         if skills.is_empty() {
             out.push_str("- `command` is the subcommand and flags; `help` lists them.\n");
         } else {
-            let named = skills.iter().take(SKILLS_NAMED).cloned().collect::<Vec<_>>().join(", ");
-            let more = skills.len().saturating_sub(SKILLS_NAMED);
-            let more = if more > 0 {
-                format!(" (and {more} more)")
-            } else {
-                String::new()
+            let declared = manifest.map(|m| m.entry_skills.as_slice()).unwrap_or_default();
+            let (entry, others) = split_entry_skills(&skills, declared);
+            let named = &others[..others.len().min(SKILLS_NAMED.saturating_sub(entry.len()))];
+            let unnamed = others.len() - named.len();
+            let listed = match (named.is_empty(), unnamed) {
+                (true, 0) => String::new(),
+                (true, n) => format!("{n} more"),
+                (false, 0) => named.join(", "),
+                (false, n) => format!("{} (and {n} more)", named.join(", ")),
             };
-            out.push_str(&format!(
+            out.push_str(
                 "- `command` is the subcommand and flags, as its skills document them; don't guess \
                  flags. Before the first command, load the skills this task needs with use_skill, \
-                 several in one response. To survey many of them, delegate a helper to read them and \
-                 report back. Its skills: {named}{more}.\n"
-            ));
+                 several in one response. ",
+            );
+            if !entry.is_empty() {
+                out.push_str(&format!(
+                    "Start with {} to find records, run reports and learn the commands; load the \
+                     skill for the specific record before creating or changing one. ",
+                    entry.join(", ")
+                ));
+            }
+            out.push_str("To survey many of them, delegate a helper to read them and report back.");
+            match (entry.is_empty(), listed.is_empty()) {
+                (true, _) => out.push_str(&format!(" Its skills: {listed}.\n")),
+                (false, false) => out.push_str(&format!(" Its other skills: {listed}.\n")),
+                (false, true) => out.push('\n'),
+            }
         }
         out.push_str(
             "- Put values with quotes or special characters in `args` ({\"flag\": \"value\"}), not in `command`.\n\
@@ -260,6 +275,25 @@ impl DynTool for PluginCliTool {
             self.runner.run_command(ctx, &call).await
         })
     }
+}
+
+/// A plugin's skills split into its declared entry skills (the manifest's
+/// order, only those it bundles, each once) and the rest (as given).
+fn split_entry_skills<'a>(skills: &'a [String], declared: &[String]) -> (Vec<&'a str>, Vec<&'a str>) {
+    let mut entry: Vec<&str> = Vec::new();
+    for name in declared {
+        if let Some(skill) = skills.iter().find(|s| *s == name.trim()) {
+            if !entry.contains(&skill.as_str()) {
+                entry.push(skill);
+            }
+        }
+    }
+    let others = skills
+        .iter()
+        .map(String::as_str)
+        .filter(|s| !entry.contains(s))
+        .collect();
+    (entry, others)
 }
 
 /// 3–8 words tool search scores: the service's name, its category and its
@@ -639,6 +673,87 @@ mod tests {
         ] {
             assert!(registry.concurrency_safe(tool, &call).await, "{tool} {call}");
         }
+    }
+
+    /// The 46 resource skills of a large bookkeeping plugin: its query and
+    /// reports skills sort after the first twelve.
+    fn bookkeeping_skills() -> Vec<String> {
+        [
+            "account", "attachable", "batch", "bill", "billpayment", "budget", "changedata", "class",
+            "companycurrency", "companyinfo", "creditcardpayment", "creditmemo", "customer",
+            "customertype", "department", "deposit", "employee", "entitlements", "estimate",
+            "exchangerate", "inventoryadjustment", "invoice", "item", "journalentry", "payment",
+            "paymentmethod", "preferences", "purchase", "purchaseorder", "query",
+            "recurringtransaction", "refundreceipt", "reimbursecharge", "reports", "salesreceipt",
+            "shared", "taxagency", "taxcode", "taxpayment", "taxrate", "taxservice", "term",
+            "timeactivity", "transfer", "vendor", "vendorcredit",
+        ]
+        .iter()
+        .map(|r| format!("ledgerly-{r}"))
+        .collect()
+    }
+
+    /// 2026-09-26, live: asked for last month's sales, the employee loaded
+    /// the sales-receipt skill (create/get only) and failed four times; the
+    /// plugin's tool named only its first twelve skills alphabetically, so
+    /// the query and reports skills were never in view. Skills the manifest
+    /// marks `entrySkills` are named first, in its order, with what they
+    /// are for; the rest fill the cap; the text is the same every build.
+    #[tokio::test]
+    async fn entry_skills_are_named_first_and_the_text_is_stable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (registry, _store) = registry(tmp.path()).await;
+        let skills = bookkeeping_skills();
+        let names: Vec<&str> = skills.iter().map(String::as_str).collect();
+        install(
+            tmp.path(),
+            "ledgerly",
+            serde_json::json!({
+                "name": "Ledgerly",
+                "entrySkills": ["ledgerly-query", "ledgerly-reports", "ledgerly-shared", "ledgerly-not-bundled"]
+            }),
+            &names,
+        );
+        registry.refresh_plugin_tools().await;
+        let d = registry.get("plugin__ledgerly").await.expect("the plugin's tool").description();
+        let line = "Start with ledgerly-query, ledgerly-reports, ledgerly-shared to find records, run \
+                    reports and learn the commands; load the skill for the specific record before \
+                    creating or changing one. To survey many of them, delegate a helper to read them \
+                    and report back. Its other skills: ledgerly-account, ledgerly-attachable, \
+                    ledgerly-batch, ledgerly-bill, ledgerly-billpayment, ledgerly-budget, \
+                    ledgerly-changedata, ledgerly-class, ledgerly-companycurrency (and 34 more).";
+        assert!(d.contains(line), "missing:\n{line}\nfrom:\n{d}");
+        assert!(!d.contains("ledgerly-not-bundled"), "{d}");
+
+        registry.refresh_plugin_tools().await;
+        let again = registry.get("plugin__ledgerly").await.unwrap().description();
+        assert_eq!(d, again, "the description is part of the cached prefix");
+    }
+
+    /// A plugin that marks no entry skills lists its first twelve skills
+    /// alphabetically, as before.
+    #[tokio::test]
+    async fn an_unmarked_plugin_lists_its_skills_alphabetically() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (registry, _store) = registry(tmp.path()).await;
+        let skills = bookkeeping_skills();
+        let names: Vec<&str> = skills.iter().map(String::as_str).collect();
+        install(tmp.path(), "ledgerly", serde_json::json!({"name": "Ledgerly"}), &names);
+        registry.refresh_plugin_tools().await;
+        let d = registry.get("plugin__ledgerly").await.expect("the plugin's tool").description();
+        let line = format!("Its skills: {} (and 34 more).", names[..12].join(", "));
+        assert!(d.contains(&line), "missing:\n{line}\nfrom:\n{d}");
+        assert!(!d.contains("Start with") && !d.contains("ledgerly-query"), "{d}");
+    }
+
+    /// Entry skills that are all the plugin has leave no "other skills".
+    #[test]
+    fn entry_skills_split_keeps_order_and_bundled_names_only() {
+        let skills: Vec<String> = ["a-query", "a-reports", "a-shared"].map(str::to_string).into();
+        let declared: Vec<String> = ["a-shared", "a-query", "a-shared", "missing"].map(str::to_string).into();
+        let (entry, others) = split_entry_skills(&skills, &declared);
+        assert_eq!(entry, ["a-shared", "a-query"]);
+        assert_eq!(others, ["a-reports"]);
     }
 
     /// find_plugins may park on an install card, so it never runs beside
