@@ -1164,6 +1164,11 @@ impl Runner {
         };
         let model_override = if raw_model.is_empty() {
             String::new()
+        } else if ai::LinkedProvider::target(&raw_model).is_some() {
+            // A linked agent's id is exact; the fuzzy matcher would score
+            // its agent id against model aliases and hand the employee
+            // another brain.
+            raw_model.clone()
         } else {
             self.selector
                 .resolve_fuzzy(&raw_model)
@@ -1658,6 +1663,8 @@ impl Runner {
 
         let req = ChatRequest {
             tool_credential: None,
+            chat_id: String::new(),
+            approval_channels: None,
             tool_choice: Default::default(),
             messages: vec![Message {
                 role: "user".to_string(),
@@ -3543,6 +3550,11 @@ async fn run_loop(
         // Build ChatRequest
         let chat_req = ChatRequest {
             tool_credential: None,
+            // The conversation and the approval door, for a provider that
+            // keeps one remote chat per Nebo chat and relays its runtime's
+            // own approval prompts (the linked provider).
+            chat_id: sessions.active_chat_id(session_id),
+            approval_channels: approval_channels.cloned(),
             tool_choice: forced_choice.unwrap_or_default(),
             messages: ai_messages,
             tools: if wrap_up_turn { Vec::new() } else { tool_defs },
@@ -4453,6 +4465,8 @@ async fn run_loop(
 
                 let summary_req = ChatRequest {
                     tool_credential: None,
+                    chat_id: String::new(),
+                    approval_channels: None,
                     tool_choice: Default::default(),
                     messages: summary_messages,
                     tools: vec![], // No tools — text-only response

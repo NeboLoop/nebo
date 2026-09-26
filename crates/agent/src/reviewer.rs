@@ -168,6 +168,8 @@ pub async fn review(
     };
     let req = ChatRequest {
         tool_credential: None,
+        chat_id: String::new(),
+        approval_channels: None,
         tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),

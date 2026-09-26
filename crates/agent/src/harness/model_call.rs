@@ -275,15 +275,19 @@ pub(crate) async fn call_model(
         // Find provider: use model-based lookup on first attempt,
         // but after retries (provider_idx > 0) use round-robin so we
         // actually fall through to the next provider (e.g. CLI agent).
-        let idx = if st.provider_idx > 0 {
-            st.provider_idx % prov_lock.len()
+        // A provider that answers only for the agent it is addressed to
+        // (the linked one) is never the default and never rotated onto.
+        let rotation = rotation(&prov_lock);
+        let first = rotation.first().copied().unwrap_or(0);
+        let idx = if st.provider_idx > 0 && !rotation.is_empty() {
+            rotation[st.provider_idx % rotation.len()]
         } else if !selected_provider_id.is_empty() {
             prov_lock
                 .iter()
                 .position(|p| p.id() == selected_provider_id)
-                .unwrap_or(0)
+                .unwrap_or(first)
         } else {
-            0
+            first
         };
 
         info!(
@@ -362,6 +366,12 @@ pub(crate) async fn call_model(
                 warn!(iteration, session_id, error = %e, "provider error");
             }
 
+            // A provider that will not take the call again (the linked
+            // provider): its answer is final, in its own words.
+            if !provider.retryable() {
+                return CallOutcome::Failed(err_str);
+            }
+
             if ai::is_context_overflow(&e) {
                 st.overflow_retries += 1;
                 if st.overflow_retries > MAX_OVERFLOW_RETRIES {
@@ -409,9 +419,10 @@ pub(crate) async fn call_model(
                 // Try next provider on transient error — but never
                 // silently fall from CLI to Janus (burns Nebo credits).
                 let prov_lock = providers.read().await;
-                let prov_count = prov_lock.len();
+                let rotation = rotation(&prov_lock);
+                let prov_count = rotation.len();
                 if prov_count > 1 {
-                    let next_idx = (st.provider_idx + 1) % prov_count;
+                    let next_idx = rotation[(st.provider_idx + 1) % prov_count];
                     if prov_lock[next_idx].id() == "janus" {
                         drop(prov_lock);
                         return CallOutcome::Failed(format!(
@@ -449,9 +460,10 @@ pub(crate) async fn call_model(
                     ));
                 }
                 let prov_lock = providers.read().await;
-                let prov_count = prov_lock.len();
+                let rotation = rotation(&prov_lock);
+                let prov_count = rotation.len();
                 if prov_count > 1 {
-                    let next_idx = (st.provider_idx + 1) % prov_count;
+                    let next_idx = rotation[(st.provider_idx + 1) % prov_count];
                     if prov_lock[next_idx].id() == "janus" {
                         drop(prov_lock);
                         return CallOutcome::Failed(format!(
@@ -723,13 +735,20 @@ pub(crate) async fn call_model(
                 // the runner synthesizes it after executing tools itself.
                 let _ = tx.send(event).await;
             }
-            StreamEventType::ApprovalRequest
-            | StreamEventType::AskRequest
+            StreamEventType::ApprovalRequest => {
+                // A provider that runs tools itself relays its runtime's own
+                // approval prompt (the linked provider), registered on the
+                // run's approval channels like the runner's own gate; relay
+                // so chat_dispatch broadcasts approval_request. API
+                // providers never emit this event.
+                let _ = tx.send(event).await;
+            }
+            StreamEventType::AskRequest
             | StreamEventType::PlanApproval
             | StreamEventType::ControlNotice
             | StreamEventType::ContextStats => {
-                // Approval/Ask/Plan/ControlNotice: only sent by runner, not
-                // received from provider.
+                // Ask/Plan/ControlNotice: only sent by runner, not received
+                // from provider.
             }
             StreamEventType::ToolSummary => {
                 // Tool execution summary — relay to parent for display.
@@ -834,14 +853,14 @@ pub(crate) async fn call_model(
         };
 
         // Layer 1: Transient errors (connection reset, timeout, EOF)
-        if !deterministic && ai::is_transient_error(&err) {
+        if provider.retryable() && !deterministic && ai::is_transient_error(&err) {
             st.transient_retries += 1;
             if st.transient_retries <= MAX_TRANSIENT_RETRIES {
                 queue_cutoff_continuation();
                 if reconnect_notice(st.transient_retries).await.is_err() {
                     debug!(session_id, "retry notice: receiver gone");
                 }
-                let prov_count = providers.read().await.len();
+                let prov_count = rotation(&providers.read().await).len();
                 if prov_count > 1 {
                     st.provider_idx += 1;
                 }
@@ -859,7 +878,8 @@ pub(crate) async fn call_model(
         }
 
         // Layer 2: Retryable errors (rate_limit, billing, provider errors)
-        let is_retryable = !deterministic
+        let is_retryable = provider.retryable()
+            && !deterministic
             && (err.is_retryable()
                 || reason == "rate_limit"
                 || reason == "billing"
@@ -885,7 +905,7 @@ pub(crate) async fn call_model(
             if reconnect_notice(st.retryable_retries).await.is_err() {
                 debug!(session_id, "retry notice: receiver gone");
             }
-            let prov_count = providers.read().await.len();
+            let prov_count = rotation(&providers.read().await).len();
             if prov_count > 1 {
                 st.provider_idx += 1;
             }
@@ -935,6 +955,17 @@ pub(crate) async fn call_model(
         block_order,
         provider,
     })
+}
+
+/// The providers a call may be rotated onto after a failure, by index: every
+/// one that takes a call it did not build (see `Provider::retryable`).
+fn rotation(providers: &[Arc<dyn Provider>]) -> Vec<usize> {
+    providers
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.retryable())
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// What a reply without tool calls asks of the next step.
@@ -1118,6 +1149,37 @@ mod tests {
         async fn stream(&self, _req: &ChatRequest) -> Result<ai::EventReceiver, ProviderError> {
             Err(ProviderError::Request("stub".into()))
         }
+    }
+
+    /// A provider that answers only for the agent it is addressed to.
+    struct Addressed;
+
+    #[async_trait::async_trait]
+    impl Provider for Addressed {
+        fn id(&self) -> &str {
+            "linked"
+        }
+        fn retryable(&self) -> bool {
+            false
+        }
+        async fn stream(&self, _req: &ChatRequest) -> Result<ai::EventReceiver, ProviderError> {
+            Err(ProviderError::Request("stub".into()))
+        }
+    }
+
+    /// Another employee's failed call rotates over the addressed provider,
+    /// and it is never the default when no provider is named.
+    #[test]
+    fn rotation_skips_a_provider_that_takes_no_call_it_did_not_build() {
+        let providers: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(Addressed),
+            Arc::new(StubProvider("anthropic")),
+            Arc::new(Addressed),
+            Arc::new(StubProvider("janus")),
+        ];
+        assert_eq!(rotation(&providers), vec![1, 3]);
+        let none: Vec<Arc<dyn Provider>> = vec![Arc::new(Addressed)];
+        assert!(rotation(&none).is_empty());
     }
 
     fn aux_config(aux: &str) -> config::ModelsConfig {
