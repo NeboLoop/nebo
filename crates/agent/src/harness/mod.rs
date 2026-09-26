@@ -51,6 +51,11 @@ pub struct Outlets {
     /// Where the agreed goal's status, kickoffs and running work are told;
     /// without it no goal is checked.
     pub goal_observer: Option<Arc<dyn goal::GoalObserver>>,
+    /// Starts a turn on a session (its key) for input already in its thread,
+    /// replying where its conversation came from: the owner's message a
+    /// stopped turn never answered. A stopped turn's stream has ended, so
+    /// its answer needs a turn of its own the app runs.
+    pub answer_thread: Option<Arc<dyn Fn(&str) + Send + Sync>>,
 }
 
 /// The facade every caller starts a turn through: the services a turn runs
@@ -164,6 +169,10 @@ impl Harness {
 
     pub(crate) fn goal_observer(&self) -> Option<Arc<dyn goal::GoalObserver>> {
         self.outlets.get().and_then(|o| o.goal_observer.clone())
+    }
+
+    pub(crate) fn answer_thread(&self) -> Option<Arc<dyn Fn(&str) + Send + Sync>> {
+        self.outlets.get().and_then(|o| o.answer_thread.clone())
     }
 
     pub fn sessions(&self) -> &SessionManager {

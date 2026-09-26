@@ -69,8 +69,7 @@ pub enum Admission {
     Queued { status: String },
 }
 
-/// How long a new turn waits for a closing turn's slot, in steps.
-const SLOT_WAIT_STEPS: usize = 100;
+/// How often a waiting turn looks at the slot again.
 const SLOT_WAIT_STEP: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Admit a turn on `session_key`, or hand its input to the turn running
@@ -79,12 +78,11 @@ const SLOT_WAIT_STEP: std::time::Duration = std::time::Duration::from_millis(50)
 /// check (`TurnGuard::close`): a row written before it is heard by that turn
 /// or the one it hands off to, and input arriving after it waits here.
 ///
-/// A turn that is closing (its loop ended, or the owner stopped it) will not
-/// read a queued row, so the new turn waits for its slot, briefly, and runs
-/// itself; past the wait the input is queued after all and the thread keeps
-/// it for the next turn. A turn that takes no input (the owner's
-/// `/compact`) is waited for as long as it runs, unless the new turn is
-/// stopped while it waits.
+/// A turn that will not read a queued row (its loop ended, the owner stopped
+/// it, or it takes no input, like the owner's `/compact`) is never queued
+/// into: the new turn waits for its slot, however long that takes, and runs
+/// itself. Stopped while it waits, the new turn runs nothing (stop means
+/// stop) and its input is kept in the thread for the next turn.
 pub async fn admit_or_queue(
     turns: &ActiveTurns,
     session_key: &str,
@@ -93,7 +91,6 @@ pub async fn admit_or_queue(
     queue: impl FnOnce(),
 ) -> Admission {
     let mut queue = Some(queue);
-    let mut step = 0;
     loop {
         {
             let mut map = turns.lock().unwrap_or_else(|p| p.into_inner());
@@ -111,11 +108,12 @@ pub async fn admit_or_queue(
                     );
                     return Admission::Admitted(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() });
                 }
-                Some(active)
-                    if active.hears_new_input()
-                        || (step >= SLOT_WAIT_STEPS && (active.takes_input || cancel_token.is_cancelled())) =>
-                {
-                    let status = busy_status_line(active);
+                Some(active) if active.hears_new_input() || cancel_token.is_cancelled() => {
+                    let status = if active.hears_new_input() {
+                        busy_status_line(active)
+                    } else {
+                        STOPPED_WHILE_WAITING.to_string()
+                    };
                     if let Some(queue) = queue.take() {
                         queue();
                     }
@@ -124,8 +122,10 @@ pub async fn admit_or_queue(
                 Some(_) => {}
             }
         }
-        tokio::time::sleep(SLOT_WAIT_STEP).await;
-        step += 1;
+        tokio::select! {
+            _ = cancel_token.cancelled() => {}
+            _ = tokio::time::sleep(SLOT_WAIT_STEP) => {}
+        }
     }
 }
 
@@ -161,6 +161,10 @@ pub fn turn_is_closing(turns: &ActiveTurns, session_key: &str) -> bool {
         .get(session_key)
         .is_some_and(|t| !t.hears_new_input())
 }
+
+/// What a message stopped while it waited for the slot answers with: it
+/// starts nothing and stays in the conversation.
+pub const STOPPED_WHILE_WAITING: &str = "Stopped. Your message is in the conversation for the next turn.";
 
 /// The typed stop reason a busy session answers with. Consumers render it as
 /// status (chat: a note under the message, spinner kept; voice: read aloud),
@@ -404,7 +408,7 @@ mod tests {
         let compact = admit_when_free(&turns, "k", progress(), CancellationToken::new()).await.unwrap();
         assert!(turn_is_closing(&turns, "k"), "a row written now would not be read");
         let released = tokio::spawn(async move {
-            tokio::time::sleep(SLOT_WAIT_STEP * (SLOT_WAIT_STEPS as u32 * 4)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
             drop(compact);
         });
         let admission = admit_or_queue(&turns, "k", progress(), CancellationToken::new(), || {
@@ -413,6 +417,58 @@ mod tests {
         .await;
         assert!(matches!(admission, Admission::Admitted(_)), "the message's turn runs once the compact ends");
         released.await.unwrap();
+    }
+
+    /// A turn that will not read a row written now (its loop ended, or the
+    /// owner stopped it and it is unwinding) is never queued into, however
+    /// long it takes to let go of the slot: the message waits and starts its
+    /// own turn the moment the slot frees. Past the old five-second wait
+    /// the message was written into the closing turn, which never read it.
+    #[tokio::test(start_paused = true)]
+    async fn input_waits_for_a_closing_turn_however_long_it_takes() {
+        for stopped in [false, true] {
+            let turns: ActiveTurns = Default::default();
+            let cancel = CancellationToken::new();
+            let closing = admit_turn(&turns, "k", progress(), cancel.clone()).unwrap();
+            if stopped {
+                cancel.cancel();
+            } else {
+                closing.close();
+            }
+            let released = tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                drop(closing);
+            });
+            let admission = admit_or_queue(&turns, "k", progress(), CancellationToken::new(), || {
+                panic!("input queued into a turn that will not read it (stopped: {stopped})")
+            })
+            .await;
+            assert!(matches!(admission, Admission::Admitted(_)), "the message's turn runs once the slot frees");
+            released.await.unwrap();
+        }
+    }
+
+    /// The owner stops a message while it waits for a closing turn: stop
+    /// means stop, so it starts no turn, and it is kept in the thread,
+    /// never dropped.
+    #[tokio::test(start_paused = true)]
+    async fn a_message_stopped_while_it_waits_is_kept_in_the_thread() {
+        let turns: ActiveTurns = Default::default();
+        let closing = admit_turn(&turns, "k", progress(), CancellationToken::new()).unwrap();
+        closing.close();
+        let stop = CancellationToken::new();
+        let pressed = stop.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            pressed.cancel();
+        });
+        let kept = std::sync::atomic::AtomicBool::new(false);
+        let started = tokio::time::Instant::now();
+        let admission = admit_or_queue(&turns, "k", progress(), stop, || kept.store(true, std::sync::atomic::Ordering::SeqCst)).await;
+        assert!(matches!(admission, Admission::Queued { .. }), "no turn of its own");
+        assert!(kept.load(std::sync::atomic::Ordering::SeqCst), "the message is written into the thread");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "the stop is heard at once");
+        drop(closing);
     }
 
     /// A closed turn that found input waiting reopens: input arriving then

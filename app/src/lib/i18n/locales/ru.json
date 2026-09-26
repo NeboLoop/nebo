@@ -253,6 +253,7 @@
 		"goalLine": "Цель: {condition} ({turns} ходов)",
 		"goalLastCheck": "последняя проверка: {reason}",
 		"goalPaused": "Приостановлено. Ваше следующее сообщение возобновит.",
+		"goalStopped": "Цель приостановлена. Скажите, когда продолжить.",
 		"resumedActivity": "Всё ещё работает: {tool}",
 		"waitingForYou": "Ждёт вас",
 		"subagentStep": "{op} · шаг {n}",

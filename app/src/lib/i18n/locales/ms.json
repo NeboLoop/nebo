@@ -253,6 +253,7 @@
 		"goalLine": "Matlamat: {condition} ({turns} giliran)",
 		"goalLastCheck": "semakan terakhir: {reason}",
 		"goalPaused": "Dijeda. Mesej anda seterusnya menyambungnya.",
+		"goalStopped": "Matlamat dijeda. Beritahu saya jika mahu menyambungnya.",
 		"resumedActivity": "Masih bekerja: {tool}",
 		"waitingForYou": "Menunggu anda",
 		"subagentStep": "{op} · langkah {n}",

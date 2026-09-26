@@ -253,6 +253,7 @@
 		"goalLine": "लक्ष्य: {condition} ({turns} दौर)",
 		"goalLastCheck": "पिछली जाँच: {reason}",
 		"goalPaused": "रुका हुआ है। आपका अगला संदेश इसे फिर शुरू करेगा।",
+		"goalStopped": "लक्ष्य रोका गया। फिर से शुरू करना हो तो बताइए।",
 		"resumedActivity": "अब भी काम पर: {tool}",
 		"waitingForYou": "आपकी प्रतीक्षा में",
 		"subagentStep": "{op} · चरण {n}",

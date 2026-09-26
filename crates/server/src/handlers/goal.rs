@@ -255,6 +255,7 @@ fn describe(g: &SessionGoalStatus) -> String {
         "active" => {}
         "met" => line.push_str("\n\nMet."),
         "impossible" => line.push_str("\n\nThe check found it can't be reached."),
+        "paused:stopped" => line.push_str(&format!("\n\n{}", agent::harness::goal::STOPPED_LINE)),
         _ => line.push_str("\n\nPaused. Your next message resumes it."),
     }
     line
@@ -279,6 +280,9 @@ mod tests {
         );
         g.status = "paused:unmet_too_often".into();
         assert!(describe(&g).ends_with("Your next message resumes it."));
+        // The owner's stop paused it: his next message does not resume it.
+        g.status = "paused:stopped".into();
+        assert!(describe(&g).ends_with("Paused the goal. Say the word to pick it back up."), "{}", describe(&g));
     }
 
     #[test]

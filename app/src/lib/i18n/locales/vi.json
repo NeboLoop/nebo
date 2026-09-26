@@ -253,6 +253,7 @@
 		"goalLine": "Mục tiêu: {condition} ({turns} lượt)",
 		"goalLastCheck": "lần kiểm tra gần nhất: {reason}",
 		"goalPaused": "Đã tạm dừng. Tin nhắn tiếp theo của bạn sẽ tiếp tục.",
+		"goalStopped": "Đã tạm dừng mục tiêu. Hãy nói khi bạn muốn tiếp tục.",
 		"resumedActivity": "Vẫn đang làm: {tool}",
 		"waitingForYou": "Đang chờ bạn",
 		"subagentStep": "{op} · bước {n}",

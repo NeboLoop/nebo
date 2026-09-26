@@ -253,6 +253,7 @@
 		"goalLine": "Cel: {condition} ({turns} tur)",
 		"goalLastCheck": "ostatnie sprawdzenie: {reason}",
 		"goalPaused": "Wstrzymano. Twoja następna wiadomość to wznowi.",
+		"goalStopped": "Cel wstrzymany. Daj znać, gdy mam go wznowić.",
 		"resumedActivity": "Wciąż pracuje: {tool}",
 		"waitingForYou": "Czeka na Ciebie",
 		"subagentStep": "{op} · krok {n}",

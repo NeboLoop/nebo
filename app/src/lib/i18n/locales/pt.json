@@ -253,6 +253,7 @@
 		"goalLine": "Objetivo: {condition} ({turns} turnos)",
 		"goalLastCheck": "última verificação: {reason}",
 		"goalPaused": "Em pausa. A sua próxima mensagem retoma-o.",
+		"goalStopped": "Objetivo em pausa. Basta dizer para o retomar.",
 		"resumedActivity": "Ainda a trabalhar: {tool}",
 		"waitingForYou": "À sua espera",
 		"subagentStep": "{op} · passo {n}",

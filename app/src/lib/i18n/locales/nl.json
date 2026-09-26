@@ -253,6 +253,7 @@
 		"goalLine": "Doel: {condition} ({turns} beurten)",
 		"goalLastCheck": "laatste controle: {reason}",
 		"goalPaused": "Gepauzeerd. Je volgende bericht hervat het.",
+		"goalStopped": "Doel gepauzeerd. Zeg het als je verder wilt.",
 		"resumedActivity": "Nog bezig: {tool}",
 		"waitingForYou": "Wacht op jou",
 		"subagentStep": "{op} · stap {n}",

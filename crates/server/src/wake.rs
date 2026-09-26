@@ -170,6 +170,20 @@ async fn deliver_to_session(state: &AppState, session_key: &str) {
         warn!(error = %e, session = %session_key, "wake: failed to stamp delivered");
     }
     drop(claim);
+    answer_thread(state, session_key, handoff_depth, seed_taint).await;
+}
+
+/// Start a turn that answers what a session's thread already holds (woken
+/// updates, the owner's message a stopped turn never answered), replying
+/// where the session's work came from, as the party it is with, unless a
+/// running turn will hear it. `handoff_depth` and `seed_taint` are what the
+/// thread's new rows carry.
+pub(crate) async fn answer_thread(
+    state: &AppState,
+    session_key: &str,
+    handoff_depth: u8,
+    seed_taint: Vec<ProvenanceClass>,
+) {
     // A running turn hears the rows at its next step, or on the turn it
     // hands them to when they land after its last one. A turn already
     // closing has made its last check for input: the rows need a turn of
@@ -189,7 +203,7 @@ async fn deliver_to_session(state: &AppState, session_key: &str) {
         if info.channel.is_empty() { "web".to_string() } else { info.channel }
     };
 
-    info!(session = %session_key, count = written.len(), "wake: waking session");
+    info!(session = %session_key, "wake: waking session");
     // The woken turn replies where the session's work came from.
     let route = crate::reply_route::of(state, session_key);
     if let Some(ReplyRoute::Coworker(route)) = route {

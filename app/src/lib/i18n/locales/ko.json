@@ -253,6 +253,7 @@
 		"goalLine": "목표: {condition} ({turns}턴)",
 		"goalLastCheck": "마지막 확인: {reason}",
 		"goalPaused": "일시 중지됨. 다음 메시지를 보내면 다시 시작합니다.",
+		"goalStopped": "목표를 일시 중지했습니다. 다시 시작하려면 말씀해 주세요.",
 		"resumedActivity": "아직 작업 중: {tool}",
 		"waitingForYou": "당신을 기다리는 중",
 		"subagentStep": "{op} · {n}단계",
