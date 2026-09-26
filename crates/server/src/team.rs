@@ -243,7 +243,9 @@ pub(crate) fn post(
 /// calls it before the fan-out; a turn spoken in the team thread's voice
 /// mode calls it alone, because the lead already answered out loud and a
 /// fan-out would ask it the same thing again in text; the hub-mirror feed
-/// calls it for every message the mirrored channel delivers. Returns the
+/// calls it for every message the mirrored channel delivers; a member that
+/// takes a post it was asked to act on acknowledges through it
+/// (`coworker::OwnerForward::acknowledge`). Returns the
 /// row and the sender's display name ("Owner" for the owner of this Nebo).
 pub(crate) fn record(
     state: &AppState,

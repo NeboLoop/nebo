@@ -339,6 +339,21 @@ pub fn normalize_mentions(text: &str, roster: &[(String, String)]) -> String {
     t
 }
 
+/// The other direction: every member's `<@id>` token written out as
+/// "@Name". Tokens are dispatch grammar — the record keeps them and the apps
+/// render them as chips — but an employee reading a post, native or linked
+/// from another runtime, reads names: a bare id tells it nothing, not even
+/// that the ask is its own.
+pub fn spell_mentions(text: &str, roster: &[(String, String)]) -> String {
+    let mut t = text.to_string();
+    for (id, name) in roster {
+        if !name.is_empty() {
+            t = t.replace(&format!("<@{id}>"), &format!("@{name}"));
+        }
+    }
+    t
+}
+
 /// Whether a post summons the whole team: an explicit `@everyone` (or
 /// `@team`, `@all`) as its own word. Only the owner or the lead is honoured
 /// for it — see `act_targets` — so a member reply cannot start a storm.
@@ -471,6 +486,19 @@ mod tests {
         let ids = mentioned_members(&text, &["chief".to_string(), "ea".to_string()]);
         assert_eq!(ids, vec!["ea".to_string(), "chief".to_string()]);
         assert!(mentioned_members("nobody here", &["chief".to_string()]).is_empty());
+    }
+
+    /// A member reads names, never ids; the round trip through
+    /// `normalize_mentions` still dispatches to the same member.
+    #[test]
+    fn mentions_are_spelled_as_names_for_the_reader() {
+        let roster = vec![
+            ("9295191e".to_string(), "Hermes".to_string()),
+            ("ea".to_string(), "Executive Assistant".to_string()),
+        ];
+        let spelled = spell_mentions("<@9295191e> research this; <@ea> fyi; <@stranger> hi", &roster);
+        assert_eq!(spelled, "@Hermes research this; @Executive Assistant fyi; <@stranger> hi");
+        assert_eq!(normalize_mentions(&spelled, &roster), "<@9295191e> research this; <@ea> fyi; <@stranger> hi");
     }
 
     /// The lead arbitrates every turn, so it has to run on this machine. A

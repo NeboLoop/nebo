@@ -132,10 +132,15 @@ pub(crate) async fn send_coworker_message(
     // the legacy key-named chat shape.
     let target_sid = ensure_conversation_thread(&state, &thread_key, &thread_title)?;
 
+    // What the member reads: the post with every mention written out as
+    // "@Name" (the team record keeps the tokens; a member reads names).
+    let roster = team.as_ref().map(|t| tools::team::member_roster(&state.store, t)).unwrap_or_default();
+    let text = tools::team::spell_mentions(&msg.text, &roster);
+
     // Team post, context only: the member reads it in its team thread and
     // is not asked to act. The post is delivered — nothing runs.
     if let (Some(t), false) = (team.as_ref(), act) {
-        let record = team_envelope(&t.name, &t.mission, &from_name, &msg.text);
+        let record = team_envelope(&t.name, &t.mission, &from_name, &text);
         let meta = team_post_metadata(&t.id).to_string();
         if let Err(e) = state
             .harness
@@ -175,10 +180,10 @@ pub(crate) async fn send_coworker_message(
         Some(t) => {
             // The first line names the team and carries the mission; the
             // briefing carries the roster and the turn-taking rule.
-            let roster: Vec<String> = tools::team::member_roster(&state.store, t)
-                .into_iter()
+            let roster: Vec<String> = roster
+                .iter()
                 .filter(|(id, _)| *id != to_id)
-                .map(|(id, name)| format!("{name} = <@{id}>"))
+                .map(|(_, name)| format!("@{name}"))
                 .collect();
             let roster = if roster.is_empty() {
                 "none (you are the only other member)".to_string()
@@ -188,7 +193,7 @@ pub(crate) async fn send_coworker_message(
             let floor = if tools::team::lead_of(t) == Some(to_id.as_str()) {
                 " You are the TEAM LEAD: a post to the team that names nobody — from the owner or \
                  another employee — comes to you alone. Answer it yourself, and hand a step to a \
-                 teammate by writing their token with a specific ask — only the teammates you \
+                 teammate by writing their @name with a specific ask — only the teammates you \
                  address act. Write @everyone only when the whole team must answer."
             } else {
                 " You act only when addressed — by the owner, the lead, or a teammate — and the \
@@ -204,13 +209,13 @@ pub(crate) async fn send_coworker_message(
                 format!("your coworker {from_name}, who is not on the team (not your owner)")
             };
             (
-                team_envelope(&t.name, &t.mission, &from_name, &msg.text),
+                team_envelope(&t.name, &t.mission, &from_name, &text),
                 format!(
                     "Team \"{name}\" — mission: {mission}. This post is from {from_who}, and you were \
                      asked to act on it. Teammates: {roster}. \
                      Your reply is posted to the team automatically — do NOT relay it via other tools. \
                      Report concrete results: artifact, status, blockers, next action. To hand a step to \
-                     a teammate, write their token exactly as listed in Teammates with a specific ask; a teammate you address \
+                     a teammate, write their @name exactly as listed in Teammates with a specific ask; a teammate you address \
                      acts, and if you address no one your reply ends the exchange (a reply never asks \
                      anyone; only the owner or the lead can summon the whole team, with @everyone). \
                      Teammates are persistent experts with their own instructions and access — never \
@@ -261,7 +266,9 @@ pub(crate) async fn send_coworker_message(
     };
     crate::reply_route::set(&state, &thread_key, "", Some(&ReplyRoute::Coworker(route.clone())));
 
-    run_in_thread(&state, &thread_key, route, prompt, Some(mention_context), seed_taint).await?;
+    // A member asked to act in a team acknowledges there before it works.
+    let acknowledge = team.is_some();
+    run_in_thread(&state, &thread_key, route, prompt, Some(mention_context), seed_taint, acknowledge).await?;
 
     if let Some(t) = team.as_ref() {
         // The owner's open team view shows who picked the post up — a post
@@ -299,7 +306,10 @@ pub(crate) async fn send_coworker_message(
 /// waits for the turn: the reply reaches the sender as a notification
 /// (`send_message`). The ONE way a coworker thread runs: a new
 /// message, and a notification that wakes the thread (`wake`), both come
-/// here.
+/// here. `acknowledge`: the run picks up a team post addressed to it, so the
+/// team thread hears the member take it before its work starts
+/// (`OwnerForward::acknowledge`); a woken thread continues work it already
+/// took, and says nothing until its reply.
 pub(crate) async fn run_in_thread(
     state: &AppState,
     thread_key: &str,
@@ -307,6 +317,7 @@ pub(crate) async fn run_in_thread(
     prompt: String,
     mention_context: Option<String>,
     seed_taint: Vec<types::provenance::ProvenanceClass>,
+    acknowledge: bool,
 ) -> Result<(), String> {
     let sender_ref = if route.from_agent_id.is_empty() { "main" } else { route.from_agent_id.as_str() };
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", &route.to_agent_id);
@@ -366,6 +377,7 @@ pub(crate) async fn run_in_thread(
             agent_name: &route.to_name,
             from_name: &route.from_name,
             session_key: &thread_key,
+            team_id: route.team.as_ref().filter(|_| acknowledge).map(|leg| leg.team_id.as_str()),
         };
         let reply = crate::channel_dispatch::collect_channel_reply(
             rx,
@@ -378,8 +390,12 @@ pub(crate) async fn run_in_thread(
         if reply.queued {
             return;
         }
-        let text = label_tainted_reply(reply.text, &reply.provenance);
-        deliver_reply(&state, &route, text, reply.provenance).await;
+        // A run that could not answer at all (a linked bot that is not
+        // reachable) says so where its reply would have gone, in the
+        // runtime's own words — never silence.
+        let said = if reply.text.is_empty() { reply.error.unwrap_or_default() } else { reply.text };
+        let text = label_tainted_reply(said, &reply.provenance);
+        deliver_reply(&state, &route, &thread_key, text, reply.provenance).await;
     });
     Ok(())
 }
@@ -389,9 +405,15 @@ pub(crate) async fn run_in_thread(
 /// both cases to the session that asked, as a notification. Its provenance
 /// rides the wake so the woken run is decided at the gates; the depth
 /// continues the sender's chain so replies stay bounded (R6).
+///
+/// A member's post asks whoever it names, and their answers come back to
+/// the one who asked: this member's own thread (`thread_key`). So a lead
+/// that hands a step to a teammate hears the result and sums it up for the
+/// team, exactly as it would had it posted with `send_message`.
 async fn deliver_reply(
     state: &AppState,
     route: &CoworkerRoute,
+    thread_key: &str,
     reply: String,
     provenance: Vec<types::provenance::ProvenanceClass>,
 ) {
@@ -410,7 +432,7 @@ async fn deliver_reply(
                 handoff_depth: depth,
                 provenance: provenance.clone(),
                 is_reply: true,
-                reply_to: route.reply_to.clone(),
+                reply_to: Some(thread_key.to_string()),
             };
             if let Err(e) = crate::team::post(state.clone(), post).await {
                 tracing::warn!(error = %e, to = %route.to_agent_id, "team: failed to post member reply");
@@ -446,6 +468,8 @@ pub(crate) struct OwnerForward<'a> {
     pub agent_name: &'a str,
     pub from_name: &'a str,
     pub session_key: &'a str,
+    /// The team whose post this run picked up; `None` for every other run.
+    pub team_id: Option<&'a str>,
 }
 
 impl OwnerForward<'_> {
@@ -484,6 +508,45 @@ impl OwnerForward<'_> {
             &format!("{} has a question", self.agent_name),
             &event.text,
         );
+    }
+
+    /// The member's work starts now (its first tool call) on a team post it
+    /// was asked to act on: the team thread hears it take the work first. The
+    /// row is the member's own words, what it said before starting — a
+    /// native model's text and a linked runtime's streamed text alike — or,
+    /// when it said nothing, that it is working on it. Recorded, not posted:
+    /// it asks nobody. Returns whether the words went to the team, so the
+    /// collector leaves them out of the reply that follows.
+    pub(crate) fn acknowledge(&self, said: &str) -> bool {
+        let Some(team_id) = self.team_id else {
+            return false;
+        };
+        let team = match self.state.store.get_team(team_id) {
+            Ok(Some(team)) => team,
+            Ok(None) => return false,
+            Err(e) => {
+                tracing::warn!(error = %e, team = %team_id, "team: could not load the team to acknowledge in");
+                return false;
+            }
+        };
+        let text = if said.is_empty() {
+            format!("{} is working on this.", self.agent_name)
+        } else {
+            said.to_string()
+        };
+        match crate::team::record(
+            self.state,
+            &team,
+            crate::team::TeamSender::Local(self.agent_id),
+            &text,
+            &serde_json::Value::Array(Vec::new()),
+        ) {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, team = %team_id, "team: acknowledgement not recorded");
+                false
+            }
+        }
     }
 
     /// Bell + broadcast so the parked run is discoverable even when the owner

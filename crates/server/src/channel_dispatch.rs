@@ -216,6 +216,11 @@ pub(crate) struct ChannelReply {
     /// The input went into a turn already running in that session: `text` is
     /// the busy line, not a reply; the running turn answers it.
     pub queued: bool,
+    /// The run's last error, in the words the turn gave the owner ("Could
+    /// not connect to Hermes. Try again."). Not part of `text`: a customer
+    /// channel never hears it; the coworker rail says it where a reply that
+    /// never came would have gone.
+    pub error: Option<String>,
 }
 
 /// `owner`: when the run happens on the LOCAL machine for the local owner
@@ -223,7 +228,10 @@ pub(crate) struct ChannelReply {
 /// frontend (same broadcasts `run_chat` emits) and the run parks on its
 /// existing oneshot until the owner answers. When `None` (remote channels —
 /// Slack/Discord — with no approval surface), an approval request cancels the
-/// run with an honest notice, as before.
+/// run with an honest notice, as before. When `owner` carries a team, the
+/// member acknowledges in the team thread as its work starts — at the run's
+/// first tool call — and what it said up to then is that acknowledgement,
+/// not part of the reply.
 pub(crate) async fn collect_channel_reply(
     mut rx: tokio::sync::mpsc::Receiver<ai::StreamEvent>,
     cancel_token: &tokio_util::sync::CancellationToken,
@@ -241,10 +249,20 @@ pub(crate) async fn collect_channel_reply(
     // Engine-stamped provenance of the run (Done events) — returned to the
     // caller so the coworker rail can label tainted replies.
     let mut reply_provenance: Vec<types::provenance::ProvenanceClass> = Vec::new();
+    let mut error: Option<String> = None;
+    let mut work_started = false;
     while let Some(event) = rx.recv().await {
         if let Some(frag) = crate::chat_dispatch::reply_fragment(&event) {
             full_response.push_str(frag);
             continue;
+        }
+        if event.event_type == StreamEventType::ToolCall && !work_started {
+            work_started = true;
+            if let Some(fw) = owner
+                && fw.acknowledge(full_response.trim())
+            {
+                full_response.clear();
+            }
         }
         match event.event_type {
             StreamEventType::ControlNotice => {
@@ -262,6 +280,7 @@ pub(crate) async fn collect_channel_reply(
                     error = %event.text,
                     "channel chat error"
                 );
+                error = event.error.clone().filter(|e| !e.trim().is_empty());
             }
             StreamEventType::ApprovalRequest => {
                 if let Some(fw) = owner {
@@ -309,7 +328,7 @@ pub(crate) async fn collect_channel_reply(
         Some(notice) if reply.is_empty() => notice.trim().to_string(),
         _ => reply,
     };
-    ChannelReply { text, provenance: reply_provenance, queued }
+    ChannelReply { text, provenance: reply_provenance, queued, error }
 }
 
 #[cfg(test)]
