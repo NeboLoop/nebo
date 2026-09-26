@@ -36,7 +36,7 @@ prompt_assertions:
       check: { first_call: true, tool: [plugin__quickbooks, find_tools] }
   recovery:
     - id: no-tool-errors
-      text: "The run completes with no error result from any tool call: no 'unexpected argument' or 'exited with code' from plugin__quickbooks, no InputValidationError, or anything else"
+      text: "The run completes with no error result from any tool call: no 'unexpected argument' or 'exited with code' from plugin__quickbooks, no input error, or anything else"
       severity: critical
       check: { max_errors: 0 }
     - id: bounded

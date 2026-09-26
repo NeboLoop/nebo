@@ -36,7 +36,7 @@ pub const KEEP_RECENT: usize = 5;
 pub const MIN_TOKENS_SAVED: usize = 20_000;
 /// What a cleared result reads when it isn't saved (it carried an image, or
 /// saving it failed).
-pub const CLEARED: &str = "[Old tool result content cleared]";
+pub const CLEARED: &str = "[Earlier tool result removed to save space]";
 
 /// Image-bearing results that keep their image, newest first.
 const KEEP_RECENT_IMAGES: usize = 2;
@@ -104,7 +104,7 @@ pub fn clear_old_results(
 /// Whether a result already reads as cleared or saved to a file.
 fn already_saved(msg: &ChatMessage) -> bool {
     let text = result_text(msg);
-    text == CLEARED || text.starts_with("<persisted-output>")
+    text == CLEARED || text.starts_with(tools::result_shape::SAVED_OUTPUT)
 }
 
 /// The text of a result row's results.

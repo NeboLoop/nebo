@@ -1,8 +1,7 @@
 /**
  * Voice device manager — enumerates microphones, persists selection,
  * handles hot-plug and OverconstrainedError fallback.
- *
- * Matches Claude Desktop's VoiceDeviceManager pattern.
+ * One store owns the device list and the chosen microphone.
  */
 
 import { writable, derived } from 'svelte/store';

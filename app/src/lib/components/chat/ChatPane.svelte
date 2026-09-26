@@ -740,7 +740,7 @@
   let initialScrollDone = false;
   let prevScrollHeight = 0;
   let lastScrollTop = 0;
-  // Reserved room for the streaming reply (the claude.ai turn model): on send,
+  // Reserved room for the streaming reply: on send,
   // the user's message pins to the TOP of the viewport and a trailing spacer
   // reserves the rest of it. The reply streams INTO the reserved room — the
   // spacer shrinks 1:1 with content growth, total scroll height stays constant,
@@ -1848,7 +1848,7 @@
       {/if}
     {/each}
 
-    <!-- Live working indicator (ChatGPT/Claude style): shown for the WHOLE run,
+    <!-- Live working indicator: shown for the WHOLE run,
          including while the reply text is streaming or a tool grinds after the
          last text chunk — not only before the first assistant message. -->
     {#if isLoading && groupedMessages.length > 0}

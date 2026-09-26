@@ -230,10 +230,10 @@ mod tests {
         let got = run(vec![tool_call(), StreamEvent::text(long.clone()), StreamEvent::done()]).await;
         let c = got.into_completion("h-1", "find it", dir.path());
         assert_eq!(c.status, CompletionStatus::Done);
-        assert!(c.result.starts_with("<persisted-output>"), "{}", &c.result[..200]);
+        assert!(c.result.starts_with(tools::result_shape::SAVED_OUTPUT), "{}", &c.result[..200]);
         assert!(c.result.contains("THE START"));
         assert!(!c.result.contains("THE END"));
-        let path = c.result.split("Full output saved to: ").nth(1).unwrap().lines().next().unwrap();
+        let path = c.result.split("Saved in full at: ").nth(1).unwrap().lines().next().unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), long, "the full text is on disk");
         assert!(c.result.chars().count() < 3_000);
     }

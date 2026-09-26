@@ -69,13 +69,13 @@ prompt_assertions:
       text: "The final reply answers the owner: it names the employee and the workflows it created, or says plainly that helpers are reading the QuickBooks skills and that it will build the employee and its workflows when they report. It never lists workflows it has not created or states what a helper found before its result arrived"
       severity: critical
     - id: no-tool-errors
-      text: "No call is rejected for its shape: no 'is required', 'is missing', 'No such tool' or 'No skill named'"
+      text: "No call is rejected for its shape: no 'is required', 'is missing', 'There is no tool named' or 'No skill named'"
       severity: important
       check:
         no_error_contains:
           - "is required"
           - "is missing"
-          - "No such tool"
+          - "There is no tool named"
           - "No skill named"
   cost:
     - id: few-steps

@@ -5,7 +5,7 @@ description: |
   says how to follow it: read_output(task_id) for its status and output,
   stop_task(task_id) to end it. Both are deferred tools, so the model loads
   them with find_tools "select:read_output,stop_task" before calling them;
-  calling one unloaded is an InputValidationError that says to call
+  calling one unloaded is an input error that says to call
   find_tools first. Until 2026-09-05 the old shell tool routed every session
   action to exec and each one answered "exec requires command", so every
   background job was a dead end. This fixture pins the whole lifecycle with
@@ -33,9 +33,9 @@ prompt_assertions:
       check: { first_call: true, tool: run_command, arg: background, equals: true }
   recovery:
     - id: no-tool-errors
-      text: "Every call the model makes is accepted: no 'exec requires command', no InputValidationError for a missing parameter, and no deferred tool called before find_tools loaded it"
+      text: "Every call the model makes is accepted: no 'exec requires command', no input error for a missing parameter, and no deferred tool called before find_tools loaded it"
       severity: critical
-      check: { max_errors: 0, no_error_contains: ["exec requires command", "InputValidationError", "find_tools"] }
+      check: { max_errors: 0, no_error_contains: ["exec requires command", "Invalid input for", "find_tools"] }
     - id: reads-the-output
       text: "The model loads read_output with find_tools and calls read_output(task_id: <the bg- id from the start result>); the result reports the task's status and what it printed"
       severity: critical

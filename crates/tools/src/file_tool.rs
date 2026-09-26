@@ -614,7 +614,7 @@ impl FileTool {
 
         if over_budget {
             return ToolResult::error(format!(
-                "File content ({} bytes rendered from line {}; the file has {} lines) exceeds the read budget of {} bytes (about 25,000 tokens). Use offset and limit to read a portion of the file, or grep for the content you need instead of reading the whole file.",
+                "Too much to read at once: {} bytes from line {}, and the file has {} lines. The read budget is {} bytes (about 25,000 tokens). Read one part with offset and limit, or grep for what you need, rather than the whole file.",
                 result.len(),
                 offset,
                 total_lines.unwrap_or(line_num),
@@ -2916,7 +2916,7 @@ mod tests {
         let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
         assert!(r.is_error, "{}", crate::truncate_str(&r.content, 200));
         assert!(r.content.contains("the file has 1200 lines"), "{}", r.content);
-        assert!(r.content.contains("Use offset and limit"), "{}", r.content);
+        assert!(r.content.contains("Read one part with offset and limit"), "{}", r.content);
         assert!(r.content.len() < 600, "an error, not a clipped payload: {} bytes", r.content.len());
         // A ranged read that fits is served whole.
         let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap(), "offset": 600, "limit": 300}));

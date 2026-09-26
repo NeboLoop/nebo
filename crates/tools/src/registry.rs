@@ -937,7 +937,7 @@ impl Registry {
             Err(Invalid::Schema { input, issues }) => {
                 return ToolResult::error(self.validation_error(ctx, tool.as_ref(), &input, issues).await);
             }
-            Err(Invalid::Tool(message)) => return ToolResult::error(crate::result_shape::tool_use_error(&message)),
+            Err(Invalid::Tool(message)) => return ToolResult::error(crate::result_shape::call_error(&message)),
         };
 
         // The permission check: hard limits, the ceiling, the rules and the
@@ -987,7 +987,7 @@ impl Registry {
         result
     }
 
-    /// The InputValidationError for a call that failed its schema: the
+    /// The input error for a call that failed its schema: the
     /// issues, the smallest valid call when nothing was sent, and for a
     /// deferred tool the model was never sent, how to load it.
     async fn validation_error(
@@ -1528,7 +1528,7 @@ fn unparsed_arguments(input: &serde_json::Value) -> Option<&str> {
     obj.get("_raw")?.as_str()
 }
 
-/// The InputValidationError for arguments that are not JSON, quoting their
+/// The input error for arguments that are not JSON, quoting their
 /// first bytes. Past 4 KB they were cut off at the output limit, and the
 /// same call will be cut off again.
 fn bad_json_error(tool: &str, raw: &str) -> String {
@@ -1903,11 +1903,11 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn an_unknown_tool_is_a_tool_use_error() {
+    async fn an_unknown_tool_is_a_call_error() {
         let r = echo_registry().await;
         let out = r.execute(&ToolContext::default(), "no_such_tool", serde_json::json!({})).await;
         assert!(out.is_error);
-        assert_eq!(out.content, "<tool_use_error>Error: No such tool available: no_such_tool</tool_use_error>");
+        assert_eq!(out.content, "<call_error>There is no tool named no_such_tool.</call_error>");
     }
 
     #[tokio::test]
@@ -1916,7 +1916,7 @@ pub(crate) mod tests {
         let ctx = ToolContext::default();
         let out = r.execute(&ctx, "echo_text", serde_json::json!({"text": "hi", "times": "many"})).await;
         assert!(out.is_error);
-        assert!(out.content.starts_with("<tool_use_error>InputValidationError: echo_text failed due to the following issue(s):\n"), "{}", out.content);
+        assert!(out.content.starts_with("<call_error>Invalid input for echo_text:\n"), "{}", out.content);
         assert!(out.content.contains("The parameter `times` type is expected as `integer` but provided as `string`"), "{}", out.content);
         let out = r.execute(&ctx, "echo_text", serde_json::json!({})).await;
         assert!(out.content.contains("The required parameter `text` is missing"), "{}", out.content);
@@ -1961,7 +1961,7 @@ pub(crate) mod tests {
     async fn validate_input_runs_after_the_schema_and_before_the_tool() {
         let r = echo_registry().await;
         let out = r.execute(&ToolContext::default(), "echo_text", serde_json::json!({"text": ""})).await;
-        assert_eq!(out.content, "<tool_use_error>`text` is empty: give the words to echo.</tool_use_error>");
+        assert_eq!(out.content, "<call_error>`text` is empty: give the words to echo.</call_error>");
     }
 
     #[tokio::test]
@@ -1970,7 +1970,7 @@ pub(crate) mod tests {
         let out = r
             .execute(&ToolContext::default(), "echo_text", serde_json::json!({"_raw": "{\"text\": }"}))
             .await;
-        assert!(out.content.starts_with("<tool_use_error>InputValidationError: echo_text"), "{}", out.content);
+        assert!(out.content.starts_with("<call_error>Invalid input for echo_text"), "{}", out.content);
         assert!(out.content.contains("`{\"text\": }`"), "{}", out.content);
     }
 
@@ -2004,8 +2004,8 @@ pub(crate) mod tests {
         let r = echo_registry().await;
         let ctx = ToolContext { session_id: format!("wp0-spill-{}", uuid::Uuid::new_v4()), ..Default::default() };
         let out = r.execute(&ctx, "echo_text", serde_json::json!({"text": "abcdefghij\n", "times": 500})).await;
-        assert!(out.content.starts_with("<persisted-output>"), "{}", out.content);
-        let path = out.content.split("Full output saved to: ").nth(1).and_then(|l| l.lines().next()).unwrap();
+        assert!(out.content.starts_with(crate::result_shape::SAVED_OUTPUT), "{}", out.content);
+        let path = out.content.split("Saved in full at: ").nth(1).and_then(|l| l.lines().next()).unwrap();
         let dir = crate::result_shape::results_dir(&ctx.session_id);
         assert!(std::path::Path::new(path).starts_with(&dir), "{path} not under {}", dir.display());
         assert_eq!(std::fs::read_to_string(path).unwrap().len(), 5_500);

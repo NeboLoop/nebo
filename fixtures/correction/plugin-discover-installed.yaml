@@ -40,12 +40,12 @@ prompt_assertions:
       text: "If find_plugins is called for quickbooks, its result says the plugin was already installed and points at plugin__quickbooks"
       severity: critical
     - id: no-first-call-misses
-      text: "No call is rejected for its shape: no InputValidationError or unknown-tool error, no install card for the installed plugin, and no 'not found. Available' (the setup above failed to install). A verb past doctor answering 'No quickbooks account is connected' is the gate bot's state, not a miss — it has no merchant's OAuth grant and never will."
+      text: "No call is rejected for its shape: no input error or unknown-tool error, no install card for the installed plugin, and no 'not found. Available' (the setup above failed to install). A verb past doctor answering 'No quickbooks account is connected' is the gate bot's state, not a miss — it has no merchant's OAuth grant and never will."
       severity: critical
       check:
         no_error_contains:
-          - "InputValidationError"
-          - "No such tool"
+          - "Invalid input for"
+          - "There is no tool named"
           - "Install it on the card"
           - "not found. Available"
     - id: bounded

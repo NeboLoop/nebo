@@ -32,16 +32,14 @@ use types::permissions::Grant;
 use types::provenance::ProvenanceClass;
 
 /// Nesting depth cap. A helper at this depth has no helper tool; a launch
-/// from it is refused as a backstop ("Subagent nesting limit reached"), so a
-/// helper that keeps delegating can't nest without end.
+/// from it is refused as a backstop, so a helper that keeps delegating
+/// can't nest without end.
 pub const MAX_DEPTH: u8 = 3;
 
 /// Most helpers running at once in one conversation's tree: the owner's
-/// session, its helpers and theirs. A launch past it is refused, told not
-/// to retry ("Concurrent subagent limit reached. You can run N subagents at
-/// once. Do not retry."), so the model waits for results instead of
-/// relaunching. It is a runaway brake on one tree,
-/// not a width limit on model calls: those take permits from the bot's one
+/// session, its helpers and theirs. A launch past it is refused and told not
+/// to retry, so the model waits for results instead of relaunching. It is
+/// a runaway brake on one tree, not a width limit on model calls: those take permits from the bot's one
 /// adaptive pool (`crate::concurrency`), which stays the only brake on
 /// fan-out width (CODE_AUDITOR §15).
 pub const MAX_RUNNING: usize = 20;
@@ -1562,7 +1560,7 @@ mod tests {
         launch_text.split_whitespace().nth(1).unwrap().to_string()
     }
 
-    /// Parity 5.1: a helper that read the web returns tainted, whichever
+    /// Review 5.1: a helper that read the web returns tainted, whichever
     /// way its result travels: the wake an owner session is woken with, the
     /// row a running parent helper hears, and a foreground result.
     #[tokio::test]

@@ -2,8 +2,8 @@
 -- A "work document" (the html/md/pdf/jsx/etc. artifacts the AI produces in the
 -- Work panel) is identified by (chat_id, filename). Each AI write becomes a new
 -- version row rather than overwriting the file, so the viewer can refresh in
--- place and the user can navigate history. Mirrors Claude Desktop's
--- artifacts/artifact_versions split with a denormalized latest pointer.
+-- place and the user can navigate history. A container table and a version
+-- table, with a denormalized latest pointer.
 
 CREATE TABLE IF NOT EXISTS work_documents (
     id              TEXT PRIMARY KEY,                 -- stable container id (uuid)

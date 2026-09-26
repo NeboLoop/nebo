@@ -4,7 +4,7 @@ description: |
   Appending to a file tempts an action that does not exist (append). On the
   rewrite write_file takes path and content and replaces the file; it has no
   append, and a call with an invented parameter is refused with an
-  InputValidationError that names the parameters that exist. The model must
+  input error that names the parameters that exist. The model must
   correct on the next call (edit_file anchored on the last line, a
   run_command append, or a read then a write_file of the whole content) and
   finish the job, not loop on the refused shape or give up.

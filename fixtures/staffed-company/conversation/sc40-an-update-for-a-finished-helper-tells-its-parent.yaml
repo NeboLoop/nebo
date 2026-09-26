@@ -1,7 +1,7 @@
 id: sc40-an-update-for-a-finished-helper-tells-its-parent
 name: "SC40 — An update for a finished helper tells its parent"
 description: |
-  A late update for a helper that has finished and been let go, redelivered at boot, goes to its parent with its taint and never wakes the helper's session as a chat turn (parity 5.5).
+  A late update for a helper that has finished and been let go, redelivered at boot, goes to its parent with its taint and never wakes the helper's session as a chat turn (review 5.5).
 target_component: staffed-company
 proof: staffed_proof::conversation::an_update_for_a_finished_helper_tells_its_parent
 conversation: []

@@ -176,7 +176,7 @@
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
-    // Electron/Claude-Desktop-style reload: ⌘R (mac) / Ctrl-R (win/linux).
+    // Desktop-app reload: ⌘R (mac) / Ctrl-R (win/linux).
     // Tauri release builds strip dev reload shortcuts, so wire it explicitly.
     if ((e.metaKey || e.ctrlKey) && (e.key === 'r' || e.key === 'R')) {
       e.preventDefault();

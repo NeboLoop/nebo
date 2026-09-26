@@ -1,5 +1,5 @@
 //! Where a woken turn's reply goes, and as whom it runs: the conversation
-//! the session's work came from (hub check O3, Batch B13; parity 5.2).
+//! the session's work came from (hub check O3, Batch B13; review 5.2).
 //!
 //! A turn the owner starts replies where the owner wrote; a coworker's turn
 //! replies to whoever messaged it. A turn woken by a notification (a helper's

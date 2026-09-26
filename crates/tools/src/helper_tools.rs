@@ -629,7 +629,7 @@ mod tests {
         assert_eq!(spawned[0].agent_type, "explore");
     }
 
-    /// Parity 5.1: a finished helper's report carries what it read. The
+    /// Review 5.1: a finished helper's report carries what it read. The
     /// result the parent reads is marked with it, so the parent's run takes
     /// the helper's taint.
     #[tokio::test]

@@ -314,7 +314,7 @@ impl SkillCore {
         let base = skill
             .base_dir
             .as_deref()
-            .map(|d| format!("Base directory for this skill: {}\n\n", d.display()))
+            .map(|d| format!("This skill's files are in: {}\n\n", d.display()))
             .unwrap_or_default();
         ToolResult::ok(format!("Loaded skill '{}'. Follow its instructions:\n\n{base}{body}", skill.name))
     }
@@ -1261,7 +1261,7 @@ mod tests {
             .await;
         assert!(!loaded.is_error, "{}", loaded.content);
         assert!(loaded.content.contains("Bill the client for March."), "{}", loaded.content);
-        assert!(loaded.content.contains("Base directory for this skill:"), "{}", loaded.content);
+        assert!(loaded.content.contains("This skill's files are in:"), "{}", loaded.content);
 
         let read = tool(&family, "read_skill_file");
         let files = read.execute_dyn(&ctx, json!({"name": "invoicing"})).await;

@@ -25,14 +25,14 @@ says nothing about whether the call succeeded. Make the call again if you still 
 need the result.)";
 
 /// What an interrupted tool call's result says: the call did not finish, and
-/// the model must not retry it on its own initiative. Models are trained on
-/// this exact wording, so they read it as a stop, not as a failure to retry.
-pub const INTERRUPTED_TOOL_RESULT: &str = "[Request interrupted by user for tool use]";
+/// the model must not retry it on its own initiative. It reads as the owner's
+/// stop, not as a tool failure to retry.
+pub const INTERRUPTED_TOOL_RESULT: &str = "[The owner stopped this call before it finished]";
 
 /// The line the thread carries after a stop. The model reads it (the next
 /// turn starts from the owner's words, not from the interrupted step); the
 /// owner does not (isMeta — the chat already shows the stop).
-pub const INTERRUPT_MESSAGE: &str = "[Request interrupted by user] The owner stopped this work. \
+pub const INTERRUPT_MESSAGE: &str = "[Stopped by the owner] The owner stopped this work. \
 Do not resume the interrupted step on your own; wait for their next message and act on that.";
 
 /// Why a turn was cut short, as its record says: the owner stopped it, or
