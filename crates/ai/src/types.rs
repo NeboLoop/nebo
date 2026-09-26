@@ -630,6 +630,12 @@ pub struct ChatRequest {
     /// reply and a reload all show and answer it. Never serialized.
     #[serde(skip)]
     pub ask_channels: Option<AskChannels>,
+    /// The run's permission mode (the employee's, or this run's override),
+    /// for a `handles_tools` provider whose runtime has modes of its own
+    /// (the linked provider tells a linked coding agent how much it may do
+    /// without asking). `None` for calls outside a run. Never serialized.
+    #[serde(skip)]
+    pub permission_mode: Option<types::permissions::Mode>,
 }
 
 /// The run's ask channels, keyed by request id; the value is the answer (one
@@ -659,6 +665,7 @@ impl ChatRequest {
             tool_credential: None,
             chat_id: String::new(),
             ask_channels: None,
+            permission_mode: None,
         }
     }
 }

@@ -11,6 +11,9 @@
   ACP agent (Claude Code, Codex, Gemini CLI, OpenCode) install of the
   owner's joined through Nebo Link, each with the agents it
   offers: picking one makes it an employee here, with its own name and brain.
+  A coding agent (Claude Code, Codex, ...) is hired with the permission mode
+  the owner picks here, which it runs in on its computer; Settings changes
+  it later.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -29,6 +32,19 @@
   let busy = $state(false);
   let errorMsg = $state('');
   let linkedBots = $state<LinkedBotEntry[]>([]);
+
+  // The runtimes that are coding agents: they run their own tools on their
+  // computer, under the permission mode the employee is hired with.
+  const CODING = new Set(['claude-code', 'codex', 'gemini', 'opencode', 'acp']);
+  type LinkedMode = 'automatic' | 'ask' | 'plan' | 'full_access';
+  const linkedModes: { id: LinkedMode; label: string; desc: string }[] = [
+    { id: 'automatic', label: 'permissions.modeAutomatic', desc: 'newEmployee.linkedModeAutomaticDesc' },
+    { id: 'ask', label: 'permissions.modeAsk', desc: 'newEmployee.linkedModeAskDesc' },
+    { id: 'plan', label: 'permissions.modePlan', desc: 'newEmployee.linkedModePlanDesc' },
+    { id: 'full_access', label: 'permissions.modeFullAccess', desc: 'newEmployee.linkedModeFullAccessDesc' }
+  ];
+  let linkedMode = $state<LinkedMode>('automatic');
+  const anyCoding = $derived(linkedBots.some((b) => CODING.has(b.runtime)));
 
   // The drafted job: its plain-words items and the draft Create grants.
   let draftId = $state<string | null>(null);
@@ -110,7 +126,9 @@
     busy = true;
     errorMsg = '';
     try {
-      const resp = await createAgent({ linked: { botId: bot.id, agentId } });
+      const resp = await createAgent({
+        linked: { botId: bot.id, agentId, ...(CODING.has(bot.runtime) ? { permissionMode: linkedMode } : {}) }
+      });
       oncreated(resp.agent.id, resp.agent.name, resp.threadId);
     } catch (e: unknown) {
       errorMsg =
@@ -207,6 +225,22 @@
       <div class="w-full mt-5 pt-4 border-t border-base-300 text-left">
         <h2 class="text-sm font-semibold">{$t('newEmployee.hireFromApps')}</h2>
         <p class="text-xs text-base-content/60 mt-1 leading-relaxed">{$t('newEmployee.linkedLede')}</p>
+        {#if anyCoding}
+          <fieldset class="mt-3">
+            <legend class="text-xs font-medium text-base-content/70">{$t('newEmployee.linkedModeTitle')}</legend>
+            <div class="mt-1 flex flex-col gap-1" role="radiogroup" aria-label={$t('newEmployee.linkedModeTitle')}>
+              {#each linkedModes as m (m.id)}
+                <label class="flex items-start gap-2 rounded-field px-2 py-1.5 cursor-pointer hover:bg-base-200/50">
+                  <input type="radio" class="radio radio-xs radio-primary mt-0.5" name="linked-mode" value={m.id} bind:group={linkedMode} disabled={busy} />
+                  <span class="min-w-0">
+                    <span class="block text-sm">{$t(m.label)}</span>
+                    <span class="block text-xs text-base-content/60">{$t(m.desc)}</span>
+                  </span>
+                </label>
+              {/each}
+            </div>
+          </fieldset>
+        {/if}
         {#each linkedBots as bot (bot.id)}
           <div class="mt-3">
             <h3 class="text-xs font-medium text-base-content/70">{bot.name} · {appName(bot.runtime)}{bot.online ? '' : ` · ${$t('newEmployee.offline')}`}</h3>

@@ -1523,6 +1523,9 @@ fn build_request(
         // (the linked provider).
         chat_id: cx.harness.store.resolve_session_chat_id(&cx.session_id),
         ask_channels: cx.harness.ask_channels.clone(),
+        // How much the employee may do without asking, for a runtime that
+        // runs its own tools under modes of its own (the linked provider).
+        permission_mode: Some(cx.grant.mode),
         tool_choice: Default::default(),
         messages: conversation::convert_messages(window, &st.model),
         tools: declared,

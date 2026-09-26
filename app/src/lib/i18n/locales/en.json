@@ -2990,7 +2990,12 @@
 		"hireFromApps": "Hire from another app",
 		"linkedLede": "They keep working on the computer they run on.",
 		"offline": "Offline",
-		"linkedFailed": "Couldn't hire from {bot}. Try again."
+		"linkedFailed": "Couldn't hire from {bot}. Try again.",
+		"linkedModeTitle": "What coding agents may do without asking",
+		"linkedModeAutomaticDesc": "Edits files in its folder on its own. Asks before anything else.",
+		"linkedModeAskDesc": "Asks you before it changes anything.",
+		"linkedModePlanDesc": "Reads and plans. Changes nothing.",
+		"linkedModeFullAccessDesc": "Runs anything on this computer without asking."
 	},
 	"runLimit": {
 		"title": "Spending limit per run",
