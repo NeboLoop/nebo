@@ -1,0 +1,10 @@
+id: sc44-the-hubs-echo-of-a-card-install-installs-nothing-twice
+name: "SC44 — The hub's echo of a card install installs nothing twice"
+description: |
+  The hub's `tool_installed` echo of a card tap arrives while the tap's own
+  install is still running; it waits for that install, finds the plugin
+  present, and downloads nothing: one download, one install, and the plugin
+  never leaves the disk.
+target_component: staffed-company
+proof: staffed_proof::connections::the_hubs_echo_of_a_card_install_installs_nothing_twice
+conversation: []

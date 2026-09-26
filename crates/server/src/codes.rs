@@ -113,9 +113,20 @@ pub struct InFlightCodes {
 }
 
 /// Held for the life of one code's handling; the code leaves the set on drop.
+/// [`install`] takes it, not the code, so no door can install without
+/// claiming: the REST door skipped the claim and the hub's echo of a card
+/// tap found nothing in flight, asked "installed?" too early, and ran the
+/// whole install a second time (2026-09-26, one tap → three cycles).
 pub struct InFlightGuard<'a> {
     set: &'a InFlightCodes,
     code: String,
+}
+
+impl InFlightGuard<'_> {
+    /// The code this claim holds.
+    pub fn code(&self) -> &str {
+        &self.code
+    }
 }
 
 /// Held for the life of one dependency cascade; the count drops with it.
@@ -137,7 +148,8 @@ impl InFlightCodes {
         CascadeGuard(self)
     }
 
-    fn busy(&self) -> bool {
+    /// Is anything being installed locally right now?
+    pub(crate) fn busy(&self) -> bool {
         !self.codes.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
             || self.cascades.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
@@ -175,12 +187,16 @@ impl Drop for CascadeGuard<'_> {
 /// [`handle_code_text`] (chat channels and the install tools) and
 /// [`submit_code`] (the REST door the app's hire cards use). `by` says
 /// whose act it is, which decides whether a hired employee gets its job.
+/// `claim` is the door's hold on the code in [`InFlightCodes`]: while it
+/// lives, a second door for the same code is refused and the hub's echo of
+/// this install waits (`settle`) instead of installing again.
 async fn install(
     state: &AppState,
     code_type: CodeType,
-    code: &str,
+    claim: &InFlightGuard<'_>,
     by: InstalledBy,
 ) -> Result<CodeHandlerResult, NeboError> {
+    let code = claim.code();
     match code_type {
         CodeType::Nebo => handle_nebo_code(state, code).await,
         CodeType::Skill => handle_skill_code(state, code, by).await,
@@ -198,7 +214,7 @@ async fn install(
 /// store tap) or hired on their account (the hub's install event), and
 /// report it to the app.
 pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, session_id: &str) {
-    let Some(_in_flight) = state.codes_in_flight.begin(code) else {
+    let Some(claim) = state.codes_in_flight.begin(code) else {
         info!(code, session_id, "code is already being handled; the first run reports the result");
         return;
     };
@@ -227,7 +243,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         }),
     );
 
-    let result = install(state, code_type, code, InstalledBy::Owner).await;
+    let result = install(state, code_type, &claim, InstalledBy::Owner).await;
 
     match result {
         Ok(r) => {
@@ -287,7 +303,7 @@ pub async fn handle_code_text(
     code: &str,
     by: InstalledBy,
 ) -> String {
-    let Some(_in_flight) = state.codes_in_flight.begin(code) else {
+    let Some(claim) = state.codes_in_flight.begin(code) else {
         return format!("{code} is already being installed.");
     };
     let code_type_str = match code_type {
@@ -315,7 +331,7 @@ pub async fn handle_code_text(
         }),
     );
 
-    let result = install(state, code_type, code, by).await;
+    let result = install(state, code_type, &claim, by).await;
 
     match result {
         Ok(r) => {
@@ -1747,7 +1763,17 @@ pub async fn submit_code(
         )
     })?;
 
-    let result = install(&state, code_type, validated_code, InstalledBy::Owner).await;
+    // A second tap while the first is installing is one install, not two:
+    // the card's door claims the code like every other door does.
+    let Some(claim) = state.codes_in_flight.begin(validated_code) else {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            axum::response::Json(types::api::ErrorResponse {
+                error: format!("{validated_code} is already being installed."),
+            }),
+        ));
+    };
+    let result = install(&state, code_type, &claim, InstalledBy::Owner).await;
 
     match result {
         Ok(r) => Ok(axum::response::Json(serde_json::json!({

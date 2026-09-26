@@ -46,3 +46,5 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc41-an-assignment-outcome-reaches-the-assigner-when-it-happens.yaml
   - ../fixtures/staffed-company/conversation/sc42-a-channel-message-during-a-running-turn-joins-it-silently.yaml
   - ../fixtures/staffed-company/conversation/sc43-a-woken-turn-replies-in-the-chat-channel-it-came-from.yaml
+  - ../fixtures/staffed-company/connections/sc44-the-hubs-echo-of-a-card-install-installs-nothing-twice.yaml
+  - ../fixtures/staffed-company/connections/sc45-two-taps-on-one-install-card-start-one-install.yaml

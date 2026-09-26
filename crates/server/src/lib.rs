@@ -748,7 +748,9 @@ async fn handle_comm_install_event(
             // re-download. Updates always re-install. The echo lands before our
             // own install has persisted (the hub emits it as the redeem is
             // recorded), so the check is only truthful once local install work
-            // — the code handler and its dependency cascade — has finished.
+            // — every door's code handler and its dependency cascade — has
+            // finished. `install` takes the claim itself, so no door (the
+            // card's REST door included) can be installing unseen here.
             state.codes_in_flight.settle().await;
             if event.event_type == "tool_installed"
                 && crate::handlers::store::is_installed(

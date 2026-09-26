@@ -333,3 +333,123 @@ async fn a_plugin_required_by_its_code_is_its_own_tool() {
     nebo.state.tools.refresh_plugin_tools().await;
     nebo.store().delete_auth_profile(&profile).unwrap();
 }
+
+/// The hub echoes every redeem as a `tool_installed` install event, before
+/// the redeem's own response — so the echo of a card tap reaches this
+/// server while the tap's install is still running. The echo waits for that
+/// install and finds the plugin present: one download, one install, and the
+/// plugin never leaves the disk. Before this, the card's REST door was the
+/// one door that did not claim its code, so the echo saw nothing in flight,
+/// asked "installed?" too early, and ran the whole install again — a
+/// second download, then a remove that left the plugin gone for the length
+/// of the extraction (2026-09-26: one tap, three cycles, two such windows).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_hubs_echo_of_a_card_install_installs_nothing_twice() {
+    const CODE: &str = "PLUG-ECH0-0001";
+    const SLUG: &str = "echo-ledger";
+    let nebo = session().await;
+    hub_offers_plugin(CODE, SLUG, "Echo Ledger");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    let before = napp_downloads_of(SLUG);
+    // The tap's install stays in its download until the echo has arrived.
+    let release = hub_holds_download(SLUG);
+
+    // The card's tap: the REST door.
+    let tap = {
+        let state = nebo.state.clone();
+        tokio::spawn(async move {
+            crate::codes::submit_code(axum::extract::State(state), axum::response::Json(json!({ "code": CODE })))
+                .await
+                .map(|body| body.0)
+                .map_err(|(status, body)| format!("{status}: {}", body.error))
+        })
+    };
+    nebo.wait_until(10, "the tap's install is in flight", || nebo.state.codes_in_flight.busy() || tap.is_finished())
+        .await;
+    if tap.is_finished() {
+        let ended = tap.await.unwrap();
+        panic!("the tap ended before its install was seen in flight: {ended:?}");
+    }
+
+    // The hub's echo of that tap's redeem, while the install runs: it waits.
+    let echo = {
+        let state = nebo.state.clone();
+        tokio::spawn(async move {
+            crate::handle_comm_install_event(
+                &state,
+                napp::InstallEvent {
+                    event_type: "tool_installed".to_string(),
+                    tool_id: hub_plugin_id(SLUG),
+                    payload: json!({ "artifact_type": "plugin", "name": "Echo Ledger" }),
+                },
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!echo.is_finished(), "the echo waits for the install it echoes");
+    assert_eq!(napp_downloads_of(SLUG) - before, 0, "nothing has been served yet");
+
+    release();
+    let tapped = tap.await.unwrap().unwrap();
+    assert_eq!(tapped["success"], json!(true), "{tapped}");
+    echo.await.unwrap().expect("the echo is handled");
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the tap installed the plugin");
+    assert_eq!(napp_downloads_of(SLUG) - before, 1, "the echo downloaded nothing");
+    assert!(!nebo.state.codes_in_flight.busy(), "and nothing is left installing");
+
+    let _ = nebo.state.plugin_store.remove(SLUG);
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.state.tools.refresh_plugin_tools().await;
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}
+
+/// Two taps on one install card, the second while the first is installing,
+/// are one install: the second is refused with 409 and the plain reason,
+/// and the `.napp` is downloaded once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_taps_on_one_install_card_start_one_install() {
+    const CODE: &str = "PLUG-TW1C-0001";
+    const SLUG: &str = "twice-ledger";
+    let nebo = session().await;
+    hub_offers_plugin(CODE, SLUG, "Twice Ledger");
+    let profile = uuid::Uuid::new_v4().to_string();
+    nebo.store()
+        .create_auth_profile(&profile, "NeboAI", "neboai", "proof-token", None, None, 0, 1, Some("token"), None)
+        .unwrap();
+    let before = napp_downloads_of(SLUG);
+    // The first tap's install stays in its download until the second has tapped.
+    let release = hub_holds_download(SLUG);
+
+    let first = {
+        let state = nebo.state.clone();
+        tokio::spawn(async move {
+            crate::codes::submit_code(axum::extract::State(state), axum::response::Json(json!({ "code": CODE })))
+                .await
+        })
+    };
+    nebo.wait_until(10, "the first tap's install is in flight", || nebo.state.codes_in_flight.busy() || first.is_finished())
+        .await;
+    assert!(!first.is_finished(), "the first tap ended before its install was seen in flight");
+
+    let second =
+        crate::codes::submit_code(axum::extract::State(nebo.state.clone()), axum::response::Json(json!({ "code": CODE })))
+            .await;
+    let (status, body) = second.err().expect("the second tap is refused");
+    assert_eq!(status, axum::http::StatusCode::CONFLICT);
+    assert_eq!(body.error, format!("{CODE} is already being installed."));
+
+    release();
+    let installed = first.await.unwrap().map_err(|(status, body)| format!("{status}: {}", body.error)).unwrap().0;
+    assert_eq!(installed["success"], json!(true), "{installed}");
+    assert!(nebo.state.plugin_store.resolve(SLUG, "*").is_some(), "the first tap installed the plugin");
+    assert_eq!(napp_downloads_of(SLUG) - before, 1, "one download for two taps");
+
+    let _ = nebo.state.plugin_store.remove(SLUG);
+    let _ = nebo.store().delete_installed_plugin(SLUG);
+    nebo.state.tools.refresh_plugin_tools().await;
+    nebo.store().delete_auth_profile(&profile).unwrap();
+}

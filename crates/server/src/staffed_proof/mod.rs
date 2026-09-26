@@ -643,6 +643,51 @@ fn hub_plugin_by_slug(slug: &str) -> Option<HubPlugin> {
         .cloned()
 }
 
+/// The code the stand-in lists a plugin under, by its slug.
+fn hub_plugin_code(slug: &str) -> Option<String> {
+    hub_plugins()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(_, p)| p.slug == slug)
+        .map(|(code, _)| code.clone())
+}
+
+/// The artifact id the stand-in gives a plugin: what its redeem answers and
+/// what the hub's `tool_installed` echo of that redeem carries.
+pub fn hub_plugin_id(slug: &str) -> String {
+    format!("artifact-{slug}")
+}
+
+fn napp_downloads() -> &'static Mutex<std::collections::HashMap<String, usize>> {
+    static DOWNLOADS: OnceLock<Mutex<std::collections::HashMap<String, usize>>> = OnceLock::new();
+    DOWNLOADS.get_or_init(Default::default)
+}
+
+/// How many times the stand-in has served a plugin's `.napp`: one per
+/// install that reached the download.
+pub fn napp_downloads_of(slug: &str) -> usize {
+    napp_downloads().lock().unwrap_or_else(|e| e.into_inner()).get(slug).copied().unwrap_or(0)
+}
+
+fn download_holds() -> &'static Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>> {
+    static HOLDS: OnceLock<Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>> = OnceLock::new();
+    HOLDS.get_or_init(Default::default)
+}
+
+/// The stand-in holds this plugin's `.napp` download until the returned
+/// release is called: an install through any door stays in flight, in its
+/// download, for exactly as long as the scenario needs it to.
+pub fn hub_holds_download(slug: &str) -> impl FnOnce() {
+    let hold = Arc::new(tokio::sync::Semaphore::new(0));
+    download_holds().lock().unwrap_or_else(|e| e.into_inner()).insert(slug.to_string(), hold.clone());
+    let slug = slug.to_string();
+    move || {
+        download_holds().lock().unwrap_or_else(|e| e.into_inner()).remove(&slug);
+        hold.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
+    }
+}
+
 /// The `.napp` the stand-in serves: a raw tar.gz of `plugin.json` and the
 /// echo binary, the layout `install_from_napp` extracts.
 fn napp_of(plugin: &HubPlugin) -> Vec<u8> {
@@ -682,7 +727,7 @@ fn hub_stand_in() -> String {
             }))
         };
         if let Some(p) = hub_plugins().lock().unwrap_or_else(|e| e.into_inner()).get(&code).cloned() {
-            return Ok(artifact(format!("artifact-{}", p.slug), p.name, p.slug, "plugin"));
+            return Ok(artifact(hub_plugin_id(&p.slug), p.name, p.slug, "plugin"));
         }
         if let Some((_, a)) = hub_agent_where(|c, _| c == code) {
             return Ok(artifact(a.id.clone(), a.name.clone(), a.slug(), "agent"));
@@ -701,7 +746,18 @@ fn hub_stand_in() -> String {
             "typeConfig": a.agent_json,
         })))
     };
+    // The detail by id resolves EVERY artifact type, as the hub's does: the
+    // account's install event carries only the id.
     let artifact_detail = |UrlPath(id): UrlPath<String>| async move {
+        if let Some((slug, code)) = id
+            .strip_prefix("artifact-")
+            .and_then(|slug| hub_plugin_code(slug).map(|code| (slug.to_string(), code)))
+        {
+            let p = hub_plugin_by_slug(&slug).ok_or(StatusCode::NOT_FOUND)?;
+            return Ok(axum::Json(json!({
+                "id": id, "name": p.name, "slug": p.slug, "type": "plugin", "code": code, "version": "0.1.0",
+            })));
+        }
         let (code, a) = hub_agent_where(|_, a| a.id == id).ok_or(StatusCode::NOT_FOUND)?;
         Ok::<_, StatusCode>(axum::Json(json!({
             "id": a.id, "name": a.name, "slug": a.slug(), "type": "agent", "code": code, "version": "1.0.0",
@@ -728,7 +784,7 @@ fn hub_stand_in() -> String {
         let napp = napp_of(&p);
         let platform = napp::plugin::current_platform_key();
         Ok::<_, StatusCode>(axum::Json(json!({
-            "id": format!("artifact-{}", p.slug), "slug": p.slug, "name": p.name, "version": "0.1.0",
+            "id": hub_plugin_id(&p.slug), "slug": p.slug, "name": p.name, "version": "0.1.0",
             "platforms": { platform: {
                 "binaryName": p.slug, "sha256": "", "signature": "", "size": napp.len(),
                 "downloadUrl": format!("/napp/{}", p.slug),
@@ -737,6 +793,11 @@ fn hub_stand_in() -> String {
     };
     let download = |UrlPath(slug): UrlPath<String>| async move {
         let p = hub_plugin_by_slug(&slug).ok_or(StatusCode::NOT_FOUND)?;
+        let hold = download_holds().lock().unwrap_or_else(|e| e.into_inner()).get(&slug).cloned();
+        if let Some(hold) = hold {
+            let _ = hold.acquire().await;
+        }
+        *napp_downloads().lock().unwrap_or_else(|e| e.into_inner()).entry(slug).or_insert(0) += 1;
         Ok::<_, StatusCode>(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], napp_of(&p)))
     };
     let app = axum::Router::new()

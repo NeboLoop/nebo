@@ -45,6 +45,17 @@ const REST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long one file may take through the files door, either way.
 const FILE_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Why a body read failed, in words that name a timeout as one: reqwest
+/// reports a body cut by the request's total timeout as "error decoding
+/// response body", which reads as a corrupt download.
+fn body_read_error(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        format!("timed out after {}s", FILE_TRANSFER_TIMEOUT.as_secs())
+    } else {
+        e.to_string()
+    }
+}
+
 /// ONE process-wide HTTP client (connection pool). `NeboAIApi` values are
 /// constructed per call site (73 of them) — giving each its own `Client` gave
 /// each an EMPTY pool, so every NeboAI request paid a fresh TCP+TLS handshake
@@ -736,7 +747,12 @@ impl NeboAIApi {
     /// redirect, which reqwest would follow with the Authorization header attached.)
     async fn resolve_and_fetch_napp(&self, full_url: &str) -> Result<Vec<u8>, CommError> {
         let same_origin = full_url.starts_with(self.api_server.as_str());
-        let mut req = self.client.get(full_url);
+        // A `.napp` is a file, not a REST answer: the shared client's 15 s
+        // REST timeout covers the whole body, and a 1.7 MB plugin on a busy
+        // machine hit it mid-body — surfacing as "error decoding response
+        // body", reqwest's wording for a body cut by its total timeout
+        // (2026-09-26, two of three attempts). A file gets the file window.
+        let mut req = self.client.get(full_url).timeout(FILE_TRANSFER_TIMEOUT);
         if same_origin {
             req = req.bearer_auth(self.token());
         }
@@ -777,7 +793,7 @@ impl NeboAIApi {
         resp.bytes()
             .await
             .map(|b| b.to_vec())
-            .map_err(|e| CommError::Other(format!("read body: {}", e)))
+            .map_err(|e| CommError::Other(format!("read body: {}", body_read_error(&e))))
     }
 
     /// GET raw bytes with no Authorization header — for cross-host CDN blob URLs.
@@ -785,6 +801,7 @@ impl NeboAIApi {
         let resp = self
             .client
             .get(url)
+            .timeout(FILE_TRANSFER_TIMEOUT)
             .send()
             .await
             .map_err(|e| CommError::Other(format!("cdn fetch failed: {}", e)))?;
@@ -801,7 +818,7 @@ impl NeboAIApi {
         resp.bytes()
             .await
             .map(|b| b.to_vec())
-            .map_err(|e| CommError::Other(format!("read cdn body: {}", e)))
+            .map_err(|e| CommError::Other(format!("read cdn body: {}", body_read_error(&e))))
     }
 
     /// Uninstall a skill for this bot.

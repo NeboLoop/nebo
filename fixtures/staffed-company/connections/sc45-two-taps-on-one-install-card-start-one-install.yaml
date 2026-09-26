@@ -1,0 +1,9 @@
+id: sc45-two-taps-on-one-install-card-start-one-install
+name: "SC45 — Two taps on one install card start one install"
+description: |
+  A second tap on an install card while the first is installing is refused
+  with 409 and the plain reason; the plugin's `.napp` is downloaded once and
+  the first tap's install completes.
+target_component: staffed-company
+proof: staffed_proof::connections::two_taps_on_one_install_card_start_one_install
+conversation: []
