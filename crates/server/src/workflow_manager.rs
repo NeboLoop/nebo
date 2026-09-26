@@ -445,6 +445,25 @@ impl WorkflowManagerImpl {
             }
         }
 
+        // A case workflow started with the person named in its inputs (its own or the caller's) works
+        // that person's case, as an event or a webhook naming them would:
+        // it opens (or reaches) their case, which waits days if need be for
+        // what it waits on. Returns the case.
+        if let Some(b) = workflow::cases::CaseBinding::from_binding(agent_id, binding_name, &def_json, binding) {
+            let key_spec = binding.case.as_ref().map(|c| c.key.as_str()).unwrap_or_default();
+            let aliases = workflow::cases::resolve_aliases(&merged, key_spec);
+            if !aliases.is_empty() {
+                let idem = format!("manual:{agent_id}:{binding_name}:{}", uuid::Uuid::new_v4());
+                let t = chrono::Utc::now().timestamp();
+                return match workflow::cases::route_signal(&self.store, &b, &aliases, &merged, "manual", &idem, t).map_err(|e| e.to_string())? {
+                    workflow::cases::Routed::Opened { case_id }
+                    | workflow::cases::Routed::Signaled { case_id }
+                    | workflow::cases::Routed::Reopened { case_id } => Ok(case_id),
+                    other => Err(format!("the case did not open: {other:?}")),
+                };
+            }
+        }
+
         // Synthesized envelope — same shape the EventDispatcher builds for
         // real events, via the same helper (workflow::events).
         workflow::events::insert_event_envelope(
@@ -2555,13 +2574,6 @@ async fn save_binding(
             // what this save gives on top (a schedule, say).
             if let Some(run_id) = &options.from_run {
                 def = definition_of_run(&mgr.store, run_id, def)?;
-            }
-            if matches!(options.lifetime, Some(Lifetime::Temporary { .. })) && def.get("case").is_some() {
-                return Err(
-                    "a temporary workflow runs once for one piece of work; a workflow with `case` works \
-                     many people over time. Save it, or leave out `case`."
-                        .to_string(),
-                );
             }
 
             // Convenience: a top-level `steps` array becomes ONE activity that

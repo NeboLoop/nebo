@@ -242,3 +242,48 @@ fn e16_a_temporary_team_is_due_to_disband_when_its_lead_closes_its_work() {
     assert_eq!(told.len(), 1);
     assert!(told[0].payload.contains("It was a temporary team, so it has disbanded."), "{}", told[0].payload);
 }
+
+/// E18 — A temporary workflow waits for an outside event the way it waits
+/// for the owner. It works one case: the customer's. Its turn writes to the
+/// customer and waits on their reply as a signal, with a follow-up timer a
+/// week out. Someone else's mail opens nothing. Three days later the
+/// customer's reply arrives from the mail connection: it wakes the case,
+/// the turn runs, closes the case, and the temporary workflow is due to
+/// report and disappear. Must never: a second case on a temporary workflow,
+/// a reply that waits for the timer, or silence that ends the case.
+#[test]
+fn e18_a_temporary_workflow_waits_days_for_the_customers_reply_as_a_signal() {
+    let mut w = World::new();
+    let chat = "agent:ic:web";
+    let b = World::binding("ic", "rivera-reply", "follow-up", 7 * DAY);
+    w.s.mark_temporary(db::TemporaryKind::Workflow, "ic", "rivera-reply", chat).unwrap();
+
+    // Started with the customer named: their case opens, and it is the
+    // temporary workflow's one piece of work.
+    let (case_id, _) = w.open(&b, "rivera@example.com", "follow up on the quote", "start-1");
+    let work = w.s.temporary_work(db::TemporaryKind::Workflow, "ic", "rivera-reply").unwrap().unwrap();
+    assert_eq!(work.run_id.as_deref(), Some(case_id.as_str()), "the case is its one piece of work");
+    w.turn(&case_id, &waits("awaiting_reply", "Sent the quote to Rivera", "signal", "7d", "Rivera's reply"));
+    let wait = w.wait(&case_id).expect("waiting on the reply");
+    assert_eq!(wait.deadline, Some(w.t + 7 * DAY), "the follow-up the work stated");
+
+    // Someone else writes in: nothing opens on a temporary workflow.
+    let other = w.arrive(&b, "email", "someone@example.com", serde_json::json!({"email": "someone@example.com", "message": "hi"}), "mail-x");
+    assert_eq!(other, Routed::Taken { case_id: case_id.clone() });
+
+    // Three days of silence: nothing ends it.
+    assert_eq!(w.advance(3 * DAY).children_started, 0);
+    assert!(w.wait(&case_id).is_some(), "still waiting");
+
+    // The customer replies from the mail connection: the signal wakes it now.
+    let routed = w.arrive(&b, "email", "rivera@example.com", serde_json::json!({"email": "rivera@example.com", "message": "Yes, go ahead"}), "mail-1");
+    assert_eq!(routed, Routed::Signaled { case_id: case_id.clone() });
+    assert_eq!(w.advance(5).children_started, 1, "the reply wakes the case, not the timer");
+    assert!(w.s.ended_temporary_work().unwrap().is_empty(), "working the reply");
+    let turn = w.turn(&case_id, &closes("accepted", "Rivera accepted the quote"));
+    assert_eq!(turn.state, "done");
+    let ended = w.s.ended_temporary_work().unwrap();
+    assert_eq!(ended.len(), 1, "the case closed: the temporary workflow reports next");
+    assert_eq!(ended[0].1.id, case_id);
+    assert_eq!(ended[0].1.summary, "Rivera accepted the quote");
+}

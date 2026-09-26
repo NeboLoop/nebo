@@ -75,15 +75,15 @@ async fn a_temporary_workflow_reports_disappears_and_is_saved_to_run_every_monda
             return Reply::Text("ok");
         }
         if fresh(messages, "MARK-DIRECTION") {
-            return Reply::Call("create_workflow", direction.clone());
+            return Reply::Call(vec![("create_workflow", direction.clone())]);
         }
         if fresh(messages, "MARK-WEEKLY") {
             let run = reported_run(messages).unwrap_or_default();
-            return Reply::Call(
+            return Reply::Call(vec![(
                 "create_workflow",
                 json!({"name": "Weekly budget", "from_run": run, "lifetime": "saved",
                        "definition": json!({"trigger": {"type": "schedule", "cron": "0 8 * * MON"}}).to_string()}),
-            );
+            )]);
         }
         if messages.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("MARK-BUDGET"))) {
             return Reply::Text("BUDGET-RESULT: $1,200 for marketing this month.");
@@ -142,89 +142,63 @@ async fn a_temporary_workflow_reports_disappears_and_is_saved_to_run_every_monda
     assert_eq!(job.enabled, Some(1), "the schedule is on");
 }
 
-/// Whether a tool result since the model's last answer says `text`: what
-/// this step reads new.
-fn just_heard(messages: &[Value], text: &str) -> bool {
-    let from = messages.iter().rposition(|m| m["role"] == "assistant").map_or(0, |i| i + 1);
-    messages[from..].iter().any(|m| m["role"] == "tool" && m["content"].as_str().is_some_and(|c| c.contains(text)))
-}
-
-/// E16: for a direction that spans employees with no standing team, the
-/// employee assembles a temporary team with a lead and hands it the work.
-/// The lead closes it; the outcome reaches the owner and the conversation,
-/// and the team disbands. A persistent team is untouched. Must never: a
-/// temporary team left standing after its outcome reached the owner, a
-/// second piece of work on it, or a persistent team removed.
+/// E17: "Tell me when the order ships" is a temporary workflow triggered by
+/// the event. The first shipment event fires it once; it reports to the
+/// owner and disappears; a second event fires nothing. Must never: a watch
+/// that polls, fires twice, or stays after it reported.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_temporary_team_takes_its_one_piece_of_work_and_disbands() {
+async fn a_one_time_watch_fires_once_reports_and_disappears() {
     let (server, calls) = server_with(Arc::new(|purpose, messages| {
         if !main_call(purpose) {
             return Reply::Text("ok");
         }
-        if fresh(messages, "MARK-TEAM") {
-            return Reply::Call(
-                "create_team",
-                json!({"name": "Budget team", "members": ["Marketer"], "lead": "Bookkeeper", "lifetime": "temporary"}),
-            );
+        if fresh(messages, "MARK-WATCH") {
+            return Reply::Call(vec![(
+                "create_workflow",
+                json!({"name": "Rivera shipped", "lifetime": "temporary", "definition": json!({
+                    "trigger": {"type": "event", "sources": ["planner.order.shipped"]},
+                    "activities": [{"id": "tell", "intent": "MARK-SHIPPED Tell the owner the Rivera order shipped."}]
+                }).to_string()}),
+            )]);
         }
-        if just_heard(messages, "Temporary team \"Budget team\" exists") {
-            return Reply::Call(
-                "assign_task",
-                json!({"to": "Budget team", "subject": "MARK-TEAMWORK Find the marketing budget and what it buys.", "done_means": "A number and a plan"}),
-            );
+        if fresh(messages, "MARK-SHIP") {
+            return Reply::Call(vec![("emit_event", json!({"source": "order.shipped", "payload": {"order": "Rivera"}}))]);
         }
-        if just_heard(messages, "Assigned to the Budget team") {
-            return Reply::Call(
-                "assign_task",
-                json!({"to": "Budget team", "subject": "MARK-SECOND another job"}),
-            );
-        }
-        if messages.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("MARK-TEAMWORK"))) && !messages.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("MARK-SECOND"))) {
-            return Reply::Text(
-                r#"TEAM-RESULT: $900 for marketing. {"result": {"status": "done", "summary": "TEAM-RESULT: $900 for marketing, enough for two local ads"}, "next": {"action": "close"}}"#,
-            );
+        if messages.iter().any(|m| m["content"].as_str().is_some_and(|c| c.contains("MARK-SHIPPED"))) {
+            return Reply::Text("SHIP-RESULT: the Rivera order shipped.");
         }
         Reply::Text("Noted.")
     }))
     .await;
     let planner = hire_blank(&server, "Planner").await;
-    let bookkeeper = hire_blank(&server, "Bookkeeper").await;
-    let marketer = hire_blank(&server, "Marketer").await;
     set_mode(&server, &planner, "full_access").await;
-    let kept = server
-        .post_json("/teams", &json!({"name": "Ops", "members": [{"agentId": bookkeeper}, {"agentId": marketer}], "organizerAgentId": bookkeeper}))
-        .await;
-    assert_eq!(kept.status(), 200, "the persistent team");
     let store = server.db_store();
-    let team_named = |name: &str| store.list_teams().unwrap().into_iter().find(|t| t.name == name);
 
-    say(&server, &planner, "MARK-TEAM have the bookkeeper and marketing work out what we can afford").await;
-    let team = eventually(60, "the temporary team", async || team_named("Budget team")).await;
-    assert_eq!(team.organizer_agent_id, bookkeeper, "assembled with a lead");
+    say(&server, &planner, "MARK-WATCH tell me when the Rivera order ships").await;
+    let watch = eventually(60, "the watch", async || workflows(&server, &planner).await.get("rivera-shipped").cloned()).await;
+    assert_eq!(watch["temporary"], true, "{watch}");
+    assert_eq!(watch["trigger"]["type"], "event", "{watch}");
+    assert!(store.list_workflow_runs(&format!("agent:{planner}"), 10, 0).unwrap().is_empty(), "nothing runs until the event");
 
-    // One piece of work: the second assignment is refused.
-    eventually(60, "the second assignment to be refused", async || {
-        heard(&calls, "already has its one piece of work").then_some(())
+    // The order ships: the watch fires once, reports, and is gone.
+    say(&server, &planner, "MARK-SHIP the order went out").await;
+    eventually(90, "the watch to report and leave the list", async || {
+        workflows(&server, &planner).await.get("rivera-shipped").is_none().then_some(())
     })
     .await;
-
-    // The lead closes it: the outcome reaches the owner, and the team goes.
-    eventually(90, "the temporary team to disband", async || team_named("Budget team").is_none().then_some(())).await;
-    let assignment = store.list_assignments_for_agent(&bookkeeper, false).unwrap();
-    assert!(assignment.iter().all(|a| a.state != "open"), "its work is closed: {assignment:?}");
+    let runs = store.list_workflow_runs(&format!("agent:{planner}"), 10, 0).unwrap();
+    assert_eq!(runs.len(), 1, "fired once");
     let user = store.ensure_local_user_id().unwrap();
-    let outcome = store
-        .list_user_notifications(&user, 100, 0)
-        .unwrap()
-        .into_iter()
-        .find(|n| n.id.starts_with("temporary:"))
-        .expect("the outcome is in the Inbox");
-    assert_eq!(outcome.title, "The Budget team finished");
-    assert!(outcome.body.unwrap_or_default().contains("TEAM-RESULT"), "the lead's outcome");
-    eventually(60, "the conversation to hear it disbanded", async || {
-        heard(&calls, "It was a temporary team, so it has disbanded").then_some(())
+    let inbox = store.get_notification(&format!("temporary:{}", runs[0].id), &user).unwrap().expect("reported to the owner");
+    assert!(inbox.body.unwrap_or_default().contains("SHIP-RESULT"));
+
+    // Another shipment: the watch is gone, nothing fires.
+    say(&server, &planner, "MARK-SHIP another order went out").await;
+    eventually(30, "the second event to be emitted", async || {
+        (calls.lock().unwrap().iter().filter(|(p, b)| main_call(p) && b.to_string().contains("Event emitted")).count() >= 2).then_some(())
     })
     .await;
-    assert!(team_named("Ops").is_some(), "the persistent team is untouched");
-    assert!(store.list_temporary_work().unwrap().is_empty(), "nothing temporary is left");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert_eq!(store.list_workflow_runs(&format!("agent:{planner}"), 10, 0).unwrap().len(), 1, "a finished watch fires nothing");
 }
+

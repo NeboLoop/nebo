@@ -172,16 +172,24 @@ impl Tasks {
                 "No employee or team named \"{to}\". Use an exact name from the roster."
             ));
         };
-        // A temporary team is for one piece of work.
-        if let Some(t) = &team
-            && let Ok(Some(work)) = self.store.temporary_work(db::TemporaryKind::Team, "", &t.id)
-            && work.run_id.is_some()
-        {
-            return ToolResult::error(format!(
-                "The temporary {} team already has its one piece of work; it disbands when that is done. Assign this to a member, or make another team.",
-                t.name
-            ));
-        }
+        // A temporary team is for one piece of work: it is claimed here,
+        // atomically, before the work opens, so two assignments never both
+        // land; the claim takes the lead's case id once the case exists.
+        let reserved = format!("reserved:{}", uuid::Uuid::new_v4());
+        let claimed = match &team {
+            Some(t) => match self.store.claim_temporary_run(db::TemporaryKind::Team, "", &t.id, &reserved) {
+                Ok(db::TemporaryClaim::AlreadyRan(_)) => {
+                    return ToolResult::error(format!(
+                        "The temporary {} team already has its one piece of work; it disbands when that is done. Assign this to a member, or make another team.",
+                        t.name
+                    ));
+                }
+                Ok(db::TemporaryClaim::Claimed) => Some(t.id.clone()),
+                Ok(db::TemporaryClaim::NotTemporary) => None,
+                Err(e) => return ToolResult::error(format!("Failed to assign: {e}")),
+            },
+            None => None,
+        };
         let assigner_id = caller_entity(ctx);
         if assignee.id == assigner_id {
             return ToolResult::error(
@@ -213,7 +221,13 @@ impl Tasks {
                 .filter(|d| !d.is_empty())
                 .map(String::from),
         };
+        let release = || {
+            if let Some(team_id) = &claimed {
+                let _ = self.store.release_temporary_run(db::TemporaryKind::Team, "", team_id, &reserved);
+            }
+        };
         let Some(opener) = crate::assignments::assignment_opener() else {
+            release();
             return ToolResult::error(
                 "Assignments are not ready: the server has not installed the opener yet. Try again in a moment.",
             );
@@ -223,8 +237,8 @@ impl Tasks {
                 let who = match &team {
                     Some(t) => {
                         // The temporary team's one piece of work: its case.
-                        if let Ok(Some(case)) = self.store.engine_run_for_key("case:assignment", &id) {
-                            let _ = self.store.claim_temporary_run(db::TemporaryKind::Team, "", &t.id, &case.id);
+                        if let (Some(team_id), Ok(Some(case))) = (&claimed, self.store.engine_run_for_key("case:assignment", &id)) {
+                            let _ = self.store.settle_temporary_run(db::TemporaryKind::Team, "", team_id, &reserved, &case.id);
                         }
                         let label = if t.name.to_lowercase().contains("team") { t.name.clone() } else { format!("{} team", t.name) };
                         format!("the {label} (its lead, {})", assignee.name)
@@ -237,7 +251,10 @@ impl Tasks {
                      do not do it yourself."
                 ))
             }
-            Err(e) => ToolResult::error(format!("Failed to assign: {e}")),
+            Err(e) => {
+                release();
+                ToolResult::error(format!("Failed to assign: {e}"))
+            }
         }
     }
 
