@@ -2066,6 +2066,8 @@ mod tests {
         verdicts: Mutex<VecDeque<&'static str>>,
         /// Every side call (title, recap, memory, …), in order.
         side: Mutex<Vec<ChatRequest>>,
+        /// Run while the next checkpoint's summary call is in flight.
+        during_checkpoint: Mutex<Option<Hook>>,
     }
 
     impl Scripted {
@@ -2109,6 +2111,12 @@ mod tests {
             }
             if req.trace.purpose == "owner_recap" {
                 return Ok(events(vec![StreamEvent::text(RECAP)], None));
+            }
+            let during_checkpoint = (req.trace.purpose == "checkpoint")
+                .then(|| self.during_checkpoint.lock().unwrap().take())
+                .flatten();
+            if let Some(hook) = during_checkpoint {
+                hook.await;
             }
             if req.trace.purpose != "agent_turn" {
                 return Ok(events(vec![StreamEvent::text("ok")], None));
@@ -3536,6 +3544,54 @@ mod tests {
             summary.messages.last().unwrap().content.ends_with("Additional instructions from the owner:\nKeep the Rivera numbers exact."),
             "{}",
             summary.messages.last().unwrap().content
+        );
+    }
+
+    /// The owner writes while their `/compact` is being summarized: the
+    /// compact makes no model turn and its summary never read the message,
+    /// so the message waits for it and gets a turn of its own, read after
+    /// the checkpoint and answered where the owner is listening. Proof
+    /// fixture checkpoint-keeps-every-owner-message: the message was
+    /// written into the compact, sat before the boundary, and no call ever
+    /// read it (no reply for 180 s, every run).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_sent_during_the_owners_compact_gets_its_own_turn() {
+        let model = Scripted::new(vec![Step::Say("First answer."), Step::Say("Saved them.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("Read the fourteen logs")).await;
+        let h2 = h.clone();
+        let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
+        let hook: Hook = Box::pin(async move {
+            let message = tokio::spawn(async move {
+                let mut handle = h2.start_turn(owner("Now save those ids to a file")).await.expect("start");
+                let mut seen = Vec::new();
+                while let Some(e) = handle.events.recv().await {
+                    seen.push(e);
+                }
+                seen
+            });
+            // Long enough for the message to reach admission.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let _ = sent_tx.send(message);
+        });
+        *model.during_checkpoint.lock().unwrap() = Some(hook);
+        let mut compact = owner("");
+        compact.input = TurnInput::Compact { instructions: String::new() };
+        let events = run_turn(&h, compact).await;
+        assert_eq!(exit_of(&events), "compacted");
+        let message = sent_rx.await.expect("the message was sent").await.expect("the message's turn");
+        assert_eq!(exit_of(&message), "text_response", "the message was answered on its own turn");
+        assert!(
+            message.iter().any(|e| e.event_type == ai::StreamEventType::Text && e.text.contains("Saved them.")),
+            "the answer streams to the one who sent it"
+        );
+        let calls = model.calls();
+        assert_eq!(calls.len(), 2, "the first turn and the message's turn; the compact made none");
+        let read = texts(&calls[1]);
+        assert!(read[0].starts_with(compact::checkpoint::BOUNDARY_LEAD), "the call opens on the checkpoint: {}", read[0]);
+        assert!(
+            read.iter().any(|t| t.contains("Now save those ids to a file")),
+            "the message is read after the checkpoint: {read:#?}"
         );
     }
 
