@@ -904,15 +904,21 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             desktop: tools::desktop_available(),
         };
         let surface = tool_surface::surface(&h.tools, &conversation, &surface_seat).await;
-        step_events(cx, st, &conversation, surface.listing.clone(), &surface.declared).await;
-        if st.reminders.has_queued() {
-            if let Err(e) = st.reminders.write(sessions, sid) {
-                warn!(session_id = sid, error = %e, "could not write this step's attachments");
+        // Attachments are Nebo's context for Nebo's model. A linked
+        // employee's runtime owns its own context, so a linked turn writes
+        // none: no identity, roster, environment, time or listing row ever
+        // reaches another runtime.
+        if !cx.linked {
+            step_events(cx, st, &conversation, surface.listing.clone(), &surface.declared).await;
+            if st.reminders.has_queued() {
+                if let Err(e) = st.reminders.write(sessions, sid) {
+                    warn!(session_id = sid, error = %e, "could not write this step's attachments");
+                }
+                conversation = match sessions.get_messages_since_checkpoint(sid) {
+                    Ok(c) => c,
+                    Err(e) => return TurnExit::ProviderFailed(format!("failed to load the conversation: {e}")),
+                };
             }
-            conversation = match sessions.get_messages_since_checkpoint(sid) {
-                Ok(c) => c,
-                Err(e) => return TurnExit::ProviderFailed(format!("failed to load the conversation: {e}")),
-            };
         }
         cx.taint
             .lock()
@@ -2495,6 +2501,27 @@ mod tests {
         assert!(!calls[0].chat_id.is_empty(), "the conversation rides with the turn");
         assert!(other.calls().is_empty(), "nothing else answers as Hermes");
         assert!(events.iter().any(|e| e.text == "Hey, Hermes here."));
+    }
+
+    /// A linked turn carries none of Nebo's attachments: the owner's words
+    /// are the newest user message the linked bot is sent, and no
+    /// `<system-reminder>` row is written or sent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_linked_turn_carries_no_attachments() {
+        let bot = Arc::new(LinkedBot::default());
+        let h = hired_linked(vec![bot.clone() as Arc<dyn ai::Provider>]);
+        run_turn(&h, to_hermes("Hey, how are you?")).await;
+        let calls = bot.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        let reminders: Vec<&str> = calls[0]
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .filter(|c| c.contains("<system-reminder>"))
+            .collect();
+        assert!(reminders.is_empty(), "{reminders:?}");
+        let newest = calls[0].messages.iter().rev().find(|m| m.role == "user").map(|m| m.content.as_str());
+        assert_eq!(newest, Some("Hey, how are you?"));
     }
 
     /// A turn that names no model (a schedule, a coworker's post) still
