@@ -71,7 +71,7 @@ name: Harness gate
 # Judging is offline. A proof run (scripts/arm-report.py) is dispatched with
 # judge off and runs=3: the gate records the traces and decides the program
 # checks, and the judge runs later on the owner's Mac against the traces kept
-# on the VM, under the Claude Code login there (no token):
+# on the VM, under the judge CLI's own login there (no token):
 #   nebo-cli test grade --traces ~/.cache/nebo-arm-runs/<run id> --grader sonnet
 # (the fetch and the whole recipe: Proof-Scorecard.md). It is the same grader
 # and the same checks `test run` uses. HARNESS_CLAUDE_OAUTH_TOKEN hit its

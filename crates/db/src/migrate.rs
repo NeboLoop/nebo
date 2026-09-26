@@ -700,7 +700,11 @@ Date
 
         let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'linked_chat_id'"), 1);
-        assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 166"), 0, "0166 is free");
+        let owner: String = conn
+            .query_row("SELECT name FROM _nebo_migrations WHERE version = 166", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(owner, "0166_permissions.sql", "0166 went to the migration that owns it, and ran");
+        assert_eq!(count("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'permission_rules'"), 1);
         let name: String = conn
             .query_row("SELECT name FROM _nebo_migrations WHERE version = 184", [], |r| r.get(0))
             .unwrap();
@@ -710,22 +714,18 @@ Date
         }
     }
 
-    /// A database migrated by a branch that numbered other migrations
-    /// 0166–0183 gets 0184 on top: a version it has not applied runs,
-    /// whatever the numbers recorded around it.
+    /// A database at 0183 (the branch's last before main's linked-chat
+    /// migration landed) gets 0184 on top, and every other record stays.
     #[test]
-    fn a_database_ahead_on_other_numbers_still_gets_0184() {
+    fn a_database_at_0183_gets_0184() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let conn = Connection::open(dir.path().join("ahead.db")).unwrap();
-        run_migrations_to(&conn, 165).unwrap();
-        conn.execute_batch(
-            "INSERT INTO _nebo_migrations (version, name) VALUES (166, '0166_permissions.sql'), (183, '0183_checkpoint_summaries_hidden.sql');",
-        )
-        .unwrap();
+        let conn = Connection::open(dir.path().join("at-0183.db")).unwrap();
+        run_migrations_to(&conn, 183).unwrap();
+        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'linked_chat_id'"), 0);
 
         run_migrations(&conn).unwrap();
 
-        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('chats') WHERE name = 'linked_chat_id'"), 1);
         assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 184"), 1);
         assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 166 AND name = '0166_permissions.sql'"), 1, "another migration's record is untouched");
