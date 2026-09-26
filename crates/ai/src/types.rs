@@ -622,21 +622,20 @@ pub struct ChatRequest {
     /// serialized.
     #[serde(skip)]
     pub chat_id: String,
-    /// The run's tool-approval channels — `tools::ApprovalChannels`, the ONE
-    /// tool-approval pathway — for a `handles_tools` provider whose runtime
-    /// stops for the owner's decision (the linked provider): it registers the
-    /// runtime's request under the same map the runner's own gate uses, so
-    /// the ApprovalGate, the phone and the comm relay all answer it. Never
-    /// serialized.
+    /// The run's ask channels — `tools::AskChannels`, the ONE way a parked
+    /// question is answered — for a `handles_tools` provider whose runtime
+    /// stops to ask the owner (the linked provider): it registers the
+    /// runtime's question under the same map the `ask` tool uses and raises
+    /// [`StreamEvent::ask_request`], so the app's ask card, the phone, a loop
+    /// reply and a reload all show and answer it. Never serialized.
     #[serde(skip)]
-    pub approval_channels: Option<ApprovalChannels>,
+    pub ask_channels: Option<AskChannels>,
 }
 
-/// The run's tool-approval channels, keyed by request id; the value is the
-/// decision (`"once"`, `"always"`, `"deny"`). The same type as
-/// `tools::ApprovalChannels`, spelled here because `tools` depends on this
-/// crate.
-pub type ApprovalChannels = Arc<
+/// The run's ask channels, keyed by request id; the value is the answer (one
+/// of the question's options). The same type as `tools::AskChannels`,
+/// spelled here because `tools` depends on this crate.
+pub type AskChannels = Arc<
     tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
 >;
 
@@ -659,7 +658,7 @@ impl ChatRequest {
             trace,
             tool_credential: None,
             chat_id: String::new(),
-            approval_channels: None,
+            ask_channels: None,
         }
     }
 }

@@ -710,19 +710,19 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 // the runner synthesizes it after executing tools itself.
                 let _ = tx.send(event).await;
             }
-            StreamEventType::ApprovalRequest => {
+            StreamEventType::AskRequest => {
                 // A provider that runs tools itself relays its runtime's own
-                // approval prompt (the linked provider), registered on the
-                // run's approval channels like the runner's own gate; relay
-                // so chat_dispatch broadcasts approval_request. API
-                // providers never emit this event.
+                // question (the linked provider), registered on the run's ask
+                // channels like the `ask` tool's; relay so chat_dispatch
+                // parks and broadcasts ask_request. API providers never emit
+                // this event.
                 let _ = tx.send(event).await;
             }
-            StreamEventType::AskRequest
+            StreamEventType::ApprovalRequest
             | StreamEventType::ControlNotice
             | StreamEventType::TextVerdict => {
-                // Ask/ControlNotice: only sent by runner, not received from
-                // provider.
+                // Approval/ControlNotice: only sent by the runner, not
+                // received from a provider.
             }
             StreamEventType::ToolSummary => {
                 // Tool execution summary — relay to parent for display.

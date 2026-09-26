@@ -1518,11 +1518,11 @@ fn build_request(
 ) -> ChatRequest {
     ChatRequest {
         tool_credential: None,
-        // The conversation and the approval door, for a provider that keeps
-        // one remote chat per Nebo chat and relays its runtime's own approval
-        // prompts (the linked provider).
+        // The conversation and the ask door, for a provider that keeps one
+        // remote chat per Nebo chat and relays its runtime's own questions
+        // (the linked provider).
         chat_id: cx.harness.store.resolve_session_chat_id(&cx.session_id),
-        approval_channels: cx.harness.approval_channels.clone(),
+        ask_channels: cx.harness.ask_channels.clone(),
         tool_choice: Default::default(),
         messages: conversation::convert_messages(window, &st.model),
         tools: declared,
@@ -2464,6 +2464,8 @@ mod tests {
     struct LinkedBot {
         calls: Mutex<Vec<ChatRequest>>,
         offline: bool,
+        /// Stops first to ask the owner, the way a runtime asks permission.
+        asks: bool,
     }
 
     #[async_trait::async_trait]
@@ -2482,7 +2484,13 @@ mod tests {
             if self.offline {
                 return Ok(events(vec![StreamEvent::error("Could not connect to Hermes. Try again.")], None));
             }
-            Ok(events(vec![StreamEvent::text("Hey, Hermes here.")], None))
+            let mut said = Vec::new();
+            if self.asks {
+                let options = serde_json::json!([{ "type": "options", "multiSelect": false, "options": ["Allow once", "Deny"] }]);
+                said.push(StreamEvent::ask_request("toolu_1", "git status\nShow git status", Some(options)));
+            }
+            said.push(StreamEvent::text("Hey, Hermes here."));
+            Ok(events(said, None))
         }
     }
 
@@ -2533,6 +2541,24 @@ mod tests {
         assert!(!calls[0].chat_id.is_empty(), "the conversation rides with the turn");
         assert!(other.calls().is_empty(), "nothing else answers as Hermes");
         assert!(events.iter().any(|e| e.text == "Hey, Hermes here."));
+    }
+
+    /// A linked runtime's question reaches the run's events as an ask, the
+    /// card every surface (the phone included) shows and answers; the turn
+    /// carries the run's ask door to the provider.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_linked_runtimes_question_is_an_ask() {
+        let bot = Arc::new(LinkedBot { asks: true, ..LinkedBot::default() });
+        let channels: tools::AskChannels = Default::default();
+        let h = hired_linked(vec![bot.clone() as Arc<dyn ai::Provider>]).with_ask_channels(channels);
+        let events = run_turn(&h, to_hermes("check the repo")).await;
+        let ask = events
+            .iter()
+            .find(|e| e.event_type == ai::StreamEventType::AskRequest)
+            .unwrap_or_else(|| panic!("no ask in {events:?}"));
+        assert_eq!(ask.error.as_deref(), Some("toolu_1"));
+        assert_eq!(ask.text, "git status\nShow git status");
+        assert!(bot.calls.lock().unwrap()[0].ask_channels.is_some(), "the ask door rides with the turn");
     }
 
     /// A linked turn carries none of Nebo's attachments: the owner's words

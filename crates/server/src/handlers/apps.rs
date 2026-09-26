@@ -885,7 +885,7 @@ async fn start_janus_stream(
         trace: ai::RequestTrace::new("app_llm"),
         tool_credential: None,
         chat_id: String::new(),
-        approval_channels: None,
+        ask_channels: None,
     };
     provider
         .stream(&req)
