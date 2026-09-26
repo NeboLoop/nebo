@@ -181,8 +181,8 @@ impl SessionManager {
     }
 
     /// The conversation the harness sends: the active chat from its latest
-    /// checkpoint boundary on (`harness::compact::checkpoint`), tool results
-    /// whose call is not loaded removed.
+    /// checkpoint boundary on (`harness::compact::checkpoint`) with every row
+    /// its summary never read, tool results whose call is not loaded removed.
     pub fn get_messages_since_checkpoint(&self, session_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
         let chat_id = self.resolve_chat_id(session_id);
         Ok(drop_orphan_results(self.store.get_chat_messages_since_checkpoint(&chat_id)?))
