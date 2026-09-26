@@ -833,7 +833,8 @@ impl Registry {
     }
 
     /// The call as it will run, or why it can't: arguments that never
-    /// parsed, input the schema refuses, or the tool's own check. Stringified
+    /// parsed, input the schema refuses (a parameter's help text sent back
+    /// as its value included), or the tool's own check. Stringified
     /// values are repaired against the schema and the tool settles the call's
     /// shape first, so every check (and the tool) sees the call that runs.
     async fn settle(&self, tool: &dyn DynTool, name: &str, mut input: serde_json::Value) -> Result<serde_json::Value, Invalid> {
@@ -842,7 +843,8 @@ impl Registry {
         if let Some(raw) = unparsed_arguments(&input) {
             return Err(Invalid::Unparsed(raw.to_string()));
         }
-        if let Some(def) = self.definition(name).await {
+        let def = self.definition(name).await;
+        if let Some(def) = &def {
             crate::mcp_tool::coerce_schema_types(&mut input, &def.input_schema);
         }
         let input = tool.normalize_input(input);
@@ -851,11 +853,16 @@ impl Registry {
         } else {
             None
         };
-        if let Some(validator) = validator {
-            let issues = crate::input_schema::issues(&validator, &input);
-            if !issues.is_empty() {
-                return Err(Invalid::Schema { input, issues });
-            }
+        let mut issues = match validator {
+            Some(validator) => crate::input_schema::issues(&validator, &input),
+            None => Vec::new(),
+        };
+        // Every tool: a parameter's help text sent back as its value.
+        if let Some(def) = &def {
+            issues.extend(crate::input_schema::echoed_descriptions(&def.input_schema, &input));
+        }
+        if !issues.is_empty() {
+            return Err(Invalid::Schema { input, issues });
         }
         tool.validate_input(&input).map_err(Invalid::Tool)?;
         Ok(input)
@@ -1865,7 +1872,10 @@ pub(crate) mod tests {
         fn schema(&self) -> serde_json::Value {
             serde_json::json!({
                 "type": "object",
-                "properties": { "text": { "type": "string" }, "times": { "type": "integer" } },
+                "properties": {
+                    "text": { "type": "string", "description": "The words to echo back." },
+                    "times": { "type": "integer" }
+                },
                 "required": ["text"]
             })
         }
@@ -1955,6 +1965,23 @@ pub(crate) mod tests {
         assert!(!registry.concurrency_safe("reader", &serde_json::json!({})).await, "missing a required field");
         assert!(!registry.concurrency_safe("reader", &serde_json::json!({"_raw": "{\"pa"})).await, "never parsed");
         assert!(!registry.concurrency_safe("nope", &serde_json::json!({})).await, "unknown tool");
+    }
+
+    /// A parameter's help text sent back as its value is refused at the
+    /// door, naming the parameter; the tool never runs.
+    #[tokio::test]
+    async fn a_parameters_help_text_as_its_value_is_refused() {
+        let r = echo_registry().await;
+        let ctx = ToolContext::default();
+        for echo in ["The words to echo back.", "the words to echo back", "  THE WORDS, to echo back!  "] {
+            let out = r.execute(&ctx, "echo_text", serde_json::json!({ "text": echo })).await;
+            assert!(out.is_error, "{echo}: {}", out.content);
+            assert!(out.content.starts_with("<call_error>Invalid input for echo_text:\n"), "{}", out.content);
+            assert!(out.content.contains("The parameter `text` is its own help text"), "{}", out.content);
+            assert!(out.content.contains("Pass the owner's actual words for `text`"), "{}", out.content);
+        }
+        let ok = r.execute(&ctx, "echo_text", serde_json::json!({ "text": "The words to echo back, please." })).await;
+        assert_eq!(ok.content, "The words to echo back, please.");
     }
 
     #[tokio::test]
