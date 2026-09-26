@@ -243,7 +243,10 @@
 		"searchChats": "Buscar chats…",
 		"upgrade": "Fazer upgrade",
 		"restarted": "Reiniciado",
-		"working": "Trabalhando"
+		"working": "Trabalhando",
+		"chatActions": "Ações do chat",
+		"deleteChatTitle": "Excluir \"{name}\"?",
+		"deleteChatBody": "Este chat e todas as suas mensagens serão removidos. Não é possível desfazer."
 	},
 	"chat": {
 		"goalLine": "Meta: {condition} ({turns} turnos)",

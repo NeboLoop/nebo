@@ -243,7 +243,10 @@
 		"searchChats": "Пошук чатів…",
 		"upgrade": "Покращити план",
 		"restarted": "Перезапущено",
-		"working": "Працює"
+		"working": "Працює",
+		"chatActions": "Дії з чатом",
+		"deleteChatTitle": "Видалити «{name}»?",
+		"deleteChatBody": "Цей чат і всі його повідомлення буде видалено. Цю дію не можна скасувати."
 	},
 	"chat": {
 		"goalLine": "Мета: {condition} ({turns} ходів)",

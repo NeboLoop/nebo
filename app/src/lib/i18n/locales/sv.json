@@ -243,7 +243,10 @@
 		"searchChats": "Sök chattar…",
 		"upgrade": "Uppgradera",
 		"restarted": "Omstartad",
-		"working": "Arbetar"
+		"working": "Arbetar",
+		"chatActions": "Chattåtgärder",
+		"deleteChatTitle": "Radera \"{name}\"?",
+		"deleteChatBody": "Den här chatten och alla dess meddelanden tas bort. Det går inte att ångra."
 	},
 	"chat": {
 		"goalLine": "Mål: {condition} ({turns} omgångar)",

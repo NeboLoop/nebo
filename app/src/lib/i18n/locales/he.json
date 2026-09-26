@@ -243,7 +243,10 @@
 		"searchChats": "חיפוש צ'אטים…",
 		"upgrade": "שדרג",
 		"restarted": "הופעל מחדש",
-		"working": "עובד"
+		"working": "עובד",
+		"chatActions": "פעולות צ'אט",
+		"deleteChatTitle": "למחוק את \"{name}\"?",
+		"deleteChatBody": "הצ'אט הזה וכל ההודעות שבו יימחקו. אי אפשר לבטל פעולה זו."
 	},
 	"chat": {
 		"goalLine": "יעד: {condition} ({turns} סבבים)",
