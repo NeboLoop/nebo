@@ -147,6 +147,18 @@ impl Store {
         })
     }
 
+    /// The run a claim reserved has its id now (a team's claim is taken
+    /// before its lead's case exists): the reservation becomes that id.
+    pub fn settle_temporary_run(&self, kind: TemporaryKind, agent_id: &str, name: &str, reserved: &str, run_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE temporary_work SET run_id = ?5 WHERE kind = ?1 AND agent_id = ?2 AND name = ?3 AND run_id = ?4",
+            params![kind.as_str(), agent_id, name, reserved, run_id],
+        )
+        .db_err("settle_temporary_run")?;
+        Ok(())
+    }
+
     /// A claimed run that never started (its record could not be written):
     /// the work may claim its one run again.
     pub fn release_temporary_run(&self, kind: TemporaryKind, agent_id: &str, name: &str, run_id: &str) -> Result<(), NeboError> {

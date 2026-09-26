@@ -1,0 +1,15 @@
+id: e18-a-temporary-workflow-waits-days-for-the-customers-reply-as-a-signal
+name: "E18 — A temporary workflow waits days for the customer's reply as a signal"
+description: |
+  E18 — Outside events arrive as signals to a waiting case, the same way the
+  owner's answer does (owner, 09-25). A temporary workflow works one case,
+  the customer's: its turn writes and waits on the reply, with the one-week
+  follow-up the work stated as its timer. Someone else's mail opens nothing.
+  Three days of silence end nothing. The customer's reply arrives from the
+  mail connection, wakes the case at once, the turn closes it, and the
+  temporary workflow is due to report and disappear.
+  Must never: a second case on a temporary workflow, a reply that waits for
+  the timer, or silence that ends the case.
+target_component: engine
+proof: engine::proof::longrun::e18_a_temporary_workflow_waits_days_for_the_customers_reply_as_a_signal
+conversation: []
