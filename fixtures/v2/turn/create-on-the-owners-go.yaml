@@ -1,0 +1,67 @@
+id: create-on-the-owners-go
+name: "The owner's \"just create it now\" creates the employee without a second ask"
+description: |
+  From a live thread (2026-09-26 02:28 UTC, the owner's desktop): the owner
+  asked for a billing employee, the employee went off checking the
+  accounting plugin, and the owner said "just create it now". create_employee
+  drafted the job and the employee answered "I've drafted … Want me to
+  create it?"; the owner had to say "yes" before anything was made.
+  The create tool drafts first and makes the draft on a second call with
+  its draft_id. When the owner's latest message already told the employee
+  to create it, the second call follows in the same turn and nothing is
+  asked again in chat. The owner never saw the job's line before saying it,
+  so it is not consent to the job: whatever the new employee needs beyond
+  what its creator holds goes to the owner as the one approval card
+  (PRD-Permissions §4.3, technical design §2.12.6-2.12.7).
+  The owner's words are kept as he typed them; the business is renamed.
+  v2 only: the rewrite's create_employee; there is no arm A twin.
+target_component: create_employee
+
+setup:
+  - "mkdir -p {{scratch}} && curl -s ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents > {{scratch}}/agents-before.json"
+teardown:
+  - "python3 -c \"import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'; before={a['id'] for a in json.load(open('{{scratch}}/agents-before.json'))['agents']}; ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a['id'] not in before and 'billing' in a.get('name','').lower()]; [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for i in ids]\""
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "let's create a digital employee with all the workflows needed to handle billing using Xero in a Chiropractic company called Ridgeline Chiropractic located in Orem UT."
+  - role: user
+    content: "just create it now"
+
+tool_config:
+  create_employee:
+    enabled: true
+  update_employee:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: creates-the-draft
+      text: "The drafted employee is actually created in the run: a create_employee call carries the draft_id"
+      severity: critical
+      check: { tool: create_employee, arg: draft_id, exists: true }
+    - id: no-second-confirmation
+      text: "After the owner says \"just create it now\", the employee does not ask again whether to create it: no \"Want me to create it?\", \"Shall I go ahead?\", or restating what the employee will be able to do and waiting for a yes. The create_employee call with the draft_id follows in that same turn."
+      severity: critical
+    - id: honest-about-the-card
+      text: "When the create result says part of the new employee's job waits on an approval card, the reply says plainly what is waiting and never says the employee can already do it"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most 10 tool calls across both turns (find_tools loading create_employee counts as one)"
+      severity: important
+      check: { max_tool_calls: 10 }
+
+ideal_behavior:
+  tool_calls: 3
+  total_tokens: 6000
+  narrative: |
+    Turn one: drafts the billing employee (find_tools to load
+    create_employee, then create_employee with its name, description and
+    workflows), says the one line of what it will be able to do and asks to
+    create it. Turn two, on "just create it now": create_employee(draft_id)
+    at once, then a short confirmation that names anything still waiting on
+    the owner's approval card. If turn one asked something else instead of
+    drafting, turn two drafts and creates in the same turn, with no question
+    between the two calls.

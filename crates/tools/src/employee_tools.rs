@@ -180,8 +180,8 @@ impl Kind {
                 - An employee already in list_employees needs no install."
                 .to_string(),
             Kind::CreateEmployee => "Makes a new employee: its name, what it does, and its duties. It takes two calls.\n\
-                - The first call drafts it and returns one plain line of what it will be able to do; nothing is created yet. Say that line to the owner and ask them to confirm.\n\
-                - When they say yes, call again with only the `draft_id`: that creates exactly the drafted job. If they want it different, draft again.\n\
+                - The first call drafts it and returns one plain line of what it will be able to do; nothing is created yet. Say that line to the owner and ask them to confirm, unless their latest message already told you to create it now.\n\
+                - On their yes, or at once when they already told you to create it, call again with only the `draft_id`: that creates exactly the drafted job. If they want it different, draft again.\n\
                 - Every recurring duty goes in `automations`: each becomes the employee's own workflow, run as it. Never make separate schedules for it.\n\
                 - Steps must be concrete — which tools, files and destinations, what to check, what to produce — because the workflow runs unattended on these words alone.\n\
                 - `app` or `ui`/`ui_jsx` makes it an app with its own page; load the build-an-app skill before writing one.\n\
@@ -192,7 +192,7 @@ impl Kind {
                 - `automations` replaces ALL its workflows. To change some, use add_automations, remove_automations, update_automation or toggle_automation.\n\
                 - `input_values` sets the values its workflows read; `inputs` changes the form that asks for them.\n\
                 - `new_name` renames it.\n\
-                - An edit that adds to its job drafts first: tell the owner only what is new, and on their yes call again with only the `draft_id`."
+                - An edit that adds to its job drafts first: tell the owner only what is new, and on their yes (or at once when they already told you to make the change) call again with only the `draft_id`."
                 .to_string(),
             Kind::DeleteEmployee => "Permanently deletes an employee: its record, workflows, schedules and the files it was made with.\n\
                 - It can't be undone; only when the owner asked for it."

@@ -1079,7 +1079,8 @@ impl PersonaTool {
         if consented {
             return format!("\nThe owner agreed to this job: {}", consent_line(name, &g.granted));
         }
-        let mut text = String::from("\nThe owner has not said yes in this chat, so this grants no more than you hold yourself.");
+        let mut text =
+            String::from("\nThe owner has not said yes to this line in this chat, so this grants no more than you hold yourself.");
         if !g.granted.is_empty() {
             text.push_str(&format!(" Granted now: {}", consent_line(name, &g.granted)));
         }
@@ -1154,9 +1155,12 @@ impl PersonaTool {
         };
         ToolResult::ok(format!(
             "Drafted {display}; nothing is created yet. What it will be able to do, in one line:\n\"{line}\"\n\
-             Tell the owner that line in plain words and ask them to confirm. When they say yes, call \
-             create_employee(draft_id: \"{draft_id}\") and nothing else: it creates \
-             exactly this job. If they want it different, draft again."
+             If the owner's latest message already told you to create it now (\"create it\", \"just do it\", \
+             \"go ahead\"), call create_employee(draft_id: \"{draft_id}\") now and don't ask again: anything \
+             the job needs beyond what you hold goes to the owner as one approval card. Otherwise tell the owner \
+             that line in plain words and ask them to confirm; when they say yes, call \
+             create_employee(draft_id: \"{draft_id}\") and nothing else. Either way it creates exactly this \
+             job. If they want it different, draft again."
         ))
         .with_payload(Self::consent_payload(&draft_id, &display, &line, &needs, false))
     }
@@ -1217,8 +1221,10 @@ impl PersonaTool {
         };
         ToolResult::ok(format!(
             "Nothing is changed yet: this edit adds to {}'s job. Only what is new, in one line:\n\"{line}\"\n\
-             Tell the owner just that (not what the job already has) and ask them to confirm. When they say yes, \
-             call update_employee(draft_id: \"{draft_id}\") and nothing else.",
+             If the owner's latest message already told you to make this change now, call \
+             update_employee(draft_id: \"{draft_id}\") now and don't ask again: the addition goes to the owner \
+             as one approval card. Otherwise tell the owner just that (not what the job already has) and ask \
+             them to confirm; when they say yes, call update_employee(draft_id: \"{draft_id}\") and nothing else.",
             agent.name
         ))
         .with_payload(Self::consent_payload(&draft_id, &agent.name, &line, &new, true))

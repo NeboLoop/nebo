@@ -336,7 +336,13 @@ impl Chat {
     /// A message lands in the chat after the line was shown, stored with
     /// `metadata` as its door stores it.
     fn says(&self, text: &str, metadata: Option<&str>) {
-        let later = chrono::Utc::now().timestamp() + 5;
+        self.says_at(text, metadata, 5);
+    }
+
+    /// A message stored `offset` seconds from now: after the line when
+    /// positive, before it was drafted when negative.
+    fn says_at(&self, text: &str, metadata: Option<&str>, offset: i64) {
+        let later = chrono::Utc::now().timestamp() + offset;
         self.store
             .create_chat_message_imported(
                 &uuid::Uuid::new_v4().to_string(),
@@ -399,6 +405,37 @@ async fn chat_create_grants_only_after_an_owner_message() {
     let sources: Vec<RuleSource> =
         c.store.permission_rules_in(&Scope::Employee(id)).unwrap().into_iter().map(|r| r.source).collect();
     assert!(sources.iter().all(|s| matches!(s, RuleSource::Created { .. })), "{sources:?}");
+}
+
+/// The owner's "just create it now" came before the draft: the create runs
+/// in the same turn with no second ask in chat. The owner never saw the line
+/// before saying it, so it is not consent to the job: the new employee gets
+/// what its creator holds and the rest is the one approval card.
+#[tokio::test]
+async fn an_owners_go_before_the_draft_creates_at_once_with_one_card() {
+    let c = chat(vec!["mail", "calendar"]);
+    c.says_at("just create it now", Some(&json!({ db::OWNER_MARK: true }).to_string()), -5);
+    let drafted = c
+        .call("create_employee", json!({ "name": "invoice-chaser", "description": "Reads the inbox and books follow-ups." }))
+        .await;
+    assert!(!drafted.is_error, "{}", drafted.content);
+    let draft_id = Chat::draft_of(&drafted);
+    assert!(
+        drafted.content.contains(&format!(
+            "If the owner's latest message already told you to create it now (\"create it\", \"just do it\", \
+             \"go ahead\"), call create_employee(draft_id: \"{draft_id}\") now and don't ask again"
+        )),
+        "the draft tells the model to create at once on the owner's go: {}",
+        drafted.content
+    );
+    let created = c.call("create_employee", json!({ "draft_id": draft_id })).await;
+    assert!(!created.is_error, "{}", created.content);
+    let id = c.agent_id("Invoice Chaser");
+    assert_eq!(employee_caps(&c.store, &id), vec!["mail"], "only what the creator holds");
+    let ceiling = c.store.employee_ceiling(&id).unwrap().expect("the extras wait on the owner");
+    assert!(!ceiling.ask_id.is_empty(), "the calendar is one approval card");
+    assert!(created.content.contains("has not said yes to this line"), "{}", created.content);
+    assert!(created.content.contains("Waiting on one card"), "{}", created.content);
 }
 
 /// Another employee's "yes", or one from Slack, Discord or a loop, is not
