@@ -2724,7 +2724,14 @@ async fn refresh_neboai_token(
         "client_id": "nbl_nebo_desktop",
     });
 
-    let resp = match reqwest::Client::new()
+    let client = match tls::http_client().build() {
+        Ok(client) => client,
+        Err(e) => {
+            warn!(error = %e, "OAuth refresh request failed");
+            return None;
+        }
+    };
+    let resp = match client
         .post(format!("{api_url}/oauth/token"))
         .json(&body)
         .send()

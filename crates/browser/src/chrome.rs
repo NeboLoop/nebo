@@ -166,7 +166,7 @@ impl RunningChrome {
     /// Wait for the CDP endpoint to respond.
     async fn wait_for_cdp(&self, timeout: Duration) -> Result<(), BrowserError> {
         let url = format!("http://127.0.0.1:{}/json/version", self.cdp_port);
-        let client = reqwest::Client::new();
+        let client = tls::http_client().build()?;
         let start = std::time::Instant::now();
 
         loop {
@@ -186,7 +186,7 @@ impl RunningChrome {
     /// Get the CDP WebSocket URL.
     pub async fn ws_url(&self) -> Result<String, BrowserError> {
         let url = format!("http://127.0.0.1:{}/json/version", self.cdp_port);
-        let resp: serde_json::Value = reqwest::get(&url).await?.json().await?;
+        let resp: serde_json::Value = tls::http_client().build()?.get(&url).send().await?.json().await?;
         resp["webSocketDebuggerUrl"]
             .as_str()
             .map(|s| s.to_string())

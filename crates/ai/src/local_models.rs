@@ -249,7 +249,7 @@ impl ModelDownloader {
 
         info!(name = %spec.name, url = %spec.url, resume_from = existing_size, "downloading model");
 
-        let client = reqwest::Client::builder()
+        let client = tls::http_client()
             .timeout(std::time::Duration::from_secs(0)) // No timeout for large files
             .build()
             .map_err(|e| format!("failed to create HTTP client: {}", e))?;

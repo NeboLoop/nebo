@@ -213,7 +213,7 @@ impl Nebo {
         // with `User(DispatchGone), "runtime dropped the dispatch task"`. No
         // connection is kept: each request opens its own, on the runtime making
         // it, and that is the whole of it.
-        let client = reqwest::Client::builder()
+        let client = tls::http_client()
             .pool_max_idle_per_host(0)
             .build()
             .expect("client");

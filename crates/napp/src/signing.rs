@@ -64,7 +64,11 @@ impl SigningKeyProvider {
     /// Force refresh the signing key.
     pub async fn refresh(&self) -> Result<VerifyingKey, NappError> {
         let url = format!("{}/api/v1/apps/signing-key", self.neboai_url);
-        let resp: SigningKeyResponse = reqwest::get(&url)
+        let resp: SigningKeyResponse = tls::http_client()
+            .build()
+            .map_err(|e| NappError::Signing(format!("fetch signing key: {}", e)))?
+            .get(&url)
+            .send()
             .await
             .map_err(|e| NappError::Signing(format!("fetch signing key: {}", e)))?
             .json()
@@ -289,7 +293,10 @@ impl RevocationChecker {
 
         // Fetch fresh
         let url = format!("{}/api/v1/apps/revocations", self.neboai_url);
-        let resp = reqwest::get(&url).await;
+        let resp = match tls::http_client().build() {
+            Ok(client) => client.get(&url).send().await,
+            Err(e) => Err(e),
+        };
 
         match resp {
             Ok(r) if r.status().is_success() => {

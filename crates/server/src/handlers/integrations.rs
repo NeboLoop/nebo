@@ -1216,7 +1216,9 @@ async fn do_client_registration(
         "scope": MCP_OAUTH_SCOPE
     });
 
-    let resp = reqwest::Client::new()
+    let resp = tls::http_client()
+        .build()
+        .map_err(|e| format!("DCR request failed: {e}"))?
         .post(registration_endpoint)
         .json(&body)
         .timeout(std::time::Duration::from_secs(10))
@@ -1454,7 +1456,9 @@ async fn exchange_mcp_code(
         params.push(("client_secret", secret));
     }
 
-    let resp = reqwest::Client::new()
+    let resp = tls::http_client()
+        .build()
+        .map_err(|e| format!("token request failed: {e}"))?
         .post(token_endpoint)
         .form(&params)
         .timeout(std::time::Duration::from_secs(15))

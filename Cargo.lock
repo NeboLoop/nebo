@@ -5634,6 +5634,7 @@ dependencies = [
  "nebo-mcp",
  "nebo-napp",
  "nebo-notify",
+ "nebo-tls",
  "nebo-tools",
  "nebo-types",
  "nebo-workflow",
@@ -5673,6 +5674,7 @@ dependencies = [
  "libc",
  "llama-cpp-2",
  "nebo-db",
+ "nebo-tls",
  "nebo-types",
  "rcgen",
  "reqwest 0.12.28",
@@ -5719,6 +5721,7 @@ dependencies = [
  "base64 0.22.1",
  "chromiumoxide",
  "futures",
+ "nebo-tls",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "serde",
@@ -5747,6 +5750,7 @@ dependencies = [
  "nebo-config",
  "nebo-db",
  "nebo-server",
+ "nebo-tls",
  "nebo-tools",
  "nebo-types",
  "reqwest 0.12.28",
@@ -5768,6 +5772,7 @@ dependencies = [
  "async-trait",
  "futures",
  "getrandom 0.2.17",
+ "nebo-tls",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -5826,6 +5831,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "hex",
+ "nebo-tls",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "serde",
@@ -5851,6 +5857,7 @@ dependencies = [
  "libc",
  "nebo-comm",
  "nebo-config",
+ "nebo-tls",
  "nebo-types",
  "notify",
  "rand 0.8.5",
@@ -5932,6 +5939,7 @@ dependencies = [
  "nebo-napp",
  "nebo-notify",
  "nebo-proto",
+ "nebo-tls",
  "nebo-tools",
  "nebo-types",
  "nebo-updater",
@@ -5989,6 +5997,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebo-tls"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "rcgen",
+ "reqwest 0.12.28",
+ "rustls",
+ "rustls-native-certs",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "webpki-roots 1.0.7",
+]
+
+[[package]]
 name = "nebo-tools"
 version = "0.15.0"
 dependencies = [
@@ -6017,6 +6041,7 @@ dependencies = [
  "nebo-notify",
  "nebo-render",
  "nebo-syntax",
+ "nebo-tls",
  "nebo-types",
  "nebo-vm",
  "notify",
@@ -6065,6 +6090,7 @@ dependencies = [
  "futures",
  "hex",
  "libc",
+ "nebo-tls",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -6082,6 +6108,7 @@ version = "0.15.0"
 dependencies = [
  "hex",
  "nebo-config",
+ "nebo-tls",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -6115,6 +6142,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures",
+ "nebo-tls",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",

@@ -166,7 +166,7 @@ pub async fn connect(
         .headers_mut()
         .insert("X-Purpose", HeaderValue::from_static("voice"));
 
-    let (ws, _resp) = tokio_tungstenite::connect_async(request)
+    let (ws, _resp) = tls::connect_ws(request)
         .await
         .map_err(|e| VoiceError::Realtime(format!("realtime dial failed: {e}")))?;
     info!(endpoint = %cfg.endpoint, model = %cfg.model, "realtime session connected");

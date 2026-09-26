@@ -29,7 +29,7 @@ pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
 /// detect dead connections via TCP keepalive and proactively recycle idle
 /// pool entries so we never hand out a stale half-closed socket.
 pub fn streaming_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    tls::http_client()
         .connect_timeout(Duration::from_secs(10))
         // Close idle keep-alives well before typical LB idle reap (~60-120s).
         .pool_idle_timeout(Duration::from_secs(30))
@@ -58,7 +58,7 @@ pub fn streaming_client() -> reqwest::Client {
 /// reap, and HTTP/2 pings keep a quiet connection open and prove it alive:
 /// a dead one fails its ping and leaves the pool instead of being handed out.
 pub fn request_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    tls::http_client()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .pool_idle_timeout(Duration::from_secs(110))
