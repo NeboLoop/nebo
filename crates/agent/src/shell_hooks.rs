@@ -21,6 +21,9 @@
 //!   no start could not spawn or wait: `[hook <name>] could not run: <why>`,
 //!            routed like "other"
 //!
+//! Post hooks run only after a call that succeeded; a refused, parked or
+//! failed call changed nothing for them to check.
+//!
 //! ```yaml
 //! post_tool:
 //!   - name: cargo-test
@@ -430,6 +433,14 @@ impl ShellHookCaller {
     async fn post(&self, payload: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
         let p: crate::hooks::ToolPostExecutePayload = serde_json::from_slice(&payload).map_err(|e| e.to_string())?;
         let mut resp = crate::hooks::ToolPostExecuteResponse { result: p.result.clone(), is_error: p.is_error };
+        // Post hooks follow a call that did its work. A refused, parked or
+        // failed call changed nothing a check could judge: gate 2026-09-26,
+        // an edit_file sent with no arguments ran the inferred `cargo check`
+        // of the server's own folder for 78 s and appended its build failure
+        // to the validation error.
+        if p.is_error {
+            return Ok((serde_json::to_vec(&resp).map_err(|e| e.to_string())?, false));
+        }
         let Some((file, root)) = self.resolve(&Self::workspace_for(&p.tool_input, &p.cwd)) else {
             return Ok((serde_json::to_vec(&resp).map_err(|e| e.to_string())?, false));
         };
@@ -564,6 +575,24 @@ mod tests {
             "Edited a.rs\n\n[hook t] exited 1:\nboom\ntest x ... FAILED",
             "stderr first, then stdout, under the exit-code title"
         );
+    }
+
+    /// A call that failed (refused, parked, or sent with no arguments) did
+    /// nothing a post hook could check: the hook doesn't run and the result
+    /// is the tool's own.
+    #[tokio::test]
+    async fn a_failed_call_runs_no_post_hook() {
+        let p = project("post_tool:\n  - name: t\n    command: \"echo ran > hook-ran; exit 1\"\n");
+        let caller = ShellHookCaller::new();
+        let mut payload: crate::hooks::ToolPostExecutePayload =
+            serde_json::from_slice(&post_payload("edit_file", p.path().to_str().unwrap(), serde_json::json!({}))).unwrap();
+        payload.is_error = true;
+        payload.result = "InputValidationError: edit_file needs path".into();
+        let (bytes, _) = caller.post(serde_json::to_vec(&payload).unwrap()).await.unwrap();
+        let resp: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(resp.result, "InputValidationError: edit_file needs path");
+        assert!(resp.is_error);
+        assert!(!p.path().join("hook-ran").exists(), "the hook never ran");
     }
 
     #[tokio::test]

@@ -11,6 +11,12 @@ use crate::registry::{DynTool, ToolResult};
 
 use crate::skills::{Loader, SkillSource};
 
+/// Where the installed skill names are, after a "no such skill" line.
+const LISTING_HINT: &str = "Installed skills are in the skill listing; find_skills searches them by what they do.";
+
+/// Most of a skill's files named when it loads.
+const LOADED_FILES_NAMED: usize = 20;
+
 /// What every skill tool shares: the loader and the channels its writes
 /// report through.
 pub struct SkillCore {
@@ -209,12 +215,52 @@ impl SkillCore {
         exact.or(substring)
     }
 
-    /// The ONE "no such skill" line: where the installed names are.
-    fn not_found(name: &str) -> String {
-        format!(
-            "No skill named '{}'. Installed skills are in the skill listing; find_skills searches them by what they do.",
-            name
-        )
+    /// The ONE "no such skill" line, then what to do next: `next` for a
+    /// load miss (`load_miss`), else [`LISTING_HINT`].
+    fn not_found(name: &str, next: &str) -> String {
+        format!("No skill named '{name}'. {next}")
+    }
+
+    /// What a load of a skill that isn't installed hears: the installed
+    /// skills that do what the name says, when there are any, and in every
+    /// case that a missing skill is no missing capability. Gate 2026-09-26
+    /// (correction-skill-miss-proceeds): the old line sent every run
+    /// searching (find_tools, find_skills twice, an invented "install skill"
+    /// name) before it read the file and did the sum.
+    async fn load_miss(&self, scope: Scope<'_>, name: &str) -> String {
+        // Close means a name that shares a word with the one asked for; a
+        // description that happens to say "summary" is not close to
+        // "quarterly-summary".
+        let words: Vec<String> = name
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .map(str::to_string)
+            .collect();
+        let close: Vec<String> = self
+            .loader
+            .discover_summaries(name, scope.agent)
+            .await
+            .into_iter()
+            .filter(|s| {
+                let own = s.name.to_lowercase();
+                words.iter().any(|w| own.split(|c: char| !c.is_alphanumeric()).any(|o| o == w))
+            })
+            .take(5)
+            .map(|s| format!("{} ({})", s.name, s.description))
+            .collect();
+        let next = if close.is_empty() {
+            "No installed skill has a name like it. The skill listing names every installed skill; if none \
+             there fits, there is no skill for this task: do it with your other tools rather than searching again."
+                .to_string()
+        } else {
+            format!(
+                "Installed skills close to it: {}. Load one of those if it fits; otherwise do the task with your \
+                 other tools.",
+                close.join("; ")
+            )
+        };
+        Self::not_found(name, &next)
     }
 
     fn user_skills_dir() -> Result<std::path::PathBuf, String> {
@@ -282,7 +328,7 @@ impl SkillCore {
                 Err(e) => return ToolResult::error(e),
             };
             if !skill_dir.join("SKILL.md.disabled").exists() {
-                return ToolResult::error(Self::not_found(name));
+                return ToolResult::error(self.load_miss(scope, name).await);
             }
             if let Err(e) = std::fs::rename(skill_dir.join("SKILL.md.disabled"), skill_dir.join("SKILL.md")) {
                 return ToolResult::error(format!("Failed to enable skill: {}. Do not retry — this is a filesystem error.", e));
@@ -291,7 +337,7 @@ impl SkillCore {
             self.loader.reload_from_disk().await;
         }
         let Some(skill) = self.loader.get(name, scope.agent).await.filter(|s| s.enabled) else {
-            return ToolResult::error(Self::not_found(name));
+            return ToolResult::error(self.load_miss(scope, name).await);
         };
         // Read mark for the review fork: a save or delete of a learned skill
         // requires it was loaded THIS run.
@@ -316,7 +362,11 @@ impl SkillCore {
             .as_deref()
             .map(|d| format!("This skill's files are in: {}\n\n", d.display()))
             .unwrap_or_default();
-        ToolResult::ok(format!("Loaded skill '{}'. Follow its instructions:\n\n{base}{body}", skill.name))
+        ToolResult::ok(format!(
+            "Loaded skill '{}'. Follow its instructions:\n\n{base}{body}{}",
+            skill.name,
+            files_line(&skill.name, skill.list_resources().unwrap_or_default())
+        ))
     }
 
     async fn find(&self, scope: Scope<'_>, query: &str) -> ToolResult {
@@ -364,7 +414,7 @@ impl SkillCore {
     /// A skill's files: the list with no path, a file's text with one.
     async fn read_file(&self, scope: Scope<'_>, name: &str, path: &str) -> ToolResult {
         let Some(skill) = self.loader.get(name, scope.agent).await else {
-            return ToolResult::error(Self::not_found(name));
+            return ToolResult::error(Self::not_found(name, LISTING_HINT));
         };
         let mut resources = match skill.list_resources() {
             Ok(r) => r,
@@ -553,7 +603,7 @@ impl SkillCore {
             }
         }
         let Some(ref path) = skill.source_path else {
-            return ToolResult::error(Self::not_found(&name));
+            return ToolResult::error(Self::not_found(&name, LISTING_HINT));
         };
         // Models routinely send the body without the YAML header; writing that
         // verbatim knocks the skill out of the loader on the next reload.
@@ -653,7 +703,7 @@ impl SkillCore {
             Err(e) => return ToolResult::error(e),
         };
         if !skill_dir.is_dir() {
-            return ToolResult::error(format!("{} Nothing deleted.", Self::not_found(name)));
+            return ToolResult::error(format!("{} Nothing deleted.", Self::not_found(name, LISTING_HINT)));
         }
         if let Err(e) = std::fs::remove_dir_all(&skill_dir) {
             tracing::warn!(skill = %name, error = %e, "failed to remove skill directory");
@@ -718,7 +768,7 @@ impl SkillCore {
 
     async fn secrets(&self, store: &db::Store, scope: Scope<'_>, name: &str) -> ToolResult {
         let Some(skill) = self.loader.get(name, scope.agent).await else {
-            return ToolResult::error(Self::not_found(name));
+            return ToolResult::error(Self::not_found(name, LISTING_HINT));
         };
         let declarations = skill.secrets();
         if declarations.is_empty() {
@@ -1154,6 +1204,25 @@ impl DynTool for SkillTool {
     }
 }
 
+/// The skill's other files, named at the end of its instructions with the
+/// call that reads one: its instructions point at them by relative path
+/// ("see reference/actions.md"), and on 2026-09-26 runs asked use_skill for
+/// one twice (args "action: browse, path: …") and got the instructions
+/// again. Empty when it has none.
+fn files_line(name: &str, mut files: Vec<String>) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    files.sort();
+    let more = files.len().saturating_sub(LOADED_FILES_NAMED);
+    files.truncate(LOADED_FILES_NAMED);
+    let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+    format!(
+        "\n\nFiles in it: {}{more}. Read one with read_skill_file(name: \"{name}\", path: \"<file>\").",
+        files.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1174,7 +1243,7 @@ mod tests {
         assert!(install_failed("'SKIL-1' is not a valid install code (e.g. ...)"));
         assert!(!install_failed("Installed skill 'foo' (v1.2)"));
         assert_eq!(source_words(&SkillSource::Learned), "a learned skill of this employee");
-        assert!(SkillCore::not_found("x").contains("find_skills"));
+        assert!(SkillCore::not_found("x", LISTING_HINT).contains("find_skills"));
     }
 
     /// One tool loads, the rest are deferred, and each is one purpose with
@@ -1232,10 +1301,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let family = family(dir.path());
         let ctx = ToolContext::default();
-        let result = tool(&family, USE_SKILL).execute_dyn(&ctx, json!({"name": "no-such-skill"})).await;
+        let result = tool(&family, "read_skill_file").execute_dyn(&ctx, json!({"name": "no-such-skill"})).await;
         assert!(result.is_error, "{}", result.content);
         assert!(result.content.contains("no-such-skill"), "{}", result.content);
         assert!(result.content.contains("skill listing"), "{}", result.content);
+    }
+
+    /// A load of a skill that isn't installed names the installed skills
+    /// that do what its name says, or settles that there is none: either
+    /// way the task goes on with the other tools, and nothing sends the
+    /// model searching again.
+    #[tokio::test]
+    async fn a_load_miss_names_what_is_close_or_says_to_proceed() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("installed").join("revenue-report");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: revenue-report\ndescription: Totals revenue by quarter\n---\nAdd it up.\n",
+        )
+        .unwrap();
+        let loader = Arc::new(Loader::new(dir.path().join("installed"), dir.path().join("user")));
+        loader.load_all().await;
+        let family = tools(SkillCore::new(loader));
+        let ctx = ToolContext::default();
+        let use_skill = tool(&family, USE_SKILL);
+
+        let none = use_skill.execute_dyn(&ctx, json!({"name": "calendar-sync"})).await;
+        assert!(none.is_error);
+        assert_eq!(
+            none.content,
+            "No skill named 'calendar-sync'. No installed skill has a name like it. The skill listing names every \
+             installed skill; if none there fits, there is no skill for this task: do it with your other tools \
+             rather than searching again."
+        );
+
+        // Its description says "quarter"; its name doesn't: not close.
+        let described = use_skill.execute_dyn(&ctx, json!({"name": "quarter-summary"})).await;
+        assert!(described.content.contains("No installed skill has a name like it."), "{}", described.content);
+
+        let close = use_skill.execute_dyn(&ctx, json!({"name": "quarterly-revenue"})).await;
+        assert!(close.is_error);
+        assert!(
+            close.content.contains("Installed skills close to it: revenue-report (Totals revenue by quarter)."),
+            "{}",
+            close.content
+        );
+        assert!(close.content.ends_with("otherwise do the task with your other tools."), "{}", close.content);
     }
 
     /// Loading returns the instructions, with the base directory and the
@@ -1262,6 +1374,13 @@ mod tests {
         assert!(!loaded.is_error, "{}", loaded.content);
         assert!(loaded.content.contains("Bill the client for March."), "{}", loaded.content);
         assert!(loaded.content.contains("This skill's files are in:"), "{}", loaded.content);
+        assert!(
+            loaded.content.ends_with(
+                "Files in it: scripts/total.py. Read one with read_skill_file(name: \"invoicing\", path: \"<file>\")."
+            ),
+            "the files it points at are named with the call that reads them: {}",
+            loaded.content
+        );
 
         let read = tool(&family, "read_skill_file");
         let files = read.execute_dyn(&ctx, json!({"name": "invoicing"})).await;

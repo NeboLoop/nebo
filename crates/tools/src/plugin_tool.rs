@@ -1367,8 +1367,20 @@ impl PluginRunner {
                         let interactive = crate::origin::ExecutionMode::from(ctx.origin)
                             == crate::origin::ExecutionMode::Interactive
                             && ctx.ask_channels.is_some();
+                        // Nothing connected and no card answered: every
+                        // command waits on it, a dry run included. Gate
+                        // 2026-09-26: after the bare line, runs searched
+                        // memory for a company id, asked the owner for one
+                        // and re-read skills, seven to ten calls each,
+                        // around a wall no call could move.
+                        let blocked = format!(
+                            "{none_msg} Until one is connected no {res} command can run, a dry run or a read \
+                             included. Tell the owner what you'll do once it's connected; don't look for \
+                             credentials or account ids anywhere else.",
+                            res = pi.slug
+                        );
                         let Some(agent_id) = agent_id.as_deref() else {
-                            return ToolResult::error(none_msg);
+                            return ToolResult::error(blocked);
                         };
                         if !interactive {
                             // Unattended: the error steers to what IS connected
@@ -1433,7 +1445,7 @@ impl PluginRunner {
                             )
                             .await;
                         if answer.as_deref() != Some("connected") {
-                            return ToolResult::error(none_msg);
+                            return ToolResult::error(blocked);
                         }
                         match self
                             .db_store
@@ -2642,6 +2654,33 @@ mod budget_and_install_tests {
         assert!(r.content.contains("No gws account is connected"), "{}", r.content);
         assert!(r.content.contains("Connected for this employee: gmail"), "{}", r.content);
         assert!(r.content.contains("Operation tools those serve: mail_message_send (via gmail)"), "{}", r.content);
+    }
+
+    /// Gate 2026-09-26 (correction-quickbooks-payment-dry-run): with nothing
+    /// connected and no card answered, the bare "not connected" line sent
+    /// runs looking for a company id in memory and asking the owner for one.
+    /// The result says every command waits on the connection, a dry run
+    /// included, and where not to look.
+    #[tokio::test]
+    async fn not_connected_says_every_command_waits_on_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_account_plugin(tmp.path(), "gws", serde_json::json!({}));
+        let tool = PluginRunner::new(plugin_store, db_store);
+        let ctx = ToolContext { session_key: "eval:no-employee:run-1".into(), ..Default::default() };
+        let pi = PluginCall { slug: "gws".into(), command: "calendar events list --dry-run".into(), ..Default::default() };
+
+        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await;
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.starts_with("No gws account is connected for this agent."), "{}", r.content);
+        assert!(
+            r.content.ends_with(
+                "Until one is connected no gws command can run, a dry run or a read included. Tell the owner \
+                 what you'll do once it's connected; don't look for credentials or account ids anywhere else."
+            ),
+            "{}",
+            r.content
+        );
     }
 
     /// A best match that is already installed gets no install card: the
