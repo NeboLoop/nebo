@@ -558,15 +558,18 @@ pub(crate) async fn prepare(
             audience: req.seat.audience.as_deref(),
         },
     );
-    // A linked employee runs as its linked agent, the id its hire stored,
-    // whatever reached it (the owner's chat, a workflow, a schedule, a
-    // coworker, the phone). That is not a model choice: a request's model
-    // never replaces it, and nothing else answers for it.
-    let linked = linked_agent(&h.store, &req.seat.agent_id);
-    let raw_model = match &linked {
-        Some(id) => id.clone(),
-        None if !req.seat.model_override.is_empty() => req.seat.model_override.clone(),
-        None => req.seat.model_preference.clone().unwrap_or_default(),
+    // The employee's own model preference, from its hire or its settings,
+    // for every run kind (the owner's chat, a workflow, a schedule, a
+    // coworker, the phone) when the request names none. A linked employee
+    // runs as its linked agent: that is not a model choice, so a request's
+    // model never replaces it and nothing else answers for it.
+    let employee = employee_model(&h.store, &req.seat.agent_id);
+    let raw_model = if employee.linked {
+        employee.preference.clone().unwrap_or_default()
+    } else if !req.seat.model_override.is_empty() {
+        req.seat.model_override.clone()
+    } else {
+        req.seat.model_preference.clone().or(employee.preference).unwrap_or_default()
     };
     let model = if raw_model.is_empty() {
         String::new()
@@ -746,7 +749,7 @@ pub(crate) async fn prepare(
         channel,
         timezone: memory_timezone,
         model,
-        linked: linked.is_some(),
+        linked: employee.linked,
         identity,
         name,
         environment,
@@ -1447,20 +1450,32 @@ async fn clear_old_results(cx: &TurnContext, st: &mut TurnState, conversation: &
 }
 
 /// The provider and model name of the turn's model.
-/// The linked agent a linked employee runs as (`linked/<bot>/<agent>`,
-/// stored on its hire as the model preference): `Some` for every employee
-/// of kind `linked`, empty when that id is missing, `None` for every other
-/// employee.
-fn linked_agent(store: &db::Store, agent_id: &str) -> Option<String> {
-    let agent = store.get_agent(agent_id).ok().flatten()?;
-    (agent.kind.as_deref() == Some(ai::providers::linked::ID)).then(|| {
-        store
-            .get_entity_config("agent", agent_id)
-            .ok()
-            .flatten()
-            .and_then(|c| c.model_preference)
-            .unwrap_or_default()
-    })
+/// An employee's own model, as its entity config stores it.
+struct EmployeeModel {
+    /// Its model preference (`provider/model`, or a linked agent's id).
+    preference: Option<String>,
+    /// A linked employee (hired from a linked bot, or whose preference names
+    /// a linked agent): its linked bot answers its turns, or nothing does.
+    linked: bool,
+}
+
+fn employee_model(store: &db::Store, agent_id: &str) -> EmployeeModel {
+    if agent_id.is_empty() {
+        return EmployeeModel { preference: None, linked: false };
+    }
+    let preference = store
+        .get_entity_config("agent", agent_id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.model_preference)
+        .filter(|m| !m.trim().is_empty());
+    let hired_linked = store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .is_some_and(|a| a.kind.as_deref() == Some(ai::providers::linked::ID));
+    let linked = hired_linked || preference.as_deref().is_some_and(|m| ai::LinkedProvider::target(m).is_some());
+    EmployeeModel { preference, linked }
 }
 
 fn model_parts(model: &str) -> (String, String) {
@@ -1530,7 +1545,7 @@ async fn checkpoint(
     let h = &cx.harness;
     let provider = match &st.last_call {
         Some(last) => last.provider.clone(),
-        None => h.providers.read().await.first().cloned().ok_or("no provider to checkpoint with")?,
+        None => ai::default_provider(&h.providers.read().await).ok_or("no provider to checkpoint with")?,
     };
     let taint: Vec<types::provenance::ProvenanceClass> =
         cx.taint.lock().unwrap_or_else(|p| p.into_inner()).iter().copied().collect();
@@ -2480,6 +2495,23 @@ mod tests {
         assert!(!calls[0].chat_id.is_empty(), "the conversation rides with the turn");
         assert!(other.calls().is_empty(), "nothing else answers as Hermes");
         assert!(events.iter().any(|e| e.text == "Hey, Hermes here."));
+    }
+
+    /// A turn that names no model (a schedule, a coworker's post) still
+    /// reaches a linked employee's linked bot: the turn reads the employee's
+    /// own model, never the default.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_scheduled_turn_reaches_the_linked_bot_too() {
+        let other = Scripted::new(Vec::new());
+        let bot = Arc::new(LinkedBot::default());
+        let h = hired_linked(vec![other.clone() as Arc<dyn ai::Provider>, bot.clone() as Arc<dyn ai::Provider>]);
+        let mut req = owner("check the inbox");
+        req.seat.agent_id = HERMES.into();
+        req.seat.door = types::permissions::Door::Schedule;
+        req.seat.origin = tools::Origin::System;
+        run_turn(&h, req).await;
+        assert_eq!(bot.calls.lock().unwrap().len(), 1);
+        assert!(other.calls().is_empty());
     }
 
     /// Without its linked bot's provider a linked employee's turn fails in

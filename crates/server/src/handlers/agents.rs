@@ -1181,6 +1181,12 @@ pub async fn update_agent(
             &fm.name
         }
     });
+    if linked_rename(&existing, name) {
+        return Err(to_error_response(types::NeboError::Validation(format!(
+            "{}'s name is set on the linked bot.",
+            existing.name
+        ))));
+    }
     let description = body["description"].as_str().unwrap_or_else(|| {
         if fm.description.is_empty() {
             &existing.description
@@ -2066,6 +2072,12 @@ fn linked_employees(state: &AppState, rows: &[db::models::Agent]) -> Vec<(String
             Some((r.id.clone(), model))
         })
         .collect()
+}
+
+/// A write that would rename a linked employee (by `name` or through the
+/// AGENT.md frontmatter): the name is the linked agent's, locked at hire.
+fn linked_rename(existing: &db::models::Agent, name: &str) -> bool {
+    existing.kind.as_deref() == Some("linked") && name != existing.name
 }
 
 /// A write that would change a linked employee's soul or rules: those are
@@ -5664,7 +5676,7 @@ mod frontmatter_save_tests {
 
 #[cfg(test)]
 mod linked_hire_tests {
-    use super::{hire_source, linked_offline, linked_persona_edit, linked_target, source_entry};
+    use super::{hire_source, linked_offline, linked_persona_edit, linked_rename, linked_target, source_entry};
 
     fn agent_row(kind: Option<&str>, soul: Option<&str>) -> db::models::Agent {
         db::models::Agent {
@@ -5779,6 +5791,17 @@ mod linked_hire_tests {
         assert_eq!(entry["runtime"], "hermes");
         assert_eq!(entry["online"], false);
         assert_eq!(entry["agents"][0]["name"], "Hermes");
+    }
+
+    /// A linked employee's name is its linked agent's: a rename is refused,
+    /// the same name passes, and other employees rename freely.
+    #[test]
+    fn a_linked_employee_keeps_its_name() {
+        let linked = agent_row(Some("linked"), None);
+        assert!(linked_rename(&linked, "Renamed"));
+        assert!(!linked_rename(&linked, "Danny"));
+        let plain = agent_row(None, None);
+        assert!(!linked_rename(&plain, "Renamed"));
     }
 
     /// Soul and rules belong to the runtime: a change is refused on a linked

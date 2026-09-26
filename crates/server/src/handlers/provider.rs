@@ -7,206 +7,19 @@ use tracing::{info, warn};
 use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
 
-/// Rebuild AI providers from auth_profiles and reload them on the runner.
-pub(crate) async fn reload_providers(state: &AppState) {
-    let profiles = match state.store.list_auth_profiles() {
-        Ok(p) => p,
-        Err(e) => {
-            warn!("failed to load auth profiles for reload: {}", e);
-            return;
-        }
-    };
-
-    let models_cfg = config::ModelsConfig::load();
-
-    let mut providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
-    let mut gateway_providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
-    for profile in &profiles {
-        if profile.is_active.unwrap_or(0) == 0 {
-            continue;
-        }
-        let provider: Option<Arc<dyn ai::Provider>> = match profile.provider.as_str() {
-            "anthropic" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("anthropic")
-                    .unwrap_or_default();
-                Some(Arc::new(ai::AnthropicProvider::new(
-                    profile.api_key.clone(),
-                    profile.model.clone().unwrap_or(default_model),
-                )))
-            }
-            "openai" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("openai")
-                    .unwrap_or_default();
-                Some(Arc::new(ai::OpenAIProvider::new(
-                    profile.api_key.clone(),
-                    profile.model.clone().unwrap_or(default_model),
-                )))
-            }
-            "deepseek" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("deepseek")
-                    .unwrap_or_default();
-                let mut p = ai::OpenAIProvider::with_base_url(
-                    profile.api_key.clone(),
-                    profile.model.clone().unwrap_or(default_model),
-                    profile
-                        .base_url
-                        .clone()
-                        .unwrap_or_else(|| "https://api.deepseek.com/v1".into()),
-                );
-                p.set_provider_id("deepseek");
-                Some(Arc::new(p))
-            }
-            "google" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("google")
-                    .unwrap_or_default();
-                Some(Arc::new(ai::GeminiProvider::new(
-                    profile.api_key.clone(),
-                    profile.model.clone().unwrap_or(default_model),
-                )))
-            }
-            "ollama" => {
-                let default_model = models_cfg
-                    .default_model_for_provider("ollama")
-                    .unwrap_or_default();
-                Some(Arc::new(ai::OllamaProvider::new(
-                    profile
-                        .base_url
-                        .clone()
-                        .unwrap_or_else(|| "http://localhost:11434".into()),
-                    profile.model.clone().unwrap_or(default_model),
-                )))
-            }
-            "neboai" => {
-                let metadata: Option<serde_json::Value> = profile
-                    .metadata
-                    .as_ref()
-                    .and_then(|m| serde_json::from_str(m).ok());
-                let is_janus = metadata
-                    .as_ref()
-                    .and_then(|m| m.get("janus_provider"))
-                    .and_then(|v| v.as_str())
-                    == Some("true");
-                if is_janus {
-                    // Skip Janus if user has disabled all Janus chat models.
-                    // Only count chat-capable models (not embedding-only).
-                    // Fail-safe: if DB query fails, skip Janus (don't burn tokens).
-                    let has_active_chat = state
-                        .store
-                        .list_active_provider_models("janus")
-                        .map(|models| {
-                            models.iter().any(|m| {
-                                let caps: Vec<String> = m
-                                    .capabilities
-                                    .as_ref()
-                                    .and_then(|c| serde_json::from_str(c).ok())
-                                    .unwrap_or_default();
-                                caps.iter().any(|c| c == "streaming" || c == "tools")
-                            })
-                        })
-                        .unwrap_or(false);
-                    if !has_active_chat {
-                        info!("janus provider has no active models in catalog, skipping");
-                        None
-                    } else {
-                        let janus_url = &state.config.neboai.janus_url;
-                        let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
-                        let bot_id = config::read_bot_id().unwrap_or_default();
-                        let mut p = ai::OpenAIProvider::with_base_url(
-                            crate::janus_api_key(state.store.clone()),
-                            model,
-                            format!("{}/v1", janus_url),
-                        );
-                        p.set_provider_id("janus");
-                        if !bot_id.is_empty() {
-                            p.set_bot_id(bot_id);
-                        }
-                        Some(Arc::new(p))
-                    }
-                } else {
-                    info!(
-                        profile_id = %profile.id,
-                        has_metadata = metadata.is_some(),
-                        "neboai profile found but janus_provider not enabled, skipping AI provider"
-                    );
-                    None
-                }
-            }
-            _ => None,
-        };
-        if let Some(p) = provider {
-            // Defer gateway providers (Janus) to end of the list so CLI
-            // providers and direct API keys take priority.  This prevents
-            // Nebo credits from being consumed when the user has enabled
-            // a CLI provider that uses their own subscription.
-            if profile.provider == "neboai" {
-                gateway_providers.push(p);
-            } else {
-                providers.push(p);
-            }
-        }
-    }
-
-    // Auto-create Ollama provider if Ollama is running and has active models,
-    // even without an auth_profile (Ollama needs no API key).
-    let has_ollama_profile = profiles
-        .iter()
-        .any(|p| p.provider == "ollama" && p.is_active.unwrap_or(0) == 1);
-    if !has_ollama_profile {
-        if let Ok(active_models) = state.store.list_active_provider_models("ollama") {
-            if !active_models.is_empty() {
-                // Pick the first active model as the default
-                let model = active_models[0].model_id.clone();
-                info!(model = %model, "auto-creating Ollama provider (no auth profile needed)");
-                providers.push(Arc::new(ai::OllamaProvider::new(
-                    "http://localhost:11434".into(),
-                    model,
-                )));
-            }
-        }
-    }
-
-    // Add CLI providers from models.yaml config
-    // Re-detect CLIs live instead of using the startup snapshot,
-    // so toggling a CLI provider works even when the app was launched
-    // from Finder/Start Menu with a minimal PATH.
-    let live_cli = config::detect_all_clis();
-    for cli_def in &models_cfg.cli_providers {
-        if !cli_def.is_active() {
-            continue;
-        }
-        let installed = match cli_def.command.as_str() {
-            "claude" => live_cli.claude.installed,
-            "codex" => live_cli.codex.installed,
-            "gemini" => live_cli.gemini.installed,
-            _ => false,
-        };
-        if !installed {
-            continue;
-        }
-        let p: Arc<dyn ai::Provider> = match cli_def.command.as_str() {
-            "claude" => Arc::new(ai::CLIProvider::new_claude_code(0, state.config.port)),
-            "codex" => Arc::new(ai::CLIProvider::new_codex_cli()),
-            "gemini" => Arc::new(ai::CLIProvider::new_gemini_cli()),
-            _ => continue,
-        };
-        info!(cli = %cli_def.command, "reloaded CLI provider");
-        providers.push(p);
-    }
-
-    // Gateway providers (Janus) go last — they consume Nebo credits and
-    // should only be used when no direct API key or CLI provider is available.
-    providers.extend(gateway_providers);
-
+/// Rebuild AI providers from auth_profiles and reload them on the harness,
+/// through the ONE builder startup uses (`build_providers`) — so a reload
+/// keeps what startup registers (the linked provider included). CLIs are
+/// re-detected live, so toggling a CLI provider works even when the app was
+/// launched from Finder/Start Menu with a minimal PATH.
+pub(crate) async fn reload_providers(store: &Arc<db::Store>, cfg: &config::Config, harness: &agent::Harness) {
+    let providers = crate::build_providers(store, cfg, Some(&config::detect_all_clis()));
     info!(count = providers.len(), "reloading providers");
-    state.harness.reload_providers(providers).await;
+    harness.reload_providers(providers).await;
 
     // Refresh the DB-held models in the selector (they're not in yaml)
-    crate::inject_db_models(&state.store, state.harness.selector(), "ollama");
-    crate::inject_db_models(&state.store, state.harness.selector(), "janus");
+    crate::inject_db_models(store, harness.selector(), "ollama");
+    crate::inject_db_models(store, harness.selector(), "janus");
 }
 
 /// GET /api/v1/providers
@@ -254,7 +67,7 @@ pub async fn create_provider(
         .map_err(to_error_response)?;
 
     // Reload providers on the runner
-    reload_providers(&state).await;
+    reload_providers(&state.store, &state.config, &state.harness).await;
 
     Ok(Json(serde_json::json!(profile)))
 }
@@ -341,7 +154,7 @@ pub async fn update_provider(
     }
 
     // Reload providers on the runner
-    reload_providers(&state).await;
+    reload_providers(&state.store, &state.config, &state.harness).await;
 
     let updated = state
         .store
@@ -360,7 +173,7 @@ pub async fn delete_provider(
         .delete_auth_profile(&id)
         .map_err(to_error_response)?;
     // Reload providers on the runner
-    reload_providers(&state).await;
+    reload_providers(&state.store, &state.config, &state.harness).await;
     Ok(Json(serde_json::json!({"success": true})))
 }
 
@@ -729,7 +542,7 @@ pub async fn update_model(
 
     // Reload providers so model toggle takes effect immediately
     // (e.g., disabling all Janus models removes the Janus provider)
-    reload_providers(&state).await;
+    reload_providers(&state.store, &state.config, &state.harness).await;
 
     Ok(Json(serde_json::json!({
         "message": format!("Model {} updated", model_id),
@@ -757,7 +570,7 @@ pub async fn update_cli_provider(
         .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
 
     // Reload providers so the toggle takes effect immediately
-    reload_providers(&state).await;
+    reload_providers(&state.store, &state.config, &state.harness).await;
 
     Ok(Json(serde_json::json!({
         "message": format!("CLI provider {} updated", cli_id),
@@ -1025,5 +838,51 @@ mod picker_tests {
         let ids: Vec<&str> = listed.values().flatten().filter_map(|m| m["id"].as_str()).collect();
         assert_eq!(listed["janus"].len(), 2, "{ids:?}");
         assert!(ids.iter().all(|id| !id.contains("embed")), "{ids:?}");
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use std::sync::Arc;
+
+    /// Pairing by a NEBO code saves the account the way the redeem does
+    /// (`janus_provider` not asked for) and reloads: Janus is live at once,
+    /// as after OAuth, and the reload keeps the linked provider startup
+    /// registers (it used to rebuild without it, so every provider change
+    /// cut linked employees off until a restart).
+    #[tokio::test]
+    async fn a_code_pairing_leaves_janus_live_and_keeps_the_linked_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        crate::seed_models_from_catalog(&store, &config::ModelsConfig::load());
+        let cfg = config::Config::default();
+        let harness = agent::Harness::new(
+            store.clone(),
+            Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store.clone())))),
+            Vec::new(),
+            agent::selector::ModelSelector::new(Default::default()),
+            Arc::new(agent::ConcurrencyController::new(Some(2))),
+            Arc::new(napp::HookDispatcher::new()),
+            None,
+            Default::default(),
+            None,
+        );
+
+        super::super::neboai::store_neboai_profile(
+            &store,
+            "https://api.example.com",
+            "owner-1",
+            "owner@example.com",
+            "Owner",
+            "connection-token",
+            "",
+            false,
+        )
+        .unwrap();
+        super::reload_providers(&store, &cfg, &harness).await;
+
+        let ids: Vec<String> = harness.providers().read().await.iter().map(|p| p.id().to_string()).collect();
+        assert!(ids.iter().any(|id| id == "janus"), "Janus is live after a code pairing: {ids:?}");
+        assert!(ids.iter().any(|id| id == ai::providers::linked::ID), "the reload keeps the linked provider: {ids:?}");
     }
 }

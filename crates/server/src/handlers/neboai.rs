@@ -246,7 +246,7 @@ pub async fn oauth_callback(
 
     // Store NeboAI profile in auth_profiles
     if let Err(e) = store_neboai_profile(
-        &app_state,
+        &app_state.store,
         &api_url,
         &user_info.id,
         &user_info.email,
@@ -259,7 +259,7 @@ pub async fn oauth_callback(
     }
 
     // Reload AI providers so Janus is available immediately
-    super::provider::reload_providers(&app_state).await;
+    super::provider::reload_providers(&app_state.store, &app_state.config, &app_state.harness).await;
 
     // Mark flow as completed
     flow.email = user_info.email.clone();
@@ -1131,7 +1131,7 @@ async fn fetch_user_info(api_url: &str, access_token: &str) -> Result<OAuthUserI
 }
 
 pub(crate) fn store_neboai_profile(
-    app_state: &AppState,
+    store: &db::Store,
     api_url: &str,
     owner_id: &str,
     email: &str,
@@ -1140,8 +1140,7 @@ pub(crate) fn store_neboai_profile(
     refresh_token: &str,
     janus_provider: bool,
 ) -> Result<(), String> {
-    let profiles = app_state
-        .store
+    let profiles = store
         .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
 
@@ -1175,8 +1174,7 @@ pub(crate) fn store_neboai_profile(
 
     if let Some(existing) = profiles.first() {
         // Update existing profile
-        app_state
-            .store
+        store
             .update_auth_profile(
                 &existing.id,
                 email,
@@ -1192,13 +1190,12 @@ pub(crate) fn store_neboai_profile(
         // Delete any extra profiles
         for p in profiles.iter().skip(1) {
             // Best-effort: clean up duplicate profiles
-            let _ = app_state.store.delete_auth_profile(&p.id);
+            let _ = store.delete_auth_profile(&p.id);
         }
     } else {
         // Create new profile
         let id = Uuid::new_v4().to_string();
-        app_state
-            .store
+        store
             .create_auth_profile(
                 &id,
                 email,

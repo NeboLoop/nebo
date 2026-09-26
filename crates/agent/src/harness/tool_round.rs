@@ -307,15 +307,13 @@ pub(crate) async fn run_tool_round(
     {
         let main_supports_images = {
             let prov_lock = providers.read().await;
-            prov_lock
-                .first()
-                .is_some_and(|p| p.supports_tool_result_images())
+            ai::default_provider(&prov_lock).is_some_and(|p| p.supports_tool_result_images())
         };
 
         if !main_supports_images {
             let sidecar_provider = {
                 let prov_lock = providers.read().await;
-                prov_lock.first().cloned()
+                ai::default_provider(&prov_lock)
             };
             if let Some(provider) = sidecar_provider {
                 let mut sidecar_futures = FuturesUnordered::new();

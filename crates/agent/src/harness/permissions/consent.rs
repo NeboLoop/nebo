@@ -290,7 +290,7 @@ impl AuxReader {
             let providers = self.providers.read().await;
             match crate::harness::model_call::resolve_aux(&config::ModelsConfig::load(), &providers) {
                 Some(routed) => routed,
-                None => (crate::summarizer::pick_cheapest(&providers)?, String::new()),
+                None => (crate::harness::model_call::prefer_non_gateway(&providers)?, String::new()),
             }
         };
         let req = ai::ChatRequest {
