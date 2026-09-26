@@ -132,18 +132,16 @@ fn log_tail(path: &Path, lines: usize) -> Option<String> {
     (!tail.is_empty()).then(|| tail.join("\n"))
 }
 
-/// Runtime manages launching and stopping tool processes.
+/// Runtime launches and stops one sidecar process.
 pub struct Runtime {
-    /// The Nebo root (`config::data_dir()`): each process's persistent data
-    /// directory lives under its `appdata/`.
-    home: PathBuf,
+    /// The persistent data directory ([`crate::app_data::data_dir`]):
+    /// its `NEBO_DATA_DIR`, working directory and `sidecar.log`.
+    data_dir: PathBuf,
 }
 
 impl Runtime {
-    pub fn new(home: &Path) -> Self {
-        Self {
-            home: home.to_path_buf(),
-        }
+    pub fn new(data_dir: PathBuf) -> Self {
+        Self { data_dir }
     }
 
     /// Launch a tool from its directory.
@@ -179,18 +177,9 @@ impl Runtime {
         // Clean up stale socket
         let _ = std::fs::remove_file(&sock_path);
 
-        // Create data directory in appdata/ (physically separated from code)
-        let artifact_slug = tool_dir
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or(&manifest.name);
-        let artifact_type = match manifest.artifact_type.as_str() {
-            "agent" => "agents",
-            _ => "plugins",
-        };
-        let data_dir = self.home.join("appdata").join(artifact_type).join(artifact_slug);
-        std::fs::create_dir_all(&data_dir)?;
+        // Its own data directory in appdata/ (physically separated from code)
+        let data_dir = &self.data_dir;
+        std::fs::create_dir_all(data_dir)?;
 
         // Build sanitized environment
         let mut env = sandbox::sanitize_env(
@@ -217,7 +206,7 @@ impl Runtime {
         // sidecar that writes a DB to a relative path (./app.db) then lands in
         // persistent storage that survives updates, instead of the install dir
         // that gets wiped. Bundled code/resources are reached via NEBO_APP_DIR.
-        cmd.current_dir(&data_dir);
+        cmd.current_dir(data_dir);
         // SIGKILL the sidecar when its Child handle is dropped (nebo exit,
         // hot-reload restart, panic unwind, task cancellation). Without this,
         // sidecars stay alive after nebo dies, holding sockets and ports.

@@ -744,7 +744,7 @@ Your sidecar runs in a sandboxed environment. The injected variables are:
 | `NEBO_APP_VERSION` | `1.0.0` | Manifest version |
 | `NEBO_APP_DIR` | `<Nebo data dir>/user/agents/deal-tracker` | App root directory (versioned code dir — read-only in spirit; write to `NEBO_DATA_DIR`) |
 | `NEBO_APP_SOCK` | `...deal-tracker/deal-tracker.sock` | Unix socket path |
-| `NEBO_DATA_DIR` | `<Nebo appdata>/plugins/deal-tracker` | Writable data directory under Nebo's appdata (separate from code — survives upgrades). Always use the env var; never hardcode a path. |
+| `NEBO_DATA_DIR` | `<Nebo appdata>/agents/deal-tracker` | Writable data directory under Nebo's appdata, `appdata/agents/<app id>/` — the app's own, keyed by its id (separate from code — survives upgrades, reinstalls and renames of the app's folder). Always use the env var; never hardcode a path. |
 | `NEBO_API_URL` | `http://127.0.0.1:27895` | Local Nebo API base URL (the port is the running server's port, injected at launch) |
 | `NEBO_APP_TOKEN` | (per-launch token) | Per-launch auth token for calling the Nebo API |
 | `PATH` | system path | Allowlisted system var |
@@ -764,7 +764,7 @@ The sidecar owns its own data in `$NEBO_DATA_DIR`. Common approaches:
 - **SQLite** — use for structured data, queries, or anything beyond trivial CRUD.
 - **File store** — store blobs (uploaded documents, images) as files in the data directory.
 
-The data directory is physically separated from the code directory — it lives under Nebo's appdata area (e.g. `~/Library/Application Support/Nebo/appdata/...` on macOS), not inside the app's code tree. Always resolve it via `$NEBO_DATA_DIR` rather than constructing the path yourself. The sidecar's working directory is set to the data directory at launch, so relative paths (`./app.db`) also land in persistent storage. This means you can safely upgrade or reinstall the app binary without touching your data. The data directory survives sidecar restarts, app updates, reinstalls, and Nebo upgrades. It follows the iOS model: the update system physically cannot reach the data container.
+The data directory is physically separated from the code directory — it lives under Nebo's appdata area at `appdata/agents/<app id>/` (e.g. `~/Library/Application Support/Nebo/appdata/agents/deal-tracker/` on macOS), not inside the app's code tree. Every app has its own; no two apps share one. Always resolve it via `$NEBO_DATA_DIR` rather than constructing the path yourself. The sidecar's working directory is set to the data directory at launch, so relative paths (`./app.db`) also land in persistent storage. This means you can safely upgrade or reinstall the app binary without touching your data. The data directory survives sidecar restarts, app updates, reinstalls, and Nebo upgrades. It follows the iOS model: the update system physically cannot reach the data container.
 
 ### Binary Location
 
@@ -1078,7 +1078,7 @@ When a scope is active, the runner limits available tools, skills, and plugins t
 
 ### Logging
 
-Sidecar stdout and stderr are captured to the app's data directory — `$NEBO_DATA_DIR/sidecar.log` (e.g. `~/Library/Application Support/Nebo/appdata/plugins/{slug}/sidecar.log`), in append mode. When the sidecar exits, Nebo's own log records its exit status and the last lines of this file. Check it when debugging startup issues.
+Sidecar stdout and stderr are captured to the app's data directory — `$NEBO_DATA_DIR/sidecar.log` (e.g. `~/Library/Application Support/Nebo/appdata/agents/{app id}/sidecar.log`), in append mode. When the sidecar exits, Nebo's own log records its exit status and the last lines of this file. Check it when debugging startup issues.
 
 ### App Agent Redaction
 

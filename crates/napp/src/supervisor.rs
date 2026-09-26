@@ -413,7 +413,8 @@ mod process_tests {
     }
 
     fn start(app: &TestApp, policy: RestartPolicy) -> Supervisor {
-        let runtime = Arc::new(Runtime::new(&app.home));
+        let data_dir = crate::app_data::data_dir(&app.home, crate::app_data::DataKind::App, &app.id).expect("app id");
+        let runtime = Arc::new(Runtime::new(data_dir));
         Supervisor::start(runtime, app.tool_dir.clone(), 0, policy)
     }
 

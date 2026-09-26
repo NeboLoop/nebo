@@ -98,7 +98,8 @@ impl World {
             0,
             policy,
         )
-        .await;
+        .await
+        .expect("a folder-name app id");
         Self { app, hub, lifecycle, _upstream: upstream }
     }
 

@@ -49,7 +49,6 @@ struct RegisteredTool {
 /// Tool registry manages discovery, launching, and capability registration.
 pub struct Registry {
     config: RegistryConfig,
-    runtime: Arc<Runtime>,
     signing: Option<SigningKeyProvider>,
     revocation: Option<RevocationChecker>,
     tools: RwLock<HashMap<String, RegisteredTool>>,
@@ -68,11 +67,8 @@ impl Registry {
             .as_ref()
             .map(|url| RevocationChecker::new(url));
 
-        let runtime = Arc::new(Runtime::new(&config.home));
-
         Self {
             config,
-            runtime,
             signing,
             revocation,
             tools: RwLock::new(HashMap::new()),
@@ -308,8 +304,20 @@ impl Registry {
         // Launch under its supervisor, which keeps it running from here on. A
         // first launch that does not come up is reported to the caller; the
         // supervisor keeps retrying it all the same.
+        //
+        // Its data dir is keyed by the folder that names it: `<slug>/` above
+        // an installed tool's version folder, a loose tool's own folder.
+        let named_by = match source {
+            ToolSource::Installed => tool_dir.parent(),
+            ToolSource::User => Some(tool_dir),
+        };
+        let data_dir = named_by
+            .and_then(|d| d.file_name())
+            .and_then(|n| n.to_str())
+            .and_then(|slug| crate::app_data::data_dir(&self.config.home, crate::app_data::DataKind::Tool, slug))
+            .ok_or_else(|| NappError::Manifest(format!("{} has no folder name to keep its data under", tool_dir.display())))?;
         let process = Supervisor::start(
-            self.runtime.clone(),
+            Arc::new(Runtime::new(data_dir)),
             tool_dir.to_path_buf(),
             self.api_port,
             RestartPolicy::default(),
