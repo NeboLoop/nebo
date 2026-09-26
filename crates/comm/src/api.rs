@@ -1271,6 +1271,39 @@ impl NeboAIApi {
         .await
     }
 
+    /// Every bot on the owner's account, own and shared —
+    /// GET /api/v1/manage/bots, which a bot token reaches as its owner.
+    pub async fn list_managed_bots(&self) -> Result<Vec<ManagedBot>, CommError> {
+        #[derive(serde::Deserialize)]
+        struct Response {
+            #[serde(default)]
+            bots: Vec<ManagedBot>,
+        }
+        let resp: Response = self
+            .do_json(reqwest::Method::GET, "/api/v1/manage/bots", None::<&()>)
+            .await?;
+        Ok(resp.bots)
+    }
+
+    /// The agents a linked bot serves on its chat contract —
+    /// GET /t/{botId}/api/v1/agents through the hub's tunnel, which admits
+    /// this bot's token for a bot of the same owner.
+    pub async fn linked_bot_agents(&self, bot_id: &str) -> Result<Vec<LinkedAgent>, CommError> {
+        #[derive(serde::Deserialize)]
+        struct Response {
+            #[serde(default)]
+            agents: Vec<LinkedAgent>,
+        }
+        let resp: Response = self
+            .do_json(
+                reqwest::Method::GET,
+                &format!("/t/{bot_id}/api/v1/agents"),
+                None::<&()>,
+            )
+            .await?;
+        Ok(resp.agents)
+    }
+
     /// The connected account's own profile (id/email/displayName) —
     /// GET /api/v1/owners/me. Answers "WHOSE account is this bot on?".
     pub async fn owner_me(&self) -> Result<serde_json::Value, CommError> {

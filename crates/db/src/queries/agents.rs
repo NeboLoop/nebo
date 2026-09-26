@@ -371,6 +371,19 @@ impl Store {
     /// runs on every restart and used to revert christened names to the
     /// bundled manifest's default. Like [`Self::sync_agent_content`], a sync
     /// that changes nothing writes nothing (`updated_at` stays put).
+    /// Lock the employee's name against manifest syncs (`name_locked`, the
+    /// same contract an owner's rename sets): a linked employee's name is
+    /// the linked agent's, never a package's.
+    pub fn lock_agent_name(&self, id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE agents SET name_locked = 1, updated_at = unixepoch() WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn sync_agent_identity(
         &self,
         id: &str,
