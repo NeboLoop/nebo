@@ -2691,7 +2691,7 @@ async fn refresh_neboai_token(
 }
 
 /// What this bot runs, as the hub knows it (connect redeem + CONNECT).
-const RUNTIME: &str = "nebo";
+pub(crate) const RUNTIME: &str = "nebo";
 
 /// Core NEBO code redemption logic. Called by both:
 /// - `handle_nebo_code()` (chat-based code interception)
