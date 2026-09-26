@@ -1,10 +1,9 @@
 //! After the turn: memory extraction, personality synthesis, the chat title,
 //! the self-improvement review and the background tool summary.
 //!
-//! Memory extraction works the way Claude Code's extraction service works:
-//! after each turn, one background call over the messages since the
-//! session's last extraction writes the durable memories it finds. There is
-//! no pre-gate. It is skipped when the employee already saved memory itself
+//! Memory extraction: after each turn, one background call over the
+//! messages since the session's last extraction writes the durable
+//! memories it finds. There is no pre-gate. It is skipped when the employee already saved memory itself
 //! during those messages. One pass runs per session at a time; a turn that
 //! ends meanwhile becomes the trailing pass, which starts where the running
 //! one stopped.

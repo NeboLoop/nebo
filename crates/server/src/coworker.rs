@@ -297,7 +297,7 @@ pub(crate) async fn send_coworker_message(
 /// Run one turn in a coworker's thread, as the coworker, on behalf of the
 /// sender `route` names, and take its reply where the route says. It never
 /// waits for the turn: the reply reaches the sender as a notification
-/// (Claude Code's SendMessage). The ONE way a coworker thread runs: a new
+/// (`send_message`). The ONE way a coworker thread runs: a new
 /// message, and a notification that wakes the thread (`wake`), both come
 /// here.
 pub(crate) async fn run_in_thread(

@@ -1,8 +1,8 @@
-//! Plan mode: read and plan only (Claude Code's plan mode). A call that
-//! changes something doesn't run; the plan document does (Claude Code
-//! allows its plan file). `exit_plan_mode` is the way out: it always asks
-//! the owner, on the one ask card, and approving it switches the employee
-//! out of Plan mode (Claude Code's ExitPlanMode asks "Exit plan mode?").
+//! Plan mode: read and plan only. A call that changes something doesn't
+//! run; the plan document does, since writing the plan is the point of the
+//! mode. `exit_plan_mode` is the way out: it always asks the owner, on the
+//! one ask card ("Exit plan mode?"), and approving it switches the employee
+//! out of Plan mode.
 
 use types::permissions::{AskCase, Decision, Mode, Target, Why};
 
@@ -10,7 +10,8 @@ use types::permissions::{AskCase, Decision, Mode, Target, Why};
 pub const REFUSAL: &str =
     "Plan mode: this changes something, so it didn't run. Include this step in the plan instead.";
 
-/// What `exit_plan_mode` hears outside Plan mode (Claude Code's words).
+/// What `exit_plan_mode` hears outside Plan mode: there is nothing to
+/// leave, and an approved plan is carried out.
 pub const NOT_IN_PLAN_MODE: &str = "You are not in plan mode. This tool only leaves plan mode once a plan is \
 written. If your plan was already approved, carry it out.";
 

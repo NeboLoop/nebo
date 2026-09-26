@@ -11,8 +11,8 @@
 //! store each step; rows below a checkpoint boundary drop out with the rest
 //! of that history. `isMeta` hides it from the owner's thread.
 //!
-//! Only this module writes attachment rows (a convention, as in Claude
-//! Code; the store has no guard).
+//! Only this module writes attachment rows (a convention; the store has no
+//! guard).
 //!
 //! Loading: the legacy history loader (`session::is_stored_steering`) still
 //! drops every `isMeta` row that starts with `<system-reminder>`, which

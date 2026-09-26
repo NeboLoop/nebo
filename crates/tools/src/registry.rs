@@ -279,7 +279,7 @@ pub trait DynTool: Send + Sync {
         None
     }
     /// The call's result can be got again (a file read or change, a
-    /// command, a web search or fetch: Claude Code's compactable set), so it
+    /// command, a web search or fetch: it can be run again), so it
     /// may be cleared under context pressure
     /// (`agent::harness::compact::trim`).
     fn clearable(&self, _input: &serde_json::Value) -> bool {
@@ -2146,11 +2146,10 @@ pub(crate) mod tests {
     /// deleted the mcp tool and deferred the plugin family (−657). Batch C
     /// gave delegate its `speed` (fix plan E8, +124: delegate 1,826) and took
     /// the server note off os on server bots. Fix plan D16 gave delegate
-    /// Claude Code's when-to-use guidance and worked examples (+630: delegate
+    /// when-to-use guidance and worked examples (+630: delegate
     /// 2,456) and D19 deferred os on every bot (−9,134): 10,908. The owner,
-    /// 2026-09-26, after an employee loaded 28 skills one per step: "Go look
-    /// at how Claude does it. It should have fanned out and acted in
-    /// parallel." delegate got a skill-survey example (schema restatements
+    /// 2026-09-26, after an employee loaded 28 skills one per step: it
+    /// should have fanned out and acted in parallel. delegate got a skill-survey example (schema restatements
     /// moved out: delegate 2,495) and use_skill its loading rule (674):
     /// 11,036. The owner, 2026-09-26: employees drive interactive terminal
     /// programs; run_command's `pty` (90) is the one line that needs:
@@ -2192,8 +2191,8 @@ pub(crate) mod tests {
             ]
         );
         // D19: the desktop tool is deferred on every bot; the listing names
-        // it where a desktop exists. suggest_goal is deferred as Claude
-        // Code's ProposeGoal is.
+        // it where a desktop exists. suggest_goal is deferred: it is needed
+        // rarely, and only in the owner's own conversation.
         for name in ["os", "suggest_goal"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
@@ -2246,8 +2245,8 @@ pub(crate) mod tests {
 
     /// Which results context pressure clears, and the taint a result brings
     /// in, are each tool's own answers: file reads and changes, commands,
-    /// web searches and fetches are cleared (Claude Code's compactable set,
-    /// 2.1.280 m0460); memory, skills, plans, restore points, background
+    /// web searches and fetches are cleared (each can be run again); memory,
+    /// skills, plans, restore points, background
     /// output, mail and calendar never are; web content and mail are
     /// untrusted.
     #[tokio::test]

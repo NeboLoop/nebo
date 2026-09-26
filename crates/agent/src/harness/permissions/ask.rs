@@ -183,8 +183,7 @@ impl Ask {
     /// loosened by an answer, a deny is never loosened by one, giving an
     /// employee more room is answered each time, the company's day figures
     /// change only in the company layer, and a command that can't
-    /// be read has no rule to save (Claude Code offers none for a command it
-    /// can't analyse).
+    /// be read has no rule to save (no rule could be sure to cover it).
     pub fn allow_always_offered(&self, store: &db::Store) -> bool {
         let loosenable = match &self.case {
             AskCase::AskRule { rule_id } => store
@@ -616,14 +615,14 @@ impl Asks {
     }
 }
 
-/// Most rules one "Allow always" on a compound command saves (Claude Code's
-/// `MAX_SUGGESTED_RULES_FOR_COMPOUND`).
+/// Most rules one "Allow always" on a compound command saves, so one answer
+/// can't quietly open a long list of commands.
 const MAX_COMMAND_RULES: usize = 5;
 
 /// The standing allows "Allow always" writes, for this employee: the rule
 /// the ask's case names (§2.12.4). A shell command gets one rule per command
-/// it runs that needed the answer, the way Claude Code saves one per
-/// subcommand; `None` when one of them can't be read (no rule could cover
+/// it runs that needed the answer, so the same command matches again next
+/// time; `None` when one of them can't be read (no rule could cover
 /// it).
 pub fn allow_always_rules(store: &db::Store, ask: &Ask) -> Option<Vec<Rule>> {
     let t = &ask.target;
@@ -1179,8 +1178,7 @@ mod tests {
     }
 
     /// "Allow always" on a compound command saves one rule per command that
-    /// needed the answer, as Claude Code saves one per subcommand, and the
-    /// same command never asks again. The whole compound text, saved as one
+    /// needed the answer, and the same command never asks again. The whole compound text, saved as one
     /// rule, never matched again.
     #[test]
     fn allow_always_on_a_compound_command_saves_one_rule_per_command() {
@@ -1213,8 +1211,7 @@ mod tests {
     }
 
     /// A command that can't be read has no rule to save: the card offers
-    /// "This once" only, as Claude Code offers no rule for a command it
-    /// can't analyse.
+    /// "This once" only: no saved rule could be sure to cover it.
     #[test]
     fn an_unreadable_command_offers_no_allow_always() {
         let dir = tempfile::tempdir().unwrap();

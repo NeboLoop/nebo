@@ -3,10 +3,8 @@
 //! pick, the job's or a helper's speed), else the configured default, and
 //! any discrepancy (a name nobody knows, a provider that isn't loaded, a
 //! model that doesn't chat) sends [`DEFAULT_CHAT_MODEL`]. A failed call is
-//! retried on the same model (`model_call`), as Claude Code retries the main
-//! loop model and changes it only for an explicitly configured fallback
-//! (`src/services/api/withRetry.ts:320-360`, `src/query.ts:893-922`); Nebo
-//! configures none.
+//! retried on the same model (`model_call`): a model changes only for an
+//! explicitly configured fallback, and Nebo configures none.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -20,9 +18,8 @@ use crate::fuzzy::FuzzyMatcher;
 /// model, which Janus routes.
 pub const DEFAULT_CHAT_MODEL: &str = "janus/nebo-1";
 
-/// The window assumed for a model whose own is not known: Claude Code's
-/// `MODEL_CONTEXT_WINDOW_DEFAULT` (src/utils/context.ts:9,97), and the 200k
-/// every Janus pool reports.
+/// The window assumed for a model whose own is not known: the 200k every
+/// Janus pool reports, and the common window of current chat models.
 pub const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
 
 /// Capabilities or kinds that mark a model as not for chat.
@@ -395,7 +392,7 @@ mod tests {
         assert_eq!(selector.context_window("anthropic/claude-opus-4-6"), 1_000_000, "a direct provider keeps its catalog value");
     }
 
-    /// A model whose window nothing reported gets Claude Code's 200k default.
+    /// A model whose window nothing reported gets the 200k default.
     #[test]
     fn an_unknown_window_is_the_one_default() {
         let selector = ModelSelector::new(ModelRoutingConfig::default());

@@ -43,8 +43,8 @@ impl Machine {
     /// Run every step's verify command and rewrite the checkboxes from the
     /// exit codes. The model cannot tick a box; only a passing command can.
     /// Each command is a `run_command` call to the permission check first,
-    /// as every shell command is (Claude Code checks every command through
-    /// Bash's permissions): its rules, the shell limits and the safeguards
+    /// as every shell command is (a verify command is still a command): its
+    /// rules, the shell limits and the safeguards
     /// see it, and a step whose command the check refuses or parks did not
     /// run. A check that verifies nothing new is reported as an error so a
     /// stalled plan never counts as progress.
@@ -918,7 +918,7 @@ impl DynTool for WritePlanTool {
     }
 }
 
-/// The way out of Plan mode (Claude Code's ExitPlanMode): the plan written
+/// The way out of Plan mode: the plan written
 /// with write_plan goes to the owner on the one ask card; their approval
 /// switches the employee out of Plan mode and hands the approved plan back
 /// as the answer. The permission check decides when it may be called and
@@ -1007,8 +1007,8 @@ impl DynTool for ExitPlanModeTool {
 }
 
 /// Switch employee `agent_id` out of Plan mode: to the company's mode, or
-/// Automatic when the company itself plans (Claude Code restores the mode
-/// from before plan mode, else its default). An employee with no scope of
+/// Automatic when the company itself plans (leaving Plan mode must never
+/// land back in it). An employee with no scope of
 /// its own (the main one) is in the company's mode.
 fn leave_plan_mode(store: &db::Store, agent_id: &str) -> Result<(), types::NeboError> {
     use types::permissions::{Mode, Scope};

@@ -32,17 +32,15 @@ use types::permissions::Grant;
 use types::provenance::ProvenanceClass;
 
 /// Nesting depth cap. A helper at this depth has no helper tool; a launch
-/// from it is refused as a backstop. Claude Code 2.1.280's default
-/// (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, m0238 `o=3`; refused in m0480:
-/// "Subagent nesting limit reached").
+/// from it is refused as a backstop ("Subagent nesting limit reached"), so a
+/// helper that keeps delegating can't nest without end.
 pub const MAX_DEPTH: u8 = 3;
 
 /// Most helpers running at once in one conversation's tree: the owner's
 /// session, its helpers and theirs. A launch past it is refused, told not
-/// to retry. Claude Code 2.1.280's limit on the subagents a session runs at
-/// once (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, default 20, m0342 `aqn`;
-/// refused in m0480 `dn`: "Concurrent subagent limit reached. You can run N
-/// subagents at once. Do not retry."). It is a runaway brake on one tree,
+/// to retry ("Concurrent subagent limit reached. You can run N subagents at
+/// once. Do not retry."), so the model waits for results instead of
+/// relaunching. It is a runaway brake on one tree,
 /// not a width limit on model calls: those take permits from the bot's one
 /// adaptive pool (`crate::concurrency`), which stays the only brake on
 /// fan-out width (CODE_AUDITOR §15).
@@ -139,10 +137,8 @@ impl HelperKind {
     pub const ALL: [HelperKind; 3] = [Self::General, Self::Explore, Self::Plan];
 
     /// When the type fits, and the tools it has: its line in the helper
-    /// types listing. Claude Code 2.1.280's agent listing line is
-    /// `- type: whenToUse (Tools: …)` (`formatAgentLine`,
-    /// `src/tools/AgentTool/prompt.ts`), and these are its general-purpose,
-    /// Explore (m0342 `TJt`) and Plan (m0342 `JV`) lines, in our words.
+    /// types listing, rendered `- type: when to use (Tools: …)` so the model
+    /// picks a type by the job in front of it and knows what it can do.
     pub fn when_to_use(self) -> &'static str {
         match self {
             Self::General => "Researching open questions, searching when you aren't sure the first few tries will find \
@@ -262,10 +258,9 @@ pub fn on_surface(mode: &TurnMode, tool_name: &str) -> bool {
 const EXIT_TOOL: &str = "exit";
 
 /// The tool that proposes the owner's agreed goal. A goal is the owner's,
-/// agreed in their own conversation: a helper never proposes one, as
-/// Claude Code's ProposeGoal is refused in agent contexts (2.1.280 m1493:
-/// "ProposeGoal cannot be used in agent contexts") and is left off every
-/// agent's tools (m0254).
+/// agreed in their own conversation: a helper never proposes one. The tool
+/// is left off every helper's tools, and a call from a helper is refused as
+/// a backstop.
 const GOAL_TOOL: &str = "suggest_goal";
 
 /// Whether a turn in `mode` may make the call `target`. A helper's kind is
@@ -2125,8 +2120,7 @@ mod tests {
     }
 
     /// D18: a goal is the owner's. A helper is neither offered
-    /// suggest_goal nor allowed to call it (Claude Code: "ProposeGoal
-    /// cannot be used in agent contexts"); the owner's own turn is.
+    /// suggest_goal nor allowed to call it; the owner's own turn is.
     #[test]
     fn a_helper_never_proposes_a_goal() {
         for kind in HelperKind::ALL {

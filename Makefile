@@ -543,7 +543,7 @@ stage-ripgrep:
 #   make test-live FIXTURE=fixtures/tools/read-file.yaml
 #   make test-live-fast                   # program checks only, no claude CLI
 #
-# Prose assertions are graded by Claude Code (`claude -p`), so the CLI must be
+# Prose assertions are graded by the `claude` CLI (`claude -p`), so it must be
 # installed for `test-live`. `test-live-fast` skips the judge and decides from
 # structured `check:` blocks alone — deterministic and free, but silent on any
 # fixture that has no `check:`.
@@ -556,7 +556,7 @@ test-live: $(NEBO_CLI)
 	@curl -sf -m 3 http://$(TEST_SERVER)/health >/dev/null \
 		|| { echo "No Nebo on $(TEST_SERVER) — start one with 'make dev' first."; exit 1; }
 	@command -v claude >/dev/null \
-		|| { echo "Claude Code CLI not found — it grades the prose assertions. Use 'make test-live-fast' to skip the judge."; exit 1; }
+		|| { echo "claude CLI not found — it grades the prose assertions. Use 'make test-live-fast' to skip the judge."; exit 1; }
 ifdef FIXTURE
 	$(NEBO_CLI) test run --fixture $(FIXTURE) --server $(TEST_SERVER)
 else

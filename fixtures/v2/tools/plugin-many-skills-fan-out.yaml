@@ -11,8 +11,8 @@ description: |
 
   The tool round already runs independent calls of one response together
   (use_skill, find_tools and file reads are concurrency-safe), so the
-  cost was the model's shape, not the executor. What is right, as Claude
-  Code does it: learning across many skills is a helper's reading that
+  cost was the model's shape, not the executor. What is right: learning
+  across many skills is a helper's reading that
   comes back as a digest (several delegate calls in one response for
   independent slices), or the skills the job needs are loaded several per
   response. Either way the conversation stays open and the steps stay

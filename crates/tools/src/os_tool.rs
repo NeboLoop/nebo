@@ -716,9 +716,8 @@ impl DynTool for OsTool {
     /// Deferred on every bot, so the tools array stays one text everywhere
     /// and a computer without a desktop never carries this definition. The
     /// listing names it where a desktop exists (`desktop_available`), and
-    /// find_tools loads it. Claude Code defers the tools of an optional
-    /// surface the same way: listed by name, loaded on demand (2.1.280 m0342
-    /// `deferred_tools_delta`).
+    /// find_tools loads it: an optional surface is listed by name and loaded
+    /// on demand.
     fn should_defer(&self) -> bool {
         true
     }

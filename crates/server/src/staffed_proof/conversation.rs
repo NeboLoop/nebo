@@ -841,8 +841,7 @@ async fn an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_i
 }
 
 /// Parity 1.9: the owner's next message answers the question card that is
-/// open in the conversation, as typing answers Claude Code's
-/// AskUserQuestion. The parked call gets the message as its answer and the
+/// open in the conversation. The parked call gets the message as its answer and the
 /// turn goes on; it is never queued behind a card nobody will click.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_owners_next_message_answers_the_open_question() {

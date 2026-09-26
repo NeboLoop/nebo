@@ -138,10 +138,9 @@ impl AnthropicProvider {
         };
 
         // Exactly one message marker, on the last message: a plain-text
-        // message becomes a text block to carry it (Claude Code 2.1.280,
-        // `addCacheBreakpoints` / `userMessageToMessageParam` in
-        // `src/services/api/claude.ts:588-620,3063-3091`). The tools carry
-        // none: they come before the system prompt, whose marker covers them.
+        // message becomes a text block to carry it, so each step reads the
+        // previous step's whole prefix from the cache. The tools carry none:
+        // they come before the system prompt, whose marker covers them.
         mark_last_message(&mut messages);
 
         // Map the cross-provider ToolChoice to Anthropic's shape (Auto → omitted).
@@ -944,7 +943,7 @@ mod tests {
         }
     }
 
-    /// Claude Code's placement: the system prompt's marker, and exactly one
+    /// Cache marker placement: the system prompt's marker, and exactly one
     /// on the last message, which a plain-text message carries as a text
     /// block. Before: none when the last row was plain text, and one on the
     /// last tool.

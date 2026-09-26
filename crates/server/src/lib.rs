@@ -2941,7 +2941,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/health", axum::routing::get(health_handler))
         .route("/ready", axum::routing::get(ready_handler))
         .route("/server.json", axum::routing::get(spa::server_json))
-        // MCP endpoint for CLI providers (Claude Code, Codex, Gemini)
+        // MCP endpoint for CLI providers (claude, codex, gemini)
         .route(
             "/agent/mcp",
             axum::routing::post(handlers::mcp_server::agent_mcp_handler)

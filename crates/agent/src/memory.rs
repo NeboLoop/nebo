@@ -580,8 +580,8 @@ fn build_existing_memories_section(store: &Store, user_id: &str) -> String {
 const WINDOW_SHARE: f64 = 0.5;
 
 /// The conversation the extraction reads: every message whole, the tool
-/// calls and their results with them (Claude Code's extraction reads the
-/// messages since its cursor as they are), newest first until half the
+/// calls and their results with them (the messages since the cursor, as
+/// they are, since a summary drops the facts), newest first until half the
 /// extraction model's window is used, then put back in order. Rows the
 /// platform wrote for the model (`isMeta` reminders) are not the
 /// conversation. The newest message always goes in, cut to fit when alone
@@ -1118,8 +1118,8 @@ mod tests {
         }
     }
 
-    /// B15: extraction reads the messages as they are, as Claude Code's
-    /// does: a long message whole, the tool calls and their results, and
+    /// B15: extraction reads the messages as they are: a long message whole,
+    /// the tool calls and their results, and
     /// more than the newest 15k characters when the window allows; the
     /// platform's own rows are not the conversation.
     #[test]

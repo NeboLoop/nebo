@@ -90,10 +90,9 @@ impl EndCheck for WorkflowContractCheck {
 pub const ANSWER_SHAPE_RETRIES: u8 = 2;
 
 /// A helper whose caller reads its final answer as data: the answer must be
-/// one JSON object matching the schema (Claude Code's structured-output
-/// Stop enforcement, `registerStructuredOutputEnforcement`, with the answer
-/// as the turn's final text rather than a per-task tool, so the tool list
-/// stays the one list).
+/// one JSON object matching the schema, checked when the helper stops and
+/// sent back to it when it doesn't match. The answer is the turn's final
+/// text rather than a per-task tool, so the tool list stays the one list.
 pub struct AnswerShapeCheck(pub std::sync::Arc<serde_json::Value>);
 
 /// The JSON object a final answer carries, if it carries one.

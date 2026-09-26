@@ -13,7 +13,7 @@ use crate::registry::{DynTool, Registry, ToolResult};
 
 pub const FIND_TOOLS: &str = "find_tools";
 
-/// Score weights (Claude Code's): a query word equal to a word of the name,
+/// Score weights: a query word equal to a word of the name,
 /// part of one, a word of the search hint, found in the description.
 const NAME_PART_EXACT: i32 = 10;
 const NAME_PART_PARTIAL: i32 = 5;

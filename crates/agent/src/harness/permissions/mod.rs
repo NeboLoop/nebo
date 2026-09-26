@@ -258,8 +258,8 @@ fn decide_rules(cx: &CheckCx<'_>, t: &Target) -> Result<Decision, Automatic> {
     if t.effects.widens {
         return Ok(Decision::Ask { case: AskCase::Widens });
     }
-    // An ask rule asks in every mode, Full Access included, as Claude Code's
-    // bypass mode still honours an ask rule.
+    // An ask rule asks in every mode, Full Access included: the owner wrote
+    // it to be asked, and a mode is not a reason to skip him.
     if let Some((rule, Effect::Ask)) = decided {
         return Ok(Decision::Ask { case: AskCase::AskRule { rule_id: rule.id.clone() } });
     }

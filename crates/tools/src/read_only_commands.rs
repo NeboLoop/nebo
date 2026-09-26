@@ -1,16 +1,12 @@
-//! Which shell commands only read. A port of Claude Code 2.1.280's
-//! read-only command validation (`src/tools/BashTool/readOnlyValidation.ts`,
-//! `src/utils/shell/readOnlyCommandValidation.ts`,
-//! `src/tools/BashTool/sedValidation.ts`) to the words of one command as the
+//! Which shell commands only read, judged on the words of one command as the
 //! shell splitter reads them ([`crate::policy::subcommands`]): a command is
 //! read-only when its name and every flag are on the allowlist, or it is one
-//! of the commands that read whatever their arguments. The `gh` and `aki`
-//! entries Claude Code keeps for its own staff are not ported.
+//! of the commands that read whatever their arguments.
 //!
 //! The words come from a real shell grammar with quoting removed, and a word
 //! only known when the command runs (`$X`, `$(…)`, a glob) never reaches
-//! here, so Claude Code's defences against its own tokenizer (the `$`,
-//! brace and backtick checks) have nothing to catch.
+//! here, so no `$`, brace or backtick checks are needed: nothing unexpanded
+//! can slip through.
 
 /// What a flag takes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -34,8 +30,9 @@ struct Config {
     flags: &'static [(&'static str, Arg)],
 }
 
-/// Claude Code's `COMMAND_ALLOWLIST` with the git, docker, ripgrep and
-/// pyright tables spread in, the longest command first.
+/// The read-only commands and the flags each may take, git, docker, ripgrep
+/// and pyright included, the longest command first (so `git stash list`
+/// matches before `git`).
 const ALLOWLIST: &[Config] = &[
     Config { command: "git stash list", double_dash: true, flags: &[("--oneline", Arg::None), ("--graph", Arg::None), ("--decorate", Arg::None), ("--no-decorate", Arg::None), ("--date", Arg::String), ("--relative-date", Arg::None), ("--all", Arg::None), ("--branches", Arg::None), ("--tags", Arg::None), ("--remotes", Arg::None), ("--max-count", Arg::Number), ("-n", Arg::Number)] },
     Config { command: "git config --get", double_dash: true, flags: &[("--local", Arg::None), ("--global", Arg::None), ("--system", Arg::None), ("--worktree", Arg::None), ("--default", Arg::String), ("--type", Arg::String), ("--bool", Arg::None), ("--int", Arg::None), ("--bool-or-int", Arg::None), ("--path", Arg::None), ("--expiry-date", Arg::None), ("-z", Arg::None), ("--null", Arg::None), ("--name-only", Arg::None), ("--show-origin", Arg::None), ("--show-scope", Arg::None)] },
@@ -231,9 +228,8 @@ fn valid(value: &str, arg: Arg) -> bool {
     }
 }
 
-/// The per-command checks Claude Code runs after the flags
-/// (`additionalCommandIsDangerousCallback`, and hostname's `regex`): the
-/// shapes of an allowlisted command that write after all.
+/// The per-command checks after the flags: the shapes of an allowlisted
+/// command that write after all.
 fn writes_anyway(command: &str, args: &[&str], words: &[&str]) -> bool {
     let positional = |a: &&&str| !a.starts_with('-');
     match command {
@@ -429,7 +425,7 @@ fn substitution(expr: &str) -> bool {
     flags.chars().all(|c| "gpimIM123456789".contains(c)) && flags.chars().filter(|c| c.is_ascii_digit()).count() <= 1
 }
 
-/// The commands Claude Code checks by shape (`READONLY_COMMAND_REGEXES`).
+/// The commands checked by shape rather than by a flag table.
 fn by_shape(words: &[&str]) -> bool {
     let args = &words[1..];
     let flag = |a: &str| a.starts_with('-');

@@ -323,8 +323,8 @@ pub enum TurnInput {
     /// The owner's `/compact`: the turn checkpoints its first step the way
     /// the turn's own checkpoint does (same request, hooks and restore),
     /// with the owner's instructions for the summary, and ends. It waits for
-    /// a running turn to finish instead of joining it (Claude Code queues
-    /// `/compact` behind the running query).
+    /// a running turn to finish instead of joining it, so the summary never
+    /// cuts a turn in half.
     Compact { instructions: String },
 }
 

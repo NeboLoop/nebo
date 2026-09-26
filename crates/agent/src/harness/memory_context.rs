@@ -1,9 +1,8 @@
 //! Memory in the turn: the employee-memory section of the per-session
 //! prompt (WP2.2) and the relevant-memories prefetch (WP2.7).
 //!
-//! The prefetch works the way Claude Code's relevant-memory prefetch works:
-//! the search starts once per turn at Prepare and runs while the turn's
-//! steps go on. Each step asks whether it has finished, without waiting;
+//! The prefetch never holds up a step: the search starts once per turn at
+//! Prepare and runs while the turn's steps go on. Each step asks whether it has finished, without waiting;
 //! the first step that finds it finished writes a `relevant_memories`
 //! attachment, and every later step asks nothing. The attachment is a
 //! persisted conversation row, so the recalled memories stay visible on

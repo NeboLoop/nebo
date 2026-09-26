@@ -2,8 +2,8 @@
 //! the employee's job, and the money a standing allow covers.
 //!
 //! Rules live at two scopes, company defaults and one employee's overrides.
-//! A deny from either scope decides, as a deny from any of Claude Code's
-//! rule sources does: an employee's rule never undoes a company deny.
+//! A deny from either scope decides: an employee's rule never undoes a
+//! company deny.
 //! Otherwise, when any employee-scope rule matches a call, the employee
 //! scope decides; else the company's does. Within the deciding scope ask
 //! beats allow; a more specific field never outranks a broader deny.
@@ -12,7 +12,7 @@
 //! and `rm x`): denied when any is denied, asked when any asks, allowed only
 //! when every one is allowed. A command that can't be read before it runs
 //! (`$CMD -rf x`, `git $SUB`) and that a deny or ask rule could name is
-//! asked about, as Claude Code asks about a command it can't analyse; a deny
+//! asked about, since it may be the denied command in disguise; a deny
 //! the known words already match still refuses it.
 
 use std::path::{Path, PathBuf};
@@ -350,7 +350,7 @@ mod tests {
             ("\\rm -rf x", Some(Effect::Deny)),
             ("git push && rm -rf x", Some(Effect::Deny)),
             // What can't be read may be the denied command: it is asked
-            // about, as Claude Code asks about a command it can't analyse.
+            // about rather than guessed at.
             // A deny its known words already match still refuses it.
             ("$CMD -rf x", Some(Effect::Ask)),
             ("ls &&", Some(Effect::Ask)),
@@ -398,7 +398,7 @@ mod tests {
 
     /// A command that can't be read and that a deny of either scope could
     /// name is asked about, even where the job's allow covers every command
-    /// (Claude Code asks about a command it can't analyse). A command the
+    /// (it may be the denied command in disguise). A command the
     /// deny doesn't name, with nothing unread, runs.
     #[test]
     fn an_unreadable_command_a_deny_could_name_asks() {

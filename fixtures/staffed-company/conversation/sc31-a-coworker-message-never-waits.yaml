@@ -2,8 +2,7 @@ id: sc31-a-coworker-message-never-waits
 name: "SC31 — A coworker message never waits"
 description: |
   send_message to a coworker returns a receipt at once, is concurrency-safe, and the reply
-  comes back to the sender's session as a notification that wakes it (B1; Claude Code
-  SendMessage).
+  comes back to the sender's session as a notification that wakes it (B1).
 target_component: staffed-company
 proof: staffed_proof::conversation::a_coworker_message_returns_at_once_and_the_reply_wakes_the_sender
 conversation: []

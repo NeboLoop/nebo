@@ -32,8 +32,8 @@ pub enum Cover {
 }
 
 /// A command's second word that names a subcommand (`commit`, `run`,
-/// `compose`), not a flag, a file, a path or a number — the shape Claude
-/// Code keeps in a saved prefix (`getSimpleCommandPrefix`).
+/// `compose`), not a flag, a file, a path or a number — the shape kept in a
+/// saved prefix, so a rule covers the action and not one file.
 fn looks_like_subcommand(word: &str) -> bool {
     let mut parts = word.split('-');
     let first = parts.next().unwrap_or("");
@@ -80,8 +80,8 @@ impl Subcommand {
         }
     }
 
-    /// The prefix an "Allow always" saves for this command, as Claude Code
-    /// suggests one: the command and its subcommand (`git push`) when the
+    /// The prefix an "Allow always" saves for this command: the command and
+    /// its subcommand (`git push`) when the
     /// second word names one, else the command exactly. `None` when no allow
     /// could ever cover it (an unknown word, a variable prefix, nothing run).
     pub fn rule_prefix(&self) -> Option<String> {
@@ -222,8 +222,7 @@ fn inline_script(words: &[Option<String>]) -> Option<Option<String>> {
     words.get(i).cloned()
 }
 
-/// Whether a shell call only reads, as Claude Code's `checkReadOnlyConstraints`
-/// judges it (`src/tools/BashTool/readOnlyValidation.ts:1876`): every command
+/// Whether a shell call only reads: every command
 /// it runs is fully known, sets no variable, writes no file through a
 /// redirect and is read-only by [`crate::read_only_commands`]; and it doesn't
 /// pair `cd` with `git` (a changed directory can carry git hooks).
@@ -541,7 +540,7 @@ mod tests {
         assert_eq!(sub(Vec::new(), false).covered_by("rm", false), Cover::No, "an empty command runs nothing");
     }
 
-    /// The prefix "Allow always" saves, as Claude Code suggests one.
+    /// The prefix "Allow always" saves: the command and its subcommand.
     #[test]
     fn a_saved_prefix_is_the_command_and_its_subcommand() {
         let prefix = |cmd: &str| subcommands(cmd).into_iter().map(|s| s.rule_prefix()).collect::<Vec<_>>();
@@ -628,8 +627,8 @@ mod tests {
         assert!(!is_sed_in_place("echo sed -i"));
     }
 
-    /// D2: a shell call is read-only when every command it runs is, as
-    /// Claude Code's classifier judges each one, and none writes a file.
+    /// D2: a shell call is read-only when every command it runs is, each
+    /// judged on its own, and none writes a file.
     #[test]
     fn read_only_shell_calls_are_recognised_per_command() {
         let reads = [

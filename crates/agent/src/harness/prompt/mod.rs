@@ -9,13 +9,11 @@
 //! change (`events::SessionFacts`): the employee's identity (name,
 //! personality, SOUL.md, rules, AGENT.md), a helper's role and parent, a
 //! workflow activity's instructions, the environment, the model and mode,
-//! the employee's memory and the session context. Claude Code 2.1.280 does
-//! the same: one system prompt for every session, and CLAUDE.md with the
-//! rest of the user context sent as a `<system-reminder>` message at the
-//! start of the conversation (`prependUserContext` in `src/utils/api.ts`,
-//! module m0269) and re-sent as a replacement when it changes (module
-//! m0342: "The session context has changed; these values replace the
-//! earlier ones").
+//! the employee's memory and the session context. One system prompt serves
+//! every session, so its cached prefix is shared; the per-session context is
+//! sent as a `<system-reminder>` message at the start of the conversation
+//! and re-sent as a replacement when it changes ("The session context has
+//! changed; these values replace the earlier ones").
 
 pub mod inputs;
 pub mod sections;
@@ -193,7 +191,8 @@ mod tests {
     }
 
     /// D16: searching yourself is for a known target; a wide search goes to
-    /// an explore helper (Claude Code's system prompt). The old line sent
+    /// an explore helper, which keeps the raw results out of this
+    /// conversation. The old line sent
     /// every search to run_command.
     #[test]
     fn wide_searches_go_to_an_explore_helper() {
@@ -204,9 +203,9 @@ mod tests {
         assert!(!text.contains("including finding files (find) and searching contents (grep)"));
     }
 
-    /// D17: a general helper is told the task is its own (Claude Code's
-    /// general-purpose agent: "do not re-delegate your entire assignment");
-    /// explore and plan helpers can't delegate, so they aren't.
+    /// D17: a general helper is told the task is its own, so it doesn't
+    /// hand its whole assignment to another helper; explore and plan helpers
+    /// can't delegate, so they aren't.
     #[test]
     fn a_general_helper_does_its_own_task() {
         let rule = "This task is yours: do the work directly. Never hand the whole of it to another helper.";
@@ -221,10 +220,9 @@ mod tests {
 
     /// 2026-09-26: an employee loaded 28 skills one step at a time and never
     /// delegated. The prompt says independent calls go in one response, with
-    /// a worked example (Claude Code's "Maximize use of parallel tool
-    /// calls"), and that learning across many skills or files is a helper's
-    /// reading that comes back as a digest, while one known file or skill is
-    /// read directly (its Agent section and "When NOT to use").
+    /// a worked example, and that learning across many skills or files is a
+    /// helper's reading that comes back as a digest, while one known file or
+    /// skill is read directly.
     #[test]
     fn independent_calls_go_together_and_surveys_go_to_helpers() {
         let text = system_prompt();

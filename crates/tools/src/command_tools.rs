@@ -107,9 +107,8 @@ impl DynTool for RunCommandTool {
         str_arg(input, "command").map(|c| RuleField::CommandPrefix(c.to_string()))
     }
 
-    /// A command that only reads, by Claude Code's classifier
-    /// (`BashTool.isReadOnly`, `src/tools/BashTool/BashTool.tsx:434-440`):
-    /// it runs alongside other reads, Plan mode and the explore and plan
+    /// A command that only reads (`policy::is_read_only`): it runs
+    /// alongside other reads, Plan mode and the explore and plan
     /// helpers may run it, and Ask mode doesn't ask.
     fn read_only(&self, input: &Value) -> bool {
         str_arg(input, "command").is_some_and(crate::policy::is_read_only)

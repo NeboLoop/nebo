@@ -154,8 +154,8 @@ async fn builder_removed_capability_not_granted() {
     assert!(matches!(decision(&store, "lead-finder", "mail"), Decision::Allow { .. }));
 }
 
-/// `company-deny-beats-employee-allow`: a deny from any scope decides, as a
-/// deny from any of Claude Code's rule sources does. The company turns the
+/// `company-deny-beats-employee-allow`: a deny from any scope decides. The
+/// company turns the
 /// shell off; an employee's own allow (its job, or an "Allow always") never
 /// turns it back on, and an answer the owner gave once never runs it.
 #[tokio::test]

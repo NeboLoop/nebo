@@ -11,8 +11,8 @@
 //!   one call on the turn's aux model route, which answers JSON verdicts with
 //!   a reason.
 //! - **Both down:** the call proceeds, [`Verdict::Unjudged`], and the check
-//!   records it unreviewed ("the permission check couldn't run"), as Claude
-//!   Code proceeds when its classifier can't answer.
+//!   records it unreviewed ("the permission check couldn't run"): an outage
+//!   of the judges must not stop the employee's work.
 //!
 //! Only undecidable calls reach the judges: money, new recipients,
 //! irreversible actions, the job and untrusted input are decided by code

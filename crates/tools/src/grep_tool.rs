@@ -66,7 +66,7 @@ impl GrepTool {
         let limit = if limit == 0 { 250 } else { limit };
 
         // multiline: `.` matches newlines and a pattern may span lines
-        // (rg -U --multiline-dotall), the same switch as Claude Code's Grep.
+        // (rg -U --multiline-dotall), the switch models already know.
         let matcher = match RegexMatcherBuilder::new()
             .case_insensitive(case_insensitive)
             .multi_line(multiline)

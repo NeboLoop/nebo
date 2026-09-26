@@ -7,10 +7,8 @@
 //! activity, mode and channel) and a load only appends, so the tools array,
 //! the head of the cached prefix, only ever grows at its end. A tool a run
 //! may not call stays declared and the one permission check refuses the
-//! call, as Claude Code's fork path does: the child sends the parent's exact
-//! tool array for a cache-identical prefix and a disallowed call is refused
-//! when it is made (2.1.280 m0480 @26732 `useExactTools`, and the
-//! `subagent_recursive_fork` refusal; `src/tools/AgentTool/forkSubagent.ts`).
+//! call: a child run sends the parent's exact tool array, so its prefix is
+//! cache-identical, and a disallowed call is refused when it is made.
 //!
 //! Everything else is deferred: listed by name, narrowed to what the run may
 //! use (an employee's job names its tools in its session context,
@@ -18,9 +16,8 @@
 //! arriving or leaving (a plugin connecting, an MCP server going away) and a
 //! loaded tool whose definition changed (an operation tool gaining a second
 //! provider) are told in the listing delta, never by changing the declared
-//! array: Claude Code 2.1.280 re-announces a surfaced tool whose definition
-//! changed as a replacement in its `deferred_tools_delta` (m0342 @3120000,
-//! `replacedNames`).
+//! array: a surfaced tool whose definition changed is re-announced as a
+//! replacement in the delta, so the cached prefix stays valid.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 

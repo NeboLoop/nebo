@@ -64,7 +64,7 @@ fn save(dir: &Path, content: &str) -> std::io::Result<PathBuf> {
 }
 
 /// Save an old result cleared under context pressure and return what the
-/// model sees in its place, as Claude Code writes it: where it was saved and
+/// model sees in its place: where it was saved and
 /// how to read it. `None` when it couldn't be saved.
 pub fn persist_cleared(dir: &Path, content: &str) -> Option<String> {
     match save(dir, content) {

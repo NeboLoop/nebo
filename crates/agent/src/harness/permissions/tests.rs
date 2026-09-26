@@ -233,8 +233,8 @@ async fn credentials_never_leave_in_an_outbound_call() {
 }
 
 /// Full Access runs everything else without asking, but an ask rule still
-/// asks and a deny rule still refuses, as Claude Code's bypass mode honours
-/// ask and deny rules (m0342 `jLt`: the ask rules return before the mode).
+/// asks and a deny rule still refuses: the rules are checked before the
+/// mode, so no mode skips a rule the owner wrote.
 #[tokio::test]
 async fn full_access_keeps_ask_and_deny_rules() {
     let (_d, store) = store();
@@ -276,9 +276,8 @@ async fn plan_mode_is_read_only_until_approved() {
 }
 
 /// D11 (parity 7.3, 7.4): Plan mode writes its plan and has a way out.
-/// The plan document goes through (Claude Code allows the plan file); the
-/// way out always asks the owner, and only in Plan mode (Claude Code's
-/// ExitPlanMode asks "Exit plan mode?" and refuses outside plan mode).
+/// The plan document goes through; the way out always asks the owner
+/// ("Exit plan mode?"), and is refused outside Plan mode.
 #[tokio::test]
 async fn plan_mode_writes_its_plan_and_asks_the_owner_to_leave() {
     let (_d, store) = store();

@@ -838,9 +838,8 @@ impl tools::GoalSuggester for GoalSuggestions {
         ask_owner: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async move {
-            // Claude Code 2.1.280 refuses a proposal in plan mode (m1493:
-            // "Plan mode is active, so a goal cannot be proposed yet. Keep
-            // planning; propose the goal after the plan is approved.").
+            // A proposal is refused in plan mode: the goal comes after the
+            // owner approves the plan, not before.
             if ctx.grant.as_ref().is_some_and(|g| g.mode == types::permissions::Mode::Plan) {
                 return Err("Plan mode is on, so a goal can't be proposed yet. Keep planning; propose it once the owner approves the plan.".to_string());
             }

@@ -643,7 +643,7 @@ mod proxy_tests {
         serde_json::from_value(json).unwrap()
     }
 
-    /// Claude Code's rules for an MCP tool: the description cut at 2,048
+    /// The rules for an MCP tool: the description cut at 2,048
     /// characters, `readOnlyHint` makes it read-only (and so parallel),
     /// `_meta` can load it always, name its search words and its result
     /// size; with no hints it is a deferred writer.

@@ -144,14 +144,13 @@ pub struct CheckpointContext<'a> {
     pub hooks: &'a [Box<dyn PreCheckpointHook>],
     pub restore: RestoreState<'a>,
     /// What the owner asked the summary to keep or focus on (`/compact
-    /// <instructions>`, Claude Code's "Additional Instructions").
+    /// <instructions>`), added to the summary prompt as extra instructions.
     pub instructions: Option<&'a str>,
     /// For the turn's own checkpoints: the threshold the conversation after
-    /// the checkpoint must be under, or the checkpoint is not applied
-    /// (Claude Code's `trySessionMemoryCompaction` returns null when
-    /// `postCompactTokenCount >= autoCompactThreshold`,
-    /// `src/services/compact/sessionMemoryCompact.ts:602-614`). None for
-    /// the owner's `/compact`, which has no such check.
+    /// the checkpoint must be under, or the checkpoint is not applied: a
+    /// checkpoint that leaves the request still at or over the threshold
+    /// would fire again on the next step, so it counts as a failure instead
+    /// of looping. None for the owner's `/compact`, which has no such check.
     pub fit_under: Option<usize>,
     /// What the next request carries besides the conversation (the system
     /// prompt and the tools), counted with the checkpoint's rows against
@@ -227,17 +226,16 @@ pub const MAX_FAILURES: u8 = 3;
 
 /// When the turn takes a checkpoint for itself. It is due when the request
 /// passes the window less the summary's output room (the model's output
-/// cap, at most 20k) and a 13k buffer: Claude Code's `getAutoCompactThreshold`
-/// on the model's own window (`src/services/compact/autoCompact.ts:33-49,
-/// 72-91`). After three failures in a row the breaker trips and neither the
-/// threshold nor an overflow tries again until a checkpoint succeeds
-/// (`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES`, `autoCompact.ts:70,259-264,
-/// 338-349`); a checkpoint that would leave the conversation at the
+/// cap, at most 20k) and a 13k buffer, measured on the model's own window,
+/// so the summary call always has room to run. After three failures in a
+/// row the breaker trips and neither the threshold nor an overflow tries
+/// again until a checkpoint succeeds, so a conversation that can't be
+/// summarised doesn't spend a summary call on every step; a checkpoint that
+/// would leave the conversation at the
 /// threshold is not applied and is one of those failures. The owner's
 /// `/compact` always runs. The summary call itself goes straight to the
-/// provider, never through a step, so it can't trigger a checkpoint
-/// (Claude Code's recursion guard on the `compact` query source,
-/// `autoCompact.ts:169-173`).
+/// provider, never through a step, so it can't trigger a checkpoint of its
+/// own (no recursion).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Trigger {
     failures: u8,
@@ -303,8 +301,8 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
 
     // The deferred tools loaded so far carry over on the boundary.
     // The summary is the model's, never a message from the owner: the row
-    // is hidden from his thread (`isMeta`), as Claude Code's summary message
-    // is `isVisibleInTranscriptOnly` (`src/services/compact/compact.ts:612-622`).
+    // is hidden from his thread (`isMeta`): the model reads it, the owner's
+    // chat never shows it as something he said.
     let mut metadata = serde_json::json!({
         "checkpoint": true,
         "isMeta": true,
@@ -333,9 +331,9 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
             "the checkpoint would leave the conversation at {after} tokens, not under the {threshold} threshold"
         ));
     }
-    // The owner sees one quiet marker, Claude Code's `compact_boundary`
-    // system message (`src/utils/messages.ts:4530-4555`). It is written
-    // before the boundary, so the model's conversation never holds it.
+    // The owner sees one quiet marker that the conversation was
+    // summarised here. It is written before the boundary, so the model's
+    // conversation never holds it.
     let marker = serde_json::json!({ MARKER_KEY: true, "reason": why.as_str() });
     cx.sessions
         .append_message(cx.session_id, "system", BOUNDARY_MARKER, None, None, Some(&marker.to_string()))
@@ -393,10 +391,10 @@ async fn summarize(cx: &CheckpointContext<'_>) -> Result<(String, bool), String>
         // Everything but the messages is the step's request as it was sent:
         // the tools, the tool choice and the output room are part of what
         // the provider caches on, so the summary reads the step's cached
-        // prefix (Claude Code 2.1.280 sends its compact fork with the main
-        // thread's params and no output cap of its own, and refuses a tool
-        // call; `src/services/compact/compact.ts:1178-1195`). A tool call
-        // instead of a summary fails the checkpoint (`call`).
+        // prefix: the summary is a fork of the main request with the same
+        // params and no output cap of its own, so it costs a cache read, not
+        // a fresh prompt. A tool call instead of a summary fails the
+        // checkpoint (`call`).
         let req = ChatRequest {
             messages,
             trace: ai::RequestTrace {
@@ -1043,10 +1041,8 @@ mod tests {
     }
 
     /// The checkpoint is a hidden row (the model's) and one quiet boundary
-    /// marker (the owner's), as Claude Code writes a `compact_boundary`
-    /// system message the transcript shows and a summary message it hides
-    /// (`src/services/compact/compact.ts:596-622`,
-    /// `src/utils/messages.ts:4530-4555`). The marker sits before the
+    /// marker (the owner's): the transcript shows the marker and hides the
+    /// summary. The marker sits before the
     /// boundary, so the model never reads it; the summary is never shown to
     /// the owner as a message from him.
     #[tokio::test]

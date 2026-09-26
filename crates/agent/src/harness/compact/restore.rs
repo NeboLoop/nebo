@@ -27,8 +27,8 @@ pub const SKILLS_TOKENS: usize = 25_000;
 const CUT_NOTE: &str = "\n…(cut to fit after the checkpoint; read it again for the rest)";
 
 /// Work started before the checkpoint that has not finished: a helper or a
-/// background command (Claude Code's post-compact `task_status` rows for
-/// running agents and background shells).
+/// background command. The summary may not mention it, so it is told again
+/// after the checkpoint, or the model would start it a second time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunningWork {
     pub id: String,
@@ -59,7 +59,7 @@ impl RunningWork {
     }
 
     /// What the model is told: it is still running, not to start it again,
-    /// and how it hears the end (Claude Code's words, m0342 `task_status`).
+    /// and how it hears the end.
     pub fn text(&self) -> String {
         match &self.kind {
             WorkKind::Helper => format!(
