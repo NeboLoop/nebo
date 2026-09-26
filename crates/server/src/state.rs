@@ -217,6 +217,9 @@ pub struct AppState {
     /// file or directory"); and an agent install re-ran itself plus every dep,
     /// flashing the install modal once per echo (2026-09-17).
     pub codes_in_flight: Arc<crate::codes::InFlightCodes>,
+    /// This computer's host: the coding agents the owner hires here run in
+    /// Nebo itself. `None` where this user has no home or data folder.
+    pub local_host: Option<Arc<ai::LocalHost>>,
 }
 
 impl AppState {

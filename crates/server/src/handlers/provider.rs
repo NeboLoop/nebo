@@ -12,8 +12,13 @@ use crate::state::AppState;
 /// keeps what startup registers (the linked provider included). CLIs are
 /// re-detected live, so toggling a CLI provider works even when the app was
 /// launched from Finder/Start Menu with a minimal PATH.
-pub(crate) async fn reload_providers(store: &Arc<db::Store>, cfg: &config::Config, harness: &agent::Harness) {
-    let providers = crate::build_providers(store, cfg, Some(&config::detect_all_clis()));
+pub(crate) async fn reload_providers(
+    store: &Arc<db::Store>,
+    cfg: &config::Config,
+    harness: &agent::Harness,
+    local_host: Option<&Arc<ai::LocalHost>>,
+) {
+    let providers = crate::build_providers(store, cfg, Some(&config::detect_all_clis()), local_host);
     info!(count = providers.len(), "reloading providers");
     harness.reload_providers(providers).await;
 
@@ -67,7 +72,7 @@ pub async fn create_provider(
         .map_err(to_error_response)?;
 
     // Reload providers on the runner
-    reload_providers(&state.store, &state.config, &state.harness).await;
+    reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
 
     Ok(Json(serde_json::json!(profile)))
 }
@@ -154,7 +159,7 @@ pub async fn update_provider(
     }
 
     // Reload providers on the runner
-    reload_providers(&state.store, &state.config, &state.harness).await;
+    reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
 
     let updated = state
         .store
@@ -173,7 +178,7 @@ pub async fn delete_provider(
         .delete_auth_profile(&id)
         .map_err(to_error_response)?;
     // Reload providers on the runner
-    reload_providers(&state.store, &state.config, &state.harness).await;
+    reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
     Ok(Json(serde_json::json!({"success": true})))
 }
 
@@ -543,7 +548,7 @@ pub async fn update_model(
 
     // Reload providers so model toggle takes effect immediately
     // (e.g., disabling all Janus models removes the Janus provider)
-    reload_providers(&state.store, &state.config, &state.harness).await;
+    reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
 
     Ok(Json(serde_json::json!({
         "message": format!("Model {} updated", model_id),
@@ -571,7 +576,7 @@ pub async fn update_cli_provider(
         .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
 
     // Reload providers so the toggle takes effect immediately
-    reload_providers(&state.store, &state.config, &state.harness).await;
+    reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
 
     Ok(Json(serde_json::json!({
         "message": format!("CLI provider {} updated", cli_id),
@@ -880,7 +885,7 @@ mod reload_tests {
             false,
         )
         .unwrap();
-        super::reload_providers(&store, &cfg, &harness).await;
+        super::reload_providers(&store, &cfg, &harness, None).await;
 
         let ids: Vec<String> = harness.providers().read().await.iter().map(|p| p.id().to_string()).collect();
         assert!(ids.iter().any(|id| id == "janus"), "Janus is live after a code pairing: {ids:?}");

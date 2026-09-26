@@ -2989,6 +2989,7 @@
 		"removeItem": "Remove {item}",
 		"hireFromApps": "Hire from another app",
 		"linkedLede": "They keep working on the computer they run on.",
+		"thisComputer": "This computer",
 		"offline": "Offline",
 		"linkedFailed": "Couldn't hire from {bot}. Try again.",
 		"linkedModeTitle": "What coding agents may do without asking",

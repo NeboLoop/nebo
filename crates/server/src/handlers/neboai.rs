@@ -259,7 +259,7 @@ pub async fn oauth_callback(
     }
 
     // Reload AI providers so Janus is available immediately
-    super::provider::reload_providers(&app_state.store, &app_state.config, &app_state.harness).await;
+    super::provider::reload_providers(&app_state.store, &app_state.config, &app_state.harness, app_state.local_host.as_ref()).await;
 
     // Mark flow as completed
     flow.email = user_info.email.clone();

@@ -2821,7 +2821,7 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
     .map_err(|e| NeboError::Internal(format!("store profile: {e}")))?;
     // Janus is live the moment the account is saved, as the OAuth door
     // leaves it — never only after a restart.
-    crate::handlers::provider::reload_providers(&state.store, &state.config, &state.harness).await;
+    crate::handlers::provider::reload_providers(&state.store, &state.config, &state.harness, state.local_host.as_ref()).await;
 
     // 3. Activate connection
     activate_neboai(state).await?;
