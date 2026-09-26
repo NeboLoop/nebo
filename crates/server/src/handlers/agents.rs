@@ -690,8 +690,8 @@ pub async fn create_agent(
     // Hire from a linked bot: the employee's brain is an agent on a linked
     // OpenClaw or Hermes install, driven through the link's chat contract.
     if let Some(linked) = body.get("linked") {
-        let (bot_id, agent_id) = linked_target(linked).map_err(to_error_response)?;
-        return create_linked_agent(state, &bot_id, &agent_id).await;
+        let (bot_id, agent_id, mode) = linked_target(linked).map_err(to_error_response)?;
+        return create_linked_agent(state, &bot_id, &agent_id, mode).await;
     }
 
     let agent_md = body["agentMd"].as_str().ok_or_else(|| {
@@ -1893,8 +1893,13 @@ async fn activate_hire(state: &AppState, agent: &db::models::Agent) {
     );
 }
 
-/// The `linked: {botId, agentId}` option of the create-agent body.
-fn linked_target(linked: &serde_json::Value) -> Result<(String, String), types::NeboError> {
+/// The `linked: {botId, agentId, permissionMode?}` option of the
+/// create-agent body. `permissionMode` is the employee's permission mode
+/// (`ask`, `automatic`, `plan`, `full_access`), chosen at hire for a linked
+/// coding agent; without it the employee follows the company's.
+fn linked_target(
+    linked: &serde_json::Value,
+) -> Result<(String, String, Option<types::permissions::Mode>), types::NeboError> {
     let field = |key: &str| {
         linked[key]
             .as_str()
@@ -1903,7 +1908,13 @@ fn linked_target(linked: &serde_json::Value) -> Result<(String, String), types::
             .map(str::to_owned)
             .ok_or_else(|| types::NeboError::Validation(format!("linked.{key} required")))
     };
-    Ok((field("botId")?, field("agentId")?))
+    let mode = match linked["permissionMode"].as_str() {
+        None => None,
+        Some(name) => Some(types::permissions::Mode::parse(name).ok_or_else(|| {
+            types::NeboError::Validation(format!("linked.permissionMode {name:?} is not a permission mode"))
+        })?),
+    };
+    Ok((field("botId")?, field("agentId")?, mode))
 }
 
 /// Hire an agent of a linked bot as an employee of this bot: the row is
@@ -1914,6 +1925,7 @@ async fn create_linked_agent(
     state: AppState,
     bot_id: &str,
     agent_id: &str,
+    mode: Option<types::permissions::Mode>,
 ) -> HandlerResult<serde_json::Value> {
     let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
     let bots = api
@@ -1972,7 +1984,13 @@ async fn create_linked_agent(
             &serde_json::json!({ "modelPreference": ai::LinkedProvider::model_id(bot_id, agent_id) }),
         )
         .map_err(to_error_response)?;
-    info!(agent = %id, bot_id, agent_id, "hired a linked agent");
+    if let Some(mode) = mode {
+        state
+            .store
+            .set_permission_mode(&types::permissions::Scope::Employee(id.clone()), mode)
+            .map_err(to_error_response)?;
+    }
+    info!(agent = %id, bot_id, agent_id, mode = ?mode, "hired a linked agent");
 
     activate_hire(&state, &agent).await;
 
@@ -5712,12 +5730,22 @@ mod linked_hire_tests {
         }
     }
 
-    /// The hire body names the linked bot and its agent, both plain ids.
+    /// The hire body names the linked bot and its agent, both plain ids,
+    /// and may choose the employee's permission mode.
     #[test]
     fn a_linked_hire_names_its_bot_and_agent() {
-        let (bot, agent) =
+        let (bot, agent, mode) =
             linked_target(&serde_json::json!({ "botId": " b1 ", "agentId": "coder" })).unwrap();
-        assert_eq!((bot.as_str(), agent.as_str()), ("b1", "coder"));
+        assert_eq!((bot.as_str(), agent.as_str(), mode), ("b1", "coder", None));
+        let (_, _, mode) = linked_target(
+            &serde_json::json!({ "botId": "b1", "agentId": "coder", "permissionMode": "full_access" }),
+        )
+        .unwrap();
+        assert_eq!(mode, Some(types::permissions::Mode::FullAccess));
+        assert!(
+            linked_target(&serde_json::json!({ "botId": "b1", "agentId": "coder", "permissionMode": "yolo" })).is_err(),
+            "an unknown mode is refused, never guessed"
+        );
         assert!(linked_target(&serde_json::json!({ "botId": "b1" })).is_err());
         assert!(linked_target(&serde_json::json!({ "botId": "", "agentId": "a" })).is_err());
         assert!(linked_target(&serde_json::json!({ "botId": "b/1", "agentId": "a" })).is_err());

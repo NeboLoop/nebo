@@ -886,6 +886,7 @@ async fn start_janus_stream(
         tool_credential: None,
         chat_id: String::new(),
         ask_channels: None,
+        permission_mode: None,
     };
     provider
         .stream(&req)

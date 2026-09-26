@@ -266,6 +266,7 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
         tool_credential: None,
         chat_id: String::new(),
         ask_channels: None,
+        permission_mode: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),

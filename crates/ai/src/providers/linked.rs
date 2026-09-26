@@ -145,16 +145,22 @@ impl LinkedProvider {
             }
         }
 
+        // The employee's permission mode rides with the turn: a linked coding
+        // agent runs it in its own matching mode (nebo-link maps it).
+        let mut data = json!({
+            "prompt": prompt,
+            "agent_id": agent_id,
+            "session_id": session_id,
+        });
+        if let Some(mode) = req.permission_mode {
+            data["permission_mode"] = json!(mode.as_str());
+        }
         send(
             &mut ws,
             json!({
                 "type": "chat",
                 "message_id": uuid::Uuid::new_v4().to_string(),
-                "data": {
-                    "prompt": prompt,
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                },
+                "data": data,
             }),
             &offline,
         )
@@ -855,7 +861,9 @@ mod tests {
             Some("api_1")
         );
 
-        let second = collect(p.stream(&request("and now?", "chat-1")).await.unwrap()).await;
+        let mut in_a_run = request("and now?", "chat-1");
+        in_a_run.permission_mode = Some(types::permissions::Mode::FullAccess);
+        let second = collect(p.stream(&in_a_run).await.unwrap()).await;
         assert_eq!(second.last().unwrap().event_type, StreamEventType::Done);
 
         let r = rec.lock().unwrap();
@@ -874,6 +882,8 @@ mod tests {
             r.bearers
         );
         assert_eq!(r.chat_frames.len(), 2);
+        assert_eq!(r.chat_frames[0]["data"].get("permission_mode"), None, "a call outside a run names none");
+        assert_eq!(r.chat_frames[1]["data"]["permission_mode"], "full_access", "the run's mode rides with the turn");
         for (frame, prompt) in r.chat_frames.iter().zip(["list the files", "and now?"]) {
             assert_eq!(frame["data"]["prompt"], prompt);
             assert_eq!(frame["data"]["agent_id"], "coder");
