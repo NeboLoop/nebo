@@ -716,6 +716,14 @@ pub trait Provider: Send + Sync {
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError>;
 }
 
+/// The first provider, in priority order, that takes any call: where a call
+/// no employee's model names goes (a summary, a compaction, a review). Never
+/// the linked provider (`retryable` = false), which answers only for the
+/// agent it is addressed to.
+pub fn default_provider(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
+    providers.iter().find(|p| p.retryable()).cloned()
+}
+
 /// Optional trait for providers that support HTTP/2 connection reset recovery.
 /// Implemented by providers that use persistent HTTP/2 connections which can
 /// enter a poisoned state (GOAWAY frames, connection exhaustion).

@@ -645,7 +645,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         // compounding checkpoint; folds prior summaries).
                                         let providers = state_clone.runner.providers();
                                         let providers = providers.read().await;
-                                        let provider = match providers.first() {
+                                        let provider = match ai::default_provider(&providers) {
                                             Some(p) => p.clone(),
                                             None => {
                                                 state_clone.hub.broadcast("session_compact", serde_json::json!({
@@ -1298,7 +1298,7 @@ async fn handle_builtin_slash(
 
                 let providers = state_clone.runner.providers();
                 let providers = providers.read().await;
-                let provider = match providers.first() {
+                let provider = match ai::default_provider(&providers) {
                     Some(p) => p.clone(),
                     None => {
                         state_clone.hub.broadcast("session_compact", serde_json::json!({

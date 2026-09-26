@@ -164,7 +164,7 @@ pub async fn review(
 ) -> Option<Verdict> {
     let (provider, aux_model) = match crate::harness::model_call::resolve_aux(&ModelsConfig::load(), providers) {
         Some(routed) => routed,
-        None => (crate::summarizer::pick_cheapest(providers)?, String::new()),
+        None => (crate::harness::model_call::prefer_non_gateway(providers)?, String::new()),
     };
     let req = ChatRequest {
         tool_credential: None,

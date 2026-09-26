@@ -1799,9 +1799,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // The ONE agentic loop for workflow activities: the chat Runner, adapted
     // (Phase 4 — the engine's second loop is deleted; see workflow::loop_contract).
-    let workflow_loop: Arc<dyn workflow::ActivityLoop> = Arc::new(
-        agent::workflow_loop::RunnerActivityLoop::new(runner.clone(), store.clone()),
-    );
+    let workflow_loop = workflow_manager::activity_loop(runner.clone(), store.clone());
 
     // Create workflow manager (needs runner's shared providers for background execution)
     let workflow_manager = Arc::new(workflow_manager::WorkflowManagerImpl::new(
