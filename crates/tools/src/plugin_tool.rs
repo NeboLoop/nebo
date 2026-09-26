@@ -1010,25 +1010,25 @@ impl PluginRunner {
                             .then(|| types::OwnerNeed::Account { plugin: pi.slug.clone() });
                         let refused = ToolResult::terminal(match (had_account, auth.commands.refresh.is_some()) {
                             (Some(false), _) => format!(
-                                "I couldn't reach **{}** — no account is connected for this \
+                                "I couldn't reach {} — no account is connected for this \
                                  employee. Connect one in the employee's Settings, Plugins, \
                                  then ask me again.",
                                 pi.slug
                             ),
                             (Some(true), true) => format!(
-                                "I couldn't reach **{}** — its authentication expired and \
+                                "I couldn't reach {} — its authentication expired and \
                                  automatic renewal didn't work. Please reconnect this account in \
                                  the employee's Settings, Plugins, then ask me again.",
                                 pi.slug
                             ),
                             (Some(true), false) => format!(
-                                "I couldn't reach **{}** — its authentication expired, and this \
+                                "I couldn't reach {} — its authentication expired, and this \
                                  plugin cannot renew itself. Please reconnect this account in the \
                                  employee's Settings, Plugins, then ask me again.",
                                 pi.slug
                             ),
                             (None, _) => format!(
-                                "I couldn't reach **{}** — it has no working sign-in: either it \
+                                "I couldn't reach {} — it has no working sign-in: either it \
                                  was never connected, or its credentials stopped working. Connect \
                                  it in Settings, Plugins, then ask me again.",
                                 pi.slug
@@ -1045,7 +1045,7 @@ impl PluginRunner {
                     // connected and end the turn.
                     if auth.auth_type == "env" {
                         return ToolResult::terminal(format!(
-                            "I couldn't reach **{}** — no working account is connected for this \
+                            "I couldn't reach {} — no working account is connected for this \
                              employee. Connect one in the employee's Settings, Plugins, then ask \
                              me again.",
                             pi.slug
@@ -1106,19 +1106,19 @@ impl PluginRunner {
                         .then(|| types::OwnerNeed::Account { plugin: pi.slug.clone() });
                     let refused = ToolResult::terminal(match had_account {
                         Some(true) => format!(
-                            "I couldn't reach **{}** — its account is no longer authenticated and \
+                            "I couldn't reach {} — its account is no longer authenticated and \
                              signing in again didn't work. Please reconnect it in the employee's \
                              Settings, Plugins, then ask me again.",
                             pi.slug
                         ),
                         Some(false) => format!(
-                            "I couldn't reach **{}** — no account is connected for this employee, \
+                            "I couldn't reach {} — no account is connected for this employee, \
                              and signing in didn't complete. Connect one in the employee's \
                              Settings, Plugins, then ask me again.",
                             pi.slug
                         ),
                         None => format!(
-                            "I couldn't reach **{}** — it has no working sign-in, and signing in \
+                            "I couldn't reach {} — it has no working sign-in, and signing in \
                              didn't complete. Connect it in Settings, Plugins, then ask me again.",
                             pi.slug
                         ),
@@ -1249,7 +1249,7 @@ impl PluginRunner {
             if let Some(sub) = args.get(1).map(|s| s.to_ascii_lowercase()) {
                 if sub == "login" || sub == "logout" || sub == "setup" {
                     return ToolResult::terminal(format!(
-                        "I can't sign in to or re-authenticate **{}** on my own — that's \
+                        "I can't sign in to or re-authenticate {} on my own — that's \
                          handled for you. If this account needs reconnecting, you can do it \
                          in this agent's Settings, Plugins.",
                         pi.slug
