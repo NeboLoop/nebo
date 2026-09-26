@@ -50,8 +50,7 @@ impl DynTool for SuggestGoalTool {
         "suggest_goal"
     }
 
-    /// Claude Code 2.1.280's ProposeGoal prompt (m0251 `Eno`), in our words:
-    /// what a goal does, that the proposal doesn't wait, when to ask and
+    /// What a goal does, that the proposal doesn't wait, when to ask and
     /// when to set it directly, when to propose, and how to state the
     /// condition for a check that reads only the conversation.
     fn description(&self) -> String {
@@ -86,8 +85,8 @@ impl DynTool for SuggestGoalTool {
         "propose a goal for the owner to approve"
     }
 
-    /// Deferred, as Claude Code's ProposeGoal is (2.1.280 m1493
-    /// `shouldDefer: !0`): listed by name and loaded with find_tools.
+    /// Deferred, since it is needed rarely: listed by name and loaded with
+    /// find_tools.
     fn should_defer(&self) -> bool {
         true
     }
@@ -205,10 +204,9 @@ mod tests {
         );
     }
 
-    /// D18: suggest_goal carries Claude Code's ProposeGoal text: what a
-    /// goal does, that proposing doesn't wait, when to propose, and how to
+    /// D18: suggest_goal says what a goal does, that proposing doesn't wait, when to propose, and how to
     /// state a condition for a check that reads only the conversation. It
-    /// stays deferred, as ProposeGoal is.
+    /// stays deferred.
     #[test]
     fn suggest_goal_says_what_a_goal_does_and_when_to_propose_one() {
         let tool = SuggestGoalTool::new(new_handle());

@@ -119,8 +119,8 @@ impl Research {
     /// helpers, and return its receipt at once. The run takes minutes; the
     /// cited report comes back as the helper's notification and lands in the
     /// Work panel. Like any long work, it never holds the conversation
-    /// (Claude Code runs long work as a background agent that notifies,
-    /// `AgentTool.tsx` / `LocalAgentTask.tsx`), and the owner's Stop reaches it.
+    /// (long work runs as a background helper that notifies), and the
+    /// owner's Stop reaches it.
     async fn deep(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let query = input["query"].as_str().unwrap_or("").trim().to_string();
         let Some(agent) = self.agent.clone() else {

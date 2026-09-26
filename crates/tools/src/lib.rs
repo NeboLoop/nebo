@@ -21,7 +21,8 @@ pub mod command_tools;
 pub mod coworker;
 
 /// A subprocess result (shell exec, plugin exec) longer than this, in
-/// characters, is persisted and previewed: Claude Code's Bash threshold.
+/// characters, is persisted and previewed, so one noisy command can't fill
+/// the context.
 /// Shell output is persisted by the registry at this size; plugin output
 /// is still cut to it (its own package moves it onto the spill path).
 pub(crate) const MAX_SUBPROCESS_OUTPUT: usize = 30_000;

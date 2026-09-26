@@ -1,5 +1,5 @@
 //! The schedule tools: create, list, delete, pause, run now and history of
-//! scheduled work (Claude Code's cron tools, in our words). One purpose per
+//! scheduled work. One purpose per
 //! tool over the one cron store.
 
 use std::sync::Arc;

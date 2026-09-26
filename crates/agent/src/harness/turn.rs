@@ -46,8 +46,8 @@ use crate::pruning;
 use super::usage::RunState;
 use crate::selector;
 
-/// Steps one turn takes before it ends with `MaxSteps` (Claude Code's
-/// max-turns option).
+/// Steps one turn takes before it ends with `MaxSteps`, so a model that
+/// never stops calling tools can't run forever.
 pub const DEFAULT_MAX_STEPS: u32 = 100;
 
 /// What one turn runs with, fixed for the turn.
@@ -149,9 +149,9 @@ pub struct TurnState {
     /// once at Prepare: the one the owner, the job or the helper's speed
     /// chose, else the configured default (`ModelSelector::resolve`). It
     /// never changes, mid-turn or after an error: a failed call is retried
-    /// on it (`model_call`), as Claude Code retries its main loop model and
-    /// changes it only for a configured fallback model
-    /// (`src/query.ts:572-575,893-922`), which Nebo has none of.
+    /// on it (`model_call`): switching models mid-turn would break the
+    /// cached prefix and change the voice of the answer, and Nebo has no
+    /// configured fallback model to switch to.
     pub model: String,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
@@ -766,8 +766,9 @@ pub(crate) async fn prepare(
         review_fork,
         withheld_tools,
     };
-    // Entering and leaving Plan mode are rows, told once each (Claude Code's
-    // plan_mode and plan_mode_exit attachments).
+    // Entering and leaving Plan mode are rows, told once each (the
+    // plan_mode and plan_mode_exit attachments), so the prompt stays
+    // cacheable and the model isn't reminded every step.
     let announced = plan_mode_announced(&h.sessions, session_id);
     if cx.plan_mode() && !announced {
         st.reminders.add(&TurnEvent::PlanMode { entered: true });
@@ -1051,8 +1052,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             turn_mode: Some(&cx.request.mode),
             side_trace: &side_trace,
         };
-        // Claude Code's streaming executor: safe calls start as their input
-        // completes in the stream, while the reply is still arriving.
+        // The streaming executor: safe calls start as their input completes
+        // in the stream, while the reply is still arriving, so a read costs
+        // no wait for the rest of the reply.
         let mut executor = ToolExecutor::new(&round_cx);
         let (tool_calls_out, streamed_calls) = mpsc::unbounded_channel();
         let call = model_call::call_model(
@@ -1090,8 +1092,8 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             CallOutcome::Reply(reply) => reply,
             CallOutcome::Retry(RetryWhy::Overflow) => {
                 // The provider refused the window: clear old results when
-                // that saves enough, as Claude Code does when the API asks
-                // it to cut the context; else checkpoint, unless the breaker
+                // that saves enough, the cheapest way to fit the window;
+                // else checkpoint, unless the breaker
                 // has tripped. The model call gives up after its own
                 // overflow retries.
                 let outcome = if clear_old_results(cx, st, &conversation).await {
@@ -1372,10 +1374,9 @@ async fn step_events(
             st.reminders.add(&TurnEvent::SkillListing(delta));
         }
     }
-    // The helper types this run can start and when each fits: Claude Code's
-    // agent listing, a delta row rather than tool text so the tools array
-    // stays the same everywhere (2.1.280 m0342 `agent_listing_delta`;
-    // `shouldInjectAgentListInMessages`, `src/tools/AgentTool/prompt.ts`).
+    // The helper types this run can start and when each fits: the helper
+    // listing, a delta row rather than tool text so the tools array stays
+    // the same everywhere and the cached prefix survives a change to it.
     let helper_types = super::delegation::helper_types(&cx.request.mode);
     if let Some(delta) = events::LinedDelta::between(&events::announced("helper_types", conversation), &helper_types) {
         st.reminders.add(&TurnEvent::HelperTypes(delta));
@@ -1426,7 +1427,8 @@ fn trim(st: &TurnState, conversation: &[ChatMessage]) -> Vec<ChatMessage> {
 
 /// Under context pressure, clear old results their tools let be cleared,
 /// each saved through the one spill path, when that saves at least 20k
-/// tokens (Claude Code 2.1.280). Each rendering is frozen and persisted for
+/// tokens (below that, breaking the cache costs more than it saves). Each
+/// rendering is frozen and persisted for
 /// the chat. Returns whether anything was cleared.
 async fn clear_old_results(cx: &TurnContext, st: &mut TurnState, conversation: &[ChatMessage]) -> bool {
     let h = &cx.harness;
@@ -1517,9 +1519,9 @@ fn build_request(
         model: model_name.to_string(),
         // Set by the turn's model (its speed), so it holds for every step and
         // never changes the cached request mid-turn: on where the model
-        // thinks, as Claude Code turns thinking on for every model that
-        // supports it (`src/QueryEngine.ts:278-282`,
-        // `src/utils/thinking.ts:90-162`). The blocks come back with their
+        // thinks: thinking is on for every model that supports it, since it
+        // improves tool use and costs nothing on the cache. The blocks come
+        // back with their
         // turn (`conversation::convert_messages`).
         enable_thinking: cx.harness.selector.thinks(&st.model),
         metadata: st.call.sticky_metadata.clone(),
@@ -1614,8 +1616,8 @@ async fn checkpoint(
 }
 
 /// The work this session started that is still running, told again after a
-/// checkpoint (Claude Code's post-compact `task_status` rows): its helpers
-/// and its background commands.
+/// checkpoint so the model doesn't start it twice: its helpers and its
+/// background commands.
 async fn running_work(cx: &TurnContext) -> Vec<compact::restore::RunningWork> {
     let h = &cx.harness;
     let mut running = h.goal_observer().map(|o| o.background(&cx.session_id)).unwrap_or_default();
@@ -1927,7 +1929,7 @@ async fn show_a_folded_answer(cx: &TurnContext, folds: &mut text_fold::TurnFolds
 /// Write the recap of the turn just finished, in the background. The call
 /// forks the turn's last request, extended by what was stored after it (the
 /// answer), so it reads the turn's cached prefix: the same system prompt,
-/// tools, conversation and model, as Claude Code's forked recap does. A
+/// tools, conversation and model, so the recap costs a cache read. A
 /// checkpoint taken after the last call replaced the conversation it was
 /// built from; that turn has no cached prefix to fork and gets no recap.
 fn spawn_recap(cx: &TurnContext, last: LastCall) {
@@ -2606,7 +2608,7 @@ mod tests {
             .collect()
     }
 
-    /// Claude Code's streaming executor: a concurrency-safe call starts as
+    /// The streaming executor: a concurrency-safe call starts as
     /// soon as its input is complete, while the reply still streams; a call
     /// that changes things waits for the reply. Results keep call order.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3509,7 +3511,7 @@ mod tests {
     /// D10 (parity 6.4): the owner's `/compact` is the turn's own
     /// checkpoint, not a weaker second path: the summary forks the step's
     /// request (the one system prompt and the tool list), carries the
-    /// owner's instructions (Claude Code's "Additional Instructions"), and
+    /// owner's instructions (added to the summary prompt), and
     /// the turn ends without a model turn. Sent while a turn runs, it waits
     /// for that turn instead of joining it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3607,8 +3609,8 @@ mod tests {
     }
 
     /// D10 (parity 6.3): after a checkpoint the model is told the work the
-    /// session started that is still running (Claude Code's post-compact
-    /// task_status rows): its helper and its background command, not
+    /// session started that is still running (restored task rows): its
+    /// helper and its background command, not
     /// another session's command.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_checkpoint_tells_the_work_still_running() {
@@ -3687,7 +3689,7 @@ mod tests {
 
     /// B10: the employee the owner talks to sees who owns which job — each
     /// employee's name and job, and each team's name, what it owns, its
-    /// lead and its members — as roster rows (Claude Code's agent listing),
+    /// lead and its members — as roster rows (like the helper listing),
     /// never in the system prompt. A restaffed team is told again as a
     /// delta: only what changed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3775,8 +3777,8 @@ mod tests {
 
     /// B12, B15: the memory flush before a checkpoint is housekeeping: it
     /// waits for a background permit, never the pool the owner's turns use,
-    /// and the turn never waits for it (Claude Code extracts memory in a
-    /// background fork). It reads the conversation the checkpoint
+    /// and the turn never waits for it (extraction runs as a background
+    /// fork). It reads the conversation the checkpoint
     /// summarized.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_checkpoint_memory_flush_runs_in_the_background_on_a_background_permit() {
@@ -3899,7 +3901,7 @@ mod tests {
     }
 
     /// Context pressure clears old results before anything is summarised,
-    /// as Claude Code 2.1.280 does: the provider refuses the window, every
+    /// because clearing is cheaper than a summary: the provider refuses the window, every
     /// clearable result but the five newest is saved to a file and replaced
     /// by where it was saved, and the step is taken again with no
     /// checkpoint.
@@ -4267,8 +4269,8 @@ mod tests {
     }
 
     /// D11: entering Plan mode is told once, and leaving it (the owner
-    /// approved the plan, or changed the mode) is told once too, as Claude
-    /// Code's plan_mode_exit row.
+    /// approved the plan, or changed the mode) is told once too, as one
+    /// plan_mode_exit row.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn leaving_plan_mode_is_told_once() {
         let model = Scripted::new(vec![Step::Say("Planning."), Step::Say("Still planning."), Step::Say("Doing it."), Step::Say("Done.")]);
@@ -4291,8 +4293,8 @@ mod tests {
         assert!(rows[1].contains("Plan mode is off"), "{}", rows[1]);
     }
 
-    /// D18: in plan mode a goal can't be proposed yet (Claude Code refuses a
-    /// proposal while plan mode is active).
+    /// D18: in plan mode a goal can't be proposed yet (a proposal is refused
+    /// while plan mode is active: the plan has to be approved first).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn no_goal_is_proposed_in_plan_mode() {
         use tools::GoalSuggester;
@@ -4500,8 +4502,8 @@ mod tests {
     /// mid-conversation (a new plugin tool, and a loaded tool's schema
     /// rewritten), a permission-mode change between turns and a checkpoint:
     /// each request's prefix is a byte-prefix of the next, except the
-    /// messages across the checkpoint boundary (Claude Code resets there
-    /// too). The model and thinking hold for the turn though the owner's
+    /// messages across the checkpoint boundary (the summary replaces them,
+    /// so the cache starts again there). The model and thinking hold for the turn though the owner's
     /// words would have routed a keyword classifier to another model, and
     /// the checkpoint's summary call forks the step's request unchanged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

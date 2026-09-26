@@ -702,8 +702,8 @@
 
   // Auto-focus chat input when user starts typing anywhere
   function handleGlobalKeydown(e: KeyboardEvent) {
-    // Esc anywhere in the chat stops the running turn, the way it does in
-    // Claude Code. The composer handles its own Esc while it has focus.
+    // Esc anywhere in the chat stops the running turn, so stopping never
+    // depends on where focus is. The composer handles its own Esc while it has focus.
     if (e.key === 'Escape' && isLoading && !(document.activeElement as HTMLElement)?.isContentEditable
       && !document.querySelector('[data-modal-open]')) {
       e.preventDefault();

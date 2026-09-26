@@ -1,6 +1,6 @@
 # Integration Test Run Prompt
 
-Give this prompt to Nebo (via `nebo chat -i` or Claude Code) to execute a full integration test run.
+Give this prompt to Nebo (via `nebo chat -i` or a coding agent) to execute a full integration test run.
 
 ---
 

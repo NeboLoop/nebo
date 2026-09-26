@@ -644,7 +644,7 @@ async fn apply_post_tool_hooks(
     attached
 }
 
-/// Most calls that run at once (Claude Code's pool).
+/// Most calls that run at once, so one reply can't flood the machine.
 const MAX_PARALLEL_CALLS: usize = 10;
 
 /// Where a call of the reply stands in the executor.
@@ -668,8 +668,8 @@ pub(crate) struct Ran {
     hook_noted: bool,
 }
 
-/// A reply's tool calls, started as the stream hands them over (Claude
-/// Code's streaming tool executor). A concurrency-safe call starts as soon
+/// A reply's tool calls, started as the stream hands them over (the
+/// streaming tool executor). A concurrency-safe call starts as soon
 /// as its input is complete, while every running call is safe too; any
 /// other call waits for the reply to end, then runs alone and in order.
 /// Results come back in call order.
@@ -780,7 +780,7 @@ impl<'a> ToolExecutor<'a> {
     }
 }
 
-/// Claude Code's queue rule. Walking the calls in order, a queued call
+/// The queue rule. Walking the calls in order, a queued call
 /// starts when nothing runs, or when it and every running call are
 /// concurrency-safe; a queued unsafe call that cannot start holds every
 /// call after it. While the reply streams, an unsafe call cannot start.

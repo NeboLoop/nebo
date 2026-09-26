@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     /// Past its timeout a command moves to the background instead of being
-    /// killed (Claude Code's Bash, `BashTool.tsx` onTimeout), and its end
+    /// killed, and its end
     /// reaches the session that ran it. Before: "Command killed after 1s".
     #[tokio::test]
     async fn a_command_past_its_timeout_moves_to_the_background_and_reports() {

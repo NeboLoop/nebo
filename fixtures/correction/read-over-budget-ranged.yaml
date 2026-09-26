@@ -4,8 +4,8 @@ description: |
   A blind read of a 300 KB file exceeds the read budget. read_file answers
   with an ERROR that names the file's line count and points at offset/limit
   and at searching with grep through run_command — never a clipped payload
-  (Claude Code's Read makes the same choice: the error costs ~100 bytes, a
-  truncated result costs the whole budget). The model must take the hint:
+  (the error costs ~100 bytes, a truncated result costs the whole budget and
+  still misses the part the model wanted). The model must take the hint:
   one targeted run_command grep or ranged read_file, then the answer. Not a
   loop of blind re-reads.
 target_component: tool

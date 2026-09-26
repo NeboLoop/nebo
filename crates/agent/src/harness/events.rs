@@ -1,6 +1,6 @@
 //! Turn events and THE table that turns each into an attachment. Every row
 //! states a fact at the moment it became true, except the task reminder,
-//! which fires on Claude Code's step counts. A new attachment is one row
+//! which fires on step counts. A new attachment is one row
 //! here plus its producer.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,7 +44,7 @@ pub enum TurnEvent {
     SessionContextChanged(String),
     /// The installed employees changed; a line is the employee's job (its
     /// description). With [`TurnEvent::TeamsListing`], the roster: who owns
-    /// which job (Claude Code's agent listing, `agent_listing_delta`).
+    /// which job, told as a delta so only a change is sent.
     AgentsListing(LinedDelta),
     /// The teams changed: hired, changed or restaffed. A line is what the
     /// team owns, its lead and its members ([`team_line`]).
@@ -606,7 +606,7 @@ fn threshold_text(t: &Threshold) -> String {
 //
 // A listing row stores what it announced (`added`: name → line, `removed`:
 // names) next to its kind, so the set the conversation was last told is
-// folded back from its rows (Claude Code's delta attachments). A listing is
+// folded back from its rows (delta attachments). A listing is
 // written only when that set differs from the current one; after a
 // checkpoint the fold starts empty and the next step lists the set whole.
 
@@ -692,10 +692,9 @@ pub fn team_line(mission: &str, lead: Option<&str>, members: &[String]) -> Strin
     format!("owns {owns}; {lead}; members: {}", members.join(", "))
 }
 
-/// Claude Code 2.1.280's agent listing: "Available agent types for the
-/// Agent tool:", then "When you launch multiple agents for independent
-/// work, send them in a single message with multiple tool uses so they run
-/// concurrently." (m0342, `agent_listing_delta`).
+/// The helper listing's words: what the types are for, and that independent
+/// pieces of work go out as several calls in one response so they run side
+/// by side (models otherwise delegate one piece at a time).
 const HELPER_WORDS: ListingWords = ListingWords {
     available: "Helper types for delegate, and when each fits. Independent pieces of work are several delegate calls in one response, so they run side by side:",
     removed: "These helper types are no longer available:",
@@ -739,7 +738,8 @@ pub fn announced(kind: &str, history: &[ChatMessage]) -> Listing {
 // ── The task reminder ───────────────────────────────────────────────────
 
 /// Steps without a task-tool call before the task reminder, and the least
-/// number of steps between two of them (Claude Code's counts).
+/// number of steps between two of them: often enough to keep a long task
+/// list honest, rare enough not to crowd the conversation.
 pub const TASK_REMINDER_STEPS: usize = 10;
 
 /// The tools whose use resets the count: creating or updating a task.
@@ -962,7 +962,7 @@ mod tests {
         assert_eq!(fact_step(&mut history, &plan), ["mode"]);
         let row = &history.last().unwrap().content;
         assert!(row.contains(&format!("Model: {}. Permission mode: Plan.", plan.mode.model)), "{row}");
-        assert!(!row.contains("guess"), "facts only, as Claude Code states the model: {row}");
+        assert!(!row.contains("guess"), "the mode row states facts only: {row}");
         assert!(fact_step(&mut history, &plan).is_empty());
     }
 

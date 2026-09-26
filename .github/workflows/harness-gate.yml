@@ -32,7 +32,7 @@ name: Harness gate
 #   HARNESS_P_NEBO_BOOT_TOKEN   arm A (the old loop) and arm P (the rewrite)
 #                               can only run at once as two bots
 #
-# The agent runs on Janus; Claude Code only measures. GATE_MODEL pins the
+# The agent runs on Janus; the claude CLI only judges. GATE_MODEL pins the
 # speed so a routing change cannot move the number.
 #
 # Runner: the house Mac mini's Lima VM (label neboloop), never a GitHub-hosted

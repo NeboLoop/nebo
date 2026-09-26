@@ -482,8 +482,8 @@ fn remember_input(state: &AppState, config: &ChatConfig) {
 
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
     // The owner's message answers the question open in this conversation,
-    // as typing answers Claude Code's AskUserQuestion: the parked call gets
-    // it as the answer and the turn goes on. It starts no turn of its own.
+    // since typing a reply is the natural way to answer: the parked call
+    // gets it as the answer and the turn goes on. It starts no turn of its own.
     let owner_writes = config.origin == Origin::User
         && config.audience.is_none()
         && !config.hidden_prompt

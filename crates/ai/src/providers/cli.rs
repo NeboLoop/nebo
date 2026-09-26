@@ -19,15 +19,15 @@ pub struct CLIProvider {
     command: String,
     args: Vec<String>,
     /// The Nebo server port whose `/agent/mcp` serves this CLI's tools, for
-    /// the CLIs that are wired to it (Claude Code).
+    /// the CLIs that are wired to it (the `claude` CLI).
     mcp_port: Option<u16>,
 }
 
 impl CLIProvider {
-    /// Create a provider that wraps the Claude Code CLI.
+    /// Create a provider that wraps the `claude` CLI.
     ///
-    /// Claude Code connects to Nebo's agent MCP server for tool access.
-    /// All built-in Claude Code tools are disabled so it only uses Nebo's STRAP tools.
+    /// The CLI connects to Nebo's agent MCP server for tool access.
+    /// All of the CLI's built-in tools are disabled so it only uses Nebo's STRAP tools.
     /// `server_port` is the HTTP server port (0 = default 27895).
     /// `max_turns` caps multi-turn tool use (0 = unlimited).
     pub fn new_claude_code(max_turns: u32, server_port: u16) -> Self {
@@ -172,7 +172,7 @@ impl Provider for CLIProvider {
         if std::fs::create_dir_all(&workspace).is_ok() {
             cmd.current_dir(&workspace);
         }
-        // Claude Code ships its own file-based memory system and CLAUDE.md
+        // The `claude` CLI ships its own file-based memory system and CLAUDE.md
         // auto-discovery. Nebo has one canonical memory pathway — the agent
         // memory tool — so the CLI's must be off or the model maintains
         // memory files instead of calling it. (--bare would also do this but

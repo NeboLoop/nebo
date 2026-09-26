@@ -69,7 +69,7 @@ pub async fn drain_extractions() {
 /// conversation the checkpoint is about to summarise (the session's active
 /// chat from its last boundary on) is read now, before the boundary is
 /// written, and its facts are extracted in the background, so the turn never
-/// waits on it (Claude Code runs memory extraction as a background fork).
+/// waits on it (extraction runs as a background fork).
 /// Tracked for shutdown like every background extraction.
 pub async fn spawn_memory_flush(
     provider: Arc<dyn Provider>,

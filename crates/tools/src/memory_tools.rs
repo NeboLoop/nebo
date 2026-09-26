@@ -1,5 +1,5 @@
 //! `recall`, `remember` and `forget`: the employee's memory. Always loaded,
-//! as Claude Code keeps its memory tools. Isolation, the provenance write
+//! since memory is used on almost every turn. Isolation, the provenance write
 //! bar, recall-for-audience and credential routing are the store's rules and
 //! hold for every call.
 

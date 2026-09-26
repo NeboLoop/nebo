@@ -207,8 +207,8 @@ pub struct Caller {
 
 /// How a command starts. Every `run_command` process is one of these, on
 /// the one registry: a foreground command is waited on by its call and moves
-/// to the background at its timeout (Claude Code's Bash does the same,
-/// `BashTool.tsx` onTimeout → startBackgrounding); a background command
+/// to the background at its timeout, so a slow command is never killed for
+/// being slow; a background command
 /// returns its id at once. Either way its end reaches its caller, once it is
 /// in the background.
 #[derive(Debug, Clone)]
@@ -218,8 +218,7 @@ pub enum Spawn {
 }
 
 /// A command that finished in the background, for the session that started
-/// it (Claude Code's task notification for a background shell,
-/// `LocalShellTask.tsx` enqueueShellNotification).
+/// it, delivered as a notification that wakes the session.
 #[derive(Debug, Clone)]
 pub struct CommandExit {
     pub caller: Caller,
@@ -727,7 +726,7 @@ impl ProcessRegistry {
     }
 
     /// Stop a running session. Its caller is not told it ended: the caller
-    /// asked for the stop (Claude Code's `notified` flag, set by TaskStop).
+    /// asked for the stop, so a notification would only repeat it.
     pub async fn kill_session(&self, id: &str) -> Result<(), String> {
         let mut running = self.running.lock().await;
         let Some(sess) = running.remove(id) else {
@@ -1100,7 +1099,7 @@ mod group_tests {
     }
 
     /// A background command's end reaches the session that started it
-    /// (Claude Code's task notification for a background shell).
+    /// as a notification.
     #[tokio::test]
     async fn a_finished_background_command_tells_its_caller() {
         let (reg, mut rx) = reported();

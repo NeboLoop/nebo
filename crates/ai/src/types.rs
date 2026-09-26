@@ -490,9 +490,8 @@ pub struct ImageContent {
 /// A block of the model's thinking in an assistant turn. A provider that
 /// signs its thinking (Anthropic) refuses a tool loop with thinking on unless
 /// each block comes back unchanged with the turn it belongs to, and a
-/// signature is bound to the model that wrote it (Claude Code keeps them in
-/// the assistant message and strips them when the model changes:
-/// `src/utils/messages.ts:5066` `stripSignatureBlocks`, `src/query.ts:924-929`).
+/// signature is bound to the model that wrote it, so the blocks stay in the
+/// assistant message and are stripped when the model changes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ThinkingBlock {

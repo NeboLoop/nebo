@@ -180,8 +180,8 @@ impl Helpers {
 impl Helpers {
     /// A message into a coworker's own session — their persona, memory,
     /// connected accounts and permissions — through the coworker rail. It
-    /// never waits: the reply comes back as a notification (Claude Code's
-    /// SendMessage, `SendMessageTool.ts`: queue, return, reply later).
+    /// never waits: the message is queued, the call returns, and the reply
+    /// comes back later as a notification.
     async fn to_coworker(&self, ctx: &ToolContext, to: &str, text: &str) -> ToolResult {
         let rail = self.rail.read().unwrap().clone();
         let Some(rail) = rail else {
@@ -266,15 +266,13 @@ impl DynTool for HelperTool {
         }
     }
 
-    /// `delegate` follows Claude Code 2.1.280's Agent tool text (m0342):
-    /// its "When to use" (`DFr`) and "When not to use" sections, background
-    /// by default, never predicting a pending result, how to write the
-    /// brief, and its two worked examples (a survey launched in the
-    /// background with the report in a later turn, and "Still waiting on the
-    /// audit" when asked mid-wait), in our words. Its "Launch multiple agents
-    /// concurrently whenever possible … a single message with multiple tool
-    /// uses" gets a third example, the 2026-09-26 billing employee that loaded
-    /// 28 skills one per step: a survey of many skills is helpers' reading,
+    /// `delegate` says when to use it and when not to, runs in the background
+    /// by default, never predicts a pending result, says how to write the
+    /// brief, and gives worked examples (a survey launched in the background
+    /// with the report in a later turn, and "Still waiting on the audit" when
+    /// asked mid-wait). Independent helpers are started together in one
+    /// response, with a third example from the 2026-09-26 billing employee
+    /// that loaded 28 skills one per step: a survey of many skills is helpers' reading,
     /// started together, and the parent builds from their digests. What the
     /// schema already says (the default type, `background`, `isolation`) is
     /// said there only.
@@ -335,14 +333,14 @@ impl DynTool for HelperTool {
         }
     }
 
-    /// `delegate` is always loaded (Claude Code's Agent); the rest are found
+    /// `delegate` is always loaded (handing off is always an option); the rest are found
     /// with find_tools.
     fn should_defer(&self) -> bool {
         self.op != HelperOp::Delegate
     }
 
-    /// Starting a helper changes nothing by itself (Claude Code marks Agent
-    /// read-only and concurrency-safe): parallel helpers are several
+    /// Starting a helper changes nothing by itself (read-only and
+    /// concurrency-safe; the helper's own calls are checked): parallel helpers are several
     /// delegate calls in one response.
     fn read_only(&self, _input: &Value) -> bool {
         self.op == HelperOp::Delegate
@@ -645,7 +643,7 @@ mod tests {
     }
 
     /// An isolated helper gets its own copy, and runs in the background like
-    /// any other (Claude Code's `shouldRunAsync` ignores isolation). Before:
+    /// any other (isolation doesn't decide foreground or background). Before:
     /// every worktree helper held its parent's step.
     #[tokio::test]
     async fn an_isolated_helper_works_in_its_own_copy_in_the_background() {
@@ -772,7 +770,7 @@ mod tests {
         assert_eq!(send.activity(&json!({"to": "Back Office"})), "messaging the Back Office team");
     }
 
-    /// A send to a coworker never waits (Claude Code's SendMessage): there
+    /// A send to a coworker never waits: there
     /// is no way to ask it to, it answers with a receipt, and several sends
     /// in one response run side by side.
     #[tokio::test]
@@ -788,8 +786,8 @@ mod tests {
     }
 
     /// D16: delegate says when to hand off and when not to, that a pending
-    /// result is never predicted, and shows both worked examples (Claude
-    /// Code's Agent tool); the old text only warned against using it.
+    /// result is never predicted, and shows both worked examples; the old
+    /// text only warned against using it.
     #[test]
     fn delegate_says_when_to_hand_off() {
         let rig = Rig::new();
@@ -811,8 +809,7 @@ mod tests {
     /// 2026-09-26: asked for a billing employee with all its workflows, an
     /// employee loaded 28 skills one step at a time and never delegated. The
     /// description now shows that survey as helpers started together in one
-    /// response, each sending back a digest (Claude Code's Agent tool:
-    /// "Launch multiple agents concurrently whenever possible").
+    /// response, each sending back a digest.
     #[test]
     fn delegate_shows_a_skill_survey_fanned_out() {
         let rig = Rig::new();

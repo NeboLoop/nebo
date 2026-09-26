@@ -607,7 +607,7 @@ mod tests {
         }
     }
 
-    // Claude Code as the model runs its tool calls over /agent/mcp. With its
+    // The `claude` CLI as the model runs its tool calls over /agent/mcp. With its
     // run's credential they are the run's own calls: shell runs for an
     // employee allowed shell.
     #[tokio::test]

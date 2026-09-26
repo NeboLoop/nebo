@@ -624,7 +624,7 @@ impl Loader {
     }
 
     /// The skill listing: every enabled skill visible to `agent`, name → one
-    /// line, in Claude Code's shape. A line is the description, with up to
+    /// line. A line is the description, with up to
     /// three triggers the name doesn't already say ("pptx" alone doesn't say
     /// "powerpoint"), cut at [`LISTING_LINE_CHARS`]. Past
     /// [`LISTING_BUDGET_CHARS`] the shared skills' lines are shortened evenly
@@ -1473,11 +1473,11 @@ fn load_learned_skills(learned_root: &Path, loaded: &mut HashMap<String, Skill>)
     }
 }
 
-/// Most characters of one listing line (Claude Code's cap).
+/// Most characters of one listing line, so one long description can't
+/// crowd out the rest.
 const LISTING_LINE_CHARS: usize = 250;
 
-/// The listing's budget in characters (Claude Code's default: 1% of a
-/// 200K-token window).
+/// The listing's budget in characters (about 1% of a 200K-token window).
 const LISTING_BUDGET_CHARS: usize = 8_000;
 
 /// Below this many characters a shortened line says nothing: the listing

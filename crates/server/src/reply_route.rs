@@ -7,8 +7,8 @@
 //! say where that is, or who it is with, so every session keeps its route
 //! and its seat, and the wake rail hands both to the woken turn: it
 //! continues that conversation as the same party, with the same limits
-//! (Claude Code runs a notification with the owning agent's attribution,
-//! 2.1.280 m0342 `turnAttribution: "inherit"`). Both are durable (the
+//! (a woken turn inherits the seat of the session that owns it, never the
+//! sender's). Both are durable (the
 //! session row), because a wake survives a restart.
 
 use serde::{Deserialize, Serialize};

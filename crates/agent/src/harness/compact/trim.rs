@@ -1,6 +1,6 @@
 //! The per-step trim, and clearing old tool results under context
-//! pressure, as Claude Code 2.1.280 does (`XBr`/`c5n`, m0460; its trigger is
-//! the context hint, m1040): when the request is due for a checkpoint, the
+//! pressure, the cheaper step before a summary (triggered by the context
+//! hint): when the request is due for a checkpoint, the
 //! results of calls whose output can be got again (a file read or change, a
 //! command, a web search or fetch: each tool says so, `DynTool::clearable`)
 //! are cleared first, all but the five most recent, and only when that saves

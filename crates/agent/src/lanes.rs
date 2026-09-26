@@ -116,8 +116,7 @@ use types::constants::lanes;
 /// There is no per-employee cap: one turn per session is the harness's
 /// session gate, and model calls share the one permit pool
 /// (`ConcurrencyController`). An employee with many conversations runs them
-/// all at once, as Claude Code runs every conversation and background agent
-/// on its own.
+/// all at once: each conversation and background helper runs on its own.
 pub struct LaneTask {
     pub id: String,
     pub lane: String,

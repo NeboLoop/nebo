@@ -1,11 +1,9 @@
 id: company-deny-beats-employee-allow
 name: "A company deny binds every employee"
 description: |
-  Owner ruling 2026-09-25, following Claude Code 2.1.280: rule sources
-  merge, and a deny from any source wins over any allow (the deny rules are
-  checked first across every source, m0342 @~2645000; readable
-  src/utils/permissions/permissions.ts:1078-1100). In Nebo's words: a deny
-  from the company defaults, the employee's own rules, or the session beats
+  Owner ruling 2026-09-25: rule sources merge, and a deny from any source
+  wins over any allow (the deny rules are checked first across every
+  source). A deny from the company defaults, the employee's own rules, or the session beats
   any allow, and an employee's rule never undoes a company deny.
   This proof gives an employee the shell in its job, then turns the shell
   off in the company defaults, and asserts every call is refused: through

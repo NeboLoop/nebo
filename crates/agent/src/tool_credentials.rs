@@ -1,6 +1,6 @@
 //! Per-run tool credentials.
 //!
-//! A CLI provider (Claude Code as the model) runs its tool calls itself, over
+//! A CLI provider (the `claude` CLI as the model) runs its tool calls itself, over
 //! the server's `/agent/mcp`. The server cannot tell such a call from any other
 //! MCP client by where it comes from, so the run that spawns the CLI issues a
 //! credential for that one provider call: random, held only in this process,

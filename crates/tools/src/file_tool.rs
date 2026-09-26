@@ -341,8 +341,9 @@ impl FileTool {
     /// the session has not been shown. A change whose bytes match the read
     /// (a touch) is not a change. `None` lets the call through.
     ///
-    /// Claude Code refuses both ("File has not been read yet…", "File has been
-    /// modified since read…": FileEditTool.ts:275-310, FileWriteTool.ts:196-218).
+    /// Both are refused ("File has not been read yet…", "File has been
+    /// modified since read…"): an edit made blind, or over someone else's
+    /// newer change, would lose work.
     fn unread_or_stale(&self, session: &str, path: &str, verb: &str) -> Option<String> {
         let read = self.read_state.lock().ok()?.get(&Self::read_state_key(session, path)).cloned();
         let Some(read) = read else {
@@ -505,12 +506,12 @@ impl FileTool {
             Some(text) => Box::new(std::io::Cursor::new(text)),
             None => Box::new(BufReader::with_capacity(1024 * 1024, file)),
         };
-        // Read budget for the whole rendered result: ~25,000 tokens, the same
-        // shape as Claude Code's Read. A read that overruns it is an ERROR
+        // Read budget for the whole rendered result: ~25,000 tokens. A read
+        // that overruns it is an ERROR
         // naming offset/limit, never a clipped result: the error costs ~100
         // bytes, a clipped result costs the whole budget and still leaves the
-        // model without the part it wanted (Claude Code measured exactly this
-        // and reverted truncation, Mar 2026).
+        // model without the part it wanted (truncating was measured to be
+        // worse than the error).
         const FILE_READ_MAX_BYTES: usize = 100_000;
         let mut result = String::new();
         let mut line_num = 0usize;
@@ -2852,7 +2853,7 @@ mod tests {
     }
 
     /// A blind read that comes back cut off is the read and its range note,
-    /// nothing added: Claude Code's Read appends no outline.
+    /// nothing added: an outline would only spend the budget again.
     #[test]
     fn a_cut_off_read_is_the_read_alone() {
         let dir = tempfile::tempdir().unwrap();

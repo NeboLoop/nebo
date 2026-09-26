@@ -424,9 +424,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                     return CallOutcome::Failed(could_not_connect(selector, selected_model));
                 }
                 // A dropped connection is nobody's model failing: the same
-                // model is asked again after a backoff (Claude Code retries
-                // an APIConnectionError on the same model,
-                // `src/services/api/withRetry.ts:753`). A reconnect is
+                // model is asked again after a backoff, never a different
+                // model. A reconnect is
                 // silent: the owner's screen still shows the turn working.
                 tokio::select! {
                     _ = cancel_token.cancelled() => return CallOutcome::CancelledInBackoff,

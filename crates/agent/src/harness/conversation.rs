@@ -25,8 +25,8 @@ says nothing about whether the call succeeded. Make the call again if you still 
 need the result.)";
 
 /// What an interrupted tool call's result says: the call did not finish, and
-/// the model must not retry it on its own initiative. Mirrors Claude Code's
-/// "[Request interrupted by user for tool use]".
+/// the model must not retry it on its own initiative. Models are trained on
+/// this exact wording, so they read it as a stop, not as a failure to retry.
 pub const INTERRUPTED_TOOL_RESULT: &str = "[Request interrupted by user for tool use]";
 
 /// The line the thread carries after a stop. The model reads it (the next
@@ -265,7 +265,7 @@ pub(crate) fn received_taint(messages: &[ChatMessage]) -> Vec<types::provenance:
 }
 
 /// How a message that arrived mid-turn reads to the model: one fixed frame
-/// naming who sent it, the way Claude Code frames a queued message. The
+/// naming who sent it, so the model knows it arrived while it worked. The
 /// frame never changes after the row is written, so the conversation's
 /// cached prefix holds.
 pub(crate) fn frame_mid_turn_message(words: &str, from: &MidTurnFrom) -> String {
@@ -695,7 +695,7 @@ mod tests {
     }
 
     /// The owner's words are stored whole, however long: no summary stands
-    /// in for them (Claude Code expands pasted text back whole).
+    /// in for them (pasted text is expanded back whole).
     #[test]
     fn a_long_owner_message_is_stored_verbatim() {
         let path = std::env::temp_dir().join(format!("nebo-conv-{}.db", uuid::Uuid::new_v4()));
