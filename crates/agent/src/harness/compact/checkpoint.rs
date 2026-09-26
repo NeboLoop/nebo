@@ -138,6 +138,12 @@ pub struct CheckpointContext<'a> {
     /// The conversation as the step sends it: loaded since the last
     /// boundary and trimmed.
     pub conversation: &'a [ChatMessage],
+    /// The last stored row the step's conversation was loaded through. A
+    /// row stored after it (a message or a helper's result that arrived
+    /// while the summary was written) was never read by the summary: the
+    /// boundary records this row, and the load after the boundary reads
+    /// every row stored after it.
+    pub heard_through: Option<&'a str>,
     /// The step's request. The summary call forks it (system prompt, tools,
     /// model, cache breakpoints) and replaces its messages.
     pub fork_of: &'a ChatRequest,
@@ -309,6 +315,9 @@ pub async fn checkpoint(cx: &CheckpointContext<'_>, why: CheckpointReason) -> Re
         "reason": why.as_str(),
         "headCut": head_cut,
     });
+    if let Some(id) = cx.heard_through {
+        metadata[crate::harness::conversation::HEARD_THROUGH] = serde_json::json!(id);
+    }
     metadata[tool_surface::LOADED_TOOLS_KEY] = serde_json::json!(
         tool_surface::loaded(&stored)
             .iter()
@@ -626,6 +635,7 @@ mod tests {
                 provider,
                 session_id: &self.sid,
                 conversation: &conversation,
+                heard_through: conversation.last().map(|m| m.id.as_str()),
                 fork_of: &fork_of,
                 hooks,
                 restore,
@@ -1082,6 +1092,7 @@ mod tests {
             provider: provider.as_ref(),
             session_id: &s.sid,
             conversation: &[],
+            heard_through: None,
             fork_of: &fork_of,
             hooks: &[],
             restore: RestoreState::default(),

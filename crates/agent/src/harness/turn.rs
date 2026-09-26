@@ -932,6 +932,9 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         let window = trim(st, &conversation);
         st.usage.last_request_estimate = pruning::estimate_total_tokens(&window);
         let window = conversation::sanitize_message_order(conversation::order_as_heard(window));
+        // Rows stored after this one arrive while the step runs: a
+        // checkpoint's summary never reads them.
+        let heard_through = conversation.last().map(|m| m.id.as_str());
 
         // 4-5. The request and the call.
         let selected = st.model.clone();
@@ -960,7 +963,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         // forks, and the turn ends with the checkpoint.
         if let TurnInput::Compact { instructions } = &cx.request.input {
             let why = compact::checkpoint::CheckpointReason::OwnerAsked;
-            return match checkpoint(cx, st, &window, &request, why, Some(instructions)).await {
+            return match checkpoint(cx, st, &window, heard_through, &request, why, Some(instructions)).await {
                 Ok(()) => TurnExit::Compacted,
                 Err(e) => {
                     let _ = cx.tx.send(StreamEvent::error(format!("The conversation could not be compacted: {e}"))).await;
@@ -976,7 +979,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 st.step -= 1;
                 continue;
             }
-            match checkpoint(cx, st, &window, &request, compact::checkpoint::CheckpointReason::Threshold, None).await {
+            match checkpoint(cx, st, &window, heard_through, &request, compact::checkpoint::CheckpointReason::Threshold, None).await {
                 Ok(()) => continue,
                 Err(e) => warn!(session_id = sid, error = %e, "checkpoint failed; sending the conversation as it is"),
             }
@@ -1101,7 +1104,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                 } else if st.trigger.tripped() {
                     Err("the checkpoint breaker has tripped".to_string())
                 } else {
-                    checkpoint(cx, st, &window, &fork_of, compact::checkpoint::CheckpointReason::Overflow, None)
+                    checkpoint(cx, st, &window, heard_through, &fork_of, compact::checkpoint::CheckpointReason::Overflow, None)
                         .await
                         .map(|()| Transition::OverflowCheckpointed)
                 };
@@ -1549,12 +1552,14 @@ fn build_request(
 
 /// Checkpoint the conversation: the pre-checkpoint memory flush, the
 /// summary forked from the step's request, the boundary row and the restore
-/// rows. The next step loads from the boundary and is told the session's
-/// facts again.
+/// rows. `heard_through` is the last row the step's conversation was
+/// loaded through. The next step loads from the boundary, with every row
+/// the summary never read, and is told the session's facts again.
 async fn checkpoint(
     cx: &TurnContext,
     st: &mut TurnState,
     conversation: &[ChatMessage],
+    heard_through: Option<&str>,
     fork_of: &ChatRequest,
     why: compact::checkpoint::CheckpointReason,
     instructions: Option<&str>,
@@ -1598,6 +1603,7 @@ async fn checkpoint(
             provider: provider.as_ref(),
             session_id: &cx.session_id,
             conversation,
+            heard_through,
             fork_of,
             hooks: &hooks,
             restore: compact::restore::RestoreState {
@@ -3630,6 +3636,66 @@ mod tests {
         assert!(
             read.iter().any(|t| t.contains("Now save those ids to a file")),
             "the message is read after the checkpoint: {read:#?}"
+        );
+    }
+
+    /// Runs a turn whose step overflows, so the turn checkpoints for
+    /// itself, and sends `input` into it while the summary is written.
+    /// Returns what the step after the checkpoint read.
+    async fn input_during_a_checkpoint(input: TurnRequest) -> (Vec<StreamEvent>, Vec<String>, Vec<ChatMessage>) {
+        let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Answered.")]);
+        let h = harness(&model).await;
+        run_turn(&h, owner("Start the report")).await;
+        let h2 = h.clone();
+        let hook: Hook = Box::pin(async move {
+            let mut handle = h2.start_turn(input).await.expect("queued");
+            let _ = handle.events.recv().await;
+        });
+        *model.during_checkpoint.lock().unwrap() = Some(hook);
+        let events = run_turn(&h, owner("Keep going")).await;
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3, "the refused call and the step after the checkpoint");
+        (events, texts(&calls[2]), stored(&h))
+    }
+
+    /// The owner writes while a checkpoint the turn took for itself is being
+    /// summarized: the summary never read the message, so the step after the
+    /// checkpoint reads it after the boundary and the turn answers it. It sat
+    /// before the boundary, which the step's load starts at, and no call
+    /// ever read it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_sent_while_the_turn_checkpoints_is_read_after_the_boundary() {
+        let (events, read, rows) = input_during_a_checkpoint(owner("What time do we open?")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert!(read[0].starts_with(compact::checkpoint::BOUNDARY_LEAD), "the step opens on the boundary: {}", read[0]);
+        assert!(read.iter().any(|t| t.contains("What time do we open?")), "the message is read after the boundary: {read:#?}");
+        assert!(!read.iter().any(|t| t == compact::checkpoint::BOUNDARY_MARKER), "the owner's marker is never the model's");
+        let at = |text: &str| rows.iter().position(|m| m.content.contains(text)).expect("stored");
+        assert!(
+            at("What time do we open?") < at(compact::checkpoint::BOUNDARY_LEAD),
+            "rows stay stored in the order they arrived"
+        );
+    }
+
+    /// A helper finishes while the turn's checkpoint is being summarized:
+    /// its result is read after the boundary, never lost before it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_helper_result_that_lands_while_the_turn_checkpoints_is_read_after_the_boundary() {
+        let mut notification = owner("");
+        notification.input = TurnInput::Notification(crate::harness::delegation::Completion {
+            task_id: "h-7".into(),
+            description: "price the Rivera order".into(),
+            status: crate::harness::delegation::CompletionStatus::Done,
+            result: "The Rivera order comes to 4,210.".into(),
+            usage: Default::default(),
+            taint: Vec::new(),
+        });
+        let (events, read, _) = input_during_a_checkpoint(notification).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert!(read[0].starts_with(compact::checkpoint::BOUNDARY_LEAD), "the step opens on the boundary: {}", read[0]);
+        assert!(
+            read.iter().any(|t| t.contains("The Rivera order comes to 4,210.")),
+            "the result is read after the boundary: {read:#?}"
         );
     }
 

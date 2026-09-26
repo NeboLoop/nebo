@@ -245,8 +245,12 @@ impl Store {
 
     /// The conversation the model sees: the chat's rows from its latest
     /// checkpoint boundary (a row whose metadata carries `"checkpoint": true`)
-    /// on, the boundary included; every row when there is none. Rows before
-    /// the boundary stay on disk and in the owner's thread.
+    /// on, the boundary first; every row when there is none. A row stored
+    /// after the last row the boundary's summary read (its `heardThrough`)
+    /// but before the boundary itself arrived while the summary was written:
+    /// the summary never read it, so it loads too, after the boundary. The
+    /// owner's marker (`compactBoundary`) never does. Rows before the
+    /// boundary stay on disk and in the owner's thread.
     pub fn get_chat_messages_since_checkpoint(&self, chat_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -256,15 +260,20 @@ impl Store {
                      WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                  ),
                  boundary AS (
-                     SELECT created_at, r FROM visible
-                     WHERE CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.checkpoint') END = 1
-                     ORDER BY created_at DESC, r DESC LIMIT 1
+                     SELECT b.created_at, b.r,
+                            (SELECT h.r FROM visible h
+                             WHERE h.id = CASE WHEN json_valid(b.metadata) THEN json_extract(b.metadata, '$.heardThrough') END) AS heard
+                     FROM visible b
+                     WHERE CASE WHEN json_valid(b.metadata) THEN json_extract(b.metadata, '$.checkpoint') END = 1
+                     ORDER BY b.created_at DESC, b.r DESC LIMIT 1
                  )
                  SELECT v.* FROM visible v
                  WHERE NOT EXISTS (SELECT 1 FROM boundary)
                     OR v.created_at > (SELECT created_at FROM boundary)
                     OR (v.created_at = (SELECT created_at FROM boundary) AND v.r >= (SELECT r FROM boundary))
-                 ORDER BY v.created_at ASC, v.r ASC",
+                    OR (v.r > (SELECT heard FROM boundary) AND v.r < (SELECT r FROM boundary)
+                        AND COALESCE(CASE WHEN json_valid(v.metadata) THEN json_extract(v.metadata, '$.compactBoundary') END, 0) != 1)
+                 ORDER BY CASE WHEN v.r = (SELECT r FROM boundary) THEN 0 ELSE 1 END, v.created_at ASC, v.r ASC",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -1420,6 +1429,30 @@ mod tests {
 
         assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["b2", "m4", "m5"]);
         assert_eq!(store.get_chat_messages("c1").unwrap().len(), 7, "the thread keeps every row");
+    }
+
+    /// Rows stored while a checkpoint's summary was written sit before its
+    /// boundary, yet the summary never read them: the load keeps every row
+    /// after the one the boundary heard through, read after the boundary,
+    /// and never the owner's marker.
+    #[test]
+    fn boundary_load_keeps_rows_its_summary_never_read() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        let ids = |rows: Vec<crate::models::ChatMessage>| rows.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        let rows = [
+            ("m1", "user", None),
+            ("m2", "assistant", None),
+            ("late", "user", None),
+            ("marker", "system", Some(r#"{"compactBoundary":true}"#)),
+            ("b1", "user", Some(r#"{"checkpoint":true,"heardThrough":"m2"}"#)),
+            ("m3", "user", None),
+        ];
+        for (i, (id, role, meta)) in rows.iter().enumerate() {
+            store.create_chat_message(id, "c1", role, id, *meta).unwrap();
+            set_created_at(&store, id, 100 + i as i64);
+        }
+        assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["b1", "late", "m3"]);
     }
 
     /// Frozen renderings round-trip and never overwrite.
