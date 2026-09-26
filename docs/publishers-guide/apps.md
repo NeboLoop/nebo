@@ -780,27 +780,46 @@ For production distribution, use `bin/`. For development, `sidecar/target/releas
 
 ### Startup Timeout
 
-The sidecar must create the Unix socket within the `startup_timeout` (default 10 seconds, max 120). If the socket doesn't appear, the launch fails and the next request retries.
+The sidecar must create the Unix socket within the `startup_timeout` (default 10 seconds, max 120). If the socket doesn't appear — or the process exits first — the launch fails and is retried with backoff (see below).
 
 ### Health Checking & Auto-Restart
 
-Nebo checks your sidecar every 15 seconds:
+One supervisor per sidecar starts, watches and restarts it — at boot, on the first request, on "Try again", and after every failure:
 
-- **Crash recovery** — if the process dies, Nebo broadcasts `app_crashed` and auto-restarts. The first restart is immediate; subsequent restarts wait with exponential backoff (20s, 40s, 80s, 160s, capped at 5min). Maximum 5 crash restarts per hour.
-- **Binary hot-reload** — if the binary on disk changes (e.g. you rebuild), Nebo gracefully stops the running process, unregisters old tools, restarts the process, and re-registers tools from `agent.json`. This is not a crash — no backoff, no limit, immediate restart. The hot-reload change watcher resolves through symlinks, so a dev setup like `bin/my-app → sidecar/target/release/my-app` is detected when the underlying target is rebuilt. Note that the binary that actually launches must be a **regular file** — validation rejects a symlinked binary at launch. Dev workflow: rebuild your binary and the server auto-detects the change for a seamless tool update.
-- Broadcasts `app_restarted` after recovery (includes `reason: "binary_changed"` for hot-reloads).
+- **Exit awaited** — the moment the process exits for any reason, Nebo logs its exit status (code or signal) with the last lines of `sidecar.log`, removes its socket, and restarts it.
+- **Socket probed** — every 3 seconds Nebo connects to the socket; three failed probes in a row mean the process is no longer serving, and it is stopped and restarted. A request that cannot reach the sidecar triggers the same restart at once (and a GET/HEAD is sent again to the new process).
+- **Backoff** — 1s, 2s, 4s, … capped at 60s. The count resets once a sidecar has served for a minute.
+- **Failed** — after 5 consecutive failures the sidecar is `failed`, with the reason. Nebo keeps retrying every 60s without the state flapping. A permanent cause — no program, one the system refuses to run, a damaged manifest — is `failed` at once, with "Reinstall" in the message.
+- **Binary hot-reload** — if the binary on disk changes (e.g. you rebuild), Nebo gracefully stops the running process and runs the new one, re-registering tools from `agent.json`. This is not a crash — no backoff, no count. The change watcher resolves through symlinks, so a dev setup like `bin/my-app → sidecar/target/release/my-app` is detected when the underlying target is rebuilt. Note that the binary that actually launches must be a **regular file** — validation rejects a symlinked binary at launch.
+- **Stopping is not crashing** — Nebo exiting, a hot reload of Nebo, or the app being deactivated stops the sidecar on purpose; nothing restarts it.
+
+An app with no program at all (a UI-only app) has nothing to supervise; its `/api/*` requests answer `404` with `sidecar.state: "none"`.
+
+#### What your app sees
+
+While the sidecar cannot serve, `/api/*` answers with JSON your page can act on — the real reason, never a generic error:
+
+```json
+{ "error": "Neighbor Mail is restarting.", "sidecar": { "state": "restarting", "attempt": 2, "retryInMs": 2000, "reason": "exited with code 1; last output: …" } }
+```
+
+- `503` + `Retry-After` while `starting` or `restarting` — retry on your own.
+- `503` when `failed` — show `error`, offer "Try again" (`POST /api/v1/apps/{id}/sidecar/restart`, which answers with the state it settled in); for `permanent: true`, offer Reinstall.
+- `GET /api/v1/apps/{id}/sidecar` returns the current state. Every change is also broadcast on the WebSocket as `sidecar_state` (`{ agentId, state, … }`), alongside `app_started`, `app_crashed`, `app_restarted` and `app_stopped`.
+
+A `502` from your own sidecar (for example when *your* upstream service is down) is passed through unchanged — it means your sidecar is running and answered.
 
 ### Lifecycle
 
 Nebo owns the full lifecycle of every sidecar. When Nebo shuts down (SIGTERM, Ctrl+C, or app quit), it sends SIGTERM to every running sidecar and waits for them to exit before the process ends. Sidecars should handle SIGTERM gracefully — flush data, close connections, then exit.
 
 You do not need to manage sidecar lifetime yourself. Nebo handles:
-- **Auto-launch** — the first API request to a sidecar triggers launch if it's not already running
-- **Restore on server restart** — previously-running sidecars are detected from the `agent_workflows` table and auto-relaunched when the server starts, so there is no user-visible breakage after a server restart
-- **Health checks** — every 15 seconds
-- **Crash recovery** — auto-restart with exponential backoff
+- **Auto-launch** — the first API request to a sidecar starts it if nothing has
+- **Restore on server restart** — every enabled app's sidecar is put under supervision when the server starts; a launch that fails at boot is retried, not forgotten
+- **Health checks** — exit awaited, socket probed every 3 seconds
+- **Crash recovery** — auto-restart with exponential backoff, `failed` with the reason after repeated failures
 - **Hot-reload** — restart on binary change (no backoff)
-- **Shutdown** — SIGTERM on Nebo exit
+- **Shutdown** — SIGTERM on Nebo exit, never counted as a crash
 
 ### Sidecar Tools (declared in `agent.json`)
 
@@ -1059,7 +1078,7 @@ When a scope is active, the runner limits available tools, skills, and plugins t
 
 ### Logging
 
-Sidecar stdout and stderr are captured to the app's data directory — `$NEBO_DATA_DIR/sidecar.log` (e.g. `~/Library/Application Support/Nebo/appdata/plugins/{slug}/sidecar.log`), in append mode. `{app_dir}/data/sidecar.log` is only used as a fallback when the appdata directory can't be resolved. Check this file when debugging startup issues.
+Sidecar stdout and stderr are captured to the app's data directory — `$NEBO_DATA_DIR/sidecar.log` (e.g. `~/Library/Application Support/Nebo/appdata/plugins/{slug}/sidecar.log`), in append mode. When the sidecar exits, Nebo's own log records its exit status and the last lines of this file. Check it when debugging startup issues.
 
 ### App Agent Redaction
 

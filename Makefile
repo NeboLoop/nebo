@@ -608,6 +608,12 @@ test-engine-proof: $(NEBO_CLI)
 .PHONY: test-staffed-proof
 test-staffed-proof: $(NEBO_CLI)
 	$(NEBO_CLI) test run --suite suites/staffed-company.yaml --no-judge
+# The app-sidecar proof (suites/app-sidecars.yaml, fixtures/app-sidecars/):
+# a real sidecar killed, crashed, starved and removed, and the app serving
+# again or saying exactly why not. nebo-server lib tests, like the above.
+.PHONY: test-sidecar-proof
+test-sidecar-proof: $(NEBO_CLI)
+	$(NEBO_CLI) test run --suite suites/app-sidecars.yaml --no-judge
 # The real-model half (suites/engine-live.yaml): a running Nebo and an
 # address you own.
 test-engine-live:

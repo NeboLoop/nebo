@@ -22,7 +22,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     tonic_build::configure()
-        .build_server(false) // We only need client stubs
+        // Nebo only calls sidecars; the server stubs exist for tests that
+        // stand in for one (feature `server`).
+        .build_server(std::env::var_os("CARGO_FEATURE_SERVER").is_some())
         .compile_protos(
             &full_paths,
             // Include path must be the parent so `import "proto/apps/v0/common.proto"` resolves

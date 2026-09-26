@@ -2857,41 +2857,17 @@ pub async fn activate_agent(
         }
     }
 
-    // Launch sidecar binary for app agents using the shared .napp runtime.
+    // Put an app's sidecar under its supervisor (replacing any it had), and
+    // wait for the first launch to settle so the app is up when this returns.
     if agent.is_app.unwrap_or(0) != 0 {
-        let old_lifecycle = {
-            let mut lifecycles = state.app_lifecycles.write().await;
-            lifecycles.remove(&agent_id)
-        };
-        if let Some(mut lifecycle) = old_lifecycle {
-            if let Err(e) = lifecycle.shutdown().await {
-                warn!(agent = %agent_id, error = %e, "failed to stop existing app sidecar");
-            }
-        }
-
-        if let Some(tool_dir) = app_tool_dir(&agent) {
-            let mut lifecycle = crate::app_lifecycle::AppLifecycle::new(
-                &agent,
-                tool_dir,
-                state.hub.clone(),
-                state.tools.clone(),
-                state.skill_loader.clone(),
-                state.config.port,
-            );
-            match lifecycle.launch().await {
-                Ok(()) => {
-                    state
-                        .app_lifecycles
-                        .write()
-                        .await
-                        .insert(agent_id.clone(), lifecycle);
-                }
-                Err(e) => {
-                    warn!(agent = %agent_id, error = %e, "failed to launch app sidecar");
+        match crate::app_lifecycle::start(&state, &agent, true).await {
+            Some(lifecycle) => {
+                let settled = lifecycle.settled(crate::app_lifecycle::REQUEST_WAIT).await;
+                if !settled.is_running() {
+                    warn!(agent = %agent_id, state = %settled.wire(), "app sidecar is not running yet");
                 }
             }
-        } else {
-            warn!(agent = %agent_id, "app agent has no sidecar directory");
+            None => info!(agent = %agent_id, "app has no program to run"),
         }
     }
 
@@ -2932,15 +2908,7 @@ pub async fn deactivate_agent(
     // Stop autonomous agent worker (cancels heartbeat, event, schedule triggers)
     state.agent_workers.stop_agent(&id).await;
 
-    let lifecycle = {
-        let mut lifecycles = state.app_lifecycles.write().await;
-        lifecycles.remove(&id)
-    };
-    if let Some(mut lifecycle) = lifecycle {
-        if let Err(e) = lifecycle.shutdown().await {
-            warn!(agent = %id, error = %e, "failed to stop app sidecar");
-        }
-    }
+    crate::app_lifecycle::stop(&state, &id).await;
 
     let removed = state.agent_registry.write().await.remove(&id);
     match removed {

@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::manifest::Manifest;
-use crate::runtime::{Process, Runtime};
+use crate::runtime::Runtime;
+use crate::supervisor::{RestartPolicy, SidecarState, Supervisor};
 use crate::signing::{RevocationChecker, SigningKeyProvider};
 use crate::{InstallEvent, NappError, QuarantineEvent};
 
@@ -27,12 +29,15 @@ pub struct RegistryConfig {
     /// Directory: <data_dir>/user/tools/
     pub user_tools_dir: PathBuf,
     pub neboai_url: Option<String>,
+    /// The Nebo root (`config::data_dir()`), where each tool's data lives.
+    pub home: PathBuf,
 }
 
 /// Registered tool info (internal).
 struct RegisteredTool {
     manifest: Manifest,
-    process: Option<Process>,
+    /// The one supervisor that runs, watches and restarts the tool's process.
+    process: Option<Supervisor>,
     capabilities: Vec<String>,
     source: ToolSource,
     /// Path to the sealed .napp archive (for installed tools).
@@ -44,7 +49,7 @@ struct RegisteredTool {
 /// Tool registry manages discovery, launching, and capability registration.
 pub struct Registry {
     config: RegistryConfig,
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
     signing: Option<SigningKeyProvider>,
     revocation: Option<RevocationChecker>,
     tools: RwLock<HashMap<String, RegisteredTool>>,
@@ -63,8 +68,7 @@ impl Registry {
             .as_ref()
             .map(|url| RevocationChecker::new(url));
 
-        // Runtime uses user_tools_dir as its base (for backward compat with process launch)
-        let runtime = Runtime::new(&config.user_tools_dir);
+        let runtime = Arc::new(Runtime::new(&config.home));
 
         Self {
             config,
@@ -301,8 +305,19 @@ impl Registry {
             }
         }
 
-        // Launch process
-        let process = self.runtime.launch(tool_dir, self.api_port).await?;
+        // Launch under its supervisor, which keeps it running from here on. A
+        // first launch that does not come up is reported to the caller; the
+        // supervisor keeps retrying it all the same.
+        let process = Supervisor::start(
+            self.runtime.clone(),
+            tool_dir.to_path_buf(),
+            self.api_port,
+            RestartPolicy::default(),
+        );
+        let first = process.settled(std::time::Duration::from_secs(
+            manifest.effective_startup_timeout() as u64 + 5,
+        ))
+        .await;
         let capabilities = manifest.provides.clone();
 
         let tool_id = manifest.id().to_string();
@@ -319,7 +334,13 @@ impl Registry {
             },
         );
 
-        Ok(())
+        match first {
+            SidecarState::Running(_) => Ok(()),
+            SidecarState::Failed { reason, .. } | SidecarState::Restarting { reason, .. } => {
+                Err(NappError::Runtime(reason))
+            }
+            SidecarState::Starting | SidecarState::Off => Ok(()),
+        }
     }
 
     /// Verify that the extracted binary matches the hash in the sealed archive.
@@ -370,8 +391,8 @@ impl Registry {
         };
 
         if let Some(mut tool) = removed {
-            if let Some(ref mut process) = tool.process {
-                process.stop().await;
+            if let Some(process) = tool.process.take() {
+                process.shutdown().await;
             }
             if tool.tool_dir.exists() {
                 std::fs::remove_dir_all(&tool.tool_dir)?;
@@ -393,8 +414,8 @@ impl Registry {
             tools.remove(tool_id)
         };
         if let Some(mut tool) = removed {
-            if let Some(ref mut process) = tool.process {
-                process.stop().await;
+            if let Some(process) = tool.process.take() {
+                process.shutdown().await;
             }
         }
 
@@ -463,8 +484,8 @@ impl Registry {
             tools.remove(tool_id)
         };
         if let Some(mut tool) = removed {
-            if let Some(ref mut process) = tool.process {
-                process.stop().await;
+            if let Some(process) = tool.process.take() {
+                process.shutdown().await;
             }
         }
 
@@ -485,7 +506,7 @@ impl Registry {
                 version: t.manifest.version.clone(),
                 description: t.manifest.description.clone(),
                 provides: t.capabilities.clone(),
-                running: t.process.as_ref().map(|p| p.is_alive()).unwrap_or(false),
+                running: t.process.as_ref().is_some_and(|p| p.state().is_running()),
                 sideloaded: t.source == ToolSource::User,
             })
             .collect()
@@ -495,10 +516,10 @@ impl Registry {
     pub async fn get_endpoint(&self, tool_id: &str) -> Option<String> {
         let tools = self.tools.read().await;
         tools.get(tool_id).and_then(|t| {
-            t.process
-                .as_ref()
-                .filter(|p| p.is_alive())
-                .map(|p| p.grpc_endpoint())
+            match t.process.as_ref()?.state() {
+                SidecarState::Running(l) => Some(format!("unix://{}", l.sock_path.display())),
+                _ => None,
+            }
         })
     }
 
@@ -515,8 +536,8 @@ impl Registry {
             std::mem::take(&mut *guard)
         };
         for (id, mut tool) in tools {
-            if let Some(ref mut process) = tool.process {
-                process.stop().await;
+            if let Some(process) = tool.process.take() {
+                process.shutdown().await;
             }
             info!(tool = id.as_str(), "tool shutdown");
         }

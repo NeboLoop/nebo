@@ -1,0 +1,17 @@
+name: app-sidecars
+# The app-sidecar proof: every way an app's sidecar can stop serving, one
+# fixture each, with a real sidecar process run by the same supervisor and
+# lifecycle the proxy serves through, over a throwaway Nebo root. No model, no
+# network. Each fixture names the Rust test that proves it.
+#
+#   make test-sidecar-proof
+#   nebo-cli test run --suite suites/app-sidecars.yaml --no-judge
+#
+# `cargo test -p nebo-server --lib -- sidecar_proof` runs the same tests
+# directly, which is how CI's workspace test run includes them.
+fixtures:
+  - ../fixtures/app-sidecars/a-killed-sidecar-serves-the-next-request-within-seconds.yaml
+  - ../fixtures/app-sidecars/a-stale-socket-and-a-dead-listener-are-served-by-relaunching.yaml
+  - ../fixtures/app-sidecars/a-crash-loop-ends-failed-with-its-reason.yaml
+  - ../fixtures/app-sidecars/a-boot-failure-recovers-when-the-program-appears.yaml
+  - ../fixtures/app-sidecars/a-clean-shutdown-is-not-a-crash.yaml

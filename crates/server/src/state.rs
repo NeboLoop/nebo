@@ -192,7 +192,7 @@ pub struct AppState {
     /// A2UI surface manager — surface lifecycle, broadcasting, persistence
     pub a2ui: Arc<A2UIManager>,
     /// Running app sidecars keyed by agent ID.
-    pub app_lifecycles: Arc<tokio::sync::RwLock<HashMap<String, AppLifecycle>>>,
+    pub app_lifecycles: Arc<tokio::sync::RwLock<HashMap<String, Arc<AppLifecycle>>>>,
     /// Rolling un-answered context buffer per loop channel, keyed by conversation_id.
     /// Every channel message is ingested here (mentioned or not); the buffer is
     /// drained when the bot replies, so it only ever holds messages since the

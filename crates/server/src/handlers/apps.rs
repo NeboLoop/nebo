@@ -516,55 +516,14 @@ pub async fn proxy_to_sidecar(
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    // Find the Unix socket for this app's sidecar
-    let sock_path = match sidecar_sock_path(&agent) {
-        Some(p) => p,
-        None => return (StatusCode::SERVICE_UNAVAILABLE, "app has no sidecar path").into_response(),
+    // The app's supervised sidecar, started on first use. Whether it is up is
+    // the supervisor's answer — never whether a socket file happens to exist.
+    let Some(lifecycle) = crate::app_lifecycle::start(&state, &agent, false).await else {
+        return sidecar_unavailable(&agent, None);
     };
-
-    // Auto-launch sidecar on first request (like plugins do on-demand).
-    //
-    // The socket is the only proof a sidecar is serving; a lifecycle entry is
-    // not. A sidecar killed out from under us (signal, OOM, a stray pkill)
-    // leaves its entry behind, and keying the launch off the map alone wedged
-    // the app on every later request until nebo restarted. Retire the dead
-    // entry here instead, so the next request brings the app back.
-    if !sock_path.exists() {
-        let mut lifecycles = state.app_lifecycles.write().await;
-        // Re-check under the lock: a request that raced us may have just
-        // launched it, and relaunching now would kill a healthy sidecar.
-        if !sock_path.exists() {
-            if let Some(mut stale) = lifecycles.remove(&agent_id) {
-                warn!(agent = %agent_id, "sidecar socket is gone — retiring dead lifecycle and relaunching");
-                let _ = stale.shutdown().await;
-            }
-            if let Some(tool_dir) = super::agents::app_tool_dir(&agent) {
-                let mut lifecycle = crate::app_lifecycle::AppLifecycle::new(
-                    &agent,
-                    tool_dir,
-                    state.hub.clone(),
-                    state.tools.clone(),
-                    state.skill_loader.clone(),
-                    state.config.port,
-                );
-                match lifecycle.launch().await {
-                    Ok(()) => {
-                        lifecycles.insert(agent_id.clone(), lifecycle);
-                    }
-                    Err(e) => {
-                        warn!(agent = %agent_id, error = %e, "auto-launch sidecar failed");
-                        return (StatusCode::SERVICE_UNAVAILABLE, "sidecar launch failed").into_response();
-                    }
-                }
-            } else {
-                return (StatusCode::SERVICE_UNAVAILABLE, "app has no sidecar directory").into_response();
-            }
-        }
-    }
-
     #[cfg(not(unix))]
     {
-        let _ = req;
+        let _ = (req, lifecycle);
         return (StatusCode::SERVICE_UNAVAILABLE, "sidecar proxy requires Unix sockets").into_response();
     }
 
@@ -620,18 +579,6 @@ pub async fn proxy_to_sidecar(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-        let channel = tonic::transport::Endpoint::from_static("http://[::]:50051")
-            .connect_with_connector_lazy(tower::service_fn(move |_: tonic::transport::Uri| {
-                let sock = sock_path.clone();
-                async move {
-                    tokio::net::UnixStream::connect(sock)
-                        .await
-                        .map(hyper_util::rt::TokioIo::new)
-                }
-            }));
-
-        let mut client = proto::ui_service_client::UiServiceClient::new(channel)
-            .max_decoding_message_size(32 * 1024 * 1024);
         let grpc_req = proto::HttpRequest {
             method,
             path: path.trim_start_matches('/').to_string(),
@@ -640,9 +587,8 @@ pub async fn proxy_to_sidecar(
             body: body_bytes,
         };
 
-        match client.handle_request(grpc_req).await {
-            Ok(resp) => {
-                let inner = resp.into_inner();
+        match lifecycle.serve(grpc_req).await {
+            Ok(inner) => {
                 let status = StatusCode::from_u16(inner.status_code as u16)
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
                 let mut response = Response::builder().status(status);
@@ -655,23 +601,72 @@ pub async fn proxy_to_sidecar(
                     .body(Body::from(inner.body))
                     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
             }
-            Err(e) => {
-                warn!(agent = %agent_id, error = %e, "sidecar gRPC call failed");
-                (StatusCode::BAD_GATEWAY, format!("sidecar error: {}", e)).into_response()
-            }
+            Err(unavailable) => sidecar_unavailable(&agent, Some(&unavailable)),
         }
     }
 }
 
-/// Get the Unix socket path for an app's sidecar process.
-fn sidecar_sock_path(agent: &db::models::Agent) -> Option<std::path::PathBuf> {
-    // Prefer napp_path if set, otherwise derive from agent directory
-    let dir = agent
-        .napp_path
-        .as_ref()
-        .map(PathBuf::from)
-        .or_else(|| super::agents::app_tool_dir(agent))?;
-    Some(dir.join(format!("{}.sock", agent.id)))
+/// The answer when an app's sidecar cannot serve a request: a status the app
+/// can act on, the real reason in words, and the supervisor's state (the same
+/// shape as the `sidecar_state` event). `Retry-After` while it is coming back.
+fn sidecar_unavailable(
+    agent: &db::models::Agent,
+    unavailable: Option<&crate::app_lifecycle::Unavailable>,
+) -> Response {
+    let name = agent.name.as_str();
+    let Some(u) = unavailable else {
+        let body = serde_json::json!({
+            "error": format!("{name} has no program to run on this computer."),
+            "sidecar": { "state": "none" },
+        });
+        return (StatusCode::NOT_FOUND, axum::Json(body)).into_response();
+    };
+    let body = serde_json::json!({ "error": u.message(name), "sidecar": u.state.wire() });
+    let (status, retry_after) = match &u.state {
+        napp::supervisor::SidecarState::Starting => (StatusCode::SERVICE_UNAVAILABLE, Some(1)),
+        napp::supervisor::SidecarState::Restarting { retry_in, .. } => {
+            (StatusCode::SERVICE_UNAVAILABLE, Some(retry_in.as_secs().max(1)))
+        }
+        napp::supervisor::SidecarState::Running(_) => (StatusCode::BAD_GATEWAY, None),
+        _ => (StatusCode::SERVICE_UNAVAILABLE, None),
+    };
+    let mut resp = (status, axum::Json(body)).into_response();
+    if let Some(secs) = retry_after {
+        if let Ok(v) = HeaderValue::from_str(&secs.to_string()) {
+            resp.headers_mut().insert(header::RETRY_AFTER, v);
+        }
+    }
+    resp
+}
+
+/// GET /apps/{agent_id}/sidecar — the app's sidecar state, as `sidecar_state`
+/// carries it (`none` for an app with no program, or one not started).
+pub async fn sidecar_state(State(state): State<AppState>, Path(agent_id): Path<String>) -> Response {
+    let lifecycle = state.app_lifecycles.read().await.get(&agent_id).cloned();
+    let wire = match lifecycle {
+        Some(lc) => lc.state().wire(),
+        None => serde_json::json!({ "state": "none" }),
+    };
+    axum::Json(wire).into_response()
+}
+
+/// POST /apps/{agent_id}/sidecar/restart — "Try again": bring the app's
+/// sidecar up now through its supervisor (starting it if nothing has), and
+/// answer with the state it settled in.
+pub async fn restart_sidecar(State(state): State<AppState>, Path(agent_id): Path<String>) -> Response {
+    let agent = match state.store.get_agent(&agent_id) {
+        Ok(Some(a)) if a.is_app.unwrap_or(0) != 0 => a,
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let existing = state.app_lifecycles.read().await.get(&agent_id).cloned();
+    let settled = match existing {
+        Some(lc) => lc.revive(crate::app_lifecycle::REQUEST_WAIT).await,
+        None => match crate::app_lifecycle::start(&state, &agent, false).await {
+            Some(lc) => lc.settled(crate::app_lifecycle::REQUEST_WAIT).await,
+            None => return sidecar_unavailable(&agent, None),
+        },
+    };
+    axum::Json(settled.wire()).into_response()
 }
 
 fn validate_app_agent(

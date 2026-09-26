@@ -1,0 +1,11 @@
+id: a-killed-sidecar-serves-the-next-request-within-seconds
+name: "A killed sidecar serves the next request within seconds"
+description: |
+  Seen live: an app sidecar gone (killed, crashed) left the app "isn't
+  running" until Nebo restarted, because the exit was never awaited and the
+  proxy relaunched only when the socket file was missing. Killed with SIGKILL,
+  the exit is noticed at once and the next request is served by a new process
+  within five seconds; the dead one is reaped, not left a zombie.
+target_component: app-sidecars
+proof: sidecar_proof::scenarios::a_killed_sidecar_serves_the_next_request_within_seconds
+conversation: []

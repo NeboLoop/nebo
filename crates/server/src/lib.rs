@@ -34,6 +34,8 @@ mod reply_route;
 pub mod layers_update;
 #[cfg(test)]
 mod staffed_proof;
+#[cfg(all(test, unix))]
+mod sidecar_proof;
 #[cfg(test)]
 mod harness;
 mod spa;
@@ -1443,6 +1445,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         installed_tools_dir: data_dir.join("nebo").join("tools"),
         user_tools_dir: data_dir.join("user").join("tools"),
         neboai_url: Some(cfg.neboai.api_url.clone()),
+        home: data_dir.clone(),
     };
     let napp_registry = Arc::new(napp::Registry::new(napp_config, port));
 
@@ -1680,35 +1683,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 );
             })
             .await;
-    }
-
-    // Spawn tool supervisor (15s health check)
-    {
-        let registry = napp_registry.clone();
-        let hub_ref = hub.clone();
-        tokio::spawn(async move {
-            let supervisor = napp::supervisor::Supervisor::new();
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-            loop {
-                interval.tick().await;
-                let tools = registry.list_processes().await;
-                for tool in &tools {
-                    if tool.running {
-                        continue;
-                    }
-                    if supervisor.should_restart(&tool.id).await {
-                        supervisor.record_restart(&tool.id).await;
-                        hub_ref.broadcast(
-                            "tool_error",
-                            serde_json::json!({
-                                "toolId": tool.id,
-                                "error": "process died",
-                            }),
-                        );
-                    }
-                }
-            }
-        });
     }
 
     // Create comm plugin manager
@@ -2513,8 +2487,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
-    // Launch sidecars for enabled app agents (restore after restart).
-    // Spawned as a background task so sidecar timeouts don't block server startup.
+    // Put every enabled app's sidecar under its supervisor (restore after
+    // restart). Supervision starts at once and launches in the background; a
+    // launch that fails is retried by the supervisor, never logged once and
+    // forgotten. An app with no program (UI-only) has nothing to start.
     {
         let startup_state = state.clone();
         tokio::spawn(async move {
@@ -2522,37 +2498,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 Ok(a) => a,
                 Err(_) => return,
             };
-            let mut launched = 0usize;
+            let mut supervised = 0usize;
             for agent in &agents {
                 if agent.is_enabled == 0 || agent.is_app.unwrap_or(0) == 0 {
                     continue;
                 }
-                if let Some(tool_dir) = handlers::agents::app_tool_dir(agent) {
-                    let mut lifecycle = app_lifecycle::AppLifecycle::new(
-                        agent,
-                        tool_dir,
-                        startup_state.hub.clone(),
-                        startup_state.tools.clone(),
-                        startup_state.skill_loader.clone(),
-                        startup_state.config.port,
-                    );
-                    match lifecycle.launch().await {
-                        Ok(()) => {
-                            startup_state
-                                .app_lifecycles
-                                .write()
-                                .await
-                                .insert(agent.id.clone(), lifecycle);
-                            launched += 1;
-                        }
-                        Err(e) => {
-                            warn!(agent = %agent.id, error = %e, "failed to launch app sidecar at startup");
-                        }
-                    }
+                if app_lifecycle::start(&startup_state, agent, true).await.is_some() {
+                    supervised += 1;
                 }
             }
-            if launched > 0 {
-                info!(count = launched, "launched app sidecars at startup");
+            if supervised > 0 {
+                info!(count = supervised, "supervising app sidecars at startup");
                 // Re-validate now that app skills are loaded — clears degraded
                 // flags set during early validation before sidecars were up.
                 tools::validate_agent_dependencies(
@@ -3106,11 +3062,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             agent::memory_flush::drain_extractions().await;
             info!("extractions drained, stopping app sidecars...");
             {
+                // Stopped on purpose: the supervisors publish Off, never a crash.
                 let mut lifecycles = shutdown_lifecycles.write().await;
-                for (id, lifecycle) in lifecycles.iter_mut() {
-                    if let Err(e) = lifecycle.shutdown().await {
-                        warn!(agent = %id, error = %e, "failed to stop sidecar on shutdown");
-                    }
+                for lifecycle in lifecycles.values() {
+                    lifecycle.shutdown().await;
                 }
                 lifecycles.clear();
             }

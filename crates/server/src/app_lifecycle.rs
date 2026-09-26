@@ -1,22 +1,65 @@
+//! An app's sidecar, run under its one supervisor (`napp::supervisor`).
+//!
+//! Every way an app sidecar starts goes through [`start`]: boot, activation,
+//! an update, and the first request to an app nobody started. Every way it is
+//! brought back goes through the supervisor: a crash, a process that stops
+//! answering, a request that cannot reach it, the app's "Try again". There is
+//! no second launcher.
+//!
+//! The server's part is what follows each state change: the app's tools are
+//! registered against the running sidecar, the per-launch token and manifest
+//! permissions are read from it, and every change is broadcast as
+//! `sidecar_state` (plus the documented `app_started` / `app_crashed` /
+//! `app_restarted` / `app_stopped`).
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
-#[cfg(unix)]
-use std::collections::HashMap;
-use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
+use napp::supervisor::{Launched, RestartPolicy, SidecarState, Supervisor};
 use tracing::{info, warn};
 
 use crate::handlers::ws::ClientHub;
 use tools::sidecar_tool::{SidecarActionTool, SidecarCaller, SidecarResponse, SidecarToolDef};
-use types::NeboError;
+
+/// How long a request waits for a sidecar that is starting or restarting.
+pub(crate) const REQUEST_WAIT: Duration = Duration::from_secs(15);
+
+/// One `UIService.HandleRequest` call to the sidecar on `sock`. The one way
+/// Nebo talks to a sidecar: the proxy and the sidecar tools both call it.
+#[cfg(unix)]
+pub(crate) async fn handle_request(
+    sock: &Path,
+    req: proto::HttpRequest,
+) -> Result<proto::HttpResponse, tonic::Status> {
+    let sock = sock.to_path_buf();
+    let channel = tonic::transport::Endpoint::from_static("http://[::]:50051")
+        .connect_with_connector_lazy(tower::service_fn(move |_: tonic::transport::Uri| {
+            let sock = sock.clone();
+            async move {
+                tokio::net::UnixStream::connect(sock)
+                    .await
+                    .map(hyper_util::rt::TokioIo::new)
+            }
+        }));
+    let mut client = proto::ui_service_client::UiServiceClient::new(channel)
+        .max_decoding_message_size(32 * 1024 * 1024);
+    client.handle_request(req).await.map(|r| r.into_inner())
+}
+
+#[cfg(not(unix))]
+pub(crate) async fn handle_request(
+    _sock: &Path,
+    _req: proto::HttpRequest,
+) -> Result<proto::HttpResponse, tonic::Status> {
+    Err(tonic::Status::unavailable("sidecars require Unix sockets"))
+}
 
 /// gRPC-based caller that routes through the sidecar's UIService.HandleRequest.
 struct GrpcSidecarCaller {
     sock_path: PathBuf,
 }
 
-#[cfg(unix)]
 impl SidecarCaller for GrpcSidecarCaller {
     fn call(
         &self,
@@ -27,347 +70,337 @@ impl SidecarCaller for GrpcSidecarCaller {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<SidecarResponse, String>> + Send + '_>,
     > {
-        let method = method.to_string();
-        let path = path.to_string();
-        let query = query.to_string();
-        let body = body.to_vec();
-        let sock = self.sock_path.clone();
-
+        let req = proto::HttpRequest {
+            method: method.to_string(),
+            path: path.to_string(),
+            query: query.to_string(),
+            headers: Default::default(),
+            body: body.to_vec(),
+        };
         Box::pin(async move {
-            let channel =
-                tonic::transport::Endpoint::from_static("http://[::]:50051")
-                    .connect_with_connector_lazy(tower::service_fn(
-                        move |_: tonic::transport::Uri| {
-                            let sock = sock.clone();
-                            async move {
-                                tokio::net::UnixStream::connect(sock)
-                                    .await
-                                    .map(hyper_util::rt::TokioIo::new)
-                            }
-                        },
-                    ));
-
-            let mut client = proto::ui_service_client::UiServiceClient::new(channel);
-            let req = proto::HttpRequest {
-                method,
-                path,
-                query,
-                headers: HashMap::new(),
-                body,
-            };
-
-            match client.handle_request(req).await {
-                Ok(resp) => {
-                    let inner = resp.into_inner();
-                    Ok(SidecarResponse {
-                        status_code: inner.status_code,
-                        body: inner.body,
-                    })
-                }
+            match handle_request(&self.sock_path, req).await {
+                Ok(inner) => Ok(SidecarResponse { status_code: inner.status_code, body: inner.body }),
                 Err(e) => Err(format!("gRPC call failed: {}", e)),
             }
         })
     }
 }
 
-#[cfg(not(unix))]
-impl SidecarCaller for GrpcSidecarCaller {
-    fn call(
-        &self,
-        _method: &str,
-        _path: &str,
-        _query: &str,
-        _body: &[u8],
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<SidecarResponse, String>> + Send + '_>,
-    > {
-        let _ = &self.sock_path;
-        Box::pin(async { Err("gRPC sidecar requires Unix sockets".to_string()) })
+/// Why a request could not be served by the sidecar, for the app to show.
+#[derive(Debug)]
+pub(crate) struct Unavailable {
+    pub state: SidecarState,
+}
+
+impl Unavailable {
+    /// The sentence the app shows: the real reason, never a generic
+    /// "could not be reached".
+    pub fn message(&self, app: &str) -> String {
+        match &self.state {
+            SidecarState::Starting => format!("{app} is starting."),
+            SidecarState::Restarting { .. } => format!("{app} is restarting."),
+            SidecarState::Failed { permanent: true, reason } => {
+                format!("{app} can't run on this computer: {reason}. Reinstall {app} to fix it.")
+            }
+            SidecarState::Failed { reason, .. } => format!("{app} stopped: {reason}"),
+            SidecarState::Running(_) => format!("{app} did not answer."),
+            SidecarState::Off => format!("{app} is turned off."),
+        }
     }
 }
 
 pub struct AppLifecycle {
     agent_id: String,
-    /// The app's part of its tools' names (`app__<app>__<tool>`).
-    app: String,
-    tool_dir: PathBuf,
-    runtime: Arc<napp::Runtime>,
-    supervisor: Arc<napp::supervisor::Supervisor>,
-    process: Arc<Mutex<Option<napp::Process>>>,
-    cancel: CancellationToken,
-    hub: Arc<ClientHub>,
-    registry: Arc<tools::Registry>,
+    supervisor: Supervisor,
+    /// Follows every state change: tools, broadcasts, the last launch. Ends
+    /// on `Off`, after unregistering the app's tools.
+    follower: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The most recent launch, for its manifest permissions.
+    latest: Arc<tokio::sync::RwLock<Option<Arc<Launched>>>>,
     skill_loader: Arc<tools::skills::Loader>,
-    /// Per-launch auth token for this app's sidecar.
-    app_token: Arc<tokio::sync::RwLock<String>>,
-    /// Cached manifest permissions for API-level enforcement.
-    permissions: Arc<tokio::sync::RwLock<Vec<String>>>,
     /// Names of skills loaded for this app (for cleanup on shutdown).
     loaded_skill_names: Vec<String>,
-    /// Server port for NEBO_API_URL injection into sidecar env.
-    api_port: u16,
 }
 
 impl AppLifecycle {
-    pub fn new(
+    /// Put an app's sidecar under its supervisor. Returns once supervision has
+    /// begun; the launch itself is published as state (see [`Self::settled`]).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start(
         agent: &db::models::Agent,
         tool_dir: PathBuf,
+        home: &Path,
         hub: Arc<ClientHub>,
         registry: Arc<tools::Registry>,
         skill_loader: Arc<tools::skills::Loader>,
         api_port: u16,
+        policy: RestartPolicy,
     ) -> Self {
-        let runtime_root = tool_dir
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-        let runtime = Arc::new(napp::Runtime::new(&runtime_root));
-        Self {
-            agent_id: agent.id.clone(),
-            app: tools::sidecar_tool::app_slug(&agent.name),
-            tool_dir,
-            runtime,
-            supervisor: Arc::new(napp::supervisor::Supervisor::new()),
-            process: Arc::new(Mutex::new(None)),
-            cancel: CancellationToken::new(),
+        let runtime = Arc::new(napp::Runtime::new(home));
+        let supervisor = Supervisor::start(runtime, tool_dir.clone(), api_port, policy);
+        let latest = Arc::new(tokio::sync::RwLock::new(None));
+        let follower = tokio::spawn(follow(
+            agent.id.clone(),
+            tools::sidecar_tool::app_slug(&agent.name),
+            tool_dir.clone(),
+            supervisor.subscribe(),
             hub,
             registry,
+            latest.clone(),
+        ));
+        let loaded_skill_names = skill_loader.load_app_skills(&tool_dir).await;
+        Self {
+            agent_id: agent.id.clone(),
+            supervisor,
+            follower: tokio::sync::Mutex::new(Some(follower)),
+            latest,
             skill_loader,
-            app_token: Arc::new(tokio::sync::RwLock::new(String::new())),
-            permissions: Arc::new(tokio::sync::RwLock::new(Vec::new())),
-            loaded_skill_names: Vec::new(),
-            api_port,
+            loaded_skill_names,
         }
     }
 
-    pub async fn launch(&mut self) -> Result<(), NeboError> {
-        self.runtime.cleanup_stale(&self.tool_dir);
-        let process = self
-            .runtime
-            .launch(&self.tool_dir, self.api_port)
-            .await
-            .map_err(|e| NeboError::Internal(format!("launch app sidecar: {e}")))?;
-        let sock_path = process.sock_path.clone();
-        *self.app_token.write().await = process.app_token.clone();
-        *self.permissions.write().await = process.manifest.permissions.clone();
-        *self.process.lock().await = Some(process);
-        self.supervisor.watch(&self.agent_id).await;
-        self.hub.broadcast(
-            "app_started",
-            serde_json::json!({
-                "agentId": self.agent_id,
-                "sockPath": sock_path,
-            }),
-        );
-        self.discover_tools(&sock_path).await;
-        self.loaded_skill_names = self.skill_loader.load_app_skills(&self.tool_dir).await;
-        self.spawn_health_checker();
-        Ok(())
+    pub fn state(&self) -> SidecarState {
+        self.supervisor.state()
     }
 
-    /// Get the current app token for API authentication validation.
+    /// Wait up to `wait` for the launch in flight to settle.
+    pub async fn settled(&self, wait: Duration) -> SidecarState {
+        self.supervisor.settled(wait).await
+    }
+
+    /// Bring the sidecar up now — "Try again", or a request that could not
+    /// reach it. The supervisor's own restart path; never a second launcher.
+    pub async fn revive(&self, wait: Duration) -> SidecarState {
+        self.supervisor.revive(wait).await
+    }
+
+    /// The running sidecar's token for API authentication; empty when it is
+    /// not running, so a dead launch's token authenticates nothing.
     pub async fn app_token(&self) -> String {
-        self.app_token.read().await.clone()
+        match self.supervisor.state() {
+            SidecarState::Running(l) => l.app_token.clone(),
+            _ => String::new(),
+        }
     }
 
     /// Check if this app has a specific permission declared in its manifest.
     ///
     /// Supports exact match, prefix match, and wildcard (`network:*`).
     pub async fn has_permission(&self, perm: &str) -> bool {
-        let perms = self.permissions.read().await;
+        let latest = self.latest.read().await;
+        let Some(launched) = latest.as_ref() else {
+            return false;
+        };
         let prefix = perm.split(':').next().unwrap_or("");
-        perms.iter().any(|p| {
+        launched.manifest.permissions.iter().any(|p| {
             p == perm
                 || p == &format!("{}:*", prefix)
                 || (p.ends_with(':') && perm.starts_with(p.as_str()))
         })
     }
 
-    pub async fn shutdown(&mut self) -> Result<(), NeboError> {
-        self.cancel.cancel();
-        self.supervisor.unwatch(&self.agent_id).await;
-        let mut process = self.process.lock().await.take();
-        if let Some(ref mut process) = process {
-            process.stop().await;
-        }
-        // Unregister all sidecar tools and skills for this agent
-        self.registry.unregister_agent_tools(&self.agent_id).await;
-        self.skill_loader.unload_skills(&self.loaded_skill_names).await;
-        self.hub.broadcast(
-            "app_stopped",
-            serde_json::json!({ "agentId": self.agent_id }),
-        );
-        Ok(())
-    }
-
-    /// Register sidecar tools declared in agent.json.
-    ///
-    /// Follows the same filesystem-based pattern as skills and plugins —
-    /// tool definitions live in agent.json, not behind an HTTP endpoint.
-    async fn discover_tools(&self, sock_path: &Path) {
-        let caller: Arc<dyn SidecarCaller> = Arc::new(GrpcSidecarCaller {
-            sock_path: sock_path.to_path_buf(),
-        });
-
-        let agent_root = &self.tool_dir;
-        let defs = match read_tool_defs_from_config(agent_root, &self.agent_id) {
-            Some(d) => d,
-            None => return,
+    /// The running sidecar, waiting for one that is starting or restarting.
+    /// A failed or stopped sidecar is reported at once, never waited on.
+    pub(crate) async fn ready(&self, wait: Duration) -> Result<Arc<Launched>, Unavailable> {
+        let state = match self.supervisor.state() {
+            SidecarState::Starting | SidecarState::Restarting { .. } => self.supervisor.settled(wait).await,
+            other => other,
         };
-
-        let count = defs.len();
-        for def in defs {
-            let tool = SidecarActionTool::new(&self.app, def, caller.clone());
-            self.registry
-                .register_for_agent(&self.agent_id, Box::new(tool))
-                .await;
+        match state {
+            SidecarState::Running(l) => Ok(l),
+            state => Err(Unavailable { state }),
         }
-        info!(
-            agent = %self.agent_id,
-            tools = count,
-            "registered sidecar tools from agent.json"
-        );
     }
 
-    fn spawn_health_checker(&self) {
-        let agent_id = self.agent_id.clone();
-        let app = self.app.clone();
-        let tool_dir = self.tool_dir.clone();
-        let process_slot = self.process.clone();
-        let runtime = self.runtime.clone();
-        let supervisor = self.supervisor.clone();
-        let cancel = self.cancel.clone();
-        let hub = self.hub.clone();
-        let registry = self.registry.clone();
-        let app_token = self.app_token.clone();
-        let permissions = self.permissions.clone();
-        let api_port = self.api_port;
-
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(supervisor.check_interval());
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    _ = interval.tick() => {}
-                }
-                let (dead, binary_changed) = {
-                    let guard = process_slot.lock().await;
-                    match guard.as_ref() {
-                        Some(process) => (!process.is_alive(), process.binary_changed()),
-                        None => (false, false),
-                    }
+    /// Serve one request through the sidecar. A connection the sidecar does
+    /// not accept revives it through the supervisor, and a request that is
+    /// safe to repeat (GET, HEAD) is sent again to the relaunched one.
+    pub(crate) async fn serve(&self, req: proto::HttpRequest) -> Result<proto::HttpResponse, Unavailable> {
+        let launched = self.ready(REQUEST_WAIT).await?;
+        match handle_request(&launched.sock_path, req.clone()).await {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                warn!(agent = %self.agent_id, error = %e, "sidecar did not answer — reviving it");
+                let state = self.supervisor.revive(REQUEST_WAIT).await;
+                let SidecarState::Running(again) = state else {
+                    return Err(Unavailable { state });
                 };
-
-                // Binary changed on disk → hot-restart (not a crash, no backoff)
-                if binary_changed && !dead {
-                    info!(agent = %agent_id, "binary changed on disk, restarting sidecar");
-                    // Unregister old tools before restart
-                    registry.unregister_agent_tools(&agent_id).await;
-                    {
-                        let mut guard = process_slot.lock().await;
-                        if let Some(ref mut p) = *guard {
-                            p.stop().await;
-                        }
-                        *guard = None;
-                    }
-                    match runtime.launch(&tool_dir, api_port).await {
-                        Ok(process) => {
-                            let sock_path = process.sock_path.clone();
-                            *app_token.write().await = process.app_token.clone();
-                            *permissions.write().await = process.manifest.permissions.clone();
-                            *process_slot.lock().await = Some(process);
-
-                            // Re-register tools from agent.json
-                            let caller: Arc<dyn SidecarCaller> = Arc::new(GrpcSidecarCaller {
-                                sock_path: sock_path.clone(),
-                            });
-                            let agent_root = &tool_dir;
-                            if let Some(defs) = read_tool_defs_from_config(agent_root, &agent_id) {
-                                for def in defs {
-                                    let tool = SidecarActionTool::new(&app, def, caller.clone());
-                                    registry.register_for_agent(&agent_id, Box::new(tool)).await;
-                                }
-                            }
-
-                            hub.broadcast(
-                                "app_restarted",
-                                serde_json::json!({
-                                    "agentId": agent_id,
-                                    "reason": "binary_changed",
-                                }),
-                            );
-                        }
-                        Err(e) => {
-                            warn!(agent = %agent_id, error = %e, "failed to restart sidecar after binary change");
-                        }
-                    }
-                    continue;
+                let repeatable = matches!(req.method.as_str(), "GET" | "HEAD");
+                if !repeatable {
+                    return Err(Unavailable { state: SidecarState::Running(again) });
                 }
-
-                if !dead {
-                    continue;
-                }
-
-                // Process crashed — use supervisor backoff/limits
-                hub.broadcast("app_crashed", serde_json::json!({ "agentId": agent_id }));
-                if !supervisor.should_restart(&agent_id).await {
-                    continue;
-                }
-                supervisor.record_restart(&agent_id).await;
-                match runtime.launch(&tool_dir, api_port).await {
-                    Ok(process) => {
-                        *app_token.write().await = process.app_token.clone();
-                        *permissions.write().await = process.manifest.permissions.clone();
-                        *process_slot.lock().await = Some(process);
-                        let restart_count = supervisor.restart_count(&agent_id).await;
-                        hub.broadcast(
-                            "app_restarted",
-                            serde_json::json!({
-                                "agentId": agent_id,
-                                "restartCount": restart_count,
-                            }),
-                        );
-                    }
-                    Err(e) => {
-                        warn!(agent = %agent_id, error = %e, "failed to restart app sidecar");
-                    }
-                }
+                handle_request(&again.sock_path, req).await.map_err(|e| {
+                    warn!(agent = %self.agent_id, error = %e, "sidecar did not answer after reviving");
+                    Unavailable { state: SidecarState::Running(again.clone()) }
+                })
             }
-        });
+        }
+    }
+
+    /// Stop the sidecar for good (Nebo exiting, the app deactivated or
+    /// replaced). Not a crash: nothing restarts it.
+    pub async fn shutdown(&self) {
+        self.supervisor.shutdown().await;
+        if let Some(follower) = self.follower.lock().await.take() {
+            let _ = follower.await;
+        }
+        self.skill_loader.unload_skills(&self.loaded_skill_names).await;
     }
 }
 
-/// Stop and relaunch a running app's sidecar from its current (post-update) tool
-/// dir, so an update that swapped the version dir replaces the live sidecar with
-/// the new binary. No-op if the app isn't currently running (the lazy-launch path
-/// picks up the new dir on the next request) or has no sidecar dir. Reuses the same
-/// launch sequence as the on-demand path.
-pub(crate) async fn relaunch(state: &crate::state::AppState, agent: &db::models::Agent) {
-    let agent_id = agent.id.clone();
-    let mut lifecycles = state.app_lifecycles.write().await;
-    let Some(mut old) = lifecycles.remove(&agent_id) else {
-        return; // not running — next request lazy-launches from the new dir
-    };
-    let _ = old.shutdown().await;
-    let Some(tool_dir) = crate::handlers::agents::app_tool_dir(agent) else {
-        warn!(agent = %agent_id, "app has no sidecar dir after update — not relaunched");
+/// Follow a sidecar's state: register its tools each time it runs, remember
+/// the launch, and broadcast every change.
+async fn follow(
+    agent_id: String,
+    app: String,
+    tool_dir: PathBuf,
+    mut rx: tokio::sync::watch::Receiver<SidecarState>,
+    hub: Arc<ClientHub>,
+    registry: Arc<tools::Registry>,
+    latest: Arc<tokio::sync::RwLock<Option<Arc<Launched>>>>,
+) {
+    let mut launches: u32 = 0;
+    let mut was_running = false;
+    loop {
+        let state = rx.borrow_and_update().clone();
+        let mut event = state.wire();
+        event["agentId"] = serde_json::json!(agent_id);
+        hub.broadcast("sidecar_state", event);
+        match &state {
+            SidecarState::Running(launched) => {
+                launches += 1;
+                *latest.write().await = Some(launched.clone());
+                register_tools(&agent_id, &app, &tool_dir, &launched.sock_path, &registry).await;
+                if launches == 1 {
+                    hub.broadcast(
+                        "app_started",
+                        serde_json::json!({ "agentId": agent_id, "sockPath": launched.sock_path }),
+                    );
+                } else {
+                    hub.broadcast(
+                        "app_restarted",
+                        serde_json::json!({ "agentId": agent_id, "restartCount": launches - 1 }),
+                    );
+                }
+                was_running = true;
+            }
+            SidecarState::Restarting { .. } | SidecarState::Failed { .. } if was_running => {
+                hub.broadcast("app_crashed", serde_json::json!({ "agentId": agent_id }));
+                was_running = false;
+            }
+            SidecarState::Off => {
+                registry.unregister_agent_tools(&agent_id).await;
+                hub.broadcast("app_stopped", serde_json::json!({ "agentId": agent_id }));
+                return;
+            }
+            _ => {}
+        }
+        if rx.changed().await.is_err() {
+            registry.unregister_agent_tools(&agent_id).await;
+            return;
+        }
+    }
+}
+
+/// Register the sidecar tools declared in agent.json against the socket.
+///
+/// Follows the same filesystem-based pattern as skills and plugins — tool
+/// definitions live in agent.json, not behind an HTTP endpoint. Re-read on
+/// every launch, so a rebuilt app's changed tools take effect.
+async fn register_tools(agent_id: &str, app: &str, tool_dir: &Path, sock: &Path, registry: &tools::Registry) {
+    registry.unregister_agent_tools(agent_id).await;
+    let Some(defs) = read_tool_defs_from_config(tool_dir, agent_id) else {
         return;
     };
-    let mut lifecycle = AppLifecycle::new(
-        agent,
-        tool_dir,
-        state.hub.clone(),
-        state.tools.clone(),
-        state.skill_loader.clone(),
-        state.config.port,
-    );
-    match lifecycle.launch().await {
-        Ok(()) => {
-            lifecycles.insert(agent_id, lifecycle);
+    let caller: Arc<dyn SidecarCaller> = Arc::new(GrpcSidecarCaller { sock_path: sock.to_path_buf() });
+    let count = defs.len();
+    for def in defs {
+        registry
+            .register_for_agent(agent_id, Box::new(SidecarActionTool::new(app, def, caller.clone())))
+            .await;
+    }
+    info!(agent = %agent_id, tools = count, "registered sidecar tools from agent.json");
+}
+
+/// Whether an app has a program to supervise. An app that recorded one at
+/// install, or has one on disk now (the one rule, `napp::runtime::sidecar_binary`),
+/// does; a UI-only app does not, and nothing is launched for it.
+pub(crate) fn has_sidecar(agent: &db::models::Agent, tool_dir: &Path) -> bool {
+    agent.app_binary_path.as_deref().is_some_and(|p| !p.is_empty())
+        || napp::runtime::sidecar_binary(tool_dir).is_some()
+}
+
+/// Start an app's sidecar under its supervisor. The ONE way an app sidecar
+/// starts — boot, activation, an update and an on-request start all call this.
+/// With `replace`, a sidecar the app already has is stopped and started anew
+/// (activation, an update); without it, a running one is kept (a request).
+/// Returns the lifecycle, or `None` for an app with no program to run.
+pub(crate) async fn start(
+    state: &crate::state::AppState,
+    agent: &db::models::Agent,
+    replace: bool,
+) -> Option<Arc<AppLifecycle>> {
+    if !replace {
+        if let Some(lc) = state.app_lifecycles.read().await.get(&agent.id) {
+            return Some(lc.clone());
         }
+    }
+    let tool_dir = crate::handlers::agents::app_tool_dir(agent)?;
+    if !has_sidecar(agent, &tool_dir) {
+        return None;
+    }
+    let home = match config::data_dir() {
+        Ok(h) => h,
         Err(e) => {
-            warn!(agent = %agent_id, error = %e, "failed to relaunch app sidecar after update");
+            warn!(agent = %agent.id, error = %e, "no data directory — app sidecar not started");
+            return None;
         }
+    };
+    let mut lifecycles = state.app_lifecycles.write().await;
+    // Decided again under the lock: two first requests start it once.
+    if let Some(existing) = lifecycles.get(&agent.id) {
+        if !replace {
+            return Some(existing.clone());
+        }
+    }
+    if let Some(old) = lifecycles.remove(&agent.id) {
+        old.shutdown().await;
+    }
+    let lifecycle = Arc::new(
+        AppLifecycle::start(
+            agent,
+            tool_dir,
+            &home,
+            state.hub.clone(),
+            state.tools.clone(),
+            state.skill_loader.clone(),
+            state.config.port,
+            RestartPolicy::default(),
+        )
+        .await,
+    );
+    lifecycles.insert(agent.id.clone(), lifecycle.clone());
+    Some(lifecycle)
+}
+
+/// Stop an app's sidecar for good (deactivation). Not a crash.
+pub(crate) async fn stop(state: &crate::state::AppState, agent_id: &str) {
+    let removed = state.app_lifecycles.write().await.remove(agent_id);
+    if let Some(lifecycle) = removed {
+        lifecycle.shutdown().await;
+    }
+}
+
+/// Replace a running app's sidecar with the one in its current (post-update)
+/// tool dir. No-op if the app isn't running (the next request starts it from
+/// the new dir).
+pub(crate) async fn relaunch(state: &crate::state::AppState, agent: &db::models::Agent) {
+    if !state.app_lifecycles.read().await.contains_key(&agent.id) {
+        return;
+    }
+    if start(state, agent, true).await.is_none() {
+        stop(state, &agent.id).await;
+        warn!(agent = %agent.id, "app has no program after update — not relaunched");
     }
 }
 

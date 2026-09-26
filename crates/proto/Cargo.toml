@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Server stubs, for tests that answer as a sidecar would.
+server = []
+
 [dependencies]
 tonic = "0.12"
 prost = "0.13"
