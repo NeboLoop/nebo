@@ -508,7 +508,7 @@ pub(crate) async fn run_tool_round(
 /// characters: while their total is over it, the largest result not yet
 /// persisted (and carrying no image) is saved under `dir` and previewed.
 fn apply_message_budget(results: &mut [Option<(ai::ToolCall, ToolResult)>], dir: &std::path::Path) {
-    let persisted = |r: &ToolResult| r.content.starts_with("<persisted-output>");
+    let persisted = |r: &ToolResult| r.content.starts_with(tools::result_shape::SAVED_OUTPUT);
     loop {
         let total: usize = results.iter().flatten().map(|(_, r)| r.content.chars().count()).sum();
         if total <= tools::result_shape::MESSAGE_RESULT_BUDGET {
@@ -1098,7 +1098,7 @@ mod tests {
         ];
         apply_message_budget(&mut results, dir.path());
         let content = |i: usize| results[i].as_ref().unwrap().1.content.clone();
-        assert!(content(1).starts_with("<persisted-output>"), "the largest goes first");
+        assert!(content(1).starts_with(tools::result_shape::SAVED_OUTPUT), "the largest goes first");
         assert_eq!(content(0), mid, "under budget after one: the rest stay inline");
         assert!(content(2).starts_with("eee"));
     }

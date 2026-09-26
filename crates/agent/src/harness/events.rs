@@ -285,7 +285,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             return replacement_row(
                 "session_context",
                 text,
-                Some("The session context has changed; these values replace the earlier ones:"),
+                Some("The session details have changed; these replace the earlier ones:"),
             );
         }
         TurnEvent::AgentsListing(d) => return d.attachment("agents_listing", &AGENT_WORDS),
@@ -293,7 +293,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::DateChanged(date) => {
             return Some(Attachment {
                 kind: "date_changed",
-                text: format!("The date has changed. Today is {}. No need to announce it.", date.format("%A, %B %-d, %Y")),
+                text: format!("It is a new day: today is {}. No need to mention it.", date.format("%A, %B %-d, %Y")),
                 data: serde_json::Map::from_iter([("date".to_string(), serde_json::json!(date.to_string()))]),
             });
         }
@@ -985,7 +985,7 @@ mod tests {
         let mut tomorrow = facts();
         tomorrow.date = tomorrow.date.succ_opt().unwrap();
         assert_eq!(fact_step(&mut history, &tomorrow), ["date_changed"]);
-        assert!(history.last().unwrap().content.contains("Today is Friday, September 25, 2026."));
+        assert!(history.last().unwrap().content.contains("today is Friday, September 25, 2026."));
         assert!(fact_step(&mut history, &tomorrow).is_empty(), "told once");
     }
 
@@ -1088,7 +1088,7 @@ mod tests {
         let text = |e: TurnEvent| attachment_for(&e).unwrap().text;
         assert_eq!(
             text(TurnEvent::DateChanged(chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap())),
-            "The date has changed. Today is Thursday, September 24, 2026. No need to announce it."
+            "It is a new day: today is Thursday, September 24, 2026. No need to mention it."
         );
         assert_eq!(
             text(TurnEvent::Usage(Threshold::Spend {

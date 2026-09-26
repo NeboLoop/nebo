@@ -3,8 +3,8 @@ name: "Correction - a call missing its required parameter, or to an unloaded def
 description: |
   The flat file and command tools validate every call against their schema
   before running it. A call that leaves out a required parameter comes back
-  as `<tool_use_error>InputValidationError: read_file failed due to the
-  following issue(s): The required parameter `path` is missing`, with the
+  as `<call_error>Invalid input for read_file: The required parameter
+  `path` is missing`, with the
   smallest valid call when nothing was sent. A deferred tool the model calls
   before loading it runs when the call is valid; when it is not, the error
   adds "This tool wasn't loaded, so its
@@ -41,7 +41,7 @@ prompt_assertions:
       check: { first_call: true, tool: read_file }
   recovery:
     - id: new-error-shapes-only
-      text: "The errors are the two induced InputValidationErrors and nothing else: no old os parse error ('Failed to parse input', 'missing field') and no third error from a repeated bad shape"
+      text: "The errors are the two induced input errors and nothing else: no old os parse error ('Failed to parse input', 'missing field') and no third error from a repeated bad shape"
       severity: critical
       check: { max_errors: 2, no_error_contains: ["Failed to parse input", "missing field"] }
     - id: loads-the-deferred-tool

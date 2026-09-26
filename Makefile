@@ -174,7 +174,7 @@ vm-rootfs:
 	docker export rootfs-tmp > vm/build/rootfs.tar
 	docker rm rootfs-tmp
 	@echo "Converting to raw disk image..."
-	@# Create a raw ext4 image from the tarball (same format as Claude's rootfs.img)
+	@# Create a raw ext4 image from the tarball (the VM's rootfs.img format)
 	dd if=/dev/zero of=vm/build/rootfs.img bs=1M count=512
 	mkfs.ext4 -F vm/build/rootfs.img
 	mkdir -p /tmp/nebo-rootfs-mnt

@@ -1,10 +1,14 @@
 //! What a tool result looks like to the model: the one spill path, the
-//! persisted-output preview, and the error shapes. Every door that runs a
+//! saved-output preview, and the error shapes. Every door that runs a
 //! tool goes through [`crate::Registry::execute`], which applies these.
 
 use std::path::{Path, PathBuf};
 
 use crate::registry::{PERSIST_THRESHOLD_CHARS, ToolResult};
+
+/// How a result saved to a file begins: a preview of a large result, or an
+/// old result cleared under context pressure.
+pub const SAVED_OUTPUT: &str = "<saved-output>";
 
 /// Characters of a persisted result shown inline.
 pub const PREVIEW_CHARS: usize = 2_000;
@@ -38,7 +42,7 @@ pub fn shape(tool: &str, dir: &Path, threshold: Option<usize>, result: &mut Tool
         return;
     }
     if result.content.is_empty() {
-        result.content = format!("({tool} completed with no output)");
+        result.content = format!("({tool} returned no output)");
         return;
     }
     // A result carrying an image is never persisted: the image is the point.
@@ -69,7 +73,7 @@ fn save(dir: &Path, content: &str) -> std::io::Result<PathBuf> {
 pub fn persist_cleared(dir: &Path, content: &str) -> Option<String> {
     match save(dir, content) {
         Ok(path) => Some(format!(
-            "<persisted-output>\nTool result saved to: {}\n\nUse read_file to view\n</persisted-output>",
+            "{SAVED_OUTPUT}\nThis result was saved at: {}\nRead it with read_file if you need it.\n</saved-output>",
             path.display()
         )),
         Err(e) => {
@@ -88,16 +92,16 @@ pub fn persist(dir: &Path, content: &str) -> String {
     let preview = preview(content);
     match saved {
         Ok(path) => format!(
-            "<persisted-output>\nOutput too large ({size}). Full output saved to: {}\n\n\
-             Preview (first 2KB):\n{preview}\n</persisted-output>\n\
+            "{SAVED_OUTPUT}\nThe output is {size}, too long to show here. Saved in full at: {}\n\n\
+             First 2KB:\n{preview}\n</saved-output>\n\
              Read the file a line range at a time, or search it with grep; don't read it whole.",
             path.display()
         ),
         Err(e) => {
             tracing::warn!(error = %e, "failed to persist a large tool result");
             format!(
-                "<persisted-output>\nOutput too large ({size}); saving it failed ({e}), so only \
-                 the preview is available.\n\nPreview (first 2KB):\n{preview}\n</persisted-output>"
+                "{SAVED_OUTPUT}\nThe output is {size}, too long to show here, and saving it failed ({e}); \
+                 only the first 2KB is available.\n\nFirst 2KB:\n{preview}\n</saved-output>"
             )
         }
     }
@@ -143,20 +147,20 @@ fn cap_error(content: &mut String) {
     );
 }
 
-/// Inside `<tool_use_error>`: a call that never reached its tool.
-pub fn tool_use_error(message: &str) -> String {
-    format!("<tool_use_error>{message}</tool_use_error>")
+/// Inside `<call_error>`: a call that never reached its tool.
+pub fn call_error(message: &str) -> String {
+    format!("<call_error>{message}</call_error>")
 }
 
 /// The call names no registered tool.
 pub fn unknown_tool(name: &str) -> String {
-    tool_use_error(&format!("Error: No such tool available: {name}"))
+    call_error(&format!("There is no tool named {name}."))
 }
 
 /// The call's input failed its tool's schema.
 pub fn input_validation(tool: &str, issues: &[String]) -> String {
-    tool_use_error(&format!(
-        "InputValidationError: {tool} failed due to the following issue(s):\n{}",
+    call_error(&format!(
+        "Invalid input for {tool}:\n{}",
         issues.join("\n")
     ))
 }
@@ -173,11 +177,11 @@ mod tests {
             let body: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
             let mut r = ToolResult::ok(body.clone());
             shape("run_command", &dir, threshold(Some(30_000)), &mut r);
-            assert!(r.content.starts_with("<persisted-output>\nOutput too large ("));
-            assert!(r.content.contains("Preview (first 2KB):\nline 0\n"));
+            assert!(r.content.starts_with("<saved-output>\nThe output is "));
+            assert!(r.content.contains("First 2KB:\nline 0\n"));
             let path = r
                 .content
-                .split("Full output saved to: ")
+                .split("Saved in full at: ")
                 .nth(1)
                 .and_then(|s| s.lines().next())
                 .unwrap();
@@ -201,7 +205,7 @@ mod tests {
     fn empty_success_names_the_tool_and_errors_keep_head_and_tail() {
         let mut r = ToolResult::ok("");
         shape("read_file", Path::new("/nonexistent"), Some(10), &mut r);
-        assert_eq!(r.content, "(read_file completed with no output)");
+        assert_eq!(r.content, "(read_file returned no output)");
         let mut e = ToolResult::error(format!("{}{}", "a".repeat(8_000), "z".repeat(8_000)));
         shape("run_command", Path::new("/nonexistent"), Some(10), &mut e);
         assert!(e.content.starts_with("aaaa") && e.content.ends_with("zzzz"));
@@ -213,11 +217,11 @@ mod tests {
     fn error_shapes_are_wrapped() {
         assert_eq!(
             unknown_tool("bash"),
-            "<tool_use_error>Error: No such tool available: bash</tool_use_error>"
+            "<call_error>There is no tool named bash.</call_error>"
         );
         assert_eq!(
             input_validation("read_file", &["The required parameter `path` is missing".into()]),
-            "<tool_use_error>InputValidationError: read_file failed due to the following issue(s):\nThe required parameter `path` is missing</tool_use_error>"
+            "<call_error>Invalid input for read_file:\nThe required parameter `path` is missing</call_error>"
         );
     }
 }

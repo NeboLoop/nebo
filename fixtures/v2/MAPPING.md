@@ -46,7 +46,7 @@ Every failure that went away was vocabulary: a first call to `find_tools`, `get_
 - **checkpoint-keeps-every-owner-message:** misses part14 (3/3).
 - **helper-finishes-while-owner-chats:** the parent reads the notes itself (2/3).
 - **read-over-budget-ranged:** two over-budget read errors (3/3).
-- **agent-edit-user-created:** calls `get_employee` before loading it (InputValidationError); **agent-update-description:** `update_employee` is stopped by a permission wait.
+- **agent-edit-user-created:** calls `get_employee` before loading it (input error); **agent-update-description:** `update_employee` is stopped by a permission wait.
 - **os-shell-session:** "Session not found" (2/3).
 - **team-no-hub:** `create_team` fails input validation (2/3).
 - **quickbooks-payment-dry-run:** 11 calls against a budget of 5 (3/3).
@@ -54,13 +54,13 @@ Every failure that went away was vocabulary: a first call to `find_tools`, `get_
 - **naming-thread-keeps-referent:** researches when it shouldn't (1/3).
 - **event-reminder-shape:** calls a tool named `reminders` that does not exist (3/3).
 
-Two checks fail on v2 where they passed on the original, and both catch real misses the old error wording could not see. In `plugin-discover-installed`, `no-first-call-misses` catches a call to a tool named `plugin`, which does not exist on P ("No such tool available"). In `quickbooks-payment-dry-run`, `no-tool-errors` catches `use_skill` called without a required parameter.
+Two checks fail on v2 where they passed on the original, and both catch real misses the old error wording could not see. In `plugin-discover-installed`, `no-first-call-misses` catches a call to a tool named `plugin`, which does not exist on P ("There is no tool named plugin."). In `quickbooks-payment-dry-run`, `no-tool-errors` catches `use_skill` called without a required parameter.
 
 **Judgement calls, for the owner:**
 
 - **`correction-os-glob-no-action`:** the owner message still says "Call the os tool with glob…". The scenario is kept verbatim, but P's `os` has no glob. v2 expects the listing through `run_command`. P made no call in any of 3 runs, so it fails.
 - **`correction-event-reminder-shape`:** `uses-event` is now `[find_tools, create_schedule]`. P's runs 1–2 first called `reminders`, a name the model invented. The call errors, so the check still fails there.
-- **`no_error_contains` in two fixtures:** `plugin-discover-installed` and `quickbooks-payment-dry-run` now list P's wording of the same first-call misses: `InputValidationError`, `No such tool`, `is missing`, `No skill named`. They replace the old tool's `Resource is required` and `Unknown action`.
+- **`no_error_contains` in two fixtures:** `plugin-discover-installed` and `quickbooks-payment-dry-run` now list P's wording of the same first-call misses: `input error`, `There is no tool named`, `is missing`, `No skill named`. They replace the old tool's `Resource is required` and `Unknown action`.
 - **Checks the branch added are not carried over.** The branch turned several judged assertions into program checks (in agent-spawn-*, empty-output, web-*) and replaced some scenarios (web-browser-interaction's page, event-reminder-shape → schedule-reminder-once). v2 keeps main's scenarios and each assertion's kind, so A and P are measured by the same list.
 
 ## Per fixture
@@ -232,7 +232,7 @@ Other: description v2 line, target_component os→run_command, tool_config os→
 #### correction-unknown-file-action (`fixtures/v2/correction/unknown-file-action.yaml`)
 Changed:
 - `uses-os` [critical, judged, first_call]: 'Model uses the os tool' → 'Model uses the file tools (read_file, edit_file, write_file) or run_command' — P split os into these tools (tool-name)
-- `corrects-after-refusal` [critical, judged, recovery]: 'refused for an unknown action … (file edit, file write, or a shell append)' → 'refused for an unknown action or parameter … (edit_file, write_file with the whole content, or a run_command append)' — P refuses an invented parameter with InputValidationError (prose-vocab)
+- `corrects-after-refusal` [critical, judged, recovery]: 'refused for an unknown action … (file edit, file write, or a shell append)' → 'refused for an unknown action or parameter … (edit_file, write_file with the whole content, or a run_command append)' — P refuses an invented parameter with input error (prose-vocab)
 Unchanged: `job-finished`, `no-abandon`, `bounded`
 Other: description names P's refusal shape and valid appends, target_component os→write_file, tool_config os→read_file/edit_file/write_file/run_command, narrative
 
@@ -314,7 +314,7 @@ Other: description (+update_employee is its own deferred tool), target_component
 #### correction-plugin-discover-installed (`fixtures/v2/correction/plugin-discover-installed.yaml`)
 Changed:
 - `says-installed` [critical, judged, recovery]: "discover … points at plugin(resource: \"quickbooks\")" → "find_plugins … points at plugin__quickbooks" (tool-name)
-- `no-first-call-misses` [critical, program, recovery]: no_error_contains ["Resource is required", "Unknown action", "Install it on the card", "not found. Available"] → ["InputValidationError", "No such tool", "Install it on the card", "not found. Available"] — the old tool's shape rejections were a missing resource / unknown action; P's are a schema rejection (InputValidationError, also returned for a deferred tool called before find_tools loaded it) and an unknown tool name (tool-name)
+- `no-first-call-misses` [critical, program, recovery]: no_error_contains ["Resource is required", "Unknown action", "Install it on the card", "not found. Available"] → ["Invalid input for", "There is no tool named", "Install it on the card", "not found. Available"] — the old tool's shape rejections were a missing resource / unknown action; P's are a schema rejection (input error, also returned for a deferred tool called before find_tools loaded it) and an unknown tool name (tool-name)
 - `bounded` [important, program, recovery]: `{max_tool_calls: 8}` → `{max_tool_calls: 9}` (call-count(+1 deferred): plugin__quickbooks is loaded with find_tools)
 Unchanged: `no-install-card`, `honest-summary`
 Other: description, target_component (plugin→find_plugins), tool_config keys (plugin__quickbooks, find_plugins, create_employee, use_skill), ideal narrative (tool_calls 3→4)
@@ -324,12 +324,12 @@ Changed:
 - `uses-event` [critical, program, first_call]: `{first_call, tool: event}` → `{first_call, tool: [find_tools, create_schedule]}` — scheduling is create_schedule on P, deferred (tool-name, deferred-load)
 - `bounded` [critical, program, recovery]: `{max_tool_calls: 3}` → `{max_tool_calls: 4}` (call-count(+1 deferred))
 Unchanged: `at-most-one-error`, `reminder-lands`
-Other: description (create_schedule's fields; deferred), target_component (event→create_schedule), tool_config key, ideal narrative. The branch deleted this fixture for `correction-schedule-reminder-once`; v2 keeps main's scenario and id. Note: arm P's runs 1–2 opened on `reminders(action: create, …)`, which is not a tool on P ("No such tool available: reminders" — a name the model invented; `reminders` is only a resource of the macOS organizer inside `os`), then loaded and called create_schedule. That first call still fails `uses-event` in v2: a real miss, not vocabulary.
+Other: description (create_schedule's fields; deferred), target_component (event→create_schedule), tool_config key, ideal narrative. The branch deleted this fixture for `correction-schedule-reminder-once`; v2 keeps main's scenario and id. Note: arm P's runs 1–2 opened on `reminders(action: create, …)`, which is not a tool on P ("There is no tool named reminders." — a name the model invented; `reminders` is only a resource of the macOS organizer inside `os`), then loaded and called create_schedule. That first call still fails `uses-event` in v2: a real miss, not vocabulary.
 
 #### correction-team-no-hub (`fixtures/v2/correction/team-no-hub.yaml`)
 Changed:
 - `first-call-is-team-create` [critical, judged, recovery]: "team(action: create) (or loop create / workroom create) with agents …" → "the first call other than a find_tools load is create_team with members …" (tool-name, deferred-load, arg-name agents→members)
-- `no-first-call-misses` [critical, program, recovery]: check unchanged (`max_errors: 0`); text "unknown-action" → "InputValidationError (a deferred tool called before find_tools loaded it)" (prose-vocab)
+- `no-first-call-misses` [critical, program, recovery]: check unchanged (`max_errors: 0`); text "unknown-action" → "input error (a deferred tool called before find_tools loaded it)" (prose-vocab)
 - `bounded` [critical, program, recovery]: `{max_tool_calls: 3}` → `{max_tool_calls: 4}` (call-count(+1 deferred))
 - `no-plugin-discover` [critical, judged, recovery]: "plugin(action: discover)" → "find_plugins" (tool-name)
 Unchanged: `team-exists`
@@ -355,7 +355,7 @@ Other: description v2 line (+delegate), tool_config agent/os→delegate/read_fil
 Changed:
 - `plugin-first` [critical, program, first_call]: `{first_call, tool: [plugin, skill]}` → `{first_call, tool: [plugin__quickbooks, use_skill, find_tools]}` (tool-name, deferred-load)
 - `no-shell-plugin` [critical, judged, recovery]: "No os shell call" → "No run_command call" (tool-name)
-- `no-tool-errors` [critical, program, recovery]: no_error_contains ["unexpected argument", "exited with code", "is required", "not found"] + ["is missing", "No such tool", "No skill named"] — the same shapes (missing parameter, guessed tool or skill name) in P's wording; nothing removed (tool-name)
+- `no-tool-errors` [critical, program, recovery]: no_error_contains ["unexpected argument", "exited with code", "is required", "not found"] + ["is missing", "There is no tool named", "No skill named"] — the same shapes (missing parameter, guessed tool or skill name) in P's wording; nothing removed (tool-name)
 - `bounded` [important, program, recovery]: `{max_tool_calls: 4}` → `{max_tool_calls: 5}` (call-count(+1 deferred))
 Unchanged: `dry-run-only`, `shape`
 Other: description (plugin__quickbooks, use_skill, the +1 noted), target_component (tool→plugin__quickbooks), tool_config keys (plugin__quickbooks, use_skill, run_command), ideal narrative (tool_calls 2→3)

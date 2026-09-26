@@ -15,7 +15,7 @@
  * 8. User calls interrupt() → stop TTS, send interrupt, → listening
  * 9. User calls stop() → cleanup everything → idle
  *
- * Based on Claude Desktop's VoiceSession (zMt) pattern.
+ * One store owns the session and every transition above.
  */
 
 import { writable, derived } from 'svelte/store';

@@ -3,7 +3,7 @@ name: "Correction — appending with no append mode keeps the file and finishes 
 description: |
   Appending to a file tempts a mode that does not exist: write_file takes
   path and content and replaces the file, it has no append. A call with an
-  invented parameter comes back as an InputValidationError that names the
+  invented parameter comes back as an input error that names the
   parameters that exist. The model must append a valid way (edit_file
   anchored on the last line, run_command `printf 'gamma\n' >> file`, or a
   read then a write_file of the whole content), never clobber the file with

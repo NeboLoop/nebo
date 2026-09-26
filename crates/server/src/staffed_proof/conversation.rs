@@ -840,7 +840,7 @@ async fn an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_i
     );
 }
 
-/// Parity 1.9: the owner's next message answers the question card that is
+/// Review 1.9: the owner's next message answers the question card that is
 /// open in the conversation. The parked call gets the message as its answer and the
 /// turn goes on; it is never queued behind a card nobody will click.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -886,7 +886,7 @@ async fn the_owners_next_message_answers_the_open_question() {
     );
 }
 
-/// Parity 5.4: a coworker's message is a coworker's. The employee reads it
+/// Review 5.4: a coworker's message is a coworker's. The employee reads it
 /// as a colleague's — in its own thread, and when a second message lands
 /// while it is still working on the first — never as the owner's, and the
 /// row it is stored as says so.
@@ -946,7 +946,7 @@ async fn a_coworkers_message_is_read_as_a_coworkers() {
     }
 }
 
-/// Parity 5.2: a turn woken by a notification continues the conversation
+/// Review 5.2: a turn woken by a notification continues the conversation
 /// it belongs to, as the same party. A helper started from a chat channel
 /// (a Slack channel: someone who is not the owner) reports back; the woken
 /// turn keeps the channel's limits — files stay off — instead of running
@@ -1138,7 +1138,7 @@ async fn a_woken_turn_replies_in_the_chat_channel_it_came_from() {
     nebo.state.channel_bridges.write().await.remove(&tools::channel_bridge_key("", "slack"));
 }
 
-/// Parity 5.5: an update for a helper that has finished and been let go —
+/// Review 5.5: an update for a helper that has finished and been let go —
 /// a coworker's late reply, redelivered at boot or at a run's end — goes to
 /// the helper's parent, which is told. It never wakes the helper's own
 /// session as a chat turn.

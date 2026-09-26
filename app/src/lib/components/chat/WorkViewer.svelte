@@ -1,12 +1,12 @@
 <script lang="ts">
   /**
    * WorkViewer — the ONE renderer for Work-panel artifacts, routed by file
-   * extension (Claude's renderer-matrix model). Heavy libraries (pdfjs-dist,
+   * extension (one renderer per format). Heavy libraries (pdfjs-dist,
    * docx-preview, xlsx, shiki) load on demand via dynamic import so the main
    * bundle stays lean. Fetching lives here too: text formats fetch as text,
    * binary formats as ArrayBuffer, media not at all (the browser streams it).
    *
-   * Security model (mirrors Claude's): HTML artifacts run in a sandboxed
+   * Security model: HTML artifacts run in a sandboxed
    * iframe WITHOUT allow-same-origin (opaque origin — scripts may run but
    * can't reach the app, its API, or its storage). DOCX renders via
    * docx-preview to styled DOM (no scripts/macros execute). Spreadsheet

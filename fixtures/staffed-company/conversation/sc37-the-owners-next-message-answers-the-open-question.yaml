@@ -3,7 +3,7 @@ name: "SC37 — The owner's next message answers the open question"
 description: |
   An ask_owner card is open when the owner writes in the conversation: the message is the
   answer, since typing a reply is the natural way to answer. The turn goes on with it; nothing
-  is queued behind a card nobody clicks (parity 1.9).
+  is queued behind a card nobody clicks (review 1.9).
 target_component: staffed-company
 proof: staffed_proof::conversation::the_owners_next_message_answers_the_open_question
 conversation: []

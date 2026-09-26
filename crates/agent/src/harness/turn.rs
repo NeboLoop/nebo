@@ -3596,7 +3596,7 @@ mod tests {
         assert_eq!(kinds(&rows).iter().filter(|k| *k == "environment").count(), 2, "the facts are told again after the boundary");
     }
 
-    /// D10 (parity 6.4): the owner's `/compact` is the turn's own
+    /// D10 (review 6.4): the owner's `/compact` is the turn's own
     /// checkpoint, not a weaker second path: the summary forks the step's
     /// request (the one system prompt and the tool list), carries the
     /// owner's instructions (added to the summary prompt), and
@@ -3756,7 +3756,7 @@ mod tests {
         }
     }
 
-    /// D10 (parity 6.3): after a checkpoint the model is told the work the
+    /// D10 (review 6.3): after a checkpoint the model is told the work the
     /// session started that is still running (restored task rows): its
     /// helper and its background command, not
     /// another session's command.
@@ -3819,7 +3819,7 @@ mod tests {
         }
     }
 
-    /// Parity 5.1: a result that carries untrusted content taints the run
+    /// Review 5.1: a result that carries untrusted content taints the run
     /// that reads it — the turn's provenance names it at its end.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_result_that_carries_what_a_helper_read_taints_the_run() {
@@ -4072,7 +4072,7 @@ mod tests {
             .collect();
         assert_eq!(results.len(), 30);
         for r in &results[..25] {
-            assert!(r.contains("Tool result saved to:") && !r.contains("rrrrr"), "{r}");
+            assert!(r.contains("This result was saved at:") && !r.contains("rrrrr"), "{r}");
         }
         for r in &results[25..] {
             assert!(r.contains(&"r".repeat(5_000)), "the five newest stay whole");
@@ -4455,7 +4455,7 @@ mod tests {
             ..Default::default()
         };
         let refused = goals.suggest(&ctx, "every test passes", true).await.unwrap_err();
-        assert!(refused.starts_with("Plan mode is on, so a goal can't be proposed yet."), "{refused}");
+        assert!(refused.starts_with("No goal yet: plan mode is on."), "{refused}");
     }
 
     /// A helper given its own speed (fix plan E8) runs every step on it,

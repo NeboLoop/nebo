@@ -412,7 +412,7 @@ mod tests {
         }
     }
 
-    /// Parity 5.3: a helper started in a coworker's run answers for that
+    /// Review 5.3: a helper started in a coworker's run answers for that
     /// run, so it keeps the audience and the memory restriction it implies,
     /// on every path a helper starts.
     #[tokio::test]

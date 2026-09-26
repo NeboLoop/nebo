@@ -581,7 +581,7 @@ fn check_in_prompt(
     } else {
         let list: Vec<String> = running.iter().map(|r| format!("- {}", r.line())).collect();
         format!(
-            "The agreed goal is still active: {condition}. Its check has waited {minutes} min because background work is still running:\n{}\nCheck on its progress. If it is progressing, say so briefly and keep waiting; if it is stuck or no longer needed, fix or stop it and continue toward the goal.",
+            "The agreed goal is still active: {condition}. Its check has been on hold for {minutes} min while this background work runs:\n{}\nSee how it is going. If it is moving, say so in a line and keep waiting; if it is stuck or not needed any more, fix or stop it and get on with the goal.",
             list.join("\n")
         )
     };
@@ -841,7 +841,7 @@ impl tools::GoalSuggester for GoalSuggestions {
             // A proposal is refused in plan mode: the goal comes after the
             // owner approves the plan, not before.
             if ctx.grant.as_ref().is_some_and(|g| g.mode == types::permissions::Mode::Plan) {
-                return Err("Plan mode is on, so a goal can't be proposed yet. Keep planning; propose it once the owner approves the plan.".to_string());
+                return Err("No goal yet: plan mode is on. Finish the plan first; a goal can follow once the owner approves it.".to_string());
             }
             let unavailable = || "Goals can't be set in this conversation. Keep working toward what the owner asked.".to_string();
             let observer = self.harness.goal_observer().ok_or_else(unavailable)?;
@@ -1298,7 +1298,7 @@ mod tests {
         let kickoffs = seen.kickoffs.lock().unwrap().clone();
         assert_eq!(kickoffs.len(), 1);
         assert!(
-            kickoffs[0].contains("still running:\n- helper h1 \"read the filings\""),
+            kickoffs[0].contains("while this background work runs:\n- helper h1 \"read the filings\""),
             "{}",
             kickoffs[0]
         );

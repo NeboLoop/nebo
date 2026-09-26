@@ -12,8 +12,8 @@
 //! the employee's memory and the session context. One system prompt serves
 //! every session, so its cached prefix is shared; the per-session context is
 //! sent as a `<system-reminder>` message at the start of the conversation
-//! and re-sent as a replacement when it changes ("The session context has
-//! changed; these values replace the earlier ones").
+//! and re-sent as a replacement when it changes ("The session details have
+//! changed; these replace the earlier ones").
 
 pub mod inputs;
 pub mod sections;

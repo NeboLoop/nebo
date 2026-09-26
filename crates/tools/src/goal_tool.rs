@@ -55,7 +55,7 @@ impl DynTool for SuggestGoalTool {
     /// condition for a check that reads only the conversation.
     fn description(&self) -> String {
         "Proposes an agreed goal: an end state that keeps you working until a separate check confirms it is met. It doesn't wait: the owner sees it on a card while you keep working.\n\
-         - Propose one only when the owner asked for an outcome with a checkable end state (\"every test passes\", \"all 40 invoices are filed\") and the work spans several turns. Not for one-off tasks, and never to widen scope: the goal follows from what they asked.\n\
+         - Propose one only when the owner asked for an outcome with a checkable end state (\"every test passes\", \"all 40 invoices are filed\") and the work will take several turns. Skip it for single tasks, and never use it to stretch what they asked for: the goal comes from their request.\n\
          - The owner approves it on the card. Set ask_owner false only when the owner's own words in this conversation stated this outcome; if you inferred it, or are unsure, ask. Either way you're told when the goal is set.\n\
          - The check reads only the conversation; it can't run commands or open files. State one end state and how it is shown, in at most 500 characters.\n\
          - One goal at a time: a new one replaces the current one. If the owner declines, you aren't told; don't ask about it or propose it again."
@@ -214,7 +214,7 @@ mod tests {
         for part in [
             "an end state that keeps you working until a separate check confirms it is met",
             "It doesn't wait: the owner sees it on a card while you keep working.",
-            "the work spans several turns. Not for one-off tasks",
+            "the work will take several turns. Skip it for single tasks",
             "The check reads only the conversation; it can't run commands or open files.",
             "If the owner declines, you aren't told; don't ask about it or propose it again.",
         ] {

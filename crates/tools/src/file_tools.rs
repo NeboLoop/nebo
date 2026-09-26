@@ -995,11 +995,11 @@ impl DynTool for ExitPlanModeTool {
             }
             let plan = str_arg(&input, "plan").unwrap_or("").trim();
             if plan.is_empty() {
-                return ToolResult::ok("The owner approved leaving plan mode. You can now proceed.");
+                return ToolResult::ok("The owner said yes: plan mode is off. Go ahead.");
             }
             ToolResult::ok(format!(
                 "The owner approved your plan. Plan mode is off: you can now carry it out.\n\n\
-                 The plan is saved at {}; tick its steps with check_plan as you go.\n\n## Approved plan:\n{plan}",
+                 The plan is saved at {}; tick its steps with check_plan as you go.\n\n## The plan:\n{plan}",
                 str_arg(&input, "path").unwrap_or("")
             ))
         })
@@ -1232,7 +1232,7 @@ mod tests {
         assert!(doc.contains("- [x] 2."), "{doc}");
     }
 
-    /// D11 (parity 7.1): every verify command meets the permission check as
+    /// D11 (review 7.1): every verify command meets the permission check as
     /// a `run_command` call, so a command rule refuses it here too; the
     /// step did not run, and the others do.
     #[tokio::test]

@@ -185,13 +185,13 @@ fi
 
 if case_ skill-onedoor-03 "the skill tool is gone"; then
   call '{"action":"list"}' skill
-  expect_error "No such tool available"
+  expect_error "There is no tool named skill"
   ok
 fi
 
 if case_ plugin-onedoor-01 "the plugin tool is gone; each plugin is its own tool"; then
   call '{"action":"help","resource":"anything"}' plugin
-  expect_error 'No such tool available: plugin'
+  expect_error 'There is no tool named plugin'
   ok
 fi
 
