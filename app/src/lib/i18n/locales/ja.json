@@ -243,7 +243,10 @@
 		"searchChats": "チャットを検索…",
 		"upgrade": "アップグレード",
 		"restarted": "再起動済み",
-		"working": "作業中"
+		"working": "作業中",
+		"chatActions": "チャットの操作",
+		"deleteChatTitle": "「{name}」を削除しますか？",
+		"deleteChatBody": "このチャットとすべてのメッセージが削除されます。元に戻すことはできません。"
 	},
 	"chat": {
 		"goalLine": "目標: {condition}（{turns} ターン）",

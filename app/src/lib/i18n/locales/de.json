@@ -243,7 +243,10 @@
 		"searchChats": "Chats durchsuchen…",
 		"upgrade": "Upgrade",
 		"restarted": "Neu gestartet",
-		"working": "Arbeitet"
+		"working": "Arbeitet",
+		"chatActions": "Chat-Aktionen",
+		"deleteChatTitle": "„{name}“ löschen?",
+		"deleteChatBody": "Dieser Chat und alle seine Nachrichten werden entfernt. Das lässt sich nicht rückgängig machen."
 	},
 	"chat": {
 		"goalLine": "Ziel: {condition} ({turns} Runden)",

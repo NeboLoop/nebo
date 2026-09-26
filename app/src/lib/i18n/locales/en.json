@@ -243,7 +243,10 @@
 		"searchChats": "Search chats…",
 		"upgrade": "Upgrade",
 		"restarted": "Interrupted",
-		"working": "Working"
+		"working": "Working",
+		"chatActions": "Chat actions",
+		"deleteChatTitle": "Delete \"{name}\"?",
+		"deleteChatBody": "This chat and all its messages are removed. This can't be undone."
 	},
 	"chat": {
 		"goalLine": "Goal: {condition} ({turns} turns)",

@@ -243,7 +243,10 @@
 		"searchChats": "Cari sembang…",
 		"upgrade": "Naik taraf",
 		"restarted": "Dimulakan semula",
-		"working": "Bekerja"
+		"working": "Bekerja",
+		"chatActions": "Tindakan sembang",
+		"deleteChatTitle": "Padam \"{name}\"?",
+		"deleteChatBody": "Sembang ini dan semua mesejnya akan dipadam. Tindakan ini tidak boleh dibatalkan."
 	},
 	"chat": {
 		"goalLine": "Matlamat: {condition} ({turns} giliran)",
