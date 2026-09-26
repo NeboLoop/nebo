@@ -23,6 +23,7 @@ use std::time::Duration;
 use futures::{AsyncRead, AsyncWrite, Sink, Stream};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
@@ -38,13 +39,23 @@ pub enum TunnelError {
     Dial(String),
     #[error("tunnel mux failed: {0}")]
     Mux(String),
+    /// The hub ended the tunnel because the bot was removed from NeboAI: it
+    /// closed the carrier with 1008 [`REVOKED_CLOSE_REASON`], or refused the
+    /// dial with 401 [`crate::REVOKED_REASON`]. Redialing cannot succeed.
+    #[error("this bot was removed from NeboAI")]
+    Revoked,
 }
+
+/// The close reason the hub sends, with 1008 Policy Violation, when it ends a
+/// removed bot's tunnel.
+pub const REVOKED_CLOSE_REASON: &str = "revoked";
 
 /// Dial the hub and serve tunnel streams until the connection closes.
 ///
 /// Returns `Ok(())` on a clean close by the hub and an error on dial/auth/mux
 /// failure; the caller owns reconnect and backoff (the watcher in
 /// `crates/server`, mirroring the comms reconnect watcher).
+/// [`TunnelError::Revoked`] is final: the bot was removed from NeboAI.
 pub async fn run(
     hub_url: &str,
     token: &str,
@@ -72,15 +83,17 @@ pub async fn run(
 
     let (ws, _) = tokio_tungstenite::connect_async(request)
         .await
-        .map_err(|e| TunnelError::Dial(e.to_string()))?;
+        .map_err(dial_error)?;
     info!(hub = %hub_url, "tunnel: connected to hub");
     online.store(true, std::sync::atomic::Ordering::Relaxed);
 
+    let revoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut conn = yamux::Connection::new(
-        WsIo::new(ws, HUB_SILENCE),
+        WsIo::new(ws, HUB_SILENCE, revoked.clone()),
         yamux::Config::default(),
         yamux::Mode::Server,
     );
+    let was_revoked = || revoked.load(std::sync::atomic::Ordering::Relaxed);
     loop {
         match futures::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await {
             Some(Ok(stream)) => {
@@ -91,6 +104,7 @@ pub async fn run(
                     }
                 });
             }
+            Some(Err(_)) | None if was_revoked() => return Err(TunnelError::Revoked),
             Some(Err(e)) => return Err(TunnelError::Mux(e.to_string())),
             None => {
                 info!("tunnel: hub closed the connection");
@@ -98,6 +112,22 @@ pub async fn run(
             }
         }
     }
+}
+
+/// A refused dial is [`TunnelError::Revoked`] when the hub says the bot was
+/// removed (401 with [`crate::REVOKED_REASON`]); anything else may pass.
+fn dial_error(e: tokio_tungstenite::tungstenite::Error) -> TunnelError {
+    if let tokio_tungstenite::tungstenite::Error::Http(response) = &e {
+        let reason = response
+            .body()
+            .as_deref()
+            .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
+            .and_then(|body| body["error"].as_str().map(str::to_owned));
+        if response.status() == 401 && reason.as_deref() == Some(crate::REVOKED_REASON) {
+            return TunnelError::Revoked;
+        }
+    }
+    TunnelError::Dial(e.to_string())
 }
 
 /// Name this process's lease on the dial (`crate::lease`): the hub lets only
@@ -374,6 +404,69 @@ mod tests {
         );
     }
 
+    /// The hub's revoke signals end the tunnel for good; a routine close
+    /// (a draining pod, 1012) or another refusal does not.
+    #[tokio::test]
+    async fn revoked_close_and_refusal_are_final_and_a_drain_is_not() {
+        use futures::SinkExt;
+        use tokio::io::AsyncWriteExt;
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+
+        // A hub that accepts the tunnel, then closes it with `code, reason`.
+        async fn closed_with(code: CloseCode, reason: &'static str) -> Result<(), TunnelError> {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let (sock, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+                ws.send(WsMessage::Close(Some(CloseFrame {
+                    code,
+                    reason: reason.into(),
+                })))
+                .await
+                .unwrap();
+                let _ = ws.close(None).await;
+            });
+            let online = std::sync::atomic::AtomicBool::new(false);
+            run(&format!("ws://{addr}/tunnel"), "t", "127.0.0.1:9", &online).await
+        }
+        assert!(matches!(
+            closed_with(CloseCode::Policy, REVOKED_CLOSE_REASON).await,
+            Err(TunnelError::Revoked)
+        ));
+        assert!(closed_with(CloseCode::Restart, "drain").await.is_ok());
+
+        // A hub that refuses the dial with `status` and `body`.
+        async fn refused_with(status: &'static str, body: &'static str) -> Result<(), TunnelError> {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut head = [0u8; 4096];
+                let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut head).await;
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                sock.write_all(reply.as_bytes()).await.unwrap();
+            });
+            let online = std::sync::atomic::AtomicBool::new(false);
+            run(&format!("ws://{addr}/tunnel"), "t", "127.0.0.1:9", &online).await
+        }
+        assert!(matches!(
+            refused_with("401 Unauthorized", r#"{"error":"bot has been revoked"}"#).await,
+            Err(TunnelError::Revoked)
+        ));
+        assert!(matches!(
+            refused_with("401 Unauthorized", r#"{"error":"stale token"}"#).await,
+            Err(TunnelError::Dial(_))
+        ));
+        assert!(matches!(
+            refused_with("503 Service Unavailable", r#"{"error":"bot has been revoked"}"#).await,
+            Err(TunnelError::Dial(_))
+        ));
+    }
+
     /// A hub that goes silent must fail the read rather than hang forever —
     /// that failure is what makes the watcher redial.
     #[tokio::test]
@@ -394,7 +487,7 @@ mod tests {
         let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
             .await
             .unwrap();
-        let mut io = WsIo::new(ws, Duration::from_millis(200));
+        let mut io = WsIo::new(ws, Duration::from_millis(200), Default::default());
 
         let mut buf = [0u8; 4];
         assert_eq!(io.read(&mut buf).await.unwrap(), 4);
@@ -414,20 +507,29 @@ mod tests {
 /// is gone. The hub's yamux keepalive puts a frame on the wire every 30s, so
 /// silence past `hub_silence` means the hub is gone; failing the read unwinds
 /// the session and the watcher redials.
+///
+/// A close frame saying the bot was revoked (1008 [`REVOKED_CLOSE_REASON`])
+/// sets `revoked`, so `run` can tell that close from a routine one.
 struct WsIo {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     buf: tokio_tungstenite::tungstenite::Bytes,
     hub_silence: Duration,
     deadline: Pin<Box<tokio::time::Sleep>>,
+    revoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl WsIo {
-    fn new(ws: WebSocketStream<MaybeTlsStream<TcpStream>>, hub_silence: Duration) -> Self {
+    fn new(
+        ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+        hub_silence: Duration,
+        revoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
         Self {
             ws,
             buf: tokio_tungstenite::tungstenite::Bytes::new(),
             hub_silence,
             deadline: Box::pin(tokio::time::sleep(hub_silence)),
+            revoked,
         }
     }
 }
@@ -457,9 +559,15 @@ impl AsyncRead for WsIo {
                     self.reset_deadline();
                     self.buf = data;
                 }
-                Poll::Ready(Some(Ok(WsMessage::Close(_)))) | Poll::Ready(None) => {
+                Poll::Ready(Some(Ok(WsMessage::Close(frame)))) => {
+                    if frame.is_some_and(|f| {
+                        f.code == CloseCode::Policy && f.reason.as_str() == REVOKED_CLOSE_REASON
+                    }) {
+                        self.revoked.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     return Poll::Ready(Ok(0));
                 }
+                Poll::Ready(None) => return Poll::Ready(Ok(0)),
                 Poll::Ready(Some(Ok(_))) => self.reset_deadline(), // ping/pong/text — liveness, not bytes
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
                 Poll::Pending => {

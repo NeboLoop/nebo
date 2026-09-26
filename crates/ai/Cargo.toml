@@ -15,6 +15,7 @@ tokio-util = { workspace = true }
 
 # HTTP
 reqwest = { workspace = true }
+tokio-tungstenite = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -45,5 +46,5 @@ libc = "0.2"
 [dev-dependencies]
 rcgen = "0.13"
 tokio-rustls = "0.26"
-tokio-tungstenite = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tempfile = "3"

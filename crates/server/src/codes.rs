@@ -1447,7 +1447,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
                         async move {
                             let platform = napp::plugin::current_platform_key();
                             let m = api_inner
-                                .get_plugin(&dep_slug, &platform)
+                                .get_plugin::<napp::plugin::PluginManifest>(&dep_slug, &platform)
                                 .await
                                 .map_err(|e| {
                                     napp::NappError::PluginDownloadFailed(e.to_string())
@@ -1526,7 +1526,7 @@ pub(crate) async fn fetch_and_install_plugin(
 ) -> Result<(), NeboError> {
     let platform = napp::plugin::current_platform_key();
     let detail = api
-        .get_plugin(slug, &platform)
+        .get_plugin::<napp::plugin::PluginManifest>(slug, &platform)
         .await
         .map_err(|e| NeboError::Internal(format!("fetch plugin detail for {slug}: {e}")))?;
     let version = if detail.version.is_empty() {
@@ -1881,19 +1881,10 @@ async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
 pub(crate) fn build_api_client(state: &AppState) -> Result<NeboAIApi, NeboError> {
     let bot_id =
         config::read_bot_id().ok_or_else(|| NeboError::Internal("no bot_id configured".into()))?;
-    let profiles = state
-        .store
-        .list_all_active_auth_profiles_by_provider("neboai")
-        .unwrap_or_default();
-    let profile = profiles
-        .first()
-        .ok_or_else(|| NeboError::Internal("not connected to NeboAI".into()))?;
+    let token =
+        neboai_token(state).ok_or_else(|| NeboError::Internal("not connected to NeboAI".into()))?;
     let api_server = state.config.neboai.api_url.clone();
-    Ok(NeboAIApi::new(
-        api_server,
-        bot_id,
-        profile.api_key.clone(),
-    ))
+    Ok(NeboAIApi::new(api_server, bot_id, token))
 }
 
 /// Push a single chat's (possibly newly-generated) title to its NeboLoop
@@ -2088,36 +2079,12 @@ fn host_label() -> String {
 }
 
 pub(crate) fn neboai_token(state: &AppState) -> Option<String> {
-    neboai_token_from(&state.store)
-}
-
-/// Store-level variant for callers without an AppState (workflow manager).
-/// Honors the rotated-token cache — the DB copy goes stale after rotation.
-pub(crate) fn neboai_token_from(store: &db::Store) -> Option<String> {
-    let profiles = store
-        .list_all_active_auth_profiles_by_provider("neboai")
-        .unwrap_or_default();
-    let mut token = profiles.first().map(|p| p.api_key.clone())?;
-    if token.is_empty() {
-        return None;
-    }
-    if let Ok(dir) = config::data_dir() {
-        let cache_path = dir.join("neboai_token.cache");
-        if let Ok(cached) = std::fs::read_to_string(&cache_path) {
-            let cached = cached.trim().to_string();
-            if !cached.is_empty() && cached != token {
-                info!("neboai: using cached rotated token (differs from DB)");
-                token = cached;
-            }
-        }
-    }
-    Some(token)
+    auth::neboai_token(&state.store)
 }
 
 /// Fire-and-forget push of a durable inbox item (or a `resolved: true` delta)
 /// to the owner's unified inbox at neboai.com/app. Uses `neboai_token()` —
-/// rotated-cache aware, unlike `build_api_client` whose DB token goes stale
-/// after rotation — and spawns so a hub outage never blocks or breaks local
+/// rotated-cache aware — and spawns so a hub outage never blocks or breaks local
 /// notification creation. Silently a no-op when not connected to NeboAI.
 pub(crate) fn push_inbox(state: &AppState, item: serde_json::Value) {
     push_inbox_via(&state.store, &state.config.neboai.api_url, item);
@@ -2138,7 +2105,7 @@ pub(crate) fn push_inbox_via(store: &db::Store, api_url: &str, item: serde_json:
 /// The hub API that reaches the owner's Inbox; `None` when this bot has no
 /// NeboAI account, so there is no Inbox.
 pub(crate) fn inbox_api(store: &db::Store, api_url: &str) -> Option<NeboAIApi> {
-    Some(NeboAIApi::new(api_url.to_string(), config::read_bot_id()?, neboai_token_from(store)?))
+    Some(NeboAIApi::new(api_url.to_string(), config::read_bot_id()?, auth::neboai_token(store)?))
 }
 
 /// Fire-and-forget registration of a produced thing (document version, app)
@@ -2153,7 +2120,7 @@ pub(crate) fn push_artifact_via(store: &db::Store, api_url: &str, artifact: serd
     let Some(bot_id) = config::read_bot_id() else {
         return;
     };
-    let Some(token) = neboai_token_from(store) else {
+    let Some(token) = auth::neboai_token(store) else {
         return;
     };
     let api_server = api_url.to_string();
@@ -2197,6 +2164,9 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     // System info for the owner's manage console — which machine is this bot?
     config.insert("platform".into(), std::env::consts::OS.to_string());
     config.insert("hostname".into(), host_label());
+    config.insert("runtime".into(), RUNTIME.to_string());
+    // Nebo serves its own chat contract over the tunnel (bots.chat).
+    config.insert("chat".into(), "true".into());
 
     // Pin the PRIMARY agent's identity on CONNECT so the loop's default agent is
     // deterministically "Nebo" (the local `assistant` row) and can never be
@@ -2810,6 +2780,9 @@ async fn refresh_neboai_token(
     Some(token_resp.access_token)
 }
 
+/// What this bot runs, as the hub knows it (connect redeem + CONNECT).
+pub(crate) const RUNTIME: &str = "nebo";
+
 /// Core NEBO code redemption logic. Called by both:
 /// - `handle_nebo_code()` (chat-based code interception)
 /// - `connect_handler()` (HTTP POST /neboai/connect)
@@ -2818,7 +2791,7 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
     let api_server = state.config.neboai.api_url.clone();
 
     // 1. Redeem code (pre-auth, standalone)
-    let resp = comm::api::redeem_code(&api_server, code, "nebo-rs", "desktop", &bot_id)
+    let resp = comm::api::redeem_code(&api_server, code, "nebo-rs", "desktop", &bot_id, RUNTIME)
         .await
         .map_err(|e| NeboError::Internal(format!("redeem failed: {e}")))?;
 

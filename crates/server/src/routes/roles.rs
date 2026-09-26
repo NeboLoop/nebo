@@ -16,6 +16,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::agents::work_out_agent_needs),
         )
         .route(
+            "/agents/linked",
+            axum::routing::get(handlers::agents::list_linked_agents),
+        )
+        .route(
             "/agents/{id}",
             axum::routing::get(handlers::agents::get_agent),
         )

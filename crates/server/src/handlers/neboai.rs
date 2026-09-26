@@ -485,19 +485,11 @@ pub async fn bot_status(State(state): State<AppState>) -> HandlerResult<serde_js
 /// Fetch usage directly from Janus GET /v1/usage and update the in-memory cache.
 async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage, NeboError> {
     let janus_url = &state.config.neboai.janus_url;
-    let profiles = state
-        .store
-        .list_all_active_auth_profiles_by_provider("neboai")
-        .unwrap_or_default();
-    let token = profiles
-        .first()
-        .map(|p| p.api_key.clone())
-        .unwrap_or_default();
-    if token.is_empty() {
+    let Some(token) = crate::codes::neboai_token(state) else {
         return Err(NeboError::Internal(
             "no neboai token for janus usage".into(),
         ));
-    }
+    };
     let bot_id = config::read_bot_id().unwrap_or_default();
 
     let resp = reqwest::Client::new()

@@ -115,14 +115,8 @@ pub(crate) async fn reload_providers(state: &AppState) {
                         let janus_url = &state.config.neboai.janus_url;
                         let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
                         let bot_id = config::read_bot_id().unwrap_or_default();
-                        // Janus authenticates via X-Bot-ID header; api_key (OAuth token) is optional
-                        let api_key = if profile.api_key.is_empty() {
-                            bot_id.clone()
-                        } else {
-                            profile.api_key.clone()
-                        };
                         let mut p = ai::OpenAIProvider::with_base_url(
-                            api_key,
+                            crate::janus_api_key(state.store.clone()),
                             model,
                             format!("{}/v1", janus_url),
                         );
@@ -426,7 +420,7 @@ pub async fn test_provider(
             let janus_url = &state.config.neboai.janus_url;
             let bot_id = config::read_bot_id().unwrap_or_default();
             let mut provider = ai::OpenAIProvider::with_base_url(
-                profile.api_key.clone(),
+                crate::janus_api_key(state.store.clone()),
                 model,
                 format!("{}/v1", janus_url),
             );
@@ -457,6 +451,8 @@ pub async fn test_provider(
 async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String, String> {
     let req = ai::ChatRequest {
         tool_credential: None,
+        chat_id: String::new(),
+        approval_channels: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),

@@ -7,6 +7,10 @@
 //! that was passing. This test reads the pooled suites and says it out loud: after
 //! [`scratch::bind`], no two fixture runs name the same directory, the same
 //! file or the same employee, and no teardown reaches outside its own scratch.
+//!
+//! What a run leaves on the server (memory, sessions, files in the bot's
+//! home) is kept from the next run by the gate itself: every run of every
+//! fixture gets a fresh server (`scripts/gate-run.sh`), tested here too.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -159,5 +163,103 @@ fn teardown_reaches_no_further_than_its_own_scratch() {
                 );
             }
         }
+    }
+}
+
+/// The gate's lanes run fixtures only through `scripts/gate-run.sh`, which
+/// gives every run a fresh server. A lane that called the runner with a whole
+/// suite (`--suite`) or its own server address (`--server`) would run
+/// several runs on one server again, and a run could quote what an earlier
+/// run of its fixture saved to memory (2026-09-25).
+#[test]
+fn every_gate_lane_runs_fixtures_through_gate_run() {
+    let wf = std::fs::read_to_string(repo_root().join(".github/workflows/harness-gate.yml")).expect("read the gate workflow");
+    for line in wf.lines().filter(|l| !l.trim_start().starts_with('#')) {
+        assert!(
+            !line.contains("--suite") && !line.contains("--server"),
+            "a lane runs the test runner around scripts/gate-run.sh: {}",
+            line.trim()
+        );
+    }
+    assert!(wf.matches("scripts/gate-run.sh ").count() >= 5, "the gate, nightly and sweep lanes all go through gate-run.sh");
+}
+
+/// `gate-run.sh` itself, with a stand-in server script beside it and a
+/// stand-in runner: a fresh server before every run of every fixture, of a
+/// suite and of a replay set alike, each run asked for on its own and keeping
+/// its number, the bot's credentials never passed to the runner, and a run
+/// that fails leaves the next runs to go ahead and fails the whole.
+#[cfg(unix)]
+#[test]
+fn gate_run_starts_a_fresh_server_before_every_run() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let t = tmp.path();
+    let write = |rel: &str, body: &str| {
+        let p = t.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, body).unwrap();
+        if rel.ends_with(".sh") {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    };
+    std::fs::create_dir_all(t.join("scripts")).unwrap();
+    std::fs::copy(repo_root().join("scripts/gate-run.sh"), t.join("scripts/gate-run.sh")).expect("copy gate-run.sh");
+    write("scripts/gate-server.sh", "echo \"fresh $1\" >> \"$LOG\"; echo 27999 > \"$GATE_JOB/server.port\"\n");
+    // Fails run 1 of fixture a, once.
+    write(
+        "runner.sh",
+        "echo \"run $* bot=${A_BOT_ID-none}\" >> \"$LOG\"\ncase \"$*\" in *a.yaml*--first-run\\ 1\\ *) exit 1 ;; esac\n",
+    );
+    write("suites/s.yaml", "name: s\nfixtures:\n  - ../fixtures/a.yaml\n  - ../fixtures/b.yaml\n");
+    write("home/harness-replays/set1/suite.yaml", "name: set1\nfixtures:\n  - thread-1.yaml\n");
+    write("home/harness-replays/set1/thread-1.yaml", "id: thread-1\n");
+    std::fs::create_dir_all(t.join("job")).unwrap();
+    let log = t.join("log");
+
+    let run = |entry: &str, runs: &str| {
+        std::process::Command::new("bash")
+            .arg(t.join("scripts/gate-run.sh"))
+            .args([entry, runs, "out", "bash"])
+            .arg(t.join("runner.sh"))
+            .args(["test", "run", "--no-judge"])
+            .current_dir(t)
+            .env("GATE_JOB", t.join("job"))
+            .env("HOME", t.join("home"))
+            .env("LOG", &log)
+            .env("A_BOT_ID", "the-bot-secret")
+            .status()
+            .expect("run gate-run.sh")
+    };
+
+    let suite = run("suites/s.yaml", "2");
+    assert!(!suite.success(), "a failed run fails the entry");
+    let lines: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().map(str::to_string).collect();
+    let fixtures = t.canonicalize().unwrap().join("fixtures");
+    let expected: Vec<String> = [("a", 1), ("a", 2), ("b", 1), ("b", 2)]
+        .iter()
+        .flat_map(|(f, n)| {
+            [
+                "fresh fresh".to_string(),
+                format!(
+                    "run test run --no-judge --fixture {}/{f}.yaml --runs 1 --first-run {n} --server localhost:27999 --output out bot=none",
+                    fixtures.display()
+                ),
+            ]
+        })
+        .collect();
+    assert_eq!(lines, expected);
+
+    std::fs::remove_file(&log).unwrap();
+    assert!(run("replays/set1/suite.yaml", "2").success());
+    let lines: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().map(str::to_string).collect();
+    let copied = t.join("job/replays/set1/thread-1.yaml");
+    assert!(copied.exists(), "the replay set is copied into the job's own directory");
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    for (i, n) in [1, 2].iter().enumerate() {
+        assert_eq!(lines[2 * i], "fresh fresh");
+        assert!(lines[2 * i + 1].contains(&format!("thread-1.yaml --runs 1 --first-run {n} ")), "{}", lines[2 * i + 1]);
+        assert!(lines[2 * i + 1].ends_with("bot=none"));
     }
 }

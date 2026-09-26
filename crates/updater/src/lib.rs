@@ -1,5 +1,6 @@
 mod apply;
 
+use std::borrow::Cow;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -8,9 +9,46 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tracing::warn;
 
-const RELEASE_URL: &str = "https://cdn.neboai.com/releases/version.json";
-const RELEASE_DOWNLOAD_URL: &str = "https://cdn.neboai.com/releases";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Where a binary's releases live and how they are verified.
+///
+/// `{base_url}/version.json` is the pointer; `{base_url}/{tag}/{file}` holds the
+/// release files: the per-platform binaries (`{binary}-{os}-{arch}[.exe]`) and
+/// the checksums file (`sha256sum` format).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feed {
+    /// Release root on the CDN, without a trailing slash.
+    pub base_url: Cow<'static, str>,
+    /// Binary name, the prefix of every per-platform asset.
+    pub binary: Cow<'static, str>,
+    /// Checksums file name inside each tag directory.
+    pub checksums: Cow<'static, str>,
+    /// Raw ed25519 public key. When set, `{checksums}.sig` (base64 of the
+    /// 64-byte signature over the exact checksums bytes) must verify before any
+    /// hash in the checksums file is trusted.
+    pub signing_key: Option<[u8; 32]>,
+}
+
+/// Nebo's own release feed.
+pub const NEBO: Feed = Feed {
+    base_url: Cow::Borrowed("https://cdn.neboai.com/releases"),
+    binary: Cow::Borrowed("nebo"),
+    checksums: Cow::Borrowed("checksums.txt"),
+    signing_key: None,
+};
+
+/// What [`apply_update`] does after the new binary is in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyMode {
+    /// Restart as the new version: `execve` in place on Unix (same PID, so a
+    /// service manager keeps supervising it), spawn-and-exit on Windows, and a
+    /// deferred helper swap for app bundles. Does not return on success.
+    Restart,
+    /// Replace the binary on disk and return. The running process keeps the old
+    /// version; the caller restarts whatever runs the binary. Direct installs only.
+    ReplaceOnly,
+}
 
 /// Outcome of an update check.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,14 +104,15 @@ pub enum UpdateError {
     Other(String),
 }
 
-/// Check the CDN for a newer version.
-pub async fn check(current_version: &str) -> Result<CheckResult, UpdateError> {
+/// Check the feed for a newer version.
+pub async fn check(feed: &Feed, current_version: &str) -> Result<CheckResult, UpdateError> {
     let client = reqwest::Client::builder()
         .timeout(CHECK_TIMEOUT)
-        .user_agent(format!("nebo/{}", current_version))
+        .user_agent(format!("{}/{}", feed.binary, current_version))
         .build()?;
 
-    let resp = client.get(RELEASE_URL).send().await?;
+    let url = format!("{}/version.json", feed.base_url);
+    let resp = client.get(&url).send().await?;
     if !resp.status().is_success() {
         return Err(UpdateError::Other(format!(
             "version check returned {}",
@@ -152,7 +191,7 @@ pub fn detect_install_method() -> &'static str {
 ///
 /// Maps Rust's `std::env::consts` values to CDN naming convention
 /// (e.g. `macos` → `darwin`, `aarch64` → `arm64`, `x86_64` → `amd64`).
-pub fn asset_name() -> String {
+pub fn asset_name(feed: &Feed) -> String {
     let os = match std::env::consts::OS {
         "macos" => "darwin",
         other => other,
@@ -163,9 +202,9 @@ pub fn asset_name() -> String {
         other => other,
     };
     if os == "windows" {
-        format!("nebo-{}-{}.exe", os, arch)
+        format!("{}-{}-{}.exe", feed.binary, os, arch)
     } else {
-        format!("nebo-{}-{}", os, arch)
+        format!("{}-{}-{}", feed.binary, os, arch)
     }
 }
 
@@ -199,6 +238,7 @@ pub type ProgressFn = Box<dyn Fn(u64, u64) + Send>;
 /// For headless/CLI installs, downloads the raw binary.
 /// For app bundles, downloads the platform installer (DMG, MSI, AppImage).
 pub async fn download(
+    feed: &Feed,
     tag: &str,
     progress: Option<ProgressFn>,
 ) -> Result<std::path::PathBuf, UpdateError> {
@@ -207,9 +247,9 @@ pub async fn download(
         bundle_asset_name(tag)
             .ok_or_else(|| UpdateError::Other("no app bundle available for this platform".into()))?
     } else {
-        asset_name()
+        asset_name(feed)
     };
-    let url = format!("{}/{}/{}", RELEASE_DOWNLOAD_URL, tag, asset);
+    let url = format!("{}/{}/{}", feed.base_url, tag, asset);
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(600))
@@ -225,7 +265,8 @@ pub async fn download(
     }
 
     let total = resp.content_length().unwrap_or(0);
-    let tmp_path = std::env::temp_dir().join(format!("nebo-update-{}", uuid::Uuid::new_v4()));
+    let tmp_path =
+        std::env::temp_dir().join(format!("{}-update-{}", feed.binary, uuid::Uuid::new_v4()));
 
     let mut file = tokio::fs::File::create(&tmp_path).await?;
     let mut downloaded: u64 = 0;
@@ -253,33 +294,41 @@ pub async fn download(
     Ok(tmp_path)
 }
 
-/// Verify SHA256 checksum of the downloaded file against checksums.txt from CDN.
+/// Verify the SHA256 of the downloaded file against the feed's checksums file.
 /// Automatically uses the correct asset name (bare binary for direct, DMG/MSI for app_bundle).
-pub async fn verify_checksum(binary_path: &std::path::Path, tag: &str) -> Result<(), UpdateError> {
+///
+/// When the feed has a `signing_key`, the checksums file's ed25519 signature
+/// (`{checksums}.sig`) is verified first and the hash is read from those same
+/// verified bytes. Every failure is fatal: nothing unverified is ever applied.
+pub async fn verify_checksum(
+    feed: &Feed,
+    binary_path: &std::path::Path,
+    tag: &str,
+) -> Result<(), UpdateError> {
     let method = detect_install_method();
     let asset = if method == "app_bundle" {
-        bundle_asset_name(tag).unwrap_or_else(|| asset_name())
+        bundle_asset_name(tag).unwrap_or_else(|| asset_name(feed))
     } else {
-        asset_name()
+        asset_name(feed)
     };
-    let url = format!("{}/{}/checksums.txt", RELEASE_DOWNLOAD_URL, tag);
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .user_agent("nebo-updater")
         .build()?;
 
-    let resp = client.get(&url).send().await?;
-    // Fail closed: a missing checksums.txt must NOT silently skip verification —
-    // an unverified installer is exactly what we refuse to apply to users.
-    if !resp.status().is_success() {
-        return Err(UpdateError::Other(format!(
-            "checksums returned {}",
-            resp.status()
-        )));
+    let sums_url = format!("{}/{}/{}", feed.base_url, tag, feed.checksums);
+    let sums = fetch_release_file(&client, &sums_url, &feed.checksums).await?;
+
+    if let Some(key) = feed.signing_key {
+        let sig_name = format!("{}.sig", feed.checksums);
+        let sig_url = format!("{}/{}/{}", feed.base_url, tag, sig_name);
+        let sig = fetch_release_file(&client, &sig_url, &sig_name).await?;
+        verify_signature(&key, &sums, &sig, &sig_name)?;
     }
 
-    let body = resp.text().await?;
+    let body = std::str::from_utf8(&sums)
+        .map_err(|_| UpdateError::Other(format!("{} is not text", feed.checksums)))?;
 
     let expected = body
         .lines()
@@ -292,7 +341,9 @@ pub async fn verify_checksum(binary_path: &std::path::Path, tag: &str) -> Result
             }
         })
         .next()
-        .ok_or_else(|| UpdateError::Other(format!("asset {} not found in checksums.txt", asset)))?;
+        .ok_or_else(|| {
+            UpdateError::Other(format!("asset {} not found in {}", asset, feed.checksums))
+        })?;
 
     let data = std::fs::read(binary_path)?;
     let mut hasher = Sha256::new();
@@ -309,15 +360,53 @@ pub async fn verify_checksum(binary_path: &std::path::Path, tag: &str) -> Result
     Ok(())
 }
 
-/// Apply the update: replace current binary and restart.
+/// Fetch one release file. Fail closed: a missing checksums or signature file
+/// must NOT silently skip verification.
+async fn fetch_release_file(
+    client: &reqwest::Client,
+    url: &str,
+    name: &str,
+) -> Result<Vec<u8>, UpdateError> {
+    let resp = client.get(url).send().await?;
+    if !resp.status().is_success() {
+        return Err(UpdateError::Other(format!(
+            "{} returned {}",
+            name,
+            resp.status()
+        )));
+    }
+    Ok(resp.bytes().await?.to_vec())
+}
+
+/// Verify a base64 ed25519 signature (Nebo's napp scheme) over `data`.
+fn verify_signature(
+    key: &[u8; 32],
+    data: &[u8],
+    sig_b64: &[u8],
+    sig_name: &str,
+) -> Result<(), UpdateError> {
+    use base64::Engine;
+    let bad = |why: &str| UpdateError::Other(format!("{} {}", sig_name, why));
+    let key = ed25519_dalek::VerifyingKey::from_bytes(key)
+        .map_err(|_| UpdateError::Other("release signing key is invalid".into()))?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(sig_b64.trim_ascii())
+        .map_err(|_| bad("is not base64"))?;
+    let sig = ed25519_dalek::Signature::from_slice(&raw).map_err(|_| bad("is malformed"))?;
+    key.verify_strict(data, &sig)
+        .map_err(|_| bad("does not match: the release was not signed by the release key"))
+}
+
+/// Apply the update: replace the current binary, then restart or not per `mode`.
 ///
 /// `data_dir` is where the deferred helper writes `UPDATE_FAILED.json` on rollback,
 /// so the restored app can surface an error to the user on next startup.
 pub fn apply_update(
     new_binary_path: &std::path::Path,
     data_dir: &std::path::Path,
+    mode: ApplyMode,
 ) -> Result<(), UpdateError> {
-    apply::apply(new_binary_path, data_dir)
+    apply::apply(new_binary_path, data_dir, mode)
 }
 
 /// Register a pre-apply hook (called before process restart).
@@ -327,6 +416,7 @@ pub fn set_pre_apply_hook(f: Box<dyn Fn() + Send>) {
 
 /// Periodically checks for updates in the background.
 pub struct BackgroundChecker {
+    feed: Feed,
     version: String,
     interval: Duration,
     notify: Box<dyn Fn(CheckResult) + Send + Sync>,
@@ -335,11 +425,13 @@ pub struct BackgroundChecker {
 
 impl BackgroundChecker {
     pub fn new(
+        feed: Feed,
         version: String,
         interval: Duration,
         notify: impl Fn(CheckResult) + Send + Sync + 'static,
     ) -> Self {
         Self {
+            feed,
             version,
             interval,
             notify: Box::new(notify),
@@ -368,7 +460,7 @@ impl BackgroundChecker {
     }
 
     async fn check_once(&self) {
-        match check(&self.version).await {
+        match check(&self.feed, &self.version).await {
             Ok(result) if result.available => {
                 let mut last = self.last_notified.lock().unwrap();
                 if last.as_deref() == Some(&result.latest_version) {
@@ -435,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_asset_name() {
-        let name = asset_name();
+        let name = asset_name(&NEBO);
         assert!(
             name.starts_with("nebo-"),
             "expected nebo- prefix, got {}",
@@ -528,5 +620,243 @@ mod tests {
         );
 
         let _ = mac;
+    }
+
+    #[test]
+    fn nebo_feed_is_nebos_release_feed() {
+        assert_eq!(NEBO.base_url, "https://cdn.neboai.com/releases");
+        assert_eq!(NEBO.checksums, "checksums.txt");
+        assert!(NEBO.signing_key.is_none());
+        let link = Feed {
+            base_url: "https://cdn.example.com/x".into(),
+            binary: "nebo-link".into(),
+            checksums: "SHA256SUMS".into(),
+            signing_key: None,
+        };
+        assert!(asset_name(&link).starts_with("nebo-link-"));
+    }
+
+    // ── verify_checksum against a local fake CDN ─────────────────────
+
+    use base64::Engine;
+    use ed25519_dalek::{Signer, SigningKey};
+    use tokio::io::AsyncReadExt;
+
+    /// Serve `files` (path → body) over HTTP/1.1 on a random local port; any
+    /// other path is a 404. Returns the base URL.
+    async fn serve(files: Vec<(String, Vec<u8>)>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let files = std::sync::Arc::new(files);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let files = files.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let req = String::from_utf8_lossy(&buf);
+                    let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let (status, body) = match files.iter().find(|(p, _)| *p == path) {
+                        Some((_, b)) => ("200 OK", b.clone()),
+                        None => ("404 Not Found", Vec::new()),
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(head.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// A throwaway test keypair — never a real release key.
+    fn test_key() -> SigningKey {
+        let mut seed = [0u8; 32];
+        seed[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        seed[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        SigningKey::from_bytes(&seed)
+    }
+
+    struct Release {
+        feed: Feed,
+        binary: std::path::PathBuf,
+        _dir: TempDir,
+    }
+
+    struct TempDir(std::path::PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Publish a fake signed release `v1.0.0` and return a feed pointing at it
+    /// plus a local file holding `downloaded` (what the client "downloaded").
+    /// `sig` overrides the signature file (`None` = not published).
+    async fn release(
+        key: &SigningKey,
+        trusted: [u8; 32],
+        list_asset: bool,
+        downloaded: &[u8],
+        sig: Option<Option<Vec<u8>>>,
+    ) -> Release {
+        let feed_shape = Feed {
+            base_url: "".into(),
+            binary: "nebo-link".into(),
+            checksums: "SHA256SUMS".into(),
+            signing_key: Some(trusted),
+        };
+        let asset = asset_name(&feed_shape);
+        let published = b"the real binary".to_vec();
+        let mut sums = format!("{}  other-asset\n", hex::encode(Sha256::digest(b"x")));
+        if list_asset {
+            sums.push_str(&format!(
+                "{}  {}\n",
+                hex::encode(Sha256::digest(&published)),
+                asset
+            ));
+        }
+        let sums = sums.into_bytes();
+        let good_sig = base64::engine::general_purpose::STANDARD
+            .encode(key.sign(&sums).to_bytes())
+            .into_bytes();
+        let mut files = vec![("/v1.0.0/SHA256SUMS".to_string(), sums)];
+        match sig {
+            None => files.push(("/v1.0.0/SHA256SUMS.sig".into(), good_sig)),
+            Some(Some(custom)) => files.push(("/v1.0.0/SHA256SUMS.sig".into(), custom)),
+            Some(None) => {}
+        }
+        let base = serve(files).await;
+
+        let dir = std::env::temp_dir().join(format!("nebo-updater-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let binary = dir.join("download");
+        std::fs::write(&binary, downloaded).unwrap();
+        Release {
+            feed: Feed {
+                base_url: base.into(),
+                ..feed_shape
+            },
+            binary,
+            _dir: TempDir(dir),
+        }
+    }
+
+    async fn verify(r: &Release) -> Result<(), String> {
+        verify_checksum(&r.feed, &r.binary, "v1.0.0")
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    #[tokio::test]
+    async fn signed_release_verifies() {
+        let key = test_key();
+        let r = release(
+            &key,
+            key.verifying_key().to_bytes(),
+            true,
+            b"the real binary",
+            None,
+        )
+        .await;
+        verify(&r).await.expect("good signature + hash must verify");
+    }
+
+    #[tokio::test]
+    async fn signature_by_another_key_is_rejected() {
+        let key = test_key();
+        let other = test_key();
+        let r = release(
+            &other,
+            key.verifying_key().to_bytes(),
+            true,
+            b"the real binary",
+            None,
+        )
+        .await;
+        let err = verify(&r).await.unwrap_err();
+        assert!(err.contains("does not match"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn garbage_signature_is_rejected() {
+        let key = test_key();
+        let r = release(
+            &key,
+            key.verifying_key().to_bytes(),
+            true,
+            b"the real binary",
+            Some(Some(b"not base64 at all!".to_vec())),
+        )
+        .await;
+        assert!(verify(&r).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn missing_signature_fails_closed() {
+        let key = test_key();
+        let r = release(
+            &key,
+            key.verifying_key().to_bytes(),
+            true,
+            b"the real binary",
+            Some(None),
+        )
+        .await;
+        let err = verify(&r).await.unwrap_err();
+        assert!(err.contains("SHA256SUMS.sig returned 404"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn asset_absent_from_checksums_is_rejected() {
+        let key = test_key();
+        let r = release(
+            &key,
+            key.verifying_key().to_bytes(),
+            false,
+            b"the real binary",
+            None,
+        )
+        .await;
+        let err = verify(&r).await.unwrap_err();
+        assert!(err.contains("not found in SHA256SUMS"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tampered_binary_is_rejected() {
+        let key = test_key();
+        let r = release(
+            &key,
+            key.verifying_key().to_bytes(),
+            true,
+            b"a tampered binary",
+            None,
+        )
+        .await;
+        let err = verify(&r).await.unwrap_err();
+        assert!(err.contains("checksum mismatch"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn unsigned_feed_skips_signature() {
+        // Nebo's own feed has no key: checksums alone, as before.
+        let key = test_key();
+        let mut r = release(&key, [0; 32], true, b"the real binary", Some(None)).await;
+        r.feed.signing_key = None;
+        verify(&r)
+            .await
+            .expect("an unsigned feed verifies by hash only");
     }
 }

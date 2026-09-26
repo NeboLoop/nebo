@@ -14,6 +14,7 @@ pub use embedding::{
     bytes_to_f32, f32_to_bytes,
 };
 pub use providers::{
-    AnthropicProvider, CLIProvider, GeminiProvider, LocalProvider, OllamaProvider, OpenAIProvider,
+    AnthropicProvider, CLIProvider, GeminiProvider, LinkedProvider, LocalProvider, OllamaProvider,
+    OpenAIProvider,
 };
 pub use types::*;

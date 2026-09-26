@@ -6,11 +6,17 @@
   An optional job description is worked out into what the employee will be
   able to do (the one needs step, `POST /agents/needs`), shown above Create
   in plain words. Each item is removable; Create grants what is left.
+
+  Below the name, "Hire from another app" lists every OpenClaw or Hermes
+  install of the owner's joined through Nebo Link, each with the agents it
+  offers: picking one makes it an employee here, with its own name and brain.
 -->
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { X } from 'lucide-svelte';
-  import { createAgent, workOutAgentNeeds } from '$lib/api/nebo';
+  import { createAgent, listLinkedAgents, workOutAgentNeeds } from '$lib/api/nebo';
+  import type { LinkedBotEntry } from '$lib/api/neboComponents';
 
   let { onclose, oncreated }: {
     onclose: () => void;
@@ -21,6 +27,7 @@
   let job = $state('');
   let busy = $state(false);
   let errorMsg = $state('');
+  let linkedBots = $state<LinkedBotEntry[]>([]);
 
   // The drafted job: its plain-words items and the draft Create grants.
   let draftId = $state<string | null>(null);
@@ -69,6 +76,17 @@
     removed = [...removed, item];
   }
 
+  onMount(async () => {
+    try {
+      const resp = await listLinkedAgents();
+      linkedBots = resp.bots ?? [];
+    } catch {
+      // Nothing to hire from is the same as no linked bots: the section
+      // stays hidden.
+      linkedBots = [];
+    }
+  });
+
   async function create() {
     if (!valid || busy || working) return;
     busy = true;
@@ -84,6 +102,26 @@
       errorMsg = e instanceof Error ? e.message : $t('newEmployee.failed');
       busy = false;
     }
+  }
+
+  async function hireLinked(bot: LinkedBotEntry, agentId: string) {
+    if (busy) return;
+    busy = true;
+    errorMsg = '';
+    try {
+      const resp = await createAgent({ linked: { botId: bot.id, agentId } });
+      oncreated(resp.agent.id, resp.agent.name, resp.threadId);
+    } catch (e: unknown) {
+      errorMsg =
+        e instanceof Error ? e.message : $t('newEmployee.linkedFailed', { values: { bot: bot.name } });
+      busy = false;
+    }
+  }
+
+  // The app a linked bot runs, as the owner knows it.
+  const APP_NAMES: Record<string, string> = { openclaw: 'OpenClaw', hermes: 'Hermes' };
+  function appName(runtime: string): string {
+    return APP_NAMES[runtime] ?? runtime.charAt(0).toUpperCase() + runtime.slice(1);
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -155,6 +193,35 @@
         {/if}
       </button>
     </div>
+
+    {#if linkedBots.length > 0}
+      <div class="w-full mt-5 pt-4 border-t border-base-300 text-left">
+        <h2 class="text-sm font-semibold">{$t('newEmployee.hireFromApps')}</h2>
+        <p class="text-xs text-base-content/60 mt-1 leading-relaxed">{$t('newEmployee.linkedLede')}</p>
+        {#each linkedBots as bot (bot.id)}
+          <div class="mt-3">
+            <h3 class="text-xs font-medium text-base-content/70">{bot.name} · {appName(bot.runtime)}{bot.online ? '' : ` · ${$t('newEmployee.offline')}`}</h3>
+            <ul class="mt-1 flex flex-col gap-1">
+              {#each bot.agents as agent (agent.id)}
+                <li>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm rounded-field w-full h-auto min-h-0 py-2 flex-col items-start gap-0.5 font-normal text-left"
+                    disabled={busy}
+                    onclick={() => hireLinked(bot, agent.id)}
+                  >
+                    <span class="font-medium whitespace-normal break-words">{agent.name}</span>
+                    {#if agent.description}
+                      <span class="text-xs text-base-content/60 truncate w-full">{agent.description}</span>
+                    {/if}
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     <p class="text-xs text-base-content/50 mt-4">{$t('newEmployee.marketplaceHint')}</p>
   </div>

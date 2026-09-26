@@ -309,11 +309,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
 
         // The chosen model's provider, every attempt: a failed call is
         // retried on the same model, never handed to another provider.
-        // Without one (a CLI bot's empty model) the first provider serves.
-        let idx = prov_lock
-            .iter()
-            .position(|p| p.id() == selected_provider_id)
-            .unwrap_or(0);
+        let idx = provider_index(&prov_lock, selected_provider_id);
 
         info!(
             iteration,
@@ -389,6 +385,12 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 debug!(iteration, session_id, "deduplicated provider error");
             } else {
                 warn!(iteration, session_id, error = %e, "provider error");
+            }
+
+            // A provider that will not take the call again (the linked
+            // provider): its answer is final, in its own words.
+            if !provider.retryable() {
+                return CallOutcome::Failed(err_str);
             }
 
             if ai::is_context_overflow(&e) {
@@ -706,12 +708,19 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 // the runner synthesizes it after executing tools itself.
                 let _ = tx.send(event).await;
             }
-            StreamEventType::ApprovalRequest
-            | StreamEventType::AskRequest
+            StreamEventType::ApprovalRequest => {
+                // A provider that runs tools itself relays its runtime's own
+                // approval prompt (the linked provider), registered on the
+                // run's approval channels like the runner's own gate; relay
+                // so chat_dispatch broadcasts approval_request. API
+                // providers never emit this event.
+                let _ = tx.send(event).await;
+            }
+            StreamEventType::AskRequest
             | StreamEventType::ControlNotice
             | StreamEventType::TextVerdict => {
-                // Approval/Ask/ControlNotice: only sent by runner, not
-                // received from provider.
+                // Ask/ControlNotice: only sent by runner, not received from
+                // provider.
             }
             StreamEventType::ToolSummary => {
                 // Tool execution summary — relay to parent for display.
@@ -786,7 +795,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         };
 
         // Layer 1: Transient errors (connection reset, timeout, EOF)
-        if !deterministic && ai::is_transient_error(&err) {
+        if provider.retryable() && !deterministic && ai::is_transient_error(&err) {
             st.transient_retries += 1;
             if st.transient_retries <= MAX_TRANSIENT_RETRIES {
                 let why = save_partial();
@@ -804,7 +813,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         }
 
         // Layer 2: Retryable errors (rate_limit, billing, provider errors)
-        let is_retryable = !deterministic
+        let is_retryable = provider.retryable()
+            && !deterministic
             && (err.is_retryable()
                 || reason == "rate_limit"
                 || reason == "billing"
@@ -874,6 +884,19 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         thinking,
         thinking_model,
     })
+}
+
+/// The index of the provider a call goes to: the chosen model's provider;
+/// without one (a CLI bot's empty model) the first provider that takes a
+/// call it did not build (see `Provider::retryable`), so a provider that
+/// answers only for the agent it is addressed to (the linked one) is never
+/// the default.
+fn provider_index(providers: &[Arc<dyn Provider>], selected_provider_id: &str) -> usize {
+    providers
+        .iter()
+        .position(|p| p.id() == selected_provider_id)
+        .or_else(|| providers.iter().position(|p| p.retryable()))
+        .unwrap_or(0)
 }
 
 /// What a reply without tool calls asks of the next step.
@@ -1040,6 +1063,37 @@ mod tests {
         async fn stream(&self, _req: &ChatRequest) -> Result<ai::EventReceiver, ProviderError> {
             Err(ProviderError::Request("stub".into()))
         }
+    }
+
+    /// A provider that answers only for the agent it is addressed to.
+    struct Addressed;
+
+    #[async_trait::async_trait]
+    impl Provider for Addressed {
+        fn id(&self) -> &str {
+            "linked"
+        }
+        fn retryable(&self) -> bool {
+            false
+        }
+        async fn stream(&self, _req: &ChatRequest) -> Result<ai::EventReceiver, ProviderError> {
+            Err(ProviderError::Request("stub".into()))
+        }
+    }
+
+    /// A call goes to the chosen model's provider, the linked one included;
+    /// with none named, the addressed provider is never the default.
+    #[test]
+    fn the_addressed_provider_is_never_the_default() {
+        let providers: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(Addressed),
+            Arc::new(StubProvider("anthropic")),
+            Arc::new(StubProvider("janus")),
+        ];
+        assert_eq!(provider_index(&providers, "janus"), 2);
+        assert_eq!(provider_index(&providers, "linked"), 0, "a linked employee's call");
+        assert_eq!(provider_index(&providers, ""), 1, "no provider named");
+        assert_eq!(provider_index(&providers, "openai"), 1, "a provider that isn't loaded");
     }
 
     fn aux_config(aux: &str) -> config::ModelsConfig {

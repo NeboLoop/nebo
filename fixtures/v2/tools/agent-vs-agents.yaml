@@ -1,0 +1,44 @@
+id: agent-memory-store
+name: "Agent memory store — correct resource routing"
+description: |
+  Storing a preference should use remember(key, value).
+  Verifies the model correctly picks the memory tool, not a task (create_task)
+  or the employee registry.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: remember
+
+conversation:
+  - role: user
+    content: "Remember that my favorite color is blue."
+
+tool_config:
+  remember:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool
+      text: "Model calls 'remember'"
+      severity: critical
+    - id: correct-resource
+      text: "Model stores it as memory (remember), not as a task (create_task) or an employee (create_employee / update_employee)"
+      severity: critical
+    - id: correct-action
+      text: "The call stores the fact (remember), not a recall, search or forget"
+      severity: critical
+    - id: has-key
+      text: "Model passes a key related to 'favorite color'"
+      severity: important
+    - id: has-value
+      text: "Model passes value: 'blue' or similar"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single remember(key: "favorite_color", value: "blue") call.

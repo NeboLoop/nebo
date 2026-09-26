@@ -244,6 +244,13 @@ export function revertLearning(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List linked agents"
+ */
+export function listLinkedAgents() {
+	return webapi.get<components.ListLinkedAgentsResponse>(`/api/v1/agents/linked`)
+}
+
+/**
  * @description "Work out agent needs"
  */
 export function workOutAgentNeeds(req: Record<string, unknown> = {}) {

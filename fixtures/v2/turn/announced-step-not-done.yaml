@@ -1,0 +1,50 @@
+id: announced-step-not-done
+name: "A single concrete action is done in the same turn, not announced"
+description: |
+  From the PRD evidence: a small model answers a one-step request with
+  "I'll create that now" and hands back with nothing done. The working
+  norm the turn controller writes into the system prompt is that a decided
+  next step is taken in the same turn. The request here has one concrete,
+  fully specified action and nothing to decide.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: prompt
+
+setup:
+  - "mkdir -p {{scratch}}"
+teardown:
+  - "rm -rf {{scratch}}"
+
+conversation:
+  - role: user
+    content: "Create the file {{scratch}}/approval.md containing the single line: Approved by the owner on Thursday."
+
+tool_config:
+  write_file:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: acts-in-the-turn
+      text: "The turn contains a tool call: the model does not reply 'I'll create it' and stop"
+      severity: critical
+      check: { first_call: true }
+  recovery:
+    - id: writes-the-line
+      text: "A file write carries the requested line"
+      severity: critical
+      check: { tool: write_file, arg: content, contains: "Approved by the owner on Thursday" }
+    - id: reports-done
+      text: "The reply says the file was created (past tense, from the tool result), not that it will be"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most three calls (a write, optionally a verifying read, one spare)"
+      severity: important
+      check: { max_tool_calls: 3 }
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    One write_file of approval.md with the line, then: "Created approval.md
+    with 'Approved by the owner on Thursday.'"

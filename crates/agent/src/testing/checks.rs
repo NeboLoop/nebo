@@ -679,11 +679,20 @@ prompt_assertions:
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repository root");
         let mut paths: Vec<PathBuf> = Vec::new();
-        for entry in std::fs::read_dir(root.join("suites")).expect("suites/") {
-            let suite_path = entry.expect("suite entry").path();
-            if suite_path.extension().and_then(|e| e.to_str()) != Some("yaml") {
-                continue;
+        // suites/ and its subdirectories (suites/v2: the new harness's twins).
+        let mut suite_paths: Vec<PathBuf> = Vec::new();
+        let mut dirs = vec![root.join("suites")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).expect("suites dir") {
+                let path = entry.expect("suite entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+                    suite_paths.push(path);
+                }
             }
+        }
+        for suite_path in suite_paths {
             let suite = load_suite(&suite_path).unwrap_or_else(|e| panic!("{e}"));
             for rel in &suite.fixtures {
                 let path = suite_path.parent().expect("suites dir").join(rel);

@@ -5679,6 +5679,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
@@ -5751,6 +5752,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",
@@ -5765,7 +5767,6 @@ dependencies = [
  "async-trait",
  "futures",
  "getrandom 0.2.17",
- "nebo-napp",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -5847,6 +5848,7 @@ dependencies = [
  "hex",
  "hkdf",
  "libc",
+ "nebo-comm",
  "nebo-config",
  "nebo-types",
  "notify",
@@ -6057,6 +6059,8 @@ dependencies = [
 name = "nebo-updater"
 version = "0.15.0"
 dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
  "futures",
  "hex",
  "libc",

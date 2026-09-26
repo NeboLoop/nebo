@@ -1,0 +1,47 @@
+id: os-file-glob
+name: "OS file glob — correct tool routing"
+description: |
+  The user asks the agent to find files matching a pattern. There is no glob
+  tool: finding files goes through run_command with find (or rg --files / ls).
+  The model must call run_command with a find-style command — NOT hallucinate
+  "glob" or "find" as a standalone tool.
+  v2 (new harness): checks written for the rewrite's tools; see fixtures/v2/MAPPING.md.
+target_component: run_command
+
+conversation:
+  - role: user
+    content: "Find all .json files in the current directory."
+
+tool_config:
+  run_command:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: correct-tool-name
+      text: "Model calls 'run_command', not 'glob', 'find', 'bash' or 'os'"
+      severity: critical
+    - id: correct-resource
+      text: "The call lists files by name (find, ls, or rg --files), not a content search or a file read"
+      severity: critical
+    - id: correct-action
+      text: "The command is a file-finding command: find, ls, or rg --files"
+      severity: critical
+    - id: has-pattern
+      text: "The command targets .json files (e.g. find . -name '*.json', ls *.json), OR lists all files and filters them (both are valid)"
+      severity: important
+  recovery:
+    - id: no-shell-find
+      text: "Model does NOT follow the successful listing with a redundant second listing (another find/ls of the same folder)"
+      severity: important
+  cost:
+    - id: single-call
+      text: "Task completes in 1 tool call"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    Single run_command(command: "find . -name '*.json'") call. Model reports
+    the matching files.

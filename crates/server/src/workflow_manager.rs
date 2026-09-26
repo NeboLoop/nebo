@@ -242,25 +242,10 @@ impl WorkflowManagerImpl {
 
     fn build_api_client(&self) -> Result<comm::api::NeboAIApi, String> {
         let bot_id = config::read_bot_id().ok_or_else(|| "no bot_id configured".to_string())?;
-        let profiles = match self
-            .store
-            .list_all_active_auth_profiles_by_provider("neboai")
-        {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(error = %e, "failed to list auth profiles for neboai");
-                return Err("failed to query auth profiles".to_string());
-            }
-        };
-        let profile = profiles
-            .first()
-            .ok_or_else(|| "not connected to NeboAI".to_string())?;
+        let token =
+            auth::neboai_token(&self.store).ok_or_else(|| "not connected to NeboAI".to_string())?;
         let api_server = self.config.neboai.api_url.clone();
-        Ok(comm::api::NeboAIApi::new(
-            api_server,
-            bot_id,
-            profile.api_key.clone(),
-        ))
+        Ok(comm::api::NeboAIApi::new(api_server, bot_id, token))
     }
 
     fn workflow_to_info(&self, wf: &db::models::Workflow) -> WorkflowInfo {
@@ -2354,6 +2339,8 @@ async fn review_failed_workflow_run(
 
     let req = ai::ChatRequest {
         tool_credential: None,
+        chat_id: String::new(),
+        approval_channels: None,
         tool_choice: Default::default(),
         messages: vec![ai::Message {
             role: "user".into(),
@@ -3054,6 +3041,8 @@ async fn workflow_tuning_sweep(
         };
         let req = ai::ChatRequest {
             tool_credential: None,
+            chat_id: String::new(),
+            approval_channels: None,
             tool_choice: Default::default(),
             messages: vec![ai::Message {
                 role: "user".into(),
