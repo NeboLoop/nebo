@@ -584,6 +584,28 @@ mod tests {
         }
     }
 
+    /// correction-agent-update-description run 3: the model's first call
+    /// sent the schema's own help text as the new description, and it was
+    /// saved. The registry refuses it by name before the tool runs.
+    #[tokio::test]
+    async fn update_employee_refuses_its_own_help_text_as_the_description() {
+        let (family, _dir) = family();
+        let registry = crate::Registry::new(crate::gate::test_gate());
+        let update = family.into_iter().find(|t| t.name() == "update_employee").unwrap();
+        registry.register(Box::new(update)).await;
+        let ctx = ToolContext::default();
+        let echo = json!({"description": "What the employee does, in a sentence or two.", "name": "front-desk-63ed55f1"});
+        let r = registry.execute(&ctx, "update_employee", echo).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("The parameter `description` is its own help text"), "{}", r.content);
+        assert!(r.content.contains("Pass the owner's actual words for `description`"), "{}", r.content);
+        // The owner's words reach the tool (which finds no such employee here).
+        let real = json!({"description": "Answers inbound calls for NeboAI and takes messages for the team.", "name": "front-desk-63ed55f1"});
+        let r = registry.execute(&ctx, "update_employee", real).await;
+        assert!(!r.content.contains("help text"), "{}", r.content);
+        assert!(r.content.contains("No employee named 'front-desk-63ed55f1'"), "{}", r.content);
+    }
+
     /// Making an employee goes through the one consent step: with the
     /// permission system not yet bound, nothing is created.
     #[tokio::test]
