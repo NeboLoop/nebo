@@ -5,6 +5,7 @@
 //! auth CLI commands and report status via WebSocket events.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// Bound on a plugin's `setup.command` run from the install flow. Generous —
@@ -23,8 +24,10 @@ const ACCOUNT_LOGOUT_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 pub(crate) const PLUGINS_SETTINGS_PATH: &str = "/settings/plugins";
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::Json;
 use tokio::io::AsyncReadExt;
+use tokio::sync::oneshot;
 use tracing::{info, warn};
 
 use super::{HandlerResult, to_error_response};
@@ -214,25 +217,85 @@ pub async fn toggle_plugin(
 
 /// POST /plugins/{slug}/auth/login
 ///
-/// Spawns the plugin's auth login command in the background. Returns immediately.
-/// Broadcasts `plugin_auth_complete` or `plugin_auth_error` via WebSocket when done.
+/// Spawns the plugin's auth login command in the background (see
+/// [`start_login`] for what the caller gets back). Broadcasts
+/// `plugin_auth_complete` or `plugin_auth_error` via WebSocket when done.
 pub async fn auth_login(
     State(state): State<AppState>,
     Path(slug): Path<String>,
+    headers: HeaderMap,
 ) -> HandlerResult<serde_json::Value> {
     let (binary_path, auth) = state
         .plugin_store
         .get_auth_info(&slug)
         .ok_or_else(|| to_error_response(NeboError::NotFound))?;
-    spawn_plugin_login(
+    let reply = start_login(
         state,
+        &headers,
         slug,
         auth.commands.login.clone(),
         binary_path,
         auth.label.clone(),
         None,
-    );
-    Ok(Json(serde_json::json!({ "started": true })))
+    )
+    .await
+    .map_err(to_error_response)?;
+    Ok(Json(reply))
+}
+
+/// How long a remote caller waits for the login to print its sign-in link.
+/// A plugin prints it within a second or two of starting (the hub relay
+/// setup adds one round trip). The edge and the hub's tunnel proxy leave the
+/// request deadline to the bot (edge WriteTimeout 0; tunnel idle 90 s), so
+/// this is the only clock on the phone's request.
+const SIGN_IN_LINK_WAIT: Duration = Duration::from_secs(20);
+
+/// The ONE way a login starts, whichever door asked for it.
+///
+/// A local caller (the desktop app) gets `{started}` and opens the sign-in
+/// link from the `plugin_auth_url` broadcast, once, app-wide (listeners.ts).
+/// A caller that reached this bot through its own tunnel (the phone) gets the
+/// link back as `authUrl` to open on its own device instead: the broadcast
+/// opened the provider's page on the bot's machine while the owner sat with
+/// the phone, and the phone's card read "Sign-in didn't complete"
+/// (2026-09-26). The link's callback rides the hub relay
+/// (`crate::plugin_oauth`) for that caller, since a browser on another device
+/// cannot reach this machine's loopback listener.
+async fn start_login(
+    state: AppState,
+    headers: &HeaderMap,
+    slug: String,
+    login_command: String,
+    binary_path: std::path::PathBuf,
+    label: String,
+    profile: Option<LoginProfile>,
+) -> Result<serde_json::Value, NeboError> {
+    if !crate::middleware::came_through_tunnel(headers) {
+        let link = SignInLink::Broadcast(state.hub.clone());
+        spawn_plugin_login(state, slug, login_command, binary_path, label, profile, link);
+        return Ok(serde_json::json!({ "started": true }));
+    }
+    let (tx, rx) = oneshot::channel();
+    let link = SignInLink::Reply(Mutex::new(Some(tx)));
+    spawn_plugin_login(state, slug, login_command, binary_path, label, profile, link);
+    sign_in_link_reply(tokio::time::timeout(SIGN_IN_LINK_WAIT, rx).await)
+}
+
+/// A remote caller's answer once the login has spoken: the link to open, or
+/// `started` alone when the login finished without a browser step (a
+/// credentials login validates and exits; its completion is announced on the
+/// socket as always). A login that says nothing in time is a failure the
+/// caller can act on, not a spinner.
+fn sign_in_link_reply(
+    link: Result<Result<String, oneshot::error::RecvError>, tokio::time::error::Elapsed>,
+) -> Result<serde_json::Value, NeboError> {
+    match link {
+        Ok(Ok(url)) => Ok(serde_json::json!({ "started": true, "authUrl": url })),
+        Ok(Err(_dropped)) => Ok(serde_json::json!({ "started": true })),
+        Err(_elapsed) => Err(NeboError::Internal(
+            "The sign-in link didn't arrive in time. Try again.".to_string(),
+        )),
+    }
 }
 
 /// One account's login context for a multi-account ("resource") plugin.
@@ -286,6 +349,7 @@ pub struct AccountLoginRequest {
 pub async fn auth_login_account(
     State(state): State<AppState>,
     Path(slug): Path<String>,
+    headers: HeaderMap,
     Json(req): Json<AccountLoginRequest>,
 ) -> HandlerResult<serde_json::Value> {
     let (binary_path, auth) = state
@@ -309,15 +373,19 @@ pub async fn auth_login_account(
         tracing::info!(slug, "single-account plugin: running its shared login for the account card");
     }
     let per_account = profile.is_some();
-    spawn_plugin_login(
+    let mut reply = start_login(
         state,
+        &headers,
         slug,
         auth.commands.login.clone(),
         binary_path,
         auth.label.clone(),
         profile,
-    );
-    Ok(Json(serde_json::json!({ "started": true, "perAccount": per_account })))
+    )
+    .await
+    .map_err(to_error_response)?;
+    reply["perAccount"] = serde_json::json!(per_account);
+    Ok(Json(reply))
 }
 
 /// The per-account context for a login, or `None` when the plugin keeps one
@@ -386,6 +454,15 @@ fn plugin_profile_dir(agent_id: &str, slug: &str, account_label: &str) -> std::p
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
+/// Where a login's sign-in link goes — see [`start_login`].
+enum SignInLink {
+    /// The desktop app opens it from a `plugin_auth_url` broadcast.
+    Broadcast(std::sync::Arc<super::ws::ClientHub>),
+    /// The caller opens it on its own device: the link goes back in the
+    /// response. Taken once; the login's two output streams share it.
+    Reply(Mutex<Option<oneshot::Sender<String>>>),
+}
+
 /// Shared background login flow used by both global and per-account login.
 /// `profile = Some(..)` injects that account's config dir into the plugin's
 /// profile_dir_env and records the profile mapping on success.
@@ -396,8 +473,11 @@ fn spawn_plugin_login(
     binary_path: std::path::PathBuf,
     label: String,
     profile: Option<LoginProfile>,
+    link: SignInLink,
 ) {
     let hub = state.hub.clone();
+    let remote = matches!(link, SignInLink::Reply(_));
+    let link = std::sync::Arc::new(link);
     let slug_owned = slug.clone();
     let store_for_restart = state.store.clone();
     let workers_for_restart = state.agent_workers.clone();
@@ -461,13 +541,16 @@ fn spawn_plugin_login(
         // browser can't reach the pod's loopback listener, so hand the plugin
         // the ONE public redirect + an opaque state and register the pending
         // auth for the hub-relayed callback (crate::plugin_oauth). Desktop
-        // takes the same path only when the manifest asks for it
+        // takes the same path when the manifest asks for it
         // (`auth.publicRedirect`): providers like Intuit refuse
-        // `http://localhost` on production credentials.
+        // `http://localhost` on production credentials — and when the caller
+        // is remote (the phone, through the tunnel), whose browser is on
+        // another device and dead-ends on `localhost` exactly like a cloud
+        // bot's owner.
         let manifest_wants_public = plugin_store_for_auth
             .get_auth_info(&slug_owned)
             .is_some_and(|(_, auth)| auth.public_redirect);
-        if crate::plugin_oauth::public_oauth_enabled() || manifest_wants_public {
+        if crate::plugin_oauth::public_oauth_enabled() || manifest_wants_public || remote {
             match config::read_bot_id().filter(|id| !id.is_empty()) {
                 Some(bot_id) => match crate::plugin_oauth::begin(&bot_id) {
                     Ok(relay) => {
@@ -539,7 +622,7 @@ fn spawn_plugin_login(
         let stderr_handle = child.stderr.take();
         let stdout_handle = child.stdout.take();
         let slug_for_stderr = slug_owned.clone();
-        let hub_for_stderr = hub.clone();
+        let link_for_stderr = link.clone();
 
         // Shared flag: once either stream opens a URL, the other skips.
         let url_opened = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -565,7 +648,7 @@ fn spawn_plugin_login(
                                 // Timeout — no more data coming, treat URL as complete.
                                 if !url_opened_stderr.load(std::sync::atomic::Ordering::Relaxed) {
                                     if let Some(url) = extract_url(&all, true) {
-                                        open_auth_url(&slug_for_stderr, &url, &hub_for_stderr);
+                                        open_auth_url(&slug_for_stderr, &url, &link_for_stderr);
                                         url_opened_stderr
                                             .store(true, std::sync::atomic::Ordering::Relaxed);
                                         opened = true;
@@ -587,7 +670,7 @@ fn spawn_plugin_login(
                                 && !url_opened_stderr.load(std::sync::atomic::Ordering::Relaxed)
                             {
                                 if let Some(url) = extract_url(&all, false) {
-                                    open_auth_url(&slug_for_stderr, &url, &hub_for_stderr);
+                                    open_auth_url(&slug_for_stderr, &url, &link_for_stderr);
                                     url_opened_stderr
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                     opened = true;
@@ -602,7 +685,7 @@ fn spawn_plugin_login(
         });
 
         let slug_for_stdout = slug_owned.clone();
-        let hub_for_stdout = hub.clone();
+        let link_for_stdout = link;
         let stdout_task = tokio::spawn(async move {
             let mut all = String::new();
             let mut opened = false;
@@ -619,7 +702,7 @@ fn spawn_plugin_login(
                             Err(_) => {
                                 if !url_opened_stdout.load(std::sync::atomic::Ordering::Relaxed) {
                                     if let Some(url) = extract_url(&all, true) {
-                                        open_auth_url(&slug_for_stdout, &url, &hub_for_stdout);
+                                        open_auth_url(&slug_for_stdout, &url, &link_for_stdout);
                                         url_opened_stdout
                                             .store(true, std::sync::atomic::Ordering::Relaxed);
                                         opened = true;
@@ -641,7 +724,7 @@ fn spawn_plugin_login(
                                 && !url_opened_stdout.load(std::sync::atomic::Ordering::Relaxed)
                             {
                                 if let Some(url) = extract_url(&all, false) {
-                                    open_auth_url(&slug_for_stdout, &url, &hub_for_stdout);
+                                    open_auth_url(&slug_for_stdout, &url, &link_for_stdout);
                                     url_opened_stdout
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                     opened = true;
@@ -1613,17 +1696,31 @@ pub async fn plugin_proxy(
     }
 }
 
-/// Open an OAuth URL: broadcast it to the frontend via WebSocket so the
-/// frontend can call `window.open()`.
-fn open_auth_url(slug: &str, url: &str, hub: &super::ws::ClientHub) {
-    info!(plugin = %slug, url = %url, "broadcasting plugin OAuth URL to frontend");
-    hub.broadcast(
-        "plugin_auth_url",
-        serde_json::json!({
-            "plugin": slug,
-            "url": url,
-        }),
-    );
+/// Hand the sign-in link to whoever opens it: the desktop app via a
+/// `plugin_auth_url` broadcast (`window.open()` there), or the remote
+/// caller waiting on its login response.
+fn open_auth_url(slug: &str, url: &str, link: &SignInLink) {
+    match link {
+        SignInLink::Broadcast(hub) => {
+            info!(plugin = %slug, url = %url, "broadcasting plugin OAuth URL to frontend");
+            hub.broadcast(
+                "plugin_auth_url",
+                serde_json::json!({
+                    "plugin": slug,
+                    "url": url,
+                }),
+            );
+        }
+        SignInLink::Reply(reply) => {
+            info!(plugin = %slug, url = %url, "handing plugin OAuth URL to the remote caller");
+            let Some(tx) = reply.lock().unwrap().take() else {
+                return;
+            };
+            if tx.send(url.to_string()).is_err() {
+                warn!(plugin = %slug, "plugin OAuth URL arrived after the remote caller stopped waiting");
+            }
+        }
+    }
 }
 
 /// Returns true if the text contains a URL-like token that `extract_url(text, false)`
@@ -2095,6 +2192,51 @@ mod tests {
     #[test]
     fn a_single_account_plugin_runs_its_shared_login_instead_of_refusing() {
         assert!(login_profile(None, "quickbooks", req()).is_none());
+    }
+
+    /// The phone asked: the link goes back to it, and the bot's own screen
+    /// never hears `plugin_auth_url` — that broadcast is what opened the
+    /// provider's page on the computer instead of the phone (2026-09-26).
+    #[tokio::test]
+    async fn a_remote_caller_gets_the_sign_in_link_and_the_desktop_does_not_open_it() {
+        let hub = std::sync::Arc::new(super::super::ws::ClientHub::new());
+        let mut desktop = hub.subscribe();
+        let url = "https://login.example.com/oauth2?client_id=abc&redirect_uri=x";
+
+        let (tx, rx) = oneshot::channel();
+        open_auth_url("xero", url, &SignInLink::Reply(Mutex::new(Some(tx))));
+        assert_eq!(rx.await.as_deref(), Ok(url));
+        assert!(
+            matches!(desktop.try_recv(), Err(tokio::sync::broadcast::error::TryRecvError::Empty)),
+            "a remote login must not open the link on the bot's machine"
+        );
+
+        open_auth_url("xero", url, &SignInLink::Broadcast(hub.clone()));
+        let opened = desktop.try_recv().expect("the desktop opens its own logins");
+        assert_eq!(opened.event_type, "plugin_auth_url");
+        assert_eq!(opened.payload["url"], url);
+    }
+
+    /// What the remote caller reads: `authUrl` to open; `started` alone when
+    /// the login finished without a browser step; an error when it said
+    /// nothing in time.
+    #[tokio::test]
+    async fn the_remote_reply_carries_the_link_or_says_what_happened() {
+        let (tx, rx) = oneshot::channel();
+        tx.send("https://login.example.com/oauth2?client_id=abc".to_string()).unwrap();
+        let reply = sign_in_link_reply(tokio::time::timeout(Duration::from_secs(1), rx).await).unwrap();
+        assert_eq!(reply["started"], true);
+        assert_eq!(reply["authUrl"], "https://login.example.com/oauth2?client_id=abc");
+
+        let (tx, rx) = oneshot::channel::<String>();
+        drop(tx);
+        let reply = sign_in_link_reply(tokio::time::timeout(Duration::from_secs(1), rx).await).unwrap();
+        assert_eq!(reply["started"], true);
+        assert!(reply.get("authUrl").is_none(), "no link is not a link");
+
+        let (_tx, rx) = oneshot::channel::<String>();
+        let err = sign_in_link_reply(tokio::time::timeout(Duration::ZERO, rx).await).unwrap_err();
+        assert!(matches!(err, NeboError::Internal(ref m) if m.contains("didn't arrive in time")), "{err}");
     }
 
     fn hub_delivery(kind: &str, extra: &[(&str, &str)]) -> comm::CommMessage {
