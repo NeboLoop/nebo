@@ -8,17 +8,24 @@ use crate::NappError;
 use crate::manifest::Manifest;
 use crate::sandbox;
 
-/// A running tool process.
+/// A running tool process. Owned by its [`crate::supervisor::Supervisor`],
+/// which is the only thing that launches, watches and restarts one.
 pub struct Process {
     pub tool_id: String,
     pub manifest: Manifest,
     pub pid: u32,
     pub sock_path: PathBuf,
     pub binary_path: PathBuf,
+    /// Where the process's stdout and stderr go (`$NEBO_DATA_DIR/sidecar.log`).
+    pub log_path: PathBuf,
     /// Per-launch auth token passed as NEBO_APP_TOKEN env var.
     pub app_token: String,
     binary_mtime: std::time::SystemTime,
     child: tokio::process::Child,
+    /// The write end of the process's stdin, held apart from `child` for the
+    /// process's whole life: `Child::wait` closes a stdin it still holds, and
+    /// a sidecar reads that EOF as "Nebo is gone" and exits.
+    _stdin: Option<tokio::process::ChildStdin>,
 }
 
 impl Process {
@@ -39,15 +46,21 @@ impl Process {
         }
     }
 
-    /// Check if the process is still alive.
-    pub fn is_alive(&self) -> bool {
-        #[cfg(unix)]
-        {
-            unsafe { libc::kill(self.pid as i32, 0) == 0 }
-        }
-        #[cfg(not(unix))]
-        {
-            true // Assume alive on non-Unix
+    /// Wait for the process to exit, then clean up after it. Returns why it
+    /// ended: its exit status and the last lines it wrote to its log. The
+    /// exit is awaited on the child handle itself, so it is never missed —
+    /// a zombie still answers `kill(pid, 0)`, which is how an exit used to go
+    /// unnoticed.
+    pub async fn exited(&mut self) -> String {
+        let status = self.child.wait().await;
+        self.cleanup();
+        let status = match status {
+            Ok(s) => describe_exit(s),
+            Err(e) => format!("could not be waited on: {e}"),
+        };
+        match log_tail(&self.log_path, 10) {
+            Some(tail) => format!("{status}; last output:\n{tail}"),
+            None => status,
         }
     }
 
@@ -75,24 +88,61 @@ impl Process {
             }
         }
 
-        // Cleanup
-        let _ = std::fs::remove_file(&self.sock_path);
-        let pid_file = self.sock_path.with_extension("pid");
-        let _ = std::fs::remove_file(&pid_file);
-
+        self.cleanup();
         info!(tool = self.tool_id.as_str(), "tool stopped");
     }
+
+    /// Remove what the process leaves behind once it is gone: its socket (a
+    /// leftover socket file must never pass for a live sidecar), its pid file
+    /// and its signal-handler registration.
+    fn cleanup(&self) {
+        let _ = std::fs::remove_file(&self.sock_path);
+        let _ = std::fs::remove_file(self.sock_path.with_extension("pid"));
+        crate::child_guard::unregister_child(self.pid);
+    }
+}
+
+/// An exit status in words: the code, or the signal that ended it.
+fn describe_exit(status: std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return format!("killed by signal {sig}");
+        }
+    }
+    match status.code() {
+        Some(code) => format!("exited with code {code}"),
+        None => "exited".to_string(),
+    }
+}
+
+/// The last `lines` non-empty lines of a log file, read from its end.
+fn log_tail(path: &Path, lines: usize) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(8 * 1024);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let tail: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail = &tail[tail.len().saturating_sub(lines)..];
+    (!tail.is_empty()).then(|| tail.join("\n"))
 }
 
 /// Runtime manages launching and stopping tool processes.
 pub struct Runtime {
-    _tools_dir: PathBuf,
+    /// The Nebo root (`config::data_dir()`): each process's persistent data
+    /// directory lives under its `appdata/`.
+    home: PathBuf,
 }
 
 impl Runtime {
-    pub fn new(tools_dir: &Path) -> Self {
+    pub fn new(home: &Path) -> Self {
         Self {
-            _tools_dir: tools_dir.to_path_buf(),
+            home: home.to_path_buf(),
         }
     }
 
@@ -102,11 +152,19 @@ impl Runtime {
         tool_dir: &Path,
         api_port: u16,
     ) -> Result<Process, NappError> {
-        let manifest = Manifest::load(&tool_dir.join("manifest.json"))?;
-        manifest.validate()?;
+        // A manifest that cannot be read or is invalid is a damaged package:
+        // reported as a manifest error so the supervisor treats it as
+        // permanent instead of retrying it.
+        let manifest = Manifest::load(&tool_dir.join("manifest.json"))
+            .and_then(|m| m.validate().map(|()| m))
+            .map_err(|e| match e {
+                NappError::Manifest(m) => NappError::Manifest(m),
+                other => NappError::Manifest(other.to_string()),
+            })?;
 
         // Find binary and snapshot its mtime for change detection
-        let binary = self.find_binary(tool_dir)?;
+        let binary = sidecar_binary(tool_dir)
+            .ok_or_else(|| NappError::NotFound("no binary found".into()))?;
         let canonical = std::fs::canonicalize(&binary).unwrap_or(binary.clone());
         let binary_mtime = std::fs::metadata(&canonical)
             .and_then(|m| m.modified())
@@ -131,9 +189,7 @@ impl Runtime {
             "agent" => "agents",
             _ => "plugins",
         };
-        let data_dir = config::appdata_dir()
-            .map(|d| d.join(artifact_type).join(artifact_slug))
-            .unwrap_or_else(|_| tool_dir.join("data"));
+        let data_dir = self.home.join("appdata").join(artifact_type).join(artifact_slug);
         std::fs::create_dir_all(&data_dir)?;
 
         // Build sanitized environment
@@ -205,23 +261,60 @@ impl Runtime {
         // would hold the same Unix socket and produce silent failures.
         crate::child_guard::reap_existing_for(&binary);
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| NappError::Runtime(format!("spawn tool: {}", e)))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            // A binary the OS refuses to execute (wrong architecture, not
+            // executable, gone between the check and the spawn) will refuse
+            // again: permanent. Anything else may pass on a retry.
+            let refused = e.kind() == std::io::ErrorKind::PermissionDenied
+                || e.kind() == std::io::ErrorKind::NotFound
+                || matches!(e.raw_os_error(), Some(libc::ENOEXEC))
+                || cfg!(target_os = "macos") && e.raw_os_error() == Some(86); // EBADARCH
+            if refused {
+                NappError::Sandbox(format!("the system will not run it: {e}"))
+            } else {
+                NappError::Runtime(format!("spawn tool: {}", e))
+            }
+        })?;
 
         let pid = child.id().unwrap_or(0);
 
-        // Track for signal-handler cleanup. Unregistered when the supervisor
-        // notices the sidecar exited (see supervisor.rs / lifecycle code).
+        // Track for signal-handler cleanup. Unregistered when the process's
+        // exit is awaited or it is stopped (`Process::cleanup`).
         crate::child_guard::register_child(pid);
 
         // Write PID file
         let pid_file = sock_path.with_extension("pid");
         let _ = std::fs::write(&pid_file, pid.to_string());
 
-        // Wait for socket to appear
-        let timeout = Duration::from_secs(manifest.effective_startup_timeout() as u64);
-        self.wait_for_socket(&sock_path, timeout).await?;
+        let stdin = child.stdin.take();
+        let mut process = Process {
+            tool_id: manifest.id.clone(),
+            manifest,
+            pid,
+            sock_path,
+            binary_path: binary,
+            log_path,
+            app_token,
+            binary_mtime,
+            child,
+            _stdin: stdin,
+        };
+
+        // Wait for the socket to appear — or for the process to die first,
+        // which is reported with its exit status instead of a bare timeout.
+        let timeout = Duration::from_secs(process.manifest.effective_startup_timeout() as u64);
+        let sock_path = process.sock_path.clone();
+        let appeared = tokio::select! {
+            r = self.wait_for_socket(&sock_path, timeout) => r.map_err(|e| (e, true)),
+            why = process.exited() => Err((NappError::Runtime(format!("exited before it was ready: {why}")), false)),
+        };
+        if let Err((e, still_running)) = appeared {
+            if still_running {
+                process.stop().await;
+            }
+            return Err(e);
+        }
+        let manifest = &process.manifest;
 
         // Health check: verify the socket is connectable
         if let Err(e) = self.health_check(&sock_path, Duration::from_secs(5)).await {
@@ -241,76 +334,9 @@ impl Runtime {
 
         info!(tool = manifest.id.as_str(), pid, "tool launched");
 
-        Ok(Process {
-            tool_id: manifest.id.clone(),
-            manifest,
-            pid,
-            sock_path,
-            binary_path: binary,
-            app_token,
-            binary_mtime,
-            child,
-        })
+        Ok(process)
     }
 
-    /// Find the binary in a tool directory.
-    fn find_binary(&self, tool_dir: &Path) -> Result<PathBuf, NappError> {
-        for name in &["binary", "app"] {
-            let path = tool_dir.join(name);
-            if path.exists() {
-                return Ok(path);
-            }
-        }
-        // Check tmp/
-        let tmp = tool_dir.join("tmp");
-        if tmp.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&tmp) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        return Ok(path);
-                    }
-                }
-            }
-        }
-        // App packages may place their sidecar in bin/.
-        let bin = tool_dir.join("bin");
-        if bin.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&bin) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        return Ok(path);
-                    }
-                }
-            }
-        }
-        // Dev-built sidecars live in sidecar/target/release/.
-        let sidecar_release = tool_dir.join("sidecar/target/release");
-        if sidecar_release.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&sidecar_release) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() && path.extension().is_none() {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            if let Ok(meta) = path.metadata() {
-                                if meta.permissions().mode() & 0o111 != 0 {
-                                    return Ok(path);
-                                }
-                            }
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            return Ok(path);
-                        }
-                    }
-                }
-            }
-        }
-        Err(NappError::NotFound("no binary found".into()))
-    }
 
     /// Check that the socket is connectable (basic health check).
     ///
@@ -383,6 +409,69 @@ impl Runtime {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+/// The program a tool directory runs, if it has one — the ONE rule for
+/// where a sidecar binary lives. The agent loader records an app's binary with
+/// it and the runtime launches with it, so "this app has a program" means the
+/// same thing everywhere. An app with no program (a UI-only app) is not an
+/// error: there is simply nothing to run.
+pub fn sidecar_binary(tool_dir: &Path) -> Option<PathBuf> {
+    for name in &["binary", "app"] {
+        let path = tool_dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    // Check tmp/
+    let tmp = tool_dir.join("tmp");
+    if tmp.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&tmp) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    // App packages may place their sidecar in bin/.
+    let bin = tool_dir.join("bin");
+    if bin.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&bin) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    // Dev-built sidecars live in sidecar/target/release/.
+    let sidecar_release = tool_dir.join("sidecar/target/release");
+    if sidecar_release.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&sidecar_release) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().is_none() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(meta) = path.metadata() {
+                            if meta.permissions().mode() & 0o111 != 0 {
+                                return Some(path);
+                            }
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Generate a random 32-byte hex token for per-launch app authentication.

@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# A real sidecar process for supervision tests (`napp::test_sidecar`).
+test-sidecar = []
+
 [dependencies]
 serde = { workspace = true }
 types = { workspace = true }

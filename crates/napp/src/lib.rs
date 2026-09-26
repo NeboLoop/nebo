@@ -14,6 +14,8 @@ pub mod sandbox;
 pub mod sealed;
 pub mod signing;
 pub mod supervisor;
+#[cfg(all(unix, any(test, feature = "test-sidecar")))]
+pub mod test_sidecar;
 pub mod user_agent;
 pub mod version;
 
@@ -66,6 +68,17 @@ pub enum NappError {
     PluginValidation(String),
     #[error("{0}")]
     Other(String),
+}
+
+impl NappError {
+    /// A launch that failed this way fails the same way every time until the
+    /// package itself changes: its program is missing, the system refuses to
+    /// run it, or its manifest is damaged. Retrying cannot help; reinstalling
+    /// can. Everything else (a slow start, a crash, a busy disk) may pass on
+    /// the next try.
+    pub fn is_permanent(&self) -> bool {
+        matches!(self, NappError::NotFound(_) | NappError::Sandbox(_) | NappError::Manifest(_))
+    }
 }
 
 /// Install event from NeboAI (MQTT/WebSocket).

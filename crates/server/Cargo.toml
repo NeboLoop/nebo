@@ -81,7 +81,9 @@ db = { workspace = true }
 browser = { workspace = true }
 workflow = { workspace = true }
 tools = { workspace = true }
-napp = { workspace = true }
+# A real sidecar process and a stand-in sidecar server for the supervision proofs.
+napp = { workspace = true, features = ["test-sidecar"] }
+proto = { workspace = true, features = ["server"] }
 agent = { workspace = true }
 chrono = { workspace = true }
 cron = { workspace = true }

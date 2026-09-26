@@ -25,6 +25,11 @@ pub fn routes() -> Router<AppState> {
             "/apps/{agent_id}/api/{*path}",
             routing::any(apps::proxy_to_sidecar),
         )
+        .route("/apps/{agent_id}/sidecar", routing::get(apps::sidecar_state))
+        .route(
+            "/apps/{agent_id}/sidecar/restart",
+            routing::post(apps::restart_sidecar),
+        )
         .route(
             "/apps/{agent_id}/agents/invoke",
             routing::post(apps::invoke_agent),
