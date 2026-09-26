@@ -7,8 +7,9 @@
   able to do (the one needs step, `POST /agents/needs`), shown above Create
   in plain words. Each item is removable; Create grants what is left.
 
-  Below the name, "Hire from another app" lists every OpenClaw or Hermes
-  install of the owner's joined through Nebo Link, each with the agents it
+  Below the name, "Hire from another app" lists every OpenClaw, Hermes or
+  ACP agent (Claude Code, Codex, Gemini CLI, OpenCode) install of the
+  owner's joined through Nebo Link, each with the agents it
   offers: picking one makes it an employee here, with its own name and brain.
 -->
 <script lang="ts">
@@ -119,7 +120,15 @@
   }
 
   // The app a linked bot runs, as the owner knows it.
-  const APP_NAMES: Record<string, string> = { openclaw: 'OpenClaw', hermes: 'Hermes' };
+  const APP_NAMES: Record<string, string> = {
+    openclaw: 'OpenClaw',
+    hermes: 'Hermes',
+    'claude-code': 'Claude Code',
+    codex: 'Codex',
+    gemini: 'Gemini CLI',
+    opencode: 'OpenCode',
+    acp: 'ACP agent'
+  };
   function appName(runtime: string): string {
     return APP_NAMES[runtime] ?? runtime.charAt(0).toUpperCase() + runtime.slice(1);
   }
