@@ -526,7 +526,7 @@ fn random_high_port() -> Result<u16, BrowserError> {
 /// Poll Obscura's CDP `/json/version` endpoint until it responds (ready) or times out.
 async fn wait_for_cdp(port: u16, timeout: Duration) -> Result<(), BrowserError> {
     let url = format!("http://127.0.0.1:{port}/json/version");
-    let client = reqwest::Client::new();
+    let client = tls::http_client().build()?;
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > timeout {

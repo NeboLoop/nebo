@@ -169,9 +169,13 @@ impl Bundle {
         );
         info!(url = %url, "downloading rootfs from CDN");
 
-        let response = reqwest::get(&url).await.map_err(|e| {
-            VmError::ImageNotFound(format!("CDN download failed: {e}"))
-        })?;
+        let response = tls::http_client()
+            .build()
+            .map_err(|e| VmError::ImageNotFound(format!("CDN download failed: {e}")))?
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| VmError::ImageNotFound(format!("CDN download failed: {e}")))?;
 
         if !response.status().is_success() {
             return Err(VmError::ImageNotFound(format!(

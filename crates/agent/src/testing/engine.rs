@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 use super::fixture::{Fixture, Interrupt};
@@ -35,7 +35,7 @@ pub async fn run_live(
     let ws_url = format!("ws://{}/ws", server);
 
     // Quick connectivity check
-    match connect_async(&ws_url).await {
+    match tls::connect_ws(&ws_url).await {
         Ok(_) => {}
         Err(e) => {
             return Err(format!(
@@ -110,7 +110,7 @@ async fn run_single(
     let start = Instant::now();
 
     // Connect
-    let (mut ws, _) = connect_async(ws_url)
+    let (mut ws, _) = tls::connect_ws(ws_url)
         .await
         .map_err(|e| format!("WS connect: {}", e))?;
 
@@ -712,7 +712,11 @@ async fn with_agent_id(fixture: &Fixture, server: &str) -> Result<Fixture, Strin
         return Ok(bound);
     };
     let url = format!("http://{server}/api/v1/agents");
-    let list: Value = reqwest::get(&url)
+    let list: Value = tls::http_client()
+        .build()
+        .map_err(|e| format!("list employees: {e}"))?
+        .get(&url)
+        .send()
         .await
         .map_err(|e| format!("list employees: {e}"))?
         .json()

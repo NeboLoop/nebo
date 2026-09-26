@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tls = { workspace = true }
 types = { workspace = true }
 ai = { workspace = true }
 comm = { workspace = true }

@@ -9,6 +9,7 @@ license.workspace = true
 test-sidecar = []
 
 [dependencies]
+tls = { workspace = true }
 serde = { workspace = true }
 types = { workspace = true }
 comm = { workspace = true }

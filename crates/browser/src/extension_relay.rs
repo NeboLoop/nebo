@@ -23,7 +23,6 @@ pub const MAX_EXT_MSG_BYTES: usize = 64 * 1024 * 1024;
 
 use futures::{SinkExt, StreamExt};
 use tokio::io::AsyncReadExt;
-use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 /// Run the native messaging relay until either side disconnects.
@@ -44,7 +43,7 @@ pub async fn run(relay_secret: Option<String>) -> anyhow::Result<()> {
 
     let relay_secret = relay_secret.unwrap_or_default();
 
-    // Build the upgrade request fresh each attempt (connect_async consumes it).
+    // Build the upgrade request fresh each attempt (connect_ws consumes it).
     let build_request = || -> anyhow::Result<_> {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let mut request = ws_url.into_client_request()?;
@@ -62,7 +61,7 @@ pub async fn run(relay_secret: Option<String>) -> anyhow::Result<()> {
         let mut attempts = 0u32;
         loop {
             let request = build_request()?;
-            match connect_async(request).await {
+            match tls::connect_ws(request).await {
                 Ok((stream, _)) => {
                     eprintln!("[nebo-relay] connected to server at {}", ws_url);
                     break stream;

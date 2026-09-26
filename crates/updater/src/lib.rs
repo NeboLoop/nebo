@@ -106,7 +106,7 @@ pub enum UpdateError {
 
 /// Check the feed for a newer version.
 pub async fn check(feed: &Feed, current_version: &str) -> Result<CheckResult, UpdateError> {
-    let client = reqwest::Client::builder()
+    let client = tls::http_client()
         .timeout(CHECK_TIMEOUT)
         .user_agent(format!("{}/{}", feed.binary, current_version))
         .build()?;
@@ -251,7 +251,7 @@ pub async fn download(
     };
     let url = format!("{}/{}/{}", feed.base_url, tag, asset);
 
-    let client = reqwest::Client::builder()
+    let client = tls::http_client()
         .timeout(Duration::from_secs(600))
         .user_agent("nebo-updater")
         .build()?;
@@ -312,7 +312,7 @@ pub async fn verify_checksum(
         asset_name(feed)
     };
 
-    let client = reqwest::Client::builder()
+    let client = tls::http_client()
         .timeout(Duration::from_secs(30))
         .user_agent("nebo-updater")
         .build()?;

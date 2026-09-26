@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tls = { workspace = true }
 types = { workspace = true }
 config = { workspace = true }
 db = { workspace = true }

@@ -931,7 +931,10 @@ pub async fn http_proxy(
 
     let req_body = body.get("body").and_then(|b| b.as_str()).map(String::from);
 
-    let client = reqwest::Client::new();
+    let client = match tls::http_client().build() {
+        Ok(client) => client,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("proxy error: {}", e)).into_response(),
+    };
     let mut req = match method.as_str() {
         "GET" => client.get(&url),
         "POST" => client.post(&url),

@@ -671,7 +671,7 @@ async fn run_chat(
     // implementation called the provider directly with zero tools and no
     // system prompt, a competing pathway on which tool use was impossible.
     let url = format!("ws://{}:{}/ws", cfg.host, cfg.port);
-    let (ws, _) = tokio_tungstenite::connect_async(&url).await.map_err(|e| {
+    let (ws, _) = tls::connect_ws(&url).await.map_err(|e| {
         anyhow::anyhow!("cannot reach nebo server at {url} ({e}) — is `nebo serve` running?")
     })?;
     use futures::{SinkExt, StreamExt};

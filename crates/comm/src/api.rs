@@ -78,12 +78,12 @@ fn body_read_error(e: &reqwest::Error) -> String {
 /// (~300ms) before doing any work. `reqwest::Client` is an `Arc` around its
 /// pool: cloning here shares warm connections across every call site.
 static HTTP_CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| {
-    Client::builder()
+    tls::http_client()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(REST_TIMEOUT)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
         .build()
-        .unwrap_or_else(|_| Client::new())
+        .expect("reqwest REST client builder is infallible with these options")
 });
 
 impl NeboAIApi {
@@ -1732,11 +1732,11 @@ impl NeboAIApi {
         debug!(url = %url, filename = %filename, "uploading file");
 
         // Use a client with a longer timeout for uploads
-        let upload_client = Client::builder()
+        let upload_client = tls::http_client()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(FILE_TRANSFER_TIMEOUT)
             .build()
-            .unwrap_or_else(|_| Client::new());
+            .map_err(|e| CommError::Other(format!("upload client: {}", e)))?;
 
         let resp = upload_client
             .post(&url)
@@ -1822,7 +1822,9 @@ pub async fn redeem_code(
     bot_id: &str,
     runtime: &str,
 ) -> Result<RedeemCodeResponse, CommError> {
-    let client = Client::new();
+    let client = tls::http_client()
+        .build()
+        .map_err(|e| CommError::Other(format!("request failed: {}", e)))?;
     let url = format!("{}/api/v1/bots/connect/redeem", api_server);
     let body = RedeemCodeRequest {
         code: code.into(),

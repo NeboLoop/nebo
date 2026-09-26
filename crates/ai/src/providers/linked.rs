@@ -113,7 +113,7 @@ impl LinkedProvider {
             .parse()
             .map_err(|_| "The NeboAI token is not a valid header value.".to_owned())?;
         request.headers_mut().insert(AUTHORIZATION, bearer);
-        let connect = tokio_tungstenite::connect_async(request);
+        let connect = tls::connect_ws(request);
         let (mut ws, _) = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
             Ok(Ok(connected)) => connected,
             Ok(Err(e)) => {

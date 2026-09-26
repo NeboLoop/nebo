@@ -17,10 +17,10 @@ impl McpStdioBridge {
     pub fn new(server_url: String, tools: Option<String>, exclude_tools: Option<String>) -> Self {
         Self {
             server_url,
-            http: reqwest::Client::builder()
+            http: tls::http_client()
                 .timeout(Duration::from_secs(660)) // nebo chat can take up to 600s
                 .build()
-                .unwrap_or_default(),
+                .expect("reqwest bridge client builder is infallible with these options"),
             tool_allow: tools.map(|t| {
                 t.split(',')
                     .map(|s| s.trim().to_string())

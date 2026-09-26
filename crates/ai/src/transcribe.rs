@@ -60,7 +60,9 @@ pub async fn transcribe(
         .part("file", part);
 
     let url = format!("{}/audio/transcriptions", base_url.trim_end_matches('/'));
-    let response = reqwest::Client::new()
+    let response = tls::http_client()
+        .build()
+        .map_err(|e| ProviderError::Request(e.to_string()))?
         .post(&url)
         .bearer_auth(api_key)
         .headers(trace.headers())

@@ -248,7 +248,9 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
         return Ok(0);
     };
     let url = format!("{}/v1/models", cfg.neboai.janus_url);
-    let resp = reqwest::Client::new()
+    let resp = tls::http_client()
+        .build()
+        .map_err(|e| e.to_string())?
         .get(&url)
         .bearer_auth(&token)
         .header("X-Bot-ID", config::read_bot_id().unwrap_or_default())
@@ -3044,8 +3046,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let api_url = cfg.neboai.janus_url.clone();
         if !api_url.is_empty() {
             tokio::spawn(async move {
-                let client = reqwest::Client::new();
-                let _ = client.head(&api_url).send().await;
+                if let Ok(client) = tls::http_client().build() {
+                    let _ = client.head(&api_url).send().await;
+                }
             });
         }
     }

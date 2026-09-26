@@ -492,7 +492,9 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
     };
     let bot_id = config::read_bot_id().unwrap_or_default();
 
-    let resp = reqwest::Client::new()
+    let resp = tls::http_client()
+        .build()
+        .map_err(|e| NeboError::Internal(format!("janus usage fetch: {e}")))?
         .get(format!("{janus_url}/v1/usage"))
         .bearer_auth(&token)
         .header("X-Bot-ID", &bot_id)
@@ -1093,7 +1095,9 @@ async fn exchange_oauth_code(
         "code_verifier": code_verifier,
     });
 
-    let resp = reqwest::Client::new()
+    let resp = tls::http_client()
+        .build()
+        .map_err(|e| format!("token request failed: {e}"))?
         .post(format!("{api_url}/oauth/token"))
         .json(&body)
         .send()
@@ -1112,7 +1116,9 @@ async fn exchange_oauth_code(
 }
 
 async fn fetch_user_info(api_url: &str, access_token: &str) -> Result<OAuthUserInfo, String> {
-    let resp = reqwest::Client::new()
+    let resp = tls::http_client()
+        .build()
+        .map_err(|e| format!("userinfo request failed: {e}"))?
         .get(format!("{api_url}/oauth/userinfo"))
         .bearer_auth(access_token)
         .send()

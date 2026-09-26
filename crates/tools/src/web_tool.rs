@@ -100,25 +100,20 @@ struct JanusSearchConfig {
 impl WebCore {
     pub fn new() -> Self {
         const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-        let client = reqwest::Client::builder()
+        let client = tls::http_client()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        let bare_client = reqwest::Client::builder()
+            .expect("reqwest web client builder is infallible with these options");
+        // Never auto-follows redirects — each hop gets the SSRF check in
+        // fetch_checked.
+        let bare_client = tls::http_client()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_else(|_| {
-                // Fallback must also never auto-follow redirects — each hop gets
-                // the SSRF check in fetch_checked.
-                reqwest::Client::builder()
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()
-                    .expect("reqwest client")
-            });
+            .expect("reqwest web client builder is infallible with these options");
         Self {
             client,
             bare_client,
