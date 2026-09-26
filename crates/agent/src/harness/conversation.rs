@@ -136,7 +136,9 @@ pub(crate) fn record_interrupt(sessions: &SessionManager, session_id: &str, why:
 /// Who a message queued into a running turn came from. Both senders store
 /// their words as typed with this mark (`metadata`); the loop hears the row at
 /// its next step (`mid_turn_message_landed`), and the model reads it framed
-/// for its sender (`frame_mid_turn_message`). One queue, three senders.
+/// for its sender (`frame_mid_turn_message`). One queue, three senders. The
+/// owner's is answered in words at the step that hears it
+/// (`unanswered_mid_turn_message`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MidTurnFrom {
     /// The owner typed it while the turn ran; `via` is the channel.
@@ -215,6 +217,28 @@ pub(crate) fn mid_turn_message_landed(fresh: &[ChatMessage], seen: &[ChatMessage
         .any(|m| m.role == "user" && arrived_mid_turn(m).is_some())
 }
 
+/// True while the owner's latest mid-turn message has no reply in words
+/// after it, in `messages` as heard (`order_as_heard`): the step built from
+/// them is that reply, with tools off. A reply that only calls tools is not
+/// one: the model is still on its old plan. A parent's or a coworker's
+/// message never makes a step a reply: they are information for the work.
+pub(crate) fn unanswered_mid_turn_message(messages: &[ChatMessage]) -> bool {
+    let Some(at) = messages
+        .iter()
+        .rposition(|m| m.role == "user" && matches!(arrived_mid_turn(m), Some(MidTurnFrom::Owner { .. })))
+    else {
+        return false;
+    };
+    !messages[at + 1..].iter().any(is_worded_reply)
+}
+
+/// An assistant row that answers in words, with no tool calls.
+fn is_worded_reply(m: &ChatMessage) -> bool {
+    m.role == "assistant"
+        && !m.content.trim().is_empty()
+        && m.tool_calls.as_deref().is_none_or(|tc| tc.is_empty() || tc == "[]" || tc == "null")
+}
+
 /// The metadata key on a stored reply naming the last row its call was
 /// built from.
 pub(crate) const HEARD_THROUGH: &str = "heardThrough";
@@ -281,12 +305,15 @@ pub(crate) fn received_taint(messages: &[ChatMessage]) -> Vec<types::provenance:
 /// How a message that arrived mid-turn reads to the model: one fixed frame
 /// naming who sent it, so the model knows it arrived while it worked. The
 /// frame never changes after the row is written, so the conversation's
-/// cached prefix holds.
+/// cached prefix holds. The owner's frame states what the turn does with
+/// it: the step that hears it has tools off, and the model decides after
+/// its reply whether the work goes on.
 pub(crate) fn frame_mid_turn_message(words: &str, from: &MidTurnFrom) -> String {
     match from {
         MidTurnFrom::Owner { via } => format!(
             "The owner sent this message while you were working (via {via}):\n{words}\n\n\
-             Address it, then carry on with your work."
+             Your next reply answers it in words, with tools off for that reply. After it, carry on \
+             with the work, unless they asked you to stop."
         ),
         MidTurnFrom::Parent { .. } => format!(
             "The employee who gave you this task sent this message while you were working:\n{words}\n\n\

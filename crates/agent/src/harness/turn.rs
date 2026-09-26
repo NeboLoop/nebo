@@ -11,6 +11,11 @@
 //! 4. the tool surface is built (core, always loaded, loaded deferred);
 //! 5. the model is called.
 //!
+//! A step whose conversation holds the owner's mid-turn message with no
+//! reply after it is that reply: tools off, then another step, where the
+//! model carries on or, asked to stop, ends the turn. Input queued while a
+//! step is built takes the step again with it.
+//!
 //! A reply with tool calls runs its tool round and takes another step. A
 //! reply without tool calls passes the end checks (`turn_end`); one that
 //! continues takes another step with its reminder, and when none does the
@@ -155,6 +160,9 @@ pub struct TurnState {
     pub model: String,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
+    /// The last reply answered the owner's mid-turn message in words: the
+    /// owner has their answer, so a reply with nothing in it ends the turn.
+    answered_owner: bool,
     /// The last call that got a reply: the recap forks it.
     last_call: Option<LastCall>,
     persisted_renderings: HashSet<String>,
@@ -195,6 +203,9 @@ pub enum Transition {
     First,
     AfterTools,
     MidTurnInput,
+    /// The owner's mid-turn message was answered in words: the model
+    /// carries on, or ends the turn if they asked it to stop.
+    MidTurnAnswered,
     CutoffResume { attempt: u8 },
     OutputEscalated,
     OverflowCleared,
@@ -458,7 +469,7 @@ async fn run(
         // closes first: input arriving from here on waits for it and starts
         // its own turn, so everything before is visible now.
         guard.close();
-        if exit != TurnExit::Cancelled && heard_nothing_since(&h, &session_id, &st.seen) {
+        if exit != TurnExit::Cancelled && input_landed_after(&h, &session_id, &st.seen) {
             info!(session_id, "input arrived after the last step: the next turn hears it");
             guard.reopen();
             req = Some(follow_up(cx.request));
@@ -471,7 +482,7 @@ async fn run(
 }
 
 /// Whether a mid-turn or notification row landed after `seen`.
-fn heard_nothing_since(h: &Harness, session_id: &str, seen: &[ChatMessage]) -> bool {
+fn input_landed_after(h: &Harness, session_id: &str, seen: &[ChatMessage]) -> bool {
     let Ok(fresh) = h.sessions.get_messages_since_checkpoint(session_id) else {
         return false;
     };
@@ -710,6 +721,7 @@ pub(crate) async fn prepare(
         seen: Vec::new(),
         model: turn_model,
         checkpoints: 0,
+        answered_owner: false,
         last_call: None,
         persisted_renderings: HashSet::new(),
         trim_checked: HashSet::new(),
@@ -935,6 +947,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         // Rows stored after this one arrive while the step runs: a
         // checkpoint's summary never reads them.
         let heard_through = conversation.last().map(|m| m.id.as_str());
+        // The owner spoke and has no answer yet: this step is the answer,
+        // in words, whatever the model's momentum. A linked runtime runs its
+        // own loop.
+        let reply_in_words = !cx.linked && conversation::unanswered_mid_turn_message(&window);
 
         // 4-5. The request and the call.
         let selected = st.model.clone();
@@ -955,7 +971,10 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         if !loaded {
             model_name.clear();
         }
-        let request = build_request(cx, st, &window, surface.declared, &model_name);
+        let mut request = build_request(cx, st, &window, surface.declared, &model_name);
+        if reply_in_words {
+            request.tool_choice = ai::ToolChoice::None;
+        }
         let request_tokens =
             st.usage.last_request_estimate + st.usage.system_overhead_tokens + st.usage.estimate_correction;
         let max_output = usize::try_from(request.max_tokens).unwrap_or_default();
@@ -985,6 +1004,17 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             }
         }
         st.seen = conversation.clone();
+        // Input queued while this step was built is stored after the
+        // conversation it loaded: sent now, the step would go out without
+        // it, and a tool round would run past the owner's message before
+        // the next step heard it (proof run 36256264330: the owner's "stop"
+        // landed 3 ms before the request left, and a read ran past it).
+        // Take the step again with it.
+        if input_landed_after(h, sid, &conversation) {
+            info!(session_id = sid, step = st.step, "input was queued while the step was built: taking the step with it");
+            st.step -= 1;
+            continue;
+        }
 
         let declared_names: Arc<HashSet<String>> = Arc::new(request.tools.iter().map(|t| t.name.clone()).collect());
         let memory_user_id = cx.seat.memory.user_id.clone();
@@ -1060,7 +1090,11 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         // in the stream, while the reply is still arriving, so a read costs
         // no wait for the rest of the reply.
         let mut executor = ToolExecutor::new(&round_cx);
-        let (tool_calls_out, streamed_calls) = mpsc::unbounded_channel();
+        let (tool_calls_out, mut streamed_calls) = mpsc::unbounded_channel();
+        // Tools are off for the owner's answer: nothing streamed starts.
+        if reply_in_words {
+            streamed_calls.close();
+        }
         let call = model_call::call_model(
             model_call::ModelCall {
                 request,
@@ -1146,11 +1180,12 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             mut tool_calls,
             stop,
             stream_error,
-            block_order,
+            mut block_order,
             provider,
             thinking,
             thinking_model,
         } = reply;
+        let after_owner_answer = std::mem::replace(&mut st.answered_owner, false);
         st.last_call = Some(LastCall {
             request: fork_of.clone(),
             provider: provider.clone(),
@@ -1160,6 +1195,12 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         if stream_error.is_some() {
             // Calls that arrived on a broken stream are not run or stored.
             tool_calls.clear();
+        }
+        if reply_in_words {
+            // The owner's answer went out with tools off: a call the
+            // provider sent anyway is neither run nor stored.
+            tool_calls.clear();
+            block_order.retain(|b| !matches!(b, Block::Tool(_)));
         }
         let heard_through = st.seen.last().map(|m| m.id.as_str());
         save_reply(cx, &mut st.folds, &text, &tool_calls, &block_order, (&thinking, &thinking_model), heard_through).await;
@@ -1203,6 +1244,14 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             }
             None => {}
         }
+        // The owner has their answer. The next step, with tools back,
+        // carries on with the work, or ends the turn if they asked to stop.
+        if reply_in_words && !text.trim().is_empty() {
+            st.answered_owner = true;
+            st.reminders.add(&TurnEvent::MidTurnAnswered);
+            st.transition = Transition::MidTurnAnswered;
+            continue;
+        }
         // The provider said tools were called and none arrived: the
         // transport lost them; take the step again.
         if model_call::lost_tool_calls(&mut st.call, stop.as_deref(), &tool_calls, st.step as usize, sid) {
@@ -1213,6 +1262,11 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             continue;
         }
         if text.trim().is_empty() {
+            // The step after the owner's answer, with nothing more to say:
+            // they asked to stop, and the turn ends on that answer.
+            if after_owner_answer {
+                return TurnExit::Answered;
+            }
             if model_call::retry_empty_reply(&mut st.call, st.step as usize, sid) {
                 st.reminders.add(&TurnEvent::EmptyReply);
                 st.transition = Transition::TransientRetry {
@@ -2039,6 +2093,8 @@ mod tests {
         Slow(Box<Step>, std::time::Duration),
         /// The step, after a whole thinking block.
         Thought(Box<Step>, ai::ThinkingBlock),
+        /// The step this function chooses from the request it is sent.
+        Reacting(fn(&ChatRequest) -> Step),
     }
 
     /// What the probe tools saw: each call's tool, and whether it started
@@ -2152,6 +2208,9 @@ mod tests {
                 hook.await;
                 step = *inner;
             }
+            if let Step::Reacting(choose) = step {
+                step = choose(req);
+            }
             if let Step::Held(calls, probe) = step {
                 let (tx, rx) = mpsc::channel(calls.len() + 1);
                 tokio::spawn(async move {
@@ -2222,7 +2281,7 @@ mod tests {
                 list.insert(0, StreamEvent::thinking_block(block));
                 (list, stop)
             }
-            Step::During(..) | Step::Held(..) | Step::Slow(..) => unreachable!("answered in stream"),
+            Step::During(..) | Step::Held(..) | Step::Slow(..) | Step::Reacting(_) => unreachable!("answered in stream"),
         })
     }
 
@@ -2884,14 +2943,19 @@ mod tests {
         *model.script.lock().unwrap() = VecDeque::from(vec![
             Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook),
             Step::Say("Done, and the calendar is clear."),
+            Step::Say(""),
         ]);
         let events = run_turn(&h, owner("Echo something")).await;
         assert_eq!(exit_of(&events), "text_response");
         assert_eq!(busy_rx.await.unwrap().as_deref(), Some(session_gate::QUEUED_INTO_RUNNING_TURN));
         let calls = model.calls();
-        assert_eq!(calls.len(), 2, "heard inside the same turn");
+        assert_eq!(calls.len(), 3, "heard inside the same turn: the answer, then the step that ends it");
         assert!(!texts(&calls[0]).iter().any(|t| t.contains("Also check the calendar")));
         assert!(texts(&calls[1]).iter().any(|t| t.contains("Also check the calendar")), "heard at the next step");
+        assert_eq!(calls[1].tool_choice, ai::ToolChoice::None, "answered in words");
+        assert_eq!(calls[2].tool_choice, ai::ToolChoice::Auto, "tools are back after the answer");
+        let answered = events::attachment_for(&TurnEvent::MidTurnAnswered).unwrap();
+        assert_eq!(texts(&calls[2]).last(), Some(&reminders::wrap(&answered.text)), "the step after the answer is told it may go on");
     }
 
     /// The owner writes while the model is answering: the answer never saw
@@ -2911,11 +2975,12 @@ mod tests {
         *model.script.lock().unwrap() = VecDeque::from(vec![
             Step::During(Box::new(Step::Say("Started on the books.")), hook),
             Step::Say("We open at nine."),
+            Step::Say(""),
         ]);
         let events = run_turn(&h, owner("Start on the books")).await;
         assert_eq!(exit_of(&events), "text_response");
         let calls = model.calls();
-        assert_eq!(calls.len(), 2, "the message gets a call of its own");
+        assert_eq!(calls.len(), 3, "the message gets a call of its own, then the step after the answer");
         let read = texts(&calls[1]);
         let answer = read.iter().position(|t| t == "Started on the books.").expect("the first answer is in the thread");
         let message = read.iter().position(|t| t.contains("What time do we open?")).expect("the message is in the thread");
@@ -3019,6 +3084,7 @@ mod tests {
         *model.script.lock().unwrap() = VecDeque::from(vec![
             Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), hook),
             Step::Say("Done."),
+            Step::Say(""),
         ]);
         run_turn(&h, owner("Echo something")).await;
         let rows = stored(&h);
@@ -3206,14 +3272,269 @@ mod tests {
         *model.script.lock().unwrap() = VecDeque::from(vec![
             Step::During(Box::new(Step::Say("Here you go.")), hook),
             Step::Say("And the one more thing."),
+            Step::Say(""),
         ]);
         let events = run_turn(&h, owner("First thing")).await;
         assert_eq!(exit_of(&events), "text_response");
         assert_eq!(events.iter().filter(|e| e.event_type == ai::StreamEventType::Done).count(), 1, "one Done");
         let calls = model.calls();
-        assert_eq!(calls.len(), 2, "a second turn ran");
+        assert_eq!(calls.len(), 3, "a second turn ran: its answer, then the step after it");
         assert!(!texts(&calls[0]).iter().any(|t| t.contains("One more thing")));
         assert!(texts(&calls[1]).iter().any(|t| t.contains("One more thing")));
+    }
+
+    /// Where in the step loop the owner acts, around step 2 of a chain of
+    /// reads (the final answer for `DuringAnswer`).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum At {
+        /// Before step 2 loads the conversation (the app's should-continue
+        /// ask runs there).
+        BeforeLoad,
+        /// After step 2 loaded the conversation and before its request goes
+        /// out (the app's steering hook runs there). The proof run's miss
+        /// (CI 36256264330, correction-message-while-working run 2): the
+        /// owner's "stop" landed 3 ms before step 3's request left.
+        AfterLoad,
+        /// While step 2's model call is in flight.
+        DuringCall,
+        /// While step 2's read runs.
+        DuringTools,
+        /// While the turn's final answer streams.
+        DuringAnswer,
+    }
+
+    const EVERY_POINT: [At; 5] = [At::BeforeLoad, At::AfterLoad, At::DuringCall, At::DuringTools, At::DuringAnswer];
+
+    /// What the owner does at the point: type a message, or press stop.
+    enum Act {
+        Message(&'static str),
+        Stop(tokio_util::sync::CancellationToken),
+    }
+
+    /// The owner's act, done once, from wherever the step loop is when
+    /// `fire` runs.
+    struct Owner {
+        h: std::sync::OnceLock<Harness>,
+        act: Act,
+        done: std::sync::atomic::AtomicBool,
+    }
+
+    impl Owner {
+        async fn fire(&self) {
+            if self.done.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            match &self.act {
+                Act::Stop(cancel) => cancel.cancel(),
+                Act::Message(text) => {
+                    let h = self.h.get().expect("the harness is bound").clone();
+                    let mut handle = h.start_turn(owner(text)).await.expect("queued");
+                    let first = handle.events.recv().await.expect("the busy line");
+                    assert_eq!(first.stop_reason.as_deref(), Some(session_gate::QUEUED_INTO_RUNNING_TURN));
+                }
+            }
+        }
+
+        fn hook(self: &Arc<Self>) -> Hook {
+            let me = self.clone();
+            Box::pin(async move { me.fire().await })
+        }
+    }
+
+    /// The app hook that acts for the owner at step 2: `agent.should_continue`
+    /// before the step loads, `steering.generate` after.
+    struct ActAtStep2(Arc<Owner>);
+
+    #[async_trait::async_trait]
+    impl napp::hooks::HookCaller for ActAtStep2 {
+        async fn call_filter(&self, hook: &str, payload: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
+            let v: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+            let step = v.get("turn").or_else(|| v.get("iteration")).and_then(|n| n.as_u64()).unwrap();
+            if step == 2 {
+                self.0.fire().await;
+            }
+            let answer = if hook == "agent.should_continue" {
+                serde_json::json!({"should_continue": true})
+            } else {
+                serde_json::json!({"directives": []})
+            };
+            Ok((serde_json::to_vec(&answer).unwrap(), true))
+        }
+        async fn call_action(&self, _hook: &str, _payload: Vec<u8>) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// A read that counts its runs and lets the owner act during its
+    /// second.
+    struct PartReader {
+        runs: Arc<std::sync::atomic::AtomicUsize>,
+        during_second: Option<Arc<Owner>>,
+    }
+
+    impl tools::registry::DynTool for PartReader {
+        fn name(&self) -> &str {
+            "read"
+        }
+        fn description(&self) -> String {
+            "reads the next part".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn read_only(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                let run = self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if run == 2
+                    && let Some(owner) = &self.during_second
+                {
+                    owner.fire().await;
+                }
+                tools::ToolResult::ok(format!("Part {run} read. Now read the next part."))
+            })
+        }
+    }
+
+    const STOP_READING: &str = "Stop reading and tell me what you have so far.";
+
+    fn reads_in(req: &ChatRequest) -> usize {
+        req.messages.iter().filter(|m| m.role == "tool").count()
+    }
+
+    /// A model with momentum: it reads three parts, then answers. Told it
+    /// may not call tools, it answers and tries to read on anyway; once it
+    /// has said it stopped, it has nothing more to say.
+    fn reads_on(req: &ChatRequest) -> Step {
+        if req.tool_choice == ai::ToolChoice::None {
+            return Step::Narrated("Stopping as asked. So far: parts one and two.", "read");
+        }
+        if req.messages.iter().any(|m| m.role == "assistant" && m.content.starts_with("Stopping as asked")) {
+            return Step::Say("");
+        }
+        if reads_in(req) < 3 { Step::Call("read", serde_json::json!({})) } else { Step::Say("All three parts are read.") }
+    }
+
+    /// The owner asks an aside: the model answers it and reads on.
+    fn answers_and_reads_on(req: &ChatRequest) -> Step {
+        if req.tool_choice == ai::ToolChoice::None {
+            return Step::Say("144.");
+        }
+        if reads_in(req) < 3 { Step::Call("read", serde_json::json!({})) } else { Step::Say("All three parts are read.") }
+    }
+
+    struct Interrupted {
+        events: Vec<StreamEvent>,
+        calls: Vec<ChatRequest>,
+        reads: usize,
+        rows: Vec<ChatMessage>,
+    }
+
+    /// A turn that reads parts one after another, with the owner acting at
+    /// `at`.
+    async fn interrupted(at: At, act: impl FnOnce(&TurnRequest) -> Act, model: fn(&ChatRequest) -> Step) -> Interrupted {
+        let req = owner("Read part one and follow it to the end, then summarize.");
+        let owner_act = Arc::new(Owner { h: Default::default(), act: act(&req), done: Default::default() });
+        let mut script: Vec<Step> = (0..12).map(|_| Step::Reacting(model)).collect();
+        match at {
+            At::DuringCall => script[1] = Step::During(Box::new(Step::Reacting(model)), owner_act.hook()),
+            At::DuringAnswer => script[3] = Step::During(Box::new(Step::Reacting(model)), owner_act.hook()),
+            _ => {}
+        }
+        let model = Scripted::new(script);
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = PartReader {
+            runs: runs.clone(),
+            during_second: (at == At::DuringTools).then(|| owner_act.clone()),
+        };
+        let h = harness_with(&model, vec![Box::new(reader)]).await;
+        let _ = owner_act.h.set(h.clone());
+        let hook = match at {
+            At::BeforeLoad => Some("agent.should_continue"),
+            At::AfterLoad => Some("steering.generate"),
+            _ => None,
+        };
+        if let Some(hook) = hook {
+            h.hooks.register(hook, "owner-probe", napp::hooks::HookType::Filter, 0, Arc::new(ActAtStep2(owner_act.clone())));
+        }
+        let events = run_turn(&h, req).await;
+        assert!(owner_act.done.load(std::sync::atomic::Ordering::SeqCst), "{at:?}: the owner acted");
+        Interrupted {
+            events,
+            calls: model.calls(),
+            reads: runs.load(std::sync::atomic::Ordering::SeqCst),
+            rows: stored(&h),
+        }
+    }
+
+    /// The owner types "stop" at every point of the step loop. The message
+    /// is never dropped: the step that has not sent its request yet hears
+    /// it, or else the next one does (a whole new turn when the answer was
+    /// already streaming). That step answers in words, with tools off, so
+    /// no read runs after the owner's message is heard, whatever the model's
+    /// momentum; and a model that has said it stopped ends the turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_queued_at_any_point_of_a_step_is_heard_at_the_next_boundary() {
+        for at in EVERY_POINT {
+            let run = interrupted(at, |_| Act::Message(STOP_READING), reads_on).await;
+            // The call that first carries the message, and the reads that
+            // ran before it: the step in flight when the message landed
+            // finishes, and nothing after.
+            let (heard, reads) = match at {
+                At::BeforeLoad | At::AfterLoad => (1, 1),
+                At::DuringCall | At::DuringTools => (2, 2),
+                At::DuringAnswer => (4, 3),
+            };
+            let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(STOP_READING));
+            let first = run.calls.iter().position(carries);
+            assert_eq!(first, Some(heard), "{at:?}: heard by the first step that had not sent its request");
+            assert!(run.calls[..heard].iter().all(|c| c.tool_choice == ai::ToolChoice::Auto), "{at:?}");
+            assert_eq!(run.calls[heard].tool_choice, ai::ToolChoice::None, "{at:?}: the step that hears the owner answers in words");
+            assert_eq!(run.reads, reads, "{at:?}: no read ran after the owner's message was heard");
+            assert_eq!(run.calls.len(), heard + 2, "{at:?}: the words reply, then the step that ends the turn");
+            assert_eq!(exit_of(&run.events), "text_response", "{at:?}");
+            let reply = run.rows.iter().rev().find(|m| m.role == "assistant").expect("the reply is stored");
+            assert!(reply.content.starts_with("Stopping as asked"), "{at:?}: {}", reply.content);
+            assert!(reply.tool_calls.is_none(), "{at:?}: the call the model tried with tools off is not stored or run");
+        }
+    }
+
+    /// An aside is not a stop: the step that hears it answers in words and
+    /// the work carries on to the end in the same turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_aside_is_answered_and_the_work_carries_on() {
+        for at in [At::AfterLoad, At::DuringCall] {
+            let run = interrupted(at, |_| Act::Message("While you're at it: what's 12 times 12?"), answers_and_reads_on).await;
+            let heard = if at == At::AfterLoad { 1 } else { 2 };
+            assert_eq!(run.calls[heard].tool_choice, ai::ToolChoice::None, "{at:?}");
+            assert!(run.calls[heard + 1..].iter().all(|c| c.tool_choice == ai::ToolChoice::Auto), "{at:?}: tools are back after the reply");
+            assert_eq!(run.reads, 3, "{at:?}: the chain carries on after the answer");
+            assert_eq!(exit_of(&run.events), "text_response");
+            let said: Vec<&str> =
+                run.rows.iter().filter(|m| m.role == "assistant" && !m.content.is_empty()).map(|m| m.content.as_str()).collect();
+            assert_eq!(said, ["144.", "All three parts are read."], "{at:?}");
+        }
+    }
+
+    /// The owner presses stop at every point of the step loop: the turn
+    /// ends there, no step after it calls the model, and no read starts
+    /// after it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_at_any_point_of_a_step_ends_the_turn_there() {
+        for at in [At::BeforeLoad, At::AfterLoad, At::DuringCall, At::DuringTools] {
+            let run = interrupted(at, |req| Act::Stop(req.cancel.clone()), reads_on).await;
+            assert_eq!(exit_of(&run.events), "cancelled", "{at:?}");
+            assert!(run.calls.len() <= 2, "{at:?}: no model call after step 2: {}", run.calls.len());
+            let most = if matches!(at, At::BeforeLoad | At::AfterLoad) { 1 } else { 2 };
+            assert!(run.reads <= most, "{at:?}: no read started after the stop: {}", run.reads);
+            assert!(run.rows.iter().any(|m| m.content == conversation::INTERRUPT_MESSAGE), "{at:?}: the stop is recorded");
+        }
     }
 
     /// `find_tools` loads a deferred tool: its schema joins the request from
@@ -3859,9 +4180,11 @@ mod tests {
 
     /// Runs a turn whose step overflows, so the turn checkpoints for
     /// itself, and sends `input` into it while the summary is written.
-    /// Returns what the step after the checkpoint read.
-    async fn input_during_a_checkpoint(input: TurnRequest) -> (Vec<StreamEvent>, Vec<String>, Vec<ChatMessage>) {
-        let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Answered.")]);
+    /// Returns what the step after the checkpoint read. `calls` is how many
+    /// model calls the second turn's task makes in all: an owner's message
+    /// is answered in words and the step after the answer ends the turn.
+    async fn input_during_a_checkpoint(input: TurnRequest, calls: usize) -> (Vec<StreamEvent>, Vec<String>, Vec<ChatMessage>) {
+        let model = Scripted::new(vec![Step::Say("First answer."), Step::Overflow, Step::Say("Answered."), Step::Say("")]);
         let h = harness(&model).await;
         run_turn(&h, owner("Start the report")).await;
         let h2 = h.clone();
@@ -3871,9 +4194,9 @@ mod tests {
         });
         *model.during_checkpoint.lock().unwrap() = Some(hook);
         let events = run_turn(&h, owner("Keep going")).await;
-        let calls = model.calls();
-        assert_eq!(calls.len(), 3, "the refused call and the step after the checkpoint");
-        (events, texts(&calls[2]), stored(&h))
+        let made = model.calls();
+        assert_eq!(made.len(), 1 + calls, "the first turn, the refused call and the steps after the checkpoint");
+        (events, texts(&made[2]), stored(&h))
     }
 
     /// The owner writes while a checkpoint the turn took for itself is being
@@ -3883,7 +4206,7 @@ mod tests {
     /// ever read it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_message_sent_while_the_turn_checkpoints_is_read_after_the_boundary() {
-        let (events, read, rows) = input_during_a_checkpoint(owner("What time do we open?")).await;
+        let (events, read, rows) = input_during_a_checkpoint(owner("What time do we open?"), 3).await;
         assert_eq!(exit_of(&events), "text_response");
         assert!(read[0].starts_with(compact::checkpoint::BOUNDARY_LEAD), "the step opens on the boundary: {}", read[0]);
         assert!(read.iter().any(|t| t.contains("What time do we open?")), "the message is read after the boundary: {read:#?}");
@@ -3908,7 +4231,7 @@ mod tests {
             usage: Default::default(),
             taint: Vec::new(),
         });
-        let (events, read, _) = input_during_a_checkpoint(notification).await;
+        let (events, read, _) = input_during_a_checkpoint(notification, 2).await;
         assert_eq!(exit_of(&events), "text_response");
         assert!(read[0].starts_with(compact::checkpoint::BOUNDARY_LEAD), "the step opens on the boundary: {}", read[0]);
         assert!(
@@ -5035,8 +5358,9 @@ mod tests {
     /// step's request, byte for byte: the same system prompt, the tools
     /// array only growing at its end (a `find_tools` load), and the earlier
     /// messages untouched, with this step's rows after them. That holds
-    /// within a turn, through a message queued into the running turn and a
-    /// thinking block, and from one turn to the next.
+    /// within a turn, through a message queued into the running turn, its
+    /// answer in words (tools off, then back) and a thinking block, and from
+    /// one turn to the next.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_request_starts_with_the_one_before_it() {
         let model = Arc::new(Scripted::default());
@@ -5048,7 +5372,8 @@ mod tests {
         });
         *model.script.lock().unwrap() = VecDeque::from(vec![
             Step::During(Box::new(Step::Call("echo", serde_json::json!({}))), queued),
-            Step::Thought(Box::new(Step::Call("find_tools", serde_json::json!({"query": "select:weather"}))), signed("load it")),
+            Step::Thought(Box::new(Step::Say("I'll check the weather too.")), signed("answer first")),
+            Step::Call("find_tools", serde_json::json!({"query": "select:weather"})),
             Step::Call("weather", serde_json::json!({})),
             Step::Say("Done."),
             Step::Call("echo", serde_json::json!({})),
@@ -5058,7 +5383,8 @@ mod tests {
         let first_turn = model.calls().len();
         run_turn(&h, on("scripted/deep", "Once more.")).await;
         let calls = model.calls();
-        assert_eq!((first_turn, calls.len()), (4, 6), "four steps, then two");
+        assert_eq!((first_turn, calls.len()), (5, 7), "five steps, then two");
+        assert_eq!(calls[1].tool_choice, ai::ToolChoice::None, "the queued message is answered in words");
 
         let mut grew = Vec::new();
         for (n, pair) in calls.windows(2).enumerate() {
@@ -5082,7 +5408,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(grew, vec![2], "the tools array grows once: the step after the load");
+        assert_eq!(grew, vec![3], "the tools array grows once: the step after the load");
 
         // Each turn's recap forks its last request: that request's messages,
         // then the answer and the instruction after them.
