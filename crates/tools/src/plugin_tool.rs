@@ -1,15 +1,12 @@
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
-use tokio::io::AsyncReadExt;
 use tracing::{debug, info, warn};
 
 use crate::channel_bridge;
 use crate::origin::ToolContext;
-use crate::process;
 use crate::registry::ToolResult;
 
 /// The exec budget when the call names no `timeout`.
@@ -400,6 +397,25 @@ impl PluginRunner {
             "agentId": agent_id,
             "label": label,
         }])
+    }
+
+    /// What the owner sees a plugin and its account called: the manifest's
+    /// display name ("Xero") and its `auth.label` ("Xero account"), each
+    /// falling back to the other rather than to the slug — a slug in
+    /// user-facing copy read as raw markdown on the phone (2026-09-26).
+    fn display_names(&self, slug: &str) -> (String, String) {
+        let manifest = self.plugin_store.get_manifest(slug);
+        let name = manifest
+            .as_ref()
+            .map(|m| m.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| slug.to_string());
+        let label = manifest
+            .and_then(|m| m.auth)
+            .map(|a| a.label)
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| format!("{name} account"));
+        (name, label)
     }
 
     pub(crate) async fn handle_discover(&self, query: &str, ctx: &crate::ToolContext) -> ToolResult {
@@ -943,6 +959,7 @@ impl PluginRunner {
                     }
 
                     info!(plugin = %pi.slug, "auth failure detected");
+                    let (display_name, display_label) = self.display_names(&pi.slug);
 
                     // FIRST: silent, non-interactive token renewal when the
                     // manifest declares a refresh command. No user interruption,
@@ -1010,120 +1027,121 @@ impl PluginRunner {
                             .then(|| types::OwnerNeed::Account { plugin: pi.slug.clone() });
                         let refused = ToolResult::terminal(match (had_account, auth.commands.refresh.is_some()) {
                             (Some(false), _) => format!(
-                                "I couldn't reach {} — no account is connected for this \
+                                "I couldn't reach {display_name} — no account is connected for this \
                                  employee. Connect one in the employee's Settings, Plugins, \
-                                 then ask me again.",
-                                pi.slug
+                                 then ask me again."
                             ),
                             (Some(true), true) => format!(
-                                "I couldn't reach {} — its authentication expired and \
+                                "I couldn't reach {display_name} — its authentication expired and \
                                  automatic renewal didn't work. Please reconnect this account in \
-                                 the employee's Settings, Plugins, then ask me again.",
-                                pi.slug
+                                 the employee's Settings, Plugins, then ask me again."
                             ),
                             (Some(true), false) => format!(
-                                "I couldn't reach {} — its authentication expired, and this \
+                                "I couldn't reach {display_name} — its authentication expired, and this \
                                  plugin cannot renew itself. Please reconnect this account in the \
-                                 employee's Settings, Plugins, then ask me again.",
-                                pi.slug
+                                 employee's Settings, Plugins, then ask me again."
                             ),
                             (None, _) => format!(
-                                "I couldn't reach {} — it has no working sign-in: either it \
+                                "I couldn't reach {display_name} — it has no working sign-in: either it \
                                  was never connected, or its credentials stopped working. Connect \
-                                 it in Settings, Plugins, then ask me again.",
-                                pi.slug
+                                 it in Settings, Plugins, then ask me again."
                             ),
                         });
                         return ToolResult { need, ..refused };
                     }
 
-                    // A plugin whose account is entered in Nebo's own dialog
-                    // (auth type env) has no browser sign-in to fall through
-                    // to: its `auth login` takes the fields from the
-                    // environment, and run without them it serves a local
-                    // form and waits for minutes. Say where the account is
-                    // connected and end the turn.
+                    // Interactive chat: the ONE connect card — the widget the
+                    // install→connect chain and first use raise — and never a
+                    // login spawned on the bot's machine from inside the tool
+                    // call. The card's action runs the login on the client
+                    // that shows it, so an owner on the phone sees it. Live
+                    // (2026-09-26): the tool ran xero's login on the Mac while
+                    // the owner was on his phone; it exited 1 in two seconds
+                    // (its client id was never set), and the terminal result
+                    // ended the turn as a red bar showing raw markdown.
+
+                    // Sign-in details typed into Nebo's own dialog (auth type
+                    // env): the card collects no values, so there is nothing
+                    // to raise. Say what is missing as data; the model answers
+                    // the owner in prose and the turn ends normally.
                     if auth.auth_type == "env" {
-                        return ToolResult::terminal(format!(
-                            "I couldn't reach {} — no working account is connected for this \
-                             employee. Connect one in the employee's Settings, Plugins, then ask \
-                             me again.",
-                            pi.slug
-                        ))
-                        .with_need(types::OwnerNeed::Account { plugin: pi.slug.clone() });
-                    }
-
-                    // Interactive chat: fall through to today's browser OAuth path.
-                    // Broadcast re-auth request so frontend can show a notification
-                    if let Some(ref bc) = self.broadcaster {
-                        bc(
-                            "plugin_reauth_request",
-                            serde_json::json!({
-                                "plugin": &pi.slug,
-                                "label": &auth.label,
-                            }),
-                        );
-                    }
-
-                    // Attempt re-auth via plugin's auth login command
-                    let login_time = match budget.step(&command_label, "the browser login") {
-                        Ok(given) => given,
-                        Err(text) => return out_of_time(text, &result),
-                    };
-                    if self.run_auth_login(&pi.slug, &binary, &auth, login_time).await {
-                        info!(plugin = %pi.slug, "re-authentication succeeded, retrying command");
-
-                        // Broadcast success
-                        if let Some(ref bc) = self.broadcaster {
-                            bc(
-                                "plugin_auth_complete",
-                                serde_json::json!({ "plugin": &pi.slug }),
-                            );
-                        }
-
-                        return match budget.step(&command_label, "the retry after the login") {
-                            Ok(given) => self.run_plugin_command(pi, ctx, given).await,
-                            Err(text) => out_of_time(text, &result),
+                        let state = if had_account == Some(true) {
+                            "entered for this employee stopped working"
+                        } else {
+                            "have not been entered for this employee"
                         };
+                        return ToolResult::error(format!(
+                            "{display_name} cannot be used: the {display_label} details {state}. \
+                             The owner enters them in {display_name}'s plugin settings. Tell the \
+                             owner that in plain words and stop; do not suggest commands."
+                        ));
                     }
 
-                    // Re-auth failed
-                    warn!(plugin = %pi.slug, "re-authentication failed");
-                    if let Some(ref bc) = self.broadcaster {
-                        bc(
-                            "plugin_auth_error",
-                            serde_json::json!({
-                                "plugin": &pi.slug,
-                                "error": "Re-authentication failed or timed out",
-                            }),
-                        );
+                    // Values the login itself needs (an OAuth app's client id
+                    // and secret, declared under `auth.env`) that nothing has
+                    // set: the login exits at once with "... is not set", on
+                    // the card too, so the card is not offered. Read from the
+                    // ONE env computation the login runs with.
+                    let login_env = napp::PluginRuntime::new(&pi.slug, binary.clone(), self.plugin_store.clone())
+                        .build_env();
+                    let mut unset: Vec<&str> = auth
+                        .env
+                        .keys()
+                        .map(String::as_str)
+                        .filter(|key| !login_env.iter().any(|(name, value)| name == key && !value.is_empty()))
+                        .collect();
+                    unset.sort_unstable();
+                    if !unset.is_empty() {
+                        return ToolResult::error(format!(
+                            "{display_name} is not set up yet: {} {} no value, and no {display_label} can \
+                             be connected until the owner enters {} in {display_name}'s plugin settings. \
+                             Tell the owner that in plain words and stop; do not suggest commands.",
+                            unset.join(" and "),
+                            if unset.len() == 1 { "has" } else { "have" },
+                            if unset.len() == 1 { "it" } else { "them" },
+                        ));
                     }
 
-                    // Terminal: auth genuinely expired and reauth failed. End the
-                    // turn and surface to the user — do not let the agent keep
-                    // retrying/improvising (FRAMES.md Phase 1).
-                    let need = (had_account == Some(false))
-                        .then(|| types::OwnerNeed::Account { plugin: pi.slug.clone() });
-                    let refused = ToolResult::terminal(match had_account {
-                        Some(true) => format!(
-                            "I couldn't reach {} — its account is no longer authenticated and \
-                             signing in again didn't work. Please reconnect it in the employee's \
-                             Settings, Plugins, then ask me again.",
-                            pi.slug
-                        ),
-                        Some(false) => format!(
-                            "I couldn't reach {} — no account is connected for this employee, \
-                             and signing in didn't complete. Connect one in the employee's \
-                             Settings, Plugins, then ask me again.",
-                            pi.slug
-                        ),
-                        None => format!(
-                            "I couldn't reach {} — it has no working sign-in, and signing in \
-                             didn't complete. Connect it in Settings, Plugins, then ask me again.",
-                            pi.slug
-                        ),
-                    });
-                    return ToolResult { need, ..refused };
+                    let agent_id = types::keyparser::extract_agent_id(&ctx.session_key);
+                    if agent_id.is_empty() {
+                        return ToolResult::error(format!(
+                            "{display_name} has no working sign-in, and this session belongs to no \
+                             employee a {display_label} could be connected for. Tell the owner in plain \
+                             words and stop."
+                        ));
+                    }
+                    let answer = ctx
+                        .ask_user(
+                            &format!(
+                                "I need your {display_label} connected to continue. Connect it on \
+                                 the card and I'll pick up right where I left off."
+                            ),
+                            Self::connect_account_widget(&pi.slug, &agent_id, &display_label),
+                        )
+                        .await;
+                    return match CardAnswer::read(answer.as_deref(), "connected") {
+                        CardAnswer::Done => {
+                            info!(plugin = %pi.slug, "account connected on the card, retrying command");
+                            // The owner's time on the card is not the command's:
+                            // the retry gets the full exec budget, as a launch
+                            // after the first-use card does.
+                            self.run_plugin_command(pi, ctx, Self::exec_timeout(pi)).await
+                        }
+                        CardAnswer::Failed(reason) => ToolResult::error(format!(
+                            "Connecting the {display_label} failed: {reason}. Tell the owner that \
+                             error in plain words and stop. Do not offer the card again and do not \
+                             suggest commands."
+                        )),
+                        CardAnswer::Skipped => ToolResult::error(format!(
+                            "The owner skipped connecting the {display_label}, so {display_name} \
+                             cannot be used yet. Say so in plain words, do what can be done without \
+                             it, and do not offer the card again unless they ask."
+                        )),
+                        CardAnswer::NoAnswer => ToolResult::error(format!(
+                            "The {display_label} was not connected: no answer (the owner stopped \
+                             the run). Do not offer the card again."
+                        )),
+                    };
                 }
             }
         }
@@ -1248,11 +1266,11 @@ impl PluginRunner {
         if args.first().map(|a| a.eq_ignore_ascii_case("auth")) == Some(true) {
             if let Some(sub) = args.get(1).map(|s| s.to_ascii_lowercase()) {
                 if sub == "login" || sub == "logout" || sub == "setup" {
+                    let (display_name, _) = self.display_names(&pi.slug);
                     return ToolResult::terminal(format!(
-                        "I can't sign in to or re-authenticate {} on my own — that's \
+                        "I can't sign in to or re-authenticate {display_name} on my own — that's \
                          handled for you. If this account needs reconnecting, you can do it \
-                         in this agent's Settings, Plugins.",
-                        pi.slug
+                         in this agent's Settings, Plugins."
                     ));
                 }
             }
@@ -1399,13 +1417,7 @@ impl PluginRunner {
                             );
                             return ToolResult::error(msg);
                         }
-                        let display_label = self
-                            .plugin_store
-                            .get_manifest(&pi.slug)
-                            .and_then(|m| m.auth)
-                            .map(|a| a.label)
-                            .filter(|l| !l.is_empty())
-                            .unwrap_or_else(|| pi.slug.clone());
+                        let (_, display_label) = self.display_names(&pi.slug);
                         let answer = ctx
                             .ask_user(
                                 &format!(
@@ -1744,156 +1756,6 @@ impl PluginRunner {
             None => Some(self.plugin_store.check_auth_now(slug).await),
         }
     }
-
-    async fn run_auth_login(
-        &self,
-        slug: &str,
-        binary: &Path,
-        auth: &napp::plugin::PluginAuth,
-        budget: Duration,
-    ) -> bool {
-        let runtime = napp::PluginRuntime::new(slug, binary.to_path_buf(), self.plugin_store.clone());
-        let mut cmd = runtime.command(&auth.commands.login);
-        process::hide_window(&mut cmd);
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(plugin = %slug, error = %e, "failed to spawn auth login");
-                return false;
-            }
-        };
-
-        // Read stderr for OAuth URLs (plugins write the URL to stderr).
-        let stderr_handle = child.stderr.take();
-        let slug_owned = slug.to_string();
-        let broadcaster = self.broadcaster.clone();
-
-        let stderr_task = tokio::spawn(async move {
-            let mut all = String::new();
-            let mut opened = false;
-            if let Some(mut stream) = stderr_handle {
-                let mut buf = [0u8; 4096];
-                loop {
-                    let has_candidate = !opened && has_url_candidate(&all);
-                    let read_result = if has_candidate {
-                        match tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
-                            .await
-                        {
-                            Ok(r) => r,
-                            Err(_) => {
-                                // Timeout — treat URL as complete
-                                if let Some(url) = extract_url(&all, true) {
-                                    open_auth_url(&slug_owned, &url, &broadcaster);
-                                    opened = true;
-                                }
-                                continue;
-                            }
-                        }
-                    } else {
-                        stream.read(&mut buf).await
-                    };
-                    match read_result {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let chunk = String::from_utf8_lossy(&buf[..n]);
-                            debug!(plugin = %slug_owned, chunk = %chunk, "auth login stderr");
-                            all.push_str(&chunk);
-                            if !opened {
-                                if let Some(url) = extract_url(&all, false) {
-                                    open_auth_url(&slug_owned, &url, &broadcaster);
-                                    opened = true;
-                                }
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-            all
-        });
-
-        // Also read stdout (some plugins may write URL there)
-        let stdout_handle = child.stdout.take();
-        let slug_for_stdout = slug.to_string();
-        let broadcaster_for_stdout = self.broadcaster.clone();
-
-        let stdout_task = tokio::spawn(async move {
-            let mut all = String::new();
-            let mut opened = false;
-            if let Some(mut stream) = stdout_handle {
-                let mut buf = [0u8; 4096];
-                loop {
-                    let has_candidate = !opened && has_url_candidate(&all);
-                    let read_result = if has_candidate {
-                        match tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
-                            .await
-                        {
-                            Ok(r) => r,
-                            Err(_) => {
-                                if let Some(url) = extract_url(&all, true) {
-                                    open_auth_url(&slug_for_stdout, &url, &broadcaster_for_stdout);
-                                    opened = true;
-                                }
-                                continue;
-                            }
-                        }
-                    } else {
-                        stream.read(&mut buf).await
-                    };
-                    match read_result {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let chunk = String::from_utf8_lossy(&buf[..n]);
-                            debug!(plugin = %slug_for_stdout, chunk = %chunk, "auth login stdout");
-                            all.push_str(&chunk);
-                            if !opened {
-                                if let Some(url) = extract_url(&all, false) {
-                                    open_auth_url(&slug_for_stdout, &url, &broadcaster_for_stdout);
-                                    opened = true;
-                                }
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-            all
-        });
-
-        // Wait for the auth login process for what is left of the exec budget.
-        let login_result = tokio::time::timeout(budget, async {
-            let (stderr_out, stdout_out) = tokio::join!(stderr_task, stdout_task);
-            let _stderr = stderr_out.unwrap_or_default();
-            let _stdout = stdout_out.unwrap_or_default();
-            child.wait().await
-        })
-        .await;
-
-        match login_result {
-            Ok(Ok(status)) if status.success() => {
-                info!(plugin = %slug, "plugin re-authentication succeeded");
-                true
-            }
-            Ok(Ok(status)) => {
-                warn!(plugin = %slug, code = ?status.code(), "plugin re-authentication failed");
-                false
-            }
-            Ok(Err(e)) => {
-                warn!(plugin = %slug, error = %e, "plugin auth login process error");
-                false
-            }
-            Err(_) => {
-                warn!(plugin = %slug, secs = budget.as_secs(), "plugin auth login timed out");
-                // Kill the child process on timeout
-                let _ = child.kill().await;
-                false
-            }
-        }
-    }
 }
 
 // ── Auth error detection ────────────────────────────────────────────
@@ -2004,53 +1866,6 @@ fn extract_and_strip_flag(args: &mut Vec<String>, name: &str) -> Option<String> 
     let value = args.remove(idx + 1);
     args.remove(idx);
     Some(value)
-}
-
-// ── URL extraction (duplicated from handlers/plugins.rs) ────────────
-
-/// Returns true if the text ends with an incomplete URL-like token.
-fn has_url_candidate(text: &str) -> bool {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if let Some(last) = words.last() {
-        let trimmed = last.trim_matches(|c: char| c == '"' || c == '\'' || c == '<' || c == '>');
-        (trimmed.starts_with("https://") || trimmed.starts_with("http://"))
-            && !text.ends_with(char::is_whitespace)
-    } else {
-        false
-    }
-}
-
-/// Extract the first HTTP(S) URL from accumulated output text.
-///
-/// When `complete` is false (streaming), only returns a URL that is followed by
-/// more text — avoids matching a partial URL still being written.
-/// When `complete` is true (after timeout), the last token is accepted.
-fn extract_url(text: &str, complete: bool) -> Option<String> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    for (i, word) in words.iter().enumerate() {
-        let trimmed = word.trim_matches(|c: char| c == '"' || c == '\'' || c == '<' || c == '>');
-        if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
-            let is_last = i == words.len() - 1;
-            if complete || !is_last || text.ends_with(char::is_whitespace) {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Open an OAuth URL: broadcast via WebSocket so the frontend can call `window.open()`.
-fn open_auth_url(slug: &str, url: &str, broadcaster: &Option<crate::web_tool::Broadcaster>) {
-    info!(plugin = %slug, url = %url, "opening plugin OAuth URL for re-authentication");
-    if let Some(bc) = broadcaster {
-        bc(
-            "plugin_auth_url",
-            serde_json::json!({
-                "plugin": slug,
-                "url": url,
-            }),
-        );
-    }
 }
 
 /// The first shell operator sitting among parsed args, if any. A plugin runs
@@ -2551,52 +2366,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_url_streaming() {
-        // URL followed by more text → extracted
-        assert_eq!(
-            extract_url(
-                "Visit https://accounts.google.com/o/oauth2 to continue",
-                false
-            ),
-            Some("https://accounts.google.com/o/oauth2".to_string())
-        );
-        // URL as last token without trailing whitespace → NOT extracted (still streaming)
-        assert_eq!(
-            extract_url("Visit https://accounts.google.com/o/oauth2", false),
-            None
-        );
-        // URL as last token with trailing whitespace → extracted
-        assert_eq!(
-            extract_url("Visit https://accounts.google.com/o/oauth2 ", false),
-            Some("https://accounts.google.com/o/oauth2".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_url_complete() {
-        // In complete mode, last token is accepted
-        assert_eq!(
-            extract_url("Visit https://accounts.google.com/o/oauth2", true),
-            Some("https://accounts.google.com/o/oauth2".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_url_strips_quotes() {
-        assert_eq!(
-            extract_url("URL: \"https://example.com/auth\" done", false),
-            Some("https://example.com/auth".to_string())
-        );
-    }
-
-    #[test]
-    fn test_has_url_candidate() {
-        assert!(has_url_candidate("Visit https://example.com"));
-        assert!(!has_url_candidate("Visit https://example.com "));
-        assert!(!has_url_candidate("no url here"));
-    }
-
-    #[test]
     fn test_produced_work_document_detects_fresh_output() {
         let dir = std::env::temp_dir().join(format!("nebo-pwd-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -3041,5 +2810,173 @@ mod budget_and_install_tests {
         // A flag's own value is not an operator, however it looks.
         assert_eq!(shell_operator(&split("orders list --filter '>'")), None);
         assert_eq!(shell_operator(&split("products list --limit 20")), None);
+    }
+
+    /// A single-account plugin (no profile dir, like xero) whose commands
+    /// fail with an auth error until `<root>/connected` exists, and whose
+    /// login leaves `<root>/login-ran` behind — so a test can tell a card
+    /// from a login spawned on the bot's machine.
+    fn install_auth_plugin(root: &std::path::Path, slug: &str, auth: serde_json::Value) {
+        let version_dir = root.join("plugins").join(slug).join("0.1.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(
+            version_dir.join("plugin.json"),
+            serde_json::json!({
+                "id": slug, "slug": slug, "name": "Example Books", "version": "0.1.0", "platforms": {},
+                "auth": auth,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let root = root.display();
+        let bin = version_dir.join(slug);
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nif [ \"$1 $2\" = \"auth login\" ]; then touch '{root}/login-ran'; exit 0; fi\n\
+                 if [ -f '{root}/connected' ]; then echo ok; exit 0; fi\n\
+                 echo 'not authenticated; run auth login'; exit 1\n"
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn oauth_auth() -> serde_json::Value {
+        serde_json::json!({"type": "oauth_cli", "label": "Example account", "commands": {"login": "auth login"}})
+    }
+
+    /// Run a command that fails on auth in an interactive chat and end the
+    /// connect card the given way: `Some(value)` answers it, `None` stops the
+    /// run. Returns the result, the card that was shown (if one was), and
+    /// whether a login ran on this machine.
+    async fn auth_failure_ending(auth: serde_json::Value, answer: Option<&str>) -> (ToolResult, Option<ai::StreamEvent>, bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_auth_plugin(tmp.path(), "books", auth);
+        let tool = PluginRunner::new(plugin_store, db_store);
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: crate::origin::AskChannels = Default::default();
+        let mut ctx = ToolContext::new(crate::origin::Origin::User);
+        ctx.session_key = "agent:ic:main".into();
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        let cancel = ctx.cancel_token.clone();
+        let pi = PluginCall { slug: "books".into(), command: "organisation get".into(), ..Default::default() };
+        let running = tokio::spawn(async move { tool.handle_exec(&pi, &ctx).await });
+        let card = tokio::select! {
+            shown = stream_rx.recv() => shown,
+            _ = tokio::time::sleep(Duration::from_secs(5)) => None,
+        };
+        if let Some(request) = &card {
+            let request_id = request.error.clone().unwrap();
+            match answer {
+                Some(v) => {
+                    if v == "connected" {
+                        std::fs::write(tmp.path().join("connected"), b"").unwrap();
+                    }
+                    let tx = channels.lock().await.remove(&request_id).unwrap();
+                    tx.send(v.to_string()).unwrap();
+                }
+                None => cancel.cancel(),
+            }
+        }
+        let result = running.await.unwrap();
+        let login_ran = tmp.path().join("login-ran").exists();
+        (result, card, login_ran)
+    }
+
+    /// Live (2026-09-26, the owner on his phone): a plugin with no account
+    /// connected failed on auth, the tool ran the plugin's login on the bot's
+    /// Mac where nobody was, and the terminal result ended the turn as a red
+    /// bar. Now the ONE connect card is raised instead, with the account's
+    /// display label, no login runs here, and "connected" retries the command.
+    #[tokio::test]
+    async fn an_interactive_auth_failure_raises_the_connect_card_and_connected_retries() {
+        let (r, card, login_ran) = auth_failure_ending(oauth_auth(), Some("connected")).await;
+        let card = card.expect("the connect card is shown");
+        assert_eq!(card.text, "I need your Example account connected to continue. Connect it on the card and I'll pick up right where I left off.");
+        let widget = &card.widgets.unwrap()[0];
+        assert_eq!(widget["type"], "connect_account");
+        assert_eq!(widget["plugin"], "books");
+        assert_eq!(widget["agentId"], "ic");
+        assert_eq!(widget["label"], "Example account");
+        assert!(!login_ran, "no login is spawned on the bot's machine");
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.content.trim(), "ok");
+    }
+
+    /// A skipped card is a plain error the model answers in prose, never a
+    /// terminal one that ends the turn with no text response.
+    #[tokio::test]
+    async fn a_skipped_connect_card_is_a_plain_error_not_a_terminal_one() {
+        let (r, card, login_ran) = auth_failure_ending(oauth_auth(), Some(crate::origin::SKIP_SENTINEL)).await;
+        assert!(card.is_some(), "the connect card is shown");
+        assert!(!login_ran);
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.starts_with("The owner skipped connecting the Example account, so Example Books cannot be used yet."), "{}", r.content);
+        assert!(!r.content.contains("**") && !r.content.contains("books"), "no markdown, no slug: {}", r.content);
+
+        let (r, _, _) = auth_failure_ending(oauth_auth(), Some("failed:Example: sign-in window closed")).await;
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.starts_with("Connecting the Example account failed: Example: sign-in window closed."), "{}", r.content);
+
+        let (r, _, _) = auth_failure_ending(oauth_auth(), None).await;
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.contains("no answer (the owner stopped the run)"), "{}", r.content);
+    }
+
+    /// The values a login itself needs (an OAuth app's client id and secret,
+    /// declared under `auth.env`) with nothing set: the login would exit at
+    /// once, on the card too — xero did, in two seconds — so no card is
+    /// raised and the error names what the owner has to enter.
+    #[tokio::test]
+    async fn unset_login_values_are_named_and_no_card_is_offered() {
+        let auth = serde_json::json!({
+            "type": "oauth_cli", "label": "Example account", "commands": {"login": "auth login"},
+            "env": {"BOOKS_CLIENT_ID": "", "BOOKS_CLIENT_SECRET": ""},
+        });
+        let (r, card, login_ran) = auth_failure_ending(auth, Some("connected")).await;
+        assert!(card.is_none(), "no card for a plugin whose login cannot start");
+        assert!(!login_ran);
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(
+            r.content.starts_with("Example Books is not set up yet: BOOKS_CLIENT_ID and BOOKS_CLIENT_SECRET have no value, and no Example account can be connected until the owner enters them in Example Books's plugin settings."),
+            "{}", r.content
+        );
+    }
+
+    /// Sign-in details typed into Nebo's own dialog (auth type env): the card
+    /// collects no values, so the error says what is missing and stays
+    /// non-terminal.
+    #[tokio::test]
+    async fn an_env_plugin_gets_a_plain_error_not_a_card() {
+        let auth = serde_json::json!({"type": "env", "label": "Example login", "env": {"BOOKS_API_KEY": ""}});
+        let (r, card, login_ran) = auth_failure_ending(auth, Some("connected")).await;
+        assert!(card.is_none());
+        assert!(!login_ran);
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.starts_with("Example Books cannot be used: the Example login details have not been entered for this employee."), "{}", r.content);
+    }
+
+    /// Unattended (nobody to ask): the result stays terminal, no login runs,
+    /// and the copy names the plugin, not its slug in markdown.
+    #[tokio::test]
+    async fn an_unattended_auth_failure_stays_terminal_with_no_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_auth_plugin(tmp.path(), "books", oauth_auth());
+        let tool = PluginRunner::new(plugin_store, db_store);
+        let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+        let pi = PluginCall { slug: "books".into(), command: "organisation get".into(), ..Default::default() };
+        let r = tool.handle_exec(&pi, &ctx).await;
+        assert!(r.is_error && r.terminal, "{}", r.content);
+        assert!(r.content.starts_with("I couldn't reach Example Books — it has no working sign-in"), "{}", r.content);
+        assert!(!r.content.contains("**"), "{}", r.content);
+        assert!(!tmp.path().join("login-ran").exists(), "no login is spawned unattended");
     }
 }
