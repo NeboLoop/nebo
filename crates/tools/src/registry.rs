@@ -2388,9 +2388,20 @@ pub(crate) mod tests {
     /// moved out: delegate 2,495) and use_skill its loading rule (674):
     /// 11,036. The owner, 2026-09-26: employees drive interactive terminal
     /// programs; run_command's `pty` (90) is the one line that needs:
-    /// 11,126. Each package that lands lowers the numbers; they never rise
-    /// without an owner decision.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 11_126;
+    /// 11,126. The proof runs of 2026-09-26 (270 runs) loaded deferred tools
+    /// mid-conversation in 84 of them, and every such load rewrites the
+    /// cached prompt at more than the fresh input price (#392: 45, 47 and 87
+    /// cache rewrites in the three runs). The tools loaded in the most runs
+    /// (get_employee 17, search_web 15, find_plugins 13, fetch_url 11,
+    /// list_employees 9, send_message 8) moved into the core, with
+    /// create_schedule, which "Remind me in 3 hours" never found while
+    /// deferred (3/3 → 0/3); find_tools gave back 28: 16,210. Larger or
+    /// one-task tools stayed deferred (create_workflow 3,254 and
+    /// update_employee 6,616 chars; convert_file, hire_employee and
+    /// install_workflow loads came from the fixtures that ask for them).
+    /// Each package that lands lowers the numbers; they never rise without
+    /// an owner decision.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 16_210;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
@@ -2421,8 +2432,10 @@ pub(crate) mod tests {
         assert_eq!(
             core,
             [
-                "ask_owner", "delegate", "edit_file", "find_tools", "forget", "message",
-                "read_file", "recall", "remember", "run_command", "use_skill", "write_file"
+                "ask_owner", "create_schedule", "delegate", "edit_file", "fetch_url", "find_plugins",
+                "find_tools", "forget", "get_employee", "list_employees", "message", "read_file",
+                "recall", "remember", "run_command", "search_web", "send_message", "use_skill",
+                "write_file"
             ]
         );
         // D19: the desktop tool is deferred on every bot; the listing names
@@ -2434,12 +2447,13 @@ pub(crate) mod tests {
         for name in ["read_output", "stop_task", "list_processes", "send_input", "share_file", "convert_file", "checkpoint_files", "list_checkpoints", "restore_checkpoint", "write_plan", "check_plan"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
-        for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules", "create_schedule", "list_teams"] {
+        for name in ["code", "notebook", "vm", "publisher", "authority", "pack", "rules", "list_schedules", "list_teams"] {
             assert!(deferred.contains(name), "{name} is deferred");
         }
-        // The plugin family: the marketplace, the events reader, one tool
-        // per installed plugin and per operation it binds, all deferred.
-        for name in ["find_plugins", "read_plugin_events", "plugin__ledgerly", "ledger_invoice_send"] {
+        // The plugin family: the events reader, one tool per installed
+        // plugin and per operation it binds, deferred; the marketplace
+        // search is core.
+        for name in ["read_plugin_events", "plugin__ledgerly", "ledger_invoice_send"] {
             assert!(deferred.contains(name), "{name} is registered and deferred");
         }
     }

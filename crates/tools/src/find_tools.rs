@@ -15,19 +15,22 @@ pub const FIND_TOOLS: &str = "find_tools";
 
 /// Score weights: a query word equal to a word of the name, part of one,
 /// a word of the search hint, a word of the description. Hint and
-/// description words match by stem too ("remind" finds "reminder").
+/// description words also match by stem ("remind" finds "reminder"), for
+/// a little less than the word itself.
 const NAME_PART_EXACT: i32 = 10;
 const NAME_PART_PARTIAL: i32 = 5;
 const HINT_WORD: i32 = 4;
+const HINT_STEM: i32 = 3;
 const DESCRIPTION_HIT: i32 = 2;
+const DESCRIPTION_STEM: i32 = 1;
 
 /// Shortest word that matches the words it begins (a stem).
 const STEM_MIN: usize = 4;
 
 /// Words of an owner's request that say nothing about which tool.
 const FILLER: &[&str] = &[
-    "a", "an", "and", "at", "be", "can", "do", "for", "from", "i", "in", "is", "it", "me", "my", "of", "on",
-    "or", "please", "set", "that", "the", "this", "to", "up", "with", "you", "your",
+    "a", "an", "and", "any", "at", "be", "can", "do", "for", "from", "have", "i", "in", "is", "it", "me", "my",
+    "of", "on", "or", "please", "set", "that", "the", "this", "to", "up", "what", "with", "you", "your",
 ];
 
 const DEFAULT_MAX_RESULTS: usize = 5;
@@ -232,11 +235,15 @@ fn score(e: &DeferredEntry, words: &[String]) -> i32 {
         } else if parts.iter().any(|p| p.contains(w.as_str())) {
             total += NAME_PART_PARTIAL;
         }
-        if hint.iter().any(|h| same_word(h, w)) {
+        if hint.iter().any(|h| h == w) {
             total += HINT_WORD;
+        } else if hint.iter().any(|h| same_stem(h, w)) {
+            total += HINT_STEM;
         }
-        if description.iter().any(|d| same_word(d, w)) {
+        if description.iter().any(|d| d == w) {
             total += DESCRIPTION_HIT;
+        } else if description.iter().any(|d| same_stem(d, w)) {
+            total += DESCRIPTION_STEM;
         }
     }
     total
@@ -250,11 +257,11 @@ fn text_words(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether two words are the same word: equal, or one a stem of the other
-/// ("remind", "reminder", "reminders").
-fn same_word(a: &str, b: &str) -> bool {
+/// Whether one word is a stem of the other ("remind", "reminder",
+/// "reminders").
+fn same_stem(a: &str, b: &str) -> bool {
     let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-    short == long || (short.len() >= STEM_MIN && long.starts_with(short))
+    short.len() >= STEM_MIN && long.starts_with(short)
 }
 
 /// A tool name's words: split on `_`, `-` and lower-to-upper case changes.
@@ -404,23 +411,25 @@ mod tests {
     }
 
     /// The owner's own words find the tool on the real roster. Proof runs
-    /// of 2026-09-26: "Remind me in 3 hours" never reached create_schedule,
-    /// whose words were "schedule a reminder": "remind" matched no word of
-    /// it, and the description hits of its siblings outranked it.
+    /// of 2026-09-26: "Remind me in 3 hours" never reached the schedule
+    /// tools, whose words were "reminder", "reminders": "remind" matched no
+    /// word of them, and "in" matched every description.
     #[tokio::test]
     async fn the_owners_own_words_find_the_tool() {
         let (registry, _dir) = crate::registry::tests::full_registry().await;
         let catalog = registry.deferred_entries().await;
         for (words, tool) in [
-            ("remind", "create_schedule"),
-            ("reminder", "create_schedule"),
-            ("remind me later", "create_schedule"),
-            ("set a reminder", "create_schedule"),
-            ("schedule", "create_schedule"),
-            ("every morning", "create_schedule"),
+            ("show my reminders", "list_schedules"),
+            ("what reminders do I have", "list_schedules"),
+            ("pause the reminder", "set_schedule_paused"),
+            ("cancel that reminder", "delete_schedule"),
         ] {
             let found = names(&answer(&catalog, words, 5));
             assert_eq!(found.first().map(String::as_str), Some(tool), "{words:?} found {found:?}");
+        }
+        for words in ["remind", "remind me in 3 hours"] {
+            let found = names(&answer(&catalog, words, 5));
+            assert!(found.first().is_some_and(|t| t.contains("schedule")), "{words:?} found {found:?}");
         }
     }
 

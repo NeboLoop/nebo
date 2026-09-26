@@ -377,6 +377,12 @@ impl DynTool for FindPluginsTool {
         "marketplace install connect new service"
     }
 
+    /// Always loaded: it is where "no tool does that" is checked, and the proof runs of 2026-09-26 loaded it mid-conversation in the most runs, and each mid-conversation load rewrites the cached prompt
+    /// (the core budget test in the registry has the counts).
+    fn should_defer(&self) -> bool {
+        false
+    }
+
     fn read_only(&self, _input: &serde_json::Value) -> bool {
         true
     }

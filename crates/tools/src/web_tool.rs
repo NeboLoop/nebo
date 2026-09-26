@@ -2450,6 +2450,13 @@ impl DynTool for WebTool {
         self.kind.search_hint()
     }
 
+    /// search_web and fetch_url are always loaded: the proof runs of 2026-09-26 loaded it mid-conversation in the most runs, and each mid-conversation load rewrites the cached prompt (the core
+    /// budget test in the registry has the counts). The rest of the family
+    /// is deferred.
+    fn should_defer(&self) -> bool {
+        !matches!(self.kind, Kind::SearchWeb | Kind::FetchUrl)
+    }
+
     fn read_only(&self, input: &serde_json::Value) -> bool {
         self.kind.read_only(input)
     }

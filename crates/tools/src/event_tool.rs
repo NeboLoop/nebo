@@ -152,6 +152,14 @@ impl DynTool for ScheduleTool {
         self.kind.search_hint()
     }
 
+    /// create_schedule is always loaded: deferred, "Remind me in 3 hours"
+    /// never found it in the proof runs of 2026-09-26 (3/3 → 0/3, and one
+    /// run told the owner there was no scheduling tool). The rest of the
+    /// family is deferred.
+    fn should_defer(&self) -> bool {
+        self.kind != Kind::Create
+    }
+
     fn read_only(&self, _input: &serde_json::Value) -> bool {
         self.kind.read_only()
     }
