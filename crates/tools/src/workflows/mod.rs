@@ -1,5 +1,5 @@
 mod manager;
-mod work_tool;
+pub(crate) mod work_tool;
 
 pub use manager::{Lifetime, SaveOptions, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 pub use work_tool::{WorkflowTool, tools};

@@ -47,8 +47,8 @@ impl Kind {
 
     fn description(self) -> &'static str {
         match self {
-            Kind::Create => "Schedules work to run later, once or on a repeat.\n\
-                - `at` runs it once, a relative time from now (\"in 20 minutes\", \"in 3 hours\"). `cron` sets a clock time or a repeat, six fields starting with seconds: \"0 0 9 * * 1-5\" is 9am on weekdays, \"0 30 8 * * *\" is 8:30 every day.\n\
+            Kind::Create => "Schedules a reminder or other work to run later, once or on a repeat.\n\
+                - `at` runs it once, a relative time from now (\"in 20 minutes\", \"in 3 hours\"). `cron` sets a clock time or a repeat, six fields starting with seconds: \"0 0 9 * * 1-5\" is 9am on weekdays, \"0 30 8 * * *\" is 8:30 every morning.\n\
                 - `prompt` is what you do when it fires, with your tools and memory; `command` runs a shell command instead.\n\
                 - It runs with your own permissions: scheduling grants nothing new.\n\
                 - Not for checking on work in progress: helpers report back when they finish, and a run's outcome lands in its history. Never schedule a check on a run.",

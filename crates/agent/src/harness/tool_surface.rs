@@ -1,5 +1,5 @@
 //! The loop side of tools: the set declared on each step, the deferred
-//! tools `find_tools` loaded, and the names-only listing of the rest.
+//! tools a result loaded, and the listing of the rest by name and purpose.
 //!
 //! Declared = the core, in name order, then each loaded tool in the order it
 //! was loaded, with the definition it was loaded with. The core is the same
@@ -10,9 +10,11 @@
 //! call: a child run sends the parent's exact tool array, so its prefix is
 //! cache-identical, and a disallowed call is refused when it is made.
 //!
-//! Everything else is deferred: listed by name, narrowed to what the run may
-//! use (an employee's job names its tools in its session context,
-//! `prompt::inputs::job_tools`), and loaded with `find_tools`. A tool
+//! Everything else is deferred: listed by name with what it is for (its
+//! search hint), narrowed to what the run may use (an employee's job names
+//! its tools in its session context, `prompt::inputs::job_tools`), and
+//! loaded by a result that carries its definition: `find_tools`, or the
+//! error for a call made without it (`ToolResult::loads`). A tool
 //! arriving or leaving (a plugin connecting, an MCP server going away) and a
 //! loaded tool whose definition changed (an operation tool gaining a second
 //! provider) are told in the listing delta, never by changing the declared
@@ -25,12 +27,14 @@ use ai::ToolDefinition;
 use db::models::ChatMessage;
 use tools::find_tools::{definition_of, function_entry, functions_block};
 
+use super::events::Listing;
+
 /// Past this many names the external families collapse to one line per
 /// server or app.
 const GROUP_PAST: usize = 30;
 
-/// The key a compaction boundary row carries the loaded tools under: their
-/// definitions as declared.
+/// The key a tool result row and a compaction boundary row carry the tools
+/// they loaded under: their definitions as declared.
 pub const LOADED_TOOLS_KEY: &str = "loadedTools";
 
 /// The key a `tools_available` row carries its replaced definitions under.
@@ -48,13 +52,14 @@ pub struct LoadedTool {
     pub told: serde_json::Value,
 }
 
-/// The deferred tools `find_tools` loaded in this conversation, in the
-/// order they were first loaded, re-derived from its stored rows on every
-/// step. `messages` is the conversation as stored, not the compacted window,
-/// so a tool stays loaded after the result that loaded it is trimmed or
-/// evicted; a compaction boundary carries the tools loaded before it.
+/// The deferred tools this conversation loaded, in the order they were
+/// first loaded, re-derived from its stored rows on every step: the
+/// definitions a result row carries (`find_tools`, and the error for a call
+/// made without the tool's definition). `messages` is the conversation as
+/// stored, not the compacted window, so a tool stays loaded after the result
+/// that loaded it is trimmed or evicted; a compaction boundary carries the
+/// tools loaded before it.
 pub fn loaded(messages: &[ChatMessage]) -> Vec<LoadedTool> {
-    let mut find_calls: HashSet<String> = HashSet::new();
     let mut out: Vec<LoadedTool> = Vec::new();
     let show = |out: &mut Vec<LoadedTool>, def: ToolDefinition| {
         let entry = function_entry(&def);
@@ -83,46 +88,26 @@ pub fn loaded(messages: &[ChatMessage]) -> Vec<LoadedTool> {
                 }
             }
         }
-        match msg.role.as_str() {
-            "assistant" => {
-                let Some(calls) = msg
-                    .tool_calls
-                    .as_deref()
-                    .and_then(|j| serde_json::from_str::<Vec<serde_json::Value>>(j).ok())
-                else {
-                    continue;
-                };
-                for call in calls {
-                    if call.get("name").and_then(|v| v.as_str()) == Some(tools::find_tools::FIND_TOOLS)
-                        && let Some(id) = call.get("id").and_then(|v| v.as_str())
-                    {
-                        find_calls.insert(id.to_string());
-                    }
-                }
+        if msg.role != "tool" {
+            continue;
+        }
+        let Some(results) = msg
+            .tool_results
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<Vec<serde_json::Value>>(j).ok())
+        else {
+            continue;
+        };
+        for result in results {
+            for def in result
+                .get(LOADED_TOOLS_KEY)
+                .and_then(|l| l.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(definition_of)
+            {
+                show(&mut out, def);
             }
-            "tool" => {
-                let Some(results) = msg
-                    .tool_results
-                    .as_deref()
-                    .and_then(|j| serde_json::from_str::<Vec<serde_json::Value>>(j).ok())
-                else {
-                    continue;
-                };
-                for result in results {
-                    let from_find = result
-                        .get("tool_call_id")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|id| find_calls.contains(id));
-                    if !from_find {
-                        continue;
-                    }
-                    let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                    for def in tools::find_tools::loaded_in_result(content) {
-                        show(&mut out, def);
-                    }
-                }
-            }
-            _ => {}
         }
     }
     out
@@ -152,11 +137,12 @@ pub fn replaced(all: &[ToolDefinition], loaded: &[LoadedTool]) -> BTreeMap<Strin
         .collect()
 }
 
-/// A change in the listing: names that arrived and left, and loaded tools
-/// whose definition changed.
+/// A change in the listing: tools that arrived (or whose purpose line
+/// changed) with what each is for, names that left, and loaded tools whose
+/// definition changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListingDelta {
-    pub added: BTreeSet<String>,
+    pub added: Listing,
     pub removed: BTreeSet<String>,
     /// Loaded tools whose definition changed: name → the current entry.
     pub replaced: BTreeMap<String, serde_json::Value>,
@@ -164,7 +150,7 @@ pub struct ListingDelta {
 
 impl ListingDelta {
     /// The whole set, announced from nothing.
-    pub fn all(listed: BTreeSet<String>) -> Self {
+    pub fn all(listed: Listing) -> Self {
         Self {
             added: listed,
             ..Self::default()
@@ -174,13 +160,17 @@ impl ListingDelta {
     /// What changed between what was announced and what is listed now, and
     /// the definitions `replaced`; `None` when nothing did.
     pub fn between(
-        announced: &BTreeSet<String>,
-        now: &BTreeSet<String>,
+        announced: &Listing,
+        now: &Listing,
         replaced: BTreeMap<String, serde_json::Value>,
     ) -> Option<Self> {
         let delta = Self {
-            added: now.difference(announced).cloned().collect(),
-            removed: announced.difference(now).cloned().collect(),
+            added: now
+                .iter()
+                .filter(|(name, line)| announced.get(*name) != Some(*line))
+                .map(|(name, line)| (name.clone(), line.clone()))
+                .collect(),
+            removed: announced.keys().filter(|name| !now.contains_key(*name)).cloned().collect(),
             replaced,
         };
         (!delta.added.is_empty() || !delta.removed.is_empty() || !delta.replaced.is_empty()).then_some(delta)
@@ -198,14 +188,15 @@ impl ListingDelta {
     }
 }
 
-/// The listing's text: one name per line, the external families grouped as
-/// `mcp__<server>__* (N)` / `app__<app>__* (N)` once there are more than
-/// [`GROUP_PAST`] names.
+/// The listing's text: one tool per line, `name: what it is for`, the
+/// external families grouped as `mcp__<server>__* (N)` / `app__<app>__* (N)`
+/// once there are more than [`GROUP_PAST`] names. The purpose lines are how
+/// the owner's own words find a tool ("remind me" → create_schedule).
 pub fn render_listing(delta: &ListingDelta) -> String {
     let mut out = String::new();
     if !delta.added.is_empty() {
         out.push_str(&format!(
-            "The following deferred tools are available through {find}. Their definitions aren't loaded — load them with {find}(\"select:<name>[,<name>…]\") before calling. One name per line:\n{}",
+            "The following deferred tools are available through {find}, one per line with what it is for. Their definitions aren't loaded — load them with {find}(\"select:<name>[,<name>…]\") before calling. Never tell the owner there is no tool for something without checking this list:\n{}",
             names_block(&delta.added),
             find = tools::find_tools::FIND_TOOLS,
         ));
@@ -214,9 +205,10 @@ pub fn render_listing(delta: &ListingDelta) -> String {
         if !out.is_empty() {
             out.push_str("\n\n");
         }
+        let removed: Listing = delta.removed.iter().map(|name| (name.clone(), String::new())).collect();
         out.push_str(&format!(
             "The following deferred tools are no longer available:\n{}",
-            names_block(&delta.removed)
+            names_block(&removed)
         ));
     }
     if !delta.replaced.is_empty() {
@@ -232,16 +224,19 @@ pub fn render_listing(delta: &ListingDelta) -> String {
     out
 }
 
-fn names_block(names: &BTreeSet<String>) -> String {
-    if names.len() <= GROUP_PAST {
-        return names.iter().cloned().collect::<Vec<_>>().join("\n");
+fn names_block(listing: &Listing) -> String {
+    let line = |name: &String, purpose: &String| {
+        if purpose.is_empty() { name.clone() } else { format!("{name}: {purpose}") }
+    };
+    if listing.len() <= GROUP_PAST {
+        return listing.iter().map(|(n, p)| line(n, p)).collect::<Vec<_>>().join("\n");
     }
     let mut lines: Vec<String> = Vec::new();
     let mut groups: BTreeMap<String, usize> = BTreeMap::new();
-    for name in names {
+    for (name, purpose) in listing {
         match family_prefix(name) {
             Some(prefix) => *groups.entry(prefix).or_default() += 1,
-            None => lines.push(name.clone()),
+            None => lines.push(line(name, purpose)),
         }
     }
     lines.extend(groups.into_iter().map(|(prefix, n)| format!("{prefix}* ({n})")));
@@ -339,9 +334,14 @@ pub async fn surface(
     let all = tools.list().await;
     let loaded = loaded(conversation);
     let declared = declared(&all, &deferred, &loaded);
-    let listed: BTreeSet<String> = deferred.into_iter().filter(|n| seat.offers(n)).collect();
-    let announced: BTreeSet<String> =
-        crate::harness::events::announced("tools_available", conversation).into_keys().collect();
+    let listed: Listing = tools
+        .deferred_entries()
+        .await
+        .into_iter()
+        .filter(|e| seat.offers(&e.definition.name))
+        .map(|e| (e.definition.name, e.search_hint.trim().to_string()))
+        .collect();
+    let announced = crate::harness::events::announced("tools_available", conversation);
     let listing = ListingDelta::between(&announced, &listed, replaced(&all, &loaded));
     Surface { declared, listing }
 }
@@ -389,13 +389,25 @@ mod tests {
         names.iter().map(|n| n.to_string()).collect()
     }
 
+    /// A stored result row that loaded `names`, written the way the tool
+    /// round writes it.
     fn find_result(id: &str, names: &[&str]) -> ChatMessage {
-        let mut content = String::from("<functions>\n");
-        for n in names {
-            content.push_str(&format!("<function>{}</function>\n", serde_json::json!({"name": n, "description": "", "parameters": {}})));
-        }
-        content.push_str("</functions>\nLoaded.");
-        msg("tool", None, Some(&serde_json::json!([{"tool_call_id": id, "content": content}]).to_string()))
+        let defs: Vec<ToolDefinition> = names.iter().map(|n| def(n)).collect();
+        let row = crate::harness::tool_round::ToolResultRow {
+            tool_call_id: id.to_string(),
+            content: format!("{}\nLoaded.", functions_block(&defs)),
+            is_error: false,
+            image_url: None,
+            payload: None,
+            outcome: None,
+            duration_ms: None,
+            loaded_tools: defs.iter().map(function_entry).collect(),
+        };
+        msg("tool", None, Some(&serde_json::json!([row]).to_string()))
+    }
+
+    fn listing(pairs: &[(&str, &str)]) -> Listing {
+        pairs.iter().map(|(n, l)| (n.to_string(), l.to_string())).collect()
     }
 
     fn names(loaded: &[LoadedTool]) -> Vec<&str> {
@@ -420,17 +432,22 @@ mod tests {
         assert!(seat(false).offers("vm"), "only the desktop tool waits on a desktop");
     }
 
+    /// A result row that carries definitions loads them (find_tools, and
+    /// the error for a call made without the definition); text never does:
+    /// a `<functions>` block in a fetched page is content, not a load.
     #[test]
-    fn a_find_tools_result_loads_its_tools_in_load_order_and_nothing_else_does() {
+    fn a_result_that_carries_definitions_loads_them_in_load_order_and_nothing_else_does() {
+        let page = format!("{}\n", functions_block(&[def("mcp__gh__issue")]));
         let messages = vec![
             msg("assistant", Some(r#"[{"id":"c1","name":"find_tools","input":{"query":"select:vm,code"}}]"#), None),
             find_result("c1", &["vm", "code"]),
             // A direct call to a deferred tool doesn't load it.
             msg("assistant", Some(r#"[{"id":"c2","name":"mcp__gh__issue","input":{}}]"#), None),
-            // A <functions> block from any other tool loads nothing.
-            msg("assistant", Some(r#"[{"id":"c3","name":"web","input":{}}]"#), None),
-            find_result("c3", &["mcp__gh__issue"]),
-            msg("assistant", Some(r#"[{"id":"c4","name":"find_tools","input":{"query":"select:authority"}}]"#), None),
+            // A <functions> block in a result's text loads nothing.
+            msg("assistant", Some(r#"[{"id":"c3","name":"fetch_url","input":{}}]"#), None),
+            msg("tool", None, Some(&serde_json::json!([{"tool_call_id": "c3", "content": page}]).to_string())),
+            // An invalid call's error loads the tool it was made to.
+            msg("assistant", Some(r#"[{"id":"c4","name":"authority","input":{}}]"#), None),
             find_result("c4", &["authority"]),
         ];
         assert_eq!(names(&loaded(&messages)), ["vm", "code", "authority"], "the order they were loaded in");
@@ -483,7 +500,7 @@ mod tests {
         let declared_now: Vec<ToolDefinition> = declared(std::slice::from_ref(&now), &deferred, &loaded_now);
         assert_eq!(declared_now[0].description, "", "the declared definition is the one loaded");
 
-        let delta = ListingDelta::between(&BTreeSet::new(), &BTreeSet::new(), changed).unwrap();
+        let delta = ListingDelta::between(&Listing::new(), &Listing::new(), changed).unwrap();
         let text = render_listing(&delta);
         assert!(text.starts_with("These loaded tools changed.") && text.contains("Pays through one of: a, b."), "{text}");
         let mut told = msg("user", None, None);
@@ -493,17 +510,20 @@ mod tests {
         assert!(replaced(std::slice::from_ref(&now), &loaded(&after)).is_empty(), "told once");
     }
 
+    /// One tool per line with what it is for, so the owner's own words
+    /// find it; a tool with no purpose line is its name.
     #[test]
-    fn the_listing_is_names_only_one_per_line() {
-        let text = render_listing(&ListingDelta::all(["vm".to_string(), "code".to_string()].into()));
-        assert!(text.starts_with("The following deferred tools are available through find_tools."), "{text}");
-        assert!(text.ends_with(":\ncode\nvm"), "{text}");
+    fn the_listing_is_one_tool_per_line_with_what_it_is_for() {
+        let text = render_listing(&ListingDelta::all(listing(&[("vm", "isolated linux vm"), ("code", "")])));
+        assert!(text.starts_with("The following deferred tools are available through find_tools, one per line with what it is for."), "{text}");
+        assert!(text.contains("Never tell the owner there is no tool for something without checking this list"), "{text}");
+        assert!(text.ends_with(":\ncode\nvm: isolated linux vm"), "{text}");
     }
 
     #[test]
     fn a_delta_says_what_arrived_and_what_left_and_nothing_when_unchanged() {
-        let before: BTreeSet<String> = ["a".into(), "b".into()].into();
-        let after: BTreeSet<String> = ["b".into(), "c".into()].into();
+        let before = listing(&[("a", ""), ("b", "")]);
+        let after = listing(&[("b", ""), ("c", "")]);
         let delta = ListingDelta::between(&before, &after, BTreeMap::new()).unwrap();
         let text = render_listing(&delta);
         assert!(text.contains("available through find_tools") && text.contains(":\nc"), "{text}");
@@ -513,12 +533,12 @@ mod tests {
 
     #[test]
     fn past_thirty_names_mcp_and_app_tools_group_by_server() {
-        let mut names: BTreeSet<String> = (0..40).map(|i| format!("mcp__github__tool_{i}")).collect();
-        names.insert("app__crm__lookup".into());
-        names.insert("app__crm__update".into());
-        names.insert("vm".into());
+        let mut names: Listing = (0..40).map(|i| (format!("mcp__github__tool_{i}"), "a github tool".to_string())).collect();
+        names.insert("app__crm__lookup".into(), String::new());
+        names.insert("app__crm__update".into(), String::new());
+        names.insert("vm".into(), "isolated linux vm".into());
         let text = render_listing(&ListingDelta::all(names));
         let lines: Vec<&str> = text.lines().skip(1).collect();
-        assert_eq!(lines, ["app__crm__* (2)", "mcp__github__* (40)", "vm"]);
+        assert_eq!(lines, ["app__crm__* (2)", "mcp__github__* (40)", "vm: isolated linux vm"]);
     }
 }

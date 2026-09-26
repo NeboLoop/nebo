@@ -94,7 +94,8 @@ pub fn persist(dir: &Path, content: &str) -> String {
         Ok(path) => format!(
             "{SAVED_OUTPUT}\nThe output is {size}, too long to show here. Saved in full at: {}\n\n\
              First 2KB:\n{preview}\n</saved-output>\n\
-             Read the file a line range at a time, or search it with grep; don't read it whole.",
+             Read the file a line range at a time with read_file (offset and limit), or search it with \
+             run_command(command: \"grep -n '<text>' {0}\"); don't read it whole.",
             path.display()
         ),
         Err(e) => {

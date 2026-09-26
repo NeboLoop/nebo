@@ -45,6 +45,10 @@ impl DynTool for ExitTool {
             .to_string()
     }
 
+    fn search_hint(&self) -> &str {
+        "stop the whole workflow run early"
+    }
+
     fn schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",

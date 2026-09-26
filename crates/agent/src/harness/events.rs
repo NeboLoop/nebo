@@ -352,8 +352,7 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::Usage(t) => ("usage", threshold_text(t)),
         TurnEvent::ToolsAvailable(d) => {
             let text = non_empty(&render_listing(d))?;
-            let added = d.added.iter().map(|n| (n.clone(), String::new())).collect();
-            let mut row = listing_row("tools_available", text, &added, &d.removed);
+            let mut row = listing_row("tools_available", text, &d.added, &d.removed);
             row.data.extend(d.replaced_data());
             return Some(row);
         }
@@ -1012,7 +1011,7 @@ mod tests {
                 condition: "all tests pass".into(),
             },
             TurnEvent::Usage(Threshold::Context { percent_full: 82 }),
-            TurnEvent::ToolsAvailable(ToolsDelta::all(["vm".to_string()].into())),
+            TurnEvent::ToolsAvailable(ToolsDelta::all([("vm".to_string(), String::new())].into())),
             TurnEvent::SkillListing(lined.clone()),
             TurnEvent::HelperTypes(lined),
             TurnEvent::BackgroundUpdate("the export finished".into()),
@@ -1154,27 +1153,31 @@ mod tests {
 
     #[test]
     fn listings_written_only_when_the_set_changes() {
-        let set = |names: &[&str]| -> BTreeSet<String> { names.iter().map(|n| n.to_string()).collect() };
+        let set = |pairs: &[(&str, &str)]| -> Listing { pairs.iter().map(|(n, l)| (n.to_string(), l.to_string())).collect() };
         let mut history = vec![row("user", "hello", None, None)];
-        // What a step does: compare the listed set with what the
+        // What a step does: compare the listed tools with what the
         // conversation was told, and write a row only on a change.
-        let step = |history: &mut Vec<ChatMessage>, now: &BTreeSet<String>| -> Option<Attachment> {
-            let told: BTreeSet<String> = announced("tools_available", history).into_keys().collect();
+        let step = |history: &mut Vec<ChatMessage>, now: &Listing| -> Option<Attachment> {
+            let told = announced("tools_available", history);
             let a = attachment_for(&TurnEvent::ToolsAvailable(ToolsDelta::between(&told, now, Default::default())?))?;
             history.push(stored(&a));
             Some(a)
         };
 
-        let first = step(&mut history, &set(&["mail_send", "web_fetch"])).expect("first listing");
-        assert!(first.text.ends_with("One name per line:\nmail_send\nweb_fetch"), "{}", first.text);
-        assert!(step(&mut history, &set(&["mail_send", "web_fetch"])).is_none(), "same set, no row");
+        let first = step(&mut history, &set(&[("mail_send", "send an email"), ("web_fetch", "")])).expect("first listing");
+        assert!(first.text.ends_with("checking this list:\nmail_send: send an email\nweb_fetch"), "{}", first.text);
+        assert!(step(&mut history, &set(&[("mail_send", "send an email"), ("web_fetch", "")])).is_none(), "same set, no row");
 
-        let changed = step(&mut history, &set(&["mail_send", "calendar_add"])).expect("a change");
-        assert!(changed.text.contains("One name per line:\ncalendar_add"), "{}", changed.text);
+        let changed = step(&mut history, &set(&[("mail_send", "send an email"), ("calendar_add", "add an event")])).expect("a change");
+        assert!(changed.text.contains("checking this list:\ncalendar_add: add an event"), "{}", changed.text);
         assert!(changed.text.ends_with("no longer available:\nweb_fetch"), "{}", changed.text);
         assert!(!changed.text.contains("mail_send"), "only the change is written");
-        assert!(step(&mut history, &set(&["calendar_add", "mail_send"])).is_none());
+        assert!(step(&mut history, &set(&[("calendar_add", "add an event"), ("mail_send", "send an email")])).is_none());
         assert_eq!(history.len(), 3, "two listing rows in four steps");
+        // A tool whose purpose line changed is told again, with the new line.
+        let reworded = step(&mut history, &set(&[("calendar_add", "add a calendar event"), ("mail_send", "send an email")])).expect("line changed");
+        assert!(reworded.text.ends_with("checking this list:\ncalendar_add: add a calendar event"), "{}", reworded.text);
+        history.pop();
 
         // Skills: a changed line is a change; the same lines are not.
         let skills = |pairs: &[(&str, &str)]| -> Listing {

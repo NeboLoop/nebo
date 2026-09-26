@@ -94,6 +94,12 @@ pub struct ToolResult {
     /// read that content, and takes its taint.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub taint: Vec<types::provenance::ProvenanceClass>,
+    /// Deferred tools this result loads, as the model was shown them: from
+    /// the next step they are declared like any other tool. `find_tools`
+    /// loads what it found; an invalid call to a deferred tool the model was
+    /// never sent loads that tool with its error.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loads: Vec<ToolDefinition>,
 }
 
 impl ToolResult {
@@ -940,11 +946,7 @@ impl Registry {
 
         let input = match self.settle(tool.as_ref(), name, input).await {
             Ok(input) => input,
-            Err(Invalid::Unparsed(raw)) => return ToolResult::error(bad_json_error(name, &raw)),
-            Err(Invalid::Schema { input, issues }) => {
-                return ToolResult::error(self.validation_error(ctx, tool.as_ref(), &input, issues).await);
-            }
-            Err(Invalid::Tool(message)) => return ToolResult::error(crate::result_shape::call_error(&message)),
+            Err(invalid) => return self.invalid_call(ctx, name, invalid).await,
         };
 
         // The permission check: hard limits, the ceiling, the rules and the
@@ -994,37 +996,37 @@ impl Registry {
         result
     }
 
-    /// The input error for a call that failed its schema: the
-    /// issues, the smallest valid call when nothing was sent, and for a
-    /// deferred tool the model was never sent, how to load it.
-    async fn validation_error(
-        &self,
-        ctx: &ToolContext,
-        tool: &dyn DynTool,
-        input: &serde_json::Value,
-        mut issues: Vec<String>,
-    ) -> String {
-        let name = tool.name();
-        let schema = self.definition(name).await.map(|d| d.input_schema).unwrap_or_default();
-        if input.as_object().is_some_and(|o| o.is_empty())
-            && let Some(minimal) = crate::input_schema::minimal_call(&schema)
-        {
-            issues.push(minimal);
-        }
-        let mut message = crate::result_shape::input_validation(name, &issues);
-        let unloaded = ctx
-            .declared_tools
-            .as_ref()
-            .is_some_and(|declared| !declared.contains(name))
-            && self.is_deferred(name).await;
-        if unloaded {
-            message.push_str(&format!(
-                "\nThis tool wasn't loaded, so its definition was never sent. Call {} with \
-                 query \"select:{name}\", then retry this call. Its input schema is: {schema}",
-                crate::find_tools::FIND_TOOLS
+    /// The error for a call that won't run as written: what is wrong with
+    /// it (the smallest valid call when nothing was sent), and for a
+    /// deferred tool the model was never sent, its definition. That error
+    /// loads the tool, so the retry is the next step, with no `find_tools`
+    /// step between.
+    async fn invalid_call(&self, ctx: &ToolContext, name: &str, invalid: Invalid) -> ToolResult {
+        let definition = self.definition(name).await;
+        let mut result = ToolResult::error(match invalid {
+            Invalid::Unparsed(raw) => bad_json_error(name, &raw),
+            Invalid::Schema { input, mut issues } => {
+                if input.as_object().is_some_and(|o| o.is_empty())
+                    && let Some(minimal) = definition.as_ref().and_then(|d| crate::input_schema::minimal_call(&d.input_schema))
+                {
+                    issues.push(minimal);
+                }
+                crate::result_shape::input_validation(name, &issues)
+            }
+            Invalid::Tool(message) => crate::result_shape::call_error(&message),
+        });
+        let unloaded = ctx.declared_tools.as_ref().is_some_and(|declared| !declared.contains(name))
+            && self.is_deferred(name).await
+            && crate::find_tools::may_load(name, ctx.withheld_tools.as_deref(), crate::desktop_available());
+        if unloaded && let Some(definition) = definition {
+            result.content.push_str(&format!(
+                "\n{name} wasn't loaded, so its definition was never sent. This error loads it: its \
+                 definition is below, and your next call can use it.\n{}",
+                crate::find_tools::functions_block([&definition])
             ));
+            result.loads.push(definition);
         }
-        message
+        result
     }
 
     /// Get a reference to the process registry.
@@ -1859,6 +1861,178 @@ pub(crate) mod tests {
             hits.join("\n")
         );
     }
+    /// The string literals of Rust source, outside comments, as written
+    /// (escapes kept), each with its line number.
+    fn string_literals(src: &str) -> Vec<(usize, String)> {
+        let b = src.as_bytes();
+        let line_at = |i: usize| src[..i].matches('\n').count() + 1;
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            let ident_before = i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+            if b[i..].starts_with(b"//") {
+                i = src[i..].find('\n').map_or(b.len(), |n| i + n);
+            } else if b[i..].starts_with(b"/*") {
+                i = src[i..].find("*/").map_or(b.len(), |n| i + n + 2);
+            } else if b[i] == b'r' && !ident_before && matches!(b.get(i + 1), Some(b'"' | b'#')) {
+                let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
+                if b.get(i + 1 + hashes) != Some(&b'"') {
+                    i += 1;
+                    continue;
+                }
+                let start = i + 2 + hashes;
+                let close = format!("\"{}", "#".repeat(hashes));
+                let end = src[start..].find(&close).map_or(b.len(), |n| start + n);
+                out.push((line_at(i), src[start..end].to_string()));
+                i = end + close.len();
+            } else if b[i] == b'"' {
+                let mut j = i + 1;
+                while j < b.len() && b[j] != b'"' {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                out.push((line_at(i), src[i + 1..j.min(b.len())].to_string()));
+                i = j + 1;
+            } else if b[i] == b'\'' {
+                // A char literal ('x', '\n', '"'), or a lifetime.
+                i = match (b.get(i + 1), b.get(i + 2)) {
+                    (Some(b'\\'), _) => src[i + 2..].find('\'').map_or(b.len(), |n| i + 2 + n + 1),
+                    (_, Some(b'\'')) => i + 3,
+                    _ => i + 1,
+                };
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// The call shapes `name(key: …)`, `name("…")` and `name()` in a string.
+    fn call_shapes(text: &str) -> Vec<String> {
+        let b = text.as_bytes();
+        let mut out = Vec::new();
+        for (open, _) in text.match_indices('(') {
+            let start = text[..open]
+                .char_indices()
+                .rev()
+                .find(|&(_, c)| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+                .map_or(0, |(at, c)| at + c.len_utf8());
+            let name = &text[start..open];
+            let after = &text[open + 1..];
+            let named_arg = after
+                .split_once(':')
+                .is_some_and(|(key, _)| !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+            let joined = start > 0 && matches!(b[start - 1], b'.' | b'$' | b':' | b'_' | b'A'..=b'Z');
+            if !name.is_empty()
+                && name.as_bytes()[0].is_ascii_lowercase()
+                && !joined
+                && (named_arg || after.starts_with('"') || after.starts_with("\\\"") || after.starts_with(')'))
+            {
+                out.push(name.to_string());
+            }
+        }
+        out
+    }
+
+    /// Error, correction and instruction text names only tools that exist.
+    /// Proof runs of 2026-09-26: the over-budget read error said "or grep
+    /// for what you need", there is no grep tool, and a run called one — a
+    /// second error against a limit of one. Every string the tools and the
+    /// harness can put in front of the model is checked:
+    /// - each call shape `name(…)` names a tool the product registers;
+    /// - the tool names other harnesses have and Nebo doesn't (grep, glob)
+    ///   are never offered as a tool ("grep for", "use grep", "with grep"):
+    ///   they appear only as a command, `run_command(command: "grep -n …")`.
+    #[tokio::test]
+    async fn model_facing_text_names_only_tools_that_exist() {
+        let (registry, dir) = full_registry().await;
+        // What the server registers beside `register_all`: the loop tools
+        // with its hub connection, script execution with its skill loader,
+        // the workflow tools with their manager, emit_event with the event
+        // bus, and a2ui with its A2UI host (a server type).
+        for tool in crate::loop_tool::tools(crate::loop_tool::LoopCore::new(Arc::new(comm::LoopbackPlugin::new()), None)) {
+            registry.register(Box::new(tool)).await;
+        }
+        let loader = Arc::new(crate::skills::Loader::new(dir.path().join("skills"), dir.path().join("user_skills")));
+        registry
+            .register(Box::new(crate::execute_tool::ExecuteTool::new(loader, Arc::new(RwLock::new(String::new())), None)))
+            .await;
+        registry
+            .register_workflows(Arc::new(crate::workflows::work_tool::tests::Recorder::default()))
+            .await;
+        registry.register(Box::new(crate::emit_tool::EmitTool::new(crate::events::EventBus::new().0))).await;
+        let mut tools: HashSet<String> = registry.get_tool_names().await.into_iter().collect();
+        tools.insert("a2ui".to_string());
+
+        // Notations that read like calls and are not: a workflow trigger,
+        // `call(line: …)`.
+        const NOT_CALLS: &[&str] = &["call"];
+        const FOREIGN: &[&str] = &["grep", "glob"];
+        for name in FOREIGN {
+            assert!(!tools.contains(*name), "{name} is a tool now: take it off the foreign list");
+        }
+        let offered = |text: &str, word: &str| {
+            ["for", "tool"].iter().any(|next| text.contains(&format!("{word} {next}")))
+                || ["use", "with", "call", "the", "using"].iter().any(|before| {
+                    text.match_indices(&format!("{before} {word}")).any(|(at, m)| {
+                        let rest = &text[at + m.len()..];
+                        !(rest.starts_with(" -") || rest.starts_with(" '") || rest.starts_with(" \\\""))
+                            && !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                    })
+                })
+        };
+
+        fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // The test harness and its grader talk to a judge, not an employee.
+                    if path.file_name().is_some_and(|n| n != "testing") {
+                        sources(&path, out);
+                    }
+                } else if path.extension().is_some_and(|e| e == "rs") && path.file_name().is_some_and(|n| n != "tests.rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        sources(&manifest.join("src"), &mut files);
+        sources(&manifest.join("../agent/src"), &mut files);
+        assert!(files.len() > 100, "the scan reads the sources: {}", files.len());
+        let mut hits = Vec::new();
+        for path in files {
+            let src = std::fs::read_to_string(&path).unwrap();
+            let tests_at = src.match_indices("#[cfg(test)]\n").map(|(at, m)| at + m.len()).find(|&next| {
+                let line = src[next..].trim_start();
+                ["mod ", "pub mod ", "pub(crate) mod "].iter().any(|p| line.starts_with(p))
+            });
+            let src = tests_at.map_or(src.as_str(), |at| &src[..at]);
+            for (line, text) in string_literals(src) {
+                for name in call_shapes(&text) {
+                    if !tools.contains(&name) && !NOT_CALLS.contains(&name.as_str()) {
+                        hits.push(format!("{}:{line}: {name}(…) names no tool", path.display()));
+                    }
+                }
+                for word in FOREIGN {
+                    if offered(&text, word) {
+                        hits.push(format!("{}:{line}: offers {word} as a tool: {text:?}", path.display()));
+                    }
+                }
+            }
+        }
+        assert!(hits.is_empty(), "model-facing text names tools that don't exist:\n{}", hits.join("\n"));
+    }
+
+    /// The scan finds what it is for, and not code or commands.
+    #[test]
+    fn the_scan_reads_literals_and_call_shapes() {
+        let src = "let a = \"use grep for it\"; // \"not(this: 1)\"\nlet b = r#\"x(\"y\")\"#; let c = '\"'; fn f<'a>() {}\nlet d = \"run_command(command: \\\"grep -n x\\\")\";";
+        let lits: Vec<String> = string_literals(src).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(lits, ["use grep for it", "x(\"y\")", "run_command(command: \\\"grep -n x\\\")"]);
+        assert_eq!(call_shapes("Use capture(action: see), then os(resource: \"x\") or now() and $(date) or x.y(\"z\")."), ["capture", "os", "now"]);
+        assert!(call_shapes("the file(s) you (probably) want").is_empty());
+    }
+
     /// A small deferred tool with a strict schema, for the error shapes.
     struct EchoTool;
 
@@ -2002,9 +2176,12 @@ pub(crate) mod tests {
     }
 
     /// A deferred tool the model was never sent: a call that validates
-    /// runs; one that fails is told to load it, with the schema.
+    /// runs; one that won't run as written (bad JSON, a schema miss, the
+    /// tool's own check) gets the tool's definition with its error, and that
+    /// error loads it. A tool the run may not load is not loaded, and a
+    /// loaded tool's errors carry no definition.
     #[tokio::test]
-    async fn an_unloaded_deferred_tool_that_fails_validation_is_told_to_load_it() {
+    async fn an_invalid_call_to_an_unloaded_deferred_tool_loads_it() {
         let r = echo_registry().await;
         let ctx = ToolContext {
             declared_tools: Some(Arc::new(HashSet::from(["read_file".to_string()]))),
@@ -2012,16 +2189,31 @@ pub(crate) mod tests {
         };
         let ok = r.execute(&ctx, "echo_text", serde_json::json!({"text": "hi"})).await;
         assert_eq!(ok.content, "hi", "a call that validates simply runs");
-        let bad = r.execute(&ctx, "echo_text", serde_json::json!({})).await;
-        assert!(bad.content.contains("Call find_tools with query \"select:echo_text\""), "{}", bad.content);
-        assert!(bad.content.contains("Its input schema is: {"), "{}", bad.content);
-        // Loaded (declared) tools don't get the hint.
+        assert!(ok.loads.is_empty());
+        let echo = r.definition("echo_text").await.unwrap();
+        for input in [serde_json::json!({}), serde_json::json!({"_raw": "{\"te"}), serde_json::json!({"text": ""})] {
+            let bad = r.execute(&ctx, "echo_text", input.clone()).await;
+            assert!(bad.is_error, "{input}");
+            assert_eq!(bad.loads.len(), 1, "{input}: {}", bad.content);
+            assert_eq!(serde_json::to_string(&bad.loads[0]).unwrap(), serde_json::to_string(&echo).unwrap());
+            assert!(bad.content.contains("This error loads it"), "{}", bad.content);
+            assert!(bad.content.ends_with(&crate::find_tools::functions_block([&echo])), "the definition it loads is the one shown: {}", bad.content);
+            assert!(!bad.content.contains("find_tools"), "no second step: {}", bad.content);
+        }
+        // A tool this run may not load stays unloaded.
+        let withheld = ToolContext {
+            withheld_tools: Some(Arc::new(HashSet::from(["echo_text".to_string()]))),
+            ..ctx.clone()
+        };
+        let bad = r.execute(&withheld, "echo_text", serde_json::json!({})).await;
+        assert!(bad.loads.is_empty() && !bad.content.contains("<functions>"), "{}", bad.content);
+        // Loaded (declared) tools don't get the definition again.
         let loaded = ToolContext {
             declared_tools: Some(Arc::new(HashSet::from(["echo_text".to_string()]))),
             ..Default::default()
         };
         let bad = r.execute(&loaded, "echo_text", serde_json::json!({})).await;
-        assert!(!bad.content.contains("find_tools"), "{}", bad.content);
+        assert!(bad.loads.is_empty() && !bad.content.contains("<functions>"), "{}", bad.content);
     }
 
     /// Results over the tool's threshold go to the one spill path, the
@@ -2132,6 +2324,22 @@ pub(crate) mod tests {
         }
         let required = schema["required"].as_array().map_or(0, |r| r.len());
         assert!(required <= 3, "{name}: {required} required parameters (at most 3)");
+    }
+
+    /// The deferred listing shows each tool with what it is for (its
+    /// search hint), so the owner's own words find it: every deferred tool
+    /// has one.
+    #[tokio::test]
+    async fn every_deferred_tool_says_what_it_is_for() {
+        let (registry, _dir) = full_registry().await;
+        let entries = registry.deferred_entries().await;
+        assert!(entries.len() > 50, "the roster is the real one: {}", entries.len());
+        let silent: Vec<&str> = entries
+            .iter()
+            .filter(|e| e.search_hint.trim().is_empty())
+            .map(|e| e.definition.name.as_str())
+            .collect();
+        assert!(silent.is_empty(), "deferred tools listed without a purpose: {silent:?}");
     }
 
     /// The checks themselves: a tool with `action`, or four required

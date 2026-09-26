@@ -960,13 +960,21 @@ mod tests {
     async fn loaded_tools_carry_over_and_nothing_is_appended() {
         let s = Setup::new();
         s.say("user", "Send the invoice.");
-        s.call("f1", tools::find_tools::FIND_TOOLS, serde_json::json!({ "query": "mail" }), "<functions>\n<function>{\"name\":\"mail\"}</function>\n</functions>\nLoaded: mail. Call them directly.", false);
+        let mail = serde_json::json!({"description": "", "name": "mail", "parameters": {}});
+        let calls = serde_json::json!([{ "id": "f1", "name": tools::find_tools::FIND_TOOLS, "input": { "query": "mail" } }]).to_string();
+        let results = serde_json::json!([{
+            "tool_call_id": "f1",
+            "content": format!("<functions>\n<function>{mail}</function>\n</functions>\nLoaded: mail. Call them directly."),
+            tool_surface::LOADED_TOOLS_KEY: [mail],
+        }])
+        .to_string();
+        s.sessions.append_message(&s.sid, "assistant", "", Some(&calls), None, None).unwrap();
+        s.sessions.append_message(&s.sid, "tool", "", None, Some(&results), None).unwrap();
         s.call("m1", "mail", serde_json::json!({ "action": "send" }), "SMTP 550 mailbox unavailable", true);
         let provider = Scripted::new(vec![Reply::Say("summary".into()), Reply::Say("summary".into())]);
         let done = s.checkpoint(&provider, CheckpointReason::Threshold, &[], RestoreState::default()).await.unwrap();
         assert_eq!(done.summary, "summary");
         let boundary = s.conversation().remove(0);
-        let mail = serde_json::json!({"description": "", "name": "mail", "parameters": {}});
         assert_eq!(metadata(&boundary).unwrap()[tool_surface::LOADED_TOOLS_KEY], serde_json::json!([mail]));
 
         s.say("user", "Try again.");

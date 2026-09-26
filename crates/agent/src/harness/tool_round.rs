@@ -434,7 +434,7 @@ pub(crate) async fn run_tool_round(
         }
         // Capture pre-truncation snapshots for the summarizer (only name + short content)
         summary_tool_calls.push(tc.clone());
-        summary_tool_results.push(ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(),
+        summary_tool_results.push(ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
             content: truncate_str(&result.content, 300).to_string(),
             is_error: result.is_error,
             image_url: None,
@@ -456,6 +456,7 @@ pub(crate) async fn run_tool_round(
             is_error: result.is_error,
             image_url: result.image_url,
             payload: result.payload,
+            loaded_tools: result.loads.iter().map(tools::find_tools::function_entry).collect(),
         };
         let tr_json = serde_json::json!([row]).to_string();
 
@@ -568,6 +569,11 @@ pub(crate) struct ToolResultRow {
     /// Wall-clock milliseconds the call took, for the same reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// The deferred tools this result loaded, as the model was shown them
+    /// (`ToolResult::loads`): the loop reads them back
+    /// (`tool_surface::loaded`) and declares them from the next step.
+    #[serde(rename = "loadedTools", skip_serializing_if = "Vec::is_empty")]
+    pub loaded_tools: Vec<serde_json::Value>,
 }
 
 /// Runs a tool call under its budget, with the clock stopped while the call

@@ -1332,7 +1332,7 @@ impl WebCore {
                     // the word "cached", which hands the model a theory.
                     let age = cached.timestamp.elapsed().as_secs();
                     let who = if cached.visited_by == session_id { "this run" } else { "a sibling run" };
-                    return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(),
+                    return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                         content: format!(
                             "[This URL was loaded {age}s ago by {who} and has not been reloaded; the content below is that load. Pass fresh: true to load it again.]\n\n{}",
                             cached.content
@@ -1683,7 +1683,7 @@ impl WebCore {
                                 .unwrap_or("");
                             if !page_content.is_empty() {
                                 let content = page_content.to_string();
-                                return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(),
+                                return ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                                     content,
                                     is_error: false,
                                     image_url: None,
@@ -1809,7 +1809,7 @@ impl WebCore {
                     }
                 }
 
-                ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(),
+                ToolResult { payload: None, need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
                     content: text_result,
                     is_error: false,
                     image_url: screenshot_b64,
@@ -3044,7 +3044,7 @@ fn cached_search_result(cached: &VisitedPage) -> ToolResult {
         http_status: None,
         terminal: false,
         payload: cached.payload.clone(),
-        need: None, parked_ask: None, taint: Vec::new(),
+        need: None, parked_ask: None, taint: Vec::new(), loads: Vec::new(),
     }
 }
 

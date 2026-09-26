@@ -119,6 +119,7 @@ pub(crate) fn record_interrupt(sessions: &SessionManager, session_id: &str, why:
             payload: None,
             outcome: Some("Interrupted".to_string()),
             duration_ms: None,
+            loaded_tools: Vec::new(),
         };
         let tr_json = serde_json::json!([row]).to_string();
         if let Err(e) = sessions.append_message(session_id, "tool", "", None, Some(&tr_json), None) {
