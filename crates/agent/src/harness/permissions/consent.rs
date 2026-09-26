@@ -2,11 +2,12 @@
 //!
 //! The owner consents to jobs, not actions. A job is a set of capability
 //! allow rules at the employee's scope; this module writes them when the
-//! owner says yes: the Hire tap, "yes, create it" after the line in chat,
-//! Create in the builder, an approved job edit. An employee that makes
-//! another hands over at most what it holds itself: the new employee works
-//! under its creator's grant (`Ceiling::Creator`) and anything beyond goes to
-//! the owner as one card, listing the extras. Only the owner widens.
+//! owner says yes: the Hire tap, his own request in chat, "yes, create it"
+//! after the line in chat, Create in the builder, an approved job edit. An
+//! employee that makes another hands over at most what it holds itself: the
+//! new employee works under its creator's grant (`Ceiling::Creator`) and
+//! anything beyond goes to the owner as one card, listing the extras. Only
+//! the owner widens.
 
 use std::sync::Arc;
 
@@ -221,7 +222,13 @@ impl DescriptionReader for Consent {
 
 #[async_trait::async_trait]
 impl JobConsent for Consent {
-    fn owner_consented(&self, draft_id: &str) -> bool {
+    fn owner_consented(&self, ctx: &ToolContext, draft_id: Option<&str>) -> bool {
+        if ctx.owner_request {
+            return true;
+        }
+        let Some(draft_id) = draft_id else {
+            return false;
+        };
         owner_consented(&self.store, draft_id).unwrap_or_else(|e| {
             tracing::warn!(draft = draft_id, error = %e, "consent unreadable; treated as not given");
             false

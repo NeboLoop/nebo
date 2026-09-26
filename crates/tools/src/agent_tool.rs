@@ -1084,10 +1084,10 @@ impl PersonaTool {
         if !g.granted.is_empty() {
             text.push_str(&format!(" Granted now: {}", consent_line(name, &g.granted)));
         }
-        if !g.extras.is_empty() {
+        if g.card.is_some() {
             text.push_str(&format!(
-                " Waiting on one card to the owner: \"{}\" Until they answer, {name} can't do that; tell the owner \
-                 plainly what is waiting and never say it can yet.",
+                " One approval card went to the owner for the rest: \"{}\" Until they answer, {name} can't do that; \
+                 tell the owner plainly what is waiting and never say it can yet.",
                 consent_line(name, &g.extras)
             ));
         }
@@ -1109,7 +1109,7 @@ impl PersonaTool {
                 Ok(d) => d,
                 Err(e) => return ToolResult::error(e),
             };
-            let consented = consent.owner_consented(draft_id);
+            let consented = consent.owner_consented(ctx, Some(draft_id));
             let id = uuid::Uuid::new_v4().to_string();
             let created = self.handle_create(&drafted, &id).await;
             if created.is_error {
@@ -1156,21 +1156,21 @@ impl PersonaTool {
         ToolResult::ok(format!(
             "Drafted {display}; nothing is created yet. What it will be able to do, in one line:\n\"{line}\"\n\
              If the owner's latest message already told you to create it now (\"create it\", \"just do it\", \
-             \"go ahead\"), call create_employee(draft_id: \"{draft_id}\") now and don't ask again: anything \
-             the job needs beyond what you hold goes to the owner as one approval card. Otherwise tell the owner \
-             that line in plain words and ask them to confirm; when they say yes, call \
-             create_employee(draft_id: \"{draft_id}\") and nothing else. Either way it creates exactly this \
-             job. If they want it different, draft again."
+             \"go ahead\"), call create_employee(draft_id: \"{draft_id}\") now and don't ask again: their \
+             request is their yes. Otherwise tell the owner that line in plain words and ask them to confirm; when \
+             they say yes, call create_employee(draft_id: \"{draft_id}\") and nothing else. Either way it creates \
+             exactly this job. If they want it different, draft again."
         ))
         .with_payload(Self::consent_payload(&draft_id, &display, &line, &needs, false))
     }
 
-    /// Update. An edit that adds to the job works out its needs again and
-    /// drafts first, putting only what is new to the owner; the update with
-    /// `draft_id` applies the drafted edit and grants the addition on the
-    /// owner's yes (an employee never widens another: without it, the
-    /// addition is one card to the owner). An edit that adds nothing runs
-    /// at once.
+    /// Update. An edit that adds to the job works out its needs again. The
+    /// owner's own request is his yes: the edit is made at once and the
+    /// addition granted as his. Any other run drafts first, putting only what
+    /// is new to the owner; the update with `draft_id` applies the drafted
+    /// edit and grants the addition on his yes (an employee never widens
+    /// another: without it, the addition is one card to the owner). An edit
+    /// that adds nothing runs at once.
     pub(crate) async fn update_with_consent(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let consent = self.job_consent();
         if let Some(draft_id) = input["draft_id"].as_str().filter(|d| !d.is_empty()) {
@@ -1181,12 +1181,7 @@ impl PersonaTool {
                 Ok(d) => d,
                 Err(e) => return ToolResult::error(e),
             };
-            let consented = consent.owner_consented(draft_id);
-            let updated = self.handle_update(&drafted).await;
-            if updated.is_error {
-                return updated;
-            }
-            let _ = self.store.use_employee_draft(draft_id);
+            let consented = consent.owner_consented(ctx, Some(draft_id));
             let job = crate::needs::JobGrant {
                 agent_id: &draft.agent_id,
                 name: &draft.name,
@@ -1195,11 +1190,7 @@ impl PersonaTool {
                 consented,
                 created: false,
             };
-            let said = match consent.grant(ctx, &job) {
-                Ok(g) => Self::granted_text(&draft.name, &g, consented),
-                Err(e) => format!("\nThe addition to its job was not granted ({e})."),
-            };
-            return ToolResult { content: format!("{}{said}", updated.content), ..updated };
+            return self.apply_edit(ctx, consent.as_ref(), &drafted, &job).await;
         }
         let shapes_the_job = Self::JOB_FIELDS.iter().any(|k| !input[*k].is_null());
         let name = input["name"].as_str().unwrap_or("");
@@ -1215,19 +1206,53 @@ impl PersonaTool {
         if new.is_empty() {
             return self.handle_update(input).await;
         }
+        if consent.owner_consented(ctx, None) {
+            let job = crate::needs::JobGrant {
+                agent_id: &agent.id,
+                name: &agent.name,
+                needs: &new,
+                draft_id: "",
+                consented: true,
+                created: false,
+            };
+            return self.apply_edit(ctx, consent.as_ref(), input, &job).await;
+        }
         let (draft_id, line) = match self.draft(ctx, "edit", &agent.id, &agent.name, input, &new) {
             Ok(d) => d,
             Err(e) => return ToolResult::error(e),
         };
         ToolResult::ok(format!(
-            "Nothing is changed yet: this edit adds to {}'s job. Only what is new, in one line:\n\"{line}\"\n\
-             If the owner's latest message already told you to make this change now, call \
-             update_employee(draft_id: \"{draft_id}\") now and don't ask again: the addition goes to the owner \
-             as one approval card. Otherwise tell the owner just that (not what the job already has) and ask \
-             them to confirm; when they say yes, call update_employee(draft_id: \"{draft_id}\") and nothing else.",
+            "Nothing is changed yet: this edit adds to {}'s job, and the owner didn't ask for it in this chat. Only \
+             what is new, in one line:\n\"{line}\"\n\
+             Tell the owner just that (not what the job already has) and ask them to confirm; when they say yes, \
+             call update_employee(draft_id: \"{draft_id}\") and nothing else.",
             agent.name
         ))
         .with_payload(Self::consent_payload(&draft_id, &agent.name, &line, &new, true))
+    }
+
+    /// Make an edit and grant what it adds to the job, as `job` says: in
+    /// full on the owner's yes, else as one card to the owner. A drafted
+    /// edit is used up once it lands.
+    async fn apply_edit(
+        &self,
+        ctx: &ToolContext,
+        consent: &dyn crate::needs::JobConsent,
+        input: &serde_json::Value,
+        job: &crate::needs::JobGrant<'_>,
+    ) -> ToolResult {
+        let updated = self.handle_update(input).await;
+        if updated.is_error {
+            return updated;
+        }
+        if !job.draft_id.is_empty() {
+            let _ = self.store.use_employee_draft(job.draft_id);
+        }
+        let said = match consent.grant(ctx, job) {
+            Ok(g) => Self::granted_text(job.name, &g, job.consented),
+            Err(e) => format!("\nThe addition to its job was not granted ({e})."),
+        };
+        ToolResult { content: format!("{}{said}", updated.content), ..updated }
     }
 
     /// Create the employee `input` describes under `id`. Reached only
