@@ -645,6 +645,17 @@ pub fn build_providers(
         );
     }
 
+    // The linked provider: one for every employee hired from a linked bot,
+    // addressed by `linked/<bot>/<agent>` on the employee's model preference.
+    // Always registered — it resolves the NeboAI token per call through the
+    // ONE resolver — and never a default or a fallback (`retryable` = false).
+    let token_store = store.clone();
+    providers.push(Arc::new(ai::LinkedProvider::new(
+        &cfg.neboai.api_url,
+        store.clone(),
+        Arc::new(move || auth::neboai_token(&token_store)),
+    )));
+
     providers
 }
 

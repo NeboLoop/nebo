@@ -65,6 +65,18 @@ impl Store {
         Ok(())
     }
 
+    /// Record the linked runtime's session behind this chat (see
+    /// `Chat::linked_chat_id`). Written once, on the thread's first turn.
+    pub fn set_chat_linked_chat_id(&self, id: &str, linked_chat_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE chats SET linked_chat_id = ?1 WHERE id = ?2",
+            params![linked_chat_id, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn get_chat(&self, id: &str) -> Result<Option<Chat>, NeboError> {
         let conn = self.conn()?;
         conn.query_row("SELECT * FROM chats WHERE id = ?1", params![id], |row| {
@@ -1031,6 +1043,7 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
         session_name: row.get("session_name")?,
         title_custom: row.get("title_custom")?,
         model: row.get("model")?,
+        linked_chat_id: row.get("linked_chat_id")?,
     })
 }
 
@@ -1216,6 +1229,25 @@ mod tests {
 
         store.set_chat_model("c1", None).unwrap();
         assert!(store.get_chat("c1").unwrap().unwrap().model.is_none(), "clearing returns to the default");
+    }
+
+    /// A linked employee's chat remembers the runtime's session once the
+    /// first turn created it; a new conversation starts without one, so a
+    /// rotated thread gets its own runtime session.
+    #[test]
+    fn a_linked_chat_id_is_recorded_once_and_never_inherited() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "First").unwrap();
+        assert!(store.get_chat("c1").unwrap().unwrap().linked_chat_id.is_none());
+
+        store.set_chat_linked_chat_id("c1", "api_7").unwrap();
+        assert_eq!(
+            store.get_chat("c1").unwrap().unwrap().linked_chat_id.as_deref(),
+            Some("api_7")
+        );
+
+        store.create_chat("c2", "Second").unwrap();
+        assert!(store.get_chat("c2").unwrap().unwrap().linked_chat_id.is_none());
     }
 
     /// A new conversation starts clean: rotating never inherits the last
