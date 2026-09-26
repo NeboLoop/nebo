@@ -3030,8 +3030,9 @@
 		"create": "Hire them",
 		"failed": "Couldn't create the employee. Try again.",
 		"marketplaceHint": "Want a pre-built expert instead? Browse the Marketplace.",
-		"hireFrom": "Hire from {bot}",
-		"linkedLede": "Runs on {bot}. Its tools run there, under that bot's own approvals. Both bots need to be online.",
+		"hireFromApps": "Hire from another app",
+		"linkedLede": "They keep working on the computer they run on.",
+		"offline": "Offline",
 		"linkedFailed": "Couldn't hire from {bot}. Try again."
 	},
 	"runLimit": {

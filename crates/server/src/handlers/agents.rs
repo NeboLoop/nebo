@@ -1793,9 +1793,10 @@ async fn create_linked_agent(
         .list_managed_bots()
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+    let self_id = config::read_bot_id().unwrap_or_default();
     let bot = bots
         .iter()
-        .find(|b| b.id == bot_id && b.chat && !b.shared)
+        .find(|b| b.id == bot_id && hire_source(b, &self_id))
         .ok_or_else(|| {
             to_error_response(types::NeboError::Validation(
                 "That bot is not a linked bot of yours with chat.".into(),
@@ -1857,9 +1858,9 @@ async fn create_linked_agent(
     })))
 }
 
-/// GET /agents/linked — every linked bot of the owner's with chat, and the
-/// agents it serves: what "Hire from <linked bot>" offers. Not signed in to
-/// NeboAI = nothing to hire from.
+/// GET /agents/linked — every linked bot of the owner's that has agents to
+/// hire, and those agents: what "Hire from another app" offers. Not signed
+/// in to NeboAI = nothing to hire from.
 pub async fn list_linked_agents(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
     let Ok(api) = crate::codes::build_api_client(&state) else {
         return Ok(Json(serde_json::json!({ "bots": [] })));
@@ -1868,8 +1869,9 @@ pub async fn list_linked_agents(State(state): State<AppState>) -> HandlerResult<
         .list_managed_bots()
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+    let self_id = config::read_bot_id().unwrap_or_default();
     let mut sources = Vec::new();
-    for bot in bots.into_iter().filter(|b| b.chat && !b.shared) {
+    for bot in bots.iter().filter(|b| hire_source(b, &self_id)) {
         let agents = match api.linked_bot_agents(&bot.id).await {
             Ok(agents) => agents,
             Err(e) => {
@@ -1877,15 +1879,38 @@ pub async fn list_linked_agents(State(state): State<AppState>) -> HandlerResult<
                 Vec::new()
             }
         };
-        sources.push(serde_json::json!({
+        sources.extend(source_entry(bot, agents));
+    }
+    Ok(Json(serde_json::json!({ "bots": sources })))
+}
+
+/// Whether a bot of the owner's is a place to hire from: another app's
+/// runtime (OpenClaw, Hermes) joined through Nebo Link and serving the chat
+/// contract. Never a Nebo bot (every one announces `chat`, and its employees
+/// are hired on it, not borrowed), never this bot, never a shared one.
+fn hire_source(bot: &comm::api_types::ManagedBot, self_id: &str) -> bool {
+    bot.chat
+        && !bot.shared
+        && !bot.runtime.is_empty()
+        && bot.runtime != crate::codes::RUNTIME
+        && bot.id != self_id
+}
+
+/// One hire source as the modal lists it; a bot with no agents to offer
+/// (its roster did not answer, or it has none) is not listed.
+fn source_entry(
+    bot: &comm::api_types::ManagedBot,
+    agents: Vec<comm::api_types::LinkedAgent>,
+) -> Option<serde_json::Value> {
+    (!agents.is_empty()).then(|| {
+        serde_json::json!({
             "id": bot.id,
             "name": bot.name,
             "runtime": bot.runtime,
             "online": bot.online,
             "agents": agents,
-        }));
-    }
-    Ok(Json(serde_json::json!({ "bots": sources })))
+        })
+    })
 }
 
 /// Whether the roster's linked employees can be reached right now, by agent
@@ -5508,7 +5533,7 @@ mod frontmatter_save_tests {
 
 #[cfg(test)]
 mod linked_hire_tests {
-    use super::{linked_offline, linked_persona_edit, linked_target};
+    use super::{hire_source, linked_offline, linked_persona_edit, linked_target, source_entry};
 
     fn agent_row(kind: Option<&str>, soul: Option<&str>) -> db::models::Agent {
         db::models::Agent {
@@ -5580,6 +5605,49 @@ mod linked_hire_tests {
 
         let unreachable = linked_offline(&linked, None);
         assert!(unreachable.values().all(|off| *off));
+    }
+
+    fn managed(id: &str, runtime: &str, chat: bool, shared: bool) -> comm::api_types::ManagedBot {
+        comm::api_types::ManagedBot {
+            id: id.into(),
+            name: id.into(),
+            runtime: runtime.into(),
+            chat,
+            shared,
+            ..Default::default()
+        }
+    }
+
+    /// Only another app's runtime is a place to hire from: a Nebo bot
+    /// announcing chat is not, this bot is not, a shared bot is not, and a
+    /// bot without the chat contract is not.
+    #[test]
+    fn only_another_apps_runtime_is_a_hire_source() {
+        let me = "self-bot";
+        assert!(hire_source(&managed("oc", "openclaw", true, false), me));
+        assert!(hire_source(&managed("hm", "hermes", true, false), me));
+        assert!(!hire_source(&managed("nanna", "nebo", true, false), me));
+        assert!(!hire_source(&managed(me, "openclaw", true, false), me));
+        assert!(!hire_source(&managed("oc", "openclaw", true, true), me));
+        assert!(!hire_source(&managed("oc", "openclaw", false, false), me));
+        assert!(!hire_source(&managed("old", "", true, false), me));
+    }
+
+    /// A bot whose roster came back empty (offline, or nothing to offer) is
+    /// not listed; one with agents is, offline or not.
+    #[test]
+    fn a_hire_source_is_listed_only_with_agents() {
+        let agent = comm::api_types::LinkedAgent {
+            id: "assistant".into(),
+            name: "Hermes".into(),
+            description: String::new(),
+        };
+        let bot = managed("hm", "hermes", true, false);
+        assert!(source_entry(&bot, Vec::new()).is_none());
+        let entry = source_entry(&bot, vec![agent]).unwrap();
+        assert_eq!(entry["runtime"], "hermes");
+        assert_eq!(entry["online"], false);
+        assert_eq!(entry["agents"][0]["name"], "Hermes");
     }
 
     /// Soul and rules belong to the runtime: a change is refused on a linked
