@@ -1194,6 +1194,12 @@ mod tests {
         assert_eq!(hosted.acp.workdir, folder, "its own folder under ~/NeboAI");
         let second = local.host(nebo_runtimes::acp::Agent::ClaudeCode, fake_acp(&told)).await.unwrap();
         assert_eq!((second.id.as_str(), second.label.as_str()), ("claude-code-2", "Claude Code 2"));
+        // nebo-link reads that Nebo hosts this computer's agents, and so
+        // refuses to link or pair: one program hosts them.
+        let daemon_home = root.path().join("nebo-link");
+        let hosting = link_core::machine::hosting_app(&daemon_home).expect("recorded");
+        assert_eq!(hosting.app, "Nebo");
+        assert_eq!(hosting.agents, ["Claude Code", "Claude Code 2"]);
 
         let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let hub = format!("http://{}", closed.local_addr().unwrap());
@@ -1258,6 +1264,7 @@ mod tests {
         // Fired: the agent is no longer hosted, and its folder stays.
         local.remove(&hosted.id).unwrap();
         assert_eq!(local.agents().iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["claude-code-2"]);
+        assert_eq!(link_core::machine::hosting_app(&daemon_home).unwrap().agents, ["Claude Code 2"]);
         assert!(folder.is_dir());
         let reopened = local_host(root.path());
         assert_eq!(reopened.agents(), local.agents(), "the record survives a restart");
@@ -1276,6 +1283,10 @@ mod tests {
 
         assert_eq!(local.hosted_by_daemon().as_deref(), Some("Studio Mac"));
         assert!(local.contract().is_none());
+        assert!(
+            link_core::machine::hosting_app(&root.path().join("nebo-link")).is_none(),
+            "Nebo records hosting nothing"
+        );
         assert!(local.hireable().is_empty());
         let refused = local
             .host(nebo_runtimes::acp::Agent::Codex, fake_acp(&root.path().join("told")))

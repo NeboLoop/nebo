@@ -32,7 +32,7 @@ use link_core::roster::{Member, Roster};
 use nebo_runtimes::acp::Agent as AcpAgent;
 use nebo_runtimes::{Environment, Runtime, RuntimeCommand};
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 
 /// Who drives the agents, as ACP's `initialize` introduces Nebo.
 const CLIENT: Client = Client {
@@ -98,15 +98,33 @@ impl LocalHost {
         let members = agents.iter().map(|a| member(&dir, a)).collect();
         let host = Host::new(Arc::new(Roster::new(members)));
         let contract = Contract::new(AcpAgent::Other.key(), AcpAgent::Other.name(), host, None);
-        Arc::new(Self {
+        let local = Arc::new(Self {
             bot_id,
             dir,
             home,
             daemon_home,
             contract,
-            agents: Mutex::new(agents),
+            agents: Mutex::new(agents.clone()),
             hiring: tokio::sync::Mutex::new(()),
-        })
+        });
+        local.record_hosting(&agents);
+        local
+    }
+
+    /// Says, where nebo-link looks ([`link_core::machine::record_app_host`]),
+    /// whether Nebo hosts this computer's agents: nebo-link then refuses to
+    /// link or pair while it does, so one program hosts them.
+    fn record_hosting(&self, agents: &[LocalAgent]) {
+        let Some(home) = self.daemon_home.as_deref() else {
+            return;
+        };
+        let hosted: Vec<String> = match self.hosted_by_daemon() {
+            Some(_) => Vec::new(),
+            None => agents.iter().map(|a| a.label.clone()).collect(),
+        };
+        if let Err(e) = link_core::machine::record_app_host(home, "Nebo", &hosted) {
+            warn!(error = %e, "linked: could not record that Nebo hosts this computer's agents");
+        }
     }
 
     /// This computer's bot id: the bot a local employee's brain names.
@@ -256,6 +274,7 @@ impl LocalHost {
             })
             .collect();
         host.set_members(members);
+        self.record_hosting(&agents);
         *self.agents.lock().expect("local agents") = agents;
         Ok(())
     }
