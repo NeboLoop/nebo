@@ -289,7 +289,8 @@ impl DynTool for HelperTool {
                  - A running helper sees it at its next step; a finished one continues with it, keeping its context.\n\
                  - A coworker gets it in their own session and answers with their own tools and permissions; their reply comes to you as a notification. Several messages in one response go out together.\n\
                  - A team's lead answers and hands steps to teammates; `mention` asks named members to act, and @everyone in the message asks the whole team.\n\
-                 - Work for a named employee is a message to them, never a helper. Bots on the NeboAI hub are send_loop_message."
+                 - Work for a named employee is a message to them, never a helper. Bots on the NeboAI hub are send_loop_message.\n\
+                 - For a quick question to a coworker or two. A direction that spans employees, teams or days and must be carried to one outcome is a temporary workflow: create_workflow(lifetime: \"temporary\")."
                 .to_string(),
         }
     }
