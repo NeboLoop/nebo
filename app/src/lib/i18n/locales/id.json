@@ -253,6 +253,7 @@
 		"goalLine": "Tujuan: {condition} ({turns} giliran)",
 		"goalLastCheck": "pemeriksaan terakhir: {reason}",
 		"goalPaused": "Dijeda. Pesan Anda berikutnya melanjutkannya.",
+		"goalStopped": "Tujuan dijeda. Bilang saja jika ingin melanjutkannya.",
 		"resumedActivity": "Masih bekerja: {tool}",
 		"waitingForYou": "Menunggu Anda",
 		"subagentStep": "{op} · langkah {n}",

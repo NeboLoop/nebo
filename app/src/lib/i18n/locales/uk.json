@@ -253,6 +253,7 @@
 		"goalLine": "Мета: {condition} ({turns} ходів)",
 		"goalLastCheck": "остання перевірка: {reason}",
 		"goalPaused": "Призупинено. Ваше наступне повідомлення відновить.",
+		"goalStopped": "Ціль призупинено. Скажіть, коли продовжити.",
 		"resumedActivity": "Досі працює: {tool}",
 		"waitingForYou": "Чекає на вас",
 		"subagentStep": "{op} · крок {n}",

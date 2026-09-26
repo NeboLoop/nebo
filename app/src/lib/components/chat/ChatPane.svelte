@@ -1890,7 +1890,9 @@
         {#if goal.last_reason}
           <span> · {$t('chat.goalLastCheck', { values: { reason: goal.last_reason } })}</span>
         {/if}
-        {#if goal.status.startsWith('paused')}
+        {#if goal.status === 'paused:stopped'}
+          <span class="text-warning"> · {$t('chat.goalStopped')}</span>
+        {:else if goal.status.startsWith('paused')}
           <span class="text-warning"> · {$t('chat.goalPaused')}</span>
         {/if}
       </div>

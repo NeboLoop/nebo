@@ -253,6 +253,7 @@
 		"goalLine": "Obiettivo: {condition} ({turns} turni)",
 		"goalLastCheck": "ultimo controllo: {reason}",
 		"goalPaused": "In pausa. Il tuo prossimo messaggio lo riprende.",
+		"goalStopped": "Obiettivo in pausa. Dimmelo quando vuoi riprenderlo.",
 		"resumedActivity": "Ancora al lavoro: {tool}",
 		"waitingForYou": "In attesa di te",
 		"subagentStep": "{op} · passaggio {n}",

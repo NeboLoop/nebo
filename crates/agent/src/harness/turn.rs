@@ -440,7 +440,10 @@ fn queue_input(h: &Harness, session_id: &str, req: &TurnRequest) {
 }
 
 /// The admitted turn's task: prepare, drive, finish; then, while input
-/// arrived after the last step, the next turn on the same slot.
+/// arrived after the last step, the next turn on the same slot. A turn the
+/// owner stopped runs nothing more on it: its stream has ended. The owner's
+/// message it never answered gets a turn of its own from the app
+/// (`Outlets::answer_thread`), once the slot is free.
 async fn run(
     h: Harness,
     req: TurnRequest,
@@ -449,6 +452,7 @@ async fn run(
     guard: TurnGuard,
     tx: mpsc::Sender<StreamEvent>,
 ) {
+    let session_key = req.session_key.clone();
     let mut req = Some(req);
     let mut taint = BTreeSet::new();
     let mut exit = TurnExit::Answered;
@@ -475,10 +479,61 @@ async fn run(
             req = Some(follow_up(cx.request));
         }
     }
+    // The slot is closing, so no row is written into this turn from here:
+    // what the owner typed and no answer followed is all in the thread now.
+    let owner_waits = exit == TurnExit::Cancelled && owner_waits_for_answer(&h, &session_id);
     let _ = tx
         .send(StreamEvent::done_with_reason(exit.label()).with_provenance(taint.into_iter().collect()))
         .await;
     drop(guard);
+    if owner_waits {
+        match h.answer_thread() {
+            Some(answer) => {
+                info!(session_id, "the stopped turn left the owner's message unanswered: its own turn answers it");
+                answer(&session_key);
+            }
+            None => warn!(session_id, "the owner's message is unanswered and nothing is bound to start a turn for it"),
+        }
+    }
+}
+
+/// Whether the owner's latest mid-turn message has no reply in words after
+/// it, as the thread reads.
+fn owner_waits_for_answer(h: &Harness, session_id: &str) -> bool {
+    h.sessions
+        .get_messages_since_checkpoint(session_id)
+        .is_ok_and(|rows| conversation::unanswered_mid_turn_message(&conversation::order_as_heard(rows)))
+}
+
+/// The owner ended the work (the stop button, or a stop he typed that was
+/// answered): an agreed goal still worked toward pauses, so nothing (a
+/// check, a check-in, a woken turn) starts the work again, and his next
+/// message does not resume it; he asks for it back. The goal line tells him,
+/// and a row tells the model.
+fn pause_goal_for_the_owner(cx: &TurnContext) {
+    let h = &cx.harness;
+    let goals = goal::GoalStore::new(&h.sessions, &cx.session_id);
+    let Ok(Some(worked)) = goals.active() else {
+        return;
+    };
+    match goals.record_check(goal::GoalStatus::Paused(goal::Pause::Stopped), None, false) {
+        Ok(Some(paused)) => {
+            if let Some(observer) = h.goal_observer() {
+                observer.status(&paused);
+            }
+        }
+        Ok(None) => return,
+        Err(e) => {
+            warn!(session_id = %cx.session_id, error = %e, "the goal could not be paused");
+            return;
+        }
+    }
+    let mut row = reminders::Reminders::default();
+    row.add(&TurnEvent::GoalPaused(worked.condition));
+    if let Err(e) = row.write(&h.sessions, &cx.session_id) {
+        warn!(session_id = %cx.session_id, error = %e, "could not tell the model the goal is paused");
+    }
+    info!(session_id = %cx.session_id, "the owner ended the work: the goal is paused");
 }
 
 /// Whether a mid-turn or notification row landed after `seen`.
@@ -1090,6 +1145,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
         // in the stream, while the reply is still arriving, so a read costs
         // no wait for the rest of the reply.
         let mut executor = ToolExecutor::new(&round_cx);
+        let reply_heard_through = st.seen.last().map(|m| m.id.clone());
         let (tool_calls_out, mut streamed_calls) = mpsc::unbounded_channel();
         // Tools are off for the owner's answer: nothing streamed starts.
         if reply_in_words {
@@ -1121,6 +1177,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                     .map(|issue| issue as &(dyn Fn() -> crate::tool_credentials::CredentialGuard + Send + Sync)),
                 tool_calls_out,
                 folds: &mut st.folds,
+                heard_through: reply_heard_through.as_deref(),
             },
             &mut st.call,
             &mut st.usage,
@@ -1265,6 +1322,7 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
             // The step after the owner's answer, with nothing more to say:
             // they asked to stop, and the turn ends on that answer.
             if after_owner_answer {
+                pause_goal_for_the_owner(cx);
                 return TurnExit::Answered;
             }
             if model_call::retry_empty_reply(&mut st.call, st.step as usize, sid) {
@@ -1903,6 +1961,7 @@ pub(crate) async fn finish(cx: &TurnContext, st: &mut TurnState, exit: &TurnExit
         let why = if cx.progress.stalled.load(std::sync::atomic::Ordering::SeqCst) {
             conversation::Interrupt::Stalled
         } else {
+            pause_goal_for_the_owner(cx);
             conversation::Interrupt::Owner
         };
         conversation::record_interrupt(&h.sessions, &cx.session_id, why);
@@ -2095,6 +2154,9 @@ mod tests {
         Thought(Box<Step>, ai::ThinkingBlock),
         /// The step this function chooses from the request it is sent.
         Reacting(fn(&ChatRequest) -> Step),
+        /// Stream this text, run the hook while the reply is still open,
+        /// then end the reply with a read.
+        Streaming(&'static str, Hook),
     }
 
     /// What the probe tools saw: each call's tool, and whether it started
@@ -2211,6 +2273,19 @@ mod tests {
             if let Step::Reacting(choose) = step {
                 step = choose(req);
             }
+            if let Step::Streaming(text, hook) = step {
+                let (tx, rx) = mpsc::channel(4);
+                tokio::spawn(async move {
+                    let _ = tx.send(StreamEvent::text(text)).await;
+                    // The turn reads the text before the owner acts.
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    hook.await;
+                    let call = ai::ToolCall { id: "call-read-on".into(), name: "read".into(), input: serde_json::json!({}) };
+                    let _ = tx.send(StreamEvent::tool_call(call)).await;
+                    let _ = tx.send(StreamEvent::done()).await;
+                });
+                return Ok(rx);
+            }
             if let Step::Held(calls, probe) = step {
                 let (tx, rx) = mpsc::channel(calls.len() + 1);
                 tokio::spawn(async move {
@@ -2281,7 +2356,7 @@ mod tests {
                 list.insert(0, StreamEvent::thinking_block(block));
                 (list, stop)
             }
-            Step::During(..) | Step::Held(..) | Step::Slow(..) | Step::Reacting(_) => unreachable!("answered in stream"),
+            Step::During(..) | Step::Held(..) | Step::Slow(..) | Step::Reacting(_) | Step::Streaming(..) => unreachable!("answered in stream"),
         })
     }
 
@@ -3297,18 +3372,22 @@ mod tests {
         AfterLoad,
         /// While step 2's model call is in flight.
         DuringCall,
+        /// While step 2's reply streams, after some of its text arrived.
+        WhileStreaming,
         /// While step 2's read runs.
         DuringTools,
         /// While the turn's final answer streams.
         DuringAnswer,
     }
 
-    const EVERY_POINT: [At; 5] = [At::BeforeLoad, At::AfterLoad, At::DuringCall, At::DuringTools, At::DuringAnswer];
+    const EVERY_POINT: [At; 6] = [At::BeforeLoad, At::AfterLoad, At::DuringCall, At::WhileStreaming, At::DuringTools, At::DuringAnswer];
 
     /// What the owner does at the point: type a message, or press stop.
     enum Act {
         Message(&'static str),
         Stop(tokio_util::sync::CancellationToken),
+        /// A message, then the stop button before any step hears it.
+        MessageThenStop(&'static str, tokio_util::sync::CancellationToken),
     }
 
     /// The owner's act, done once, from wherever the step loop is when
@@ -3326,13 +3405,19 @@ mod tests {
             }
             match &self.act {
                 Act::Stop(cancel) => cancel.cancel(),
-                Act::Message(text) => {
-                    let h = self.h.get().expect("the harness is bound").clone();
-                    let mut handle = h.start_turn(owner(text)).await.expect("queued");
-                    let first = handle.events.recv().await.expect("the busy line");
-                    assert_eq!(first.stop_reason.as_deref(), Some(session_gate::QUEUED_INTO_RUNNING_TURN));
+                Act::Message(text) => self.queue(text).await,
+                Act::MessageThenStop(text, cancel) => {
+                    self.queue(text).await;
+                    cancel.cancel();
                 }
             }
+        }
+
+        async fn queue(&self, text: &str) {
+            let h = self.h.get().expect("the harness is bound").clone();
+            let mut handle = h.start_turn(owner(text)).await.expect("queued");
+            let first = handle.events.recv().await.expect("the busy line");
+            assert_eq!(first.stop_reason.as_deref(), Some(session_gate::QUEUED_INTO_RUNNING_TURN));
         }
 
         fn hook(self: &Arc<Self>) -> Hook {
@@ -3434,16 +3519,30 @@ mod tests {
         calls: Vec<ChatRequest>,
         reads: usize,
         rows: Vec<ChatMessage>,
+        h: Harness,
+        model: Arc<Scripted>,
     }
 
     /// A turn that reads parts one after another, with the owner acting at
     /// `at`.
     async fn interrupted(at: At, act: impl FnOnce(&TurnRequest) -> Act, model: fn(&ChatRequest) -> Step) -> Interrupted {
+        interrupted_with(at, act, model, |_| {}).await
+    }
+
+    /// [`interrupted`], with `prepare` run on the harness before the turn
+    /// (outlets, a goal).
+    async fn interrupted_with(
+        at: At,
+        act: impl FnOnce(&TurnRequest) -> Act,
+        model: fn(&ChatRequest) -> Step,
+        prepare: impl FnOnce(&Harness),
+    ) -> Interrupted {
         let req = owner("Read part one and follow it to the end, then summarize.");
         let owner_act = Arc::new(Owner { h: Default::default(), act: act(&req), done: Default::default() });
         let mut script: Vec<Step> = (0..12).map(|_| Step::Reacting(model)).collect();
         match at {
             At::DuringCall => script[1] = Step::During(Box::new(Step::Reacting(model)), owner_act.hook()),
+            At::WhileStreaming => script[1] = Step::Streaming("Reading part two.", owner_act.hook()),
             At::DuringAnswer => script[3] = Step::During(Box::new(Step::Reacting(model)), owner_act.hook()),
             _ => {}
         }
@@ -3455,6 +3554,7 @@ mod tests {
         };
         let h = harness_with(&model, vec![Box::new(reader)]).await;
         let _ = owner_act.h.set(h.clone());
+        prepare(&h);
         let hook = match at {
             At::BeforeLoad => Some("agent.should_continue"),
             At::AfterLoad => Some("steering.generate"),
@@ -3470,6 +3570,8 @@ mod tests {
             calls: model.calls(),
             reads: runs.load(std::sync::atomic::Ordering::SeqCst),
             rows: stored(&h),
+            h,
+            model,
         }
     }
 
@@ -3488,7 +3590,7 @@ mod tests {
             // finishes, and nothing after.
             let (heard, reads) = match at {
                 At::BeforeLoad | At::AfterLoad => (1, 1),
-                At::DuringCall | At::DuringTools => (2, 2),
+                At::DuringCall | At::WhileStreaming | At::DuringTools => (2, 2),
                 At::DuringAnswer => (4, 3),
             };
             let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(STOP_READING));
@@ -3535,6 +3637,124 @@ mod tests {
             assert!(run.reads <= most, "{at:?}: no read started after the stop: {}", run.reads);
             assert!(run.rows.iter().any(|m| m.content == conversation::INTERRUPT_MESSAGE), "{at:?}: the stop is recorded");
         }
+    }
+
+    /// The turn the app runs when the harness asks it to answer the thread:
+    /// no input of its own, the owner's message is already there.
+    async fn answer_the_thread(h: &Harness) -> Vec<StreamEvent> {
+        let mut follow = owner("");
+        follow.input = TurnInput::None;
+        run_turn(h, follow).await
+    }
+
+    /// Outlets that record each session the harness asks a turn for.
+    fn asking_outlets(goal_observer: Option<Arc<Watch>>) -> (crate::harness::Outlets, mpsc::UnboundedReceiver<String>) {
+        let (asked_tx, asked) = mpsc::unbounded_channel::<String>();
+        let outlets = crate::harness::Outlets {
+            answer_thread: Some(Arc::new(move |key: &str| {
+                let _ = asked_tx.send(key.to_string());
+            })),
+            goal_observer: goal_observer.map(|w| w as Arc<dyn goal::GoalObserver>),
+            ..Default::default()
+        };
+        (outlets, asked)
+    }
+
+    /// The owner types while the employee works, then presses stop before
+    /// any step hears the message. The stop ends the work; the message then
+    /// starts the next turn, which answers it in words first. Nothing the
+    /// owner typed goes unanswered. A stop with nothing unanswered asks for
+    /// no turn: stop means stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_the_stopped_turn_never_heard_starts_the_next_turn() {
+        for at in [At::DuringCall, At::WhileStreaming, At::DuringTools] {
+            let (outlets, mut asked) = asking_outlets(None);
+            let run =
+                interrupted_with(at, |req| Act::MessageThenStop(STOP_READING, req.cancel.clone()), reads_on, |h| h.bind(outlets)).await;
+            assert_eq!(exit_of(&run.events), "cancelled", "{at:?}: the stop ends the work");
+            let carries = |c: &ChatRequest| texts(c).iter().any(|t| t.contains(STOP_READING));
+            assert!(!run.calls.iter().any(carries), "{at:?}: the stopped turn never heard it");
+            let key = tokio::time::timeout(std::time::Duration::from_secs(2), asked.recv()).await.ok().flatten();
+            assert_eq!(key.as_deref(), Some(KEY), "{at:?}: the app is asked for a turn that answers it");
+
+            let events = answer_the_thread(&run.h).await;
+            assert_eq!(exit_of(&events), "text_response", "{at:?}");
+            let calls = run.model.calls();
+            let first = &calls[run.calls.len()];
+            assert!(carries(first), "{at:?}: the next turn hears the message");
+            assert_eq!(first.tool_choice, ai::ToolChoice::None, "{at:?}: and answers it in words first");
+            let reply = stored(&run.h).into_iter().rev().find(|m| m.role == "assistant").expect("a reply");
+            assert!(reply.content.starts_with("Stopping as asked"), "{at:?}: {}", reply.content);
+        }
+
+        let (outlets, mut asked) = asking_outlets(None);
+        let run = interrupted_with(At::DuringTools, |req| Act::Stop(req.cancel.clone()), reads_on, |h| h.bind(outlets)).await;
+        assert_eq!(exit_of(&run.events), "cancelled");
+        let key = tokio::time::timeout(std::time::Duration::from_millis(300), asked.recv()).await.ok().flatten();
+        assert_eq!(key, None, "nothing unanswered: no turn after the stop");
+    }
+
+    /// The agreed goal is paused, the goal line tells the owner (its paused
+    /// line is `goal::STOPPED_LINE`), a row tells the model, and no goal
+    /// check ran.
+    fn assert_goal_paused_by_the_owner(run: &Interrupted, watch: &Watch) {
+        let sid = run.h.sessions.resolve_session_id_by_key(KEY).unwrap();
+        let goal = goal::GoalStore::new(&run.h.sessions, &sid).get().unwrap().expect("the goal");
+        assert_eq!(goal.status, goal::GoalStatus::Paused(goal::Pause::Stopped));
+        assert!(watch.0.lock().unwrap().iter().any(|s| s == "paused:stopped"), "the goal line shows it");
+        assert!(kinds(&stored(&run.h)).iter().any(|k| k == "goal_paused"), "the model is told too");
+        assert!(
+            run.model.side.lock().unwrap().iter().all(|r| r.trace.purpose != "done_check"),
+            "no goal check ran to start the work again"
+        );
+    }
+
+    fn with_goal(watch: &Arc<Watch>) -> (crate::harness::Outlets, impl FnOnce(&Harness)) {
+        let (outlets, _asked) = asking_outlets(Some(watch.clone()));
+        (outlets, |h: &Harness| {
+            let sid = h.sessions.get_or_create(KEY, "").unwrap().id;
+            goal::GoalStore::new(&h.sessions, &sid).set("every part is summarized", goal::GoalSource::OwnerCommand).unwrap();
+        })
+    }
+
+    /// The owner presses stop on work toward an agreed goal: the goal pauses
+    /// and the owner is told so. His next message does not pick it back up,
+    /// and no goal check starts the work again: it resumes only when he asks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_stop_button_pauses_the_goal_until_the_owner_asks() {
+        let watch = Arc::new(Watch(Mutex::new(Vec::new())));
+        let (outlets, set_goal) = with_goal(&watch);
+        let run = interrupted_with(At::DuringTools, |req| Act::Stop(req.cancel.clone()), reads_on, |h| {
+            h.bind(outlets);
+            set_goal(h);
+        })
+        .await;
+        assert_eq!(exit_of(&run.events), "cancelled");
+        assert_goal_paused_by_the_owner(&run, &watch);
+
+        run.model.script.lock().unwrap().push_front(Step::Say("You're welcome."));
+        let events = run_turn(&run.h, owner("Thanks.")).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let sid = run.h.sessions.resolve_session_id_by_key(KEY).unwrap();
+        let goal = goal::GoalStore::new(&run.h.sessions, &sid).get().unwrap().unwrap();
+        assert_eq!(goal.status, goal::GoalStatus::Paused(goal::Pause::Stopped), "the next message does not resume it");
+        assert!(run.model.side.lock().unwrap().iter().all(|r| r.trace.purpose != "done_check"), "no check after it either");
+    }
+
+    /// The owner types "stop" while the employee works toward a goal: the
+    /// stop is answered in words, the turn ends on that answer, and the goal
+    /// pauses rather than a goal check starting the work again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typed_stop_answered_in_words_pauses_the_goal() {
+        let watch = Arc::new(Watch(Mutex::new(Vec::new())));
+        let (outlets, set_goal) = with_goal(&watch);
+        let run = interrupted_with(At::DuringTools, |_| Act::Message(STOP_READING), reads_on, |h| {
+            h.bind(outlets);
+            set_goal(h);
+        })
+        .await;
+        assert_eq!(exit_of(&run.events), "text_response");
+        assert_goal_paused_by_the_owner(&run, &watch);
     }
 
     /// `find_tools` loads a deferred tool: its schema joins the request from

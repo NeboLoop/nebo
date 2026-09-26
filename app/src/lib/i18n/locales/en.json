@@ -254,6 +254,7 @@
 		"goalLine": "Goal: {condition} ({turns} turns)",
 		"goalLastCheck": "last check: {reason}",
 		"goalPaused": "Paused. Your next message resumes it.",
+		"goalStopped": "Paused the goal. Say the word to pick it back up.",
 		"resumedActivity": "Still working: {tool}",
 		"waitingForYou": "Waiting for you",
 		"subagentStep": "{op} · step {n}",

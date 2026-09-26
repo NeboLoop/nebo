@@ -253,6 +253,7 @@
 		"goalLine": "目標：{condition}（{turns} 輪）",
 		"goalLastCheck": "上次檢查：{reason}",
 		"goalPaused": "已暫停。你的下一則訊息會恢復它。",
+		"goalStopped": "目標已暫停。需要繼續時告訴我。",
 		"resumedActivity": "仍在處理：{tool}",
 		"waitingForYou": "等你處理",
 		"subagentStep": "{op} · 第 {n} 步",

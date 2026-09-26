@@ -253,6 +253,7 @@
 		"goalLine": "Mål: {condition} ({turns} omgångar)",
 		"goalLastCheck": "senaste kontroll: {reason}",
 		"goalPaused": "Pausad. Ditt nästa meddelande återupptar den.",
+		"goalStopped": "Målet är pausat. Säg till när du vill fortsätta.",
 		"resumedActivity": "Arbetar fortfarande: {tool}",
 		"waitingForYou": "Väntar på dig",
 		"subagentStep": "{op} · steg {n}",

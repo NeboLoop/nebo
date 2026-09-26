@@ -176,8 +176,8 @@ impl GoalStatus {
     }
 }
 
-/// Why the goal stopped being pursued. Every pause resumes on the owner's
-/// next message ([`GoalStore::resume`]).
+/// Why the goal stopped being pursued. Every pause but [`Pause::Stopped`]
+/// resumes on the owner's next message ([`GoalStore::resume`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pause {
     /// The done check did not answer within [`DONE_CHECK_DEADLINE`], or
@@ -187,9 +187,13 @@ pub enum Pause {
     UnmetTooOften,
     /// The turn hit its step or spend limit.
     LimitReached,
-    /// The turn was stopped.
+    /// The owner ended the work: the stop button, or a stop he typed that
+    /// was answered. It resumes only when he asks for the goal again.
     Stopped,
 }
+
+/// The goal line's paused text when the owner's stop paused the goal.
+pub const STOPPED_LINE: &str = "Paused the goal. Say the word to pick it back up.";
 
 /// The done check's answer; `reason` quotes the transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,10 +300,12 @@ impl<'a> GoalStore<'a> {
             .add_session_goal_decline(self.session_id, condition.trim())
     }
 
-    /// The owner's next message resumes a paused goal.
+    /// The owner's next message resumes a paused goal, except one his own
+    /// stop paused: that one resumes only when he asks for it (the goal set
+    /// again, by `/goal` or `suggest_goal` on his word).
     pub fn resume(&self) -> Result<Option<AgreedGoal>, NeboError> {
         match self.get()? {
-            Some(g) if matches!(g.status, GoalStatus::Paused(_)) => {
+            Some(g) if matches!(g.status, GoalStatus::Paused(why) if why != Pause::Stopped) => {
                 self.record_check(GoalStatus::Active, None, false)
             }
             _ => Ok(None),

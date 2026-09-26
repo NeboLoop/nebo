@@ -66,6 +66,9 @@ pub enum TurnEvent {
         entered: bool,
     },
     GoalSet(String),
+    /// The owner ended the work (the stop button, or a stop they typed that
+    /// was answered): the agreed goal is paused until they ask for it back.
+    GoalPaused(String),
     /// The done check found the agreed goal unmet.
     GoalCheck {
         reason: String,
@@ -186,6 +189,7 @@ pub const NAMES: &[&str] = &[
     "plan_mode",
     "goal_set",
     "goal_check",
+    "goal_paused",
     "usage",
     "tools_available",
     "skill_listing",
@@ -346,6 +350,13 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             "goal_set",
             format!(
                 "Agreed goal: {}. Work continues until a separate check confirms it is met. Briefly acknowledge it, then start (or continue) working toward it now; don't stop to ask.",
+                non_empty(condition)?
+            ),
+        ),
+        TurnEvent::GoalPaused(condition) => (
+            "goal_paused",
+            format!(
+                "The owner stopped the work, so the agreed goal is paused: {}. Nothing picks it back up until the owner asks for it; then set it again with suggest_goal, ask_owner false.",
                 non_empty(condition)?
             ),
         ),
@@ -1017,6 +1028,7 @@ mod tests {
             TurnEvent::TasksIdle(Vec::new()),
             TurnEvent::PlanMode { entered: true },
             TurnEvent::GoalSet("all tests pass".into()),
+            TurnEvent::GoalPaused("all tests pass".into()),
             TurnEvent::GoalCheck {
                 reason: "\"2 failing\"".into(),
                 condition: "all tests pass".into(),

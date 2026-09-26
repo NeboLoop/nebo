@@ -253,6 +253,7 @@
 		"goalLine": "יעד: {condition} ({turns} סבבים)",
 		"goalLastCheck": "בדיקה אחרונה: {reason}",
 		"goalPaused": "מושהה. ההודעה הבאה שלך תחדש אותו.",
+		"goalStopped": "היעד הושהה. תגיד לי כשתרצה להמשיך.",
 		"resumedActivity": "עדיין עובד: {tool}",
 		"waitingForYou": "ממתין לך",
 		"subagentStep": "{op} · שלב {n}",

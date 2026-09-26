@@ -2367,6 +2367,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             title_sink: Some(Arc::new(chat_dispatch::TitleBroadcaster::new(state.clone()))),
             broadcast: Some(Arc::new(move |event: &str, payload: serde_json::Value| hub.broadcast(event, payload))),
             goal_observer: Some(Arc::new(handlers::goal::GoalOutlet::new(state.clone()))),
+            answer_thread: Some({
+                let state = state.clone();
+                Arc::new(move |session_key: &str| {
+                    let state = state.clone();
+                    let key = session_key.to_string();
+                    tokio::spawn(async move { wake::answer_thread(&state, &key, 0, Vec::new()).await });
+                })
+            }),
         });
         // `suggest_goal` reaches the agreed goal through the harness.
         state.tools.bind_goals(Arc::new(agent::harness::goal::GoalSuggestions::new(

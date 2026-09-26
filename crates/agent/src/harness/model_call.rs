@@ -200,6 +200,10 @@ pub(crate) struct ModelCall<'a> {
     pub tool_calls_out: mpsc::UnboundedSender<ai::ToolCall>,
     /// The turn's text segments: a tool call closing one sends its verdict.
     pub folds: &'a mut super::text_fold::TurnFolds,
+    /// The last row the request was built from, stamped on a partial reply
+    /// a stop cuts short, as on every reply (`conversation::HEARD_THROUGH`):
+    /// a message that landed during the call reads after it, unanswered.
+    pub heard_through: Option<&'a str>,
 }
 
 /// One content block of a reply, in stream order.
@@ -279,6 +283,7 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
         tool_credential,
         tool_calls_out,
         folds,
+        heard_through,
     } = call;
 
     // Acquire LLM permit before provider call (blocks if at capacity)
@@ -493,9 +498,11 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                     } else {
                         None
                     };
+                    let heard = heard_through
+                        .map(|id| serde_json::json!({ super::conversation::HEARD_THROUGH: id }).to_string());
                     if let Err(e) = sessions.append_message(
                         session_id, "assistant", &assistant_content,
-                        tc_json.as_deref(), None, None,
+                        tc_json.as_deref(), None, heard.as_deref(),
                     ) {
                         warn!(session_id = %session_id, error = %e, "failed to save partial assistant message on cancel");
                     } else {

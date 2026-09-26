@@ -253,6 +253,7 @@
 		"goalLine": "লক্ষ্য: {condition} ({turns} দফা)",
 		"goalLastCheck": "শেষ যাচাই: {reason}",
 		"goalPaused": "বিরতিতে আছে। আপনার পরের বার্তা আবার শুরু করবে।",
+		"goalStopped": "লক্ষ্যটি থামানো হয়েছে। আবার শুরু করতে চাইলে বলুন।",
 		"resumedActivity": "এখনও কাজ করছেন: {tool}",
 		"waitingForYou": "আপনার অপেক্ষায়",
 		"subagentStep": "{op} · ধাপ {n}",

@@ -253,6 +253,7 @@
 		"goalLine": "الهدف: {condition} ({turns} جولات)",
 		"goalLastCheck": "آخر تحقق: {reason}",
 		"goalPaused": "متوقف مؤقتًا. رسالتك التالية تستأنفه.",
+		"goalStopped": "تم إيقاف الهدف مؤقتًا. أخبرني عندما تريد استئنافه.",
 		"resumedActivity": "ما زال يعمل: {tool}",
 		"waitingForYou": "بانتظارك",
 		"subagentStep": "{op} · خطوة {n}",
