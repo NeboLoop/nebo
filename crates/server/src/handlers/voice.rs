@@ -951,6 +951,12 @@ impl TurnLedger {
     /// user row is not written yet: the run must wait for it, so the spoken
     /// request lands before the run's rows.
     fn call(&mut self, delegating: bool) -> bool {
+        // A call while the utterance is still open is the reply to it, even
+        // before (or without) any reply audio: a reply that only calls a tool
+        // is never heard.
+        if self.open {
+            self.answering = true;
+        }
         let turn = if self.answering { &mut self.early } else { &mut self.turn };
         turn.delegated |= delegating;
         self.answering
@@ -1772,6 +1778,44 @@ fn join_transcript(acc: &mut String, delta: &str) {
     acc.push_str(delta);
 }
 
+/// One text frame from a voice client (desktop web, phone app, phone bridge).
+#[derive(Debug, PartialEq)]
+enum ClientFrame {
+    KeepAlive,
+    /// Barge-in. `playedMs` is how much of the current reply the client
+    /// played; clients that predate it omit it and the relay estimates.
+    Interrupt { played_ms: Option<u64> },
+    ManualInputEnd,
+    Start,
+    TextInput(Option<String>),
+    /// The client's goodbye before it closes the socket.
+    Stop,
+    Unknown,
+}
+
+fn client_frame(text: &str) -> ClientFrame {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) else {
+        return ClientFrame::Unknown;
+    };
+    match parsed.get("type").and_then(|t| t.as_str()) {
+        Some("KeepAlive") => ClientFrame::KeepAlive,
+        Some("interrupt") => ClientFrame::Interrupt {
+            played_ms: parsed
+                .get("playedMs")
+                .and_then(|v| v.as_f64())
+                .filter(|ms| ms.is_finite() && *ms >= 0.0)
+                .map(|ms| ms as u64),
+        },
+        Some("manual_input_end") => ClientFrame::ManualInputEnd,
+        Some("Start") => ClientFrame::Start,
+        Some("text_input") => ClientFrame::TextInput(
+            parsed.get("text").and_then(|v| v.as_str()).map(str::to_string),
+        ),
+        Some("Stop") => ClientFrame::Stop,
+        _ => ClientFrame::Unknown,
+    }
+}
+
 /// Bridge the browser WebSocket to the xAI realtime session, executing tool
 /// calls through the tools registry (the ONE policy engine) as they surface.
 ///
@@ -2203,36 +2247,39 @@ async fn handle_conversation_session(
                             break;
                         }
                     }
-                    Some(Ok(Message::Text(text))) => {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                            match parsed.get("type").and_then(|t| t.as_str()) {
-                                Some("KeepAlive") => {}
-                                Some("interrupt") => {
-                                    info!("conversation interrupt received");
-                                    if rt_tx.send(RealtimeCommand::Interrupt).await.is_err() {
-                                        break;
-                                    }
-                                }
-                                // server_vad owns endpointing; the old
-                                // push-to-talk end marker is a no-op kept for
-                                // wire-protocol compatibility.
-                                Some("manual_input_end") => {}
-                                // The client's hello; the agent is already bound
-                                // from the query string.
-                                Some("Start") => {}
-                                Some("text_input") => {
-                                    if let Some(t) = parsed.get("text").and_then(|v| v.as_str())
-                                        && rt_tx.send(RealtimeCommand::Text(t.to_string())).await.is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                _ => {
-                                    warn!(msg = %text, "unknown conversation WS message");
-                                }
+                    Some(Ok(Message::Text(text))) => match client_frame(&text) {
+                        ClientFrame::KeepAlive => {}
+                        ClientFrame::Interrupt { played_ms } => {
+                            info!(?played_ms, "conversation interrupt received");
+                            if rt_tx.send(RealtimeCommand::Interrupt { played_ms }).await.is_err() {
+                                break;
                             }
                         }
-                    }
+                        // server_vad owns endpointing; the old push-to-talk
+                        // end marker is a no-op kept for wire-protocol
+                        // compatibility.
+                        ClientFrame::ManualInputEnd => {}
+                        // The client's hello; the agent is already bound from
+                        // the query string.
+                        ClientFrame::Start => {}
+                        ClientFrame::TextInput(t) => {
+                            if let Some(t) = t
+                                && rt_tx.send(RealtimeCommand::Text(t)).await.is_err()
+                            {
+                                break;
+                            }
+                        }
+                        // The client's goodbye, sent before it closes: the call
+                        // is over, exactly as on a Close frame.
+                        ClientFrame::Stop => {
+                            info!("conversation stopped by the client");
+                            let _ = rt_tx.send(RealtimeCommand::Close).await;
+                            break;
+                        }
+                        ClientFrame::Unknown => {
+                            warn!(msg = %text, "unknown conversation WS message");
+                        }
+                    },
                     Some(Ok(Message::Close(_))) | None => {
                         info!("conversation WebSocket closed");
                         let _ = rt_tx.send(RealtimeCommand::Close).await;
@@ -2432,6 +2479,54 @@ mod voice_prompt_tests {
         assert_eq!(shape(&l.user_final()), ["user:how are you"]);
         l.speech(" thanks.");
         assert_eq!(shape(&l.flush()), ["assistant:Good, thanks."]);
+    }
+
+    /// A reply that only calls `nebo`, before any audio and before the
+    /// utterance ends: the run waits for the user row, and the model's
+    /// relay of the run's answer is the delegated turn's filler.
+    #[test]
+    fn ledger_holds_a_silent_tool_reply_until_the_user_row() {
+        let mut l = TurnLedger::default();
+        l.utterance_started();
+        l.words("make the repo");
+        assert!(l.call(true), "no reply audio yet: the run waits for the user row");
+        assert_eq!(shape(&l.user_final()), ["user:make the repo"]);
+        l.reply_started();
+        l.speech("Done, the repo exists.");
+        assert!(l.flush().is_empty());
+    }
+
+    /// The client's frames: `Stop` is the goodbye (it ended the call as an
+    /// "unknown conversation WS message" before), and `interrupt` carries the
+    /// played position when the client knows it.
+    #[test]
+    fn client_frames_parse() {
+        assert_eq!(client_frame(r#"{"type":"Stop"}"#), ClientFrame::Stop);
+        assert_eq!(
+            client_frame(r#"{"type":"interrupt","playedMs":1830}"#),
+            ClientFrame::Interrupt { played_ms: Some(1830) }
+        );
+        assert_eq!(
+            client_frame(r#"{"type":"interrupt","playedMs":1830.6}"#),
+            ClientFrame::Interrupt { played_ms: Some(1830) }
+        );
+        assert_eq!(
+            client_frame(r#"{"type":"interrupt"}"#),
+            ClientFrame::Interrupt { played_ms: None }
+        );
+        assert_eq!(
+            client_frame(r#"{"type":"interrupt","playedMs":-5}"#),
+            ClientFrame::Interrupt { played_ms: None }
+        );
+        assert_eq!(client_frame(r#"{"type":"KeepAlive"}"#), ClientFrame::KeepAlive);
+        assert_eq!(client_frame(r#"{"type":"Start","agentId":"a"}"#), ClientFrame::Start);
+        assert_eq!(client_frame(r#"{"type":"manual_input_end"}"#), ClientFrame::ManualInputEnd);
+        assert_eq!(
+            client_frame(r#"{"type":"text_input","text":"hi"}"#),
+            ClientFrame::TextInput(Some("hi".into()))
+        );
+        assert_eq!(client_frame(r#"{"type":"Nope"}"#), ClientFrame::Unknown);
+        assert_eq!(client_frame("not json"), ClientFrame::Unknown);
     }
 
     #[test]

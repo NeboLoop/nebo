@@ -164,6 +164,17 @@ function createVoiceSessionStore() {
 	let pendingAudioChunks: Float32Array[] = [];
 	let currentSource: AudioBufferSourceNode | null = null;
 	let isPlayingAudio = false;
+	// Where playback is along the call's stream of reply audio, in ms, so a
+	// barge-in can tell the server how much of the reply was heard (it cuts
+	// the model's memory of the reply back to exactly that). `streamQueuedMs`
+	// is audio received, `streamPlayedMs` audio whose buffers finished, and
+	// the buffer playing now adds its elapsed time. Idle gaps between chunks
+	// never count. `replyStartMs` is where the current reply's audio begins.
+	let streamQueuedMs = 0;
+	let streamPlayedMs = 0;
+	let currentStartedAt = 0;
+	let currentDurationMs = 0;
+	let replyStartMs = 0;
 	// Whether the current trailing transcript entry is the agent's in-progress
 	// streamed response (deltas append to it; playback_end closes it).
 	let agentEntryOpen = false;
@@ -272,8 +283,14 @@ function createVoiceSessionStore() {
 
 		isPlayingAudio = true;
 		currentSource = source;
+		currentStartedAt = playbackCtx.currentTime;
+		currentDurationMs = merged.length / 24;
 
 		source.onended = () => {
+			// A source stopped by a barge-in is already accounted for, and a
+			// newer one may be playing.
+			if (currentSource !== source) return;
+			streamPlayedMs += currentDurationMs;
 			isPlayingAudio = false;
 			currentSource = null;
 			// If more chunks arrived during playback, flush again
@@ -285,8 +302,30 @@ function createVoiceSessionStore() {
 		source.start();
 	}
 
+	/** Stream position of playback: finished buffers plus the one playing. */
+	function playedPositionMs(): number {
+		if (!currentSource || !playbackCtx) return streamPlayedMs;
+		const elapsed = (playbackCtx.currentTime - currentStartedAt) * 1000;
+		return streamPlayedMs + Math.min(Math.max(0, elapsed), currentDurationMs);
+	}
+
+	/** How much of the current reply has been heard, in whole ms. */
+	function replyPlayedMs(): number {
+		return Math.max(0, Math.round(playedPositionMs() - replyStartMs));
+	}
+
+	/** Barge-in upstream, with the heard position of the reply. */
+	function sendInterrupt(playedMs: number) {
+		if (ws && ws.readyState === WebSocket.OPEN) {
+			ws.send(JSON.stringify({ type: 'interrupt', playedMs }));
+		}
+	}
+
 	/** Stop any in-progress TTS playback. */
 	function stopPlayback() {
+		// Audio dropped here is never played: the stream ends where playback is.
+		streamPlayedMs = playedPositionMs();
+		streamQueuedMs = streamPlayedMs;
 		if (currentSource) {
 			try {
 				currentSource.stop();
@@ -485,6 +524,7 @@ function createVoiceSessionStore() {
 		if (event.data instanceof ArrayBuffer) {
 			const int16 = new Int16Array(event.data);
 			const float32 = int16ToFloat32(int16);
+			streamQueuedMs += int16.length / 24;
 			pendingAudioChunks.push(float32);
 			flushPlaybackQueue();
 			return;
@@ -517,20 +557,21 @@ function createVoiceSessionStore() {
 					}));
 					break;
 
-				case 'transcription_start':
+				case 'transcription_start': {
 					// Barge-in: the user's voice always wins. Kill local playback
 					// immediately — including tail audio still buffered after the
 					// server finished generating (status already 'listening') —
-					// and cancel upstream only mid-response (the server drops the
-					// cancel when nothing is in flight, so the race is harmless).
+					// and tell the server how much of the reply was heard, so the
+					// employee remembers saying only that. The server cancels
+					// only a response still in flight.
+					const playing = isPlayingAudio || pendingAudioChunks.length > 0;
+					const playedMs = replyPlayedMs();
 					stopPlayback();
-					if (readState().status === 'speaking') {
-						if (ws && ws.readyState === WebSocket.OPEN) {
-							ws.send(JSON.stringify({ type: 'interrupt' }));
-						}
-						update((s) => ({ ...s, status: 'listening' }));
-					}
+					const speaking = readState().status === 'speaking';
+					if (speaking || playing) sendInterrupt(playedMs);
+					if (speaking) update((s) => ({ ...s, status: 'listening' }));
 					break;
+				}
 
 				case 'transcription_text':
 					// Cumulative transcript (includes upstream corrections) —
@@ -566,6 +607,9 @@ function createVoiceSessionStore() {
 					break;
 
 				case 'playback_start':
+					// The reply's audio follows this frame: everything queued
+					// before it belongs to earlier replies.
+					replyStartMs = streamQueuedMs;
 					userEntryOpen = false;
 					update((s) => ({ ...s, status: 'speaking' }));
 					break;
@@ -764,11 +808,9 @@ function createVoiceSessionStore() {
 			const current = readState();
 			if (current.status !== 'speaking') return;
 
+			const playedMs = replyPlayedMs();
 			stopPlayback();
-
-			if (ws && ws.readyState === WebSocket.OPEN) {
-				ws.send(JSON.stringify({ type: 'interrupt' }));
-			}
+			sendInterrupt(playedMs);
 
 			update((s) => ({ ...s, status: 'listening' }));
 			log.info('Voice session interrupted');

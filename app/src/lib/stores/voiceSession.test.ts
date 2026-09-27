@@ -38,7 +38,7 @@ class FakeSocket {
 	onopen: (() => void) | null = null;
 	onerror: (() => void) | null = null;
 	onclose: ((ev: { code: number }) => void) | null = null;
-	onmessage: ((ev: { data: string }) => void) | null = null;
+	onmessage: ((ev: { data: string | ArrayBuffer }) => void) | null = null;
 
 	constructor(public url: string) {
 		FakeSocket.instances.push(this);
@@ -62,9 +62,21 @@ class FakeSocket {
 	emit(msg: Record<string, unknown>) {
 		this.onmessage?.({ data: JSON.stringify(msg) });
 	}
+	/** `ms` of the employee's 24 kHz PCM16 audio, as one binary frame. */
+	audio(ms: number) {
+		this.onmessage?.({ data: new Int16Array(ms * 24).buffer });
+	}
+	/** The JSON frames the client sent, parsed. */
+	frames(): Array<Record<string, unknown>> {
+		return this.sent.filter((s) => typeof s === 'string').map((s) => JSON.parse(s));
+	}
 }
 
 const released = vi.fn();
+
+/** The playback AudioContext's clock (seconds) and every source it played. */
+let audioClock = 0;
+let sources: Array<{ onended: (() => void) | null; stopped: boolean }> = [];
 
 async function startCall(chatId?: string) {
 	const { voiceSession } = await import('./voiceSession');
@@ -95,13 +107,29 @@ beforeEach(() => {
 	// No jitter spread in the test: 0.5 is the midpoint, so delays are exact.
 	vi.spyOn(Math, 'random').mockReturnValue(0.5);
 	vi.stubGlobal('WebSocket', FakeSocket);
+	audioClock = 0;
+	sources = [];
 	vi.stubGlobal('AudioContext', class {
 		destination = {};
+		get currentTime() {
+			return audioClock;
+		}
 		createBuffer() {
 			return { copyToChannel: () => {} };
 		}
 		createBufferSource() {
-			return { buffer: null, connect: () => {}, start: () => {}, stop: () => {}, onended: null };
+			const source = {
+				buffer: null,
+				connect: () => {},
+				start: () => {},
+				stopped: false,
+				stop() {
+					source.stopped = true;
+				},
+				onended: null as (() => void) | null
+			};
+			sources.push(source);
+			return source;
 		}
 		close() {}
 	});
@@ -291,5 +319,60 @@ describe('voiceSession reconnect', () => {
 		const dials = FakeSocket.instances.length;
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(FakeSocket.instances).toHaveLength(dials);
+	});
+});
+
+/**
+ * Barge-in tells the server how much of the reply the owner heard, so the
+ * employee's memory of the reply is cut back to exactly that.
+ */
+describe('voiceSession barge-in', () => {
+	it('sends the played position of the reply when the owner speaks over it', async () => {
+		const { voiceSession, first } = await liveCall();
+		first.emit({ type: 'playback_start' });
+		first.audio(1000);
+		audioClock = 0.4;
+		first.emit({ type: 'transcription_start' });
+
+		expect(first.frames().at(-1)).toEqual({ type: 'interrupt', playedMs: 400 });
+		expect(sources.at(-1)?.stopped).toBe(true);
+		expect(get(voiceSession).status).toBe('listening');
+	});
+
+	it('still barges in on the tail the client is playing after generation ended', async () => {
+		const { first } = await liveCall();
+		first.emit({ type: 'playback_start' });
+		first.audio(2000);
+		first.emit({ type: 'playback_end' });
+		audioClock = 1.25;
+		first.emit({ type: 'transcription_start' });
+
+		expect(first.frames().at(-1)).toEqual({ type: 'interrupt', playedMs: 1250 });
+	});
+
+	it('counts only this reply, never an earlier one or the silence between', async () => {
+		const { first } = await liveCall();
+		first.emit({ type: 'playback_start' });
+		first.audio(1000);
+		audioClock = 1.0;
+		sources.at(-1)?.onended?.();
+		first.emit({ type: 'playback_end' });
+
+		// Five quiet seconds, then the next reply.
+		audioClock = 6.0;
+		first.emit({ type: 'playback_start' });
+		first.audio(500);
+		audioClock = 6.2;
+		first.emit({ type: 'transcription_start' });
+
+		expect(first.frames().at(-1)).toEqual({ type: 'interrupt', playedMs: 200 });
+	});
+
+	it('sends nothing when nothing is playing', async () => {
+		const { first } = await liveCall();
+		const sent = first.frames().length;
+		first.emit({ type: 'transcription_start' });
+
+		expect(first.frames()).toHaveLength(sent);
 	});
 });
