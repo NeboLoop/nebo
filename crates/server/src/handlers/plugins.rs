@@ -224,7 +224,7 @@ pub async fn auth_login(
     State(state): State<AppState>,
     Path(slug): Path<String>,
     headers: HeaderMap,
-) -> HandlerResult<serde_json::Value> {
+) -> HandlerResult<AuthLoginResponse> {
     let (binary_path, auth) = state
         .plugin_store
         .get_auth_info(&slug)
@@ -250,6 +250,32 @@ pub async fn auth_login(
 /// this is the only clock on the phone's request.
 const SIGN_IN_LINK_WAIT: Duration = Duration::from_secs(20);
 
+/// What starting a login tells the caller (see [`start_login`]).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthLoginResponse {
+    /// The login is running; how it ends arrives on the socket.
+    pub started: bool,
+    /// The sign-in link, for a caller that came through the tunnel to open
+    /// on its own device. Absent for the desktop app (it opens the link from
+    /// the `plugin_auth_url` broadcast) and for a login with no browser step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_url: Option<String>,
+}
+
+/// What starting an account's login tells the caller: the same as
+/// [`AuthLoginResponse`], and whether the login got an account of its own.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthLoginAccountResponse {
+    pub started: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_url: Option<String>,
+    /// True when the plugin keeps a separate sign-in per account; false when
+    /// its one shared login ran instead.
+    pub per_account: bool,
+}
+
 /// The ONE way a login starts, whichever door asked for it.
 ///
 /// A local caller (the desktop app) gets `{started}` and opens the sign-in
@@ -269,11 +295,11 @@ async fn start_login(
     binary_path: std::path::PathBuf,
     label: String,
     profile: Option<LoginProfile>,
-) -> Result<serde_json::Value, NeboError> {
+) -> Result<AuthLoginResponse, NeboError> {
     if !crate::middleware::came_through_tunnel(headers) {
         let link = SignInLink::Broadcast(state.hub.clone());
         spawn_plugin_login(state, slug, login_command, binary_path, label, profile, link);
-        return Ok(serde_json::json!({ "started": true }));
+        return Ok(AuthLoginResponse { started: true, auth_url: None });
     }
     let (tx, rx) = oneshot::channel();
     let link = SignInLink::Reply(Mutex::new(Some(tx)));
@@ -288,10 +314,10 @@ async fn start_login(
 /// caller can act on, not a spinner.
 fn sign_in_link_reply(
     link: Result<Result<String, oneshot::error::RecvError>, tokio::time::error::Elapsed>,
-) -> Result<serde_json::Value, NeboError> {
+) -> Result<AuthLoginResponse, NeboError> {
     match link {
-        Ok(Ok(url)) => Ok(serde_json::json!({ "started": true, "authUrl": url })),
-        Ok(Err(_dropped)) => Ok(serde_json::json!({ "started": true })),
+        Ok(Ok(url)) => Ok(AuthLoginResponse { started: true, auth_url: Some(url) }),
+        Ok(Err(_dropped)) => Ok(AuthLoginResponse { started: true, auth_url: None }),
         Err(_elapsed) => Err(NeboError::Internal(
             "The sign-in link didn't arrive in time. Try again.".to_string(),
         )),
@@ -351,7 +377,7 @@ pub async fn auth_login_account(
     Path(slug): Path<String>,
     headers: HeaderMap,
     Json(req): Json<AccountLoginRequest>,
-) -> HandlerResult<serde_json::Value> {
+) -> HandlerResult<AuthLoginAccountResponse> {
     let (binary_path, auth) = state
         .plugin_store
         .get_auth_info(&slug)
@@ -373,7 +399,7 @@ pub async fn auth_login_account(
         tracing::info!(slug, "single-account plugin: running its shared login for the account card");
     }
     let per_account = profile.is_some();
-    let mut reply = start_login(
+    let reply = start_login(
         state,
         &headers,
         slug,
@@ -384,8 +410,11 @@ pub async fn auth_login_account(
     )
     .await
     .map_err(to_error_response)?;
-    reply["perAccount"] = serde_json::json!(per_account);
-    Ok(Json(reply))
+    Ok(Json(AuthLoginAccountResponse {
+        started: reply.started,
+        auth_url: reply.auth_url,
+        per_account,
+    }))
 }
 
 /// The per-account context for a login, or `None` when the plugin keeps one
@@ -2202,13 +2231,13 @@ mod tests {
     async fn the_remote_reply_carries_the_link_or_says_what_happened() {
         let (tx, rx) = oneshot::channel();
         tx.send("https://login.example.com/oauth2?client_id=abc".to_string()).unwrap();
-        let reply = sign_in_link_reply(tokio::time::timeout(Duration::from_secs(1), rx).await).unwrap();
+        let reply = serde_json::to_value(sign_in_link_reply(tokio::time::timeout(Duration::from_secs(1), rx).await).unwrap()).unwrap();
         assert_eq!(reply["started"], true);
         assert_eq!(reply["authUrl"], "https://login.example.com/oauth2?client_id=abc");
 
         let (tx, rx) = oneshot::channel::<String>();
         drop(tx);
-        let reply = sign_in_link_reply(tokio::time::timeout(Duration::from_secs(1), rx).await).unwrap();
+        let reply = serde_json::to_value(sign_in_link_reply(tokio::time::timeout(Duration::from_secs(1), rx).await).unwrap()).unwrap();
         assert_eq!(reply["started"], true);
         assert!(reply.get("authUrl").is_none(), "no link is not a link");
 
