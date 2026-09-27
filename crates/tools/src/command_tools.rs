@@ -73,9 +73,8 @@ impl DynTool for RunCommandTool {
         format!(
             "Runs a shell command and returns its output.\n\
          - Prefer absolute paths; shell state doesn't carry between calls.\n\
-         - Use read_file, edit_file and write_file instead of cat, head, tail, sed, awk or echo.\n\
+         - Use read_file, edit_file and write_file, not cat, sed, awk or echo.\n\
          {SEARCH_NOTE}\n\
-         - The owner sees `description`, not the command.\n\
          - Long jobs: set `background: true` and continue; you're notified when they end."
         )
     }
@@ -86,10 +85,10 @@ impl DynTool for RunCommandTool {
             "properties": {
                 "command": { "type": "string", "description": "The command to run." },
                 "description": { "type": "string", "description": "What this command does, in plain words the owner will read (5–10 words). Don't repeat the command." },
-                "timeout": { "type": "integer", "description": "Milliseconds to wait before it moves to the background (default 120000, max 600000)." },
-                "background": { "type": "boolean", "description": "Run detached; you're told when it ends. Read output with read_output." },
+                "timeout": { "type": "integer", "description": "Ms before it moves to the background (default 120000, max 600000)." },
+                "background": { "type": "boolean", "description": "Run detached; read output with read_output." },
                 "pty": { "type": "boolean", "description": "Run in a terminal; type into it with send_input." },
-                "cwd": { "type": "string", "description": "Folder to run in. Default: the conversation's working folder." }
+                "cwd": { "type": "string", "description": "Folder to run in (default: the conversation's folder)." }
             },
             "required": ["command", "description"]
         })

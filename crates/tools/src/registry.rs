@@ -2561,8 +2561,10 @@ pub(crate) mod tests {
     /// update_employee 6,616 chars; convert_file, hire_employee and
     /// install_workflow loads came from the fixtures that ask for them).
     /// Each package that lands lowers the numbers; they never rise without
-    /// an owner decision.
-    const CORE_DEFINITION_CHARS_BUDGET: usize = 16_210;
+    /// an owner decision. 2026-09-27: run_command's `pty` line (#374) had
+    /// raised it +90; run_command's own wording was trimmed instead and the
+    /// 90 given back: 16,120.
+    const CORE_DEFINITION_CHARS_BUDGET: usize = 16_120;
 
     #[tokio::test]
     async fn the_always_loaded_set_stays_within_its_budget() {
