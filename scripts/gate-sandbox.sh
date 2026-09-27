@@ -66,6 +66,12 @@ if [ -n "$server" ]; then
     done
   fi
   args+=(--ro-bind "$GATE_JOB/bin" "$GATE_JOB/bin" --bind "$GATE_JOB/nebo-home" "$GATE_JOB/nebo-home" --bind "$GATE_JOB/work" "$GATE_JOB/work")
+  # The browser the job linked into bin lives in the runner's tool cache,
+  # under the real home this view covers: bind its directory back, read-only.
+  if [ -L "$GATE_JOB/bin/chromium" ]; then
+    browser="$(dirname "$(readlink -f "$GATE_JOB/bin/chromium")")"
+    args+=(--ro-bind "$browser" "$browser")
+  fi
   if [ -n "${CARGO_TARGET_DIR:-}" ] && [ -d "$CARGO_TARGET_DIR" ]; then
     args+=(--bind "$CARGO_TARGET_DIR" "$CARGO_TARGET_DIR")
   fi

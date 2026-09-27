@@ -214,7 +214,17 @@ jobs:
             protobuf-compiler \
             libopenblas-dev \
             python3-yaml \
-            bubblewrap
+            bubblewrap \
+            unzip \
+            libnss3 \
+            libgbm1 \
+            libasound2t64 \
+            libcups2t64 \
+            libatk-bridge2.0-0t64 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxrandr2 \
+            libxkbcommon0
 
       - name: Configure OpenBLAS paths
         run: |
@@ -277,6 +287,33 @@ jobs:
           triple="$(rustc -vV | sed -n 's/^host: //p')"
           cp "src-tauri/binaries/rg-$triple" "$GATE_JOB/bin/rg"
           "$GATE_JOB/bin/rg" --version | head -1
+
+      # A browser, as a cloud bot has one: the cloud image installs Chromium
+      # (Dockerfile) and the browser tools drive it headless over CDP; the
+      # server finds it as `chromium` on its PATH (nebo_browser::Manager,
+      # chrome::find_chrome). The gate had none, so every browser_* call
+      # answered "isn't available on this cloud bot" and a click-and-read
+      # fixture could only guess (36348199618, web-browser-interaction 0/3).
+      # Ubuntu's apt Chromium is a snap, so this is Playwright's build of
+      # Chromium at a pinned revision, arm64 like this job's runner, kept in
+      # the runner's tool cache between jobs and linked into the server's
+      # bin; gate-sandbox.sh shows the server the directory it resolves to.
+      - name: A browser for the server, as a cloud bot has
+        env:
+          CHROMIUM_REVISION: "1243"
+        run: |
+          dir="${{ runner.tool_cache }}/chromium/$CHROMIUM_REVISION"
+          if [ ! -x "$dir/chrome-linux-arm64/chrome" ]; then
+            tmp="$(mktemp -d)"
+            curl -sSfL -o "$tmp/chromium.zip" "https://cdn.playwright.dev/builds/chromium/$CHROMIUM_REVISION/chromium-linux-arm64.zip"
+            unzip -q "$tmp/chromium.zip" -d "$tmp/unpacked"
+            rm -rf "$dir"
+            mkdir -p "$(dirname "$dir")"
+            mv "$tmp/unpacked" "$dir"
+            rm -rf "$tmp"
+          fi
+          ln -sfn "$dir/chrome-linux-arm64/chrome" "$GATE_JOB/bin/chromium"
+          "$GATE_JOB/bin/chromium" --version
 
       # A fresh NEBO_HOME, the arm's CI bot, Janus confirmed as the provider:
       # scripts/gate-server.sh says how and why.
