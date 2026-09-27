@@ -1,0 +1,9 @@
+id: mp03-an-isolated-employees-facts-from-the-owners-chat-outlive-the-chat
+name: "MP03 — An isolated employee's facts from the owner's chat outlive the chat"
+description: |
+  The conversation-scoping bug of 2026-09-27: the primary employee had memory isolation on, and
+  every durable fact it learned in the owner's chat was filed under that one chat. An owner chat is
+  not a matter; the fact lands in the employee's private scope and the next chat recalls it.
+target_component: memory
+proof: staffed_proof::memory::an_isolated_employees_facts_from_the_owners_chat_outlive_the_chat
+conversation: []

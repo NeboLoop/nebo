@@ -2012,12 +2012,12 @@
 	},
 	"agentIsolation": {
 		"title": "Pengasingan ingatan",
-		"shared": "Ingatan dikongsi",
+		"shared": "Satu memori",
 		"sharedHint": "Satu ingatan merentas semua perbualan — apa yang pekerja ini pelajari di mana-mana, ia tahu di mana-mana",
 		"isolated": "Diasingkan mengikut perbualan",
-		"isolatedHint": "Setiap perbualan menyimpan ingatannya sendiri yang tertutup — satu kes, klien atau perkara tidak pernah bocor ke yang lain",
+		"isolatedHint": "Perbualan anda disenaraikan secara berasingan dan berkongsi memori peribadi pekerja ini. Setiap perbualan dengan orang lain — pemanggil, pelawat, bot lain — menyimpan memori termeterainya sendiri, supaya tiada yang bocor ke perbualan lain",
 		"confirmOffTitle": "Matikan pengasingan ingatan?",
-		"confirmOffBody": "Perbualan terasing anda kekal disimpan, tetapi tidak lagi muncul sebagai senarai perkara — pekerja ini kembali kepada satu perbualan berterusan. Apa yang dipelajari dalam setiap perbualan tertutup kekal tertutup: sembang seterusnya tidak akan menggunakannya. Tiada apa-apa dipadam, dan menghidupkan semula pengasingan akan memulihkan senarai itu berserta ingatan setiap perbualan.",
+		"confirmOffBody": "Perbualan berasingan anda kekal disimpan, tetapi tidak lagi dipaparkan sebagai senarai — pekerja ini kembali kepada satu perbualan berterusan. Apa yang dipelajari dalam perbualan dengan orang lain kekal termeterai: sembang akan datang tidak akan menggunakannya. Tiada apa yang dipadam, dan menghidupkan semula pengasingan memulihkan senarai.",
 		"confirmOffAction": "Matikan pengasingan",
 		"lockedByPhone": "Diasingkan selagi talian telefon dipasang — setiap pemanggil mendapat ingatan tertutup. Tanggalkan talian di neboai.com/manage/phone untuk mengubahnya."
 	},

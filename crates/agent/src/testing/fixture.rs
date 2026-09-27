@@ -76,6 +76,14 @@ fn is_first_turn(turn: &usize) -> bool {
 pub struct ConversationTurn {
     pub role: String,
     pub content: String,
+    /// The employee (id or name) this turn is sent to, in a NEW conversation
+    /// with that employee; the turns after it continue that conversation.
+    /// None: the conversation the fixture's `agent` started goes on. The way
+    /// to prove what outlives one conversation or crosses to another
+    /// employee: one employee saves, a different one (or the same one in a
+    /// new chat) is asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -210,6 +218,17 @@ pub struct Check {
     /// a secret's field name, another run's marker.
     #[serde(default, deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
     pub no_result_contains: Vec<String>,
+    /// The result of a call the selector picks must contain this
+    /// (case-insensitive): what a tool actually answered, e.g. that a recall
+    /// found a fact another employee saved. Needs a call selector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_contains: Option<String>,
+    /// No call the selector picks may return a result containing any of
+    /// these (case-insensitive): `no_result_contains` narrowed to the named
+    /// tool, so a fact one call rightly echoes can be pinned out of another
+    /// tool's answers. Needs a call selector.
+    #[serde(default, deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
+    pub result_not_contains: Vec<String>,
     /// Regex that must match the run's reply text: every owner turn's
     /// streamed reply joined, with the harness's card notes. The way to pin
     /// what was said: a question asked, a fact reported.

@@ -1,0 +1,8 @@
+id: mp05-with-no-global-store-nothing-names-global-memory
+name: "MP05 — With no global store, nothing names global memory"
+description: |
+  A Nebo not enrolled in any global store: the memory tools, their results and the prompt never
+  name global memory, and saving and recalling still work.
+target_component: memory
+proof: staffed_proof::memory::with_no_global_store_nothing_names_global_memory
+conversation: []

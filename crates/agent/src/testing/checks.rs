@@ -164,6 +164,26 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
         evidence.push(format!("reply never matches /{}/", pattern));
     }
 
+    // Selector-scoped negatives: no picked call may return any of these.
+    if !check.result_not_contains.is_empty() {
+        let ordinal = if check.first_call { Some(1) } else { check.call };
+        let picked: Vec<&TracedToolCall> = match ordinal {
+            Some(n) => trace.tool_calls.get(n - 1).into_iter().collect(),
+            None => trace
+                .tool_calls
+                .iter()
+                .filter(|c| views(c).iter().any(|(tool, _)| check.tool.iter().any(|t| t == tool)))
+                .collect(),
+        };
+        for c in &picked {
+            let lower = c.response.content.to_lowercase();
+            if let Some(needle) = check.result_not_contains.iter().find(|n| lower.contains(&n.to_lowercase())) {
+                return Ok((false, format!("call #{} ({}) returned '{}'", c.sequence, c.tool, needle)));
+            }
+        }
+        evidence.push(format!("no picked call's result contains {:?}", check.result_not_contains));
+    }
+
     // Call-level criteria.
     let ordinal = if check.first_call { Some(1) } else { check.call };
     if let Some(n) = ordinal {
@@ -225,6 +245,15 @@ fn check_one_call(
     check: &Check,
     call: &TracedToolCall,
 ) -> Result<Result<String, String>, String> {
+    if let Some(needle) = &check.result_contains
+        && !call.response.content.to_lowercase().contains(&needle.to_lowercase())
+    {
+        return Ok(Err(format!(
+            "result does not contain '{}': {}",
+            needle,
+            call.response.content.lines().next().unwrap_or("").chars().take(160).collect::<String>()
+        )));
+    }
     let mut why_named = None;
     let mut why_as_made = None;
     for (i, (tool, args)) in views(call).iter().enumerate() {
@@ -328,6 +357,9 @@ fn validate(check: &Check) -> Result<(), String> {
     }
     if has_arg_predicate && !has_call_selector {
         return Err("arg predicates need a call selector (call, first_call, or tool)".into());
+    }
+    if (check.result_contains.is_some() || !check.result_not_contains.is_empty()) && !has_call_selector {
+        return Err("result_contains/result_not_contains need a call selector (call, first_call, or tool)".into());
     }
     if let Some(0) = check.call {
         return Err("call is 1-based; 0 is invalid".into());
@@ -467,6 +499,29 @@ prompt_assertions:
         let (passed, why) = evaluate(&c, &bad).unwrap();
         assert!(!passed);
         assert!(why.contains("old_string"), "evidence names the arg: {}", why);
+    }
+
+    /// A tool's own answer decides `result_contains` (some picked call) and
+    /// `result_not_contains` (no picked call); another tool's answer never
+    /// counts for either.
+    #[test]
+    fn result_predicates_read_the_picked_tools_answers() {
+        let mut t = trace_with(
+            vec![("remember", serde_json::json!({"scope": "private"})), ("recall", serde_json::json!({"query": "x"}))],
+            0,
+        );
+        t.tool_calls[0].response.content = "Saved to your private memory (only you can see it): [tacit] k = ORCHID-1".into();
+        t.tool_calls[1].response.content = "No memories found matching: x".into();
+
+        assert!(evaluate(&check(r#"{ tool: remember, result_contains: "saved to your private memory" }"#), &t).unwrap().0);
+        let (p, why) = evaluate(&check(r#"{ tool: recall, result_contains: "ORCHID-1" }"#), &t).unwrap();
+        assert!(!p && why.contains("does not contain"), "the recall never returned it: {why}");
+
+        assert!(evaluate(&check(r#"{ tool: recall, result_not_contains: "ORCHID-1" }"#), &t).unwrap().0, "the save's echo is not the recall's answer");
+        let (p, why) = evaluate(&check(r#"{ tool: remember, result_not_contains: ["orchid-1"] }"#), &t).unwrap();
+        assert!(!p && why.contains("call #1"), "{why}");
+
+        assert!(evaluate(&check(r#"{ result_contains: "x" }"#), &t).is_err(), "a result predicate needs a call selector");
     }
 
     fn trace_with_errors(errors: Vec<&str>) -> Trace {

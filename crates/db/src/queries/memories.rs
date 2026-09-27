@@ -102,23 +102,6 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    pub fn get_memory_by_key(
-        &self,
-        namespace: &str,
-        key: &str,
-    ) -> Result<Option<Memory>, NeboError> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
-                    accessed_at, access_count, user_id
-             FROM memories WHERE namespace = ?1 AND key = ?2",
-            params![namespace, key],
-            row_to_memory,
-        )
-        .optional()
-        .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
     pub fn get_memory_by_key_and_user(
         &self,
         namespace: &str,
@@ -295,15 +278,14 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    /// Find a memory by key alone (no namespace/user_id filter).
-    /// Used as a last-resort fallback when scoped lookups fail.
-    pub fn find_memory_by_key(&self, key: &str) -> Result<Option<Memory>, NeboError> {
+    /// The memory stored under `key` in any namespace of ONE scope.
+    pub fn find_memory_by_key(&self, key: &str, user_id: &str) -> Result<Option<Memory>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
                     accessed_at, access_count, user_id
-             FROM memories WHERE key = ?1 LIMIT 1",
-            params![key],
+             FROM memories WHERE key = ?1 AND user_id = ?2 LIMIT 1",
+            params![key, user_id],
             row_to_memory,
         )
         .optional()

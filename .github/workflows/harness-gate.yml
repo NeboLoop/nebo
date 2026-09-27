@@ -313,6 +313,20 @@ jobs:
           P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
         run: scripts/gate-run.sh suites/error-correction.yaml 1 "$GATE_JOB/traces/correction" scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --no-judge --model "$GATE_MODEL"
 
+      # Local memory shared across employees, private memory kept, nothing
+      # filed under one conversation, and no global memory on a Nebo that
+      # has no global store (this server has none: gate-server.sh).
+      - name: Memory suite, program checks
+        if: github.event_name != 'schedule' && !inputs.suites
+        env:
+          A_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
+          A_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          A_BOOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOOT_TOKEN }}
+          P_BOT_ID: ${{ secrets.HARNESS_P_NEBO_BOT_ID }}
+          P_BOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOT_TOKEN }}
+          P_BOOT_TOKEN: ${{ secrets.HARNESS_P_NEBO_BOOT_TOKEN }}
+        run: scripts/gate-run.sh suites/memory.yaml 1 "$GATE_JOB/traces/memory" scripts/gate-sandbox.sh "$GATE_JOB/bin/nebo-runner" test run --no-judge --model "$GATE_MODEL"
+
       # The VM has no node. Anthropic's native installer puts a standalone
       # `claude` in ~/.local/bin; it persists on the runner, so this is a
       # no-op after the first nightly.

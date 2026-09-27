@@ -239,8 +239,9 @@ pub async fn execute_workflow(
     // server layer owns the scope derivation — see agent::memory). A bare
     // user_id made every workflow run read/write the global unowned "" scope
     // shared across all agents (isolation audit 2026-08-22, leak class 1).
-    // For context-isolated agents a workflow run has no matter, so callers
-    // pass writes_disabled=true — fail closed, reads still serve the scope.
+    // A workflow run is the owner's own automation, so it files into the
+    // employee's private memory (`resolve_memory_scope` with the Workflow
+    // origin); writes_disabled only when that derivation refuses them.
     memory_user_id: &str,
     memory_writes_disabled: bool,
     inputs: serde_json::Value,

@@ -4934,16 +4934,17 @@ mod tests {
         }
     }
 
-    /// The ethical wall: an isolated employee's run with no matter can't
-    /// reach company Memory. The tool is never listed or declared, find_tools
-    /// doesn't find it, and a call by its name is refused at the check.
+    /// The ethical wall: an isolated employee's run for someone other than
+    /// the owner, with no matter, can't reach global memory. The tool is
+    /// never listed or declared, find_tools doesn't find it, and a call by
+    /// its name is refused at the check.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_sealed_seat_cannot_reach_company_memory_by_name() {
         const KB: &str = "mcp__nebo_kb__memory_search";
         let model = Scripted::new(vec![
             Step::Call("find_tools", serde_json::json!({"query": format!("select:{KB}")})),
             Step::Call(KB, serde_json::json!({"query": "settlement"})),
-            Step::Say("I can't see company memory here."),
+            Step::Say("I can't see global memory here."),
         ]);
         let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let h = harness(&model).await;
@@ -4956,10 +4957,11 @@ mod tests {
             serde_json::from_value(serde_json::json!({"memory": {"context_isolated": true}})).unwrap();
         h.agent_registry.write().await.insert("iso".into(), employee("iso", "Iso", "Discreet.", Some(isolated)));
 
-        // A helper of the isolated employee whose parent's scope carried no
-        // matter: sealed.
+        // A helper of the isolated employee, serving another bot, whose
+        // parent's scope carried no matter: sealed.
         let key = "subagent:agent:iso:web:h-1";
         let mut req = seat_of(owner("Find the settlement figure"), "iso", key);
+        req.seat.origin = tools::Origin::Comm;
         req.mode = TurnMode::Helper {
             parent_session_key: "agent:iso:web".into(),
             kind: crate::harness::delegation::HelperKind::General,

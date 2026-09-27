@@ -2012,12 +2012,12 @@
 	},
 	"agentIsolation": {
 		"title": "Tách biệt bộ nhớ",
-		"shared": "Bộ nhớ dùng chung",
+		"shared": "Một bộ nhớ",
 		"sharedHint": "Một bộ nhớ cho mọi cuộc trò chuyện — nhân viên này học ở đâu thì biết ở mọi nơi",
 		"isolated": "Tách riêng theo cuộc trò chuyện",
-		"isolatedHint": "Mỗi cuộc trò chuyện giữ bộ nhớ khép kín của riêng nó — một vụ việc, một khách hàng hay một hồ sơ không bao giờ lọt sang cái khác",
+		"isolatedHint": "Các cuộc trò chuyện của bạn được liệt kê riêng và dùng chung bộ nhớ riêng của nhân viên này. Mỗi cuộc trò chuyện với người khác — người gọi, khách truy cập, bot khác — giữ bộ nhớ niêm phong của riêng nó, để không gì lẫn sang cuộc khác",
 		"confirmOffTitle": "Tắt tách biệt bộ nhớ?",
-		"confirmOffBody": "Các cuộc trò chuyện tách riêng vẫn được lưu, nhưng không còn hiện thành danh sách vụ việc — nhân viên này quay về một cuộc trò chuyện liên tục. Những gì học được bên trong từng cuộc trò chuyện khép kín vẫn khép kín: các lần trò chuyện sau sẽ không dùng đến. Không có gì bị xóa, và bật lại tách biệt sẽ khôi phục danh sách cùng bộ nhớ của từng cuộc trò chuyện.",
+		"confirmOffBody": "Các cuộc trò chuyện riêng của bạn vẫn được lưu, nhưng sẽ không còn hiện thành danh sách — nhân viên này quay lại một cuộc trò chuyện liền mạch. Những gì học được trong cuộc trò chuyện với người khác vẫn được niêm phong: các cuộc trò chuyện sau sẽ không dùng đến. Không có gì bị xóa, và bật lại chế độ cách ly sẽ khôi phục danh sách.",
 		"confirmOffAction": "Tắt tách biệt",
 		"lockedByPhone": "Tách riêng chừng nào còn gắn đường dây điện thoại — mỗi người gọi có một bộ nhớ khép kín. Gỡ đường dây tại neboai.com/manage/phone để đổi điều này."
 	},

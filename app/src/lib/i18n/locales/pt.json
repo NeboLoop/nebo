@@ -2012,12 +2012,12 @@
 	},
 	"agentIsolation": {
 		"title": "Separação da memória",
-		"shared": "Memória partilhada",
+		"shared": "Uma só memória",
 		"sharedHint": "Uma só memória para todas as conversas — o que este funcionário aprende num sítio sabe-o em todos",
 		"isolated": "Separada por conversa",
-		"isolatedHint": "Cada conversa guarda a sua memória selada — um processo, um cliente ou um caso nunca transborda para outro",
+		"isolatedHint": "As suas conversas aparecem em separado e partilham a memória privada deste colaborador. Cada conversa com outra pessoa — quem liga, um visitante, outro bot — mantém a sua própria memória selada, para que nenhuma passe para outra",
 		"confirmOffTitle": "Desligar a separação da memória?",
-		"confirmOffBody": "As conversas separadas continuam guardadas, mas deixam de aparecer como uma lista de processos — este funcionário volta a uma só conversa contínua. O que foi aprendido em cada conversa selada continua selado: as conversas seguintes não vão lá buscar nada. Nada é apagado, e voltar a ligar a separação repõe a lista e a memória própria de cada conversa.",
+		"confirmOffBody": "As suas conversas separadas continuam guardadas, mas deixam de aparecer como lista — este colaborador volta a uma conversa contínua. O que foi aprendido numa conversa com outra pessoa continua selado: as conversas futuras não o usarão. Nada é apagado, e voltar a ativar o isolamento restaura a lista.",
 		"confirmOffAction": "Desligar a separação",
 		"lockedByPhone": "Separada enquanto houver uma linha telefónica ligada — cada pessoa que liga fica com uma memória selada. Retire a linha em neboai.com/manage/phone para mudar isto."
 	},

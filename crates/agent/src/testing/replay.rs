@@ -45,6 +45,7 @@ pub fn fixture_from_run(
         .map(|m| ConversationTurn {
             role: "user".to_string(),
             content: m.content.clone(),
+            agent: None,
         })
         .collect();
     let first_prompt = conversation

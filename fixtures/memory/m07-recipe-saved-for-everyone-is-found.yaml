@@ -1,0 +1,74 @@
+id: memory-recipe-replay
+name: 'Memory: replay of the recipe exchange — saved to "company memory", found by another employee'
+description: |
+  A replay of the thread that exposed the bug (2026-09-27), with a neutral recipe. The owner gives
+  the primary employee (isolation on, as it was) a recipe and asks it to save it to company memory,
+  the owner's words for local memory. Then a different employee, in a new conversation, is asked to
+  pull the recipe up and must find it, without saving a copy of its own and without blaming anyone.
+target_component: memory
+agent: assistant-{{tag}}
+setup:
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"assistant-{{tag}}"}'' > /dev/null'
+- 'python3 -c "import json,urllib.request as u; s=''http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'';
+  ags=json.load(u.urlopen(s+''/agents''))[''agents'']; i=[a[''id''] for a in ags if a.get(''name'')==''assistant-{{tag}}''][0];
+  u.urlopen(u.Request(s+''/agents/''+i, data=json.dumps({''contextIsolated'': True}).encode(), headers={''Content-Type'':
+  ''application/json''}, method=''PUT''))"'
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"chief-of-staff-{{tag}}"}'' > /dev/null'
+teardown:
+- python3 -c "import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1';
+  ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','')=='assistant-{{tag}}'
+  or a.get('name','')=='chief-of-staff-{{tag}}']; [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE'))
+  for i in ids]"
+conversation:
+- role: user
+  content: 'Here''s a recipe I like. Chicken tenderloin bites, air fryer: cut 2 lb of chicken tenderloins
+    into 1-inch cubes, toss with olive oil, garlic powder, smoked paprika, salt and pepper, rest 10 minutes,
+    then air fry at 380F for 8 to 10 minutes, shaking halfway, until 165F inside. Finish with a squeeze
+    of lemon. Can you also save it to company memory?'
+- role: user
+  agent: chief-of-staff-{{tag}}
+  content: Pull up the chicken tenderloin bites recipe.
+tool_config:
+  remember:
+    enabled: true
+  recall:
+    enabled: true
+prompt_assertions:
+  first_call:
+  - id: company-memory-is-local
+    text: '"Company memory" is saved with remember, scope local, and the store says local memory'
+    severity: critical
+    check:
+      tool: remember
+      arg: scope
+      equals: local
+      result_contains: Saved to local memory
+  recovery:
+  - id: other-employee-finds-it
+    text: The second employee's recall returns the recipe (380F)
+    severity: critical
+    check:
+      tool: recall
+      result_contains: '380'
+  - id: answers-with-the-recipe
+    text: 'The second employee''s reply (turn two) gives the recipe it recalled: 380F and 8 to 10 minutes,
+      without saving a copy of its own'
+    severity: important
+  - id: no-blame
+    text: If anything could not be found, the reply says so plainly. It never claims a memory was saved
+      somewhere other employees can see unless a tool result said 'Saved to local memory', and it never
+      blames another employee, a namespace (tacit, project, entity) or another employee's search for a
+      miss.
+    severity: important
+  cost:
+  - id: bounded
+    text: At most 5 tool calls across both conversations
+    severity: important
+    check:
+      max_tool_calls: 5
+ideal_behavior:
+  tool_calls: 2
+  narrative: 'remember(scope: "local") → "Saved to local memory." Then the other employee: recall(query:
+    "chicken tenderloin bites") → the recipe.'

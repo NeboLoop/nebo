@@ -6054,7 +6054,7 @@ fn build_embed_context(
             Some(record) => out.push_str(&format!(
                 " This conversation is with a prospective buyer standing at \"{}\" — they \
                  scanned its code. You are the seller's representative for this exact item. \
-                 Here is its record from Company Memory, complete and current: {}. Answer \
+                 Here is its record, complete and current: {}. Answer \
                  from it directly and confidently, as someone who knows this item well — no \
                  narration of what you are doing, no lookups, no web searches, no market \
                  estimates or figures from anywhere else, no remarks about records or stock \

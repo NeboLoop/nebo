@@ -847,8 +847,10 @@ pub(crate) async fn ensure_agent_active(state: &AppState, agent_id: &str) -> Res
 /// The matter (isolation context) of an ORIGINATING thread, for stamping onto a
 /// message routed out of it (the user @mention fork; coworker sends carry it on
 /// the envelope from the sender's resolved scope instead). Matters only exist
-/// under `context_isolated`; the precedence (explicit key segment, then active
-/// chat) matches the runner's canonical `resolve_memory_scope` inputs.
+/// under `context_isolated`; the precedence is explicit key segment, then
+/// active chat. It keys the forked conversation; the forked run's memory
+/// follows its own origin (`resolve_memory_scope`), so an owner's mention
+/// files into the mentioned employee's private memory.
 pub(crate) fn origin_matter_context(
     state: &AppState,
     origin_agent_id: &str,
