@@ -1926,7 +1926,7 @@
         </span>
         <div class="flex items-center gap-2 shrink-0">
           {#if isOutOfBalance}
-            <button type="button" class="btn btn-primary btn-xs" onclick={openWebBilling}>{$t('chat.topUp')}</button>
+            <button type="button" class="btn btn-primary btn-xs" onclick={openWebBilling}>{$t('chat.choosePlan')}</button>
           {/if}
           <button class="btn btn-ghost btn-xs" onclick={() => ondismisserror?.()}>x</button>
         </div>
