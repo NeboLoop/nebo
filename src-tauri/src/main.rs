@@ -550,6 +550,12 @@ fn main() {
                 let req = if let Some(connection) = request.headers().get("x-nebo-connection-id").and_then(|v| v.to_str().ok()) {
                     req.set("X-Nebo-Connection-Id", connection)
                 } else { req };
+                // The desktop shell is the owner's own client: its proxy
+                // proves itself to the local API with the install key.
+                let req = match config::read_install_key() {
+                    Some(key) => req.set("Authorization", &format!("Bearer {key}")),
+                    None => req,
+                };
                 let result = if matches!(method, "POST" | "PUT" | "PATCH") && !req_body.is_empty() {
                     req.set("Content-Type", &content_type_in)
                         .send_bytes(&req_body)
@@ -626,10 +632,14 @@ fn main() {
                 .map(|s| (s.width, s.height))
                 .unwrap_or((1280.0, 860.0));
 
+            // The window opens through a one-use sign-in ticket minted in
+            // this process (the server runs here too): the local API answers
+            // only a browser holding the session it gives (`local_access`).
+            let signed_in = format!("{}{}", frontend_url(), server::local_access::sign_in_path());
             let window = WebviewWindowBuilder::new(
                 app,
                 "main",
-                WebviewUrl::External(frontend_url().parse().unwrap()),
+                WebviewUrl::External(signed_in.parse().unwrap()),
             )
             .title("Nebo")
             .inner_size(w, h)
@@ -837,10 +847,14 @@ fn main() {
                     // Fire-and-forget POST to the local backend — raw TCP to avoid extra deps.
                     std::thread::spawn(|| {
                         use std::io::Write;
+                        let Some(key) = config::read_install_key() else { return };
                         if let Ok(mut stream) = std::net::TcpStream::connect("127.0.0.1:27895") {
                             let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
                             let _ = stream.write_all(
-                                b"POST /api/v1/neboai/reconnect HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+                                format!(
+                                    "POST /api/v1/neboai/reconnect HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {key}\r\nContent-Length: 0\r\n\r\n"
+                                )
+                                .as_bytes(),
                             );
                         }
                     });

@@ -31,6 +31,8 @@ enum Commands {
     Serve,
     /// Start the agent only
     Agent,
+    /// Sign a browser in to this computer's Nebo: prints (and opens) a one-use link
+    Open,
     /// Interactive chat mode
     Chat {
         /// Enable interactive mode
@@ -536,6 +538,9 @@ async fn run() -> anyhow::Result<()> {
         Some(Commands::Relay) => {
             browser::extension_relay::run(config::read_extension_secret()).await?;
         }
+        Some(Commands::Open) => {
+            run_open(&cfg).await?;
+        }
         Some(Commands::Capabilities) => {
             println!("Nebo v{VERSION} — Platform Capabilities");
             println!();
@@ -565,7 +570,7 @@ async fn run() -> anyhow::Result<()> {
                 exclude_tools,
             } => {
                 let server_url = format!("http://{}:{}", cfg.host, cfg.port);
-                let bridge = mcp_serve::McpStdioBridge::new(server_url, tools, exclude_tools);
+                let bridge = mcp_serve::McpStdioBridge::new(server_url, install_key()?, tools, exclude_tools);
                 bridge.run().await?;
             }
         },
@@ -660,6 +665,45 @@ fn run_doctor(cfg: &config::Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The install key this computer's Nebo made (`config::read_install_key`):
+/// how the CLI, as the owner's own client, proves itself to the local API.
+fn install_key() -> anyhow::Result<String> {
+    config::read_install_key().ok_or_else(|| {
+        anyhow::anyhow!("no install key: start Nebo once (it makes one in its folder), or set NEBO_MCP_API_KEY")
+    })
+}
+
+/// `nebo open`: a one-use sign-in link for a browser on this computer, from
+/// the running server (asked with the install key), printed and opened. The
+/// session it gives belongs to `localhost`, so it covers the Vite dev
+/// server too.
+async fn run_open(cfg: &config::Config) -> anyhow::Result<()> {
+    let base = format!("http://localhost:{}", cfg.port);
+    let reply: serde_json::Value = tls::http_client()
+        .build()?
+        .post(format!("{base}/api/v1/local-session/ticket"))
+        .bearer_auth(install_key()?)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("cannot reach nebo server at {base} ({e}) — is Nebo running?"))?
+        .error_for_status()?
+        .json()
+        .await?;
+    let path = reply["path"].as_str().ok_or_else(|| anyhow::anyhow!("the server sent no sign-in link"))?;
+    let link = format!("{base}{path}");
+    println!("Open this link in a browser on this computer (it works once, for two minutes):\n{link}");
+    #[cfg(target_os = "macos")]
+    let opener = std::process::Command::new("open").arg(&link).status();
+    #[cfg(target_os = "windows")]
+    let opener = std::process::Command::new("explorer").arg(&link).status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let opener = std::process::Command::new("xdg-open").arg(&link).status();
+    if opener.is_err() {
+        println!("(No browser could be opened from here; copy the link.)");
+    }
+    Ok(())
+}
+
 async fn run_chat(
     cfg: &config::Config,
     interactive: bool,
@@ -671,7 +715,11 @@ async fn run_chat(
     // implementation called the provider directly with zero tools and no
     // system prompt, a competing pathway on which tool use was impossible.
     let url = format!("ws://{}:{}/ws", cfg.host, cfg.port);
-    let (ws, _) = tls::connect_ws(&url).await.map_err(|e| {
+    let mut request = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(url.as_str())?;
+    request
+        .headers_mut()
+        .insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", install_key()?).parse()?);
+    let (ws, _) = tls::connect_ws(request).await.map_err(|e| {
         anyhow::anyhow!("cannot reach nebo server at {url} ({e}) — is `nebo serve` running?")
     })?;
     use futures::{SinkExt, StreamExt};
@@ -956,7 +1004,7 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
                 println!("Running fixture: {} ({}x)", fix.id, runs);
 
                 let run_numbers = first_run..=first_run + runs - 1;
-                let mut traces = match scratch::run_bound(fix, &server, model.as_deref(), run_numbers).await {
+                let mut traces = match scratch::run_bound(fix, &server, &install_key()?, model.as_deref(), run_numbers).await {
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!("  FAILED: {}", e);

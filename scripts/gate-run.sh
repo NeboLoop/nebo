@@ -65,7 +65,10 @@ failed=""
 for fixture in "${fixtures[@]}"; do
   for run in $(seq 1 "$runs"); do
     "$here/gate-server.sh" fresh
+    # The runner proves itself to the server's local API with the key the
+    # server made in its NEBO_HOME (the runner never sees that home).
     env -u A_BOT_ID -u A_BOT_TOKEN -u A_BOOT_TOKEN -u P_BOT_ID -u P_BOT_TOKEN -u P_BOOT_TOKEN \
+      NEBO_MCP_API_KEY="$(cat "$GATE_JOB/nebo-home/.install-key")" \
       "$@" --fixture "$fixture" --runs 1 --first-run "$run" \
       --server "localhost:$(cat "$GATE_JOB/server.port")" --output "$output" \
       || failed="$failed $(basename "$fixture" .yaml):run-$run"

@@ -25,13 +25,20 @@ pub fn inspect_prompt(fixture: Option<&Fixture>) {
     println!("\n--- Total: {} chars (~{} tokens) ---", total, total / crate::CHARS_PER_TOKEN);
 }
 
-/// Run a fixture live against a running Nebo server.
+/// Run a fixture live against a running Nebo server. The harness is the
+/// owner's own client: it proves itself to the local API with the server's
+/// install key `key`, carried as the first segment of the address it hands
+/// everything (the chat socket, the employee lookup, the setup commands'
+/// NEBO_TEST_SERVER), so a fixture's `curl` needs no change.
 pub async fn run_live(
     fixture: &Fixture,
     server: &str,
+    key: &str,
     model: Option<&str>,
     runs: usize,
 ) -> Result<Vec<Trace>, String> {
+    let shown = server;
+    let server = &format!("{server}/k/{key}");
     let ws_url = format!("ws://{}/ws", server);
 
     // Quick connectivity check
@@ -39,8 +46,8 @@ pub async fn run_live(
         Ok(_) => {}
         Err(e) => {
             return Err(format!(
-                "Cannot connect to Nebo at {}. Is `make dev` running?\nError: {}",
-                ws_url, e
+                "Cannot connect to Nebo at ws://{}/ws. Is `make dev` running?\nError: {}",
+                shown, e
             ));
         }
     }
@@ -1103,7 +1110,7 @@ mod recording_tests {
 
     async fn record(turns: &[&str], batches: Vec<Batch>) -> Trace {
         let server = scripted_server(batches).await;
-        let mut traces = run_live(&fixture(turns), &server, None, 1).await.expect("run");
+        let mut traces = run_live(&fixture(turns), &server, "test-key", None, 1).await.expect("run");
         traces.pop().expect("one trace")
     }
 

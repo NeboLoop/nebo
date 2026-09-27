@@ -1888,12 +1888,10 @@ async fn channel_loop(
         // reach the local voice session, so the employee's real persona and
         // tools answer the call. Bridges that don't declare it get nothing.
         if channel_def.needs_local_api {
-            let port = std::env::var("NEBO_PORT")
-                .ok()
-                .and_then(|v| v.parse::<u16>().ok())
-                .unwrap_or(types::constants::DEFAULT_PORT);
+            for (key, value) in napp::plugin::plugin_base_env() {
+                runtime = runtime.with_env(key, value);
+            }
             runtime = runtime
-                .with_env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"))
                 .with_env("NEBO_AGENT_ID", agent_id.clone())
                 // And which bot this Nebo is, so the bridge can say so when
                 // it registers — the gateway logs a mismatch, and an empty

@@ -33,7 +33,12 @@ pub fn auth_routes() -> Router<AppState> {
         )
 }
 
-/// Public auth config route (no rate limit).
+/// Public auth config route (no rate limit), and a browser's sign-in to the
+/// local API (`local_access`): the ticket exchange, and a ticket for the
+/// owner's own client.
 pub fn public_routes() -> Router<AppState> {
-    Router::new().route("/auth/config", axum::routing::get(handlers::auth::config))
+    Router::new()
+        .route("/auth/config", axum::routing::get(handlers::auth::config))
+        .route("/local-session", axum::routing::get(crate::local_access::sign_in))
+        .route("/local-session/ticket", axum::routing::post(crate::local_access::new_ticket))
 }

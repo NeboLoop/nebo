@@ -151,6 +151,10 @@ fn own_rule(nebo: &Nebo, agent: &str, key: RuleKey, effect: Effect) {
     nebo.store().write_permission_rule(&rule, &Writer::Owner).unwrap();
 }
 
+/// Held by a proof that needs Nebo's own ports as they are (or changes
+/// them): the list is the process's, and the proofs share one server.
+static OWN_PORTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
@@ -162,6 +166,7 @@ fn free_port() -> u16 {
 /// answers it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_employee_command_never_reaches_nebo_own_server() {
+    let _ports = OWN_PORTS.lock().await;
     let nebo = session().await;
     if !tools::confine::available() {
         eprintln!("no confinement on this computer: Nebo's own server is reachable from an employee's commands");
@@ -369,6 +374,7 @@ async fn workflow_step(nebo: &Nebo, agent: &str, command: &str) -> Result<String
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_workflow_command_step_meets_its_employee_limits() {
     use std::sync::atomic::Ordering;
+    let _ports = OWN_PORTS.lock().await;
     let nebo = session().await;
     let agent = format!("flow-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     own_rule(&nebo, &agent, RuleKey::Capability("shell".into()), Effect::Allow);
@@ -575,4 +581,137 @@ async fn a_full_access_employee_runs_unconfined() {
     let r = nebo.tool(&full, "run_command", fetch).await;
     assert!(r.content.contains("Example Domain"), "the command itself works: {}", r.content);
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+/// Nebo's own server port, open to commands for as long as it lives: what a
+/// computer that confines no command (Windows) gives an employee's command.
+struct PortOpenToCommands(u16);
+
+impl PortOpenToCommands {
+    fn new(port: u16) -> Self {
+        types::own_ports::close(port);
+        Self(port)
+    }
+}
+
+impl Drop for PortOpenToCommands {
+    fn drop(&mut self) {
+        types::own_ports::open(self.0);
+    }
+}
+
+/// `local-api-requires-caller-proof`: Nebo's local API trusted any caller on
+/// loopback. On Windows nothing confines an employee's command, so its
+/// `curl` could call nearly every route, the one that changes its own
+/// permissions included; on macOS and Linux the sandbox was the only thing
+/// in the way. Every caller now proves it is Nebo's own app or the owner's
+/// client. With Nebo's port left open to commands, as on Windows, an
+/// employee's command reaches the server and is refused on every route,
+/// with nothing in its environment or its reach to prove itself with; the
+/// app (a browser signed in through a ticket) and an app's sidecar (its
+/// token) still work.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_employee_command_is_refused_by_nebo_own_api() {
+    let _ports = OWN_PORTS.lock().await;
+    let nebo = session().await;
+    let agent = format!("win-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    own_rule(&nebo, &agent, RuleKey::Capability("shell".into()), Effect::Allow);
+    let ctx = Nebo::ctx(&agent, Origin::User);
+    let key = config::read_install_key().expect("the server made its install key");
+    let open = PortOpenToCommands::new(nebo.port);
+    let base = format!("http://127.0.0.1:{}", nebo.port);
+    let curl = |args: String| json!({ "command": format!("curl -s -m 5 -o /dev/null -w 'code=%{{http_code}}' {args}"), "description": "Call Nebo" });
+
+    // The command reaches the server (it answers), and every route that does
+    // anything refuses it: reading its employees, changing its own
+    // permissions, the tools door, the app itself.
+    for args in [
+        format!("{base}/api/v1/agents"),
+        format!("-X PUT -H 'Content-Type: application/json' -d '{{\"permissions\":{{\"web\":true}}}}' {base}/api/v1/entity-config/agent/{agent}"),
+        format!("-X POST -H 'Content-Type: application/json' -d '{{}}' {base}/agent/mcp"),
+        format!("{base}/"),
+        format!("-H 'Host: localhost:{}' {base}/api/v1/agents", nebo.port),
+    ] {
+        let r = nebo.tool(&ctx, "run_command", curl(args.clone())).await;
+        assert!(r.content.contains("code=401"), "an employee's command was not refused by Nebo's API ({args}): {}", r.content);
+    }
+    // /health answers anyone: the command did reach the server.
+    let r = nebo.tool(&ctx, "run_command", curl(format!("{base}/health"))).await;
+    assert!(r.content.contains("code=200"), "the port is open to commands: {}", r.content);
+
+    // Nothing it can see proves anything: not its environment, not the key's
+    // file (refused by name here, and closed by the confinement where there
+    // is one).
+    let r = nebo.tool(&ctx, "run_command", json!({ "command": "env", "description": "Show the environment" })).await;
+    assert!(!r.content.contains(&key), "the install key is in a command's environment");
+    let r = nebo
+        .tool(&ctx, "run_command", json!({ "command": format!("cat '{}'", nebo.home.join(".install-key").display()), "description": "Read the key" }))
+        .await;
+    assert!(r.is_error && r.content.contains("Nebo's own files") && !r.content.contains(&key), "{}", r.content);
+    drop(open);
+
+    // The app: a browser signs in with a ticket and gets the app shell and
+    // the API, from its own page only.
+    let browser = tls::http_client().pool_max_idle_per_host(0).redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let signed_in = browser
+        .get(format!("{base}{}", crate::local_access::sign_in_path()))
+        .header("sec-fetch-site", "none")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(signed_in.status(), 303);
+    let cookie = signed_in
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .expect("a session cookie")
+        .to_string();
+    assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"), "{cookie}");
+    let session = cookie.split(';').next().unwrap().to_string();
+    let shell = browser
+        .get(format!("http://localhost:{}/", nebo.port))
+        .header("cookie", &session)
+        .header("sec-fetch-site", "none")
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(shell.status(), 200);
+    assert!(shell.text().await.unwrap().contains("<html"), "the app shell");
+    let api = |site: &'static str| {
+        browser
+            .get(format!("http://localhost:{}/api/v1/agents", nebo.port))
+            .header("cookie", &session)
+            .header("sec-fetch-site", site)
+            .send()
+    };
+    assert_eq!(api("same-origin").await.unwrap().status(), 200, "the signed-in app calls its API");
+    assert_eq!(api("same-site").await.unwrap().status(), 401, "another page on this computer can't ride the session");
+    let bare = browser.get(format!("http://localhost:{}/", nebo.port)).header("accept", "text/html").send().await.unwrap();
+    assert_eq!(bare.status(), 401);
+    assert!(bare.text().await.unwrap().contains("nebo open"), "a browser with no session is told how to sign in");
+
+    // An app's sidecar: its NEBO_APP_TOKEN reaches its own app's routes, and
+    // nothing else.
+    #[cfg(unix)]
+    {
+        let id = format!("pa{}", &uuid::Uuid::new_v4().simple().to_string()[..4]);
+        let world = crate::sidecar_proof::World::new(&id, crate::sidecar_proof::quick(), |_| {}).await;
+        world.until(20, |s| matches!(s, napp::supervisor::SidecarState::Running(_))).await;
+        nebo.state.app_lifecycles.write().await.insert(id.clone(), world.lifecycle.clone());
+        let token = world.lifecycle.app_token().await;
+        let sidecar = |path: String, token: Option<&str>| {
+            let mut req = browser.get(format!("{base}{path}"));
+            if let Some(t) = token {
+                req = req.bearer_auth(t);
+            }
+            req.send()
+        };
+        let own = sidecar(format!("/api/v1/apps/{id}/storage"), Some(&token)).await.unwrap();
+        assert_eq!(own.status(), 200, "{}", own.text().await.unwrap_or_default());
+        assert_eq!(sidecar(format!("/api/v1/apps/{id}/storage"), None).await.unwrap().status(), 401);
+        assert_eq!(sidecar("/api/v1/agents".into(), Some(&token)).await.unwrap().status(), 401, "an app's token is its app's alone");
+        nebo.state.app_lifecycles.write().await.remove(&id);
+        world.lifecycle.shutdown().await;
+    }
 }

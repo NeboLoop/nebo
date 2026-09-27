@@ -64,6 +64,7 @@ pub mod files {
     pub const BOT_ID: &str = "bot_id";
     pub const SETUP_COMPLETE: &str = ".setup-complete";
     pub const EXTENSION_SECRET: &str = ".extension-secret";
+    pub const INSTALL_KEY: &str = ".install-key";
     pub const DATABASE: &str = "data/nebo.db";
     pub const MODELS_YAML: &str = "models.yaml";
     pub const CONFIG_YAML: &str = "config.yaml";

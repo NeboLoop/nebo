@@ -11,6 +11,8 @@
 set -u
 
 TEST_SERVER="${TEST_SERVER:-localhost:27895}"
+. "$(dirname "$0")/install-key.sh"
+TEST_SERVER="$(with_install_key "$TEST_SERVER")"
 ONLY="${CASE:-}"
 WORK="${TMPDIR:-/tmp}"; WORK="${WORK%/}/nebo-test-tools"   # TMPDIR carries a trailing slash on macOS
 command -v jq >/dev/null || { echo "FAIL: jq not found (brew install jq)."; exit 1; }

@@ -117,8 +117,10 @@ start() {
   fi
   curl -sf -m 2 "http://localhost:$port/health"
   echo
-  # The agent runs on Janus, the backend customers get.
-  curl -sf "http://localhost:$port/api/v1/providers" \
+  # The agent runs on Janus, the backend customers get. The local API answers
+  # only a caller that proves itself: this script holds the server's install
+  # key, which the server made in its NEBO_HOME.
+  curl -sf -H "Authorization: Bearer $(cat "$NEBO_HOME/.install-key")" "http://localhost:$port/api/v1/providers" \
     | jq -e '.profiles[] | select(.provider == "neboai" and .isActive)' >/dev/null \
     || { echo "no active NeboAI profile; the bot token did not seed"; exit 1; }
 }

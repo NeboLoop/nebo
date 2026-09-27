@@ -184,23 +184,43 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     response
 }
 
-/// Who may reach this server, fixed when it binds (PRD Permissions §4.8).
-#[derive(Clone, Debug)]
+/// Who may reach this server and how each caller proves itself, fixed when
+/// it binds (PRD Permissions §4.8; `local_boundary`).
+#[derive(Clone)]
 pub struct Boundary {
     /// The port the server listens on.
     pub port: u16,
     /// Bound off loopback (`NEBO_HOST`): the network can reach it.
     pub network: bool,
-    /// The install's API key (`NEBO_MCP_API_KEY`), when one is set.
+    /// The install key (`config::ensure_install_key`): the owner's own
+    /// clients send it. `None` only when Nebo's folder can't be written, and
+    /// then no key opens anything.
     pub install_key: Option<String>,
+    /// The browser session the install key signs in (`local_access`).
+    pub session: Option<String>,
+    /// Live per-run credentials (`agent::tool_credentials`): a CLI
+    /// provider's tool calls to `/agent/mcp` carry their run's.
+    pub credentials: agent::ToolCredentials,
+    /// The running apps: a sidecar's `NEBO_APP_TOKEN` reaches its own app's
+    /// routes.
+    pub apps: Apps,
 }
 
+/// The running apps, by id (`AppState::app_lifecycles`).
+pub type Apps = Arc<tokio::sync::RwLock<HashMap<String, Arc<crate::app_lifecycle::AppLifecycle>>>>;
+
 impl Boundary {
-    pub fn for_bind(host: &str, port: u16) -> Self {
+    pub fn for_bind(host: &str, port: u16, credentials: agent::ToolCredentials, apps: Apps) -> Self {
+        let install_key = config::ensure_install_key()
+            .map_err(|e| tracing::error!(error = %e, "the install key could not be read or made: no client can prove itself"))
+            .ok();
         Self {
             port,
             network: !is_loopback_bind(host),
-            install_key: install_key(),
+            session: install_key.as_deref().map(crate::local_access::session_for),
+            install_key,
+            credentials,
+            apps,
         }
     }
 }
@@ -208,11 +228,6 @@ impl Boundary {
 /// Whether `NEBO_HOST` keeps the server on this machine.
 pub fn is_loopback_bind(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1")
-}
-
-/// The install's API key: `NEBO_MCP_API_KEY`, when set and non-empty.
-pub fn install_key() -> Option<String> {
-    std::env::var("NEBO_MCP_API_KEY").ok().filter(|k| !k.is_empty())
 }
 
 /// The bearer token on a request, if it carries one.
@@ -254,15 +269,205 @@ fn host_is_local(host: &str, port: u16) -> bool {
         && host_port.is_none_or(|p| p.parse::<u16>().ok() == Some(port))
 }
 
+/// A credential a caller carried as its path's first segment,
+/// `/k/<credential>/…`, taken off the path by `path_credential`.
+#[derive(Clone, Debug)]
+pub struct PathCredential(pub String);
+
+/// Takes a credential carried as the path's first segment (`/k/<credential>`)
+/// off the path, before routing, into the request's `PathCredential`. A
+/// process that knows Nebo only as a base URL joins its paths onto it:
+/// the plugins (`NEBO_LOCAL_URL`, `napp::plugin::plugin_base_env`), a
+/// harness fixture (`NEBO_TEST_SERVER`). The route, and the request log,
+/// see the path without it. It wraps the whole router: a layer on the
+/// router runs after routing, too late to change the path.
+pub fn path_credential(mut request: Request) -> Request {
+    let Some(rest) = request.uri().path().strip_prefix("/k/") else {
+        return request;
+    };
+    let (credential, tail) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    if credential.is_empty() {
+        return request;
+    }
+    let credential = credential.to_string();
+    let path_and_query = match request.uri().query() {
+        Some(q) => format!("{tail}?{q}"),
+        None => tail.to_string(),
+    };
+    let mut parts = request.uri().clone().into_parts();
+    parts.path_and_query = path_and_query.parse().ok();
+    if let Ok(uri) = axum::http::Uri::from_parts(parts) {
+        *request.uri_mut() = uri;
+        request.extensions_mut().insert(PathCredential(credential));
+    }
+    request
+}
+
+/// Nebo's own UI origins: the app as this server serves it, and the Vite
+/// dev (5173) and preview (4173) servers that proxy to it. CORS admits them
+/// (`cors_layer`).
+pub(crate) const UI_ORIGINS: &[&str] = &[
+    "http://localhost:27895",
+    "http://127.0.0.1:27895",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+];
+
+/// Routes a caller reaches with no proof: each proves its caller itself, or
+/// has nothing to protect.
+fn proves_itself(method: &axum::http::Method, path: &str) -> bool {
+    // A file in the workspace, read: the folder an employee works in, and
+    // its commands read it anyway. The Work panel renders a document in a
+    // sandboxed frame whose origin is opaque, so the images and styles it
+    // loads from beside it carry no session.
+    if matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD) && path.starts_with("/api/v1/files/") {
+        return true;
+    }
+    matches!(
+        path,
+        // Status and version only: a liveness probe calls it bare.
+        "/health"
+        // The sign-in ticket is the proof (`local_access`).
+        | "/api/v1/local-session"
+        // A browser coming back from a sign-in elsewhere: the pending
+        // flow's state is the proof, and it is the owner's system browser,
+        // which holds no session.
+        | "/auth/neboai/callback"
+        | "/api/v1/integrations/oauth/callback"
+        // The app SDK: a public script, loaded by app pages from other
+        // origins.
+        | "/sdk/nebo.global.js"
+        // The browser-extension relay: its handler checks the relay's own
+        // secret and refuses any browser.
+        | "/ws/extension"
+    )
+    // Employees as models: the key minted on the employee's Connect tab,
+    // checked by `openai::api_key_auth`.
+    || path.starts_with("/v1/")
+}
+
+/// The routes the plugins' credential reaches: the relays that carry a
+/// plugin's calls to the hub, and the phone line (`napp::plugin::plugin_base_env`).
+fn plugin_route(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/v1/plugins/oauth/token"
+            | "/api/v1/phone/bind"
+            | "/api/v1/phone/unbind"
+            | "/api/v1/phone/call"
+            | "/api/v1/phone/optout"
+            | "/api/v1/phone/presence"
+            | "/ws/voice/conversation"
+    ) || path
+        .strip_prefix("/api/v1/plugins/")
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(slug, rest)| !slug.is_empty() && (rest == "proxy" || rest.starts_with("proxy/")))
+}
+
+/// The app whose routes `path` is, for an app sidecar's token.
+fn app_of(path: &str) -> Option<&str> {
+    path.strip_prefix("/api/v1/apps/")?.split('/').next().filter(|id| !id.is_empty())
+}
+
+impl Boundary {
+    /// The caller holds the install key, as its bearer token or its path's
+    /// credential.
+    fn holds_key(&self, bearer: Option<&str>, path_credential: Option<&str>) -> bool {
+        let Some(key) = self.install_key.as_deref() else { return false };
+        [bearer, path_credential]
+            .into_iter()
+            .flatten()
+            .any(|t| !t.is_empty() && crate::handlers::ws::constant_time_eq(t, key))
+    }
+
+    /// A browser that signed in (`local_access`), on a request from Nebo's
+    /// own page: a page another server on this computer serves is the same
+    /// site as this one, and a SameSite cookie rides its requests too, so
+    /// the request itself must be same-origin. Browsers say so in
+    /// `Sec-Fetch-Site`; one that doesn't send it is judged by its Origin.
+    fn signed_in_browser(&self, headers: &axum::http::HeaderMap) -> bool {
+        let Some(session) = self.session.as_deref() else { return false };
+        let holds = headers
+            .get_all(axum::http::header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(';'))
+            .filter_map(|c| c.trim().split_once('='))
+            .any(|(name, value)| name == crate::local_access::COOKIE && crate::handlers::ws::constant_time_eq(value, session));
+        if !holds {
+            return false;
+        }
+        match headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
+            Some(site) => matches!(site, "same-origin" | "none"),
+            None => headers
+                .get(axum::http::header::ORIGIN)
+                .and_then(|v| v.to_str().ok())
+                .is_none_or(|origin| self.is_ui_origin(origin)),
+        }
+    }
+
+    fn is_ui_origin(&self, origin: &str) -> bool {
+        UI_ORIGINS.contains(&origin)
+            || ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+                .iter()
+                .any(|base| origin.strip_prefix(base).and_then(|p| p.strip_prefix(':')) == Some(self.port.to_string().as_str()))
+    }
+
+    /// A credential scoped to what one kind of process calls, on a route it
+    /// reaches: a CLI provider's run credential (`/agent/mcp`), the plugins'
+    /// credential (`plugin_route`), an app sidecar's token (its own app's
+    /// routes).
+    async fn scoped(&self, path: &str, headers: &axum::http::HeaderMap, bearer: Option<&str>, path_credential: Option<&str>) -> bool {
+        if path == "/agent/mcp"
+            && headers
+                .get(agent::tool_credentials::HEADER)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|t| self.credentials.grant(t).is_some())
+        {
+            return true;
+        }
+        let plugins = napp::plugin::plugin_local_token();
+        if plugin_route(path) && [bearer, path_credential].into_iter().flatten().any(|t| crate::handlers::ws::constant_time_eq(t, plugins)) {
+            return true;
+        }
+        if let (Some(token), Some(app)) = (bearer, app_of(path)) {
+            let lifecycle = self.apps.read().await.get(app).cloned();
+            if let Some(lifecycle) = lifecycle {
+                let expected = lifecycle.app_token().await;
+                return !expected.is_empty() && crate::handlers::ws::constant_time_eq(token, &expected);
+            }
+        }
+        false
+    }
+}
+
 /// The one gate every request passes before any route (REST, WebSocket,
-/// `/agent/*`, static files).
+/// `/agent/*`, static files). Every caller proves who it is, on loopback as
+/// from the network: nothing on this computer is trusted for where it
+/// connects from. On Windows nothing confines an employee's commands, and
+/// on macOS and Linux the sandbox was the only thing between a command and
+/// every route here, the one that changes its own permissions included.
 ///
 /// - Through the tunnel: admitted — the hub authenticated the owner, and the
 ///   Host is the browser's (`neboai.com`), which is why the stamp decides.
 /// - From the network on a non-loopback bind: the install key is required.
 ///   `/health` alone is exempt — it reports only status and version, and it
 ///   is the path an orchestrator's liveness probe calls without credentials.
-/// - From this machine: `Host` must name this machine (DNS rebinding).
+/// - From this machine: `Host` must name this machine (DNS rebinding), and
+///   the caller proves itself: the install key (the owner's clients), a
+///   signed-in browser on Nebo's own page (`local_access`), or a credential
+///   scoped to the route (`Boundary::scoped`). A route that proves its
+///   caller itself is let through (`proves_itself`).
+///
+/// No employee command holds any of these: Nebo's own settings are kept out
+/// of its environment, the install key's file is in Nebo's folder, which its
+/// commands can't read, and each process Nebo starts gets only its own
+/// scoped credential.
 pub async fn local_boundary(
     axum::extract::State(boundary): axum::extract::State<Boundary>,
     request: Request,
@@ -272,6 +477,9 @@ pub async fn local_boundary(
     if came_through_tunnel(headers) {
         return next.run(request).await;
     }
+    let presented = bearer(headers).filter(|t| !t.is_empty());
+    let path_credential = request.extensions().get::<PathCredential>().map(|c| c.0.as_str());
+    let holds_key = boundary.holds_key(presented, path_credential);
     // No peer address means the server was not served with connect info:
     // treat the caller as the network, never as this machine.
     let from_this_machine = request
@@ -279,30 +487,57 @@ pub async fn local_boundary(
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .is_some_and(|ci| ci.0.ip().is_loopback());
     if boundary.network && !from_this_machine {
-        if request.uri().path() == "/health" {
+        if request.uri().path() == "/health" || holds_key {
             return next.run(request).await;
         }
-        let presented = bearer(headers).filter(|t| !t.is_empty());
-        return match (boundary.install_key.as_deref(), presented) {
-            (Some(key), Some(token)) if token == key => next.run(request).await,
-            _ => boundary_refusal(
-                StatusCode::UNAUTHORIZED,
-                "this server is reachable from the network: send the install's API key \
-                 (NEBO_MCP_API_KEY) as Authorization: Bearer <key>",
-            ),
-        };
+        return boundary_refusal(
+            StatusCode::UNAUTHORIZED,
+            "this server is reachable from the network: send the install's API key \
+             (NEBO_MCP_API_KEY, or the key in Nebo's folder, .install-key) as Authorization: Bearer <key>",
+        );
     }
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .or_else(|| request.uri().authority().map(|a| a.as_str()));
-    match host {
-        Some(host) if host_is_local(host, boundary.port) => next.run(request).await,
-        _ => {
-            tracing::warn!(host = ?host, path = %request.uri().path(), "refused a request for a foreign host");
-            boundary_refusal(StatusCode::FORBIDDEN, "host not allowed")
-        }
+    if !host.is_some_and(|host| host_is_local(host, boundary.port)) {
+        tracing::warn!(host = ?host, path = %request.uri().path(), "refused a request for a foreign host");
+        return boundary_refusal(StatusCode::FORBIDDEN, "host not allowed");
     }
+    let path = request.uri().path();
+    if holds_key
+        || proves_itself(request.method(), path)
+        || boundary.signed_in_browser(headers)
+        || boundary.scoped(path, headers, presented, path_credential).await
+    {
+        return next.run(request).await;
+    }
+    tracing::debug!(path = %path, "refused a caller that proved nothing");
+    unproven(&request)
+}
+
+/// The refusal for a caller that proved nothing: a page for a browser
+/// opening Nebo, words for everything else.
+fn unproven(request: &Request) -> Response {
+    let wants_page = request.method() == axum::http::Method::GET
+        && request
+            .headers()
+            .get(axum::http::header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|a| a.contains("text/html"));
+    if wants_page {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            crate::local_access::NOT_SIGNED_IN,
+        )
+            .into_response();
+    }
+    boundary_refusal(
+        StatusCode::UNAUTHORIZED,
+        "Nebo's local API answers only its own app and the owner's clients: sign in from the Nebo \
+         app (or `nebo open`), or send the install key as Authorization: Bearer <key>",
+    )
 }
 
 fn boundary_refusal(status: StatusCode, message: &str) -> Response {
@@ -313,76 +548,6 @@ fn boundary_refusal(status: StatusCode, message: &str) -> Response {
         }),
     )
         .into_response()
-}
-
-/// What the `/agent/mcp` key check needs, fixed at startup.
-#[derive(Clone)]
-pub struct McpAuth {
-    /// The install's API key (`NEBO_MCP_API_KEY`), when one is set.
-    pub install_key: Option<String>,
-    /// Live per-run credentials (see `agent::tool_credentials`).
-    pub credentials: agent::ToolCredentials,
-}
-
-/// Opt-in API key auth for the MCP endpoint.
-/// If `NEBO_MCP_API_KEY` is set, requires `Authorization: Bearer <key>` — or
-/// a live run credential (`X-Nebo-Run-Credential`): a CLI provider's tool
-/// calls carry their run's credential, never the install key.
-/// If not set, the endpoint is open (localhost-only use case).
-pub async fn mcp_api_key_auth(
-    axum::extract::State(auth): axum::extract::State<McpAuth>,
-    request: Request,
-    next: Next,
-) -> Response {
-    // No key configured → skip auth (zero-config localhost mode)
-    let Some(expected) = auth.install_key else {
-        return next.run(request).await;
-    };
-
-    let run_credential = request
-        .headers()
-        .get(agent::tool_credentials::HEADER)
-        .and_then(|v| v.to_str().ok());
-    if run_credential.is_some_and(|t| auth.credentials.grant(t).is_some()) {
-        return next.run(request).await;
-    }
-
-    let auth_header = request
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok());
-
-    let token = match auth_header {
-        Some(header) => {
-            let parts: Vec<&str> = header.splitn(2, ' ').collect();
-            if parts.len() != 2 || !parts[0].eq_ignore_ascii_case("bearer") {
-                return mcp_auth_error("invalid authorization header format");
-            }
-            parts[1]
-        }
-        None => {
-            return mcp_auth_error("MCP API key required (set NEBO_MCP_API_KEY)");
-        }
-    };
-
-    if token != expected {
-        return mcp_auth_error("invalid MCP API key");
-    }
-
-    next.run(request).await
-}
-
-fn mcp_auth_error(message: &str) -> Response {
-    // Return JSON-RPC error for MCP clients
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": null,
-        "error": {
-            "code": -32000,
-            "message": message,
-        }
-    });
-    (StatusCode::UNAUTHORIZED, Json(body)).into_response()
 }
 
 /// In-memory rate limiter state.
@@ -471,40 +636,72 @@ mod boundary_tests {
     use std::net::SocketAddr;
     use tower::ServiceExt;
 
-    fn app(boundary: Boundary) -> Router {
-        Router::new()
-            .route("/api/v1/agents", axum::routing::get(|| async { "ok" }))
-            .route("/health", axum::routing::get(|| async { "ok" }))
+    const KEY: &str = "k-123";
+
+    /// The routes a caller reaches, behind the boundary, with the path
+    /// credential taken off before routing, as `run` serves them. Each route
+    /// answers with the path it was reached by.
+    async fn send(boundary: Boundary, req: HttpRequest<Body>) -> (StatusCode, String) {
+        let echo = |req: axum::extract::Request| async move { req.uri().path().to_string() };
+        let app = Router::new()
+            .route("/api/v1/agents", axum::routing::get(echo))
+            .route("/api/v1/local-session", axum::routing::get(echo))
+            .route("/api/v1/plugins/oauth/token", axum::routing::post(echo))
+            .route("/api/v1/plugins/{slug}/proxy/{*rest}", axum::routing::get(echo))
+            .route("/api/v1/plugins/{slug}/toggle", axum::routing::post(echo))
+            .route("/api/v1/apps/{id}/storage", axum::routing::get(echo))
+            .route("/agent/mcp", axum::routing::post(echo))
+            .route("/v1/models", axum::routing::get(echo))
+            .route("/api/v1/files/{*path}", axum::routing::get(echo))
+            .route("/api/v1/files/upload", axum::routing::post(echo))
+            .route("/health", axum::routing::get(echo))
+            .route("/auth/neboai/callback", axum::routing::get(echo))
             .fallback(|| async { "spa" })
-            .layer(axum::middleware::from_fn_with_state(boundary, local_boundary))
+            .layer(axum::middleware::from_fn_with_state(boundary, local_boundary));
+        let resp = app.map_request(path_credential).oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    fn boundary(network: bool, key: Option<&str>) -> Boundary {
+        Boundary {
+            port: 27895,
+            network,
+            install_key: key.map(str::to_string),
+            session: key.map(crate::local_access::session_for),
+            credentials: agent::ToolCredentials::default(),
+            apps: Apps::default(),
+        }
     }
 
     fn loopback_bind() -> Boundary {
-        Boundary { port: 27895, network: false, install_key: None }
+        boundary(false, Some(KEY))
     }
 
     fn network_bind(key: Option<&str>) -> Boundary {
-        Boundary { port: 27895, network: true, install_key: key.map(str::to_string) }
+        boundary(true, key)
     }
 
-    async fn status(
-        boundary: Boundary,
-        path: &str,
-        peer: &str,
-        headers: &[(&str, &str)],
-    ) -> StatusCode {
-        let mut req = HttpRequest::builder().uri(path);
+    fn request(method: &str, path: &str, peer: &str, headers: &[(&str, &str)]) -> HttpRequest<Body> {
+        let mut req = HttpRequest::builder().method(method).uri(path);
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
         let mut req = req.body(Body::empty()).unwrap();
         let peer: SocketAddr = peer.parse().unwrap();
         req.extensions_mut().insert(ConnectInfo(peer));
-        app(boundary).oneshot(req).await.unwrap().status()
+        req
+    }
+
+    async fn status(boundary: Boundary, path: &str, peer: &str, headers: &[(&str, &str)]) -> StatusCode {
+        send(boundary, request("GET", path, peer, headers)).await.0
     }
 
     const LOCAL: &str = "127.0.0.1:50000";
     const LAN: &str = "192.168.1.20:50000";
+    const HOST: (&str, &str) = ("host", "localhost:27895");
+    const KEYED: (&str, &str) = ("authorization", "Bearer k-123");
 
     // DNS rebinding: a page on attacker.example re-points its own name at
     // 127.0.0.1 and calls the API as same-origin. The browser sends the
@@ -513,7 +710,7 @@ mod boundary_tests {
     async fn a_foreign_host_is_refused() {
         for path in ["/api/v1/agents", "/health", "/", "/ws"] {
             assert_eq!(
-                status(loopback_bind(), path, LOCAL, &[("host", "attacker.example:27895")]).await,
+                status(loopback_bind(), path, LOCAL, &[("host", "attacker.example:27895"), KEYED]).await,
                 StatusCode::FORBIDDEN,
                 "{path}"
             );
@@ -525,7 +722,7 @@ mod boundary_tests {
     }
 
     #[tokio::test]
-    async fn loopback_and_app_hosts_pass() {
+    async fn loopback_and_app_hosts_pass_with_proof() {
         for host in [
             "localhost:27895",
             "127.0.0.1:27895",
@@ -536,7 +733,7 @@ mod boundary_tests {
             "tauri.localhost",
         ] {
             assert_eq!(
-                status(loopback_bind(), "/api/v1/agents", LOCAL, &[("host", host)]).await,
+                status(loopback_bind(), "/api/v1/agents", LOCAL, &[("host", host), KEYED]).await,
                 StatusCode::OK,
                 "{host}"
             );
@@ -546,7 +743,7 @@ mod boundary_tests {
     #[tokio::test]
     async fn a_loopback_name_on_another_port_is_refused() {
         assert_eq!(
-            status(loopback_bind(), "/api/v1/agents", LOCAL, &[("host", "localhost:8080")]).await,
+            status(loopback_bind(), "/api/v1/agents", LOCAL, &[("host", "localhost:8080"), KEYED]).await,
             StatusCode::FORBIDDEN
         );
     }
@@ -585,7 +782,7 @@ mod boundary_tests {
 
     #[tokio::test]
     async fn a_network_bind_requires_the_install_key() {
-        let b = || network_bind(Some("k-123"));
+        let b = || network_bind(Some(KEY));
         for path in ["/api/v1/agents", "/", "/ws", "/agent/mcp"] {
             assert_eq!(
                 status(b(), path, LAN, &[("host", "192.168.1.5:27895")]).await,
@@ -599,7 +796,7 @@ mod boundary_tests {
             );
         }
         assert_eq!(
-            status(b(), "/api/v1/agents", LAN, &[("host", "192.168.1.5:27895"), ("authorization", "Bearer k-123")]).await,
+            status(b(), "/api/v1/agents", LAN, &[("host", "192.168.1.5:27895"), KEYED]).await,
             StatusCode::OK
         );
         assert_eq!(
@@ -620,114 +817,146 @@ mod boundary_tests {
         );
     }
 
-    // A cloud bot binds 0.0.0.0 and is reached only through the tunnel; its
-    // own process and sidecars call it on loopback, and the orchestrator's
-    // liveness probe calls /health from the node. None of those carry a key.
+    // A cloud bot binds 0.0.0.0 and is reached through the tunnel; the
+    // orchestrator's liveness probe calls /health from the node. Its own
+    // processes on loopback prove themselves like any local caller.
     #[tokio::test]
     async fn a_network_bind_keeps_the_tunnel_local_callers_and_health_probe() {
         let stamp = comm::tunnel::tunnel_auth_secret();
         assert_eq!(
-            status(network_bind(None), "/api/v1/agents", LOCAL, &[("host", "neboai.com"), ("x-nebo-tunnel-auth", stamp)]).await,
+            status(network_bind(Some(KEY)), "/api/v1/agents", LOCAL, &[("host", "neboai.com"), ("x-nebo-tunnel-auth", stamp)]).await,
             StatusCode::OK
         );
         assert_eq!(
-            status(network_bind(None), "/api/v1/agents", LOCAL, &[("host", "127.0.0.1:27895")]).await,
+            status(network_bind(Some(KEY)), "/api/v1/agents", LOCAL, &[("host", "127.0.0.1:27895"), KEYED]).await,
             StatusCode::OK
         );
         assert_eq!(
-            status(network_bind(None), "/health", "10.244.1.1:40000", &[("host", "10.244.1.7:27895")]).await,
+            status(network_bind(Some(KEY)), "/health", "10.244.1.1:40000", &[("host", "10.244.1.7:27895")]).await,
             StatusCode::OK
         );
         // Same-machine callers are still held to the Host check.
         assert_eq!(
-            status(network_bind(None), "/api/v1/agents", LOCAL, &[("host", "attacker.example:27895")]).await,
+            status(network_bind(Some(KEY)), "/api/v1/agents", LOCAL, &[("host", "attacker.example:27895"), KEYED]).await,
             StatusCode::FORBIDDEN
         );
     }
 
+    /// An employee's command on this computer (Windows: nothing confines it)
+    /// calls the API with nothing to show: every route that does anything is
+    /// refused, and a browser opening Nebo with no session is told how to
+    /// sign in.
     #[tokio::test]
-    async fn a_loopback_bind_asks_for_no_key() {
-        assert_eq!(
-            status(Boundary { install_key: Some("k".into()), ..loopback_bind() }, "/api/v1/agents", LOCAL, &[("host", "localhost:27895")]).await,
-            StatusCode::OK
-        );
-    }
-}
-
-#[cfg(test)]
-mod mcp_auth_tests {
-    use super::*;
-    use axum::Router;
-    use axum::body::Body;
-    use axum::http::Request as HttpRequest;
-    use tower::ServiceExt;
-
-    fn app(auth: McpAuth) -> Router {
-        Router::new().route(
-            "/agent/mcp",
-            axum::routing::post(|| async { "ok" })
-                .layer(axum::middleware::from_fn_with_state(auth, mcp_api_key_auth)),
-        )
-    }
-
-    async fn status(auth: McpAuth, headers: &[(&str, &str)]) -> StatusCode {
-        let mut req = HttpRequest::builder().method("POST").uri("/agent/mcp");
-        for (k, v) in headers {
-            req = req.header(*k, *v);
+    async fn a_loopback_caller_with_no_proof_is_refused() {
+        for path in ["/api/v1/agents", "/", "/ws", "/api/v1/plugins/gws/toggle", "/api/v1/apps/a1/storage"] {
+            assert_eq!(status(loopback_bind(), path, LOCAL, &[HOST]).await, StatusCode::UNAUTHORIZED, "{path}");
         }
-        app(auth).oneshot(req.body(Body::empty()).unwrap()).await.unwrap().status()
+        for (method, path) in [("POST", "/agent/mcp"), ("POST", "/api/v1/files/upload")] {
+            let (code, body) = send(loopback_bind(), request(method, path, LOCAL, &[HOST])).await;
+            assert_eq!(code, StatusCode::UNAUTHORIZED, "{path}: {body}");
+        }
+        let (code, page) = send(loopback_bind(), request("GET", "/", LOCAL, &[HOST, ("accept", "text/html")])).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED);
+        assert!(page.contains("nebo open"), "{page}");
+        // A wrong key, a key with no key configured, an empty bearer.
+        assert_eq!(status(loopback_bind(), "/api/v1/agents", LOCAL, &[HOST, ("authorization", "Bearer k-12")]).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status(boundary(false, None), "/api/v1/agents", LOCAL, &[HOST, KEYED]).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status(loopback_bind(), "/api/v1/agents", LOCAL, &[HOST, ("authorization", "Bearer ")]).await, StatusCode::UNAUTHORIZED);
     }
 
-    fn keyed(credentials: &agent::ToolCredentials) -> McpAuth {
-        McpAuth { install_key: Some("k-123".into()), credentials: credentials.clone() }
+    /// The owner's own clients (the CLI, the MCP bridge, the desktop shell,
+    /// a harness fixture) send the install key, as a bearer token or as the
+    /// path's credential; the route sees the path without it.
+    #[tokio::test]
+    async fn the_install_key_opens_every_route() {
+        let (code, path) = send(loopback_bind(), request("GET", "/api/v1/agents", LOCAL, &[HOST, KEYED])).await;
+        assert_eq!((code, path.as_str()), (StatusCode::OK, "/api/v1/agents"));
+        let (code, path) = send(loopback_bind(), request("GET", "/k/k-123/api/v1/agents", LOCAL, &[HOST])).await;
+        assert_eq!((code, path.as_str()), (StatusCode::OK, "/api/v1/agents"), "the credential comes off the path");
+        let (code, _) = send(loopback_bind(), request("POST", "/agent/mcp", LOCAL, &[HOST, KEYED])).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(status(loopback_bind(), "/k/wrong/api/v1/agents", LOCAL, &[HOST]).await, StatusCode::UNAUTHORIZED);
     }
 
-    fn grant() -> agent::RunGrant {
-        agent::RunGrant {
-            ctx: Default::default(),
-            agent_id: "emp-1".into(),
+    /// A browser that signed in holds the session cookie, and it counts only
+    /// on a request from Nebo's own page: another server on this computer
+    /// is the same site, so its page's requests carry the cookie too.
+    #[tokio::test]
+    async fn a_signed_in_browser_counts_only_on_its_own_page() {
+        let cookie = format!("{}={}", crate::local_access::COOKIE, crate::local_access::session_for(KEY));
+        let c = || ("cookie", cookie.as_str());
+        let ok = [
+            vec![HOST, c(), ("sec-fetch-site", "same-origin")],
+            vec![HOST, c(), ("sec-fetch-site", "none")],
+            // A browser that sends no Sec-Fetch-Site: its Origin decides.
+            vec![HOST, c(), ("origin", "http://localhost:5173")],
+            vec![HOST, c(), ("origin", "http://localhost:27895")],
+            vec![HOST, c()],
+            vec![HOST, ("cookie", "theme=dark"), ("cookie", cookie.as_str()), ("sec-fetch-site", "same-origin")],
+        ];
+        for headers in ok {
+            assert_eq!(status(loopback_bind(), "/api/v1/agents", LOCAL, &headers).await, StatusCode::OK, "{headers:?}");
+        }
+        let refused = [
+            vec![HOST, c(), ("sec-fetch-site", "same-site")],
+            vec![HOST, c(), ("sec-fetch-site", "cross-site")],
+            vec![HOST, c(), ("origin", "http://localhost:3000")],
+            vec![HOST, ("cookie", "nebo_session=forged"), ("sec-fetch-site", "same-origin")],
+            vec![HOST, ("sec-fetch-site", "same-origin")],
+        ];
+        for headers in refused {
+            assert_eq!(status(loopback_bind(), "/api/v1/agents", LOCAL, &headers).await, StatusCode::UNAUTHORIZED, "{headers:?}");
         }
     }
 
-    // A CLI provider's tool calls carry their run's credential, never the
-    // install key: with a key set, the credential is what admits them.
+    /// Routes that prove their caller themselves answer with no proof, and
+    /// still only on this machine's Host.
     #[tokio::test]
-    async fn a_live_run_credential_satisfies_the_key() {
-        let credentials = agent::ToolCredentials::default();
-        let guard = credentials.issue(grant());
-        assert_eq!(
-            status(keyed(&credentials), &[("x-nebo-run-credential", guard.token())]).await,
-            StatusCode::OK
-        );
+    async fn routes_that_prove_their_caller_themselves_pass() {
+        for path in ["/health", "/api/v1/local-session", "/v1/models", "/auth/neboai/callback", "/api/v1/files/report/chart.png"] {
+            assert_eq!(status(loopback_bind(), path, LOCAL, &[HOST]).await, StatusCode::OK, "{path}");
+            assert_eq!(status(loopback_bind(), path, LOCAL, &[("host", "attacker.example")]).await, StatusCode::FORBIDDEN, "{path}");
+        }
     }
 
+    /// A CLI provider's tool calls carry their run's credential: it reaches
+    /// `/agent/mcp` while the run lives, and nothing else.
     #[tokio::test]
-    async fn an_ended_or_unknown_credential_does_not() {
-        let credentials = agent::ToolCredentials::default();
-        let token = credentials.issue(grant()).token().to_string(); // guard dropped: revoked
-        assert_eq!(
-            status(keyed(&credentials), &[("x-nebo-run-credential", &token)]).await,
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(
-            status(keyed(&credentials), &[("x-nebo-run-credential", "made-up")]).await,
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(status(keyed(&credentials), &[]).await, StatusCode::UNAUTHORIZED);
+    async fn a_run_credential_reaches_agent_mcp_alone() {
+        let b = loopback_bind();
+        let guard = b.credentials.issue(agent::RunGrant { ctx: Default::default(), agent_id: "emp-1".into() });
+        let token = guard.token().to_string();
+        let run = || ("x-nebo-run-credential", token.as_str());
+        assert_eq!(send(b.clone(), request("POST", "/agent/mcp", LOCAL, &[HOST, run()])).await.0, StatusCode::OK);
+        assert_eq!(status(b.clone(), "/api/v1/agents", LOCAL, &[HOST, run()]).await, StatusCode::UNAUTHORIZED);
+        drop(guard);
+        assert_eq!(send(b.clone(), request("POST", "/agent/mcp", LOCAL, &[HOST, run()])).await.0, StatusCode::UNAUTHORIZED, "an ended run's credential");
+        assert_eq!(send(b, request("POST", "/agent/mcp", LOCAL, &[HOST, ("x-nebo-run-credential", "made-up")])).await.0, StatusCode::UNAUTHORIZED);
     }
 
+    /// The plugins' credential (in `NEBO_LOCAL_URL`) reaches the relays and
+    /// the phone line, and nothing else.
     #[tokio::test]
-    async fn the_install_key_still_works_and_no_key_means_open() {
-        let credentials = agent::ToolCredentials::default();
-        assert_eq!(
-            status(keyed(&credentials), &[("authorization", "Bearer k-123")]).await,
-            StatusCode::OK
-        );
-        assert_eq!(
-            status(keyed(&credentials), &[("authorization", "Bearer nope")]).await,
-            StatusCode::UNAUTHORIZED
-        );
-        let open = McpAuth { install_key: None, credentials };
-        assert_eq!(status(open, &[]).await, StatusCode::OK);
+    async fn the_plugins_credential_reaches_the_plugin_routes_alone() {
+        let token = napp::plugin::plugin_local_token();
+        let (code, path) = send(loopback_bind(), request("POST", &format!("/k/{token}/api/v1/plugins/oauth/token"), LOCAL, &[HOST])).await;
+        assert_eq!((code, path.as_str()), (StatusCode::OK, "/api/v1/plugins/oauth/token"));
+        let (code, _) = send(loopback_bind(), request("GET", &format!("/k/{token}/api/v1/plugins/plaid/proxy/accounts/get"), LOCAL, &[HOST])).await;
+        assert_eq!(code, StatusCode::OK);
+        let bearer = format!("Bearer {token}");
+        assert_eq!(status(loopback_bind(), "/api/v1/plugins/plaid/proxy/x", LOCAL, &[HOST, ("authorization", bearer.as_str())]).await, StatusCode::OK);
+        for path in ["/api/v1/agents", "/api/v1/plugins/plaid/toggle"] {
+            let (code, _) = send(loopback_bind(), request(if path.ends_with("toggle") { "POST" } else { "GET" }, &format!("/k/{token}{path}"), LOCAL, &[HOST])).await;
+            assert_eq!(code, StatusCode::UNAUTHORIZED, "{path}");
+        }
+        assert!(plugin_route("/ws/voice/conversation") && plugin_route("/api/v1/phone/call"));
+        assert!(!plugin_route("/api/v1/phone/lines") && !plugin_route("/api/v1/plugins//proxy/x") && !plugin_route("/api/v1/plugins/x/proxyish"));
+    }
+
+    #[test]
+    fn an_app_token_is_judged_on_its_own_app_routes() {
+        assert_eq!(app_of("/api/v1/apps/a1/storage/k"), Some("a1"));
+        assert_eq!(app_of("/api/v1/apps/"), None);
+        assert_eq!(app_of("/api/v1/agents"), None);
     }
 }

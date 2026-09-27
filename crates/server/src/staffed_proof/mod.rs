@@ -187,6 +187,8 @@ impl Nebo {
         // the OnceCell that boots it; nothing reads NEBO_HOME earlier.
         unsafe { std::env::set_var("NEBO_HOME", &home) };
         *BOOTED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // Made before the server boots, which reads the same one.
+        let key = config::ensure_install_key().expect("install key");
 
         let port = free_port();
         let mut cfg = config::Config::default();
@@ -213,8 +215,13 @@ impl Nebo {
         // with `User(DispatchGone), "runtime dropped the dispatch task"`. No
         // connection is kept: each request opens its own, on the runtime making
         // it, and that is the whole of it.
+        // The owner's own client: it proves itself with the install key, as
+        // every caller of the local API does.
+        let mut auth = reqwest::header::HeaderMap::new();
+        auth.insert(reqwest::header::AUTHORIZATION, format!("Bearer {key}").parse().unwrap());
         let client = tls::http_client()
             .pool_max_idle_per_host(0)
+            .default_headers(auth)
             .build()
             .expect("client");
         let health = format!("http://127.0.0.1:{port}/health");

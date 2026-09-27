@@ -209,6 +209,27 @@ Nebo is an AI agent platform. The agent has file system access. If an app's sour
 
 ## 7. Network Security
 
+### Every caller of the local API proves itself (`middleware::local_boundary`)
+
+The local API does not trust a caller for connecting from this computer. An employee's command runs as the same user as Nebo, and on Windows nothing confines it. So every request, on loopback or from the network, shows one of these:
+
+| Caller | Proof |
+|---|---|
+| The desktop app | A session cookie (`nebo_session`: HttpOnly, SameSite=Strict). The window opens through a one-use sign-in ticket the app mints in-process. The cookie counts only on a same-origin request, so a page served from another port on this computer can't use it. |
+| A browser the owner opens, including the Vite dev server | The same cookie, set by the link `nebo open` prints |
+| The CLI, the MCP bridge (`nebo mcp serve`), an MCP client the owner configured, the desktop app's own calls, a caller from the network | The install key, as `Authorization: Bearer <key>`. It is `NEBO_MCP_API_KEY`, or else generated into `.install-key` (mode 0600) in Nebo's folder. |
+| A CLI provider's tool calls | Its run's credential, on `/agent/mcp` only |
+| An app sidecar | Its `NEBO_APP_TOKEN`, on its own app's routes only |
+| Plugins | The token in `NEBO_LOCAL_URL` (`/k/<token>`), on the plugin relays and the phone line only |
+| Phone and web through the hub | The tunnel's per-boot stamp. The hub authenticated the owner. |
+
+An employee's command holds none of these:
+- Nebo's own settings are kept out of its environment.
+- The key's file is in Nebo's folder, which its commands can't read.
+- A process Nebo starts gets only its own scoped credential, never the install key.
+
+On a computer with no confinement (Windows), the key's file is guarded by the check on a command's text alone.
+
 ### Authentication
 - **JWT** (HMAC-SHA256) for all API requests (`crates/auth/src/jwt.rs`)
 - **WebSocket authentication required** — unauthenticated connections rejected

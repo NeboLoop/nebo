@@ -72,7 +72,7 @@ pub fn quick() -> RestartPolicy {
 pub struct World {
     pub app: TestApp,
     pub hub: Arc<ClientHub>,
-    pub lifecycle: AppLifecycle,
+    pub lifecycle: Arc<AppLifecycle>,
     _upstream: tempfile::TempDir,
 }
 
@@ -100,7 +100,7 @@ impl World {
         )
         .await
         .expect("a folder-name app id");
-        Self { app, hub, lifecycle, _upstream: upstream }
+        Self { app, hub, lifecycle: Arc::new(lifecycle), _upstream: upstream }
     }
 
     /// A GET through the proxy's path, answered by the stand-in server.
