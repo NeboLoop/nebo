@@ -965,18 +965,18 @@ impl NeboAIApi {
         .await
     }
 
-    // ── Bot Identity ────────────────────────────────────────────────
+    // ── Bot Name ────────────────────────────────────────────────────
+    //
+    // The bot's name belongs to the owner: the web console and the phone
+    // rename it with the owner's session. Nebo only reads it; no call here
+    // writes it (`tests::the_bot_never_writes_its_own_name`).
 
-    /// Push bot name and agent info to NeboAI.
-    pub async fn update_bot_identity(&self, name: &str, role: &str) -> Result<(), CommError> {
-        let body = UpdateBotIdentityRequest {
-            name: name.into(),
-            role: role.into(),
-        };
-        self.do_void(
-            reqwest::Method::PUT,
+    /// This bot's record on NeboAI: the name the owner sees in every list.
+    pub async fn get_bot(&self) -> Result<BotRecord, CommError> {
+        self.do_json(
+            reqwest::Method::GET,
             &format!("/api/v1/bots/{}", self.bot_id),
-            Some(&body),
+            None::<&()>,
         )
         .await
     }
@@ -1976,6 +1976,28 @@ mod tests {
         let mut api = NeboAIApi::new("http://127.0.0.1:9".into(), "bot".into(), "token".into());
         api.lease = lease;
         api
+    }
+
+    /// The bot's name is the owner's (the web console and the phone rename
+    /// it). Nebo reads it and never writes it: no request in this client
+    /// changes `/api/v1/bots/{id}`, so no stale local name can reach the hub.
+    #[test]
+    fn the_bot_never_writes_its_own_name() {
+        let source = include_str!("api.rs");
+        let mut rest = source;
+        let mut reads = 0;
+        while let Some(at) = rest.find("&format!(\"/api/v1/bots/{}\", self.bot_id)") {
+            let before = &rest[..at];
+            let method = before.rsplit("reqwest::Method::").next().unwrap_or("");
+            assert!(
+                method.starts_with("GET"),
+                "a {} request to /api/v1/bots/{{id}}",
+                method.split(',').next().unwrap_or("")
+            );
+            reads += 1;
+            rest = &rest[at + 1..];
+        }
+        assert_eq!(reads, 1, "the one read of the bot's record");
     }
 
     #[tokio::test]

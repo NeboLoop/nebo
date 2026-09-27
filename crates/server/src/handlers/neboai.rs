@@ -480,6 +480,38 @@ pub async fn bot_status(State(state): State<AppState>) -> HandlerResult<serde_js
     })))
 }
 
+// --- The bot's name ---
+
+/// The bot's name as NeboAI holds it, and where the owner renames it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotNameResponse {
+    /// "" when the bot is not paired.
+    pub name: String,
+    /// The bot's page on the NeboAI web app, where the owner renames it with
+    /// their own session ("" when the bot is not paired). The bot's name is
+    /// the owner's: Nebo reads it and never writes it.
+    pub rename_url: String,
+}
+
+/// GET /api/v1/neboai/bot — the bot's name, read from the hub.
+pub async fn get_bot(State(state): State<AppState>) -> HandlerResult<BotNameResponse> {
+    let Ok(api) = build_api_client(&state) else {
+        return Ok(Json(BotNameResponse { name: String::new(), rename_url: String::new() }));
+    };
+    let name = api.get_bot().await.map(|b| b.name).map_err(|e| {
+        to_error_response(NeboError::Internal(format!(
+            "Could not read the bot's name from NeboAI: {e}"
+        )))
+    })?;
+    let rename_url = format!(
+        "{}/app/manage/{}",
+        neboai_frontend_url(&state.config.neboai.api_url),
+        api.bot_id()
+    );
+    Ok(Json(BotNameResponse { name, rename_url }))
+}
+
 // --- The bot's own hosted address ---
 
 /// The bot's own hosted email address, when its hub gives it one.
@@ -488,23 +520,68 @@ pub async fn bot_status(State(state): State<AppState>) -> HandlerResult<serde_js
 pub struct BotEmailResponse {
     /// "" when the bot has no hosted address (not paired, or the hub offers none).
     pub address: String,
+    /// The address that reaches one employee (`agentId` in the query): the
+    /// bot's address with the employee's `+tag`. "" without an `agentId` or
+    /// a hosted address.
+    pub employee_address: String,
     pub sending_enabled: bool,
     pub daily_limit: i64,
     pub sent_today: i64,
 }
 
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BotEmailQuery {
+    pub agent_id: String,
+}
+
 /// GET /api/v1/neboai/email — the bot's own address, read from the hub.
-pub async fn bot_email(State(state): State<AppState>) -> HandlerResult<BotEmailResponse> {
+pub async fn bot_email(
+    State(state): State<AppState>,
+    Query(q): Query<BotEmailQuery>,
+) -> HandlerResult<BotEmailResponse> {
     let info = match crate::codes::build_api_client(&state) {
         Ok(api) => api.bot_email().await.unwrap_or_default(),
         Err(_) => comm::api_types::BotEmailInfo::default(),
     };
+    let employee = (!q.agent_id.is_empty())
+        .then(|| state.store.get_agent(&q.agent_id).ok().flatten())
+        .flatten();
+    let employee_address = employee
+        .and_then(|a| employee_address(&info.address, &a.name))
+        .unwrap_or_default();
     Ok(Json(BotEmailResponse {
         address: info.address,
+        employee_address,
         sending_enabled: info.sending_enabled,
         daily_limit: info.daily_limit,
         sent_today: info.sent_today,
     }))
+}
+
+/// The address that reaches one employee: the bot's address with the tag
+/// mail intake routes by (`comm::handle::slugify` of the name).
+fn employee_address(bot_address: &str, employee_name: &str) -> Option<String> {
+    let (local, domain) = bot_address.split_once('@')?;
+    let tag = comm::handle::slugify(employee_name);
+    (!local.is_empty() && !domain.is_empty() && !tag.is_empty())
+        .then(|| format!("{local}+{tag}@{domain}"))
+}
+
+#[cfg(test)]
+mod employee_address_tests {
+    use super::employee_address;
+
+    /// The tag is the one mail intake routes by; no address, no tag.
+    #[test]
+    fn an_employee_is_reached_at_the_bots_address_plus_its_tag() {
+        assert_eq!(
+            employee_address("nanna-7kq@nebo.bot", "Front Office Lead").as_deref(),
+            Some("nanna-7kq+front-office-lead@nebo.bot")
+        );
+        assert_eq!(employee_address("", "Nanna"), None);
+        assert_eq!(employee_address("nanna-7kq@nebo.bot", "  "), None);
+    }
 }
 
 // --- Janus AI usage ---

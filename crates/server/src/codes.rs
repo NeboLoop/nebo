@@ -2275,12 +2275,10 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     // one pass per connect) — the platform only knows the employees we tell it.
     request_agent_reconcile(state, "gateway connect");
 
-    // Sync bot identity + refresh license keys in background (non-blocking)
+    // Refresh the bot's address and license keys in background (non-blocking)
     {
         let st = state.clone();
         tokio::spawn(async move {
-            // Sync bot identity (name) to NeboAI
-            sync_bot_identity(&st).await;
             // The bot's own hosted address, as a sender of mail_message_send.
             crate::mail_intake::refresh_bot_address(&st).await;
             // Refresh content protection license keys for sealed .napp files
@@ -2299,28 +2297,6 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     }
 
     Ok(())
-}
-
-/// Sync the bot's display name to NeboAI from the local agent profile.
-pub(crate) async fn sync_bot_identity(state: &AppState) {
-    let name = state
-        .store
-        .get_agent_profile()
-        .ok()
-        .flatten()
-        .map(|p| p.name)
-        .unwrap_or_default();
-    if name.is_empty() {
-        return;
-    }
-    let api = match build_api_client(state) {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-    match api.update_bot_identity(&name, "").await {
-        Ok(_) => info!(name = %name, "synced bot identity to NeboAI"),
-        Err(e) => warn!(error = %e, "failed to sync bot identity"),
-    }
 }
 
 /// Debounce window between a reconcile request and its pass. Employee edits

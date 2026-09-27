@@ -127,7 +127,7 @@
 </script>
 
 <div class="flex items-center justify-between mb-1">
-  <h2 class="text-lg font-semibold">{$t('settingsStatus.updates')}</h2>
+  <h2 class="text-lg font-semibold">{$t('settingsUpdates.title')}</h2>
   <button class="btn btn-sm btn-outline gap-2" onclick={checkNow} disabled={checking}>
     <RefreshCw class="w-4 h-4 {checking ? 'animate-spin' : ''}" />
     {checking ? $t('agentSettings.checking') : $t('settingsUpdates.checkNow')}

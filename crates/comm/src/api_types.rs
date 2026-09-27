@@ -535,16 +535,14 @@ pub struct RedeemCodeResponse {
     pub owner_display_name: String,
 }
 
-// ── Bot Identity ─────────────────────────────────────────────────────
+// ── Bot Name ─────────────────────────────────────────────────────────
 
-/// Sent to PUT /api/v1/bots/{id}.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateBotIdentityRequest {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+/// GET /api/v1/bots/{id}: the part of the hub's bot record Nebo reads.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BotRecord {
+    pub id: String,
     pub name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub role: String,
 }
 
 // ── Loop Types ───────────────────────────────────────────────────────

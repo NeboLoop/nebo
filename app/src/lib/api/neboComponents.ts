@@ -277,9 +277,15 @@ export interface BillingSubscription {
 
 export interface BotEmailResponse {
 	address: string
+	employeeAddress: string
 	sendingEnabled: boolean
 	dailyLimit: number
 	sentToday: number
+}
+
+export interface BotNameResponse {
+	name: string
+	renameUrl: string
 }
 
 export interface CaseDetail {

@@ -1,6 +1,6 @@
 //! The bot's own identity and account: `get_profile` reads the plan and
-//! model, `update_profile` renames the employee or changes its role,
-//! `open_billing` opens the billing portal.
+//! model, `update_profile` renames the employee or changes its role (its own
+//! name only, never the bot's), `open_billing` opens the billing portal.
 
 use std::sync::Arc;
 
@@ -58,109 +58,27 @@ impl Profile {
         ToolResult::ok(out)
     }
 
+    /// Rename the employee in this conversation, or change its role. Only its
+    /// own row changes: the bot's name belongs to the owner (Bot settings, the
+    /// web, the phone), and the old single agent profile is not a name any
+    /// employee goes by.
     async fn update(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
-        let api = match self.api() {
-            Ok(a) => a,
-            Err(e) => return ToolResult::error(e),
-        };
-        let name = input["name"].as_str().unwrap_or("");
-        let role = input["role"].as_str().unwrap_or("");
-        // Local identity FIRST: agent_profile.name is what feeds
-        // {agent_name} in the system prompt and the UI. Without this
-        // the rename was cosmetic — a memory said "Javis" while the
-        // prompt still said "You are Nebo", and every new session
-        // answered with the old name.
-        if let Err(e) = self.store.update_agent_profile(
-            (!name.is_empty()).then_some(name),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            (!role.is_empty()).then_some(role),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ) {
-            return ToolResult::error(format!(
-                "Failed to update identity: {}. Do not retry — this is a database error.",
-                e
-            ));
-        }
-        // The agents-table row is what the UI reads (employee roster,
-        // agent header, Identity settings) — agent_profile above only
-        // feeds the prompt fallback. Without this the rename never
-        // shows: agent_profile said 'Javis' while the roster still
-        // said 'Nebo'. Reuses the same store.update_agent the
-        // updateAgent handler uses (one canonical write path).
+        let name = input["name"].as_str().unwrap_or("").trim();
+        let role = input["role"].as_str().unwrap_or("").trim();
         let agent_id = {
             let id = types::keyparser::extract_agent_id(&ctx.session_key);
             if id.is_empty() {
-                "assistant".to_string()
+                crate::team_tool::PRIMARY_AGENT_ID.to_string()
             } else {
                 id
             }
         };
-        let mut roster_row_missing = false;
-        match self.store.get_agent(&agent_id) {
-            Ok(Some(existing)) => {
-                let new_name = if name.is_empty() {
-                    existing.name.clone()
-                } else {
-                    name.to_string()
-                };
-                let new_desc = if role.is_empty() {
-                    existing.description.clone()
-                } else {
-                    role.to_string()
-                };
-                if let Err(e) = self.store.update_agent(
-                    &agent_id,
-                    &new_name,
-                    &new_desc,
-                    &existing.agent_md,
-                    &existing.frontmatter,
-                    existing.pricing_model.as_deref(),
-                    existing.pricing_cost,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ) {
-                    return ToolResult::error(format!(
-                        "Failed to update agent record: {}. Do not retry — this is a database error.",
-                        e
-                    ));
-                }
-                // Live roster update — same event name + payload shape
-                // the updateAgent handler broadcasts, so the sidebar
-                // row and agent header patch in place immediately.
-                let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
-                if let Some(notify) = notify {
-                    notify(
-                        "agent_updated",
-                        serde_json::json!({
-                            "agentId": agent_id,
-                            "name": new_name,
-                            "description": new_desc,
-                        }),
-                    );
-                }
-            }
+        let existing = match self.store.get_agent(&agent_id) {
+            Ok(Some(existing)) => existing,
             Ok(None) => {
-                roster_row_missing = true;
-                tracing::warn!(agent_id = %agent_id, "profile update: no agents row to sync");
+                return ToolResult::error(format!(
+                    "There is no employee '{agent_id}' here to rename."
+                ));
             }
             Err(e) => {
                 return ToolResult::error(format!(
@@ -168,22 +86,57 @@ impl Profile {
                     e
                 ));
             }
-        }
-        // Cloud identity (NeboAI directory) — best-effort; the local
-        // rename above is the one the user experiences.
-        let mut caveats = String::new();
-        if let Err(e) = api.update_bot_identity(name, role).await {
-            tracing::warn!(error = %e, "cloud bot identity sync failed (local rename applied)");
-            caveats.push_str(&format!(
-                "; cloud directory sync failed ({}), local name is updated",
+        };
+        let new_name = if name.is_empty() {
+            existing.name.clone()
+        } else {
+            name.to_string()
+        };
+        let new_desc = if role.is_empty() {
+            existing.description.clone()
+        } else {
+            role.to_string()
+        };
+        // The same store.update_agent the updateAgent handler uses (one
+        // canonical write path).
+        if let Err(e) = self.store.update_agent(
+            &agent_id,
+            &new_name,
+            &new_desc,
+            &existing.agent_md,
+            &existing.frontmatter,
+            existing.pricing_model.as_deref(),
+            existing.pricing_cost,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ) {
+            return ToolResult::error(format!(
+                "Failed to update agent record: {}. Do not retry — this is a database error.",
                 e
             ));
         }
-        if roster_row_missing {
-            caveats.push_str("; no agent roster row found, only the prompt identity changed");
+        // Live roster update — same event name + payload shape the
+        // updateAgent handler broadcasts, so the sidebar row and agent header
+        // patch in place immediately.
+        let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
+        if let Some(notify) = notify {
+            notify(
+                "agent_updated",
+                serde_json::json!({
+                    "agentId": agent_id,
+                    "name": new_name,
+                    "description": new_desc,
+                }),
+            );
         }
         ToolResult::ok(format!(
-            "Updated identity{}{}{}. This takes effect in new conversations.",
+            "Updated identity{}{}. This takes effect in new conversations.",
             if name.is_empty() {
                 String::new()
             } else {
@@ -194,7 +147,6 @@ impl Profile {
             } else {
                 format!(", role: '{}'", role)
             },
-            caveats,
         ))
     }
 
@@ -302,7 +254,7 @@ impl DynTool for ProfileTool {
     fn description(&self) -> String {
         match self.op {
             ProfileOp::Get => "Reads this bot's account: its id, the model this conversation runs on, and the plan, subscription status, renewal and balance.".to_string(),
-            ProfileOp::Update => "Renames you or changes your role, everywhere the owner sees it. When the owner says to use a different name, call this: remembering the name alone doesn't change it. Takes effect in new conversations.".to_string(),
+            ProfileOp::Update => "Renames you or changes your role, everywhere the owner sees it. It changes your own name only, never the bot's. When the owner says to use a different name, call this: remembering the name alone doesn't change it. Takes effect in new conversations.".to_string(),
             ProfileOp::OpenBilling => "Opens the account's billing portal in the owner's browser.".to_string(),
         }
     }
@@ -386,6 +338,39 @@ mod tests {
             "Plan: solo\nSubscription status: active\nRenewal: not reported\nBalance: not reported"
         );
         assert!(!out.contains("secret_field"));
+    }
+
+    /// An employee renaming itself in chat changes its own name and nothing
+    /// else: not the primary, not the old agent profile, and nothing reaches
+    /// NeboAI — the store here has no NeboAI credentials at all, so any call
+    /// to the hub would fail the rename.
+    #[tokio::test]
+    async fn a_self_rename_changes_only_the_employees_own_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("p.db").to_string_lossy()).unwrap());
+        store.ensure_agent_profile().unwrap();
+        for (id, name) in [(crate::team_tool::PRIMARY_AGENT_ID, "Nanna"), ("books", "Bookkeeper")] {
+            store.create_agent(id, None, name, "", "", "{}", None, None).unwrap();
+        }
+        let tools = Profile::new(store.clone(), Arc::new(std::sync::RwLock::new(None))).tools();
+        let ctx = ToolContext { session_key: "agent:books:web".into(), ..Default::default() };
+
+        let out = tools[1].execute_dyn(&ctx, json!({"name": "Penny", "role": "Books"})).await;
+        assert!(!out.is_error, "{}", out.content);
+
+        assert_eq!(store.get_agent("books").unwrap().unwrap().name, "Penny");
+        assert_eq!(store.get_agent("books").unwrap().unwrap().description, "Books");
+        assert_eq!(store.get_agent(crate::team_tool::PRIMARY_AGENT_ID).unwrap().unwrap().name, "Nanna");
+        let profile = store.get_agent_profile().unwrap().unwrap();
+        assert_eq!(profile.name, "Nebo", "the old agent profile is not renamed");
+        assert!(profile.role.unwrap_or_default().is_empty(), "no bot-wide role is written");
+
+        // The primary renaming itself is the same: its own row only.
+        let ctx = ToolContext { session_key: "agent:assistant:web".into(), ..Default::default() };
+        let out = tools[1].execute_dyn(&ctx, json!({"name": "Ada"})).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(store.get_agent(crate::team_tool::PRIMARY_AGENT_ID).unwrap().unwrap().name, "Ada");
+        assert_eq!(store.get_agent_profile().unwrap().unwrap().name, "Nebo");
     }
 
     #[test]

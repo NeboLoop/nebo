@@ -27,6 +27,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::neboai::bot_status),
         )
         .route(
+            "/neboai/bot",
+            axum::routing::get(handlers::neboai::get_bot),
+        )
+        .route(
             "/neboai/email",
             axum::routing::get(handlers::neboai::bot_email),
         )

@@ -13,6 +13,10 @@ export const agentSettingsSections = [
 	{ id: 'rules', label: 'settings.navItems.rules' },
 	{ id: 'configure', label: 'agent.configure' },
 	{ id: 'skills', label: 'settings.navItems.skills' },
+	{ id: 'workflows', label: 'marketplace.workflows' },
+	// Where people and other systems reach this employee: its own address,
+	// its phone lines and its channels, each managed in its own section.
+	{ id: 'reach', label: 'agentSettings.reach' },
 	{ id: 'channels', label: 'agentSettings.channels' },
 	{ id: 'accounts', label: 'agentSettings.connectedAccounts' },
 	{ id: 'phone', label: 'agentSettings.phone' },

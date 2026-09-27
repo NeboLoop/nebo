@@ -82,7 +82,12 @@
               title={agent.status === 'online' ? $t('common.online') : $t('common.paused')}
             ></div>
           {/snippet}
-          <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-left" onclick={() => { selected = agent; confirming = false; }}>{agent.name}</button>
+          <div class="flex items-center gap-2 min-w-0">
+            <button class="text-sm font-semibold text-primary hover:underline cursor-pointer bg-transparent border-none p-0 text-left truncate" onclick={() => { selected = agent; confirming = false; }}>{agent.name}</button>
+            {#if agent.id === 'assistant'}
+              <span class="shrink-0 px-1.5 py-0.5 rounded bg-primary/10 text-primary text-xs font-medium">{$t('agentSettings.personalAssistant')}</span>
+            {/if}
+          </div>
           {#if agent.role}
             <div class="text-xs text-base-content/70 line-clamp-1">{agent.role}</div>
           {/if}
@@ -113,17 +118,22 @@
         <p class="text-xs text-base-content/70">{selected.role}</p>
       </div>
     {/if}
+    {#if selected.id === 'assistant'}
+      <p class="text-xs text-base-content/60 leading-snug">{$t('agent.primaryUndeletable')}</p>
+    {/if}
     <div>
       <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('common.status')}</div>
       <span class="px-2 py-0.5 rounded text-xs font-medium {selected.status === 'online' ? 'bg-success/10 text-success' : 'bg-base-200 text-base-content/60'}">{selected.status}</span>
     </div>
     {#snippet footer()}
       <a href="/{selected?.id}/settings" class="px-3 py-1.5 rounded-md border border-base-300 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors no-underline">{$t('settingsAgents.configure')}</a>
-      <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={() => (confirming = true)}>{$t('common.uninstall')}</button>
+      {#if selected?.id !== 'assistant'}
+        <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={() => (confirming = true)}>{$t('common.uninstall')}</button>
+      {/if}
     {/snippet}
   </ManageModal>
 
-  {#if confirming}
+  {#if confirming && selected.id !== 'assistant'}
     <ConfirmModal
       title={$t('common.uninstallTitle', { values: { name: selected.name } })}
       message={$t('settingsAgents.uninstallMessage')}

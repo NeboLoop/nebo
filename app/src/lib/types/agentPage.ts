@@ -139,6 +139,8 @@ export interface AgentDisplay {
 	department?: string
 	/** The employee this one answers to; empty = answers to the owner. */
 	reportsTo?: string
+	/** When the employee was hired (unix seconds). */
+	installedAt?: number
 }
 
 /** The agentPage context shape provided by [agentId]/+layout.svelte. */
@@ -188,4 +190,6 @@ export interface AgentPageContext {
 	agentStatus: (id: string) => string
 	refreshRuns: () => Promise<void>
 	refreshThreads: () => Promise<void>
+	/** Reload this employee's config (skills, persona, workflows) after an edit. */
+	refreshAgent: () => Promise<void>
 }

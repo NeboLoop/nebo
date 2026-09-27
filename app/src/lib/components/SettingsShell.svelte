@@ -25,6 +25,7 @@
   import Radio from 'lucide-svelte/icons/radio';
   import Layers from 'lucide-svelte/icons/layers';
   import X from 'lucide-svelte/icons/x';
+  import Building2 from 'lucide-svelte/icons/building-2';
   import type { SvelteComponent } from 'svelte';
 
   import { onMount } from 'svelte';
@@ -109,6 +110,7 @@
     <!-- Header -->
     <div class="flex items-center justify-between px-6 py-4 border-b border-base-content/10 shrink-0">
       <div class="flex items-center gap-3">
+        <Building2 class="w-5 h-5 text-base-content/70 shrink-0" aria-hidden="true" />
         <h1 class="font-display text-lg font-bold text-base-content">{$t('settings.title')}</h1>
         {#if appVersion}<span class="text-xs text-base-content/50">v{appVersion}</span>{/if}
       </div>
