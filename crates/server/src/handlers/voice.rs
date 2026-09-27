@@ -2297,6 +2297,7 @@ mod voice_prompt_tests {
             title_custom: false,
             model: None,
             linked_chat_id: None,
+            linked_agent_id: None,
         }
     }
 

@@ -65,13 +65,14 @@ impl Store {
         Ok(())
     }
 
-    /// Record the linked runtime's session behind this chat (see
-    /// `Chat::linked_chat_id`). Written once, on the thread's first turn.
-    pub fn set_chat_linked_chat_id(&self, id: &str, linked_chat_id: &str) -> Result<(), NeboError> {
+    /// Record the linked agent's session behind this chat and the agent it
+    /// belongs to (see `Chat::linked_chat_id`). Written on the thread's
+    /// first turn.
+    pub fn set_chat_linked_session(&self, id: &str, agent_id: &str, session_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE chats SET linked_chat_id = ?1 WHERE id = ?2",
-            params![linked_chat_id, id],
+            "UPDATE chats SET linked_chat_id = ?1, linked_agent_id = ?2 WHERE id = ?3",
+            params![session_id, agent_id, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -1135,6 +1136,7 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
         title_custom: row.get("title_custom")?,
         model: row.get("model")?,
         linked_chat_id: row.get("linked_chat_id")?,
+        linked_agent_id: row.get("linked_agent_id")?,
     })
 }
 
@@ -1331,11 +1333,10 @@ mod tests {
         store.create_chat("c1", "First").unwrap();
         assert!(store.get_chat("c1").unwrap().unwrap().linked_chat_id.is_none());
 
-        store.set_chat_linked_chat_id("c1", "api_7").unwrap();
-        assert_eq!(
-            store.get_chat("c1").unwrap().unwrap().linked_chat_id.as_deref(),
-            Some("api_7")
-        );
+        store.set_chat_linked_session("c1", "coder", "api_7").unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert_eq!(chat.linked_chat_id.as_deref(), Some("api_7"));
+        assert_eq!(chat.linked_agent_id.as_deref(), Some("coder"));
 
         store.create_chat("c2", "Second").unwrap();
         assert!(store.get_chat("c2").unwrap().unwrap().linked_chat_id.is_none());

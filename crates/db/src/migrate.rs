@@ -731,6 +731,42 @@ Date
         assert_eq!(count("SELECT COUNT(*) FROM _nebo_migrations WHERE version = 166 AND name = '0166_permissions.sql'"), 1, "another migration's record is untouched");
     }
 
+    /// A linked chat stored under the phone contract's id reaches the same
+    /// session under Open Agent Link: `<member>~<session>` loses its member,
+    /// a first member's raw session stays, and so does anything whose part
+    /// before a `~` could not be a member id.
+    #[test]
+    fn linked_chats_keep_their_sessions_under_open_agent_link() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("linked.db")).unwrap();
+        run_migrations_to(&conn, 184).unwrap();
+        for (id, linked) in [
+            ("local", Some("claude-code~s-1")),
+            ("member", Some("openclaw-2~agent:main:thread-9")),
+            ("first", Some("20260925_143012_ab12cd")),
+            ("odd", Some("agent:main:x~y")),
+            ("none", None),
+        ] {
+            conn.execute(
+                "INSERT INTO chats (id, title, created_at, updated_at, linked_chat_id) VALUES (?1, 't', 0, 0, ?2)",
+                rusqlite::params![id, linked],
+            )
+            .unwrap();
+        }
+
+        run_migrations(&conn).unwrap();
+
+        let linked = |id: &str| -> (Option<String>, Option<String>) {
+            conn.query_row("SELECT linked_chat_id, linked_agent_id FROM chats WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+        };
+        assert_eq!(linked("local"), (Some("s-1".into()), None));
+        assert_eq!(linked("member"), (Some("agent:main:thread-9".into()), None));
+        assert_eq!(linked("first"), (Some("20260925_143012_ab12cd".into()), None));
+        assert_eq!(linked("odd"), (Some("agent:main:x~y".into()), None), "not a member's prefix");
+        assert_eq!(linked("none"), (None, None));
+    }
+
     /// A migration file without goose markers is applied verbatim — the
     /// whole file is the Up script, not silently skipped.
     #[test]

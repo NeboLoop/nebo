@@ -18,9 +18,13 @@ tokio-util = { workspace = true }
 reqwest = { workspace = true }
 tokio-tungstenite = { workspace = true }
 
-# Coding agents hosted on this computer
+# Coding agents hosted on this computer, and every linked agent reached
+# over Open Agent Link
 link-core = { workspace = true }
 nebo-runtimes = { workspace = true }
+oal-host = { workspace = true }
+oal-secure = { workspace = true }
+oal-relay = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -49,6 +53,7 @@ local-inference = ["dep:llama-cpp-2"]
 libc = "0.2"
 
 [dev-dependencies]
+rusqlite = { workspace = true }
 rcgen = "0.13"
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
