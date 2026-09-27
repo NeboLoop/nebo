@@ -847,8 +847,8 @@ pub(crate) async fn ensure_agent_active(state: &AppState, agent_id: &str) -> Res
 /// The matter (isolation context) of an ORIGINATING thread, for stamping onto a
 /// message routed out of it (the user @mention fork; coworker sends carry it on
 /// the envelope from the sender's resolved scope instead). Matters only exist
-/// under `context_isolated`; the precedence is explicit key segment, then
-/// active chat. It keys the forked conversation; the forked run's memory
+/// for an employee whose conversations are kept apart (memory mode Separate
+/// or Confidential); the precedence is explicit key segment, then active chat. It keys the forked conversation; the forked run's memory
 /// follows its own origin (`resolve_memory_scope`), so an owner's mention
 /// files into the mentioned employee's private memory.
 pub(crate) fn origin_matter_context(
@@ -857,7 +857,7 @@ pub(crate) fn origin_matter_context(
     origin_session_key: &str,
 ) -> Option<String> {
     if origin_agent_id.is_empty()
-        || !crate::workflow_manager::agent_context_isolated(&state.store, origin_agent_id)
+        || !crate::workflow_manager::agent_memory_mode(&state.store, origin_agent_id).separates_conversations()
     {
         return None;
     }

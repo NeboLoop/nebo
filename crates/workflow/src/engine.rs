@@ -802,7 +802,7 @@ pub async fn execute_activity(
     // Memory continuity for agent-bound runs. Computed per activity so
     // mid-run memory writes surface in later activities. The employee's
     // identity is the loop's `identity` row, not part of the instructions.
-    let agent_ctx = build_agent_context(store, agent_id);
+    let agent_ctx = build_agent_context(store, agent_id, memory_user_id);
 
     // If activity has steps, execute per-step. Otherwise, single-turn legacy path.
     if activity.steps.is_empty() {
@@ -1346,21 +1346,24 @@ fn typed_node_preamble(activity_type: &str) -> Option<&'static str> {
 /// happened most recently, including post-run outcome history. Recall is
 /// not learning, so this is NOT gated by learning_mode. Who the agent is
 /// (SOUL.md, rules, AGENT.md) is the loop's `identity` row.
-fn build_agent_context(store: &Store, agent_id: &str) -> Option<String> {
+fn build_agent_context(store: &Store, agent_id: &str, memory_user_id: &str) -> Option<String> {
     if agent_id.is_empty() {
         return None;
     }
-    // Base agent scope ONLY — never `:ctx:`-suffixed scopes. Context-isolated
-    // agents (law-firm matters, per-client engagements) keep each context's
-    // memories sealed from every other; a scheduled run has no case context,
-    // so it must see none of them. It gets the agent-wide slice only.
+    // Only what the run's own scope reads (`memory_scope_chain`), never a
+    // conversation's scope. An employee whose conversations are kept apart
+    // (law-firm matters, per-client engagements) keeps each one's memories
+    // sealed from every other; a scheduled run has no case context, so it
+    // sees none of them — and a Confidential employee's run, whose scope
+    // skips the private memory, sees none of that either.
+    let readable = tools::memory_tools::memory_scope_chain(memory_user_id);
     let mut memories = store.recent_memories_for_agent(agent_id, 8).unwrap_or_default();
     for m in store.list_memories_for_agent(agent_id, 8, 0).unwrap_or_default() {
         if !memories.iter().any(|e| e.id == m.id) {
             memories.push(m);
         }
     }
-    memories.retain(|m| !m.user_id.contains(":ctx:"));
+    memories.retain(|m| readable.contains(&m.user_id));
     memories.truncate(8);
 
     if memories.is_empty() {

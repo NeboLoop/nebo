@@ -2022,15 +2022,17 @@
 		"send": "Send"
 	},
 	"agentIsolation": {
-		"title": "Memory isolation",
-		"shared": "One memory",
-		"sharedHint": "One memory across every conversation — what this employee learns anywhere, it knows everywhere",
-		"isolated": "Isolated per conversation",
-		"isolatedHint": "Your conversations are listed separately and share this employee's private memory. Each conversation with someone else — a caller, a visitor, another bot — keeps its own sealed memory, so one never bleeds into another",
-		"confirmOffTitle": "Turn off memory isolation?",
-		"confirmOffBody": "Your separate conversations stay saved, but they'll no longer appear as a list — this employee returns to one continuous conversation. What was learned in a conversation with someone else stays sealed: future chats won't draw on it. Nothing is deleted, and turning isolation back on restores the list.",
-		"confirmOffAction": "Turn off isolation",
-		"lockedByPhone": "Isolated while a phone line is attached — every caller gets sealed memory. Remove the line at neboai.com/manage/phone to change this."
+		"title": "Conversations and memory",
+		"single": "One conversation",
+		"singleHint": "A single running conversation with one memory.",
+		"separate": "Separate conversations",
+		"separateHint": "Many conversations that share one memory. A conversation with someone else, like a caller, a visitor or another bot, keeps its own sealed memory.",
+		"confidential": "Confidential",
+		"confidentialHint": "Use this when each conversation is a different client, patient or case. Nothing learned in one conversation is ever visible in another, not even to this employee. Knowledge you choose to save to local memory is still available to every conversation.",
+		"confirmOffTitle": "Switch to one conversation?",
+		"confirmOffBody": "Your separate conversations stay saved, but they'll no longer appear as a list, and this employee returns to one continuous conversation. What was learned in a sealed conversation stays sealed: future chats won't draw on it. Nothing is deleted, and choosing separate conversations again restores the list.",
+		"confirmOffAction": "Switch to one conversation",
+		"lockedByPhone": "Conversations stay separate while a phone line is attached, so every caller gets sealed memory. Remove the line at neboai.com/manage/phone to choose one conversation."
 	},
 	"cases": {
 		"title": "Cases",

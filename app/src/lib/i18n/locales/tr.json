@@ -2013,15 +2013,17 @@
 		"send": "Gönder"
 	},
 	"agentIsolation": {
-		"title": "Bellek yalıtımı",
-		"shared": "Tek bellek",
-		"sharedHint": "Tüm sohbetlerde tek bir bellek — bu çalışan nerede öğrenirse öğrensin, her yerde bilir",
-		"isolated": "Her sohbet için ayrı",
-		"isolatedHint": "Konuşmaların ayrı listelenir ve bu çalışanın özel belleğini paylaşır. Başka biriyle yapılan her konuşma — arayan biri, bir ziyaretçi, başka bir bot — kendi mühürlü belleğini korur; böylece hiçbiri diğerine karışmaz",
-		"confirmOffTitle": "Bellek yalıtımı kapatılsın mı?",
-		"confirmOffBody": "Ayrı konuşmaların kayıtlı kalır ama artık liste olarak görünmez — bu çalışan tek ve kesintisiz bir konuşmaya döner. Başka biriyle yapılan bir konuşmada öğrenilenler mühürlü kalır: sonraki sohbetler bunlardan yararlanmaz. Hiçbir şey silinmez ve yalıtımı yeniden açmak listeyi geri getirir.",
-		"confirmOffAction": "Yalıtımı kapat",
-		"lockedByPhone": "Bir telefon hattı bağlıyken yalıtılmıştır — her arayan mühürlü bellek alır. Bunu değiştirmek için hattı neboai.com/manage/phone adresinden kaldırın."
+		"title": "Konuşmalar ve hafıza",
+		"single": "Tek konuşma",
+		"singleHint": "Tek bir hafızası olan tek ve kesintisiz bir konuşma.",
+		"separate": "Ayrı konuşmalar",
+		"separateHint": "Tek bir hafızayı paylaşan çok sayıda konuşma. Arayan, ziyaretçi ya da başka bir bot gibi başka biriyle yapılan konuşma kendi mühürlü hafızasını korur.",
+		"confidential": "Gizli",
+		"confidentialHint": "Her konuşma farklı bir müvekkil, hasta veya dosya olduğunda bunu kullanın. Bir konuşmada öğrenilen hiçbir şey başka bir konuşmada asla görünmez, bu çalışana bile. Yerel hafızaya kaydetmeyi seçtiğiniz bilgiler her konuşmada kullanılabilir olmaya devam eder.",
+		"confirmOffTitle": "Tek konuşmaya geçilsin mi?",
+		"confirmOffBody": "Ayrı konuşmalarınız kayıtlı kalır ama artık liste olarak görünmez, bu çalışan tek ve kesintisiz bir konuşmaya döner. Mühürlü bir konuşmada öğrenilenler mühürlü kalır: sonraki sohbetler bunları kullanmaz. Hiçbir şey silinmez; ayrı konuşmaları yeniden seçtiğinizde liste geri gelir.",
+		"confirmOffAction": "Tek konuşmaya geç",
+		"lockedByPhone": "Bir telefon hattı bağlıyken konuşmalar ayrı kalır, böylece her arayanın hafızası mühürlü olur. Tek konuşmayı seçmek için hattı neboai.com/manage/phone adresinden kaldırın."
 	},
 	"cases": {
 		"title": "Dosyalar",

@@ -2013,15 +2013,17 @@
 		"send": "Enviar"
 	},
 	"agentIsolation": {
-		"title": "Aislamiento de memoria",
-		"shared": "Una memoria",
-		"sharedHint": "Una memoria para todas las conversaciones — lo que este empleado aprende en cualquier sitio, lo sabe en todos",
-		"isolated": "Aislada por conversación",
-		"isolatedHint": "Tus conversaciones aparecen por separado y comparten la memoria privada de este empleado. Cada conversación con otra persona — quien llama, un visitante, otro bot — conserva su propia memoria sellada, así ninguna se mezcla con otra",
-		"confirmOffTitle": "¿Desactivar el aislamiento de memoria?",
-		"confirmOffBody": "Tus conversaciones separadas siguen guardadas, pero ya no aparecerán como una lista: este empleado vuelve a una conversación continua. Lo aprendido en una conversación con otra persona sigue sellado: los chats futuros no lo usarán. No se borra nada, y al volver a activar el aislamiento se restaura la lista.",
-		"confirmOffAction": "Desactivar el aislamiento",
-		"lockedByPhone": "Aislado mientras haya una línea de teléfono conectada — cada persona que llama recibe una memoria sellada. Quita la línea en neboai.com/manage/phone para cambiarlo."
+		"title": "Conversaciones y memoria",
+		"single": "Una conversación",
+		"singleHint": "Una sola conversación continua con una memoria.",
+		"separate": "Conversaciones separadas",
+		"separateHint": "Muchas conversaciones que comparten una memoria. Una conversación con otra persona, como alguien que llama, un visitante u otro bot, conserva su propia memoria sellada.",
+		"confidential": "Confidencial",
+		"confidentialHint": "Úsalo cuando cada conversación sea un cliente, paciente o caso distinto. Nada de lo aprendido en una conversación es visible en otra, ni siquiera para este empleado. Lo que elijas guardar en la memoria local sigue disponible para todas las conversaciones.",
+		"confirmOffTitle": "¿Cambiar a una conversación?",
+		"confirmOffBody": "Tus conversaciones separadas siguen guardadas, pero ya no aparecerán como lista, y este empleado vuelve a una conversación continua. Lo aprendido en una conversación sellada sigue sellado: los chats futuros no lo usarán. No se borra nada, y elegir de nuevo conversaciones separadas restaura la lista.",
+		"confirmOffAction": "Cambiar a una conversación",
+		"lockedByPhone": "Las conversaciones siguen separadas mientras haya una línea telefónica conectada, así cada persona que llama tiene memoria sellada. Quita la línea en neboai.com/manage/phone para elegir una conversación."
 	},
 	"cases": {
 		"title": "Casos",

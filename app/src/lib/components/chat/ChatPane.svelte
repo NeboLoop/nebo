@@ -96,7 +96,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, folder = '', isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', helpers = [], tokenUsage = null, goal = null, quotaWarning = '', chatError = '', recapText = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, memoryMode = 'single', folder = '', isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -105,8 +105,9 @@
     /** Runs open as a modal over the workspace, not in the pane. */
     onopenruns?: () => void;
     onsettings?: () => void;
-    /** memory.context_isolated — this employee's conversations are sealed. */
-    isolated?: boolean;
+    /** memory.mode — "separate" or "confidential" keeps this employee's
+     *  conversations apart, and the header shows which. */
+    memoryMode?: string;
     /** The folder a linked coding employee's conversation works in. */
     folder?: string;
     /** This employee is an app: badge the header and offer Open App. */
@@ -1243,14 +1244,14 @@
         {#if isApp}
           <span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-info/15 text-info font-semibold shrink-0">{$t('agent.appBadge')}</span>
         {/if}
-        {#if isolated}
+        {#if memoryMode === 'separate' || memoryMode === 'confidential'}
           <!-- Separate conversations only mean something when memory is sealed
                between them. MessageSquareLock = "this conversation is sealed";
                the plain Lock stays on the Settings toggle — that distinction
                is deliberate. Words live in the tooltip. -->
           <span
             class="self-center text-warning/80 shrink-0 tooltip tooltip-bottom"
-            data-tip={$t('agentIsolation.isolated')}
+            data-tip={$t(`agentIsolation.${memoryMode}`)}
           >
             <MessageSquareLock class="w-3 h-3" />
           </span>

@@ -5463,7 +5463,7 @@ mod tests {
             .expect("the Memory integration");
         h.tools.register(Box::new(CompanyMemory { integration: memory.id, ran: ran.clone() })).await;
         let isolated: napp::agent::AgentConfig =
-            serde_json::from_value(serde_json::json!({"memory": {"context_isolated": true}})).unwrap();
+            serde_json::from_value(serde_json::json!({"memory": {"mode": "separate"}})).unwrap();
         h.agent_registry.write().await.insert("iso".into(), employee("iso", "Iso", "Discreet.", Some(isolated)));
 
         // A helper of the isolated employee, serving another bot, whose

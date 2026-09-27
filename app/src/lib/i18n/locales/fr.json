@@ -2013,15 +2013,17 @@
 		"send": "Envoyer"
 	},
 	"agentIsolation": {
-		"title": "Cloisonnement de la mémoire",
-		"shared": "Une seule mémoire",
-		"sharedHint": "Une seule mémoire pour toutes les conversations — ce que cet employé apprend quelque part, il le sait partout",
-		"isolated": "Cloisonnée par conversation",
-		"isolatedHint": "Vos conversations sont listées séparément et partagent la mémoire privée de cet employé. Chaque conversation avec quelqu'un d'autre — un appelant, un visiteur, un autre bot — garde sa propre mémoire scellée, pour qu'aucune ne déborde sur une autre",
-		"confirmOffTitle": "Désactiver le cloisonnement de la mémoire ?",
-		"confirmOffBody": "Vos conversations séparées restent enregistrées, mais n'apparaîtront plus sous forme de liste — cet employé revient à une conversation continue. Ce qui a été appris dans une conversation avec quelqu'un d'autre reste scellé : les prochaines conversations ne s'en serviront pas. Rien n'est supprimé, et réactiver l'isolement rétablit la liste.",
-		"confirmOffAction": "Désactiver le cloisonnement",
-		"lockedByPhone": "Cloisonné tant qu'une ligne téléphonique est rattachée — chaque appelant obtient une mémoire scellée. Retirez la ligne sur neboai.com/manage/phone pour changer cela."
+		"title": "Conversations et mémoire",
+		"single": "Une conversation",
+		"singleHint": "Une seule conversation continue, avec une seule mémoire.",
+		"separate": "Conversations séparées",
+		"separateHint": "Plusieurs conversations qui partagent une seule mémoire. Une conversation avec quelqu'un d'autre, comme un appelant, un visiteur ou un autre bot, garde sa propre mémoire scellée.",
+		"confidential": "Confidentiel",
+		"confidentialHint": "Utilisez ce mode quand chaque conversation concerne un client, un patient ou un dossier différent. Rien de ce qui est appris dans une conversation n'est jamais visible dans une autre, pas même pour cet employé. Ce que vous choisissez d'enregistrer dans la mémoire locale reste disponible pour toutes les conversations.",
+		"confirmOffTitle": "Passer à une seule conversation ?",
+		"confirmOffBody": "Vos conversations séparées restent enregistrées, mais elles n'apparaîtront plus sous forme de liste, et cet employé revient à une conversation continue. Ce qui a été appris dans une conversation scellée reste scellé : les prochains échanges ne s'en serviront pas. Rien n'est supprimé, et revenir aux conversations séparées rétablit la liste.",
+		"confirmOffAction": "Passer à une seule conversation",
+		"lockedByPhone": "Les conversations restent séparées tant qu'une ligne téléphonique est rattachée, pour que chaque appelant ait une mémoire scellée. Retirez la ligne sur neboai.com/manage/phone pour choisir une seule conversation."
 	},
 	"cases": {
 		"title": "Dossiers",

@@ -1205,12 +1205,12 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
 }
 
 impl Store {
-    /// Full-text search across every chat's messages (FTS5, ranked). Distinct
-    /// from search_chat_messages, which is the in-chat find (one chat, LIKE,
-    /// full rows). Tool/system rows are excluded — this searches the
-    /// conversation, not tool output. Terms are quoted so user text can't
-    /// break FTS syntax.
-    pub fn search_chats(&self, query: &str, limit: i64) -> Result<Vec<ChatSearchHit>, NeboError> {
+    /// Full-text search across every chat's messages (FTS5, ranked), or only
+    /// `chat_id`'s when given. Distinct from search_chat_messages, which is
+    /// the in-chat find (one chat, LIKE, full rows). Tool/system rows are
+    /// excluded — this searches the conversation, not tool output. Terms are
+    /// quoted so user text can't break FTS syntax.
+    pub fn search_chats(&self, query: &str, limit: i64, chat_id: Option<&str>) -> Result<Vec<ChatSearchHit>, NeboError> {
         let fts_query = query
             .split_whitespace()
             .map(|t| format!("\"{}\"", t.replace('"', "")))
@@ -1229,12 +1229,13 @@ impl Store {
                  LEFT JOIN chats c ON c.id = m.chat_id
                  WHERE chat_messages_fts MATCH ?1
                    AND m.role IN ('user', 'assistant')
+                   AND (?3 IS NULL OR m.chat_id = ?3)
                  ORDER BY rank
                  LIMIT ?2",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
-            .query_map(params![fts_query, limit], |row| {
+            .query_map(params![fts_query, limit, chat_id], |row| {
                 Ok(ChatSearchHit {
                     message_id: row.get(0)?,
                     chat_id: row.get(1)?,

@@ -89,21 +89,24 @@ pub struct ToolScope {
 
 /// Memory scoping configuration for an agent.
 ///
-/// Controls how memories are isolated and inherited across the 3-tier hierarchy:
-/// - Layer 1 (User):   `user_id = "user123"` — main Nebo companion
-/// - Layer 2 (Agent):  `user_id = "user123:agent:brief"` — agent-wide
-/// - Layer 3 (Context): `user_id = "user123:agent:brief:ctx:doc-123"` — per-context
+/// Controls how memories are isolated and inherited across the hierarchy:
+/// - Local:   `user_id = "user123"` — shared by every employee on this Nebo
+/// - Private: `user_id = "user123:agent:brief"` — the employee's own
+/// - One conversation: `user_id = "user123:agent:brief:ctx:doc-123"` (a
+///   Separate employee's conversation with someone else) or
+///   `"user123:agent:brief:matter:doc-123"` (a Confidential conversation)
 ///
 /// Owner-scope inheritance is always on: every agent READS the owner's tacit
 /// memories (facts about the owner belong to the owner, not the agent that
 /// heard them) while WRITING only to its own scope. The former opt-in
 /// `inherit_user` flag is gone; unknown fields in older agent.json parse fine.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(from = "MemoryConfigFile")]
 pub struct MemoryConfig {
-    /// When true, memories are isolated per contextId (from SDK embed sessions).
-    /// Context comes from the session key's 4th segment: `agent:{id}:{channel}:{ctx}`.
-    #[serde(default)]
-    pub context_isolated: bool,
+    /// How this employee's conversations and memory are kept: the one choice
+    /// in its settings. `agent::memory::resolve_memory_scope` turns it into
+    /// the scope every read and write uses.
+    pub mode: MemoryMode,
     /// Optional declared memory topics. When set, they replace the generic
     /// `project/` category in this agent's extraction prompt — each slug is a
     /// namespace prefix inside the agent's memory scope, and the description
@@ -116,7 +119,7 @@ pub struct MemoryConfig {
     /// kebab-case class names ("web", "external-email", "channel", "document",
     /// "phone", "coworker"). A memory write from a run whose taint intersects
     /// the bar is refused at the store. `None` = engine default (channel+phone
-    /// when `context_isolated`, otherwise no bar); an explicit `[]` is a
+    /// when the mode separates conversations, otherwise no bar); an explicit `[]` is a
     /// deliberate opt-out.
     #[serde(default)]
     pub write_bar: Option<Vec<String>>,
@@ -128,6 +131,73 @@ pub struct MemoryConfig {
     /// never per-conversation model judgment.
     #[serde(default)]
     pub share_with: Vec<String>,
+}
+
+/// An employee's conversations and memory.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryMode {
+    /// One running conversation and one memory.
+    #[default]
+    Single,
+    /// Many conversations sharing the employee's one private memory. A
+    /// conversation with someone other than the owner (a caller, a visitor,
+    /// another bot) keeps its own sealed memory.
+    Separate,
+    /// Many conversations, each a sealed matter: nothing learned in one is
+    /// visible in another, the owner's own included. Local memory is still
+    /// read by every conversation.
+    Confidential,
+}
+
+impl MemoryMode {
+    /// The owner's conversations with this employee are kept apart (listed
+    /// one by one) rather than as one running thread.
+    pub fn separates_conversations(self) -> bool {
+        self != MemoryMode::Single
+    }
+
+    /// The mode an agent.json written before modes existed declares with its
+    /// `context_isolated` flag: off is one conversation, on is separate
+    /// conversations (what that flag did). Migration 0189 applies the same
+    /// mapping to the employees already stored.
+    pub fn from_context_isolated(context_isolated: bool) -> Self {
+        if context_isolated {
+            MemoryMode::Separate
+        } else {
+            MemoryMode::Single
+        }
+    }
+}
+
+/// `memory` as agent.json spells it. `mode` is the setting; a package or file
+/// written before it carries `context_isolated` instead, read through
+/// [`MemoryMode::from_context_isolated`]. Only `mode` is ever written back.
+#[derive(Deserialize)]
+struct MemoryConfigFile {
+    #[serde(default)]
+    mode: Option<MemoryMode>,
+    #[serde(default)]
+    context_isolated: Option<bool>,
+    #[serde(default)]
+    topics: Vec<MemoryTopic>,
+    #[serde(default)]
+    write_bar: Option<Vec<String>>,
+    #[serde(default)]
+    share_with: Vec<String>,
+}
+
+impl From<MemoryConfigFile> for MemoryConfig {
+    fn from(f: MemoryConfigFile) -> Self {
+        MemoryConfig {
+            mode: f
+                .mode
+                .unwrap_or_else(|| MemoryMode::from_context_isolated(f.context_isolated.unwrap_or(false))),
+            topics: f.topics,
+            write_bar: f.write_bar,
+            share_with: f.share_with,
+        }
+    }
 }
 
 /// One declared memory topic — `{ "slug": "lead", "description": "A prospective
@@ -1373,7 +1443,7 @@ mod tests {
         assert!(config.pricing.is_none());
         assert!(config.scopes.is_empty());
         // Memory config defaults
-        assert!(!config.memory.context_isolated);
+        assert_eq!(config.memory.mode, MemoryMode::Single);
         assert!(config.memory.topics.is_empty());
     }
 
@@ -1417,14 +1487,30 @@ mod tests {
         // older agent.json carrying it must still parse.
         let json = r#"{"memory": {"inherit_user": true, "context_isolated": true}}"#;
         let config = parse_agent_config(json).unwrap();
-        assert!(config.memory.context_isolated);
+        assert_eq!(config.memory.mode, MemoryMode::Separate);
     }
 
     #[test]
     fn test_memory_config_defaults() {
         let json = r#"{"memory": {}}"#;
         let config = parse_agent_config(json).unwrap();
-        assert!(!config.memory.context_isolated);
+        assert_eq!(config.memory.mode, MemoryMode::Single);
+    }
+
+    /// The flag agent.json carried before modes: off is one conversation, on
+    /// is separate conversations. A `mode` wins over it, and only `mode` is
+    /// written back.
+    #[test]
+    fn test_memory_mode_reads_the_old_isolation_flag() {
+        let mode = |json: &str| parse_agent_config(json).unwrap().memory.mode;
+        assert_eq!(mode(r#"{"memory": {"context_isolated": false}}"#), MemoryMode::Single);
+        assert_eq!(mode(r#"{"memory": {"context_isolated": true}}"#), MemoryMode::Separate);
+        assert_eq!(mode(r#"{"memory": {"mode": "confidential"}}"#), MemoryMode::Confidential);
+        assert_eq!(mode(r#"{"memory": {"mode": "single", "context_isolated": true}}"#), MemoryMode::Single);
+        assert!(parse_agent_config(r#"{"memory": {"mode": "sealed"}}"#).is_err(), "an unknown mode is refused");
+        let written = serde_json::to_value(parse_agent_config(r#"{"memory": {"context_isolated": true}}"#).unwrap().memory).unwrap();
+        assert_eq!(written["mode"], "separate");
+        assert!(written.get("context_isolated").is_none(), "{written}");
     }
 
 

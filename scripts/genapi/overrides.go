@@ -130,7 +130,10 @@ export interface RunDisplay {
 	department?: string
 	/** The employee this one answers to (local agent id); unset = answers to the owner. */
 	reportsTo?: string
+	/** Conversations are kept apart (memory.mode "separate" or "confidential"). */
 	isolated: boolean
+	/** memory.mode: "single", "separate" or "confidential". */
+	memoryMode: string
 	needsSetup: boolean
 	nappPath?: string
 	appWindowConfig?: AppWindowConfig

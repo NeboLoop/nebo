@@ -104,8 +104,11 @@ export interface AgentRun {
 
 /** Local agent display object (derived from API Agent). */
 export interface AgentDisplay {
-	/** memory.context_isolated — each conversation keeps its own sealed memory. */
+	/** The employee's conversations are kept apart (memory.mode "separate" or
+	 *  "confidential"): its conversations are listed one by one. */
 	isolated?: boolean
+	/** memory.mode: "single", "separate" or "confidential". */
+	memoryMode?: string
 	id: string
 	name: string
 	role: string

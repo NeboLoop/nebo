@@ -2013,15 +2013,17 @@
 		"send": "Skicka"
 	},
 	"agentIsolation": {
-		"title": "Minnesisolering",
-		"shared": "Ett minne",
-		"sharedHint": "Ett minne för alla samtal — det medarbetaren lär sig någonstans vet den överallt",
-		"isolated": "Isolerat per samtal",
-		"isolatedHint": "Dina konversationer listas separat och delar den här medarbetarens privata minne. Varje konversation med någon annan — en uppringare, en besökare, en annan bot — behåller sitt eget förseglade minne, så att inget läcker över till en annan",
-		"confirmOffTitle": "Stänga av minnesisolering?",
-		"confirmOffBody": "Dina separata konversationer finns kvar men visas inte längre som en lista — medarbetaren återgår till en sammanhängande konversation. Det som lärdes i en konversation med någon annan förblir förseglat: framtida chattar använder det inte. Inget raderas, och om du slår på isoleringen igen kommer listan tillbaka.",
-		"confirmOffAction": "Stäng av isolering",
-		"lockedByPhone": "Isolerat så länge en telefonlinje är kopplad — varje uppringare får förseglat minne. Ta bort linjen på neboai.com/manage/phone för att ändra det här."
+		"title": "Samtal och minne",
+		"single": "Ett samtal",
+		"singleHint": "Ett enda pågående samtal med ett minne.",
+		"separate": "Separata samtal",
+		"separateHint": "Många samtal som delar ett minne. Ett samtal med någon annan, till exempel en uppringare, en besökare eller en annan bot, behåller sitt eget förseglade minne.",
+		"confidential": "Konfidentiellt",
+		"confidentialHint": "Använd detta när varje samtal gäller en annan klient, patient eller ärende. Inget som lärs i ett samtal syns någonsin i ett annat, inte ens för den här medarbetaren. Det du väljer att spara i det lokala minnet är fortfarande tillgängligt för alla samtal.",
+		"confirmOffTitle": "Byta till ett samtal?",
+		"confirmOffBody": "Dina separata samtal sparas, men visas inte längre som en lista, och den här medarbetaren går tillbaka till ett sammanhängande samtal. Det som lärts i ett förseglat samtal förblir förseglat: framtida chattar använder det inte. Inget raderas, och om du väljer separata samtal igen kommer listan tillbaka.",
+		"confirmOffAction": "Byt till ett samtal",
+		"lockedByPhone": "Samtalen förblir separata så länge en telefonlinje är kopplad, så att varje uppringare får ett förseglat minne. Ta bort linjen på neboai.com/manage/phone för att välja ett samtal."
 	},
 	"cases": {
 		"title": "Ärenden",

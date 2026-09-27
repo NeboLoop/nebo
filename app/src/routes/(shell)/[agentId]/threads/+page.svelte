@@ -100,7 +100,7 @@
   onprefilled={clearAsk}
   onback={ctx.openList}
   onsettings={ctx.openSettings}
-  isolated={ctx.agent?.isolated ?? false}
+  memoryMode={ctx.agent?.memoryMode ?? 'single'}
   isApp={ctx.agent?.isApp ?? false}
   onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App')}
 

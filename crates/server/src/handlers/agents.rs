@@ -246,16 +246,6 @@ fn agent_dir_name(name: &str) -> String {
         .to_string()
 }
 
-/// memory.context_isolated as the runtime enforces it — the DB frontmatter is
-/// the ONE source of truth for the toggle (the owner flips it in the DB; the
-/// file is not rewritten). Both list branches derive from here.
-fn isolated_from_frontmatter(frontmatter: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(frontmatter)
-        .ok()
-        .and_then(|fm| fm.pointer("/memory/context_isolated").and_then(|v| v.as_bool()))
-        .unwrap_or(false)
-}
-
 /// A message as a one-line preview: plain text, cut at `PREVIEW_CHARS`.
 const PREVIEW_CHARS: usize = 120;
 fn chat_preview(last_content: &str) -> String {
@@ -421,6 +411,10 @@ pub async fn list_agents(
             .unwrap_or_else(|| name.clone());
 
         let latest_thread = latest_thread_status(&state.store, &agent_id);
+        let memory_mode = match db_row {
+            Some(r) => crate::workflow_manager::memory_mode_of(&r.frontmatter),
+            None => loaded.config.as_ref().map(|c| c.memory.mode).unwrap_or_default(),
+        };
 
         let mut entry = serde_json::json!({
             "id": agent_id,
@@ -448,15 +442,15 @@ pub async fn list_agents(
             // The roster's "editable" affordance keys off nappPath — omitting
             // it made every agent look hand-editable.
             "nappPath": db_row.and_then(|r| r.napp_path.clone()),
-            // memory.context_isolated — the roster shows a lock on sealed
-            // employees, so the list must know without N getAgent round trips.
-            // ONE source of truth: DB frontmatter, because that is what the
-            // runtime enforces. No filesystem fallback when a DB row exists —
-            // a lock that overstates enforcement would lie to the owner.
-            "isolated": match db_row {
-                Some(r) => isolated_from_frontmatter(&r.frontmatter),
-                None => loaded.config.as_ref().map(|c| c.memory.context_isolated).unwrap_or(false),
-            },
+            // memory.mode — the roster lists a kept-apart employee's
+            // conversations and shows a lock, so the list must know without N
+            // getAgent round trips. `isolated` is whether the conversations
+            // are kept apart (Separate or Confidential). ONE source of truth:
+            // DB frontmatter, read as the runtime enforces it. No filesystem
+            // fallback when a DB row exists — a lock that overstates
+            // enforcement would lie to the owner.
+            "memoryMode": memory_mode,
+            "isolated": memory_mode.separates_conversations(),
             // The roster row's second line, without a per-employee round trip:
             // the latest thread's status line, and whether a restart cut it.
             "latestPreview": latest_thread.as_ref().and_then(|t| t.preview.clone()),
@@ -536,7 +530,8 @@ pub async fn list_agents(
             // hid every sealed employee whose files failed to load (a name
             // with "/" nests its folder and the loader misses it) — the rail
             // then showed no drill affordance until a click resolved it.
-            "isolated": isolated_from_frontmatter(&r.frontmatter),
+            "memoryMode": crate::workflow_manager::memory_mode_of(&r.frontmatter),
+            "isolated": crate::workflow_manager::memory_mode_of(&r.frontmatter).separates_conversations(),
             "needsSetup": false,
             "latestPreview": latest_thread.as_ref().and_then(|t| t.preview.clone()),
             "restarted": latest_thread.as_ref().is_some_and(|t| t.restarted),
@@ -1061,6 +1056,9 @@ pub async fn get_agent(
             "inputValues": input_values_json,
             "pluginsNeedingAuth": plugins_needing_auth,
             "needsSetup": needs_setup,
+            // memory.mode, read as the runtime enforces it (an agent.json
+            // that still carries the old isolation flag included).
+            "memoryMode": crate::workflow_manager::memory_mode_of(&agent.frontmatter),
         })))
     } else {
         Ok(Json(serde_json::json!({
@@ -1091,6 +1089,9 @@ pub async fn get_agent(
                 .unwrap_or_else(|| serde_json::json!({})),
             "pluginsNeedingAuth": plugins_needing_auth,
             "needsSetup": needs_setup,
+            // memory.mode, read as the runtime enforces it (an agent.json
+            // that still carries the old isolation flag included).
+            "memoryMode": crate::workflow_manager::memory_mode_of(&agent.frontmatter),
         })))
     }
 }
@@ -1236,23 +1237,35 @@ pub async fn update_agent(
         .cloned()
         .unwrap_or(serde_json::json!({}));
 
-    // Memory config (context isolation, topics) survives every save — dropping
-    // it here silently un-isolated agents whose whole point is that one
-    // client's context never bleeds into another's. `contextIsolated` in the
-    // body toggles isolation from the General tab.
+    // Memory config (mode, topics) survives every save — dropping it here
+    // silently un-isolated agents whose whole point is that one client's
+    // context never bleeds into another's. `memoryMode` in the body
+    // ("single", "separate" or "confidential") sets it from the General tab.
     let mut memory_cfg = existing_fm
         .get("memory")
         .cloned()
         .unwrap_or(serde_json::json!({}));
-    if let Some(iso) = body["contextIsolated"].as_bool() {
-        // A phone line forces isolation: callers must never share memory.
-        // Checked live against the hub so removing the line is the only key.
-        if !iso && super::neboai::agent_has_phone_line(&state, &id).await {
+    if let Some(raw) = body.get("memoryMode") {
+        let mode: napp::agent::MemoryMode = serde_json::from_value(raw.clone()).map_err(|_| {
+            to_error_response(types::NeboError::Validation(
+                "memoryMode is \"single\", \"separate\" or \"confidential\".".into(),
+            ))
+        })?;
+        // A phone line keeps conversations apart: callers must never share
+        // memory. Checked live against the hub so removing the line is the
+        // only key.
+        if !mode.separates_conversations() && super::neboai::agent_has_phone_line(&state, &id).await {
             return Err(to_error_response(types::NeboError::Validation(
-                "Memory isolation stays on while a phone line is attached to this employee. Remove the line at neboai.com/manage/phone first.".into(),
+                "Conversations stay separate while a phone line is attached to this employee. Remove the line at neboai.com/manage/phone first.".into(),
             )));
         }
-        memory_cfg["context_isolated"] = serde_json::json!(iso);
+        if !memory_cfg.is_object() {
+            memory_cfg = serde_json::json!({});
+        }
+        memory_cfg["mode"] = serde_json::json!(mode);
+        if let Some(m) = memory_cfg.as_object_mut() {
+            m.remove("context_isolated");
+        }
     }
 
     let authored = AuthoredDeclaration::from_body(&body);
@@ -5808,20 +5821,20 @@ mod frontmatter_save_tests {
             "tools": ["agent", "team"],
             "scopes": {"embed": {"tools": ["web"]}},
             "defaults": {"timezone": "America/Denver"},
-            "memory": {"context_isolated": true}
+            "memory": {"mode": "separate"}
         });
         let saved = saved_frontmatter(
             &on_file,
             serde_json::json!({"new": {}}),
             serde_json::json!(["b"]),
             None,
-            serde_json::json!({"context_isolated": false}),
+            serde_json::json!({"mode": "single"}),
             &AuthoredDeclaration::default(),
         );
         assert_eq!(saved["workflows"], serde_json::json!({"new": {}}));
         assert_eq!(saved["skills"], serde_json::json!(["b"]));
         assert!(saved["pricing"].is_null());
-        assert_eq!(saved["memory"]["context_isolated"], serde_json::json!(false));
+        assert_eq!(saved["memory"]["mode"], serde_json::json!("single"));
         for key in ["inputs", "requires", "tools", "scopes", "defaults"] {
             assert_eq!(saved[key], on_file[key], "{key} must survive a save");
         }
@@ -5829,7 +5842,7 @@ mod frontmatter_save_tests {
 
     #[test]
     fn an_empty_memory_config_is_removed_not_written_as_an_empty_object() {
-        let on_file = serde_json::json!({"memory": {"context_isolated": true}, "requires": {}});
+        let on_file = serde_json::json!({"memory": {"mode": "separate"}, "requires": {}});
         let saved = saved_frontmatter(
             &on_file,
             serde_json::json!({}),

@@ -1875,12 +1875,11 @@ async fn handle_conversation_session(
     {
         let voice_agent_id = q.agent_id.as_deref().unwrap_or_default();
         let owner = state.store.ensure_local_user_id().unwrap_or_default();
-        let isolated =
-            crate::workflow_manager::agent_context_isolated(&state.store, voice_agent_id);
+        let mode = crate::workflow_manager::agent_memory_mode(&state.store, voice_agent_id);
         let scope = agent::memory::resolve_memory_scope(
             &owner,
             voice_agent_id,
-            isolated,
+            mode,
             ctx.origin,
             None,
             chat_id.as_deref().filter(|c| !c.is_empty()),

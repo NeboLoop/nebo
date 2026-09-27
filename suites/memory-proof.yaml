@@ -17,3 +17,5 @@ fixtures:
   - ../fixtures/memory/proof/mp05-with-no-global-store-nothing-names-global-memory.yaml
   - ../fixtures/memory/proof/mp06-an-enrolled-global-store-carries-a-save-to-a-second-bot.yaml
   - ../fixtures/memory/proof/mp07-a-recipe-saved-for-everyone-is-found-by-another-employee.yaml
+  - ../fixtures/memory/proof/mp08-a-confidential-employees-conversations-never-see-each-other.yaml
+  - ../fixtures/memory/proof/mp09-separate-conversations-still-share-one-memory.yaml

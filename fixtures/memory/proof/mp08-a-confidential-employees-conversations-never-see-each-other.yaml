@@ -1,0 +1,14 @@
+id: mp08-a-confidential-employees-conversations-never-see-each-other
+name: "MP08 — A Confidential employee's conversations never see each other"
+description: |
+  The owner's worry for law, medical, investigations and HR: client A must never bleed into client B.
+  A Confidential employee holds conversation A (client A) and conversation B (client B), both the
+  owner's own. A's saved fact and the fact automatic extraction files after A's turn sit in A's
+  conversation scope (`<owner>:agent:<id>:matter:<A>`), B's in B's, nothing in the employee's
+  private memory. B never reaches A's facts, and A never B's: not by recall (words, key, listing),
+  not in any request the model is sent (the prompt, the relevant-memories recall), not by
+  search_history, not through a helper B starts. A fact the owner saved to local memory is found in
+  both. The save names its scope: "Saved to this conversation's confidential memory".
+target_component: memory
+proof: staffed_proof::memory::a_confidential_employees_conversations_never_see_each_other
+conversation: []

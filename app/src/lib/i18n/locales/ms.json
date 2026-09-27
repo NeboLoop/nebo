@@ -2013,15 +2013,17 @@
 		"send": "Hantar"
 	},
 	"agentIsolation": {
-		"title": "Pengasingan ingatan",
-		"shared": "Satu memori",
-		"sharedHint": "Satu ingatan merentas semua perbualan — apa yang pekerja ini pelajari di mana-mana, ia tahu di mana-mana",
-		"isolated": "Diasingkan mengikut perbualan",
-		"isolatedHint": "Perbualan anda disenaraikan secara berasingan dan berkongsi memori peribadi pekerja ini. Setiap perbualan dengan orang lain — pemanggil, pelawat, bot lain — menyimpan memori termeterainya sendiri, supaya tiada yang bocor ke perbualan lain",
-		"confirmOffTitle": "Matikan pengasingan ingatan?",
-		"confirmOffBody": "Perbualan berasingan anda kekal disimpan, tetapi tidak lagi dipaparkan sebagai senarai — pekerja ini kembali kepada satu perbualan berterusan. Apa yang dipelajari dalam perbualan dengan orang lain kekal termeterai: sembang akan datang tidak akan menggunakannya. Tiada apa yang dipadam, dan menghidupkan semula pengasingan memulihkan senarai.",
-		"confirmOffAction": "Matikan pengasingan",
-		"lockedByPhone": "Diasingkan selagi talian telefon dipasang — setiap pemanggil mendapat ingatan tertutup. Tanggalkan talian di neboai.com/manage/phone untuk mengubahnya."
+		"title": "Perbualan dan memori",
+		"single": "Satu perbualan",
+		"singleHint": "Satu perbualan berterusan dengan satu memori.",
+		"separate": "Perbualan berasingan",
+		"separateHint": "Banyak perbualan yang berkongsi satu memori. Perbualan dengan orang lain, seperti pemanggil, pelawat atau bot lain, menyimpan memori termeterainya sendiri.",
+		"confidential": "Sulit",
+		"confidentialHint": "Gunakan ini apabila setiap perbualan ialah klien, pesakit atau kes yang berbeza. Tiada apa yang dipelajari dalam satu perbualan akan kelihatan dalam perbualan lain, walaupun kepada pekerja ini. Pengetahuan yang anda pilih untuk disimpan dalam memori tempatan masih tersedia untuk setiap perbualan.",
+		"confirmOffTitle": "Tukar kepada satu perbualan?",
+		"confirmOffBody": "Perbualan berasingan anda kekal tersimpan, tetapi tidak lagi dipaparkan sebagai senarai, dan pekerja ini kembali kepada satu perbualan berterusan. Apa yang dipelajari dalam perbualan termeterai kekal termeterai: sembang akan datang tidak menggunakannya. Tiada apa dipadamkan, dan memilih perbualan berasingan semula akan memulihkan senarai.",
+		"confirmOffAction": "Tukar kepada satu perbualan",
+		"lockedByPhone": "Perbualan kekal berasingan selagi talian telefon disambungkan, supaya setiap pemanggil mendapat memori termeterai. Buang talian di neboai.com/manage/phone untuk memilih satu perbualan."
 	},
 	"cases": {
 		"title": "Kes",
