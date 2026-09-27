@@ -2,14 +2,23 @@
 //! prompt (WP2.2) and the relevant-memories prefetch (WP2.7).
 //!
 //! The prefetch never holds up a step: the search starts once per turn at
-//! Prepare and runs while the turn's steps go on. Each step asks whether it has finished, without waiting;
-//! the first step that finds it finished writes a `relevant_memories`
-//! attachment, and every later step asks nothing. The attachment is a
-//! persisted conversation row, so the recalled memories stay visible on
-//! later steps and later turns. The row carries the ids it showed, and
-//! [`surfaced_memories`] folds them back from the conversation, so a memory
-//! surfaced once this session is never surfaced again (until a checkpoint
-//! drops the row).
+//! Prepare and runs while the turn's steps go on. The first step reads the
+//! literal tier of the recall itself (`db_context::literal_recall`: an FTS
+//! search of the owner's words, local, a few milliseconds) when the hybrid
+//! search has not answered by then, so an answer given in one step sees a
+//! memory that matches the owner's words. Before this, only a later step
+//! wrote the recall, and an employee that answered in one step never saw
+//! local memory (`suites/memory.yaml` m02: "I don't know" in 3 of 3 runs
+//! with the fact in local memory). Every later step asks the search whether
+//! it has finished, without waiting; the first that finds it finished writes
+//! what it adds, and every step after asks nothing.
+//!
+//! Each landing is a persisted `relevant_memories` row written after the
+//! rows the step before sent, so every request still starts with the one
+//! before it and the cached prefix holds. The row carries the ids it showed,
+//! and [`surfaced_memories`] folds them back from the conversation, so a
+//! memory surfaced once this session is never surfaced again (until a
+//! checkpoint drops the row).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -91,6 +100,38 @@ pub struct RecallRequest<'a> {
 /// The turn's relevant-memories prefetch, started at Prepare.
 pub struct RecallPrefetch {
     search: Option<JoinHandle<Vec<ScoredMemory>>>,
+    /// What the first step searches itself when the search has not answered
+    /// by then; taken by the first step.
+    first_step: Option<LiteralRecall>,
+}
+
+/// The literal tier's search, as the first step runs it.
+struct LiteralRecall {
+    store: Arc<db::Store>,
+    user_id: String,
+    prompt: String,
+    tacit_only: bool,
+    skip: HashSet<i64>,
+}
+
+impl LiteralRecall {
+    fn run(self) -> Vec<ScoredMemory> {
+        let results = db_context::literal_recall(&self.store, &self.user_id, &self.prompt);
+        shown(results, &self.skip, self.tacit_only, &self.store)
+    }
+}
+
+/// The results a recall may show, as memories: [`db_context::select_prompt_memories`],
+/// at most [`MAX_RECALLED`].
+fn shown(results: Vec<tools::HybridSearchResult>, skip: &HashSet<i64>, tacit_only: bool, store: &db::Store) -> Vec<ScoredMemory> {
+    db_context::select_prompt_memories(results, skip, tacit_only)
+        .into_iter()
+        .filter_map(|r| {
+            let memory = store.get_memory(r.memory_id?).ok().flatten()?;
+            Some(ScoredMemory { memory, score: r.score })
+        })
+        .take(MAX_RECALLED)
+        .collect()
 }
 
 impl RecallPrefetch {
@@ -102,50 +143,57 @@ impl RecallPrefetch {
         req: RecallRequest<'_>,
     ) -> RecallPrefetch {
         let (Some(searcher), false) = (searcher, req.prompt.trim().is_empty()) else {
-            return RecallPrefetch { search: None };
+            return RecallPrefetch { search: None, first_step: None };
         };
         let found = db_context::spawn_prompt_recall(searcher, req.user_id, req.prompt);
+        let RecallRequest { prompt, user_id, tacit_only, skip } = req;
+        let first_step = LiteralRecall {
+            store: store.clone(),
+            user_id: user_id.to_string(),
+            prompt: prompt.to_string(),
+            tacit_only,
+            skip: skip.clone(),
+        };
         let store = store.clone();
-        let user_id = req.user_id.to_string();
-        let prompt = req.prompt.to_string();
-        let RecallRequest { tacit_only, skip, .. } = req;
+        let user_id = user_id.to_string();
+        let prompt = prompt.to_string();
         let search = tokio::spawn(async move {
             let results = db_context::recall_within_budget(found, &store, &user_id, &prompt).await;
-            db_context::select_prompt_memories(results, &skip, tacit_only)
-                .into_iter()
-                .filter_map(|r| {
-                    let memory = store.get_memory(r.memory_id?).ok().flatten()?;
-                    Some(ScoredMemory { memory, score: r.score })
-                })
-                .take(MAX_RECALLED)
-                .collect()
+            shown(results, &skip, tacit_only, &store)
         });
         RecallPrefetch {
             search: Some(search),
+            first_step: Some(first_step),
         }
     }
 
-    /// Called once per step, never waits. When the search has finished, its
-    /// memories that `surfaced` does not already hold are queued as the
-    /// `relevant_memories` attachment, added to `surfaced` and counted as
-    /// accessed; returns whether anything was queued. Before the search
-    /// finishes, and on every step after it landed, does nothing.
+    /// Called once per step, never waits. When the search has finished, or
+    /// on the first step when it has not (the literal tier then answers
+    /// instead), the memories that `surfaced` does not already hold are
+    /// queued as the `relevant_memories` attachment, added to `surfaced` and
+    /// counted as accessed; returns whether anything was queued. On a later
+    /// step before the search finishes, and on every step after it landed,
+    /// does nothing.
     pub fn land(
         &mut self,
         reminders: &mut Reminders,
         surfaced: &mut HashSet<i64>,
         store: &Arc<db::Store>,
     ) -> bool {
-        if !self.search.as_ref().is_some_and(JoinHandle::is_finished) {
-            return false;
-        }
-        let Some(search) = self.search.take() else {
+        let first_step = self.first_step.take();
+        let found = if self.search.as_ref().is_some_and(JoinHandle::is_finished) {
+            let Some(search) = self.search.take() else {
+                return false;
+            };
+            // Finished, so this resolves at once; a panicked search recalls nothing.
+            futures::FutureExt::now_or_never(search)
+                .and_then(Result::ok)
+                .unwrap_or_default()
+        } else if let Some(literal) = first_step {
+            literal.run()
+        } else {
             return false;
         };
-        // Finished, so this resolves at once; a panicked search recalls nothing.
-        let found = futures::FutureExt::now_or_never(search)
-            .and_then(Result::ok)
-            .unwrap_or_default();
         let fresh: Vec<ScoredMemory> = found
             .into_iter()
             .filter(|m| !surfaced.contains(&m.memory.id))
@@ -210,9 +258,12 @@ mod tests {
     use crate::search_adapter::HybridSearchAdapter;
     use crate::session::SessionManager;
 
-    /// A searcher that answers only once its gate opens (FTS underneath).
+    /// A searcher that answers only once its gate opens: FTS underneath,
+    /// plus `semantic`, a match the owner's words don't contain (what the
+    /// vector leg finds).
     struct Gated {
         inner: HybridSearchAdapter,
+        semantic: Vec<tools::HybridSearchResult>,
         gate: Arc<tokio::sync::Notify>,
     }
 
@@ -227,7 +278,9 @@ mod tests {
         {
             Box::pin(async move {
                 self.gate.notified().await;
-                self.inner.search(query, user_id, limit, min_score).await
+                let mut found = self.inner.search(query, user_id, limit, min_score).await;
+                found.extend(self.semantic.iter().cloned());
+                found
             })
         }
     }
@@ -329,45 +382,64 @@ mod tests {
             .collect()
     }
 
+    /// The first step never waits for the search: it lands the memories the
+    /// owner's words match (the literal tier), so a one-step answer sees
+    /// them. The search lands what it adds on the first step after it
+    /// finished, and nothing is written twice.
     #[tokio::test]
-    async fn recall_lands_on_first_ready_step() {
+    async fn first_step_lands_the_literal_match_and_the_search_adds_the_rest() {
         let f = Fixture::new();
         let owner = "local:agent:a1";
-        let id = f.remember(owner, "invoice/format", "Invoices go out as PDF with the logo");
+        let literal = f.remember(owner, "invoice/format", "Invoices go out as PDF with the logo");
+        let semantic = f.remember(owner, "billing/cadence", "Bills leave monthly on day one");
         let gate = Arc::new(tokio::sync::Notify::new());
         let searcher: Arc<dyn tools::HybridSearcher> = Arc::new(Gated {
             inner: HybridSearchAdapter::new(f.store.clone(), None),
+            semantic: vec![tools::HybridSearchResult {
+                memory_id: Some(semantic),
+                key: "billing/cadence".into(),
+                value: "Bills leave monthly on day one".into(),
+                namespace: "tacit/general".into(),
+                scope: owner.into(),
+                score: 0.7,
+            }],
             gate: gate.clone(),
         });
         let mut p = f.start(&searcher, owner, "send the invoice to the client", HashSet::new());
         let mut reminders = Reminders::default();
         let mut surfaced = HashSet::new();
 
-        // The search has not answered: the step goes on without it.
+        // The search has not answered: the first step lands the literal match.
+        assert!(p.land(&mut reminders, &mut surfaced, &f.store), "the first step sees what the owner's words match");
+        reminders.write(&f.sessions, &f.session_id).unwrap();
+        assert_eq!(written_ids(&f.history()), vec![HashSet::from([literal])]);
+        assert_eq!(surfaced, HashSet::from([literal]));
+
+        // A later step before the search answers waits for nothing and writes nothing.
         assert!(!p.land(&mut reminders, &mut surfaced, &f.store), "a step never waits for the recall");
         reminders.write(&f.sessions, &f.session_id).unwrap();
-        assert!(written_ids(&f.history()).is_empty(), "nothing is written before the search finishes");
+        assert_eq!(written_ids(&f.history()).len(), 1);
 
         gate.notify_one();
         let (_, landed) = step_until_finished(&mut p, &mut reminders, &mut surfaced, &f.store).await;
-        assert!(landed, "the first step after the search finished writes the attachment");
+        assert!(landed, "the first step after the search finished writes what it adds");
         reminders.write(&f.sessions, &f.session_id).unwrap();
-        assert_eq!(written_ids(&f.history()), vec![HashSet::from([id])]);
-        assert_eq!(surfaced, HashSet::from([id]));
+        assert_eq!(written_ids(&f.history()), vec![HashSet::from([literal]), HashSet::from([semantic])], "the literal match is not repeated");
+        assert_eq!(surfaced, HashSet::from([literal, semantic]));
 
         // Every later step asks nothing and writes nothing.
         assert!(!p.land(&mut reminders, &mut surfaced, &f.store));
         reminders.write(&f.sessions, &f.session_id).unwrap();
-        assert_eq!(written_ids(&f.history()).len(), 1);
+        assert_eq!(written_ids(&f.history()).len(), 2);
 
-        // Access accounting: the landed memory was counted.
+        // Access accounting: each landed memory was counted once.
         for _ in 0..100 {
-            if f.access_count(id) > 0 {
+            if f.access_count(literal) > 0 && f.access_count(semantic) > 0 {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        assert_eq!(f.access_count(id), 1);
+        assert_eq!((f.access_count(literal), f.access_count(semantic)), (1, 1));
     }
 
     #[tokio::test]

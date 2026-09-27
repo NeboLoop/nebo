@@ -32,6 +32,10 @@
 //! No phrase lists: what a message means is the decision's, never a keyword
 //! match (the lists deleted after the 2026-09-18 incident stay deleted).
 //!
+//! The same call asks whether the message asks for something to be saved
+//! (`memory_save`), when that check applies to the turn: one call per
+//! message, never two.
+//!
 //! Every decision is logged at info with `site="mid_turn_intent"` and the
 //! numbers that made it; every undecided message at warn with the reason.
 //!
@@ -46,6 +50,7 @@ use ai::{DecideClient, Decision, Question};
 use db::models::ChatMessage;
 use tracing::{info, warn};
 
+use super::memory_save::{self, SaveAsk};
 use crate::heartbeat_triage::{self, Mode};
 
 /// UNTUNED. The chance of "stop" at or over which the message stops the
@@ -117,18 +122,36 @@ pub fn state(asked: &Asked<'_>) -> serde_json::Value {
     })
 }
 
-fn questions() -> BTreeMap<&'static str, Question> {
-    BTreeMap::from([(
-        "intent",
-        Question::choice(
-            "The owner sent `message` while the employee was doing `task`. What `message` asks to happen to that work next.",
-            &[
-                ("stop", "Stop the work now: nothing more is done on it, apart from telling the owner what was done or found so far."),
-                ("redirect", "Keep working, but differently: a new or changed instruction for the work (another target, scope, order or method, or a step added or dropped)."),
-                ("aside", "Keep working as before: a question, remark or piece of information beside the work, answered in passing."),
-            ],
-        ),
-    )])
+fn intent_question() -> Question {
+    Question::choice(
+        "The owner sent `message` while the employee was doing `task`. What `message` asks to happen to that work next.",
+        &[
+            ("stop", "Stop the work now: nothing more is done on it, apart from telling the owner what was done or found so far."),
+            ("redirect", "Keep working, but differently: a new or changed instruction for the work (another target, scope, order or method, or a step added or dropped)."),
+            ("aside", "Keep working as before: a question, remark or piece of information beside the work, answered in passing."),
+        ],
+    )
+}
+
+/// The questions one call asks: the intent unless its switch is off, and
+/// whether the message asks for a save when `save`.
+fn questions(mode: Mode, save: bool) -> BTreeMap<&'static str, Question> {
+    let mut questions = BTreeMap::new();
+    if mode != Mode::Off {
+        questions.insert("intent", intent_question());
+    }
+    if save {
+        questions.insert(memory_save::QUESTION, memory_save::question());
+    }
+    questions
+}
+
+/// What one decision says about the owner's mid-turn message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Heard {
+    pub intent: OwnerIntent,
+    /// Whether it asks for a save; [`SaveAsk::Undecided`] when not asked.
+    pub save: SaveAsk,
 }
 
 /// The intent a decision states: a stop at or over [`STOP_AT`] wins, else
@@ -148,35 +171,44 @@ pub fn intent_from(decision: &Decision) -> OwnerIntent {
     }
 }
 
-/// Decide what the owner's mid-turn message asks for. `mode` is [`mode`]
-/// at the call site; `timeout` bounds the one call. Anything but an answer
-/// under [`Mode::On`] is [`OwnerIntent::Undecided`].
+/// Decide what the owner's mid-turn message asks for, and with `save`
+/// whether it asks for a save, in one call. `mode` is [`mode`] at the call
+/// site; `timeout` bounds the call. Anything but an answer under
+/// [`Mode::On`] is [`OwnerIntent::Undecided`]; a save question with no
+/// answer is [`SaveAsk::Undecided`].
 pub async fn decide(
     client: Option<&DecideClient>,
     mode: Mode,
     asked: &Asked<'_>,
+    save: bool,
     agent_id: &str,
     timeout: Duration,
-) -> OwnerIntent {
+) -> Heard {
     let undecided = |reason: &str| {
         warn!(site = "mid_turn_intent", agent = %agent_id, outcome = "undecided", reason, "the owner's message is handled as a stop");
         OwnerIntent::Undecided
     };
-    if mode == Mode::Off {
-        return undecided("off");
+    let unasked = |reason: &str| if save { memory_save::undecided(agent_id, reason) } else { SaveAsk::Undecided };
+    let questions = questions(mode, save);
+    if questions.is_empty() {
+        return Heard { intent: undecided("off"), save: SaveAsk::Undecided };
     }
     let Some(client) = client else {
-        return undecided("no_client");
+        return Heard { intent: undecided("no_client"), save: unasked("no_client") };
     };
     let trace = ai::RequestTrace { agent_id: agent_id.to_string(), ..ai::RequestTrace::new("mid_turn_intent") };
-    let decision = match tokio::time::timeout(timeout, client.decide(&trace, &state(asked), &questions())).await {
+    let decision = match tokio::time::timeout(timeout, client.decide(&trace, &state(asked), &questions)).await {
         Ok(Ok(d)) => d,
         Ok(Err(e)) => {
             warn!(site = "mid_turn_intent", error = %e, "the decision failed");
-            return undecided("error");
+            return Heard { intent: undecided("error"), save: unasked("error") };
         }
-        Err(_) => return undecided("timeout"),
+        Err(_) => return Heard { intent: undecided("timeout"), save: unasked("timeout") },
     };
+    let save = if save { memory_save::read(&decision, agent_id) } else { SaveAsk::Undecided };
+    if mode == Mode::Off {
+        return Heard { intent: undecided("off"), save };
+    }
     let intent = intent_from(&decision);
     let answer = decision.answer("intent");
     let p = |option: &str| answer.and_then(|a| a.probabilities.get(option).copied()).unwrap_or(-1.0);
@@ -202,11 +234,12 @@ pub async fn decide(
         cost_micro = decision.usage.cost_micro,
         "mid-turn intent"
     );
-    match (intent, shadow) {
+    let intent = match (intent, shadow) {
         (OwnerIntent::Undecided, _) => undecided("incomplete"),
         (_, true) => undecided("shadow"),
         (i, false) => i,
-    }
+    };
+    Heard { intent, save }
 }
 
 /// The metadata field the answer's note stores the intent under.
@@ -275,10 +308,23 @@ mod tests {
     async fn no_decision_is_undecided() {
         let asked = Asked { task: "Read the parts", message: "what's 12 times 12?" };
         let t = Duration::from_millis(50);
-        assert_eq!(decide(None, Mode::On, &asked, "a", t).await, OwnerIntent::Undecided);
+        let nothing = Heard { intent: OwnerIntent::Undecided, save: SaveAsk::Undecided };
+        assert_eq!(decide(None, Mode::On, &asked, true, "a", t).await, nothing);
         let dead = DecideClient::new("http://127.0.0.1:9", || Some(ai::Bearer { token: "t".into(), bot_id: None }));
-        assert_eq!(decide(Some(&dead), Mode::Off, &asked, "a", t).await, OwnerIntent::Undecided);
-        assert_eq!(decide(Some(&dead), Mode::On, &asked, "a", t).await, OwnerIntent::Undecided, "an unreachable Jev");
+        assert_eq!(decide(Some(&dead), Mode::Off, &asked, false, "a", t).await, nothing);
+        assert_eq!(decide(Some(&dead), Mode::On, &asked, true, "a", t).await, nothing, "an unreachable Jev");
+    }
+
+    /// One call asks both questions when the save check applies, and only
+    /// the intent when it doesn't; with the intent switched off, the save
+    /// question is still asked alone.
+    #[test]
+    fn the_save_question_rides_the_same_call() {
+        let keys = |mode, save| questions(mode, save).into_keys().collect::<Vec<_>>();
+        assert_eq!(keys(Mode::On, true), ["intent", memory_save::QUESTION]);
+        assert_eq!(keys(Mode::Shadow, false), ["intent"]);
+        assert_eq!(keys(Mode::Off, true), [memory_save::QUESTION]);
+        assert!(keys(Mode::Off, false).is_empty());
     }
 
     #[test]
@@ -286,7 +332,7 @@ mod tests {
         let s = state(&Asked { task: "", message: "Stop reading and tell me what you have so far." });
         assert_eq!(s["task"], "none");
         assert_eq!(s["message"], "Stop reading and tell me what you have so far.");
-        let q = serde_json::to_string(&questions()).unwrap();
+        let q = serde_json::to_string(&questions(Mode::On, true)).unwrap();
         assert!(!q.contains("Stop reading"), "{q}");
     }
 }

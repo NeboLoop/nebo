@@ -150,6 +150,8 @@ pub struct TurnState {
     pub frozen_renderings: compact::trim::Frozen,
     /// The relevant-memories search started at Prepare.
     pub recall: super::memory_context::RecallPrefetch,
+    /// The saves the owner asked for, checked when the turn would end.
+    pub saves: super::memory_save::SaveWatch,
     /// The conversation the last step sent: input stored after it is heard
     /// by the next turn.
     pub seen: Vec<ChatMessage>,
@@ -163,9 +165,9 @@ pub struct TurnState {
     pub model: String,
     /// Checkpoints taken this turn.
     pub checkpoints: usize,
-    /// The last reply answered the owner's mid-turn message and the work
-    /// goes on: the owner has their answer, so a reply with nothing in it
-    /// ends the turn.
+    /// The last reply answered the owner (their mid-turn message, with the
+    /// work going on, or the turn's answer before a save it lacked): the
+    /// owner has their answer, so a reply with nothing in it ends the turn.
     answered_owner: bool,
     /// What the owner's waiting message asks for, with the row id of the
     /// latest one it was decided for; taken by the reply that answers it.
@@ -756,6 +758,24 @@ pub(crate) async fn prepare(
         },
     );
     surfaced.extend(memory.identity_ids.iter().copied());
+    // Whether the owner's words ask for a save is decided while the steps
+    // run, when the owner speaks and the employee can save.
+    let can_save = !employee.linked
+        && !seat.memory.writes_disabled
+        && grant.mode != Mode::Plan
+        && !withheld_tools.contains("remember")
+        && req.seat.tool_allowlist.as_ref().is_none_or(|allowed| allowed.contains("remember"))
+        && h.tools.get("remember").await.is_some();
+    let owner_words = match &req.input {
+        TurnInput::Owner { text, .. } => Some(text.as_str()),
+        _ => None,
+    };
+    let saves = super::memory_save::SaveWatch::start(
+        h.decide.clone(),
+        owner_words,
+        can_save && owner_speaks(&req),
+        &req.seat.agent_id,
+    );
 
     let (max_steps, spend_cap_microcents) = match &req.mode {
         TurnMode::Workflow(m) => (if m.max_steps > 0 { m.max_steps } else { DEFAULT_MAX_STEPS }, m.spend_cap_microcents),
@@ -775,6 +795,7 @@ pub(crate) async fn prepare(
         usage: RunState::default(),
         surfaced_memories: surfaced,
         recall,
+        saves,
         end_checks_this_turn: 0,
         frozen_renderings: h
             .store
@@ -993,16 +1014,18 @@ pub async fn drive_turn(cx: &TurnContext, st: &mut TurnState) -> TurnExit {
                         h.decide.as_deref(),
                         owner_intent::mode(),
                         &asked,
+                        st.saves.applies(),
                         cx.agent_id(),
                         owner_intent::DECIDE_TIMEOUT,
                     );
-                    let intent = tokio::select! {
+                    let heard = tokio::select! {
                         biased;
                         _ = cx.request.cancel.cancelled() => return TurnExit::Cancelled,
-                        intent = decided => intent,
+                        heard = decided => heard,
                     };
-                    st.reminders.add(&TurnEvent::MidTurnMessage { via: w.via.clone(), intent });
-                    intent
+                    st.saves.heard(st.step, heard.save);
+                    st.reminders.add(&TurnEvent::MidTurnMessage { via: w.via.clone(), intent: heard.intent });
+                    heard.intent
                 }
             };
             info!(session_id = sid, intent = intent.as_str(), "the owner's message is answered at this step");
@@ -1918,6 +1941,9 @@ async fn tool_round(
             });
         }
     };
+    if results.saved_memory {
+        st.saves.saved(st.step);
+    }
     for tc in tool_calls.iter() {
         if let Some(class) = h.tools.get(&tc.name).await.and_then(|t| t.taint(&tc.input)) {
             cx.taint.lock().unwrap_or_else(|p| p.into_inner()).insert(class);
@@ -1966,7 +1992,8 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
         _ => None,
     };
     let workflow_contract = cx.workflow().map(|m| m.contract.clone());
-    let checks = turn_end::registry(&cx.request.mode, turn_end::EndChecks { goal, workflow_contract });
+    let unsaved_memory = st.saves.due().await;
+    let checks = turn_end::registry(&cx.request.mode, turn_end::EndChecks { goal, workflow_contract, unsaved_memory });
     if checks.is_empty() {
         return None;
     }
@@ -1984,6 +2011,11 @@ async fn end_checks(cx: &TurnContext, st: &mut TurnState) -> Option<Result<(), T
             EndVerdict::Exit(exit) => return Some(Err(exit)),
             EndVerdict::Continue(event) => {
                 st.end_checks_this_turn += 1;
+                // The reply before a missing save answered the owner: if the
+                // step it adds has nothing to say, the turn ends there.
+                if check.name() == super::memory_save::CHECK {
+                    st.answered_owner = true;
+                }
                 let reason = events::attachment_for(&event).map(|a| a.text).unwrap_or_default();
                 st.reminders.add(&event);
                 st.transition = Transition::EndCheckContinue {
@@ -5930,5 +5962,178 @@ mod tests {
                 "a recap forks the turn's last request exactly"
             );
         }
+    }
+
+    // ── Memory: a save is a call, and recall reaches the first step ──────
+
+    /// The memory tool as the turn sees it: `remember`, always loaded; every
+    /// save succeeds.
+    struct Remember;
+
+    impl tools::registry::DynTool for Remember {
+        fn name(&self) -> &str {
+            "remember"
+        }
+        fn description(&self) -> String {
+            "Saves a fact".into()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"key": {"type": "string"}, "value": {"type": "string"}, "scope": {"type": "string"}},
+                "required": ["key", "value"]
+            })
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = tools::ToolResult> + Send + 'a>> {
+            Box::pin(async move { tools::ToolResult::ok("Saved to local memory.") })
+        }
+    }
+
+    fn remember_tool() -> Vec<Box<dyn tools::registry::DynTool>> {
+        vec![Box::new(Remember)]
+    }
+
+    /// A Jev that reads the owner's message as asking for a save (`p_save`)
+    /// and answers anything else "no".
+    async fn jev_saving(asked: bool) -> Arc<ai::DecideClient> {
+        let answer: fn(&str) -> serde_json::Value = if asked {
+            |q| serde_json::json!({"type": "noul", "noul": if q == crate::harness::memory_save::QUESTION { 0.95 } else { 0.02 }})
+        } else {
+            |_| serde_json::json!({"type": "noul", "noul": 0.02})
+        };
+        Arc::new(serve_jev(answer).await.0)
+    }
+
+    const SAVE_RECIPE: &str = "Here's a recipe I like: air fryer tenderloin bites, 380F for 8 to 10 minutes. Can you also save it to company memory?";
+    const CLAIM: &str = "I've saved this to company memory under recipes/tenderloin-bites.";
+    const NOT_SAVED_YET: &str = "nothing is saved yet";
+
+    fn remember_calls(h: &Harness) -> usize {
+        stored(h)
+            .iter()
+            .filter(|m| m.role == "assistant")
+            .filter_map(|m| m.tool_calls.as_deref())
+            .filter(|calls| calls.contains("\"remember\""))
+            .count()
+    }
+
+    /// m07's replay: the owner asks for a save and the model claims one
+    /// without calling `remember`. The turn doesn't end on the claim: one
+    /// more step, told nothing is saved yet, makes the call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_claimed_save_with_no_call_is_sent_back_once() {
+        let model = Scripted::new(vec![
+            Step::Say(CLAIM),
+            Step::Call("remember", serde_json::json!({"key": "recipes/tenderloin-bites", "value": "380F, 8 to 10 minutes", "scope": "local"})),
+            Step::Say("Saved to local memory: every employee on this Nebo can find it."),
+        ]);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(true).await);
+        let events = run_turn(&h, owner(SAVE_RECIPE)).await;
+        assert_eq!(exit_of(&events), "text_response");
+        let calls = model.calls();
+        assert_eq!(calls.len(), 3, "the claim, the save, the answer");
+        assert!(!texts(&calls[0]).iter().any(|t| t.contains(NOT_SAVED_YET)));
+        assert!(texts(&calls[1]).iter().any(|t| t.contains(NOT_SAVED_YET)), "the step after the claim is told");
+        assert_eq!(remember_calls(&h), 1);
+        assert!(result_ids(&h).len() == 1 && stored(&h).iter().any(|m| m.tool_results.as_deref().is_some_and(|r| r.contains("Saved to local memory") && !r.contains("is_error"))), "the save ran");
+        assert!(kinds(&stored(&h)).contains(&"unsaved_memory".to_string()));
+    }
+
+    /// A model that keeps claiming is sent back once, never in a loop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unsaved_claim_is_corrected_once_a_turn() {
+        let model = Scripted::new(vec![Step::Say(CLAIM), Step::Say("It can't be saved here.")]);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(true).await);
+        let events = run_turn(&h, owner(SAVE_RECIPE)).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(model.calls().len(), 2);
+    }
+
+    /// The correction step with nothing to say ends the turn on the answer
+    /// before it: the owner has it, and no empty-reply error is shown.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nothing_more_after_the_correction_ends_the_turn() {
+        let model = Scripted::new(vec![Step::Say(CLAIM), Step::Say("")]);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(true).await);
+        let events = run_turn(&h, owner(SAVE_RECIPE)).await;
+        assert_eq!(exit_of(&events), "text_response");
+        assert_eq!(model.calls().len(), 2);
+        assert!(!events.iter().any(|e| e.event_type == ai::StreamEventType::Error), "no error for the empty step");
+    }
+
+    /// A save that happened, a message that asked for none, and a message no
+    /// decision could be had for all end the turn on its answer: the check
+    /// fails open.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_done_save_or_no_ask_ends_the_turn() {
+        let model = Scripted::new(vec![
+            Step::Call("remember", serde_json::json!({"key": "recipes/tenderloin-bites", "value": "380F", "scope": "local"})),
+            Step::Say("Saved to local memory."),
+        ]);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(true).await);
+        run_turn(&h, owner(SAVE_RECIPE)).await;
+        assert_eq!(model.calls().len(), 2, "saved at once: nothing to correct");
+
+        let model = Scripted::new(vec![Step::Say("It's a good recipe.")]);
+        let h = harness_with(&model, remember_tool()).await.with_decide(jev_saving(false).await);
+        run_turn(&h, owner("What do you think of air fryer tenderloin bites?")).await;
+        assert_eq!(model.calls().len(), 1, "no save was asked for");
+
+        let model = Scripted::new(vec![Step::Say(CLAIM)]);
+        let h = harness_with(&model, remember_tool()).await;
+        run_turn(&h, owner(SAVE_RECIPE)).await;
+        assert_eq!(model.calls().len(), 1, "no decision: the turn ends as it would have");
+
+        let model = Scripted::new(vec![Step::Say(CLAIM)]);
+        let h = harness(&model).await.with_decide(jev_saving(true).await);
+        run_turn(&h, owner(SAVE_RECIPE)).await;
+        assert_eq!(model.calls().len(), 1, "no remember in reach: nothing to correct toward");
+    }
+
+    /// A searcher as slow as a remote embedding: the hybrid search never
+    /// answers before the first step.
+    struct SlowSearch(crate::search_adapter::HybridSearchAdapter);
+
+    impl tools::HybridSearcher for SlowSearch {
+        fn search<'a>(
+            &'a self,
+            query: &'a str,
+            user_id: &'a str,
+            limit: usize,
+            min_score: Option<f64>,
+        ) -> Pin<Box<dyn Future<Output = Vec<tools::HybridSearchResult>> + Send + 'a>> {
+            Box::pin(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                self.0.search(query, user_id, limit, min_score).await
+            })
+        }
+    }
+
+    /// m02: a fact in local memory reaches an answer given in one step. The
+    /// recall's row is stored after the owner's message and before the
+    /// reply, so the next turn's request still starts with this one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_one_step_answer_sees_local_memory() {
+        let model = Scripted::new(vec![Step::Say("It's HARBOR-7."), Step::Say("You're welcome.")]);
+        let h = harness(&model).await;
+        let h = h.clone().with_hybrid_searcher(Arc::new(SlowSearch(crate::search_adapter::HybridSearchAdapter::new(h.store.clone(), None))));
+        let local = h.store.ensure_local_user_id().expect("owner");
+        h.store
+            .upsert_memory("project/office", "office/supply-closet-code", "The supply closet code changes every Monday; this week it is HARBOR-7.", None, None, &local)
+            .expect("saved");
+        run_turn(&h, owner("What's the supply closet code this week?")).await;
+        let calls = model.calls();
+        assert_eq!(calls.len(), 1, "one step");
+        assert!(texts(&calls[0]).iter().any(|t| t.contains("HARBOR-7")), "the first step sees the local fact");
+
+        run_turn(&h, owner("Thanks")).await;
+        let calls = model.calls();
+        let (_, _, first) = wire(&calls[0]);
+        let (_, _, next) = wire(&calls[1]);
+        assert!(next.starts_with(&first), "the next request starts with this one");
     }
 }
