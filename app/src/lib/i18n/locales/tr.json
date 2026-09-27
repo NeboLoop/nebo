@@ -2014,12 +2014,12 @@
 	},
 	"agentIsolation": {
 		"title": "Bellek yalıtımı",
-		"shared": "Paylaşılan bellek",
+		"shared": "Tek bellek",
 		"sharedHint": "Tüm sohbetlerde tek bir bellek — bu çalışan nerede öğrenirse öğrensin, her yerde bilir",
 		"isolated": "Her sohbet için ayrı",
-		"isolatedHint": "Her sohbetin kendi mühürlü belleği olur — bir dosya, müşteri ya da konu asla başkasına sızmaz",
+		"isolatedHint": "Konuşmaların ayrı listelenir ve bu çalışanın özel belleğini paylaşır. Başka biriyle yapılan her konuşma — arayan biri, bir ziyaretçi, başka bir bot — kendi mühürlü belleğini korur; böylece hiçbiri diğerine karışmaz",
 		"confirmOffTitle": "Bellek yalıtımı kapatılsın mı?",
-		"confirmOffBody": "Ayrı sohbetleriniz kayıtlı kalır, ancak artık bir dosya listesi olarak görünmezler — bu çalışan tek bir kesintisiz sohbete döner. Her mühürlü sohbetin içinde öğrenilen mühürlü kalır: ileriki sohbetler ondan yararlanmaz. Hiçbir şey silinmez ve yalıtımı yeniden açmak listeyi ve her sohbetin kendi belleğini geri getirir.",
+		"confirmOffBody": "Ayrı konuşmaların kayıtlı kalır ama artık liste olarak görünmez — bu çalışan tek ve kesintisiz bir konuşmaya döner. Başka biriyle yapılan bir konuşmada öğrenilenler mühürlü kalır: sonraki sohbetler bunlardan yararlanmaz. Hiçbir şey silinmez ve yalıtımı yeniden açmak listeyi geri getirir.",
 		"confirmOffAction": "Yalıtımı kapat",
 		"lockedByPhone": "Bir telefon hattı bağlıyken yalıtılmıştır — her arayan mühürlü bellek alır. Bunu değiştirmek için hattı neboai.com/manage/phone adresinden kaldırın."
 	},

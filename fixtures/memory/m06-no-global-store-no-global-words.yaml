@@ -1,0 +1,56 @@
+id: memory-no-global-store
+name: 'Memory: with no global store, nothing mentions global memory and nothing fails'
+description: |
+  Nebo is complete without NeboAI: local and private memory are the whole system for a Nebo that
+  is not enrolled in a global store (the gate's server runs with no memory address). Saving for
+  the team works, no tool result names global memory, and the reply doesn't offer one.
+target_component: memory
+agent: office-manager-{{tag}}
+setup:
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"office-manager-{{tag}}"}'' > /dev/null'
+teardown:
+- python3 -c "import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1';
+  ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','')=='office-manager-{{tag}}'];
+  [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for i in ids]"
+conversation:
+- role: user
+  content: 'Save this for the whole team: supplies are reordered every Monday morning, reference TIDE-{{tag}}.
+    Then tell me where you saved it.'
+tool_config:
+  remember:
+    enabled: true
+  recall:
+    enabled: true
+prompt_assertions:
+  first_call:
+  - id: saves-local
+    text: Saved to local memory
+    severity: critical
+    check:
+      tool: remember
+      arg: scope
+      equals: local
+      result_contains: Saved to local memory
+  recovery:
+  - id: no-global-in-results
+    text: No tool result names global memory
+    severity: critical
+    check:
+      no_result_contains:
+      - global memory
+      - global store
+  - id: no-global-in-reply
+    text: The reply never offers or names global memory
+    severity: critical
+    check:
+      reply_not_matches: (?i)global memory
+  - id: nothing-fails
+    text: Every call is accepted
+    severity: critical
+    check:
+      max_errors: 0
+ideal_behavior:
+  tool_calls: 1
+  narrative: 'remember(scope: "local"), then "Saved to local memory, where every employee here can find
+    it."'

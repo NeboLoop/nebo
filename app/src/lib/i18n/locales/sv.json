@@ -2014,12 +2014,12 @@
 	},
 	"agentIsolation": {
 		"title": "Minnesisolering",
-		"shared": "Delat minne",
+		"shared": "Ett minne",
 		"sharedHint": "Ett minne för alla samtal — det medarbetaren lär sig någonstans vet den överallt",
 		"isolated": "Isolerat per samtal",
-		"isolatedHint": "Varje samtal har sitt eget förseglade minne — ett ärende, en klient eller ett fall läcker aldrig in i ett annat",
+		"isolatedHint": "Dina konversationer listas separat och delar den här medarbetarens privata minne. Varje konversation med någon annan — en uppringare, en besökare, en annan bot — behåller sitt eget förseglade minne, så att inget läcker över till en annan",
 		"confirmOffTitle": "Stänga av minnesisolering?",
-		"confirmOffBody": "Dina separata samtal finns kvar, men visas inte längre som en lista över ärenden — den här medarbetaren återgår till ett enda löpande samtal. Det som lärdes inne i varje förseglat samtal förblir förseglat: framtida chattar hämtar inte från det. Ingenting raderas, och om du slår på isoleringen igen kommer listan och varje samtals eget minne tillbaka.",
+		"confirmOffBody": "Dina separata konversationer finns kvar men visas inte längre som en lista — medarbetaren återgår till en sammanhängande konversation. Det som lärdes i en konversation med någon annan förblir förseglat: framtida chattar använder det inte. Inget raderas, och om du slår på isoleringen igen kommer listan tillbaka.",
 		"confirmOffAction": "Stäng av isolering",
 		"lockedByPhone": "Isolerat så länge en telefonlinje är kopplad — varje uppringare får förseglat minne. Ta bort linjen på neboai.com/manage/phone för att ändra det här."
 	},

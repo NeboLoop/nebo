@@ -2014,12 +2014,12 @@
 	},
 	"agentIsolation": {
 		"title": "Cloisonnement de la mémoire",
-		"shared": "Mémoire partagée",
+		"shared": "Une seule mémoire",
 		"sharedHint": "Une seule mémoire pour toutes les conversations — ce que cet employé apprend quelque part, il le sait partout",
 		"isolated": "Cloisonnée par conversation",
-		"isolatedHint": "Chaque conversation garde sa propre mémoire scellée — un dossier, un client ou une affaire ne déborde jamais sur un autre",
+		"isolatedHint": "Vos conversations sont listées séparément et partagent la mémoire privée de cet employé. Chaque conversation avec quelqu'un d'autre — un appelant, un visiteur, un autre bot — garde sa propre mémoire scellée, pour qu'aucune ne déborde sur une autre",
 		"confirmOffTitle": "Désactiver le cloisonnement de la mémoire ?",
-		"confirmOffBody": "Vos conversations séparées restent enregistrées, mais elles n'apparaîtront plus comme une liste de dossiers — cet employé revient à une seule conversation continue. Ce qui a été appris dans chaque conversation scellée reste scellé : les prochaines discussions n'y puiseront pas. Rien n'est supprimé, et réactiver le cloisonnement rétablit la liste et la mémoire propre à chaque conversation.",
+		"confirmOffBody": "Vos conversations séparées restent enregistrées, mais n'apparaîtront plus sous forme de liste — cet employé revient à une conversation continue. Ce qui a été appris dans une conversation avec quelqu'un d'autre reste scellé : les prochaines conversations ne s'en serviront pas. Rien n'est supprimé, et réactiver l'isolement rétablit la liste.",
 		"confirmOffAction": "Désactiver le cloisonnement",
 		"lockedByPhone": "Cloisonné tant qu'une ligne téléphonique est rattachée — chaque appelant obtient une mémoire scellée. Retirez la ligne sur neboai.com/manage/phone pour changer cela."
 	},

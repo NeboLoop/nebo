@@ -1,0 +1,19 @@
+name: memory-proof
+description: |
+  The memory suite's deterministic half: each fixture names a staffed_proof::memory scenario,
+  a real turn on the in-process server with a scripted model, and the scenario checks the row
+  the store holds (memories.user_id), not only the words.
+
+    make test-memory-proof
+    nebo-cli test run --suite suites/memory-proof.yaml --no-judge
+
+  `cargo test -p nebo-server --lib -- staffed_proof::memory` runs the same tests directly,
+  which is how CI's workspace test run includes them.
+fixtures:
+  - ../fixtures/memory/proof/mp01-one-employee-saves-to-local-memory-and-another-recalls-it.yaml
+  - ../fixtures/memory/proof/mp02-a-private-fact-stays-with-its-employee.yaml
+  - ../fixtures/memory/proof/mp03-an-isolated-employees-facts-from-the-owners-chat-outlive-the-chat.yaml
+  - ../fixtures/memory/proof/mp04-the-words-the-model-reads-name-the-scope-the-row-is-in.yaml
+  - ../fixtures/memory/proof/mp05-with-no-global-store-nothing-names-global-memory.yaml
+  - ../fixtures/memory/proof/mp06-an-enrolled-global-store-carries-a-save-to-a-second-bot.yaml
+  - ../fixtures/memory/proof/mp07-a-recipe-saved-for-everyone-is-found-by-another-employee.yaml

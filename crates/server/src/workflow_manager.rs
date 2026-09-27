@@ -2194,19 +2194,21 @@ pub(crate) fn agent_context_isolated(store: &db::Store, agent_id: &str) -> bool 
     }
 }
 
-/// Memory scope a workflow run executes tools under. Workflow runs have no
-/// matter/chat context, so for context-isolated agents the scope stays the
-/// agent base and WRITES ARE DISABLED (fail closed) — reads still serve the
-/// agent scope.
+/// Memory scope a workflow run executes tools under: the ONE derivation, for
+/// the owner's own automation — the employee's private memory, never a
+/// conversation, whatever the isolation setting (a standalone run: the
+/// owner's local memory).
 fn workflow_memory_scope(store: &db::Store, agent_id: &str) -> (String, bool) {
     let owner = store.ensure_local_user_id().unwrap_or_default();
-    if agent_id.is_empty() {
-        return (owner, false);
-    }
-    (
-        agent::memory::agent_memory_scope(&owner, agent_id),
+    let scope = agent::memory::resolve_memory_scope(
+        &owner,
+        agent_id,
         agent_context_isolated(store, agent_id),
-    )
+        tools::Origin::Workflow,
+        None,
+        None,
+    );
+    (scope.user_id, scope.writes_disabled)
 }
 
 /// How a run that ended with an error is recorded. An evaluator's exit is the

@@ -2014,12 +2014,12 @@
 	},
 	"agentIsolation": {
 		"title": "Geheugenscheiding",
-		"shared": "Gedeeld geheugen",
+		"shared": "Eén geheugen",
 		"sharedHint": "Eén geheugen over alle gesprekken — wat deze medewerker ergens leert, weet die overal",
 		"isolated": "Gescheiden per gesprek",
-		"isolatedHint": "Elk gesprek houdt zijn eigen afgeschermde geheugen — een zaak, klant of dossier lekt nooit naar een ander",
+		"isolatedHint": "Je gesprekken staan apart in een lijst en delen het privégeheugen van deze medewerker. Elk gesprek met iemand anders — een beller, een bezoeker, een andere bot — houdt een eigen verzegeld geheugen, zodat niets naar een ander gesprek lekt",
 		"confirmOffTitle": "Geheugenscheiding uitzetten?",
-		"confirmOffBody": "Je losse gesprekken blijven bewaard, maar verschijnen niet langer als een lijst met dossiers — deze medewerker keert terug naar één doorlopend gesprek. Wat binnen elk afgeschermd gesprek is geleerd, blijft afgeschermd: latere chats putten er niet uit. Er wordt niets verwijderd, en zet je de scheiding weer aan, dan komen de lijst en het eigen geheugen van elk gesprek terug.",
+		"confirmOffBody": "Je aparte gesprekken blijven bewaard, maar verschijnen niet meer als lijst — deze medewerker gaat terug naar één doorlopend gesprek. Wat in een gesprek met iemand anders is geleerd, blijft verzegeld: toekomstige chats gebruiken het niet. Er wordt niets verwijderd, en isolatie weer aanzetten zet de lijst terug.",
 		"confirmOffAction": "Scheiding uitzetten",
 		"lockedByPhone": "Gescheiden zolang er een telefoonlijn aan hangt — elke beller krijgt een afgeschermd geheugen. Haal de lijn weg op neboai.com/manage/phone om dit te veranderen."
 	},

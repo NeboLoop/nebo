@@ -116,9 +116,15 @@ impl HybridSearchAdapter {
         }
     }
 
+    /// The model's index with every scope of `user_id`'s read chain loaded
+    /// (the search reaches local memory as well as the run's own scope).
     async fn get_or_load_index(&self, user_id: &str) -> Option<Arc<VectorIndex>> {
         let model = self.embedding_provider.as_ref()?.id();
-        Some(sync_scope(&self.store, model, user_id).await)
+        let mut index = None;
+        for scope in crate::memory::memory_scope_chain(user_id) {
+            index = Some(sync_scope(&self.store, model, &scope).await);
+        }
+        index
     }
 }
 
@@ -162,6 +168,7 @@ impl HybridSearcher for HybridSearchAdapter {
                     key: r.key,
                     value: r.value,
                     namespace: r.namespace,
+                    scope: r.scope,
                     score: r.score,
                 })
                 .collect()

@@ -2014,12 +2014,12 @@
 	},
 	"agentIsolation": {
 		"title": "Izolacja pamięci",
-		"shared": "Wspólna pamięć",
+		"shared": "Jedna pamięć",
 		"sharedHint": "Jedna pamięć na wszystkie rozmowy — czego ten pracownik nauczy się gdziekolwiek, wie wszędzie",
 		"isolated": "Osobna dla każdej rozmowy",
-		"isolatedHint": "Każda rozmowa ma własną zamkniętą pamięć — jedna sprawa, klient czy kwestia nigdy nie przenika do innej",
+		"isolatedHint": "Twoje rozmowy są wymienione osobno i dzielą prywatną pamięć tego pracownika. Każda rozmowa z kimś innym — dzwoniącym, gościem, innym botem — ma własną zapieczętowaną pamięć, więc żadna nie przenika do innej",
 		"confirmOffTitle": "Wyłączyć izolację pamięci?",
-		"confirmOffBody": "Twoje osobne rozmowy zostaną zapisane, ale przestaną się pokazywać jako lista spraw — ten pracownik wróci do jednej ciągłej rozmowy. To, czego nauczył się w każdej zamkniętej rozmowie, pozostaje zamknięte: przyszłe czaty nie będą z tego korzystać. Nic nie zostaje usunięte, a ponowne włączenie izolacji przywraca listę i pamięć każdej rozmowy.",
+		"confirmOffBody": "Twoje osobne rozmowy pozostają zapisane, ale nie będą już widoczne jako lista — ten pracownik wraca do jednej ciągłej rozmowy. To, czego nauczył się w rozmowie z kimś innym, pozostaje zapieczętowane: przyszłe czaty z tego nie skorzystają. Nic nie jest usuwane, a ponowne włączenie izolacji przywraca listę.",
 		"confirmOffAction": "Wyłącz izolację",
 		"lockedByPhone": "Izolacja działa, dopóki podpięta jest linia telefoniczna — każdy dzwoniący ma zamkniętą pamięć. Aby to zmienić, odepnij linię na neboai.com/manage/phone."
 	},

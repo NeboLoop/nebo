@@ -323,7 +323,9 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
          Proactively save: user corrections, preferences, environment facts, recurring patterns.\n\
          Write as declarative facts (\"User prefers X\"), not directives (\"Always do X\").\n\
          Use recall(query: \"...\") to search memories, or recall with a saved key for one fact.\n\
-         Use remember(key, value) to save one."
+         Use remember(key, value) to save one. It goes to your private memory unless you pass scope \"local\": \
+         local memory is shared by every employee on this Nebo, and it is what the owner means by \
+         company memory, shared or for everyone. Tell the owner where a fact went in the result's words."
             .to_string(),
     );
 
@@ -494,6 +496,7 @@ pub async fn recall_within_budget(
                             key: m.key,
                             value: m.value,
                             namespace: m.namespace,
+                            scope: m.user_id,
                             score,
                         }
                     })
@@ -847,6 +850,7 @@ mod tests {
                     key: "fact/vector".to_string(),
                     value: "vector-only recall content".to_string(),
                     namespace: "tacit/general".to_string(),
+                    scope: String::new(),
                     score: 0.9,
                 }],
                 std::time::Duration::from_millis(1),
@@ -886,6 +890,7 @@ mod tests {
                     key: "fact/late".to_string(),
                     value: "late vector content".to_string(),
                     namespace: "tacit/general".to_string(),
+                    scope: String::new(),
                     score: 0.9,
                 }],
                 std::time::Duration::from_secs(5),

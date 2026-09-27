@@ -1,0 +1,9 @@
+id: mp04-the-words-the-model-reads-name-the-scope-the-row-is-in
+name: "MP04 — The words the model reads name the scope the row is in"
+description: |
+  "Saved to local memory" only for a row in the local scope, "Saved to your private memory" only
+  for a row in the employee's own; a run the owner did not start (a coworker's message, a workflow)
+  is refused local memory in words that say so, and nothing lands.
+target_component: memory
+proof: staffed_proof::memory::the_words_the_model_reads_name_the_scope_the_row_is_in
+conversation: []

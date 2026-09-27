@@ -159,12 +159,13 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // every run falls through to the chat derivation below.
     let explicit_ctx = crate::memory::session_key_context(key);
 
-    // Context-isolated agents whose session key carries NO explicit segment
-    // (desktop chat threads) derive the context from the session's ACTIVE
-    // CHAT id — thread = matter — via the canonical session→chat resolution.
-    // Precedence: an explicit channel segment always wins over the chat
-    // derivation (see memory::resolve_memory_scope).
+    // A sealed employee talking to someone other than the owner, with no
+    // explicit segment, derives the conversation from the session's ACTIVE
+    // CHAT id via the canonical session→chat resolution. The owner's own
+    // runs never bind memory to a conversation, so they never need it (see
+    // memory::resolve_memory_scope).
     let chat_ctx = if memory_config.context_isolated
+        && !origin.is_trusted()
         && !agent_id.is_empty()
         && explicit_ctx.is_none()
     {
@@ -172,7 +173,6 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     } else {
         None
     };
-    let has_context = explicit_ctx.is_some() || chat_ctx.is_some();
 
     // Canonical memory owner: the on-device local user id, NOT the loosely-passed
     // (often empty) request user_id. ALL memory scoping derives from this so the
@@ -192,9 +192,14 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
         &memory_owner,
         agent_id,
         memory_config.context_isolated,
+        origin,
         explicit_ctx.as_deref(),
         chat_ctx.as_deref(),
     );
+    // The conversation this run's memory is sealed to, if any — read back
+    // from the ONE derivation rather than re-decided here.
+    let sealed_ctx = crate::memory::scope_matter(&memory_scope.user_id).map(str::to_string);
+    let has_context = sealed_ctx.is_some();
     // Fail-closed: context_isolated with no derivable context must NEVER write
     // to the shared agent scope (readable from every isolation context — the
     // exact leak the flag exists to prevent). The runner refuses the
@@ -246,13 +251,8 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
         user_id
             .rsplit_once(":ctx:")
             .map(|(_, ctx)| format!("matter/{ctx}"))
-    } else if memory_config.context_isolated {
-        explicit_ctx
-            .as_deref()
-            .or(chat_ctx.as_deref())
-            .map(|c| format!("matter/{c}"))
     } else {
-        None
+        sealed_ctx.as_deref().map(|c| format!("matter/{c}"))
     };
     // A sealed parent's child is sealed too, even though its own config says
     // nothing: no matter derivable means no company Memory at all.
@@ -289,7 +289,9 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
             .and_then(|e| e.config.as_ref())
             .map(|c| c.memory.context_isolated)
             .unwrap_or(false);
-    let company_memory_sealed = isolated_employee && memory_matter.is_none();
+    // The owner's own runs are not walled: nothing in them belongs to a
+    // stranger (their memory is not sealed either, see resolve_memory_scope).
+    let company_memory_sealed = isolated_employee && memory_matter.is_none() && !origin.is_trusted();
 
     Seat {
         memory,

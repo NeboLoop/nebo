@@ -1,0 +1,9 @@
+id: mp07-a-recipe-saved-for-everyone-is-found-by-another-employee
+name: "MP07 — A recipe saved for everyone is found by another employee"
+description: |
+  Replay of the 2026-09-27 exchange: "save that recipe to company memory" (the owner's words for
+  local memory) to one employee, then a different employee asked to pull up the chicken tenderloin
+  bites recipe finds it, and the row is in local memory.
+target_component: memory
+proof: staffed_proof::memory::a_recipe_saved_for_everyone_is_found_by_another_employee
+conversation: []

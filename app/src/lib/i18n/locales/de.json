@@ -2014,12 +2014,12 @@
 	},
 	"agentIsolation": {
 		"title": "Gedächtnistrennung",
-		"shared": "Gemeinsames Gedächtnis",
+		"shared": "Ein Gedächtnis",
 		"sharedHint": "Ein Gedächtnis über alle Gespräche — was dieser Mitarbeiter irgendwo lernt, weiß er überall",
 		"isolated": "Pro Gespräch getrennt",
-		"isolatedHint": "Jedes Gespräch behält sein eigenes abgeschottetes Gedächtnis — ein Fall, Kunde oder Vorgang dringt nie in einen anderen",
+		"isolatedHint": "Deine Gespräche werden getrennt aufgelistet und teilen das private Gedächtnis dieses Mitarbeiters. Jedes Gespräch mit jemand anderem — einem Anrufer, einem Besucher, einem anderen Bot — behält sein eigenes versiegeltes Gedächtnis, sodass nichts ins nächste übergeht",
 		"confirmOffTitle": "Gedächtnistrennung ausschalten?",
-		"confirmOffBody": "Deine getrennten Gespräche bleiben gespeichert, erscheinen aber nicht mehr als Liste von Fällen — dieser Mitarbeiter kehrt zu einem durchgehenden Gespräch zurück. Was in jedem abgeschotteten Gespräch gelernt wurde, bleibt abgeschottet: künftige Chats greifen nicht darauf zurück. Nichts wird gelöscht, und wenn du die Trennung wieder einschaltest, kommen die Liste und das eigene Gedächtnis jedes Gesprächs zurück.",
+		"confirmOffBody": "Deine getrennten Gespräche bleiben gespeichert, erscheinen aber nicht mehr als Liste — dieser Mitarbeiter kehrt zu einem durchgehenden Gespräch zurück. Was in einem Gespräch mit jemand anderem gelernt wurde, bleibt versiegelt: künftige Chats greifen nicht darauf zurück. Nichts wird gelöscht, und wenn du die Trennung wieder einschaltest, ist die Liste wieder da.",
 		"confirmOffAction": "Trennung ausschalten",
 		"lockedByPhone": "Getrennt, solange eine Telefonleitung angeschlossen ist — jeder Anrufer bekommt ein abgeschottetes Gedächtnis. Entferne die Leitung auf neboai.com/manage/phone, um das zu ändern."
 	},

@@ -1,0 +1,51 @@
+id: memory-private-stays-private
+name: 'Memory: an employee''s private fact is invisible to another employee'
+description: |
+  A fact the owner tells one employee just for itself is private memory. A different employee,
+  asked in a new conversation, must not find it: its recall never returns the fact, and it says it
+  does not know rather than inventing one.
+target_component: memory
+agent: office-manager-{{tag}}
+setup:
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"office-manager-{{tag}}"}'' > /dev/null'
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"scheduler-{{tag}}"}'' > /dev/null'
+teardown:
+- python3 -c "import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1';
+  ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','')=='office-manager-{{tag}}'
+  or a.get('name','')=='scheduler-{{tag}}']; [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for
+  i in ids]"
+conversation:
+- role: user
+  content: 'Just for you, not for the rest of the team: remember that I prefer our one-on-ones to be 25
+    minutes. My note code for it is ORCHID-{{tag}}.'
+- role: user
+  agent: scheduler-{{tag}}
+  content: How long do I like my one-on-ones to be? Check your memory first.
+tool_config:
+  remember:
+    enabled: true
+  recall:
+    enabled: true
+prompt_assertions:
+  first_call:
+  - id: saved-private
+    text: The first employee saves it and the store says it went to its private memory
+    severity: critical
+    check:
+      tool: remember
+      result_contains: Saved to your private memory
+  recovery:
+  - id: other-employee-never-sees-it
+    text: No recall the second employee makes returns ORCHID-{{tag}}
+    severity: critical
+    check:
+      tool: recall
+      result_not_contains: ORCHID-{{tag}}
+  - id: no-invented-answer
+    text: The second employee does not state 25 minutes as a known fact; it says it doesn't have that
+    severity: important
+ideal_behavior:
+  tool_calls: 2
+  narrative: remember (private); the other employee's recall finds nothing and it says so.

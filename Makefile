@@ -611,6 +611,14 @@ test-staffed-proof: $(NEBO_CLI)
 # The app-sidecar proof (suites/app-sidecars.yaml, fixtures/app-sidecars/):
 # a real sidecar killed, crashed, starved and removed, and the app serving
 # again or saying exactly why not. nebo-server lib tests, like the above.
+# The memory proof (suites/memory-proof.yaml, fixtures/memory/proof/): local
+# memory shared across employees, private memory kept, nothing filed under
+# one conversation, the global store only through its own door, each as a
+# real turn on the in-process server with a scripted model. nebo-server lib
+# tests, like the above. The model-driven half is suites/memory.yaml (gate).
+.PHONY: test-memory-proof
+test-memory-proof: $(NEBO_CLI)
+	$(NEBO_CLI) test run --suite suites/memory-proof.yaml --no-judge
 .PHONY: test-sidecar-proof
 test-sidecar-proof: $(NEBO_CLI)
 	$(NEBO_CLI) test run --suite suites/app-sidecars.yaml --no-judge
@@ -655,7 +663,7 @@ $(NEBO_CLI):
 	@echo "Building the test CLI (make build)..." && $(MAKE) build
 
 # The gate CI runs on every PR (.github/workflows/harness-gate.yml), locally:
-# smoke + error-correction with program checks only, against the dev server.
+# smoke, error-correction and memory with program checks only, against the dev server.
 # A failed critical check exits non-zero. Pass MODEL to pin the model the way
 # CI does (CI uses anthropic/claude-haiku-4-5-20251001).
 test-gate: $(NEBO_CLI)
@@ -663,6 +671,7 @@ test-gate: $(NEBO_CLI)
 		|| { echo "No Nebo on $(TEST_SERVER) — start one with 'make dev' first."; exit 1; }
 	$(NEBO_CLI) test run --suite suites/smoke.yaml --no-judge --runs 3 --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
 	$(NEBO_CLI) test run --suite suites/error-correction.yaml --no-judge --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
+	$(NEBO_CLI) test run --suite suites/memory.yaml --no-judge --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
 
 # What the nightly lane runs: judged, three runs, and the correction rate must
 # clear the same floor CI uses. Billed grader calls; takes most of an hour.

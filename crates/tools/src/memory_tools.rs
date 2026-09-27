@@ -2,6 +2,16 @@
 //! since memory is used on almost every turn. Isolation, the provenance write
 //! bar, recall-for-audience and credential routing are the store's rules and
 //! hold for every call.
+//!
+//! Two memories, one store, told apart by the scope (`user_id`) a row is
+//! filed under:
+//! - LOCAL memory — the owner's scope (`<owner>`), shared by every employee
+//!   on this Nebo. "Company memory", "shared", "for everyone" all mean this.
+//! - PRIVATE memory — the employee's own scope (`<owner>:agent:<id>`).
+//!
+//! A third, sealed scope (`<owner>:agent:<id>:ctx:<ctx>`) exists only for a
+//! conversation with someone other than the owner, on an employee the owner
+//! sealed (`memory.context_isolated`); see `agent::memory::resolve_memory_scope`.
 
 use std::sync::Arc;
 
@@ -26,6 +36,69 @@ const DEFAULT_NAMESPACE: &str = "tacit/general";
 
 /// What `recall` with no query lists.
 const LIST_PREFIX: &str = "tacit/";
+
+/// Which memory a scope (`user_id`) is — the ONE reading of the scope
+/// convention for the words the model and the owner see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryScopeKind {
+    /// Shared by every employee on this Nebo.
+    Local,
+    /// The employee's own.
+    Private,
+    /// One conversation with someone other than the owner.
+    Sealed,
+}
+
+impl MemoryScopeKind {
+    pub fn of(user_id: &str) -> Self {
+        if user_id.contains(":ctx:") {
+            MemoryScopeKind::Sealed
+        } else if user_id.contains(":agent:") {
+            MemoryScopeKind::Private
+        } else {
+            MemoryScopeKind::Local
+        }
+    }
+
+    /// How a recalled fact names where it lives.
+    pub fn label(self) -> &'static str {
+        match self {
+            MemoryScopeKind::Local => "local memory",
+            MemoryScopeKind::Private => "private memory",
+            MemoryScopeKind::Sealed => "this conversation's sealed memory",
+        }
+    }
+
+    /// How a save names where it went, and who can see it.
+    fn saved_to(self) -> &'static str {
+        match self {
+            MemoryScopeKind::Local => "local memory (every employee on this Nebo can find it)",
+            MemoryScopeKind::Private => "your private memory (only you can see it)",
+            MemoryScopeKind::Sealed => "this conversation's sealed memory (only this conversation can see it)",
+        }
+    }
+}
+
+/// Local memory's scope for any resolved scope: the owner part, which every
+/// employee on this Nebo reads.
+pub fn local_memory_scope(user_id: &str) -> &str {
+    user_id.split_once(":agent:").map_or(user_id, |(owner, _)| owner)
+}
+
+/// The READ scope chain for a memory user_id — the ONE place ancestor scopes
+/// are derived. An employee (and a sealed conversation under it) also reads
+/// the scopes above it: `owner:agent:X:ctx:Y` → itself, `owner:agent:X`,
+/// `owner` (local memory); the bare owner reads only itself. Sibling
+/// employees and sibling conversations are never in it.
+pub fn memory_scope_chain(user_id: &str) -> Vec<String> {
+    let mut chain = vec![user_id.to_string()];
+    if let Some((agent_scope, _ctx)) = user_id.split_once(":ctx:") {
+        chain.push(agent_scope.to_string());
+    }
+    chain.push(local_memory_scope(user_id).to_string());
+    chain.dedup();
+    chain
+}
 
 /// The memory the three tools share.
 pub struct Memory {
@@ -82,6 +155,25 @@ impl Memory {
         })
     }
 
+    /// The scope a `remember`/`forget` call writes: the run's own scope, or
+    /// local memory when the call names `scope: "local"`. Local memory is
+    /// read by every employee on this Nebo, so only the owner's own message
+    /// puts something there — an unattended run, a caller or a coworker
+    /// cannot publish to everyone.
+    fn write_scope<'c>(input: &Value, ctx: &'c ToolContext) -> Result<&'c str, ToolResult> {
+        if input["scope"].as_str() != Some("local") {
+            return Ok(&ctx.user_id);
+        }
+        if !ctx.owner_request {
+            return Err(ToolResult::error(
+                "Not saved to local memory: local memory is shared by every employee on this \
+                 Nebo, so it only changes when the owner asks for it in their own conversation. \
+                 Save it with scope \"private\", or tell the owner what you would add.",
+            ));
+        }
+        Ok(local_memory_scope(&ctx.user_id))
+    }
+
     /// Recall-for-audience (trust-boundaries design 2026-08-22): replying to
     /// a coworker not granted by `memory.share_with`, memory lookups are
     /// refused outright. Working style (`tacit/`) already reaches the model
@@ -118,6 +210,10 @@ impl Memory {
             ));
         }
 
+        let scope = match Self::write_scope(input, ctx) {
+            Ok(scope) => scope,
+            Err(refused) => return refused,
+        };
         let key = input["key"].as_str().unwrap_or("");
         let value = input["value"].as_str().unwrap_or("");
         // `layer` maps to the namespace for that layer; an explicit
@@ -145,7 +241,7 @@ impl Memory {
                     .keychain
                     .store(
                         MEMORY_KEYCHAIN_SERVICE,
-                        &format!("{}/{}", ctx.user_id, key),
+                        &format!("{}/{}", scope, key),
                         value,
                     )
                     .await
@@ -163,7 +259,7 @@ impl Memory {
                 (
                     format!(
                         "(stored in system keychain: {MEMORY_KEYCHAIN_SERVICE}, account {}/{key})",
-                        ctx.user_id
+                        scope
                     ),
                     Some(kind),
                 )
@@ -188,7 +284,7 @@ impl Memory {
             }
         };
 
-        debug!(namespace, key, value_len = stored_value.len(), user_id = %ctx.user_id, "memory store attempt");
+        debug!(namespace, key, value_len = stored_value.len(), scope, "memory store attempt");
 
         // Provenance rides the metadata annex — the classes of untrusted
         // content the storing run touched (empty = clean).
@@ -200,7 +296,7 @@ impl Memory {
             &stored_value,
             None,
             provenance_meta.as_deref(),
-            &ctx.user_id,
+            scope,
         ) {
             return ToolResult::error(format!(
                 "Failed to save memory [{namespace}] {key}: {e}. Do not retry immediately — this \
@@ -210,12 +306,12 @@ impl Memory {
         // Verify the write on a different pool connection.
         match self
             .store
-            .get_memory_by_key_and_user(namespace, key, &ctx.user_id)
+            .get_memory_by_key_and_user(namespace, key, scope)
         {
             Ok(Some(_)) => {}
             Ok(None) => {
                 let total = self.store.count_memories().ok();
-                warn!(namespace, key, user_id = %ctx.user_id, total_memories = total.unwrap_or(-1),
+                warn!(namespace, key, scope, total_memories = total.unwrap_or(-1),
                     "memory store: upsert OK but cross-connection verify found NOTHING");
                 return ToolResult::error(format!(
                     "Memory save failed: the write to [{namespace}] {key} was accepted but could \
@@ -231,16 +327,20 @@ impl Memory {
         // Explicit stores get the same background chunk+embed treatment as
         // automatic extraction, so vector recall finds them too.
         if let Some(ref embedder) = self.embedder {
-            embedder.embed(namespace, key, &ctx.user_id);
+            embedder.embed(namespace, key, scope);
         }
         match keychain_kind {
             Some(kind) => ToolResult::ok(format!(
-                "Saved a pointer for {key} in [{namespace}]; the value was credential-shaped \
+                "Saved a pointer for {key} in [{namespace}] of {}; the value was credential-shaped \
                  ({kind}), and the secret itself is in the OS keychain (service \
                  {MEMORY_KEYCHAIN_SERVICE}, account {}/{key}). Tell the owner where it lives.",
-                ctx.user_id
+                MemoryScopeKind::of(scope).saved_to(),
+                scope
             )),
-            None => ToolResult::ok(format!("Remembered: [{namespace}] {key} = {stored_value}")),
+            None => ToolResult::ok(format!(
+                "Saved to {}: [{namespace}] {key} = {stored_value}",
+                MemoryScopeKind::of(scope).saved_to()
+            )),
         }
     }
 
@@ -265,76 +365,62 @@ impl Memory {
         self.search(query, limit, ctx).await
     }
 
-    /// The fact stored under `key`: in `namespace` for this scope first, then
-    /// under an ancestor scope, then in any namespace. Sibling employees and
-    /// sibling isolation contexts are never readable.
+    /// The fact stored under `key`: in `namespace` first, then in any
+    /// namespace — each time in the run's own scope before the scopes above
+    /// it (private memory, then local memory). Sibling employees and sibling
+    /// conversations are never readable.
     fn find_by_key(
         &self,
         namespace: &str,
         key: &str,
         ctx: &ToolContext,
     ) -> Result<Option<String>, String> {
-        match self
-            .store
-            .get_memory_by_key_and_user(namespace, key, &ctx.user_id)
-        {
-            Ok(Some(mem)) => {
+        let chain = memory_scope_chain(&ctx.user_id);
+        for scope in &chain {
+            match self.store.get_memory_by_key_and_user(namespace, key, scope) {
+                Ok(Some(mem)) => {
+                    let _ = self
+                        .store
+                        .increment_memory_access_by_key(namespace, key, scope);
+                    return Ok(Some(format!(
+                        "[{}] {}: {} ({})",
+                        mem.namespace,
+                        mem.key,
+                        mem.value,
+                        MemoryScopeKind::of(scope).label()
+                    )));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(format!(
+                        "Failed to recall memory [{namespace}] {key}: {e}. Do not retry — this is \
+                         a database error."
+                    ));
+                }
+            }
+        }
+        // Key-only lookup across namespaces, same scope order.
+        for scope in &chain {
+            if let Some(m) = self.store.find_memory_by_key(key, scope).ok().flatten() {
                 let _ = self
                     .store
-                    .increment_memory_access_by_key(namespace, key, &ctx.user_id);
+                    .increment_memory_access_by_key(&m.namespace, key, scope);
                 return Ok(Some(format!(
-                    "[{}] {}: {}",
-                    mem.namespace, mem.key, mem.value
+                    "[{}] {}: {} (found in namespace {}; {})",
+                    m.namespace,
+                    m.key,
+                    m.value,
+                    m.namespace,
+                    MemoryScopeKind::of(scope).label()
                 )));
             }
-            Ok(None) => {}
-            Err(e) => {
-                return Err(format!(
-                    "Failed to recall memory [{namespace}] {key}: {e}. Do not retry — this is a \
-                     database error."
-                ));
-            }
         }
-        // Legacy owner-scoped memories: only ANCESTOR scopes are readable.
-        if let Some(m) = self
-            .store
-            .get_memory_by_key(namespace, key)
-            .ok()
-            .flatten()
-            .filter(|m| scope_is_ancestor(&ctx.user_id, &m.user_id))
-        {
-            warn!(namespace, key, expected_user_id = %ctx.user_id, actual_user_id = %m.user_id,
-                "memory found under ancestor scope — returning");
-            let _ = self
-                .store
-                .increment_memory_access_by_key(namespace, key, &m.user_id);
-            return Ok(Some(format!(
-                "[{}] {}: {} (inherited from owner scope)",
-                m.namespace, m.key, m.value
-            )));
-        }
-        // Key-only lookup across namespaces (same ancestor-scope guard).
-        Ok(self
-            .store
-            .find_memory_by_key(key)
-            .ok()
-            .flatten()
-            .filter(|m| scope_is_ancestor(&ctx.user_id, &m.user_id))
-            .map(|m| {
-                let inherited = if m.user_id == ctx.user_id {
-                    ""
-                } else {
-                    "; inherited from owner scope"
-                };
-                format!(
-                    "[{}] {}: {} (found in namespace {}{inherited})",
-                    m.namespace, m.key, m.value, m.namespace
-                )
-            }))
+        Ok(None)
     }
 
     async fn search(&self, query: &str, limit: usize, ctx: &ToolContext) -> ToolResult {
-        // Hybrid search (FTS5 + vector) when available.
+        // Hybrid search (FTS5 + vector) when available — it reads the whole
+        // scope chain.
         if let Some(ref searcher) = self.hybrid_searcher {
             let results = searcher.search(query, &ctx.user_id, limit, None).await;
             if !results.is_empty() {
@@ -342,8 +428,12 @@ impl Memory {
                     .iter()
                     .map(|r| {
                         format!(
-                            "- [{}] {}: {} (relevance {:.2}/1)",
-                            r.namespace, r.key, r.value, r.score
+                            "- [{}] {}: {} ({}, relevance {:.2}/1)",
+                            r.namespace,
+                            r.key,
+                            r.value,
+                            MemoryScopeKind::of(&r.scope).label(),
+                            r.score
                         )
                     })
                     .collect();
@@ -354,93 +444,123 @@ impl Memory {
                 ));
             }
         }
-        match self
-            .store
-            .search_memories_by_user(&ctx.user_id, query, limit as i64, 0)
-        {
-            Ok(memories) if memories.is_empty() => {
-                ToolResult::ok(format!("No memories found matching: {query}"))
+        let mut lines: Vec<String> = Vec::new();
+        for scope in memory_scope_chain(&ctx.user_id) {
+            match self
+                .store
+                .search_memories_by_user(&scope, query, limit as i64, 0)
+            {
+                Ok(memories) => lines.extend(memories.iter().map(|m| {
+                    format!(
+                        "- [{}] {}: {} ({})",
+                        m.namespace,
+                        m.key,
+                        m.value,
+                        MemoryScopeKind::of(&scope).label()
+                    )
+                })),
+                Err(e) => {
+                    return ToolResult::error(format!(
+                        "Memory search failed: {e}. Do not retry — this is a database error. \
+                         Call recall with no query to list memories instead."
+                    ));
+                }
             }
-            Ok(memories) => {
-                let lines: Vec<String> = memories
-                    .iter()
-                    .map(|m| format!("- [{}] {}: {}", m.namespace, m.key, m.value))
-                    .collect();
-                ToolResult::ok(format!(
-                    "Found {} memories (text match):\n{}",
-                    memories.len(),
-                    lines.join("\n")
-                ))
-            }
-            Err(e) => ToolResult::error(format!(
-                "Memory search failed: {e}. Do not retry — this is a database error. Call recall \
-                 with no query to list memories instead."
-            )),
         }
+        lines.truncate(limit);
+        if lines.is_empty() {
+            return ToolResult::ok(format!(
+                "No memories found matching: {query} (searched {}).",
+                searched(&ctx.user_id)
+            ));
+        }
+        ToolResult::ok(format!(
+            "Found {} memories (text match):\n{}",
+            lines.len(),
+            lines.join("\n")
+        ))
     }
 
-    /// Always scoped to this employee — never another employee's memories.
+    /// This employee's memories and local memory — never another employee's.
     fn list(&self, prefix: &str, limit: i64, ctx: &ToolContext) -> ToolResult {
-        match self
-            .store
-            .list_memories_by_user_and_namespace(&ctx.user_id, prefix, limit, 0)
-        {
-            Ok(mems) if mems.is_empty() => ToolResult::ok(format!(
-                "No memories in namespace prefix '{prefix}'. (With no namespace this lists tacit/; \
-                 pass namespace: \"project\" or \"entity/\" to see others.)"
-            )),
-            Ok(mems) => {
-                let lines: Vec<String> = mems
-                    .iter()
-                    .map(|m| format!("- [{}] {}: {}", m.namespace, m.key, m.value))
-                    .collect();
-                let page_note = if mems.len() as i64 >= limit {
-                    format!(" (first {limit}; raise limit for more)")
-                } else {
-                    String::new()
-                };
-                ToolResult::ok(format!(
-                    "{} memories in {prefix}{page_note}:\n{}",
-                    mems.len(),
-                    lines.join("\n")
-                ))
+        let mut lines: Vec<String> = Vec::new();
+        for scope in memory_scope_chain(&ctx.user_id) {
+            let room = limit - lines.len() as i64;
+            if room <= 0 {
+                break;
             }
-            Err(e) => ToolResult::error(format!("Failed to list memories: {e}")),
+            match self
+                .store
+                .list_memories_by_user_and_namespace(&scope, prefix, room, 0)
+            {
+                Ok(mems) => lines.extend(mems.iter().map(|m| {
+                    format!(
+                        "- [{}] {}: {} ({})",
+                        m.namespace,
+                        m.key,
+                        m.value,
+                        MemoryScopeKind::of(&scope).label()
+                    )
+                })),
+                Err(e) => return ToolResult::error(format!("Failed to list memories: {e}")),
+            }
         }
+        if lines.is_empty() {
+            return ToolResult::ok(format!(
+                "No memories in namespace prefix '{prefix}' ({}). (With no namespace this lists \
+                 tacit/; pass namespace: \"project\" or \"entity/\" to see others.)",
+                searched(&ctx.user_id)
+            ));
+        }
+        let page_note = if lines.len() as i64 >= limit {
+            format!(" (first {limit}; raise limit for more)")
+        } else {
+            String::new()
+        };
+        ToolResult::ok(format!(
+            "{} memories in {prefix}{page_note}:\n{}",
+            lines.len(),
+            lines.join("\n")
+        ))
     }
 
     fn forget(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         if let Some(refused) = Self::writes_refused(ctx) {
             return refused;
         }
+        let scope = match Self::write_scope(input, ctx) {
+            Ok(scope) => scope,
+            Err(refused) => return refused,
+        };
         let key = input["key"].as_str().unwrap_or("");
         let namespace = input["namespace"]
             .as_str()
             .filter(|n| !n.is_empty())
             .unwrap_or(DEFAULT_NAMESPACE);
-        // Scoped to this employee only — never another's.
+        let place = MemoryScopeKind::of(scope).label();
         match self
             .store
-            .delete_memory_by_key_and_user(namespace, key, &ctx.user_id)
+            .delete_memory_by_key_and_user(namespace, key, scope)
         {
             Ok(n) if n > 0 => ToolResult::ok(format!(
-                "Forgot {n} entries for key '{key}' in {namespace}."
+                "Forgot {n} entries for key '{key}' in {namespace} of {place}."
             )),
             Ok(_) => ToolResult::ok(format!(
-                "Nothing forgotten: no memory with key '{key}' in {namespace}. recall with the key \
-                 shows the namespace it is in."
+                "Nothing forgotten: no memory with key '{key}' in {namespace} of {place}. recall \
+                 with the key shows the namespace and the memory it is in."
             )),
             Err(e) => ToolResult::error(format!("Failed to forget: {e}")),
         }
     }
 }
 
-/// True when `found` is `own` itself or an ANCESTOR scope of `own` in the
-/// memory scope chain (`owner` → `owner:agent:X` → `owner:agent:X:ctx:Y` —
-/// scopes nest with `:` separators, so an ancestor is a strict `:`-boundary
-/// prefix). Sibling employees and sibling isolation contexts never are.
-fn scope_is_ancestor(own: &str, found: &str) -> bool {
-    own == found || own.starts_with(&format!("{found}:"))
+/// The memories a read covered, in words: "private memory and local memory".
+fn searched(user_id: &str) -> String {
+    memory_scope_chain(user_id)
+        .iter()
+        .map(|s| MemoryScopeKind::of(s).label())
+        .collect::<Vec<_>>()
+        .join(" and ")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -467,14 +587,13 @@ impl DynTool for MemoryTool {
     fn description(&self) -> String {
         match self.op {
             MemoryOp::Recall => "Searches what you've remembered about the owner, the company and past work.\n\
-                 - `query` can be a saved key (returns that fact) or words to search for.\n\
+                 - `query` can be a saved key or words to search for.\n\
                  - Leave `query` empty to list recent memories; `namespace` narrows the list (\"project\", \"entity/\").\n\
                  - A fact that reads \"(stored in system keychain: …)\" is a pointer: fetch the secret only when the owner asks for it."
                 .to_string(),
-            MemoryOp::Remember => "Saves a fact worth keeping across conversations. Use a short, specific key (\"owner/coffee-order\").\n\
-                 - `layer`: \"tacit\" for preferences and working style (the default), \"project\" for ongoing work, \"entity\" for people, places and things.\n\
-                 - Use the owner's exact words; don't paraphrase.\n\
-                 - When the owner asks you to remember something, save it — the request is their consent. Passwords and API keys go to the system keychain and the memory keeps a pointer; the result says so.\n\
+            MemoryOp::Remember => "Saves a fact worth keeping across conversations, in the owner's exact words. Use a short, specific key (\"owner/coffee-order\").\n\
+                 - `scope` \"local\" (company memory, shared, for everyone) is read by every employee on this Nebo; the default is your private memory.\n\
+                 - When the owner asks you to remember something, save it — the request is their consent. Passwords and API keys go to the system keychain and the memory keeps a pointer.\n\
                  - Saving to an existing key replaces it."
                 .to_string(),
             MemoryOp::Forget => "Deletes a remembered fact by its key.\n\
@@ -499,7 +618,8 @@ impl DynTool for MemoryTool {
                     "key": { "type": "string", "description": "Short, specific key, e.g. \"owner/coffee-order\"." },
                     "value": { "type": "string", "description": "The fact, in the owner's words." },
                     "layer": { "type": "string", "description": "tacit (preferences, the default), project (ongoing work), entity (people, places, things), or a topic your employee declares." },
-                    "namespace": { "type": "string", "description": "Exact namespace; overrides layer. \"tacit/preferences\" facts reach every conversation." }
+                    "namespace": { "type": "string", "description": "Exact namespace; overrides layer." },
+                    "scope": { "type": "string", "enum": ["private", "local"] }
                 },
                 "required": ["key", "value"]
             }),
@@ -507,7 +627,8 @@ impl DynTool for MemoryTool {
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "The key of the fact to delete." },
-                    "namespace": { "type": "string", "description": "Namespace it is in (default tacit/general)." }
+                    "namespace": { "type": "string", "description": "Namespace it is in (default tacit/general)." },
+                    "scope": { "type": "string", "enum": ["private", "local"] }
                 },
                 "required": ["key"]
             }),
@@ -537,6 +658,16 @@ impl DynTool for MemoryTool {
 
     fn validate_input(&self, input: &Value) -> Result<(), String> {
         let blank = |k: &str| input[k].as_str().is_none_or(|s| s.trim().is_empty());
+        if self.op != MemoryOp::Recall
+            && !matches!(input.get("scope"), None | Some(Value::Null))
+            && !matches!(input["scope"].as_str(), Some("private" | "local"))
+        {
+            return Err(
+                "scope is \"private\" (your own memory) or \"local\" (shared by every employee \
+                 on this Nebo)."
+                    .to_string(),
+            );
+        }
         match self.op {
             MemoryOp::Remember if blank("key") || blank("value") => Err(
                 "key and value can't be empty: remember(key: \"owner/name\", value: \"Alice\")"
@@ -1028,20 +1159,109 @@ mod tests {
         assert!(owner.contains("owner value"), "{owner}");
     }
 
+    fn employee(owner: &str, id: &str, owner_request: bool) -> ToolContext {
+        ToolContext {
+            user_id: format!("{owner}:agent:{id}"),
+            owner_request,
+            ..Default::default()
+        }
+    }
+
+    /// Local memory is read by every employee on this Nebo; a private fact
+    /// is read by its employee alone. The save says which one it was.
+    #[tokio::test]
+    async fn a_local_save_reaches_every_employee_and_a_private_one_stays_private() {
+        let rig = Rig::new(false);
+        let (a, b, c) = (employee("o", "a", true), employee("o", "b", false), employee("o", "c", true));
+        let recipe = "Sheet-pan lemon chickpeas: 2 cans chickpeas, 2 tbsp olive oil, zest of one lemon, roast at 425F for 25 minutes.";
+        let saved = rig
+            .remember
+            .execute_dyn(&a, json!({"key": "recipes/lemon-chickpeas", "value": recipe, "layer": "project", "scope": "local"}))
+            .await;
+        assert!(!saved.is_error && saved.content.starts_with("Saved to local memory"), "{}", saved.content);
+        assert!(rig.store.get_memory_by_key_and_user("project", "recipes/lemon-chickpeas", "o").unwrap().is_some());
+
+        // Another employee, and a sealed conversation of it, find it by
+        // words and by key, and are told it is in local memory.
+        for reader in [b.clone(), ctx_for("o:agent:b:ctx:caller-1")] {
+            let found = rig.recall.execute_dyn(&reader, json!({"query": "chickpeas"})).await;
+            assert!(found.content.contains("425F") && found.content.contains("(local memory)"), "{}", found.content);
+            let by_key = rig.recall.execute_dyn(&reader, json!({"query": "recipes/lemon-chickpeas"})).await;
+            assert!(by_key.content.contains("425F") && by_key.content.contains("local memory"), "{}", by_key.content);
+            let listed = rig.recall.execute_dyn(&reader, json!({"namespace": "project"})).await;
+            assert!(listed.content.contains("recipes/lemon-chickpeas"), "{}", listed.content);
+        }
+
+        // A private save is its employee's alone, and says so.
+        let private = rig
+            .remember
+            .execute_dyn(&c, json!({"key": "owner/gate-code-hint", "value": "The owner keeps the side gate code on the fridge calendar."}))
+            .await;
+        assert!(private.content.starts_with("Saved to your private memory"), "{}", private.content);
+        assert!(!private.content.contains("local memory"), "{}", private.content);
+        for query in ["owner/gate-code-hint", "fridge calendar"] {
+            let other = rig.recall.execute_dyn(&b, json!({"query": query})).await;
+            assert!(!other.content.contains("side gate"), "{query}: {}", other.content);
+        }
+        let own = rig.recall.execute_dyn(&c, json!({"query": "fridge calendar"})).await;
+        assert!(own.content.contains("(private memory)"), "{}", own.content);
+    }
+
+    /// Only the owner's own message changes local memory: a coworker, a
+    /// caller or an unattended run is refused, and nothing is written.
+    #[tokio::test]
+    async fn local_memory_changes_only_at_the_owners_request() {
+        let rig = Rig::new(false);
+        let unattended = employee("o", "a", false);
+        let refused = rig
+            .remember
+            .execute_dyn(&unattended, json!({"key": "team/standup", "value": "The team standup moved to Thursdays at nine.", "scope": "local"}))
+            .await;
+        assert!(refused.is_error && refused.content.starts_with("Not saved to local memory"), "{}", refused.content);
+        assert_eq!(rig.store.count_memories().unwrap(), 0);
+
+        rig.store.upsert_memory("tacit/general", "team/standup", "Thursdays", None, None, "o").unwrap();
+        let kept = rig.forget.execute_dyn(&unattended, json!({"key": "team/standup", "scope": "local"})).await;
+        assert!(kept.is_error, "{}", kept.content);
+        let gone = rig.forget.execute_dyn(&employee("o", "a", true), json!({"key": "team/standup", "scope": "local"})).await;
+        assert!(gone.content.starts_with("Forgot 1") && gone.content.contains("local memory"), "{}", gone.content);
+    }
+
+    /// Nothing the memory tools say names a global memory: this Nebo's
+    /// memory is local and private, complete without any account.
+    #[tokio::test]
+    async fn the_memory_tools_never_mention_a_global_memory() {
+        let rig = Rig::new(false);
+        let ctx = employee("o", "a", true);
+        let mut said = Vec::new();
+        for tool in [&rig.recall, &rig.remember, &rig.forget] {
+            said.push(tool.description());
+            said.push(tool.schema().to_string());
+        }
+        said.push(rig.remember.execute_dyn(&ctx, json!({"key": "k/one", "value": "The owner prefers morning meetings before ten.", "scope": "local"})).await.content);
+        said.push(rig.recall.execute_dyn(&ctx, json!({"query": "morning"})).await.content);
+        said.push(rig.recall.execute_dyn(&ctx, json!({"query": "nothing-matches-this"})).await.content);
+        said.push(rig.recall.execute_dyn(&ctx, json!({})).await.content);
+        for text in said {
+            assert!(!text.to_lowercase().contains("global"), "{text}");
+        }
+        assert!(rig.remember.validate_input(&json!({"key": "k", "value": "v", "scope": "global"})).is_err());
+        assert!(rig.remember.validate_input(&json!({"key": "k", "value": "v", "scope": "local"})).is_ok());
+    }
+
+    /// The read chain: the run's own scope, then private memory, then local
+    /// memory — never a sibling employee or a sibling conversation.
     #[test]
-    fn ancestors_are_colon_bounded_prefixes() {
-        assert!(scope_is_ancestor("local", "local"));
-        assert!(scope_is_ancestor(
-            "local:agent:a1:ctx:chat-A",
-            "local:agent:a1"
-        ));
-        assert!(scope_is_ancestor("local:agent:a1:ctx:chat-A", "local"));
-        assert!(!scope_is_ancestor(
-            "local:agent:a1:ctx:chat-A",
-            "local:agent:a1:ctx:chat-B"
-        ));
-        assert!(!scope_is_ancestor("local:agent:a1", "local:agent:a2"));
-        assert!(!scope_is_ancestor("local", "local:agent:a1"));
-        assert!(!scope_is_ancestor("localx:agent:a1", "local"));
+    fn the_read_chain_is_own_then_private_then_local() {
+        assert_eq!(memory_scope_chain("local"), vec!["local"]);
+        assert_eq!(memory_scope_chain("local:agent:a1"), vec!["local:agent:a1", "local"]);
+        assert_eq!(
+            memory_scope_chain("local:agent:a1:ctx:chat-A"),
+            vec!["local:agent:a1:ctx:chat-A", "local:agent:a1", "local"]
+        );
+        assert_eq!(local_memory_scope("local:agent:a1:ctx:chat-A"), "local");
+        assert_eq!(MemoryScopeKind::of("local"), MemoryScopeKind::Local);
+        assert_eq!(MemoryScopeKind::of("local:agent:a1"), MemoryScopeKind::Private);
+        assert_eq!(MemoryScopeKind::of("local:agent:a1:ctx:c"), MemoryScopeKind::Sealed);
     }
 }

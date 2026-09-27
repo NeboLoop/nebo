@@ -2014,12 +2014,12 @@
 	},
 	"agentIsolation": {
 		"title": "Separazione della memoria",
-		"shared": "Memoria condivisa",
+		"shared": "Una sola memoria",
 		"sharedHint": "Una sola memoria per tutte le conversazioni: ciò che questo dipendente impara da una parte lo sa ovunque",
 		"isolated": "Separata per conversazione",
-		"isolatedHint": "Ogni conversazione tiene la propria memoria sigillata: una pratica, un cliente o un caso non sconfina mai in un altro",
+		"isolatedHint": "Le tue conversazioni sono elencate separatamente e condividono la memoria privata di questo dipendente. Ogni conversazione con qualcun altro — chi chiama, un visitatore, un altro bot — mantiene la propria memoria sigillata, così nessuna si mescola con un'altra",
 		"confirmOffTitle": "Disattivare la separazione della memoria?",
-		"confirmOffBody": "Le conversazioni separate restano salvate, ma non appariranno più come un elenco di pratiche: questo dipendente torna a una sola conversazione continua. Ciò che ha imparato in ogni conversazione sigillata resta sigillato: le prossime conversazioni non vi attingeranno. Non viene eliminato nulla, e riattivare la separazione riporta l'elenco e la memoria propria di ogni conversazione.",
+		"confirmOffBody": "Le tue conversazioni separate restano salvate, ma non appariranno più come elenco: questo dipendente torna a un'unica conversazione continua. Ciò che è stato appreso in una conversazione con qualcun altro resta sigillato: le chat future non lo useranno. Non viene eliminato nulla e riattivando l'isolamento l'elenco torna.",
 		"confirmOffAction": "Disattiva la separazione",
 		"lockedByPhone": "Separata finché una linea telefonica è collegata: ogni chiamante ottiene una memoria sigillata. Togli la linea su neboai.com/manage/phone per cambiare."
 	},

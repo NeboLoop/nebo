@@ -2014,12 +2014,12 @@
 	},
 	"agentIsolation": {
 		"title": "Pemisahan memori",
-		"shared": "Memori bersama",
+		"shared": "Satu memori",
 		"sharedHint": "Satu memori untuk semua percakapan — apa yang dipelajari karyawan ini di mana pun, ia tahu di mana pun",
 		"isolated": "Terpisah per percakapan",
-		"isolatedHint": "Tiap percakapan menyimpan memorinya sendiri yang tertutup — satu kasus, klien, atau perkara tidak pernah bocor ke yang lain",
+		"isolatedHint": "Percakapan Anda tercantum terpisah dan berbagi memori pribadi karyawan ini. Setiap percakapan dengan orang lain — penelepon, pengunjung, bot lain — menyimpan memori tersegelnya sendiri, sehingga tidak ada yang bocor ke percakapan lain",
 		"confirmOffTitle": "Matikan pemisahan memori?",
-		"confirmOffBody": "Percakapan terpisah Anda tetap tersimpan, tetapi tidak lagi muncul sebagai daftar perkara — karyawan ini kembali ke satu percakapan berkelanjutan. Apa yang dipelajari di dalam tiap percakapan tertutup tetap tertutup: obrolan berikutnya tidak akan memakainya. Tidak ada yang dihapus, dan menyalakan kembali pemisahan akan memulihkan daftar beserta memori tiap percakapan.",
+		"confirmOffBody": "Percakapan terpisah Anda tetap tersimpan, tetapi tidak lagi tampil sebagai daftar — karyawan ini kembali ke satu percakapan berkelanjutan. Apa yang dipelajari dalam percakapan dengan orang lain tetap tersegel: obrolan berikutnya tidak akan memakainya. Tidak ada yang dihapus, dan menyalakan isolasi lagi mengembalikan daftarnya.",
 		"confirmOffAction": "Matikan pemisahan",
 		"lockedByPhone": "Terpisah selama saluran telepon terpasang — setiap penelepon mendapat memori tertutup. Lepaskan salurannya di neboai.com/manage/phone untuk mengubah ini."
 	},
