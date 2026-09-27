@@ -1915,7 +1915,7 @@
 			"emptyHint": "Item yang dikongsi secara persendirian oleh organisasi akan muncul di sini."
 		},
 		"employeesHeadline": "Ambil pekerja AI anda",
-		"employeesLede": "Pekerja siap bina, disusun mengikut jabatan. Setiap seorang berjalan secara setempat dengan ingatan kekal dan mula bekerja sebaik sahaja anda mengambilnya.",
+		"employeesLede": "Pekerja siap bina, disusun mengikut jabatan. Setiap seorang mempunyai ingatan kekal dan mula bekerja sebaik sahaja anda mengambilnya.",
 		"toolsHeadline": "Alat",
 		"toolsLede": "Sambungkan perisian yang anda sudah guna — disusun mengikut kegunaannya.",
 		"searchAllPlaceholder": "Cari pekerja, alat, koleksi…",
@@ -2703,7 +2703,7 @@
 		"business": "Perniagaan",
 		"businessDesc": "Urus dan automasikan kerja anda.",
 		"welcomeTitle": "Selamat datang.",
-		"welcomeBody": "Saya tinggal di komputer anda dan membantu anda mengurus serta mengautomasikan {noun}. Mari saya bawa anda melihat sekeliling supaya anda tahu di mana semuanya berada.",
+		"welcomeBody": "Saya di sini untuk membantu anda mengurus serta mengautomasikan {noun}. Mari saya bawa anda melihat sekeliling supaya anda tahu di mana semuanya berada.",
 		"nounPersonal": "kehidupan anda",
 		"nounBusiness": "perniagaan anda",
 		"skipTour": "Langkau lawatan",
@@ -2757,7 +2757,16 @@
 		"paymentAtCheckout": "Kaedah pembayaran akan diambil semasa pembayaran",
 		"processingPaymentEllipsis": "Memproses pembayaran…",
 		"mayTakeMoment": "Ini mungkin mengambil sedikit masa",
-		"skipSetup": "Langkau persediaan"
+		"skipSetup": "Langkau persediaan",
+		"hireName": "Ambil {name}",
+		"hired": "Diambil bekerja",
+		"hiringName": "Mengambil {name}…",
+		"hiredTitle": "{name} telah diambil bekerja",
+		"hiredReady": "{name} sedia untuk bekerja.",
+		"gettingReady": "Menyediakan {name}…",
+		"skillsAndTools": "Kemahiran dan alat",
+		"hireFailedTitle": "Pengambilan tidak dapat diselesaikan",
+		"hireFailed": "{name} tidak diambil bekerja. Cuba lagi."
 	},
 	"activity": {
 		"pageTitle": "Aktiviti - Nebo",
@@ -3000,7 +3009,7 @@
 	},
 	"christen": {
 		"title": "Namakan pekerja pertama anda",
-		"lede": "Setiap pengambilan bermula dengan satu nama. Yang ini berjalan pada mesin anda, mengingati semua yang anda ajar, dan bekerja untuk anda seorang.",
+		"lede": "Setiap pengambilan bermula dengan satu nama. Yang ini mengingati semua yang anda ajar, dan bekerja untuk anda seorang.",
 		"placeholder": "cth. Jarvis, Piper, Ada…",
 		"create": "Ambil dia bekerja",
 		"creating": "Mencipta {name}…",

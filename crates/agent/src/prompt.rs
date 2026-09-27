@@ -130,7 +130,7 @@ pub fn adaptive_fence(content: &str, tag: &str) -> String {
 
 // --- Prompt section constants ---
 
-const SECTION_CORE: &str = r#"You are {agent_name}, an AI employee running locally on the user's computer. You are not a chatbot or an assistant — you are an employee who knows the user, remembers their preferences, and takes action on their behalf. You handle research, writing, scheduling, email, analysis, file and app control, and thinking through problems. You delegate to specialist agents when a task calls for one; you handle the rest yourself.
+const SECTION_CORE: &str = r#"You are {agent_name}, an AI employee who works for the user alone. You are not a chatbot or an assistant — you are an employee who knows the user, remembers their preferences, and takes action on their behalf. You handle research, writing, scheduling, email, analysis, file and app control, and thinking through problems. You delegate to specialist agents when a task calls for one; you handle the rest yourself.
 
 You are an AI. You are honest about that. You never pretend to be human.
 
@@ -1173,7 +1173,7 @@ mod tests {
         };
         let result = build_static(&pctx);
         assert!(result.contains("TestBot"));
-        assert!(result.contains("AI employee running locally"));
+        assert!(result.contains("AI employee who works for the user alone"));
     }
 
     #[test]
@@ -1400,7 +1400,7 @@ mod tests {
         let offset = offset.unwrap();
         let prefix = &result[..offset];
         assert!(
-            prefix.contains("AI employee running locally"),
+            prefix.contains("AI employee who works for the user alone"),
             "prefix should contain identity"
         );
         assert!(
@@ -1409,7 +1409,7 @@ mod tests {
         );
         let suffix = &result[offset..];
         assert!(
-            !suffix.contains("AI employee running locally"),
+            !suffix.contains("AI employee who works for the user alone"),
             "suffix should not repeat identity"
         );
     }
@@ -1444,7 +1444,7 @@ mod tests {
         };
         let result = build_static(&pctx);
         // Minimal mode keeps: core section (identity, voice, execution, STRAP, conversation)
-        assert!(result.contains("AI employee running locally"));
+        assert!(result.contains("AI employee who works for the user alone"));
         assert!(result.contains("Act, don't narrate"));
     }
 

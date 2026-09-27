@@ -1915,7 +1915,7 @@
 			"emptyHint": "Les éléments partagés en privé par une organisation apparaîtront ici."
 		},
 		"employeesHeadline": "Embauchez vos employés IA",
-		"employeesLede": "Des employés prêts à l'emploi, classés par département. Chacun tourne localement avec une mémoire persistante et se met au travail dès que vous l'embauchez.",
+		"employeesLede": "Des employés prêts à l'emploi, classés par département. Chacun garde une mémoire persistante et se met au travail dès que vous l'embauchez.",
 		"toolsHeadline": "Outils",
 		"toolsLede": "Connectez les logiciels que vous utilisez déjà — classés par usage.",
 		"searchAllPlaceholder": "Rechercher des employés, des outils, des collections…",
@@ -2703,7 +2703,7 @@
 		"business": "Professionnel",
 		"businessDesc": "Organisez et automatisez votre travail.",
 		"welcomeTitle": "Bienvenue à bord.",
-		"welcomeBody": "Je vis sur votre ordinateur et je vous aide à organiser et automatiser {noun}. Laissez-moi vous faire une visite rapide pour que vous sachiez où tout se trouve.",
+		"welcomeBody": "Je suis là pour vous aider à organiser et automatiser {noun}. Laissez-moi vous faire une visite rapide pour que vous sachiez où tout se trouve.",
 		"nounPersonal": "votre vie",
 		"nounBusiness": "votre activité",
 		"skipTour": "Passer la visite",
@@ -2757,7 +2757,16 @@
 		"paymentAtCheckout": "Le moyen de paiement sera demandé lors du paiement",
 		"processingPaymentEllipsis": "Traitement du paiement…",
 		"mayTakeMoment": "Cela peut prendre un moment",
-		"skipSetup": "Passer la configuration"
+		"skipSetup": "Passer la configuration",
+		"hireName": "Embaucher {name}",
+		"hired": "Embauché",
+		"hiringName": "Embauche de {name}…",
+		"hiredTitle": "{name} est embauché",
+		"hiredReady": "{name} est prêt à travailler.",
+		"gettingReady": "Préparation de {name}…",
+		"skillsAndTools": "Compétences et outils",
+		"hireFailedTitle": "L'embauche n'a pas pu aboutir",
+		"hireFailed": "{name} n'a pas été embauché. Réessayez."
 	},
 	"activity": {
 		"pageTitle": "Activité - Nebo",
@@ -3000,7 +3009,7 @@
 	},
 	"christen": {
 		"title": "Donnez un nom à votre premier employé",
-		"lede": "Toute embauche commence par un nom. Celui-ci tourne sur votre machine, retient tout ce que vous lui apprenez et travaille pour vous seul.",
+		"lede": "Toute embauche commence par un nom. Celui-ci retient tout ce que vous lui apprenez et travaille pour vous seul.",
 		"placeholder": "par ex. Jarvis, Piper, Ada…",
 		"create": "L'embaucher",
 		"creating": "Création de {name}…",
