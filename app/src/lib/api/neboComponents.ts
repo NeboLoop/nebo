@@ -215,6 +215,17 @@ export interface Assignment {
 	closedAt?: number
 }
 
+export interface AuthLoginAccountResponse {
+	started: boolean
+	authUrl?: string
+	perAccount: boolean
+}
+
+export interface AuthLoginResponse {
+	started: boolean
+	authUrl?: string
+}
+
 export interface AuthProfile {
 	id: string
 	name: string
