@@ -852,18 +852,28 @@ impl Registry {
         let Some(tool) = self.get(tool_name).await else {
             return false;
         };
-        match self.settle(tool.as_ref(), tool_name, input.clone()).await {
+        match self.settle(tool.as_ref(), tool_name, input.clone(), false).await {
             Ok(input) => tool.concurrency_safe(&input),
             Err(_) => false,
         }
     }
 
     /// The call as it will run, or why it can't: arguments that never
-    /// parsed, input the schema refuses (a parameter's help text sent back
-    /// as its value included), or the tool's own check. Stringified
+    /// parsed, input the schema refuses (a parameter the tool doesn't have
+    /// and a parameter's help text sent back as its value included, on
+    /// every tool), or the tool's own check. Stringified
     /// values are repaired against the schema and the tool settles the call's
     /// shape first, so every check (and the tool) sees the call that runs.
-    async fn settle(&self, tool: &dyn DynTool, name: &str, mut input: serde_json::Value) -> Result<serde_json::Value, Invalid> {
+    /// `replayed`: the call is one this registry settled before, run again
+    /// on the owner's answer to the ask it parked on; what the tool wrote in
+    /// for itself then is in it now.
+    async fn settle(
+        &self,
+        tool: &dyn DynTool,
+        name: &str,
+        mut input: serde_json::Value,
+        replayed: bool,
+    ) -> Result<serde_json::Value, Invalid> {
         // Arguments that never parsed arrive as `{"_raw": "..."}` (the
         // provider's salvage of a cut or malformed stream).
         if let Some(raw) = unparsed_arguments(&input) {
@@ -873,6 +883,7 @@ impl Registry {
         if let Some(def) = &def {
             crate::mcp_tool::coerce_schema_types(&mut input, &def.input_schema);
         }
+        let sent: Vec<String> = input.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
         let input = tool.normalize_input(input);
         let validator = if tool.validates_input() {
             self.validators.read().await.get(name).cloned()
@@ -883,8 +894,17 @@ impl Registry {
             Some(validator) => crate::input_schema::issues(&validator, &input),
             None => Vec::new(),
         };
-        // Every tool: a parameter's help text sent back as its value.
+        // Every tool: a parameter it doesn't have, and a parameter's help
+        // text sent back as its value. The parameters judged are the ones
+        // the call sent, as the tool settled them (a shorthand it accepts
+        // renamed): what the tool writes in for itself (exit_plan_mode reads
+        // the plan document into `plan`) is its own, never the model's.
         if let Some(def) = &def {
+            let mut as_sent = input.clone();
+            if let Some(fields) = as_sent.as_object_mut() {
+                fields.retain(|key, _| sent.contains(key) && !replayed);
+            }
+            issues.extend(crate::input_schema::unknown_parameters(&def.input_schema, &as_sent));
             issues.extend(crate::input_schema::echoed_descriptions(&def.input_schema, &input));
         }
         if !issues.is_empty() {
@@ -964,7 +984,7 @@ impl Registry {
             return ToolResult::error(crate::result_shape::unknown_tool(name));
         };
 
-        let input = match self.settle(tool.as_ref(), name, input).await {
+        let input = match self.settle(tool.as_ref(), name, input, ctx.answered_ask.is_some()).await {
             Ok(input) => input,
             Err(invalid) => return self.invalid_call(ctx, name, invalid).await,
         };
@@ -1015,14 +1035,16 @@ impl Registry {
             threshold,
             &mut result,
         );
+        if result.is_error {
+            self.load_with_error(ctx, name, &mut result).await;
+        }
         result
     }
 
     /// The error for a call that won't run as written: what is wrong with
-    /// it (the smallest valid call when nothing was sent), and for a
-    /// deferred tool the model was never sent, its definition. That error
-    /// loads the tool, so the retry is the next step, with no `find_tools`
-    /// step between.
+    /// it (the smallest valid call when nothing was sent), with the
+    /// definition of a tool the model was never sent (see
+    /// [`Registry::load_with_error`]).
     async fn invalid_call(&self, ctx: &ToolContext, name: &str, invalid: Invalid) -> ToolResult {
         let definition = self.definition(name).await;
         let mut result = ToolResult::error(match invalid {
@@ -1037,10 +1059,22 @@ impl Registry {
             }
             Invalid::Tool(message) => crate::result_shape::call_error(&message),
         });
+        self.load_with_error(ctx, name, &mut result).await;
+        result
+    }
+
+    /// A call to a deferred tool the model was never sent runs only when
+    /// it is right: every parameter one the tool has, of its type (see
+    /// [`Registry::settle`]). A call that fails — refused as written, or
+    /// failed by the tool — gets the tool's definition with its error, and
+    /// that error loads it, so the retry is the next step, with no
+    /// `find_tools` step between. A call that runs as written loads
+    /// nothing, and the cached prompt stays as it is.
+    async fn load_with_error(&self, ctx: &ToolContext, name: &str, result: &mut ToolResult) {
         let unloaded = ctx.declared_tools.as_ref().is_some_and(|declared| !declared.contains(name))
             && self.is_deferred(name).await
             && crate::find_tools::may_load(name, ctx.withheld_tools.as_deref(), crate::desktop_available());
-        if unloaded && let Some(definition) = definition {
+        if unloaded && let Some(definition) = self.definition(name).await {
             result.content.push_str(&format!(
                 "\n{name} wasn't loaded, so its definition was never sent. This error loads it: its \
                  definition is below, and your next call can use it.\n{}",
@@ -1048,7 +1082,6 @@ impl Registry {
             ));
             result.loads.push(definition);
         }
-        result
     }
 
     /// Get a reference to the process registry.
@@ -2098,6 +2131,9 @@ pub(crate) mod tests {
             input: serde_json::Value,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
             Box::pin(async move {
+                if input["text"] == "fail" {
+                    return ToolResult::error("Nothing to echo here.");
+                }
                 let times = input["times"].as_u64().unwrap_or(1) as usize;
                 ToolResult::ok(input["text"].as_str().unwrap_or("").repeat(times))
             })
@@ -2240,6 +2276,48 @@ pub(crate) mod tests {
         assert!(bad.loads.is_empty() && !bad.content.contains("<functions>"), "{}", bad.content);
     }
 
+    /// Release proof of 2026-09-27: `create_workflow`, never loaded, was
+    /// called with another tool's parameters (`background`, `helper_type`,
+    /// `prompt`); its schema had no word against them, so it ran and failed
+    /// on meaning, twice, and the model never saw its definition. A call to
+    /// a tool that isn't loaded runs only when every parameter is one the
+    /// tool has, of its type; anything else, and a call the tool itself
+    /// fails, comes back with the definition and loads it. A loaded tool is
+    /// held to the same schema, and its errors carry no definition.
+    #[tokio::test]
+    async fn a_call_to_an_unloaded_tool_never_runs_blind() {
+        let r = echo_registry().await;
+        let unloaded = ToolContext {
+            declared_tools: Some(Arc::new(HashSet::from(["read_file".to_string()]))),
+            ..Default::default()
+        };
+        let guessed = serde_json::json!({"text": "hi", "background": "false", "helper_type": "general"});
+        let out = r.execute(&unloaded, "echo_text", guessed.clone()).await;
+        assert!(out.is_error, "a guessed parameter never runs: {}", out.content);
+        assert!(!out.content.starts_with("hi"), "the tool did not run: {}", out.content);
+        assert!(
+            out.content.contains("The parameters `background`, `helper_type` don't exist. This tool's parameters: text, times."),
+            "{}",
+            out.content
+        );
+        assert_eq!(out.loads.len(), 1, "the error loads the tool: {}", out.content);
+        let failed = r.execute(&unloaded, "echo_text", serde_json::json!({"text": "fail"})).await;
+        assert!(failed.is_error && failed.content.starts_with("Nothing to echo here."), "{}", failed.content);
+        assert_eq!(failed.loads.len(), 1, "a call the tool fails loads it too: {}", failed.content);
+        let right = r.execute(&unloaded, "echo_text", serde_json::json!({"text": "hi"})).await;
+        assert_eq!((right.content.as_str(), right.loads.len()), ("hi", 0), "a right call runs and loads nothing");
+
+        let loaded = ToolContext {
+            declared_tools: Some(Arc::new(HashSet::from(["echo_text".to_string()]))),
+            ..Default::default()
+        };
+        let out = r.execute(&loaded, "echo_text", guessed).await;
+        assert!(out.is_error && out.content.contains("`background`"), "{}", out.content);
+        assert!(out.loads.is_empty() && !out.content.contains("<functions>"), "{}", out.content);
+        let failed = r.execute(&loaded, "echo_text", serde_json::json!({"text": "fail"})).await;
+        assert!(failed.loads.is_empty() && !failed.content.contains("<functions>"), "{}", failed.content);
+    }
+
     /// Results over the tool's threshold go to the one spill path, the
     /// session's `tool-results/`, and come back as a preview.
     #[tokio::test]
@@ -2303,6 +2381,65 @@ pub(crate) mod tests {
         registry.register_all(store, crate::orchestrator::new_handle()).await;
         registry.register(Box::new(crate::find_tools::FindToolsTool::new(registry.clone()))).await;
         (registry, dir)
+    }
+
+    /// The parameters judged are the ones the call sent: a shorthand the
+    /// tool accepts (`file_path` for `path`) passes, and what a tool writes
+    /// in for itself (exit_plan_mode reads the plan document into `plan`)
+    /// is its own, and stays its own when the owner's answer replays the
+    /// parked call; the same `plan` sent by the model is refused.
+    #[tokio::test]
+    async fn only_the_parameters_the_call_sent_are_judged() {
+        let (registry, dir) = full_registry().await;
+        let store = Arc::new(db::Store::new(&dir.path().join("plan.db").to_string_lossy()).unwrap());
+        registry.register(Box::new(crate::file_tools::ExitPlanModeTool::new(store))).await;
+        let doc = dir.path().join("plan.md");
+        std::fs::write(&doc, "# Plan\n\n- [ ] 1. Update the price\n").unwrap();
+        let exit = registry.get("exit_plan_mode").await.unwrap();
+        let path = doc.to_string_lossy().to_string();
+        assert!(registry.settle(exit.as_ref(), "exit_plan_mode", serde_json::json!({"path": path}), false).await.is_ok());
+        let smuggled = registry
+            .settle(exit.as_ref(), "exit_plan_mode", serde_json::json!({"path": path, "plan": "Delete everything."}), false)
+            .await;
+        assert!(matches!(&smuggled, Err(Invalid::Schema { issues, .. }) if issues[0].contains("`plan`")), "the model's own plan is refused");
+        // The owner's answer runs the parked call as it was settled, plan and all.
+        let settled = serde_json::json!({"path": path, "plan": "# Plan\n\n- [ ] 1. Update the price\n"});
+        assert!(registry.settle(exit.as_ref(), "exit_plan_mode", settled, true).await.is_ok());
+        let read = registry.get("read_file").await.unwrap();
+        assert!(registry.settle(read.as_ref(), "read_file", serde_json::json!({"file_path": path}), false).await.is_ok());
+    }
+
+    /// The release proof's call, word for word (correction-work-name-in-
+    /// definition run 2, call #2): create_workflow, not loaded, with
+    /// delegate's parameters. It is refused before the workflow manager is
+    /// asked for anything, names what doesn't exist, and loads the tool.
+    #[tokio::test]
+    async fn the_release_proofs_blind_create_workflow_is_refused_with_its_definition() {
+        let (registry, _dir) = full_registry().await;
+        let recorder = Arc::new(crate::workflows::work_tool::tests::Recorder::default());
+        registry.register_workflows(recorder.clone()).await;
+        let ctx = ToolContext {
+            session_key: "agent:cs-agent:web".into(),
+            declared_tools: Some(Arc::new(HashSet::from(["read_file".to_string()]))),
+            ..Default::default()
+        };
+        let call = serde_json::json!({
+            "background": "false",
+            "description": "Create Handle Web Form Submission workflow for cs-agent-387b239e",
+            "helper_type": "general",
+            "name": "Handle Web Form Submission",
+            "prompt": "Create a workflow with the following structure exactly as specified: {\"name\": \"Handle Web Form Submission\"}"
+        });
+        let out = registry.execute(&ctx, "create_workflow", call).await;
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("The parameters `background`, `description`, `helper_type`, `prompt` don't exist."),
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains("This tool's parameters: definition, employee, from_run, lifetime, name."), "{}", out.content);
+        assert_eq!(out.loads.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["create_workflow"]);
+        assert!(recorder.calls.lock().unwrap().is_empty(), "nothing reached the workflow manager");
     }
 
     /// The tools that still carry several jobs behind `action`/`resource`.

@@ -187,7 +187,7 @@ async fn a_coworker_acts_under_its_own_permissions_not_the_askers() {
             }
             return Reply::Call(vec![(
                 "send_message",
-                json!({"to": "Field Researcher", "message": "Please write the VAT rate to the rates file.", "wait": false}),
+                json!({"to": "Field Researcher", "message": "Please write the VAT rate to the rates file."}),
             )]);
         }
         Reply::Text("Hello.")

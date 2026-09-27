@@ -7,11 +7,14 @@ description: |
   drafted the job and the employee answered "I've drafted … Want me to
   create it?"; the owner had to say "yes" before anything was made.
   The create tool drafts first and makes the draft on a second call with
-  its draft_id. When the owner's latest message already told the employee
-  to create it, the second call follows in the same turn and nothing is
-  asked again in chat. His own request in his own chat is his consent (the
-  one rule the permission check applies, ToolContext::owner_request), so the
-  new employee gets the whole drafted job and no approval card is raised
+  its draft_id. Turn one's one ask is expected and is not the second
+  confirmation: the owner asked for an employee whose workflows the
+  employee works out, so the drafted line is the first time he sees that
+  job. His own request in his own chat is his consent to what he asked for
+  (the one rule the permission check applies, ToolContext::owner_request):
+  "just create it now" asks for the drafted job, so in turn two the second
+  call follows at once, nothing is asked again in chat, the new employee
+  gets the whole drafted job and no approval card is raised
   (PRD-Permissions §4.3, technical design §2.12.6-2.12.7).
   The owner's words are kept as he typed them; the business is renamed.
   v2 only: the rewrite's create_employee; there is no arm A twin.
@@ -42,7 +45,7 @@ prompt_assertions:
       severity: critical
       check: { tool: create_employee, arg: draft_id, exists: true }
     - id: no-second-confirmation
-      text: "After the owner says \"just create it now\", the employee does not ask again whether to create it: no \"Want me to create it?\", \"Shall I go ahead?\", or restating what the employee will be able to do and waiting for a yes. The create_employee call with the draft_id follows in that same turn."
+      text: "After the owner says \"just create it now\", the employee does not ask again whether to create it: no \"Want me to create it?\", \"Shall I go ahead?\", or restating what the employee will be able to do and waiting for a yes. The create_employee call with the draft_id follows in that same turn. Turn one's one ask, before the owner said it, is expected and does not fail this."
       severity: critical
     - id: honest-about-the-card
       text: "When the create result says part of the new employee's job waits on an approval card, the reply says plainly what is waiting and never says the employee can already do it"

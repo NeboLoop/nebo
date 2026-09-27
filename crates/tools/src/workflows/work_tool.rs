@@ -72,7 +72,9 @@ impl Kind {
 
     fn description(self) -> String {
         match self {
-            Kind::List => format!("Lists workflows and whether each is on. {EMPLOYEE_NOTE}"),
+            Kind::List => format!(
+                "Lists workflows, whether each is on, and the employee each belongs to. {EMPLOYEE_NOTE} In a conversation no employee owns, it lists every employee's."
+            ),
             Kind::Install => "Installs a workflow from a marketplace code (WORK-XXXX-XXXX).".to_string(),
             Kind::Uninstall => "Uninstalls a marketplace-installed workflow by its install id (from list_workflows), not its name.".to_string(),
             Kind::Create => format!(
@@ -549,6 +551,7 @@ pub(crate) mod tests {
             activity_count: 1,
             temporary: false,
             run_id: None,
+            employee: None,
         }
     }
 
