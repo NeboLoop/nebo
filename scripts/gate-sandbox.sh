@@ -25,12 +25,16 @@
 # Two views. The runner's (the default) keeps its checkout (the fixtures and
 # suites it runs) and the job directory (traces, replay sets). The server's
 # (--server) is where the model's commands run, so it keeps only what the
-# server runs from: GATE_JOB/bin, its NEBO_HOME, the working directory and
-# the build cache. The checkout (every check, and the source beside it) and
-# the rest of the job directory (every earlier run's server log and traces,
-# the runner's own Nebo folder) are not in it: the v0.16.0 release proof
-# found the model reading the checkout and the job directory
-# (replay-thread-c52ae090, agent-spawn-explore).
+# server runs from: GATE_JOB/bin, its NEBO_HOME, the working directory, the
+# build cache, and the source tree it was built from, read-only. A debug
+# build reads its embedded folders from that tree at run time (rust-embed:
+# the database migrations, the app's build), so without it the server
+# migrates to nothing and stops (36309407616, "no such table"). The checks
+# (every fixtures/ and suites/ in the checkout) and the rest of the job
+# directory (every earlier run's server log and traces, the runner's own
+# Nebo folder) are not in it: the v0.16.0 release proof found the model
+# reading both (replay-thread-c52ae090, agent-spawn-explore). The source
+# itself is the working directory's anyway.
 set -euo pipefail
 
 server=""
@@ -47,12 +51,20 @@ args=(--dev-bind / / --bind "$GATE_JOB/home" "$HOME" --bind "$GATE_JOB/tmp" /tmp
 # What the job runs from, bound back at the same paths. Sources resolve in the
 # real filesystem, so these are reachable even though they live under $HOME.
 if [ -n "$server" ]; then
-  # The checkout and the job directory covered, wherever they are, then the
-  # server's own parts bound back. The build cache stays where CARGO_TARGET_DIR
-  # says, so an employee's build in the working directory is as warm as before.
-  for hide in "${GITHUB_WORKSPACE:-}" "${RUNNER_TEMP:-}"; do
-    if [ -n "$hide" ] && [ -d "$hide" ]; then args+=(--tmpfs "$hide"); fi
-  done
+  # The job directory covered, then the server's own parts bound back. The
+  # checkout (this commit's, and the code under test's in under-test/) comes
+  # back read-only with its checks covered. The build cache stays where
+  # CARGO_TARGET_DIR says, so an employee's build in the working directory is
+  # as warm as before.
+  if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then args+=(--tmpfs "$RUNNER_TEMP"); fi
+  if [ -n "${GITHUB_WORKSPACE:-}" ] && [ -d "$GITHUB_WORKSPACE" ]; then
+    args+=(--ro-bind "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE")
+    for tree in "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/under-test"; do
+      for checks in fixtures suites; do
+        if [ -d "$tree/$checks" ]; then args+=(--tmpfs "$tree/$checks"); fi
+      done
+    done
+  fi
   args+=(--ro-bind "$GATE_JOB/bin" "$GATE_JOB/bin" --bind "$GATE_JOB/nebo-home" "$GATE_JOB/nebo-home" --bind "$GATE_JOB/work" "$GATE_JOB/work")
   if [ -n "${CARGO_TARGET_DIR:-}" ] && [ -d "$CARGO_TARGET_DIR" ]; then
     args+=(--bind "$CARGO_TARGET_DIR" "$CARGO_TARGET_DIR")
