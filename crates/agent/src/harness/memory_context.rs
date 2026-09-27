@@ -35,7 +35,7 @@ use crate::memory::ScoredMemory;
 const RELEVANT_MEMORIES: &str = "relevant_memories";
 
 /// What the employee knows at the start of a turn: the identity slice of
-/// its memory (profile, owner, preferences, learned personality, the
+/// its memory (the owner, preferences, learned personality, the
 /// always-on memories) plus the owner's configured inputs.
 pub struct EmployeeMemory {
     /// The `employee_memory` row's text.

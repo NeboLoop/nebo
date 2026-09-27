@@ -1168,6 +1168,20 @@ export function localModelsStatus() {
 }
 
 /**
+ * @description "Sign in"
+ */
+export function signIn() {
+	return webapi.get<unknown>(`/api/v1/local-session`)
+}
+
+/**
+ * @description "New ticket"
+ */
+export function newTicket(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/local-session/ticket`, req)
+}
+
+/**
  * @description "List memories"
  */
 export function listMemories(limit?: number, offset?: number, namespace?: string, agent_id?: string) {
@@ -1647,14 +1661,14 @@ export function disconnectPluginAccount(slug: string, agentId: string, accountLa
  * @description "Auth login account"
  */
 export function authLoginAccount(slug: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.AuthLoginAccountResponse>(`/api/v1/plugins/${slug}/accounts/login`, req)
+	return webapi.post<unknown>(`/api/v1/plugins/${slug}/accounts/login`, req)
 }
 
 /**
  * @description "Auth login"
  */
 export function authLogin(slug: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.AuthLoginResponse>(`/api/v1/plugins/${slug}/auth/login`, req)
+	return webapi.post<unknown>(`/api/v1/plugins/${slug}/auth/login`, req)
 }
 
 /**
