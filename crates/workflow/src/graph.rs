@@ -806,10 +806,17 @@ async fn run_http<'a>(
         "body": param_str(activity, "body"),
     });
 
+    // As the employee that owns the workflow, like a command step: the
+    // permission check under its grant, recorded under the workflow door.
+    // Nobody waits on an http step, so a request that needs the owner's OK
+    // is refused and the run fails with the reason, which reaches the owner
+    // as the run's failure; no card is parked.
     let mut tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
         tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
         ctx.run_id.clone(),
     );
+    tool_ctx.door = types::permissions::Door::Workflow;
+    tool_ctx.cannot_wait = true;
     tool_ctx.user_id = ctx.memory_user_id.clone();
     tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
     let tool_ctx = tool_ctx;

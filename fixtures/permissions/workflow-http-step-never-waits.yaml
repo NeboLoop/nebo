@@ -1,0 +1,19 @@
+id: workflow-http-step-never-waits
+name: "A workflow's http step that needs the owner's OK is refused, never parked"
+description: |
+  A workflow's http step sent its request through the registry with no door
+  and nothing saying it can't wait: a request an ask rule covered parked a
+  card nobody waited on, and the run failed on "Waiting for the owner to
+  allow". It now follows the rule every unattended step follows (scheduled
+  commands, workflow command steps): the request is refused with the reason
+  it needed the owner's OK, the refusal is recorded with why (cannot_wait)
+  under the workflow door, and the run fails with that reason, which is the
+  owner's notice.
+  This proof runs a one-step workflow through the real engine and registry:
+  an http step whose request an ask rule covers. The request never reaches
+  the server, no card is parked, and the activity record reads deny /
+  cannot_wait / workflow.
+  Mechanical, no model: a deterministic proof through the real server.
+target_component: permissions
+proof: nebo_files_proof::a_workflow_http_step_that_needs_an_ok_is_refused_not_parked
+conversation: []

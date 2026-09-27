@@ -313,16 +313,16 @@ async fn a_scheduled_command_meets_its_employee_limits() {
     assert_eq!(refused.door, "schedule");
 }
 
-/// Runs `command` as the command step of a workflow `agent` owns: the
-/// production engine, the harness's workflow loop and the registry roster a
-/// run is given.
-async fn workflow_step(nebo: &Nebo, agent: &str, command: &str) -> Result<String, String> {
+/// Runs a one-step workflow `agent` owns, its step of type `kind` with
+/// `params`: the production engine, the harness's workflow loop and the
+/// registry roster a run is given.
+async fn workflow_step(nebo: &Nebo, agent: &str, kind: &str, params: serde_json::Value) -> Result<String, String> {
     let def = workflow::parser::parse_workflow(
         &json!({
             "version": "1.0",
             "id": "proof-step",
             "name": "Proof step",
-            "activities": [{ "id": "step", "type": "command", "params": { "command": command } }],
+            "activities": [{ "id": "step", "type": kind, "params": params }],
             "connections": [{ "from": "__trigger__", "to": "step" }, { "from": "step", "to": "__emit__" }],
         })
         .to_string(),
@@ -382,7 +382,7 @@ async fn a_workflow_command_step_meets_its_employee_limits() {
 
     // Web off: the step's curl reaches nothing.
     let (port, hits) = page_server();
-    let said = match workflow_step(&nebo, &agent, &format!("curl -s -m 5 http://127.0.0.1:{port}/")).await {
+    let said = match workflow_step(&nebo, &agent, "command", json!({ "command": format!("curl -s -m 5 http://127.0.0.1:{port}/") })).await {
         Ok(out) | Err(out) => out,
     };
     assert!(!said.contains("Example Domain"), "a web-off employee's workflow step got the page: {said}");
@@ -395,7 +395,7 @@ async fn a_workflow_command_step_meets_its_employee_limits() {
         std::fs::write(&settings, "{\"accessSecret\": \"SECRET-accessSecret-canary\"}").unwrap();
     }
     let secret = std::fs::read_to_string(&settings).unwrap();
-    let err = workflow_step(&nebo, &agent, &format!("cat {}", settings.display())).await.unwrap_err();
+    let err = workflow_step(&nebo, &agent, "command", json!({ "command": format!("cat {}", settings.display()) })).await.unwrap_err();
     assert!(err.contains("Nebo's own files"), "{err}");
     assert!(!err.contains(secret.trim()));
 
@@ -407,12 +407,12 @@ async fn a_workflow_command_step_meets_its_employee_limits() {
     if tools::confine::available() {
         std::fs::create_dir_all(nebo.home.join("files")).unwrap();
         let around = format!("cd '{}' && cat ../settings.json", nebo.home.join("files").display());
-        let said = match workflow_step(&nebo, &flow, &around).await {
+        let said = match workflow_step(&nebo, &flow, "command", json!({ "command": around })).await {
             Ok(out) | Err(out) => out,
         };
         assert!(said.contains("settings.json"), "the command ran: {said}");
         assert!(!said.contains(secret.trim()), "a workflow step read Nebo's settings: {said}");
-        let said = match workflow_step(&nebo, &flow, &format!("curl -s -m 5 -o /dev/null -w 'code=%{{http_code}}' http://127.0.0.1:{}/health", nebo.port)).await {
+        let said = match workflow_step(&nebo, &flow, "command", json!({ "command": format!("curl -s -m 5 -o /dev/null -w 'code=%{{http_code}}' http://127.0.0.1:{}/health", nebo.port) })).await {
             Ok(out) | Err(out) => out,
         };
         assert!(!said.contains("code=200"), "a workflow step reached Nebo's API: {said}");
@@ -435,7 +435,7 @@ async fn a_workflow_command_step_meets_its_employee_limits() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let out = workflow_step(&nebo, &flow, &bin.display().to_string()).await.expect("the plugin ran");
+    let out = workflow_step(&nebo, &flow, "command", json!({ "command": bin.display().to_string() })).await.expect("the plugin ran");
     assert!(out.contains("PLUGIN-RAN") && out.contains("PLUGIN-DATA"), "{out}");
 
     // A step that needs the owner's OK is refused, not parked, and recorded.
@@ -444,7 +444,7 @@ async fn a_workflow_command_step_meets_its_employee_limits() {
     own_rule(&nebo, &careful, RuleKey::Tool("run_command".into()), Effect::Ask);
     let marker = nebo.home.join("files").join(format!("{careful}.marker"));
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    let err = workflow_step(&nebo, &careful, &format!("touch {}", marker.display())).await.unwrap_err();
+    let err = workflow_step(&nebo, &careful, "command", json!({ "command": format!("touch {}", marker.display()) })).await.unwrap_err();
     assert!(err.contains("needs the owner's OK") && err.contains("a workflow step can't wait"), "{err}");
     assert!(!marker.exists(), "the step that needed an OK ran");
     let open = nebo.state.permission_asks.open(None).unwrap();
@@ -454,6 +454,43 @@ async fn a_workflow_command_step_meets_its_employee_limits() {
         .permission_activity(&db::PermissionActivityFilter { agent_id: Some(careful.clone()), limit: 10, ..Default::default() })
         .unwrap();
     let refused = rows.iter().find(|r| r.tool == "run_command").expect("the decision is recorded");
+    assert_eq!(refused.decision, "deny");
+    assert!(refused.why.contains("cannot_wait"), "{}", refused.why);
+    assert_eq!(refused.door, "workflow");
+}
+
+/// `workflow-http-step-never-waits`: a workflow's http step ran its request
+/// through the registry with no door and nothing saying it can't wait, so a
+/// request an ask rule covered parked a card nobody waited on, and the run
+/// failed on "Waiting for the owner to allow". It now follows the rule every
+/// unattended step follows: the request is refused with the reason it needed
+/// the owner's OK, the refusal is recorded under the workflow door, the run
+/// fails with that reason (the owner's notice), and no card is parked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_workflow_http_step_that_needs_an_ok_is_refused_not_parked() {
+    use std::sync::atomic::Ordering;
+    let nebo = session().await;
+    let careful = format!("httpask-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    own_rule(&nebo, &careful, RuleKey::Capability("web".into()), Effect::Allow);
+    own_rule(&nebo, &careful, RuleKey::Tool("http_request".into()), Effect::Ask);
+    let (port, hits) = page_server();
+    let err = workflow_step(
+        &nebo,
+        &careful,
+        "http",
+        json!({ "url": format!("http://127.0.0.1:{port}/hook"), "method": "POST", "body": "{}" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("needs the owner's OK") && err.contains("a workflow step can't wait"), "{err}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "the request that needed an OK was sent");
+    let open = nebo.state.permission_asks.open(None).unwrap();
+    assert!(open.iter().all(|a| a.agent_id != careful), "the step was parked on a card: {open:?}");
+    let (rows, _) = nebo
+        .store()
+        .permission_activity(&db::PermissionActivityFilter { agent_id: Some(careful.clone()), limit: 10, ..Default::default() })
+        .unwrap();
+    let refused = rows.iter().find(|r| r.tool == "http_request").expect("the decision is recorded");
     assert_eq!(refused.decision, "deny");
     assert!(refused.why.contains("cannot_wait"), "{}", refused.why);
     assert_eq!(refused.door, "workflow");
