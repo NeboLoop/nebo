@@ -46,6 +46,7 @@ fixtures:
   - ../fixtures/permissions/scheduled-command-meets-employee-limits.yaml
   # Workflow command steps: the same door, as the workflow's employee
   - ../fixtures/permissions/workflow-command-step-meets-employee-limits.yaml
+  - ../fixtures/permissions/workflow-http-step-never-waits.yaml
   # Doors: every entry through the one check (§4.8; technical design §2.12.8)
   - ../fixtures/permissions/every-door-goes-through-the-check.yaml
   - ../fixtures/permissions/foreign-host-refused.yaml
