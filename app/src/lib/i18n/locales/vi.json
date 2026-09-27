@@ -2013,15 +2013,17 @@
 		"send": "Gửi"
 	},
 	"agentIsolation": {
-		"title": "Tách biệt bộ nhớ",
-		"shared": "Một bộ nhớ",
-		"sharedHint": "Một bộ nhớ cho mọi cuộc trò chuyện — nhân viên này học ở đâu thì biết ở mọi nơi",
-		"isolated": "Tách riêng theo cuộc trò chuyện",
-		"isolatedHint": "Các cuộc trò chuyện của bạn được liệt kê riêng và dùng chung bộ nhớ riêng của nhân viên này. Mỗi cuộc trò chuyện với người khác — người gọi, khách truy cập, bot khác — giữ bộ nhớ niêm phong của riêng nó, để không gì lẫn sang cuộc khác",
-		"confirmOffTitle": "Tắt tách biệt bộ nhớ?",
-		"confirmOffBody": "Các cuộc trò chuyện riêng của bạn vẫn được lưu, nhưng sẽ không còn hiện thành danh sách — nhân viên này quay lại một cuộc trò chuyện liền mạch. Những gì học được trong cuộc trò chuyện với người khác vẫn được niêm phong: các cuộc trò chuyện sau sẽ không dùng đến. Không có gì bị xóa, và bật lại chế độ cách ly sẽ khôi phục danh sách.",
-		"confirmOffAction": "Tắt tách biệt",
-		"lockedByPhone": "Tách riêng chừng nào còn gắn đường dây điện thoại — mỗi người gọi có một bộ nhớ khép kín. Gỡ đường dây tại neboai.com/manage/phone để đổi điều này."
+		"title": "Cuộc trò chuyện và bộ nhớ",
+		"single": "Một cuộc trò chuyện",
+		"singleHint": "Một cuộc trò chuyện liên tục duy nhất với một bộ nhớ.",
+		"separate": "Các cuộc trò chuyện riêng",
+		"separateHint": "Nhiều cuộc trò chuyện dùng chung một bộ nhớ. Cuộc trò chuyện với người khác, như người gọi, khách truy cập hay một bot khác, giữ bộ nhớ niêm phong của riêng nó.",
+		"confidential": "Bảo mật",
+		"confidentialHint": "Dùng chế độ này khi mỗi cuộc trò chuyện là một khách hàng, bệnh nhân hoặc vụ việc khác nhau. Không điều gì học được trong một cuộc trò chuyện hiện ra ở cuộc trò chuyện khác, kể cả với nhân viên này. Những gì bạn chọn lưu vào bộ nhớ cục bộ vẫn dùng được cho mọi cuộc trò chuyện.",
+		"confirmOffTitle": "Chuyển sang một cuộc trò chuyện?",
+		"confirmOffBody": "Các cuộc trò chuyện riêng của bạn vẫn được lưu, nhưng sẽ không còn hiện thành danh sách, và nhân viên này quay lại một cuộc trò chuyện liên tục. Những gì học được trong cuộc trò chuyện niêm phong vẫn được niêm phong: các cuộc trò chuyện sau sẽ không dùng đến. Không có gì bị xóa, và chọn lại các cuộc trò chuyện riêng sẽ khôi phục danh sách.",
+		"confirmOffAction": "Chuyển sang một cuộc trò chuyện",
+		"lockedByPhone": "Các cuộc trò chuyện vẫn tách riêng khi còn gắn đường dây điện thoại, để mỗi người gọi có bộ nhớ niêm phong. Gỡ đường dây tại neboai.com/manage/phone để chọn một cuộc trò chuyện."
 	},
 	"cases": {
 		"title": "Hồ sơ",

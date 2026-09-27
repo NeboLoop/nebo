@@ -9,9 +9,14 @@
 //!   on this Nebo. "Company memory", "shared", "for everyone" all mean this.
 //! - PRIVATE memory — the employee's own scope (`<owner>:agent:<id>`).
 //!
-//! A third, sealed scope (`<owner>:agent:<id>:ctx:<ctx>`) exists only for a
-//! conversation with someone other than the owner, on an employee the owner
-//! sealed (`memory.context_isolated`); see `agent::memory::resolve_memory_scope`.
+//! A conversation-bound scope sits under the private one, decided by the
+//! employee's memory mode (`agent::memory::resolve_memory_scope`):
+//! - SEALED (`<owner>:agent:<id>:ctx:<ctx>`) — a Separate employee's
+//!   conversation with someone other than the owner. It also reads the
+//!   employee's private memory.
+//! - CONFIDENTIAL (`<owner>:agent:<id>:matter:<ctx>`) — any conversation of a
+//!   Confidential employee, the owner's own included. It reads only itself
+//!   and local memory.
 
 use std::sync::Arc;
 
@@ -37,6 +42,57 @@ const DEFAULT_NAMESPACE: &str = "tacit/general";
 /// What `recall` with no query lists.
 const LIST_PREFIX: &str = "tacit/";
 
+/// The segment a Separate employee's conversation with someone else hangs
+/// off the private scope by.
+const SEALED_SEGMENT: &str = ":ctx:";
+/// The segment a Confidential conversation hangs off the private scope by.
+const CONFIDENTIAL_SEGMENT: &str = ":matter:";
+
+/// A scope bound to one conversation, read back from its `user_id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConversationScope<'a> {
+    /// The employee's private scope it sits under.
+    pub private: &'a str,
+    /// The conversation. Empty for a Confidential run no conversation could
+    /// be derived for (its writes are refused).
+    pub conversation: &'a str,
+    /// A Confidential conversation: it never reads the private scope.
+    pub confidential: bool,
+}
+
+/// The conversation a scope is bound to, if any — the ONE parser of the
+/// conversation segments.
+pub fn conversation_scope(user_id: &str) -> Option<ConversationScope<'_>> {
+    let sealed = user_id.find(SEALED_SEGMENT).map(|i| (i, SEALED_SEGMENT, false));
+    let confidential = user_id.find(CONFIDENTIAL_SEGMENT).map(|i| (i, CONFIDENTIAL_SEGMENT, true));
+    let (at, segment, confidential) = match (sealed, confidential) {
+        (Some(s), Some(c)) => {
+            if s.0 < c.0 {
+                s
+            } else {
+                c
+            }
+        }
+        (s, c) => s.or(c)?,
+    };
+    Some(ConversationScope {
+        private: &user_id[..at],
+        conversation: &user_id[at + segment.len()..],
+        confidential,
+    })
+}
+
+/// The scope of `conversation` under the private scope `private` — the ONE
+/// writer of the conversation segments (see [`conversation_scope`]).
+pub fn conversation_scope_id(private: &str, conversation: &str, confidential: bool) -> String {
+    let segment = if confidential {
+        CONFIDENTIAL_SEGMENT
+    } else {
+        SEALED_SEGMENT
+    };
+    format!("{private}{segment}{conversation}")
+}
+
 /// Which memory a scope (`user_id`) is — the ONE reading of the scope
 /// convention for the words the model and the owner see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,16 +103,17 @@ pub enum MemoryScopeKind {
     Private,
     /// One conversation with someone other than the owner.
     Sealed,
+    /// One conversation of a Confidential employee.
+    Confidential,
 }
 
 impl MemoryScopeKind {
     pub fn of(user_id: &str) -> Self {
-        if user_id.contains(":ctx:") {
-            MemoryScopeKind::Sealed
-        } else if user_id.contains(":agent:") {
-            MemoryScopeKind::Private
-        } else {
-            MemoryScopeKind::Local
+        match conversation_scope(user_id) {
+            Some(c) if c.confidential => MemoryScopeKind::Confidential,
+            Some(_) => MemoryScopeKind::Sealed,
+            None if user_id.contains(":agent:") => MemoryScopeKind::Private,
+            None => MemoryScopeKind::Local,
         }
     }
 
@@ -66,6 +123,7 @@ impl MemoryScopeKind {
             MemoryScopeKind::Local => "local memory",
             MemoryScopeKind::Private => "private memory",
             MemoryScopeKind::Sealed => "this conversation's sealed memory",
+            MemoryScopeKind::Confidential => "this conversation's confidential memory",
         }
     }
 
@@ -75,6 +133,21 @@ impl MemoryScopeKind {
             MemoryScopeKind::Local => "local memory (every employee on this Nebo can find it)",
             MemoryScopeKind::Private => "your private memory (only you can see it)",
             MemoryScopeKind::Sealed => "this conversation's sealed memory (only this conversation can see it)",
+            MemoryScopeKind::Confidential => {
+                "this conversation's confidential memory (no other conversation can see it)"
+            }
+        }
+    }
+
+    /// Where a `remember` with no `scope: "local"` goes, as the prompt says it.
+    pub fn default_save(self) -> &'static str {
+        match self {
+            MemoryScopeKind::Local => "local memory",
+            MemoryScopeKind::Private => "your private memory",
+            MemoryScopeKind::Sealed => "this conversation's sealed memory",
+            MemoryScopeKind::Confidential => {
+                "this conversation's confidential memory, which no other conversation can see"
+            }
         }
     }
 }
@@ -88,12 +161,15 @@ pub fn local_memory_scope(user_id: &str) -> &str {
 /// The READ scope chain for a memory user_id — the ONE place ancestor scopes
 /// are derived. An employee (and a sealed conversation under it) also reads
 /// the scopes above it: `owner:agent:X:ctx:Y` → itself, `owner:agent:X`,
-/// `owner` (local memory); the bare owner reads only itself. Sibling
-/// employees and sibling conversations are never in it.
+/// `owner` (local memory); the bare owner reads only itself. A Confidential
+/// conversation skips the private scope: `owner:agent:X:matter:Y` → itself,
+/// `owner`. Sibling employees and sibling conversations are never in it.
 pub fn memory_scope_chain(user_id: &str) -> Vec<String> {
     let mut chain = vec![user_id.to_string()];
-    if let Some((agent_scope, _ctx)) = user_id.split_once(":ctx:") {
-        chain.push(agent_scope.to_string());
+    if let Some(c) = conversation_scope(user_id)
+        && !c.confidential
+    {
+        chain.push(c.private.to_string());
     }
     chain.push(local_memory_scope(user_id).to_string());
     chain.dedup();
@@ -1263,5 +1339,69 @@ mod tests {
         assert_eq!(MemoryScopeKind::of("local"), MemoryScopeKind::Local);
         assert_eq!(MemoryScopeKind::of("local:agent:a1"), MemoryScopeKind::Private);
         assert_eq!(MemoryScopeKind::of("local:agent:a1:ctx:c"), MemoryScopeKind::Sealed);
+    }
+
+    /// A Confidential conversation reads itself and local memory: never the
+    /// employee's private memory, never a sibling conversation. The segments
+    /// read back what was written, whichever comes first.
+    #[test]
+    fn a_confidential_conversation_reads_itself_then_local() {
+        let a = conversation_scope_id("local:agent:a1", "chat-A", true);
+        assert_eq!(a, "local:agent:a1:matter:chat-A");
+        assert_eq!(memory_scope_chain(&a), vec![a.clone(), "local".to_string()]);
+        assert_eq!(MemoryScopeKind::of(&a), MemoryScopeKind::Confidential);
+        assert_eq!(
+            conversation_scope(&a),
+            Some(ConversationScope { private: "local:agent:a1", conversation: "chat-A", confidential: true })
+        );
+        let sealed = conversation_scope_id("local:agent:a1", "dm:matter:9", false);
+        assert_eq!(
+            conversation_scope(&sealed),
+            Some(ConversationScope { private: "local:agent:a1", conversation: "dm:matter:9", confidential: false })
+        );
+        assert_eq!(conversation_scope("local:agent:a1"), None);
+        assert_eq!(local_memory_scope(&a), "local");
+    }
+
+    /// In a Confidential conversation a save with no scope stays in that
+    /// conversation, and says so; another conversation of the same employee
+    /// never finds it by words, key or listing, while a local fact reaches
+    /// both. A save the owner asked to put in local memory names local memory.
+    #[tokio::test]
+    async fn a_confidential_save_stays_in_its_conversation() {
+        let rig = Rig::new(false);
+        let conv = |c: &str| ToolContext {
+            user_id: conversation_scope_id("o:agent:law", c, true),
+            owner_request: true,
+            ..Default::default()
+        };
+        let (a, b) = (conv("client-a"), conv("client-b"));
+        let saved = rig
+            .remember
+            .execute_dyn(&a, json!({"key": "case/settlement", "value": "The Harlow settlement offer is 410,000, ALDER-1.", "layer": "project"}))
+            .await;
+        assert!(saved.content.starts_with("Saved to this conversation's confidential memory"), "{}", saved.content);
+        let private = rig
+            .remember
+            .execute_dyn(&a, json!({"key": "case/judge", "value": "Judge Okafor hears the Harlow motions, ALDER-2.", "scope": "private"}))
+            .await;
+        assert!(private.content.starts_with("Saved to this conversation's confidential memory"), "private is this conversation here: {}", private.content);
+        assert!(rig.store.get_memory_by_key_and_user("project", "case/settlement", "o:agent:law:matter:client-a").unwrap().is_some());
+        assert!(rig.store.get_memory_by_key_and_user("project", "case/settlement", "o:agent:law").unwrap().is_none());
+
+        let local = rig
+            .remember
+            .execute_dyn(&a, json!({"key": "office/hours", "value": "The office closes at four on Fridays.", "scope": "local"}))
+            .await;
+        assert!(local.content.starts_with("Saved to local memory"), "{}", local.content);
+
+        for input in [json!({"query": "Harlow settlement"}), json!({"query": "case/settlement"}), json!({"query": "case/judge"}), json!({"namespace": "project"}), json!({})] {
+            let seen = rig.recall.execute_dyn(&b, input.clone()).await;
+            assert!(!seen.content.contains("ALDER"), "{input}: {}", seen.content);
+        }
+        let hours = rig.recall.execute_dyn(&b, json!({"query": "Fridays"})).await;
+        assert!(hours.content.contains("four on Fridays") && hours.content.contains("(local memory)"), "{}", hours.content);
+        let own = rig.recall.execute_dyn(&a, json!({"query": "Harlow settlement"})).await;
+        assert!(own.content.contains("ALDER-1") && own.content.contains("confidential memory"), "{}", own.content);
     }
 }

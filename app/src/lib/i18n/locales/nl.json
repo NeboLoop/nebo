@@ -2013,15 +2013,17 @@
 		"send": "Versturen"
 	},
 	"agentIsolation": {
-		"title": "Geheugenscheiding",
-		"shared": "Eén geheugen",
-		"sharedHint": "Eén geheugen over alle gesprekken — wat deze medewerker ergens leert, weet die overal",
-		"isolated": "Gescheiden per gesprek",
-		"isolatedHint": "Je gesprekken staan apart in een lijst en delen het privégeheugen van deze medewerker. Elk gesprek met iemand anders — een beller, een bezoeker, een andere bot — houdt een eigen verzegeld geheugen, zodat niets naar een ander gesprek lekt",
-		"confirmOffTitle": "Geheugenscheiding uitzetten?",
-		"confirmOffBody": "Je aparte gesprekken blijven bewaard, maar verschijnen niet meer als lijst — deze medewerker gaat terug naar één doorlopend gesprek. Wat in een gesprek met iemand anders is geleerd, blijft verzegeld: toekomstige chats gebruiken het niet. Er wordt niets verwijderd, en isolatie weer aanzetten zet de lijst terug.",
-		"confirmOffAction": "Scheiding uitzetten",
-		"lockedByPhone": "Gescheiden zolang er een telefoonlijn aan hangt — elke beller krijgt een afgeschermd geheugen. Haal de lijn weg op neboai.com/manage/phone om dit te veranderen."
+		"title": "Gesprekken en geheugen",
+		"single": "Eén gesprek",
+		"singleHint": "Eén doorlopend gesprek met één geheugen.",
+		"separate": "Aparte gesprekken",
+		"separateHint": "Veel gesprekken die één geheugen delen. Een gesprek met iemand anders, zoals een beller, een bezoeker of een andere bot, houdt zijn eigen verzegelde geheugen.",
+		"confidential": "Vertrouwelijk",
+		"confidentialHint": "Gebruik dit wanneer elk gesprek een andere cliënt, patiënt of zaak is. Niets wat in het ene gesprek geleerd wordt, is ooit zichtbaar in een ander, zelfs niet voor deze medewerker. Wat je bewust in het lokale geheugen bewaart, blijft beschikbaar voor elk gesprek.",
+		"confirmOffTitle": "Overschakelen naar één gesprek?",
+		"confirmOffBody": "Je aparte gesprekken blijven bewaard, maar verschijnen niet meer als lijst, en deze medewerker gaat terug naar één doorlopend gesprek. Wat in een verzegeld gesprek geleerd is, blijft verzegeld: toekomstige chats gebruiken het niet. Er wordt niets verwijderd, en als je weer aparte gesprekken kiest, is de lijst terug.",
+		"confirmOffAction": "Overschakelen naar één gesprek",
+		"lockedByPhone": "Gesprekken blijven apart zolang er een telefoonlijn gekoppeld is, zodat elke beller een verzegeld geheugen krijgt. Verwijder de lijn via neboai.com/manage/phone om één gesprek te kiezen."
 	},
 	"cases": {
 		"title": "Dossiers",

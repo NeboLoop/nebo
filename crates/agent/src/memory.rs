@@ -745,13 +745,15 @@ pub fn session_key_context(session_key: &str) -> Option<String> {
     }
 }
 
-/// The matter (isolation context) portion of a RESOLVED memory scope, if any —
-/// the read-side counterpart of the `:ctx:` suffix [`resolve_memory_scope`]
-/// appends. Used to carry a requester's matter on a coworker envelope
-/// (`ToolContext.user_id` → envelope → target session key) without any caller
-/// re-deriving scopes.
+/// The matter (the conversation a scope is bound to) of a RESOLVED memory
+/// scope, if any — the read-side counterpart of the conversation segment
+/// [`resolve_memory_scope`] appends. Used to carry a requester's matter on a
+/// coworker envelope (`ToolContext.user_id` → envelope → target session key)
+/// and to scope company Memory, without any caller re-deriving scopes.
 pub fn scope_matter(user_id: &str) -> Option<&str> {
-    user_id.split_once(":ctx:").map(|(_, ctx)| ctx)
+    tools::memory_tools::conversation_scope(user_id)
+        .map(|c| c.conversation)
+        .filter(|c| !c.is_empty())
 }
 
 /// The memory scoping decision for one run — produced by
@@ -762,87 +764,109 @@ pub fn scope_matter(user_id: &str) -> Option<&str> {
 pub struct MemoryScope {
     /// The exact scope every memory WRITE uses, and the base scope for reads.
     pub user_id: String,
-    /// Fail-closed marker: `context_isolated` is set but no context could be
-    /// derived (no explicit key segment, no session row / active chat). All
-    /// memory writes for the run must be refused — never silently written to
-    /// the shared agent scope, where they would be readable from every
-    /// isolation context. Reads still serve `user_id` (the base agent scope)
-    /// plus the owner identity chain.
+    /// Fail-closed marker: the run's memory must be bound to a conversation
+    /// but none could be derived (no explicit key segment, no session row /
+    /// active chat). All memory writes for the run must be refused — never
+    /// silently written to a scope every conversation reads. Reads still
+    /// serve `user_id` and its chain.
     pub writes_disabled: bool,
 }
 
-/// Derive the memory scope for a run. An employee's durable memory is its
-/// PRIVATE memory (`owner:agent:X`); the main bot (empty `agent_id`) uses
-/// the raw owner scope, which is LOCAL memory.
+/// Derive the memory scope for a run from the employee's memory mode — the
+/// ONE decision of where a run's memory lives. An employee's durable memory
+/// is its PRIVATE memory (`owner:agent:X`); the main bot (empty `agent_id`)
+/// uses the raw owner scope, which is LOCAL memory.
 ///
-/// A memory bound to one conversation exists for exactly one reason: the
-/// owner sealed this employee (`context_isolated`) and someone OTHER than
-/// the owner is in the conversation — a caller, a visitor, another bot, a
-/// coworker on a client matter — whose facts must never reach the next
-/// stranger. `origin` says who is in it: the owner's own runs (trusted
-/// origins — the owner's chats, their schedules and workflows) never bind
-/// memory to a conversation, whatever the isolation setting; one owner is
-/// one person, and splitting what they said by thread only loses it. For an
-/// outside party, context precedence (highest first):
+/// - `Single` and `Separate`, the owner's own runs (trusted origins — their
+///   chats, schedules and workflows): the private memory. One owner is one
+///   person; splitting what they said by thread only loses it.
+/// - `Separate`, a run with someone OTHER than the owner (a caller, a
+///   visitor, another bot, a coworker on a client matter): bound to that
+///   conversation (`owner:agent:X:ctx:<ctx>`), which also reads the private
+///   memory. A `Single` employee's outside runs keep the private memory, as
+///   they always have.
+/// - `Confidential`, every run, the owner's included: bound to that
+///   conversation (`owner:agent:X:matter:<ctx>`), which reads only itself
+///   and local memory. Nothing learned in one conversation reaches another.
 ///
-/// 1. An EXPLICIT `:ctx:` segment in the session key
-///    (`agent:{id}:{channel}:{ctx}`) — channel sessions set it deliberately.
+/// The conversation, highest first:
+/// 1. An EXPLICIT segment in the session key (`agent:{id}:{channel}:{ctx}`)
+///    — channel sessions and desktop threads set it deliberately.
 /// 2. The session's ACTIVE CHAT id, resolved by the caller via the
 ///    canonical `Store::session_chat_id`.
-/// 3. Neither derivable → FAIL CLOSED: the private scope is kept for reads,
-///    `writes_disabled` is set.
+/// 3. Neither → FAIL CLOSED: `writes_disabled` is set, and reads keep what
+///    that mode may read with no conversation (a Separate run the private
+///    memory; a Confidential run local memory only).
 pub fn resolve_memory_scope(
     owner: &str,
     agent_id: &str,
-    context_isolated: bool,
+    mode: napp::agent::MemoryMode,
     origin: tools::Origin,
     explicit_ctx: Option<&str>,
     chat_ctx: Option<&str>,
 ) -> MemoryScope {
+    use napp::agent::MemoryMode;
     if agent_id.is_empty() {
         return MemoryScope {
             user_id: owner.to_string(),
             writes_disabled: false,
         };
     }
-    let agent_scope = agent_memory_scope(owner, agent_id);
-    if !context_isolated || origin.is_trusted() {
+    let private = agent_memory_scope(owner, agent_id);
+    // (bound to its conversation, confidential)
+    let (bound, confidential) = match mode {
+        MemoryMode::Single => (false, false),
+        MemoryMode::Separate => (!origin.is_trusted(), false),
+        MemoryMode::Confidential => (true, true),
+    };
+    if !bound {
         return MemoryScope {
-            user_id: agent_scope,
+            user_id: private,
             writes_disabled: false,
         };
     }
-    match explicit_ctx.or(chat_ctx) {
+    let conversation = explicit_ctx
+        .filter(|c| !c.is_empty())
+        .or(chat_ctx.filter(|c| !c.is_empty()));
+    match conversation {
         Some(ctx) => MemoryScope {
-            user_id: format!("{}:ctx:{}", agent_scope, ctx),
+            user_id: tools::memory_tools::conversation_scope_id(&private, ctx, confidential),
             writes_disabled: false,
         },
+        None if confidential => MemoryScope {
+            user_id: tools::memory_tools::conversation_scope_id(&private, "", true),
+            writes_disabled: true,
+        },
         None => MemoryScope {
-            user_id: agent_scope,
+            user_id: private,
             writes_disabled: true,
         },
     }
 }
 
 /// The inherited READ scopes for a run — the ONE place this construction
-/// lives (the runner calls it once per run). A context-isolated run inherits
-/// the agent-wide `tacit/` prefix ONLY (working style crosses contexts, case
-/// facts do not — and sibling ctx scopes appear nowhere); every agent
-/// additionally reads the owner's identity prefixes. The main bot inherits
-/// nothing (it IS the owner scope).
+/// lives (the runner calls it once per run), read off the run's resolved
+/// scope (`scope`, from [`resolve_memory_scope`]). A sealed conversation of a
+/// Separate employee inherits the agent-wide `tacit/` prefix ONLY (working
+/// style crosses contexts, case facts do not — and sibling ctx scopes appear
+/// nowhere); a Confidential conversation inherits nothing of the private
+/// memory. Every agent additionally reads the owner's identity prefixes
+/// (local memory). The main bot inherits nothing (it IS the owner scope).
 pub fn build_inherit_scopes(
     owner: &str,
     agent_id: &str,
-    context_isolated: bool,
-    has_context: bool,
+    scope: &str,
 ) -> Vec<crate::db_context::InheritScope> {
     let mut inherit_scopes: Vec<crate::db_context::InheritScope> = Vec::new();
 
     if !agent_id.is_empty() {
-        // If context-isolated, inherit agent-wide memories (all tacit/)
-        if context_isolated && has_context {
+        // A Separate employee's sealed conversation reads its private
+        // memory's tacit/ (the chain says which scopes are above it).
+        if let Some(c) = tools::memory_tools::conversation_scope(scope)
+            && !c.confidential
+        {
             inherit_scopes.push(crate::db_context::InheritScope {
-                user_id: agent_memory_scope(owner, agent_id),
+                user_id: c.private.to_string(),
                 namespace_prefix: "tacit/".to_string(),
             });
         }
@@ -893,7 +917,7 @@ pub fn load_scored_memories(
         }
     }
 
-    // Inherited scopes (user preferences, agent-wide for context-isolated)
+    // Inherited scopes (user preferences, agent-wide for a sealed conversation)
     for scope in inherit_scopes {
         if let Ok(memories) = store.get_tacit_memories_with_min_confidence(
             &scope.user_id,
@@ -1101,6 +1125,7 @@ pub async fn backfill_missing_embeddings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use napp::agent::MemoryMode::{Confidential, Separate, Single};
     use tools::Origin;
 
     fn row(role: &str, content: &str, calls: Option<&str>, results: Option<&str>, meta: Option<&str>) -> ChatMessage {
@@ -1430,10 +1455,10 @@ mod tests {
     fn test_scope_matter_round_trip() {
         // The matter extracted from a resolved scope is exactly what
         // resolve_memory_scope appended — envelope stamping must round-trip.
-        let s = resolve_memory_scope("local", "a1", true, Origin::Caller, Some("caseA"), None);
+        let s = resolve_memory_scope("local", "a1", Separate, Origin::Caller, Some("caseA"), None);
         assert_eq!(scope_matter(&s.user_id), Some("caseA"));
         // Matters may carry colons (channel-style ctx segments) — stay whole.
-        let s = resolve_memory_scope("local", "a1", true, Origin::Caller, Some("dm:123"), None);
+        let s = resolve_memory_scope("local", "a1", Separate, Origin::Caller, Some("dm:123"), None);
         assert_eq!(scope_matter(&s.user_id), Some("dm:123"));
         // Un-isolated scopes carry no matter.
         assert_eq!(scope_matter("local:agent:a1"), None);
@@ -1443,12 +1468,12 @@ mod tests {
     #[test]
     fn test_resolve_memory_scope_main_bot_and_plain_agent() {
         // Main bot: raw owner, contexts irrelevant.
-        let s = resolve_memory_scope("local", "", true, Origin::Caller, Some("caseA"), None);
+        let s = resolve_memory_scope("local", "", Separate, Origin::Caller, Some("caseA"), None);
         assert_eq!(s.user_id, "local");
         assert!(!s.writes_disabled);
 
         // Non-isolated agent: base scope, contexts ignored.
-        let s = resolve_memory_scope("local", "a1", false, Origin::Caller, Some("caseA"), Some("chat-1"));
+        let s = resolve_memory_scope("local", "a1", Single, Origin::Caller, Some("caseA"), Some("chat-1"));
         assert_eq!(s.user_id, "local:agent:a1");
         assert!(!s.writes_disabled);
     }
@@ -1456,12 +1481,12 @@ mod tests {
     #[test]
     fn test_resolve_memory_scope_isolated_context_precedence() {
         // Explicit channel segment wins over the chat derivation.
-        let s = resolve_memory_scope("local", "a1", true, Origin::Caller, Some("caseA"), Some("chat-1"));
+        let s = resolve_memory_scope("local", "a1", Separate, Origin::Caller, Some("caseA"), Some("chat-1"));
         assert_eq!(s.user_id, "local:agent:a1:ctx:caseA");
         assert!(!s.writes_disabled);
 
         // No explicit segment → active chat id (thread = matter).
-        let s = resolve_memory_scope("local", "a1", true, Origin::Caller, None, Some("chat-1"));
+        let s = resolve_memory_scope("local", "a1", Separate, Origin::Caller, None, Some("chat-1"));
         assert_eq!(s.user_id, "local:agent:a1:ctx:chat-1");
         assert!(!s.writes_disabled);
     }
@@ -1478,7 +1503,7 @@ mod tests {
             let s = resolve_memory_scope(
                 "owner",
                 "assistant",
-                true,
+                Separate,
                 origin,
                 session_key_context(key).as_deref(),
                 Some("chat-1"),
@@ -1491,7 +1516,7 @@ mod tests {
         let s = resolve_memory_scope(
             "owner",
             "assistant",
-            true,
+            Separate,
             Origin::Caller,
             session_key_context(key).as_deref(),
             None,
@@ -1499,12 +1524,53 @@ mod tests {
         assert_eq!(s.user_id, "owner:agent:assistant:ctx:chat-1");
     }
 
+    /// Confidential: every run is bound to its conversation, the owner's own
+    /// included, under a scope that never reads the private memory. Each
+    /// conversation is its own scope; a run with no conversation writes
+    /// nothing and reads local memory only.
+    #[test]
+    fn test_confidential_binds_every_run_to_its_conversation() {
+        let key = "agent:counsel:thread:chat-A";
+        for origin in [Origin::User, Origin::System, Origin::Workflow, Origin::Caller, Origin::Comm] {
+            let s = resolve_memory_scope("owner", "counsel", Confidential, origin, session_key_context(key).as_deref(), None);
+            assert_eq!(s.user_id, "owner:agent:counsel:matter:chat-A", "{origin:?}");
+            assert!(!s.writes_disabled, "{origin:?}");
+            assert_eq!(scope_matter(&s.user_id), Some("chat-A"));
+            assert_eq!(memory_scope_chain(&s.user_id), vec![s.user_id.clone(), "owner".to_string()], "{origin:?}: never the private memory");
+        }
+        let b = resolve_memory_scope("owner", "counsel", Confidential, Origin::User, None, Some("chat-B"));
+        assert_eq!(b.user_id, "owner:agent:counsel:matter:chat-B");
+        assert!(!memory_scope_chain(&b.user_id).iter().any(|s| s.contains("chat-A")));
+
+        // No conversation derivable (a schedule, a workflow): fail closed.
+        for origin in [Origin::User, Origin::Workflow] {
+            let s = resolve_memory_scope("owner", "counsel", Confidential, origin, None, None);
+            assert!(s.writes_disabled, "{origin:?}");
+            assert_eq!(scope_matter(&s.user_id), None);
+            assert_eq!(memory_scope_chain(&s.user_id), vec![s.user_id.clone(), "owner".to_string()]);
+            let empty = resolve_memory_scope("owner", "counsel", Confidential, origin, Some(""), Some(""));
+            assert_eq!(empty, s, "an empty segment is no conversation");
+        }
+    }
+
+    /// The mode the old flag maps to behaves as the flag did: `Separate` is
+    /// what `context_isolated: true` was, `Single` what false was.
+    #[test]
+    fn test_separate_and_single_keep_the_flags_behavior() {
+        for (mode, outside) in [(Single, "owner:agent:a1"), (Separate, "owner:agent:a1:ctx:chat-1")] {
+            let own = resolve_memory_scope("owner", "a1", mode, Origin::User, Some("chat-1"), Some("chat-1"));
+            assert_eq!(own.user_id, "owner:agent:a1", "{mode:?}: the owner's runs share the private memory");
+            let caller = resolve_memory_scope("owner", "a1", mode, Origin::Caller, Some("chat-1"), None);
+            assert_eq!(caller.user_id, outside, "{mode:?}");
+        }
+    }
+
     #[test]
     fn test_resolve_memory_scope_isolated_fails_closed_without_context() {
         // Isolated with NO derivable context: reads keep the base agent
         // scope, writes are refused — never a silent write to the shared
         // agent scope.
-        let s = resolve_memory_scope("local", "a1", true, Origin::Caller, None, None);
+        let s = resolve_memory_scope("local", "a1", Separate, Origin::Caller, None, None);
         assert_eq!(s.user_id, "local:agent:a1");
         assert!(s.writes_disabled);
     }
@@ -1514,7 +1580,7 @@ mod tests {
         // Isolated run with a context: agent-wide tacit/ ONLY + owner
         // identity prefixes — never the agent's non-tacit namespaces, never
         // a sibling ctx scope.
-        let scopes = build_inherit_scopes("local", "a1", true, true);
+        let scopes = build_inherit_scopes("local", "a1", "local:agent:a1:ctx:caseA");
         assert_eq!(scopes.len(), 3);
         assert_eq!(scopes[0].user_id, "local:agent:a1");
         assert_eq!(scopes[0].namespace_prefix, "tacit/");
@@ -1534,24 +1600,60 @@ mod tests {
 
         // Fail-closed run (no context): no agent tacit/ inherit (the base
         // agent scope IS the read scope), identity prefixes remain.
-        let scopes = build_inherit_scopes("local", "a1", true, false);
+        let scopes = build_inherit_scopes("local", "a1", "local:agent:a1");
         assert_eq!(scopes.len(), 2);
         assert!(scopes.iter().all(|s| s.user_id == "local"));
 
         // Main bot inherits nothing.
-        assert!(build_inherit_scopes("local", "", false, false).is_empty());
+        assert!(build_inherit_scopes("local", "", "local").is_empty());
+
+        // A Confidential conversation inherits nothing of the private
+        // memory: the owner's identity prefixes (local memory) only.
+        let scopes = build_inherit_scopes("local", "a1", "local:agent:a1:matter:caseA");
+        assert_eq!(scopes.len(), 2);
+        assert!(scopes.iter().all(|s| s.user_id == "local"), "{scopes:?}");
+    }
+
+    /// Automatic extraction in a Confidential conversation lands in that
+    /// conversation's scope only: never the private memory, never local
+    /// memory, never a sibling conversation.
+    #[test]
+    fn test_confidential_extraction_lands_in_its_conversation_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::new(&dir.path().join("conf-extract.db").to_string_lossy()).unwrap());
+        let scope = resolve_memory_scope("local", "a1", Confidential, Origin::User, Some("client-A"), None);
+        let facts = ExtractedFacts {
+            topics: vec![Fact {
+                key: "harlow-settlement".to_string(),
+                value: "The Harlow settlement offer is 410,000 dollars.".to_string(),
+                category: "topic".to_string(),
+                tags: vec![],
+                confidence: 0.9,
+                explicit: Some(true),
+                topic: None,
+            }],
+            ..Default::default()
+        };
+        store_facts(&store, &facts, &scope.user_id, None, &[], &[]);
+        let rows: Vec<String> = store
+            .search_memories("Harlow", 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.user_id)
+            .collect();
+        assert_eq!(rows, vec!["local:agent:a1:matter:client-A".to_string()]);
     }
 
     #[test]
     fn test_store_facts_extraction_lands_at_exact_ctx_scope() {
-        // Extraction parity: with context_isolated + a chat-derived ctx, the
+        // Extraction parity: a sealed run with a chat-derived ctx — the
         // debounced-extraction/flush write path (store_facts) lands facts
         // under the exact ctx scope — invisible to sibling contexts.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ctx-extract-test.db");
         let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
 
-        let scope = resolve_memory_scope("local", "a1", true, Origin::Caller, None, Some("chat-A"));
+        let scope = resolve_memory_scope("local", "a1", Separate, Origin::Caller, None, Some("chat-A"));
         assert!(!scope.writes_disabled);
 
         let facts = ExtractedFacts {

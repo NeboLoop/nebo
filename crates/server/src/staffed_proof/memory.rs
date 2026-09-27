@@ -1,6 +1,7 @@
 //! Memory on one Nebo: local memory is shared by every employee on it,
 //! private memory is one employee's own, and neither is ever filed under a
-//! single conversation with the owner.
+//! single conversation with the owner — unless the owner made the employee
+//! Confidential, where every conversation is a sealed matter.
 //!
 //! These scenarios run real turns on the one server with a scripted model
 //! (the conversation rig): the script calls `remember` and `recall` the way a
@@ -159,9 +160,9 @@ async fn a_private_fact_stays_with_its_employee() {
 async fn an_isolated_employees_facts_from_the_owners_chat_outlive_the_chat() {
     let nebo = session().await;
     let primary = nebo
-        .hire("Proof Mem3 Primary", json!({ "workflows": {}, "memory": { "context_isolated": true } }))
+        .hire("Proof Mem3 Primary", json!({ "workflows": {}, "memory": { "mode": "separate" } }))
         .await;
-    assert!(crate::workflow_manager::agent_context_isolated(nebo.store(), &primary), "isolation is on");
+    assert!(crate::workflow_manager::agent_memory_mode(nebo.store(), &primary).separates_conversations(), "conversations are separate");
     let heard = Arc::new(Heard::default());
     let key = "owner/mem3-standing-order";
     let rules = vec![
@@ -393,4 +394,213 @@ async fn a_recipe_saved_for_everyone_is_found_by_another_employee() {
     assert_eq!(stored, vec![owner], "the recipe is in local memory");
     let found = heard.of("MARK-MEM7-ASK");
     assert!(found.contains("air fry at 380F"), "the other employee finds it: {found}");
+}
+
+/// A turn keyed by the owner's latest words, not the thread's opener: the
+/// latest message that names `marker` (a `MARK-` word) is the owner's newest
+/// in this thread, so several turns of one conversation each get their own
+/// script. It makes `calls` once, records what came back, and says
+/// `DONE-<marker without MARK->`.
+fn turn(marker: &'static str, calls: Vec<(&'static str, Value)>, heard: Arc<Heard>) -> Rule {
+    Box::new(move |t| {
+        let at = t
+            .req
+            .messages
+            .iter()
+            .rposition(|m| m.role == "user" && m.content.contains("MARK-"))?;
+        if !t.req.messages[at].content.contains(marker) {
+            return None;
+        }
+        let done = format!("DONE-{}", marker.trim_start_matches("MARK-"));
+        // Already answered (a notification arriving later is not the ask).
+        if t.req.messages[at..].iter().any(|m| m.role == "assistant" && m.content.contains(&done)) {
+            return None;
+        }
+        if calls.is_empty() {
+            return Some(Step::say(done));
+        }
+        if t.has_tool_results() {
+            heard.push(marker, t);
+            return Some(Step::say(done));
+        }
+        Some(Step::call(calls.iter().map(|(n, v)| (*n, v.clone())).collect()))
+    })
+}
+
+/// The owner writes `text` (naming `marker`) in the conversation `chat` with
+/// employee `agent_id`, and the turn runs to the script's `DONE-` word.
+async fn owner_turn(rig: &Rig<'_>, agent_id: &str, chat: &str, marker: &str, text: &str) {
+    let key = format!("agent:{agent_id}:thread:{chat}");
+    rig.owner_writes(&key, agent_id, None, text).await;
+    let done = format!("DONE-{}", marker.trim_start_matches("MARK-"));
+    rig.until(30, &format!("{marker} ends in {chat}"), || {
+        rig.thread(&key).iter().any(|m| m.role == "assistant" && m.content.contains(&done))
+    })
+    .await;
+}
+
+/// Every row whose value names `needle`, as (user_id, value).
+fn rows_naming(nebo: &Nebo, needle: &str) -> Vec<(String, String)> {
+    let conn = rusqlite::Connection::open(nebo.home.join("data").join("nebo.db")).expect("db");
+    let mut stmt = conn.prepare("SELECT user_id, value FROM memories WHERE value LIKE ?1").expect("prepare");
+    stmt.query_map([format!("%{needle}%")], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("rows")
+}
+
+/// The owner's worry, as real turns: a Confidential employee (a law office's
+/// counsel) holds conversation A about client A and conversation B about
+/// client B. What A learns — saved by the employee, or extracted on its own
+/// after a turn — is never visible in B, and what B learns never in A: not
+/// by recall (words, key, listing), not in what the model is sent (the
+/// prompt, the relevant-memories recall), not by searching past
+/// conversations, not through a helper B starts. The owner's own
+/// conversations are sealed too: both are the owner's. A fact the owner
+/// saved to local memory is visible in both. Every row sits where the words
+/// say: A's in A's scope, B's in B's, the local fact in local memory, and
+/// nothing in the employee's private memory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_confidential_employees_conversations_never_see_each_other() {
+    let nebo = session().await;
+    let counsel = nebo.hire("Proof Mem8 Counsel", json!({ "workflows": {} })).await;
+    // The owner picks Confidential in the employee's settings.
+    nebo.put_ok(&format!("/agents/{counsel}"), &json!({ "memoryMode": "confidential" })).await;
+    assert_eq!(crate::workflow_manager::agent_memory_mode(nebo.store(), &counsel), napp::agent::MemoryMode::Confidential);
+    assert_eq!(nebo.get_ok(&format!("/agents/{counsel}")).await["memoryMode"], "confidential");
+
+    let heard = Arc::new(Heard::default());
+    // Every request the model is sent in a turn, with the owner words it came in.
+    let sent = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let seen = sent.clone();
+    let saw: Rule = Box::new(move |t| {
+        let owner_words: Vec<&str> = t.req.messages.iter().filter(|m| m.role == "user" && m.content.contains("MARK-MEM8")).map(|m| m.content.as_str()).collect();
+        if !owner_words.is_empty() {
+            let text = format!("{}\n{}", t.req.system, t.req.messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n"));
+            seen.lock().unwrap().push((owner_words.join(" | "), text));
+        }
+        None
+    });
+    let asks = |about: &'static str, key: &'static str| {
+        vec![
+            ("recall", json!({ "query": about })),
+            ("recall", json!({ "query": key })),
+            ("recall", json!({ "namespace": "project" })),
+            ("recall", json!({ "query": "mediation" })),
+            ("search_history", json!({ "query": about })),
+            ("recall", json!({ "query": "office closes Fridays" })),
+        ]
+    };
+    let rules = vec![
+        saw,
+        turn("MARK-MEM8-A-SAVE", vec![("remember", json!({ "key": "case/harlow-settlement", "value": "The Harlow settlement offer is 410,000, ALDER-MEM8.", "layer": "project" }))], heard.clone()),
+        turn("MARK-MEM8-A-TALK", vec![], heard.clone()),
+        turn("MARK-MEM8-LOCAL", vec![("remember", json!({ "key": "office/friday-close", "value": "The office closes at four on Fridays, CEDAR-MEM8.", "scope": "local" }))], heard.clone()),
+        turn("MARK-MEM8-B-SAVE", vec![("remember", json!({ "key": "case/pryce-deposition", "value": "The Pryce deposition is on the 14th, BIRCH-MEM8.", "layer": "project" }))], heard.clone()),
+        turn("MARK-MEM8-B-ASK", asks("Harlow settlement", "case/harlow-settlement"), heard.clone()),
+        turn("MARK-MEM8-A-ASK", asks("Pryce deposition", "case/pryce-deposition"), heard.clone()),
+        turn("MARK-MEM8-B-HELP", vec![("delegate", json!({ "description": "check the file", "prompt": "MARK-MEM8-HELPER check the file for the Harlow settlement" }))], heard.clone()),
+        turn("MARK-MEM8-HELPER", asks("Harlow settlement", "case/harlow-settlement"), heard.clone()),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    // Automatic extraction after A's plain turn learns a fact of its own.
+    rig.answer_background(Box::new(|t| {
+        let prompt = t.req.messages.first().map(|m| m.content.as_str()).unwrap_or("");
+        (t.req.system.starts_with("You are a precise fact extractor") && prompt.contains("MARK-MEM8-A-TALK")).then(|| {
+            Step::say(
+                json!({ "topics": [{ "key": "harlow-mediation", "value": "The Harlow mediation is set for the 9th, DOGWOOD-MEM8.", "category": "topic", "confidence": 0.95, "explicit": true }] })
+                    .to_string(),
+            )
+        })
+    }));
+
+    owner_turn(&rig, &counsel, "mem8-a", "MARK-MEM8-A-SAVE", "MARK-MEM8-A-SAVE client A: remember the Harlow settlement offer is 410,000").await;
+    owner_turn(&rig, &counsel, "mem8-a", "MARK-MEM8-A-TALK", "MARK-MEM8-A-TALK also, the Harlow mediation is set for the 9th").await;
+    rig.until(30, "extraction files A's mediation fact", || !rows_naming(&nebo, "DOGWOOD-MEM8").is_empty()).await;
+    owner_turn(&rig, &counsel, "mem8-local", "MARK-MEM8-LOCAL", "MARK-MEM8-LOCAL save to local memory for everyone: the office closes at four on Fridays").await;
+    owner_turn(&rig, &counsel, "mem8-b", "MARK-MEM8-B-SAVE", "MARK-MEM8-B-SAVE client B: remember the Pryce deposition is on the 14th").await;
+    owner_turn(&rig, &counsel, "mem8-b", "MARK-MEM8-B-ASK", "MARK-MEM8-B-ASK what do we know about the Harlow settlement and the mediation? when does the office close?").await;
+    owner_turn(&rig, &counsel, "mem8-a", "MARK-MEM8-A-ASK", "MARK-MEM8-A-ASK what do we know about the Pryce deposition? when does the office close?").await;
+    owner_turn(&rig, &counsel, "mem8-b", "MARK-MEM8-B-HELP", "MARK-MEM8-B-HELP have a helper check the file").await;
+    rig.until(60, "the helper ran its lookups", || !heard.of("MARK-MEM8-HELPER").is_empty()).await;
+
+    // Where every row sits.
+    let owner = owner(&nebo);
+    let a = format!("{owner}:agent:{counsel}:matter:mem8-a");
+    let b = format!("{owner}:agent:{counsel}:matter:mem8-b");
+    let scopes = |needle: &str| rows_naming(&nebo, needle).into_iter().map(|(u, _)| u).collect::<Vec<_>>();
+    assert_eq!(scopes("ALDER-MEM8"), vec![a.clone()], "A's save is in A's conversation");
+    assert_eq!(scopes("DOGWOOD-MEM8"), vec![a.clone()], "the fact extracted after A's turn is in A's conversation too");
+    assert_eq!(scopes("BIRCH-MEM8"), vec![b.clone()], "B's save is in B's conversation");
+    assert_eq!(scopes("CEDAR-MEM8"), vec![owner.clone()], "the local fact is in local memory");
+    let private = format!("{owner}:agent:{counsel}");
+    let conn = rusqlite::Connection::open(nebo.home.join("data").join("nebo.db")).expect("db");
+    let in_private: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE user_id = ?1", [&private], |r| r.get(0)).unwrap();
+    assert_eq!(in_private, 0, "nothing is written to the employee's private memory");
+
+    // The words the model read.
+    let saved = heard.of("MARK-MEM8-A-SAVE");
+    assert!(saved.contains("Saved to this conversation's confidential memory"), "the save names its scope: {saved}");
+    assert!(heard.of("MARK-MEM8-LOCAL").contains("Saved to local memory"), "{}", heard.of("MARK-MEM8-LOCAL"));
+    for (marker, other) in [("MARK-MEM8-B-ASK", ["ALDER-MEM8", "DOGWOOD-MEM8"]), ("MARK-MEM8-A-ASK", ["BIRCH-MEM8", "Pryce deposition is on"]), ("MARK-MEM8-HELPER", ["ALDER-MEM8", "DOGWOOD-MEM8"])] {
+        let got = heard.of(marker);
+        for word in other {
+            assert!(!got.contains(word), "{marker} reached the other conversation's {word}: {got}");
+        }
+        assert!(got.contains("CEDAR-MEM8"), "{marker} reads local memory: {got}");
+    }
+    // The other conversation's own words are not found by searching history
+    // either (the searched conversation's own words are).
+    assert!(!heard.of("MARK-MEM8-B-ASK").contains("410,000"), "{}", heard.of("MARK-MEM8-B-ASK"));
+
+    // What the model was sent, turn by turn: A's facts never in B's
+    // requests, B's never in A's.
+    for (words, text) in sent.lock().unwrap().iter() {
+        let in_b = words.contains("MARK-MEM8-B-") || words.contains("MARK-MEM8-HELPER");
+        let in_a = words.contains("MARK-MEM8-A-");
+        if in_b && !in_a {
+            for word in ["ALDER-MEM8", "DOGWOOD-MEM8", "410,000", "mediation is set"] {
+                assert!(!text.contains(word), "a request in B carried A's {word}: {words}");
+            }
+        }
+        if in_a && !in_b {
+            for word in ["BIRCH-MEM8", "Pryce deposition is on"] {
+                assert!(!text.contains(word), "a request in A carried B's {word}: {words}");
+            }
+        }
+    }
+}
+
+/// Separate conversations still share one memory: the mode the old
+/// isolation flag maps to keeps what the flag did. A fact the owner has the
+/// employee save in one conversation is in its private memory and recalled
+/// in another, and a caller's conversation of the same employee still gets
+/// its own sealed memory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn separate_conversations_still_share_one_memory() {
+    let nebo = session().await;
+    let clerk = nebo.hire("Proof Mem9 Clerk", json!({ "workflows": {} })).await;
+    nebo.put_ok(&format!("/agents/{clerk}"), &json!({ "memoryMode": "separate" })).await;
+    assert_eq!(nebo.get_ok(&format!("/agents/{clerk}")).await["memoryMode"], "separate");
+    let heard = Arc::new(Heard::default());
+    let rules = vec![
+        turn("MARK-MEM9-SAVE", vec![("remember", json!({ "key": "owner/mem9-parking", "value": "The owner parks in bay 12, FERN-MEM9.", "layer": "tacit" }))], heard.clone()),
+        turn("MARK-MEM9-ASK", vec![("recall", json!({ "query": "parks in bay" })), ("search_history", json!({ "query": "bay 12" }))], heard.clone()),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    owner_turn(&rig, &clerk, "mem9-a", "MARK-MEM9-SAVE", "MARK-MEM9-SAVE remember I park in bay 12").await;
+    owner_turn(&rig, &clerk, "mem9-b", "MARK-MEM9-ASK", "MARK-MEM9-ASK where do I park?").await;
+
+    let owner = owner(&nebo);
+    assert_eq!(rows(&nebo, "owner/mem9-parking").into_iter().map(|(u, _)| u).collect::<Vec<_>>(), vec![format!("{owner}:agent:{clerk}")], "the private memory");
+    let found = heard.of("MARK-MEM9-ASK");
+    assert!(found.contains("FERN-MEM9") && found.contains("(private memory"), "the next conversation recalls it: {found}");
+    assert!(found.contains("bay 12"), "and past conversations are searchable: {found}");
+
+    // A caller's conversation of the same employee is sealed, as it always was.
+    let mut caller = Nebo::ctx(&clerk, Origin::Caller);
+    caller.user_id = agent::memory::resolve_memory_scope(&owner, &clerk, napp::agent::MemoryMode::Separate, Origin::Caller, Some("call-9"), None).user_id;
+    assert_eq!(caller.user_id, format!("{owner}:agent:{clerk}:ctx:call-9"));
+    let saved = nebo.tool(&caller, "remember", json!({ "key": "caller/mem9", "value": "The caller asked about a refund." })).await;
+    assert!(saved.content.starts_with("Saved to this conversation's sealed memory"), "{}", saved.content);
 }

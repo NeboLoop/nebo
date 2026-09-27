@@ -1655,14 +1655,17 @@ pub async fn phone_answer(
         .await
         .map_err(to_error_response)?;
     // A line means strangers talk to this employee: every caller gets sealed
-    // memory from here on, and update_agent refuses to unseal while the
-    // line is attached.
-    let fm = state
-        .store
-        .set_agent_context_isolated(&req.agent_id, true)
-        .map_err(to_error_response)?;
-    if let Ok(Some(agent)) = state.store.get_agent(&req.agent_id) {
-        super::agents::write_agent_json_to_fs(&agent.napp_path, &fm);
+    // memory from here on (conversations kept apart; a Confidential employee
+    // stays Confidential), and update_agent refuses one conversation while
+    // the line is attached.
+    if !crate::workflow_manager::agent_memory_mode(&state.store, &req.agent_id).separates_conversations() {
+        let fm = state
+            .store
+            .set_agent_memory_mode(&req.agent_id, "separate")
+            .map_err(to_error_response)?;
+        if let Ok(Some(agent)) = state.store.get_agent(&req.agent_id) {
+            super::agents::write_agent_json_to_fs(&agent.napp_path, &fm);
+        }
     }
     state.hub.broadcast("agent_updated", serde_json::json!({ "agentId": req.agent_id }));
     Ok(Json(serde_json::json!({ "ok": true })))

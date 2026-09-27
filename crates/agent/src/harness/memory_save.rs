@@ -365,6 +365,8 @@ pub fn saved_line(result: &str) -> &'static str {
         "Saved to my private memory, where only I can see it."
     } else if went_to(MemoryScopeKind::Sealed) {
         "Saved to this conversation's sealed memory."
+    } else if went_to(MemoryScopeKind::Confidential) {
+        "Saved to this conversation's confidential memory, which no other conversation can see."
     } else {
         "Saved to memory."
     }
@@ -502,6 +504,10 @@ mod tests {
             saved_line("Saved to your private memory (only you can see it): [tacit/general] owner/replies = keep it out of local memory"),
             "Saved to my private memory, where only I can see it.",
             "the fact's own words never decide"
+        );
+        assert_eq!(
+            saved_line("Saved to this conversation's confidential memory (no other conversation can see it): [project] case/terms = 410,000"),
+            "Saved to this conversation's confidential memory, which no other conversation can see."
         );
         assert_eq!(saved_line("Saved."), "Saved to memory.");
     }

@@ -3,7 +3,8 @@ description: |
   Memory on one Nebo, driven by a real model (the gate runs it with program checks only).
   Local memory is shared by every employee on this Nebo; private memory is one employee's
   own; global memory exists only when this Nebo is enrolled in a global store, and the gate's
-  server is not. Each fixture's program checks read what the memory tools answered (the save's
+  server is not. A Confidential employee's conversations never see each other, while local memory
+  reaches every one of them. Each fixture's program checks read what the memory tools answered (the save's
   scope words, what another employee's recall returned), and a turn that names an employee is a
   new conversation with that employee. Where each row actually sits (memories.user_id) is proved
   without a model by suites/memory-proof.yaml.
@@ -15,3 +16,5 @@ fixtures:
   - ../fixtures/memory/m05-the-claim-matches-the-scope.yaml
   - ../fixtures/memory/m06-no-global-store-no-global-words.yaml
   - ../fixtures/memory/m07-recipe-saved-for-everyone-is-found.yaml
+  - ../fixtures/memory/m08-confidential-conversations-never-see-each-other.yaml
+  - ../fixtures/memory/m09-confidential-local-memory-reaches-every-conversation.yaml

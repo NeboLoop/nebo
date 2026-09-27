@@ -2013,15 +2013,17 @@
 		"send": "Enviar"
 	},
 	"agentIsolation": {
-		"title": "Separação da memória",
-		"shared": "Uma só memória",
-		"sharedHint": "Uma só memória para todas as conversas — o que este funcionário aprende num sítio sabe-o em todos",
-		"isolated": "Separada por conversa",
-		"isolatedHint": "As suas conversas aparecem em separado e partilham a memória privada deste colaborador. Cada conversa com outra pessoa — quem liga, um visitante, outro bot — mantém a sua própria memória selada, para que nenhuma passe para outra",
-		"confirmOffTitle": "Desligar a separação da memória?",
-		"confirmOffBody": "As suas conversas separadas continuam guardadas, mas deixam de aparecer como lista — este colaborador volta a uma conversa contínua. O que foi aprendido numa conversa com outra pessoa continua selado: as conversas futuras não o usarão. Nada é apagado, e voltar a ativar o isolamento restaura a lista.",
-		"confirmOffAction": "Desligar a separação",
-		"lockedByPhone": "Separada enquanto houver uma linha telefónica ligada — cada pessoa que liga fica com uma memória selada. Retire a linha em neboai.com/manage/phone para mudar isto."
+		"title": "Conversas e memória",
+		"single": "Uma conversa",
+		"singleHint": "Uma única conversa contínua com uma memória.",
+		"separate": "Conversas separadas",
+		"separateHint": "Muitas conversas que partilham uma memória. Uma conversa com outra pessoa, como quem liga, um visitante ou outro bot, mantém a sua própria memória selada.",
+		"confidential": "Confidencial",
+		"confidentialHint": "Use isto quando cada conversa for um cliente, doente ou caso diferente. Nada do que é aprendido numa conversa fica alguma vez visível noutra, nem sequer para este funcionário. O que escolher guardar na memória local continua disponível para todas as conversas.",
+		"confirmOffTitle": "Mudar para uma conversa?",
+		"confirmOffBody": "As conversas separadas continuam guardadas, mas deixam de aparecer como lista, e este funcionário volta a uma conversa contínua. O que foi aprendido numa conversa selada continua selado: as conversas futuras não o vão usar. Nada é apagado, e escolher de novo conversas separadas repõe a lista.",
+		"confirmOffAction": "Mudar para uma conversa",
+		"lockedByPhone": "As conversas mantêm-se separadas enquanto houver uma linha telefónica associada, para que cada pessoa que liga tenha memória selada. Remova a linha em neboai.com/manage/phone para escolher uma conversa."
 	},
 	"cases": {
 		"title": "Processos",

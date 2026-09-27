@@ -921,6 +921,53 @@ Date
         assert_eq!(before.0, 2, "only the conversations with someone else stay sealed");
     }
 
+    /// The isolation flag becomes the memory mode it behaved as: off is one
+    /// conversation, on is separate conversations (so the primary employee,
+    /// sealed today, stays exactly as it is). A mode already named is kept,
+    /// the flag goes everywhere, and nothing else in the frontmatter moves.
+    #[test]
+    fn the_isolation_flag_becomes_the_memory_mode_it_behaved_as() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("memory-mode.db")).unwrap();
+        run_migrations_to(&conn, 189).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO agents (id, name, description, agent_md, frontmatter) VALUES
+                ('off', 'Off', '', '', '{"memory":{"context_isolated":false,"topics":[{"slug":"lead","description":"A lead"}]},"workflows":{}}'),
+                ('on', 'Nanna', '', '', '{"memory":{"context_isolated":true,"share_with":["*"]}}'),
+                ('named', 'Named', '', '', '{"memory":{"mode":"confidential","context_isolated":false}}'),
+                ('none', 'None', '', '', '{"workflows":{}}'),
+                ('blank', 'Blank', '', '', ''),
+                ('broken', 'Broken', '', '', '{not json');"#,
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let fm = |id: &str| -> String {
+            conn.query_row("SELECT frontmatter FROM agents WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        let memory = |id: &str| -> serde_json::Value { serde_json::from_str::<serde_json::Value>(&fm(id)).unwrap()["memory"].clone() };
+        assert_eq!(memory("off")["mode"], "single");
+        assert_eq!(memory("off")["topics"][0]["slug"], "lead", "the rest of memory is kept");
+        assert_eq!(memory("on")["mode"], "separate");
+        assert_eq!(memory("on")["share_with"][0], "*");
+        assert_eq!(memory("named")["mode"], "confidential", "a named mode is kept");
+        for id in ["off", "on", "named"] {
+            assert!(memory(id).get("context_isolated").is_none(), "{id}: the flag goes: {}", fm(id));
+        }
+        assert_eq!(fm("none"), r#"{"workflows":{}}"#, "no flag, nothing to map");
+        assert_eq!(fm("blank"), "");
+        assert_eq!(fm("broken"), "{not json", "unreadable frontmatter is left for the reader to fail closed on");
+
+        // Idempotent: the statements, run again, change nothing.
+        let all = || -> Vec<String> {
+            conn.prepare("SELECT frontmatter FROM agents ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        let before = all();
+        conn.execute_batch(&extract_goose_up(include_str!("../migrations/0190_memory_mode.sql"))).unwrap();
+        assert_eq!(all(), before);
+    }
+
     /// A migration file without goose markers is applied verbatim — the
     /// whole file is the Up script, not silently skipped.
     #[test]

@@ -385,9 +385,10 @@
           loopExposed: a.loopExposed ?? false,
           loopAgentId: a.loopAgentId,
           voice: a.voice || '',
-          // The list endpoint reports isolation directly (the roster lock
-          // needs it for every row).
+          // The list endpoint reports the memory mode directly (the roster
+          // lock needs it for every row).
           isolated: a.isolated,
+          memoryMode: a.memoryMode,
           // Structure. The roster is the org chart's data — /org draws the
           // reporting tree from these, so there is no second fetch for shape.
           department: a.department ?? '',
@@ -714,21 +715,19 @@
       if (agentResp) {
         const ar = agentResp;
         apiSkills[id] = Array.isArray(ar.skills) ? ar.skills as string[] : [];
-        // Isolation lives in frontmatter, which only getAgent returns. Learn
-        // it here and patch the roster row; if we learn mid-view that the
-        // employee is isolated, show their matter list — that is what a row
+        // The memory mode rides on getAgent too. Learn it here and patch the
+        // roster row; if we learn mid-view that the employee keeps its
+        // conversations apart, show their matter list — that is what a row
         // click would have done had we known.
-        try {
-          const fm = JSON.parse((ar.agent as Agent)?.frontmatter || '{}');
-          const iso = fm?.memory?.context_isolated === true;
-          const idx = allAgents.findIndex((x) => x.id === id);
-          if (idx !== -1 && allAgents[idx].isolated !== iso) {
-            const next = [...allAgents];
-            next[idx] = { ...next[idx], isolated: iso };
-            allAgents = next;
-            if (iso && $page.params.agentId === id && $page.url.searchParams.get('list') === '1') showList(id, true);
-          }
-        } catch { /* malformed frontmatter — leave unknown */ }
+        const mode = typeof ar.memoryMode === 'string' ? ar.memoryMode : undefined;
+        const iso = mode === 'separate' || mode === 'confidential';
+        const idx = allAgents.findIndex((x) => x.id === id);
+        if (mode && idx !== -1 && (allAgents[idx].isolated !== iso || allAgents[idx].memoryMode !== mode)) {
+          const next = [...allAgents];
+          next[idx] = { ...next[idx], isolated: iso, memoryMode: mode };
+          allAgents = next;
+          if (iso && $page.params.agentId === id && $page.url.searchParams.get('list') === '1') showList(id, true);
+        }
         const persona = typeof ar.persona === 'string' ? (ar.persona as string) : '';
         const agentMd = (ar.agent as Agent)?.agentMd || '';
         const soul = (ar.agent as Agent)?.soul || '';

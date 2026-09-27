@@ -1534,19 +1534,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                 let mut tool_defs = tools_registry.list().await;
 
                 // The ethical wall reaches WORKFLOW runs too. The chat runner
-                // withholds company Memory from a context_isolated employee,
+                // withholds company Memory from a sealed run with no matter,
                 // but a workflow builds its own roster here — and an employee
                 // like an intake coordinator runs entirely through workflows,
                 // so a wall that covered only chat would cover nothing that
                 // matters. Memory is single-principal: unscoped access hands a
                 // sealed employee the whole company graph.
-                let isolated_employee = store
-                    .get_agent(&agent_id_owned)
-                    .ok()
-                    .flatten()
-                    .and_then(|a| napp::agent::parse_agent_config(&a.frontmatter).ok())
-                    .map(|c| c.memory.context_isolated)
-                    .unwrap_or(false);
+                let isolated_employee = agent_memory_mode(&store, &agent_id_owned).separates_conversations();
                 if isolated_employee {
                     let memory_url = config::memory_url();
                     let memory_ids: std::collections::HashSet<String> = if memory_url.is_empty() {
@@ -1579,7 +1573,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             info!(
                                 role = %agent_id_owned,
                                 withheld,
-                                "context_isolated employee: company Memory withheld from workflow run"
+                                "sealed employee: company Memory withheld from workflow run"
                             );
                         }
                     }
@@ -2179,34 +2173,43 @@ fn learning_mode_for(store: &db::Store, agent_id: &str) -> String {
 /// slice, which is what makes dedup ("already published today") and error
 /// avoidance possible. Honors learning modes: written for auto and staged,
 /// skipped for off — an agent set to Off does not accumulate anything.
-/// Fail-closed read of an agent's `memory.context_isolated` flag: an empty
-/// frontmatter is a legitimate default (not isolated), but config that exists
-/// and cannot be parsed — or an agent row that cannot be read — counts as
-/// isolated. "Couldn't read the isolation flag" must never mean "not isolated"
-/// (isolation audit 2026-08-22, fail-open class).
-pub(crate) fn agent_context_isolated(store: &db::Store, agent_id: &str) -> bool {
+/// Fail-closed read of an agent's `memory.mode`: an empty frontmatter is a
+/// legitimate default (one conversation), but config that exists and cannot
+/// be parsed — or an agent row that cannot be read — counts as Confidential,
+/// the most sealed mode. "Couldn't read the setting" must never mean "not
+/// sealed" (isolation audit 2026-08-22, fail-open class).
+pub(crate) fn agent_memory_mode(store: &db::Store, agent_id: &str) -> napp::agent::MemoryMode {
     if agent_id.is_empty() {
-        return false;
+        return napp::agent::MemoryMode::Single;
     }
     match store.get_agent(agent_id) {
-        Ok(Some(a)) if a.frontmatter.is_empty() => false,
-        Ok(Some(a)) => napp::agent::parse_agent_config(&a.frontmatter)
-            .map(|c| c.memory.context_isolated)
-            .unwrap_or(true),
-        _ => true,
+        Ok(Some(a)) => memory_mode_of(&a.frontmatter),
+        _ => napp::agent::MemoryMode::Confidential,
     }
+}
+
+/// The memory mode a stored frontmatter declares, read the way the runtime
+/// enforces it (see [`agent_memory_mode`]).
+pub(crate) fn memory_mode_of(frontmatter: &str) -> napp::agent::MemoryMode {
+    if frontmatter.is_empty() {
+        return napp::agent::MemoryMode::Single;
+    }
+    napp::agent::parse_agent_config(frontmatter)
+        .map(|c| c.memory.mode)
+        .unwrap_or(napp::agent::MemoryMode::Confidential)
 }
 
 /// Memory scope a workflow run executes tools under: the ONE derivation, for
 /// the owner's own automation — the employee's private memory, never a
-/// conversation, whatever the isolation setting (a standalone run: the
-/// owner's local memory).
+/// conversation (a standalone run: the owner's local memory). A Confidential
+/// employee's run has no conversation, so it writes nothing and reads local
+/// memory only.
 fn workflow_memory_scope(store: &db::Store, agent_id: &str) -> (String, bool) {
     let owner = store.ensure_local_user_id().unwrap_or_default();
     let scope = agent::memory::resolve_memory_scope(
         &owner,
         agent_id,
-        agent_context_isolated(store, agent_id),
+        agent_memory_mode(store, agent_id),
         tools::Origin::Workflow,
         None,
         None,
@@ -2267,11 +2270,12 @@ fn record_run_outcome(store: &db::Store, agent_id: &str, binding: &str, status: 
     }
     let scope = agent::memory::agent_memory_scope(&owner, agent_id);
 
-    // Context-isolated agents keep case/matter data sealed per context. The
-    // outcome row lives in the SHARED agent scope, so for isolated agents it
-    // carries status only — run output could name a client or matter.
-    let context_isolated = agent_context_isolated(store, agent_id);
-    let detail: &str = if context_isolated { "" } else { detail };
+    // An employee whose conversations are kept apart keeps case/matter data
+    // sealed per conversation. The outcome row lives in the SHARED agent
+    // scope, so for such an employee it carries status only — run output
+    // could name a client or matter.
+    let sealed = agent_memory_mode(store, agent_id).separates_conversations();
+    let detail: &str = if sealed { "" } else { detail };
 
     let date = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
     let mut gist = detail.replace('\n', " ");

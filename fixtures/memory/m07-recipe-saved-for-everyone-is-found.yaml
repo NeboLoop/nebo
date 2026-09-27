@@ -2,7 +2,7 @@ id: memory-recipe-replay
 name: 'Memory: replay of the recipe exchange — saved to "company memory", found by another employee'
 description: |
   A replay of the thread that exposed the bug (2026-09-27), with a neutral recipe. The owner gives
-  the primary employee (isolation on, as it was) a recipe and asks it to save it to company memory,
+  the primary employee (separate conversations, the mode its isolation maps to) a recipe and asks it to save it to company memory,
   the owner's words for local memory. Then a different employee, in a new conversation, is asked to
   pull the recipe up and must find it, without saving a copy of its own and without blaming anyone.
 target_component: memory
@@ -12,7 +12,7 @@ setup:
   -d ''{"blank":true,"name":"assistant-{{tag}}"}'' > /dev/null'
 - 'python3 -c "import json,urllib.request as u; s=''http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'';
   ags=json.load(u.urlopen(s+''/agents''))[''agents'']; i=[a[''id''] for a in ags if a.get(''name'')==''assistant-{{tag}}''][0];
-  u.urlopen(u.Request(s+''/agents/''+i, data=json.dumps({''contextIsolated'': True}).encode(), headers={''Content-Type'':
+  u.urlopen(u.Request(s+''/agents/''+i, data=json.dumps({''memoryMode'': ''separate''}).encode(), headers={''Content-Type'':
   ''application/json''}, method=''PUT''))"'
 - 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
   -d ''{"blank":true,"name":"chief-of-staff-{{tag}}"}'' > /dev/null'

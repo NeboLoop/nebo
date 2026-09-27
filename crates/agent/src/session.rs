@@ -246,7 +246,7 @@ impl SessionManager {
     pub fn set_active_chat(&self, session_id: &str, chat_id: &str) -> Result<(), NeboError> {
         // Switching conversations resets the session's per-conversation
         // counters exactly like rotate_chat does: the active chat is the
-        // isolation context under context_isolated, and no state of matter A
+        // isolation context when conversations are kept apart, and no state of matter A
         // may cross into matter B (isolation audit 2026-08-22, leak #4).
         let changed = self
             .store

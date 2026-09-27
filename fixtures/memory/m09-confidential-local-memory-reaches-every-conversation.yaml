@@ -1,0 +1,53 @@
+id: memory-confidential-local-memory-reaches-every-conversation
+name: 'Memory: what the owner saves to local memory reaches every Confidential conversation'
+description: |
+  Confidential seals each conversation, but knowledge the owner deliberately saves to local memory is
+  for everyone. In one conversation with a Confidential employee the owner asks for a fact to be
+  saved to local memory; the save must say "Saved to local memory". In a NEW conversation with the
+  same employee the owner asks for it, and recall returns it.
+target_component: memory
+agent: counsel-{{tag}}
+setup:
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"counsel-{{tag}}"}'' > /dev/null'
+- 'python3 -c "import json,urllib.request as u; s=''http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'';
+  ags=json.load(u.urlopen(s+''/agents''))[''agents'']; i=[a[''id''] for a in ags if a.get(''name'')==''counsel-{{tag}}''][0];
+  u.urlopen(u.Request(s+''/agents/''+i, data=json.dumps({''memoryMode'': ''confidential''}).encode(), headers={''Content-Type'':
+  ''application/json''}, method=''PUT''))"'
+teardown:
+- python3 -c "import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1';
+  ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','')=='counsel-{{tag}}'];
+  [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for i in ids]"
+conversation:
+- role: user
+  content: 'Save this to local memory for everyone: the office closes at 4pm on Fridays, notice code
+    CEDAR-{{tag}}.'
+- role: user
+  agent: counsel-{{tag}}
+  content: When does the office close on Fridays, and what is the notice code? Check your memory.
+tool_config:
+  remember:
+    enabled: true
+  recall:
+    enabled: true
+prompt_assertions:
+  first_call:
+  - id: saves-to-local
+    text: The fact is saved with remember, scope local, and the store answers that it was saved to local
+      memory
+    severity: critical
+    check:
+      tool: remember
+      arg: scope
+      equals: local
+      result_contains: Saved to local memory
+  recovery:
+  - id: new-conversation-finds-it
+    text: In the new conversation, recall returns CEDAR-{{tag}}
+    severity: critical
+    check:
+      tool: recall
+      result_contains: CEDAR-{{tag}}
+ideal_behavior:
+  tool_calls: 2
+  narrative: 'remember(scope: "local"); in the new conversation recall returns the closing time and code.'

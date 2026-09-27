@@ -4,8 +4,8 @@ description: |
   The bug of 2026-09-27: the owner's primary employee had memory isolation switched on (the same
   switch splits its conversations into separate threads), and every durable fact it learned in
   the owner's chat was filed under that one chat, so a new chat never saw it. An owner chat is not
-  a matter. The employee here has isolation on, as the primary did; the owner tells it a fact in
-  one chat, then asks in a NEW chat with the same employee.
+  a matter. The employee here is set to Separate conversations, the mode the primary's isolation
+  maps to; the owner tells it a fact in one chat, then asks in a NEW chat with the same employee.
 target_component: memory
 agent: assistant-{{tag}}
 setup:
@@ -13,7 +13,7 @@ setup:
   -d ''{"blank":true,"name":"assistant-{{tag}}"}'' > /dev/null'
 - 'python3 -c "import json,urllib.request as u; s=''http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1'';
   ags=json.load(u.urlopen(s+''/agents''))[''agents'']; i=[a[''id''] for a in ags if a.get(''name'')==''assistant-{{tag}}''][0];
-  u.urlopen(u.Request(s+''/agents/''+i, data=json.dumps({''contextIsolated'': True}).encode(), headers={''Content-Type'':
+  u.urlopen(u.Request(s+''/agents/''+i, data=json.dumps({''memoryMode'': ''separate''}).encode(), headers={''Content-Type'':
   ''application/json''}, method=''PUT''))"'
 teardown:
 - python3 -c "import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1';

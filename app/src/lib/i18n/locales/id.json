@@ -2013,15 +2013,17 @@
 		"send": "Kirim"
 	},
 	"agentIsolation": {
-		"title": "Pemisahan memori",
-		"shared": "Satu memori",
-		"sharedHint": "Satu memori untuk semua percakapan — apa yang dipelajari karyawan ini di mana pun, ia tahu di mana pun",
-		"isolated": "Terpisah per percakapan",
-		"isolatedHint": "Percakapan Anda tercantum terpisah dan berbagi memori pribadi karyawan ini. Setiap percakapan dengan orang lain — penelepon, pengunjung, bot lain — menyimpan memori tersegelnya sendiri, sehingga tidak ada yang bocor ke percakapan lain",
-		"confirmOffTitle": "Matikan pemisahan memori?",
-		"confirmOffBody": "Percakapan terpisah Anda tetap tersimpan, tetapi tidak lagi tampil sebagai daftar — karyawan ini kembali ke satu percakapan berkelanjutan. Apa yang dipelajari dalam percakapan dengan orang lain tetap tersegel: obrolan berikutnya tidak akan memakainya. Tidak ada yang dihapus, dan menyalakan isolasi lagi mengembalikan daftarnya.",
-		"confirmOffAction": "Matikan pemisahan",
-		"lockedByPhone": "Terpisah selama saluran telepon terpasang — setiap penelepon mendapat memori tertutup. Lepaskan salurannya di neboai.com/manage/phone untuk mengubah ini."
+		"title": "Percakapan dan memori",
+		"single": "Satu percakapan",
+		"singleHint": "Satu percakapan berkelanjutan dengan satu memori.",
+		"separate": "Percakapan terpisah",
+		"separateHint": "Banyak percakapan yang berbagi satu memori. Percakapan dengan orang lain, seperti penelepon, pengunjung, atau bot lain, menyimpan memori tersegelnya sendiri.",
+		"confidential": "Rahasia",
+		"confidentialHint": "Gunakan ini jika setiap percakapan adalah klien, pasien, atau kasus yang berbeda. Tidak ada yang dipelajari dalam satu percakapan yang pernah terlihat di percakapan lain, bahkan oleh karyawan ini. Pengetahuan yang Anda pilih untuk disimpan ke memori lokal tetap tersedia untuk setiap percakapan.",
+		"confirmOffTitle": "Beralih ke satu percakapan?",
+		"confirmOffBody": "Percakapan terpisah Anda tetap tersimpan, tetapi tidak lagi tampil sebagai daftar, dan karyawan ini kembali ke satu percakapan berkelanjutan. Apa yang dipelajari dalam percakapan tersegel tetap tersegel: chat berikutnya tidak akan memakainya. Tidak ada yang dihapus, dan memilih percakapan terpisah lagi akan memulihkan daftarnya.",
+		"confirmOffAction": "Beralih ke satu percakapan",
+		"lockedByPhone": "Percakapan tetap terpisah selama saluran telepon terhubung, sehingga setiap penelepon mendapat memori tersegel. Hapus saluran di neboai.com/manage/phone untuk memilih satu percakapan."
 	},
 	"cases": {
 		"title": "Kasus",

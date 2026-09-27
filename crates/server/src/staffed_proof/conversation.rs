@@ -128,6 +128,9 @@ pub(super) type Rule = Box<dyn Fn(&Thread<'_>) -> Option<Step> + Send + Sync>;
 /// The company's model for one scenario.
 struct Company {
     rules: Vec<Rule>,
+    /// Answers for the calls that are not a turn (memory extraction, titles,
+    /// checks); a call none answers gets "ok".
+    background: std::sync::Mutex<Vec<Rule>>,
     gates: std::sync::Mutex<HashMap<&'static str, Arc<tokio::sync::Semaphore>>>,
     /// Every call's opener, in order.
     calls: std::sync::Mutex<Vec<String>>,
@@ -137,6 +140,7 @@ impl Company {
     fn new(rules: Vec<Rule>) -> Arc<Self> {
         Arc::new(Self {
             rules,
+            background: Default::default(),
             gates: Default::default(),
             calls: Default::default(),
         })
@@ -176,10 +180,23 @@ impl ai::Provider for Model {
 
     async fn stream(&self, req: &ai::ChatRequest) -> Result<ai::EventReceiver, ai::ProviderError> {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        // Titles, recaps, memory and checks: nothing to do with the work.
+        // Titles, recaps, memory and checks: nothing to do with the work,
+        // unless the scenario answers them.
         if req.trace.purpose != "agent_turn" {
+            let thread = Thread { req };
+            let events = self
+                .0
+                .background
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|r| r(&thread))
+                .map(|step| step.events)
+                .unwrap_or_else(|| vec![ai::StreamEvent::text("ok")]);
             tokio::spawn(async move {
-                let _ = tx.send(ai::StreamEvent::text("ok")).await;
+                for e in events {
+                    let _ = tx.send(e).await;
+                }
                 let _ = tx.send(ai::StreamEvent::done()).await;
             });
             return Ok(rx);
@@ -273,6 +290,12 @@ impl<'a> Rig<'a> {
             company,
             loop_,
         }
+    }
+
+    /// Answer the calls that are not a turn with `rule` (for the rest of
+    /// the scenario), before the "ok" every other one gets.
+    pub(super) fn answer_background(&self, rule: Rule) {
+        self.company.background.lock().unwrap().push(rule);
     }
 
     /// The owner writes in their loop conversation `conversation`, to the

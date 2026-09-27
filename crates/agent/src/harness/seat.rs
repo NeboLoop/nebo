@@ -75,7 +75,8 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // activation) — that must NOT default to "not isolated", or a copied
     // isolated employee silently runs unisolated (isolation audit 2026-08-22,
     // fail-open class). Fail closed: re-read the store row; empty frontmatter
-    // is the legitimate default, unparseable frontmatter counts as isolated.
+    // is the legitimate default, unparseable frontmatter counts as
+    // Confidential (the most sealed mode).
     let memory_config = agent
         .and_then(|e| e.config.as_ref())
         .map(|c| c.memory.clone())
@@ -91,10 +92,10 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
                         warn!(
                             agent_id,
                             error = %e,
-                            "agent config unparseable — treating as context_isolated (fail closed)"
+                            "agent config unparseable — treating memory as confidential (fail closed)"
                         );
                         napp::agent::MemoryConfig {
-                            context_isolated: true,
+                            mode: napp::agent::MemoryMode::Confidential,
                             ..Default::default()
                         }
                     }
@@ -103,7 +104,7 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
                 // fail closed like an unparseable config.
                 Ok(None) => Default::default(),
                 Err(_) => napp::agent::MemoryConfig {
-                    context_isolated: true,
+                    mode: napp::agent::MemoryMode::Confidential,
                     ..Default::default()
                 },
             }
@@ -116,8 +117,9 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // Effective provenance write bar for this scope (trust-boundaries design
     // 2026-08-22): agent config `memory.write_bar` (kebab-case class names)
     // when declared — explicit [] is a deliberate opt-out — else the engine
-    // default: context-isolated scopes refuse channel/phone content (untrusted
-    // interlocutors never write case files); non-isolated scopes have no bar.
+    // default: an employee whose conversations are kept apart refuses
+    // channel/phone content (untrusted interlocutors never write case files);
+    // a one-conversation employee has no bar.
     let write_bar: Vec<types::provenance::ProvenanceClass> = match &memory_config.write_bar {
         Some(names) => names
             .iter()
@@ -129,7 +131,7 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
                     .ok()
             })
             .collect(),
-        None if memory_config.context_isolated => vec![
+        None if memory_config.mode.separates_conversations() => vec![
             types::provenance::ProvenanceClass::Channel,
             types::provenance::ProvenanceClass::Phone,
         ],
@@ -159,16 +161,10 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // every run falls through to the chat derivation below.
     let explicit_ctx = crate::memory::session_key_context(key);
 
-    // A sealed employee talking to someone other than the owner, with no
-    // explicit segment, derives the conversation from the session's ACTIVE
-    // CHAT id via the canonical session→chat resolution. The owner's own
-    // runs never bind memory to a conversation, so they never need it (see
-    // memory::resolve_memory_scope).
-    let chat_ctx = if memory_config.context_isolated
-        && !origin.is_trusted()
-        && !agent_id.is_empty()
-        && explicit_ctx.is_none()
-    {
+    // With no explicit segment, the conversation is the session's ACTIVE
+    // CHAT id via the canonical session→chat resolution. Whether this run's
+    // memory is bound to it is memory::resolve_memory_scope's decision.
+    let chat_ctx = if !agent_id.is_empty() && explicit_ctx.is_none() {
         store.session_chat_id(session_id)
     } else {
         None
@@ -185,13 +181,13 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
 
     // Scope memory by agent: each agent gets its own memory namespace to prevent
     // cross-contamination. Main bot uses the raw owner; agents use
-    // "owner:agent:agent_id"; with context_isolated, further scoped to
-    // "owner:agent:agent_id:ctx:context_id". The ONE derivation — every read
-    // and write path inherits it.
+    // "owner:agent:agent_id", or one conversation's scope under it as the
+    // employee's memory mode decides. The ONE derivation — every read and
+    // write path inherits it.
     let memory_scope = crate::memory::resolve_memory_scope(
         &memory_owner,
         agent_id,
-        memory_config.context_isolated,
+        memory_config.mode,
         origin,
         explicit_ctx.as_deref(),
         chat_ctx.as_deref(),
@@ -199,10 +195,9 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // The conversation this run's memory is sealed to, if any — read back
     // from the ONE derivation rather than re-decided here.
     let sealed_ctx = crate::memory::scope_matter(&memory_scope.user_id).map(str::to_string);
-    let has_context = sealed_ctx.is_some();
-    // Fail-closed: context_isolated with no derivable context must NEVER write
-    // to the shared agent scope (readable from every isolation context — the
-    // exact leak the flag exists to prevent). The runner refuses the
+    // Fail-closed: a run whose memory must be bound to a conversation, with
+    // none derivable, must NEVER write to a scope every conversation reads
+    // (the exact leak the mode exists to prevent). The runner refuses the
     // extraction, flush, and personality paths through their existing gate;
     // transcript indexing and the memory tool's mutations check
     // memory_writes_disabled directly. Reads still serve the base agent scope
@@ -210,9 +205,21 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     if memory_scope.writes_disabled {
         warn!(
             session_id,
-            agent_id, "context_isolated: no context derivable — memory writes disabled for this run"
+            agent_id, "memory bound to a conversation but none derivable — memory writes disabled for this run"
         );
     }
+
+    // Build the inheritance chain for READ access, off the resolved scope:
+    // agent tacit/ (a Separate employee's sealed conversation only) + owner
+    // identity prefixes. Sibling conversation scopes are never in the chain.
+    let inherit_scopes = crate::memory::build_inherit_scopes(&memory_owner, agent_id, &memory_scope.user_id);
+
+    // This run's memory is bound to a conversation (or had to be and none
+    // was derivable) — read back from the ONE derivation, or, for a
+    // sub-agent, from the parent's resolved scope it runs under.
+    let memory_bound = sealed_ctx.is_some()
+        || memory_scope.writes_disabled
+        || (key.starts_with("subagent:") && tools::memory_tools::conversation_scope(user_id).is_some());
 
     // ── Sub-agent scope inheritance ────────────────────────────────────
     // Sub-agent runs (anonymous task spawns and persona delegations) execute
@@ -222,6 +229,8 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
     // derivation above short-circuits to the raw owner scope with writes
     // enabled, and one task-spawn exfiltrates an isolated matter's data into
     // the scope every agent inherits (isolation audit 2026-08-22, leak #3).
+    // A Confidential parent's scope never reads the private memory, so its
+    // helpers inherit the seal with it.
     let memory = if key.starts_with("subagent:") {
         let parent_scope = if user_id.is_empty() {
             memory_scope.user_id
@@ -236,62 +245,40 @@ pub fn resolve_seat(store: &Store, key: &str, inputs: SeatInputs<'_>) -> Seat {
         memory_scope
     };
 
-    // Company Memory's confidentiality scope for this run. An isolated
-    // employee is sealed to ONE matter — the same context its own memory is
-    // scoped by — so it can remember its client without ever reaching another.
-    // The value is the platform's; it travels as a header the model can't set.
+    // Company Memory's confidentiality scope for this run. An employee whose
+    // run is bound to a conversation is sealed to ONE matter — the same
+    // context its own memory is scoped by — so it can remember its client
+    // without ever reaching another. The value is the platform's; it travels
+    // as a header the model can't set.
     //
-    // Sub-agents inherit it. A spawn carries an empty agent_id, so the
-    // context_isolated check below sees a default config and would hand the
-    // child UNSCOPED Memory — the company-Memory twin of isolation-audit
-    // leak #3. The parent's resolved scope arrives as the request user_id and
-    // ends in ":ctx:<id>" when the parent was sealed, so read the matter back
-    // out of it rather than trusting the child's own (absent) config.
+    // Sub-agents inherit it. A spawn carries an empty agent_id, so its own
+    // resolution sees no employee and would hand the child UNSCOPED Memory —
+    // the company-Memory twin of isolation-audit leak #3. The parent's
+    // resolved scope arrives as the request user_id and names its
+    // conversation when the parent was sealed, so read the matter back out of
+    // it rather than trusting the child's own (absent) config.
     let memory_matter: Option<String> = if key.starts_with("subagent:") {
-        user_id
-            .rsplit_once(":ctx:")
-            .map(|(_, ctx)| format!("matter/{ctx}"))
+        crate::memory::scope_matter(user_id).map(|ctx| format!("matter/{ctx}"))
     } else {
         sealed_ctx.as_deref().map(|c| format!("matter/{c}"))
     };
-    // A sealed parent's child is sealed too, even though its own config says
-    // nothing: no matter derivable means no company Memory at all.
-    let inherits_isolation = key.starts_with("subagent:") && user_id.contains(":ctx:");
 
-    // Build the inheritance chain for READ access: agent tacit/ (context-
-    // isolated runs only) + owner identity prefixes. Sibling ctx scopes are
-    // never in the chain.
-    let inherit_scopes = crate::memory::build_inherit_scopes(
-        &memory_owner,
-        agent_id,
-        memory_config.context_isolated,
-        has_context,
-    );
-
-    // ── Ethical wall: an isolated employee gets no company Memory ──
-    // memory.context_isolated is per EMPLOYEE, while an MCP integration is
-    // bot-wide — one Nebo can host an isolated legal assistant alongside a
+    // ── Ethical wall: a sealed run with no matter gets no company Memory ──
+    // The memory mode is per EMPLOYEE, while an MCP integration is bot-wide
+    // — one Nebo can host a confidential legal assistant alongside a
     // receptionist that should see everything. So the wall lives in this
     // run's toolset, not in whether the server is installed.
     //
     // Company Memory is currently single-principal: any caller sees the
     // whole graph, unprojected (DESIGN §11's domain ∩ sensitivity
-    // projection is designed, not built). Handing that to an employee whose
-    // own memory is sealed per matter would break the promise its setting
-    // makes — one case, client, or matter never bleeding into another.
-    // Until Memory is matter-scoped, isolated employees simply don't get it.
-    // An isolated employee with a derivable matter gets MATTER-SCOPED
-    // Memory (the header on every call confines it server-side). Only when
-    // no matter can be derived does the blunt wall apply: unscoped access
-    // to a single-principal graph is exactly what isolation forbids.
-    let isolated_employee = inherits_isolation
-        || agent
-            .and_then(|e| e.config.as_ref())
-            .map(|c| c.memory.context_isolated)
-            .unwrap_or(false);
-    // The owner's own runs are not walled: nothing in them belongs to a
-    // stranger (their memory is not sealed either, see resolve_memory_scope).
-    let company_memory_sealed = isolated_employee && memory_matter.is_none() && !origin.is_trusted();
+    // projection is designed, not built). A run whose memory is bound to a
+    // conversation with a derivable matter gets MATTER-SCOPED Memory (the
+    // header on every call confines it server-side). Only when no matter can
+    // be derived does the blunt wall apply: unscoped access to a
+    // single-principal graph is exactly what sealing forbids. A run whose
+    // memory is not bound (the owner's own runs of a Single or Separate
+    // employee) is not walled.
+    let company_memory_sealed = memory_bound && memory_matter.is_none();
 
     Seat {
         memory,
@@ -333,7 +320,7 @@ pub async fn company_memory_tools(store: &Store, tools: &tools::Registry, agent_
         }
     }
     if !walled.is_empty() {
-        debug!(agent = %agent_id, walled = walled.len(), "context_isolated employee: company Memory walled off (no matter)");
+        debug!(agent = %agent_id, walled = walled.len(), "sealed run: company Memory walled off (no matter)");
     }
     walled
 }

@@ -1,11 +1,14 @@
 //! Past conversations: `search_history` finds messages, `read_session`
-//! reads one conversation, `list_sessions` lists them.
+//! reads one conversation, `list_sessions` lists them. A Confidential
+//! conversation (its memory scope says so) reaches only itself: nothing said
+//! in one matter is found from another.
 
 use std::sync::Arc;
 
 use db::Store;
 use serde_json::{Value, json};
 
+use crate::memory_tools::MemoryScopeKind;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
@@ -34,10 +37,17 @@ impl History {
             .collect()
     }
 
-    fn search(&self, input: &Value) -> ToolResult {
+    /// The one conversation a Confidential run may read — its own — or
+    /// `None` for every conversation.
+    fn confined_to(&self, ctx: &ToolContext) -> Option<String> {
+        (MemoryScopeKind::of(&ctx.user_id) == MemoryScopeKind::Confidential)
+            .then(|| self.store.resolve_session_chat_id(&ctx.session_id))
+    }
+
+    fn search(&self, input: &Value, ctx: &ToolContext) -> ToolResult {
         let query = input["query"].as_str().unwrap_or("");
         let limit = input["limit"].as_i64().unwrap_or(20);
-        match self.store.search_chats(query, limit) {
+        match self.store.search_chats(query, limit, self.confined_to(ctx).as_deref()) {
             Ok(hits) if hits.is_empty() => {
                 ToolResult::ok(format!("No messages found matching: {query}"))
             }
@@ -76,6 +86,12 @@ impl History {
             .as_str()
             .filter(|s| !s.is_empty())
             .unwrap_or(&ctx.session_id);
+        if session_id != ctx.session_id && self.confined_to(ctx).is_some() {
+            return ToolResult::error(
+                "This conversation is confidential: only its own messages can be read here. Leave \
+                 session_id out to read this one.",
+            );
+        }
         let chat_id = self.store.resolve_session_chat_id(session_id);
         match self.store.get_chat_messages(&chat_id) {
             Ok(msgs) if msgs.is_empty() => ToolResult::ok(format!(
@@ -107,7 +123,13 @@ impl History {
         }
     }
 
-    fn list(&self) -> ToolResult {
+    fn list(&self, ctx: &ToolContext) -> ToolResult {
+        if self.confined_to(ctx).is_some() {
+            return ToolResult::ok(
+                "This conversation is confidential: other conversations are not listed here. \
+                 read_session with no session_id reads this one.",
+            );
+        }
         match self.store.list_sessions(50, 0) {
             Ok(sessions) if sessions.is_empty() => ToolResult::ok("No sessions."),
             Ok(sessions) => {
@@ -220,9 +242,9 @@ impl DynTool for HistoryTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
             match self.op {
-                HistoryOp::Search => self.history.search(&input),
+                HistoryOp::Search => self.history.search(&input, ctx),
                 HistoryOp::Read => self.history.read(&input, ctx),
-                HistoryOp::List => self.history.list(),
+                HistoryOp::List => self.history.list(ctx),
             }
         })
     }

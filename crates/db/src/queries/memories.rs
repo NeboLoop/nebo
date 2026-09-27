@@ -53,7 +53,9 @@ impl Store {
                 .collect::<Result<Vec<_>, _>>()
         } else {
             let exact = format!("%:agent:{}", agent_id);
-            let ctx = format!("%:agent:{}:ctx:%", agent_id);
+            // Every conversation scope under the private one (`:ctx:` and
+            // `:matter:`); agent ids hold no colon.
+            let ctx = format!("%:agent:{}:%", agent_id);
             let sql = format!(
                 "SELECT {COLS} FROM memories WHERE user_id LIKE ?1 OR user_id LIKE ?2 \
                  ORDER BY access_count DESC LIMIT ?3 OFFSET ?4"
@@ -339,7 +341,9 @@ impl Store {
     ) -> Result<Vec<Memory>, NeboError> {
         let conn = self.conn()?;
         let exact = format!("%:agent:{}", agent_id);
-        let ctx = format!("%:agent:{}:ctx:%", agent_id);
+        // Every conversation scope under the private one (`:ctx:` and
+        // `:matter:`); agent ids hold no colon.
+        let ctx = format!("%:agent:{}:%", agent_id);
         let mut stmt = conn
             .prepare(
                 "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
@@ -404,7 +408,9 @@ impl Store {
                 .collect::<Result<Vec<_>, _>>()
         } else {
             let exact = format!("%:agent:{}", agent_id);
-            let ctx = format!("%:agent:{}:ctx:%", agent_id);
+            // Every conversation scope under the private one (`:ctx:` and
+            // `:matter:`); agent ids hold no colon.
+            let ctx = format!("%:agent:{}:%", agent_id);
             let sql = format!(
                 "SELECT {COLS} FROM memories WHERE (user_id LIKE ?1 OR user_id LIKE ?2) \
                  AND (namespace LIKE ?3 OR key LIKE ?3 OR value LIKE ?3 OR tags LIKE ?3) \

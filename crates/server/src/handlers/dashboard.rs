@@ -120,7 +120,7 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
         });
         let latest = live_chat.or_else(|| state.store.get_latest_agent_chat(&a.id).ok().flatten());
         let latest_title = latest.as_ref().and_then(|c| display_title(&c.title));
-        let isolated = crate::workflow_manager::agent_context_isolated(&state.store, &a.id);
+        let isolated = crate::workflow_manager::agent_memory_mode(&state.store, &a.id).separates_conversations();
         let matters = state.store.count_agent_chats(&a.id).unwrap_or(0) as u32;
         let paused = !active_ids.contains(&a.id);
         let wf_now = live_wf.get(a.id.as_str()).copied();

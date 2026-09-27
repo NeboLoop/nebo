@@ -2013,15 +2013,17 @@
 		"send": "Senden"
 	},
 	"agentIsolation": {
-		"title": "Gedächtnistrennung",
-		"shared": "Ein Gedächtnis",
-		"sharedHint": "Ein Gedächtnis über alle Gespräche — was dieser Mitarbeiter irgendwo lernt, weiß er überall",
-		"isolated": "Pro Gespräch getrennt",
-		"isolatedHint": "Deine Gespräche werden getrennt aufgelistet und teilen das private Gedächtnis dieses Mitarbeiters. Jedes Gespräch mit jemand anderem — einem Anrufer, einem Besucher, einem anderen Bot — behält sein eigenes versiegeltes Gedächtnis, sodass nichts ins nächste übergeht",
-		"confirmOffTitle": "Gedächtnistrennung ausschalten?",
-		"confirmOffBody": "Deine getrennten Gespräche bleiben gespeichert, erscheinen aber nicht mehr als Liste — dieser Mitarbeiter kehrt zu einem durchgehenden Gespräch zurück. Was in einem Gespräch mit jemand anderem gelernt wurde, bleibt versiegelt: künftige Chats greifen nicht darauf zurück. Nichts wird gelöscht, und wenn du die Trennung wieder einschaltest, ist die Liste wieder da.",
-		"confirmOffAction": "Trennung ausschalten",
-		"lockedByPhone": "Getrennt, solange eine Telefonleitung angeschlossen ist — jeder Anrufer bekommt ein abgeschottetes Gedächtnis. Entferne die Leitung auf neboai.com/manage/phone, um das zu ändern."
+		"title": "Gespräche und Gedächtnis",
+		"single": "Ein Gespräch",
+		"singleHint": "Ein einziges fortlaufendes Gespräch mit einem Gedächtnis.",
+		"separate": "Getrennte Gespräche",
+		"separateHint": "Viele Gespräche, die sich ein Gedächtnis teilen. Ein Gespräch mit jemand anderem, etwa einem Anrufer, einem Besucher oder einem anderen Bot, behält sein eigenes versiegeltes Gedächtnis.",
+		"confidential": "Vertraulich",
+		"confidentialHint": "Verwende dies, wenn jedes Gespräch ein anderer Mandant, Patient oder Fall ist. Nichts, was in einem Gespräch gelernt wird, ist jemals in einem anderen sichtbar, nicht einmal für diesen Mitarbeiter. Was du bewusst im lokalen Gedächtnis speicherst, steht weiterhin jedem Gespräch zur Verfügung.",
+		"confirmOffTitle": "Zu einem Gespräch wechseln?",
+		"confirmOffBody": "Deine getrennten Gespräche bleiben gespeichert, erscheinen aber nicht mehr als Liste, und dieser Mitarbeiter kehrt zu einem fortlaufenden Gespräch zurück. Was in einem versiegelten Gespräch gelernt wurde, bleibt versiegelt: Künftige Chats greifen nicht darauf zurück. Nichts wird gelöscht, und wenn du wieder getrennte Gespräche wählst, ist die Liste zurück.",
+		"confirmOffAction": "Zu einem Gespräch wechseln",
+		"lockedByPhone": "Die Gespräche bleiben getrennt, solange eine Telefonleitung verbunden ist, damit jeder Anrufer ein versiegeltes Gedächtnis bekommt. Entferne die Leitung unter neboai.com/manage/phone, um ein Gespräch zu wählen."
 	},
 	"cases": {
 		"title": "Fälle",

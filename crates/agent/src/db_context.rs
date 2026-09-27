@@ -27,6 +27,9 @@ pub struct DBContext {
     /// Per-agent plugin accounts (plugin_slug, account_label, is_primary).
     /// Empty for agents that have no multi-account profiles configured.
     pub plugin_accounts: Vec<(String, String, bool)>,
+    /// Which memory the run's own scope is: where a `remember` without
+    /// `scope: "local"` goes.
+    pub scope: tools::memory_tools::MemoryScopeKind,
 }
 
 /// Load all database context needed for prompt assembly.
@@ -96,6 +99,7 @@ pub fn load_db_context(
         personality_directive,
         tacit_memories,
         plugin_accounts,
+        scope: tools::memory_tools::MemoryScopeKind::of(user_id),
     }
 }
 
@@ -321,18 +325,18 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     // extracted from conversations"), and in 6 of 21 turns of
     // suites/memory.yaml (2026-09-27) the model told the owner "Saved…"
     // with no remember call, trusting that line.
-    sections.push(
+    sections.push(format!(
         "# Memory Quick Reference\n\
          A fact is saved only by a remember call that succeeds. When the owner asks you to save or remember \
          something, call remember in that turn, and say it is saved only after the result says so.\n\
          Proactively save: user corrections, preferences, environment facts, recurring patterns.\n\
          Write as declarative facts (\"User prefers X\"), not directives (\"Always do X\").\n\
          Use recall(query: \"...\") to search memories, or recall with a saved key for one fact.\n\
-         Use remember(key, value) to save one. It goes to your private memory unless you pass scope \"local\": \
+         Use remember(key, value) to save one. It goes to {} unless you pass scope \"local\": \
          local memory is shared by every employee on this Nebo, and it is what the owner means by \
-         company memory, shared or for everyone. Tell the owner where a fact went in the result's words."
-            .to_string(),
-    );
+         company memory, shared or for everyone. Tell the owner where a fact went in the result's words.",
+        ctx.scope.default_save()
+    ));
 
     let mut result = sections.join("\n\n---\n\n");
     result = result.replace("{agent_name}", agent_name);
@@ -932,6 +936,7 @@ mod tests {
             personality_directive: None,
             tacit_memories: vec![],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
         let result = format_for_system_prompt(&ctx, "Nebo");
         assert!(result.contains("Memory Quick Reference"));
@@ -969,6 +974,7 @@ mod tests {
             personality_directive: None,
             tacit_memories: vec![],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
 
         let result = format_for_system_prompt(&ctx, "TestBot");
@@ -1015,6 +1021,7 @@ mod tests {
             personality_directive: None,
             tacit_memories: vec![],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
         let result = format_for_system_prompt(&ctx, "TestBot");
         assert!(!result.contains("# Identity"), "{result}");
@@ -1052,6 +1059,7 @@ mod tests {
             personality_directive: None,
             tacit_memories: vec![],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
@@ -1070,6 +1078,7 @@ mod tests {
             personality_directive: Some("Be concise and direct.".to_string()),
             tacit_memories: vec![],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
@@ -1103,6 +1112,7 @@ mod tests {
                 score: 1.0,
             }],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");
@@ -1165,6 +1175,7 @@ mod tests {
             personality_directive: None,
             tacit_memories: vec![],
             plugin_accounts: vec![],
+            scope: tools::memory_tools::MemoryScopeKind::Private,
         };
 
         let result = format_for_system_prompt(&ctx, "Nebo");

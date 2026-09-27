@@ -2013,15 +2013,17 @@
 		"send": "Invia"
 	},
 	"agentIsolation": {
-		"title": "Separazione della memoria",
-		"shared": "Una sola memoria",
-		"sharedHint": "Una sola memoria per tutte le conversazioni: ciò che questo dipendente impara da una parte lo sa ovunque",
-		"isolated": "Separata per conversazione",
-		"isolatedHint": "Le tue conversazioni sono elencate separatamente e condividono la memoria privata di questo dipendente. Ogni conversazione con qualcun altro — chi chiama, un visitatore, un altro bot — mantiene la propria memoria sigillata, così nessuna si mescola con un'altra",
-		"confirmOffTitle": "Disattivare la separazione della memoria?",
-		"confirmOffBody": "Le tue conversazioni separate restano salvate, ma non appariranno più come elenco: questo dipendente torna a un'unica conversazione continua. Ciò che è stato appreso in una conversazione con qualcun altro resta sigillato: le chat future non lo useranno. Non viene eliminato nulla e riattivando l'isolamento l'elenco torna.",
-		"confirmOffAction": "Disattiva la separazione",
-		"lockedByPhone": "Separata finché una linea telefonica è collegata: ogni chiamante ottiene una memoria sigillata. Togli la linea su neboai.com/manage/phone per cambiare."
+		"title": "Conversazioni e memoria",
+		"single": "Una conversazione",
+		"singleHint": "Un'unica conversazione continua con una sola memoria.",
+		"separate": "Conversazioni separate",
+		"separateHint": "Molte conversazioni che condividono una sola memoria. Una conversazione con qualcun altro, come chi chiama, un visitatore o un altro bot, mantiene la propria memoria sigillata.",
+		"confidential": "Riservato",
+		"confidentialHint": "Usalo quando ogni conversazione riguarda un cliente, un paziente o un caso diverso. Niente di ciò che viene appreso in una conversazione è mai visibile in un'altra, nemmeno a questo dipendente. Ciò che scegli di salvare nella memoria locale resta disponibile per ogni conversazione.",
+		"confirmOffTitle": "Passare a una sola conversazione?",
+		"confirmOffBody": "Le conversazioni separate restano salvate, ma non appariranno più come elenco, e questo dipendente torna a un'unica conversazione continua. Ciò che è stato appreso in una conversazione sigillata resta sigillato: le chat future non lo useranno. Non viene eliminato nulla, e scegliendo di nuovo conversazioni separate l'elenco torna.",
+		"confirmOffAction": "Passa a una sola conversazione",
+		"lockedByPhone": "Le conversazioni restano separate finché è collegata una linea telefonica, così ogni chiamante ha una memoria sigillata. Rimuovi la linea su neboai.com/manage/phone per scegliere una sola conversazione."
 	},
 	"cases": {
 		"title": "Pratiche",

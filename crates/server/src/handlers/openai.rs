@@ -124,7 +124,7 @@ pub async fn api_key_auth(State(state): State<AppState>, mut request: Request, n
 /// a client knows whether `user` names a conversation or is ignored.
 pub async fn openai_list_models(State(state): State<AppState>, axum::Extension(key): axum::Extension<db::models::ApiKey>) -> Response {
     let agent = state.store.get_agent(&key.agent_id).ok().flatten();
-    let isolated = crate::workflow_manager::agent_context_isolated(&state.store, &key.agent_id);
+    let isolated = crate::workflow_manager::agent_memory_mode(&state.store, &key.agent_id).separates_conversations();
     let name = agent.as_ref().map(|a| a.name.clone()).unwrap_or_default();
     let data: Vec<serde_json::Value> = key
         .models
@@ -232,7 +232,7 @@ fn conversation_ctx(user: Option<&str>) -> String {
 /// The thread this call runs in, per the employee's memory mode. Returns the
 /// session key and the chat id (created if new).
 async fn resolve_thread(state: &AppState, agent_id: &str, agent_name: &str, user: Option<&str>) -> (String, String) {
-    let isolated = crate::workflow_manager::agent_context_isolated(&state.store, agent_id);
+    let isolated = crate::workflow_manager::agent_memory_mode(&state.store, agent_id).separates_conversations();
     if isolated {
         let ctx = conversation_ctx(user);
         let chat_id = format!("api-{}-{}", &agent_id[..agent_id.len().min(8)], ctx);
@@ -756,7 +756,7 @@ pub async fn list_agent_api_keys(State(state): State<AppState>, Path(id): Path<S
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     let keys = state.store.list_api_keys_for_agent(&id).map_err(to_error_response)?;
-    let isolated = crate::workflow_manager::agent_context_isolated(&state.store, &id);
+    let isolated = crate::workflow_manager::agent_memory_mode(&state.store, &id).separates_conversations();
     let memory = if isolated { "isolated" } else { "shared" };
     let mut models = vec![serde_json::json!({
         "id": employee_model(&agent),

@@ -317,15 +317,14 @@ pub struct ToolContext {
     /// addition to the built-in layers. Empty for the main bot.
     pub memory_topics: Vec<String>,
     /// Fail-closed memory isolation (set by the runner's ONE scope
-    /// derivation): the active agent has `memory.context_isolated` but no
-    /// isolation context could be derived for this run, so memory MUTATIONS
-    /// (store/delete/clear) must be refused rather than land in the shared
-    /// agent scope. Reads still serve the inherited chain. `false` for every
+    /// derivation): the active agent's memory mode binds this run to a
+    /// conversation but none could be derived, so memory MUTATIONS
+    /// (store/delete/clear) must be refused rather than land in a scope every
+    /// conversation reads. Reads still serve the inherited chain. `false` for every
     /// normal run.
     pub memory_writes_disabled: bool,
-    /// Confidentiality scope for this run: the client matter an isolated
-    /// employee is sealed to (`memory.context_isolated` + the derived
-    /// context). Forwarded to platform Memory as a header so the shard can
+    /// Confidentiality scope for this run: the client matter a sealed run is
+    /// bound to (the employee's `memory.mode` + the derived conversation). Forwarded to platform Memory as a header so the shard can
     /// enforce the wall server-side. `None` for a normal employee.
     pub memory_matter: Option<String>,
     /// Engine-set ONLY (workflow command nodes — owner-authored deterministic

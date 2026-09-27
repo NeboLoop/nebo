@@ -2013,15 +2013,17 @@
 		"send": "Wyślij"
 	},
 	"agentIsolation": {
-		"title": "Izolacja pamięci",
-		"shared": "Jedna pamięć",
-		"sharedHint": "Jedna pamięć na wszystkie rozmowy — czego ten pracownik nauczy się gdziekolwiek, wie wszędzie",
-		"isolated": "Osobna dla każdej rozmowy",
-		"isolatedHint": "Twoje rozmowy są wymienione osobno i dzielą prywatną pamięć tego pracownika. Każda rozmowa z kimś innym — dzwoniącym, gościem, innym botem — ma własną zapieczętowaną pamięć, więc żadna nie przenika do innej",
-		"confirmOffTitle": "Wyłączyć izolację pamięci?",
-		"confirmOffBody": "Twoje osobne rozmowy pozostają zapisane, ale nie będą już widoczne jako lista — ten pracownik wraca do jednej ciągłej rozmowy. To, czego nauczył się w rozmowie z kimś innym, pozostaje zapieczętowane: przyszłe czaty z tego nie skorzystają. Nic nie jest usuwane, a ponowne włączenie izolacji przywraca listę.",
-		"confirmOffAction": "Wyłącz izolację",
-		"lockedByPhone": "Izolacja działa, dopóki podpięta jest linia telefoniczna — każdy dzwoniący ma zamkniętą pamięć. Aby to zmienić, odepnij linię na neboai.com/manage/phone."
+		"title": "Rozmowy i pamięć",
+		"single": "Jedna rozmowa",
+		"singleHint": "Jedna ciągła rozmowa z jedną pamięcią.",
+		"separate": "Osobne rozmowy",
+		"separateHint": "Wiele rozmów, które dzielą jedną pamięć. Rozmowa z kimś innym, na przykład z dzwoniącym, gościem lub innym botem, zachowuje własną zapieczętowaną pamięć.",
+		"confidential": "Poufne",
+		"confidentialHint": "Używaj tego, gdy każda rozmowa dotyczy innego klienta, pacjenta lub sprawy. Nic, czego nauczono się w jednej rozmowie, nigdy nie jest widoczne w innej, nawet dla tego pracownika. To, co zdecydujesz się zapisać w pamięci lokalnej, pozostaje dostępne dla każdej rozmowy.",
+		"confirmOffTitle": "Przełączyć na jedną rozmowę?",
+		"confirmOffBody": "Twoje osobne rozmowy pozostają zapisane, ale nie będą już widoczne jako lista, a ten pracownik wraca do jednej ciągłej rozmowy. To, czego nauczono się w zapieczętowanej rozmowie, pozostaje zapieczętowane: przyszłe czaty nie będą z tego korzystać. Nic nie zostaje usunięte, a ponowny wybór osobnych rozmów przywraca listę.",
+		"confirmOffAction": "Przełącz na jedną rozmowę",
+		"lockedByPhone": "Rozmowy pozostają osobne, dopóki podłączona jest linia telefoniczna, aby każdy dzwoniący miał zapieczętowaną pamięć. Usuń linię na neboai.com/manage/phone, aby wybrać jedną rozmowę."
 	},
 	"cases": {
 		"title": "Sprawy",
