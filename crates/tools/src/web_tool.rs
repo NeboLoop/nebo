@@ -2861,7 +2861,7 @@ fn extract_origin(url: &str) -> String {
 /// What the model reads when a URL points inside the local or private network.
 fn private_url_error(url: &str) -> String {
     format!(
-        "Cannot fetch {}: it points to a local or private network address, which this tool never fetches. For this machine's own Nebo server use run_command(command: \"curl -s http://localhost:27895/api/v1/...\").",
+        "Cannot fetch {}: it points to a local or private network address, which this tool never fetches. A server you started on this computer answers run_command(command: \"curl -s http://localhost:<port>/...\"); Nebo's own server answers no command.",
         url
     )
 }
@@ -3834,6 +3834,7 @@ mod wording_tests {
         let e = private_url_error("http://127.0.0.1:8080/x");
         assert!(e.starts_with("Cannot fetch http://127.0.0.1:8080/x:"), "{e}");
         assert!(!e.contains("SSRF"));
+        assert!(!e.contains("27895"), "the model is never pointed at Nebo's own API: {e}");
     }
 
     #[test]

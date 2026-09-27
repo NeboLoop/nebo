@@ -1943,7 +1943,7 @@ pub async fn extension_ws_handler(
 
 /// Constant-time string comparison. The secret is fixed-length (64 hex chars),
 /// so the early length check leaks nothing useful.
-fn constant_time_eq(a: &str, b: &str) -> bool {
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;

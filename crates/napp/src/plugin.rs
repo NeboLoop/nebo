@@ -2730,6 +2730,13 @@ pub enum PluginFsEvent {
 /// the global login, and the silent-refresh path did not) — the fourth instance
 /// of launch-path drift. One constructor, called by every spawn site, is the
 /// fix. Grep rule: no other code builds `NEBO_LOCAL_URL`.
+///
+/// The URL carries the plugin's credential as its first path segment
+/// (`/k/<token>`, `plugin_local_token`): the local API admits no caller
+/// without one, and a plugin joins its paths onto this base, so the
+/// credential rides every call it makes, a WebSocket's included, with no
+/// change to the plugin. It reaches only the routes plugins call
+/// (`server::middleware`).
 pub fn plugin_base_env() -> Vec<(String, String)> {
     let port = std::env::var("NEBO_PORT")
         .ok()
@@ -2737,8 +2744,15 @@ pub fn plugin_base_env() -> Vec<(String, String)> {
         .unwrap_or(types::constants::DEFAULT_PORT);
     vec![(
         "NEBO_LOCAL_URL".to_string(),
-        format!("http://127.0.0.1:{port}"),
+        format!("http://127.0.0.1:{port}/k/{}", plugin_local_token()),
     )]
+}
+
+/// The credential every plugin this Nebo starts reaches its local API with:
+/// made at boot, held in memory, handed out only in `NEBO_LOCAL_URL`.
+pub fn plugin_local_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple()))
 }
 
 /// Derive the environment variable name for a plugin binary path.

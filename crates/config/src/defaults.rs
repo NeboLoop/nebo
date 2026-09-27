@@ -170,6 +170,48 @@ pub fn read_extension_secret() -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// Read or generate the install key: the credential the owner's own
+/// clients prove themselves to Nebo's local API with, on loopback as from
+/// the network (`server::middleware::local_boundary`). `NEBO_MCP_API_KEY`
+/// when it is set; otherwise generated once into `<data_dir>/.install-key`
+/// (mode 0600), a file only Nebo and the owner read: an employee's command
+/// can't (`tools::nebo_files` closes Nebo's folder, and Nebo's own settings
+/// never reach a command's environment). The server calls this at startup.
+pub fn ensure_install_key() -> Result<String, NeboError> {
+    if let Some(existing) = read_install_key() {
+        return Ok(existing);
+    }
+    let key = {
+        use rand::Rng;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill(&mut bytes);
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    let path = data_dir()?.join(files::INSTALL_KEY);
+    let _ = fs::remove_file(&path);
+    fs::write(&path, &key)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(key)
+}
+
+/// Read the install key without generating one (a client: the CLI, the
+/// desktop shell): `NEBO_MCP_API_KEY`, else `<data_dir>/.install-key`.
+/// `None` when neither is there.
+pub fn read_install_key() -> Option<String> {
+    if let Ok(key) = std::env::var("NEBO_MCP_API_KEY")
+        && !key.trim().is_empty()
+    {
+        return Some(key.trim().to_string());
+    }
+    let s = fs::read_to_string(data_dir().ok()?.join(files::INSTALL_KEY)).ok()?;
+    let s = s.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
 // ── Artifact Directory Helpers ─────────────────────────────────────
 
 /// Returns the `nebo/` directory for marketplace (sealed) artifacts.

@@ -1,0 +1,28 @@
+id: local-api-requires-caller-proof
+name: "Nebo's local API answers only its own app and the owner's clients"
+description: |
+  Nebo's local API trusted any caller on loopback. On Windows nothing
+  confines an employee's command, so a command could call nearly every
+  route, the one that changes its own permissions included; on macOS and
+  Linux the sandbox was the only thing in the way. Every caller now proves
+  itself, on loopback as from the network, in the one boundary
+  (middleware::local_boundary): the install key (the CLI, the MCP bridge,
+  the desktop shell, MCP clients the owner configured), a browser session
+  cookie signed in through a one-use ticket and counted only on Nebo's own
+  page (the desktop app, the Vite dev server, `nebo open`), a credential
+  scoped to one kind of process (a CLI provider's run credential for
+  /agent/mcp, an app sidecar's NEBO_APP_TOKEN for its own app, the plugins'
+  token in NEBO_LOCAL_URL for the plugin relays and the phone line), or the
+  hub tunnel's stamp.
+  This proof leaves Nebo's port open to an employee's commands, as a
+  computer that confines nothing does. The command reaches the server
+  (/health answers) and is refused on every route that does anything (its
+  employees, its own permissions, /agent/mcp, the app). The install key is
+  not in its environment, and a read of the key's file is refused. A browser
+  signed in through a ticket gets the app shell and the API from its own
+  page, and not from another page on this computer. An app's sidecar
+  reaches its own app's routes with its token, and nothing else.
+  Mechanical, no model: a deterministic proof through the real server.
+target_component: permissions
+proof: nebo_files_proof::an_employee_command_is_refused_by_nebo_own_api
+conversation: []

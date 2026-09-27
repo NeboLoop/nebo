@@ -17,6 +17,7 @@ mod engine;
 mod heartbeat;
 mod workforce_reporter;
 pub mod import;
+pub mod local_access;
 pub mod middleware;
 mod migration;
 mod outside;
@@ -2979,17 +2980,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/health", axum::routing::get(health_handler))
         .route("/ready", axum::routing::get(ready_handler))
         .route("/server.json", axum::routing::get(spa::server_json))
-        // MCP endpoint for CLI providers (claude, codex, gemini)
+        // MCP endpoint for CLI providers (claude, codex, gemini) and the
+        // owner's MCP clients: the boundary admits a live run credential or
+        // the install key.
         .route(
             "/agent/mcp",
-            axum::routing::post(handlers::mcp_server::agent_mcp_handler)
-                .layer(axum::middleware::from_fn_with_state(
-                    middleware::McpAuth {
-                        install_key: middleware::install_key(),
-                        credentials: state.tool_credentials.clone(),
-                    },
-                    middleware::mcp_api_key_auth,
-                )),
+            axum::routing::post(handlers::mcp_server::agent_mcp_handler),
         )
         // The OpenAI-shaped door: employees and workflows as models, behind a
         // key minted on the employee's Connect tab. Root-level because every
@@ -3031,10 +3027,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/apps/{agent_id}/ui/{*path}", axum::routing::get(handlers::apps::serve_app_ui))
         .route("/sdk/nebo.global.js", axum::routing::get(handlers::apps::serve_sdk_iife))
         .merge(http_routes)
-        // Before any route: the tunnel, this machine by Host, or the
-        // network with the install key (PRD Permissions §4.8).
+        // Before any route: the tunnel, or a caller that proves itself on
+        // this machine's Host, or the network with the install key (PRD
+        // Permissions §4.8).
         .layer(axum::middleware::from_fn_with_state(
-            middleware::Boundary::for_bind(&host, port),
+            middleware::Boundary::for_bind(&host, port, state.tool_credentials.clone(), state.app_lifecycles.clone()),
             middleware::local_boundary,
         ))
         .layer(axum::middleware::from_fn(middleware::security_headers))
@@ -3071,12 +3068,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             )));
         }
         eprintln!("WARNING: Server binding to {bind_addr} — remote access enabled");
-        if middleware::install_key().is_none() {
-            eprintln!(
-                "WARNING: NEBO_MCP_API_KEY is not set, so every request from the network is \
-                 refused. Only the NeboAI tunnel, this machine, and /health reach the server."
-            );
-        }
+        eprintln!(
+            "Every caller from the network sends the install key (NEBO_MCP_API_KEY, or the key \
+             in Nebo's folder, .install-key) as Authorization: Bearer <key>. Only the NeboAI \
+             tunnel and /health reach the server without it."
+        );
     }
 
     // Preconnect to AI provider to warm TCP+TLS (saves ~200ms on first call)
@@ -3100,8 +3096,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     }
 
     // Connect info: the boundary tells this machine from the network by the
-    // peer address.
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+    // peer address. A credential carried in the path comes off it before
+    // routing (`middleware::path_credential`).
+    let app = tower::ServiceExt::map_request(app, middleware::path_credential);
+    axum::serve(listener, axum::ServiceExt::into_make_service_with_connect_info::<std::net::SocketAddr>(app))
         .with_graceful_shutdown(async move {
             shutdown.await;
             info!("shutdown signal received — pausing scheduler, draining in-flight runs...");
@@ -6348,15 +6346,8 @@ fn cors_layer() -> CorsLayer {
     use axum::http::HeaderValue;
     use tower_http::cors::AllowOrigin;
 
-    let static_origins: Vec<HeaderValue> = [
-        "http://localhost:27895",
-        "http://127.0.0.1:27895",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:4173",
-        "http://127.0.0.1:4173",
-    ]
-    .iter()
+    let static_origins: Vec<HeaderValue> = middleware::UI_ORIGINS
+        .iter()
     .filter_map(|o| o.parse().ok())
     .collect();
 

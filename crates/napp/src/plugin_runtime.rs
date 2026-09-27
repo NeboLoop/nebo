@@ -67,14 +67,17 @@ pub fn split_command(args_str: &str) -> Vec<String> {
 }
 
 /// Return a sanitized copy of the current process environment,
-/// stripping dangerous loader/shell injection vars.
+/// stripping dangerous loader/shell injection vars, and the install key
+/// (`NEBO_MCP_API_KEY`): it proves the owner's own client to Nebo's local
+/// API, and a process Nebo starts gets a credential of its own, scoped to
+/// what it calls (`plugin_base_env`, an app's `NEBO_APP_TOKEN`), never it.
 pub fn sanitized_env() -> Vec<(String, String)> {
     let dangerous: std::collections::HashSet<&str> = DANGEROUS_ENV_VARS.iter().copied().collect();
 
     std::env::vars()
         .filter(|(k, _)| {
             let upper = k.to_uppercase();
-            if dangerous.contains(upper.as_str()) {
+            if dangerous.contains(upper.as_str()) || upper == "NEBO_MCP_API_KEY" {
                 return false;
             }
             if upper.starts_with("BASH_FUNC_")

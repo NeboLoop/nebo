@@ -39,6 +39,7 @@ fixtures:
   # Nebo's own files: closed to every employee, the employee's own open
   - ../fixtures/permissions/nebo-own-files-stay-closed.yaml
   - ../fixtures/permissions/nebo-own-server-closed.yaml
+  - ../fixtures/permissions/local-api-requires-caller-proof.yaml
   # Full access: its commands run unconfined, the owner's web setting still holds
   - ../fixtures/permissions/full-access-runs-unconfined.yaml
   # Scheduled commands: the one door, never waiting on an ask

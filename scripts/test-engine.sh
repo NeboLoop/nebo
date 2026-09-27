@@ -23,6 +23,8 @@
 # Exits non-zero on the first failed assertion and prints why.
 set -u
 TEST_SERVER="${TEST_SERVER:-localhost:27895}"
+. "$(dirname "$0")/install-key.sh"
+TEST_SERVER="$(with_install_key "$TEST_SERVER")"
 CONTACT="${ENGINE_CONTACT:-}"
 AGENT="${ENGINE_AGENT:-intake-coordinator}"
 SOURCE="${ENGINE_SOURCE:-sales.intake-coordinator.lead-captured}"
