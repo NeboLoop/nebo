@@ -96,6 +96,49 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
+
+    /// The old single profile's persona, rules and tool notes leave it, once:
+    /// each employee in `souls` gets its new soul, the moved fields go back to
+    /// their empty defaults, and `conversion` is recorded with `report`, all in
+    /// one transaction, so a failed move leaves the profile as it was.
+    pub fn retire_agent_profile(
+        &self,
+        souls: &[(String, String)],
+        conversion: &str,
+        report: &str,
+    ) -> Result<(), NeboError> {
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        for (id, soul) in souls {
+            tx.execute(
+                "UPDATE agents SET soul = ?1, updated_at = unixepoch() WHERE id = ?2",
+                params![soul, id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        }
+        tx.execute(
+            "UPDATE agent_profile SET
+                personality_preset = 'balanced', custom_personality = '',
+                voice_style = 'neutral', response_length = 'adaptive',
+                emoji_usage = 'moderate', formality = 'adaptive',
+                emoji = '', creature = '', vibe = '', role = '',
+                agent_rules = '', tool_notes = '', updated_at = unixepoch()
+             WHERE id = 1",
+            [],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        tx.execute(
+            "INSERT OR REPLACE INTO upgrade_conversions (name, report, applied_at)
+             VALUES (?1, ?2, unixepoch())",
+            params![conversion, report],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        tx.commit()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
 }
 
 fn row_to_agent_profile(row: &rusqlite::Row) -> rusqlite::Result<AgentProfile> {

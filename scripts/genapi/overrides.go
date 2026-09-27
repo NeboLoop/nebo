@@ -82,6 +82,9 @@ var typeOverrides = map[string]string{
 	"publish_agent_workflow.keyPrefix":    "string",
 	"publish_agent_workflow.url":          "string",
 
+	// ── Model picker: provider id → that provider's models (a map, NOT an array) ──
+	"list_models.models": "Record<string, unknown[]>",
+
 	// ── Misc ──
 	"get_agent_stats.stats":       "AgentStats",
 	"list_aliases.aliases":        "AliasEntry[]",
@@ -159,6 +162,8 @@ export interface RunDisplay {
 	id: string
 	name: string
 	description: string
+	/** A "New <runtime>" row (` + "`id`" + ` ` + "`new:<runtime>`" + `): the coding agent it starts. */
+	runtime?: string
 }`,
 
 	"AppWindowConfig": `export interface AppWindowConfig {

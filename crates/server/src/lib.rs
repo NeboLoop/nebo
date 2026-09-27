@@ -45,6 +45,7 @@ mod nebo_files_proof;
 mod spa;
 mod state;
 pub mod workflow_manager;
+mod old_profile;
 mod permission_asks;
 mod stored_tool_names;
 
@@ -1256,6 +1257,17 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // before anything loads an employee, a skill or a workflow.
     stored_tool_names::upgrade(&store, &data_dir)?;
 
+    // The old single profile's persona, rules and tool notes move to the
+    // employees' souls and the company layer once, before any employee is
+    // loaded. A failed move is retried at the next start.
+    let moved_rules = match config::packs_dir().and_then(|dir| old_profile::upgrade(&store, &dir)) {
+        Ok(pack) => pack,
+        Err(e) => {
+            warn!(error = %e, "old agent profile not moved; retried at the next start");
+            None
+        }
+    };
+
     // Initialize plugin store for shared binary management
     let plugins_dir = data_dir.join("nebo").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
@@ -2338,8 +2350,10 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     Some(applied) => *packs = applied,
                     // Never applied anything: this install predates parking, or
                     // is new. Seed the snapshot from disk, which raises nothing.
+                    // The company rules moved from the old profile this start
+                    // are not in it: no seat has read them yet.
                     None => {
-                        for p in current.iter() {
+                        for p in current.iter().filter(|p| moved_rules.as_ref() != Some(&p.slug)) {
                             packs.insert(format!("{}:{}", p.layer.as_str(), p.slug), p.clone());
                         }
                         layers_update::save_applied(&packs);
@@ -2348,7 +2362,17 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 *state.pending_layers.write().await = layers_update::load_pending();
                 layers_update::first_read_for_unstamped_seats(&state, &packs);
             }
-            layers_update::detect_changes(&state, &dir).await;
+            // The rules moved from the old profile reached every employee
+            // before; the owner decided that, so their pack is applied rather
+            // than parked. Any other edit waiting stays parked.
+            match moved_rules {
+                Some(slug) => {
+                    layers_update::detect_and_apply(&state, &dir, Some(vec![slug])).await;
+                }
+                None => {
+                    layers_update::detect_changes(&state, &dir).await;
+                }
+            }
             let watch_state = state.clone();
             let watch_dir = dir.clone();
             let handle = tokio::runtime::Handle::current();

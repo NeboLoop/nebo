@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use db::Store;
-use db::models::{AgentProfile, Memory, UserPreference, UserProfile};
+use db::models::{Memory, UserPreference, UserProfile};
 use regex::Regex;
 use tracing::{debug, info, warn};
 
@@ -19,7 +19,6 @@ pub struct InheritScope {
 
 /// Rich context loaded from the database for prompt assembly.
 pub struct DBContext {
-    pub agent: Option<AgentProfile>,
     pub user: Option<UserProfile>,
     pub preferences: Option<UserPreference>,
     pub personality_directive: Option<String>,
@@ -41,9 +40,6 @@ pub fn load_db_context(
     inherit_scopes: &[InheritScope],
 ) -> DBContext {
     let t0 = std::time::Instant::now();
-
-    let agent = store.get_agent_profile().ok().flatten();
-    let t_agent = t0.elapsed();
 
     let user = store.get_user_profile().ok().flatten();
     let t_user = t0.elapsed();
@@ -81,8 +77,7 @@ pub fn load_db_context(
     };
 
     info!(
-        agent_ms = t_agent.as_millis() as u64,
-        user_ms = (t_user - t_agent).as_millis() as u64,
+        user_ms = t_user.as_millis() as u64,
         prefs_ms = (t_prefs - t_user).as_millis() as u64,
         directive_ms = (t_directive - t_prefs).as_millis() as u64,
         memories_ms = (t_memories - t_directive).as_millis() as u64,
@@ -93,7 +88,6 @@ pub fn load_db_context(
     );
 
     DBContext {
-        agent,
         user,
         preferences,
         personality_directive,
@@ -104,58 +98,19 @@ pub fn load_db_context(
 }
 
 /// Format the DB context into a rich system prompt section.
-/// Produces 9 sections joined with separators, matching Go's FormatForSystemPrompt.
+/// Produces up to 6 sections joined with separators. Who the employee is
+/// (personality, soul, rules) is its identity attachment, never read here.
 pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     let mut sections: Vec<String> = Vec::new();
 
-    // 1. The personality the owner chose. Who the employee is belongs to the
-    // system prompt's identity section; with no personality set, nothing here.
-    if let Some(personality) = ctx.agent.as_ref().and_then(|agent| {
-        agent
-            .custom_personality
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .or_else(|| personality_preset_prompt(agent.personality_preset.as_deref()))
-    }) {
-        sections.push(format!("# Identity\n{}", personality));
-    }
-
-    // 2. Character (creature, role, vibe, emoji)
-    if let Some(ref agent) = ctx.agent {
-        let mut parts = Vec::new();
-        if let Some(ref creature) = agent.creature {
-            if !creature.is_empty() {
-                parts.push(format!("Creature: {}", creature));
-            }
-        }
-        if let Some(ref role) = agent.role {
-            if !role.is_empty() {
-                parts.push(format!("Role: {}", role));
-            }
-        }
-        if let Some(ref vibe) = agent.vibe {
-            if !vibe.is_empty() {
-                parts.push(format!("Vibe: {}", vibe));
-            }
-        }
-        if let Some(ref emoji) = agent.emoji {
-            if !emoji.is_empty() {
-                parts.push(format!("Emoji: {}", emoji));
-            }
-        }
-        if !parts.is_empty() {
-            sections.push(format!("# Character\n{}", parts.join("\n")));
-        }
-    }
-
-    // 3. Personality directive (learned from style observations)
+    // 1. Personality directive (learned from style observations)
     if let Some(ref directive) = ctx.personality_directive {
         if !directive.is_empty() {
             sections.push(format!("# Personality (Learned)\n{}", directive));
         }
     }
 
-    // 4. Communication style
+    // 2. Communication style
     {
         let mut parts = Vec::new();
 
@@ -169,35 +124,12 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
             }
         }
 
-        if let Some(ref agent) = ctx.agent {
-            if let Some(ref voice) = agent.voice_style {
-                if !voice.is_empty() {
-                    parts.push(format!("Voice: {}", voice));
-                }
-            }
-            if let Some(ref formality) = agent.formality {
-                if !formality.is_empty() {
-                    parts.push(format!("Formality: {}", formality));
-                }
-            }
-            if let Some(ref length) = agent.response_length {
-                if !length.is_empty() {
-                    parts.push(format!("Response length: {}", length));
-                }
-            }
-            if let Some(ref emoji_usage) = agent.emoji_usage {
-                if !emoji_usage.is_empty() {
-                    parts.push(format!("Emoji usage: {}", emoji_usage));
-                }
-            }
-        }
-
         if !parts.is_empty() {
             sections.push(format!("# Communication Style\n{}", parts.join("\n")));
         }
     }
 
-    // 5. User information
+    // 3. User information
     if let Some(ref user) = ctx.user {
         let mut parts = Vec::new();
         if let Some(ref name) = user.display_name {
@@ -243,29 +175,7 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         }
     }
 
-    // 6. Agent rules
-    if let Some(ref agent) = ctx.agent {
-        if let Some(ref rules) = agent.agent_rules {
-            if !rules.is_empty() {
-                let sanitized = sanitize::sanitize_for_prompt(rules);
-                let formatted = format_structured_or_raw(&sanitized, "Rules");
-                sections.push(format!("# Agent Rules\n{}", formatted));
-            }
-        }
-    }
-
-    // 7. Tool notes
-    if let Some(ref agent) = ctx.agent {
-        if let Some(ref notes) = agent.tool_notes {
-            if !notes.is_empty() {
-                let sanitized = sanitize::sanitize_for_prompt(notes);
-                let formatted = format_structured_or_raw(&sanitized, "Tool Notes");
-                sections.push(format!("# Tool Notes\n{}", formatted));
-            }
-        }
-    }
-
-    // 7b. Connected accounts (only when the agent has multi-account plugins)
+    // 4. Connected accounts (only when the agent has multi-account plugins)
     if !ctx.plugin_accounts.is_empty() {
         let mut by_plugin: BTreeMap<&str, Vec<&(String, String, bool)>> = BTreeMap::new();
         for acct in &ctx.plugin_accounts {
@@ -294,7 +204,7 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         ));
     }
 
-    // 8. What You Know (scored tacit memories, grouped by section tags)
+    // 5. What You Know (scored tacit memories, grouped by section tags)
     if !ctx.tacit_memories.is_empty() {
         let now = chrono::Utc::now();
         let mut values = Vec::new();
@@ -320,7 +230,7 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         ));
     }
 
-    // 9. Memory quick reference (aligns with SECTION_MEMORY_DOCS). It never
+    // 6. Memory quick reference (aligns with SECTION_MEMORY_DOCS). It never
     // says facts are saved on their own: it did ("Facts are automatically
     // extracted from conversations"), and in 6 of 21 turns of
     // suites/memory.yaml (2026-09-27) the model told the owner "Saved…"
@@ -631,39 +541,6 @@ fn group_memories_by_section(memories: &[String]) -> String {
     output.trim_end().to_string()
 }
 
-/// Try to parse as JSON array of strings and format as markdown list,
-/// otherwise return the raw text.
-fn format_structured_or_raw(text: &str, _label: &str) -> String {
-    // Try JSON array of strings
-    if let Ok(items) = serde_json::from_str::<Vec<String>>(text) {
-        return items
-            .iter()
-            .map(|item| format!("- {}", item))
-            .collect::<Vec<_>>()
-            .join("\n");
-    }
-
-    // Try JSON array of objects with "text" or "rule" field
-    if let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(text) {
-        let lines: Vec<String> = items
-            .iter()
-            .filter_map(|item| {
-                item.get("text")
-                    .or_else(|| item.get("rule"))
-                    .or_else(|| item.get("note"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| format!("- {}", s))
-            })
-            .collect();
-        if !lines.is_empty() {
-            return lines.join("\n");
-        }
-    }
-
-    // Raw text fallback
-    text.to_string()
-}
-
 /// Map language code to display name for the system prompt.
 fn language_display_name(code: &str) -> &'static str {
     match code {
@@ -713,26 +590,6 @@ fn memory_staleness_note(mem: &Memory, now: &DateTime<Utc>) -> String {
         )
     } else {
         String::new()
-    }
-}
-
-/// Map personality preset names to prompt text.
-fn personality_preset_prompt(preset: Option<&str>) -> Option<&'static str> {
-    match preset? {
-        "professional" => Some(
-            "You are professional, precise, and efficient. You focus on accuracy and clear communication.",
-        ),
-        "friendly" => Some(
-            "You are warm, friendly, and approachable. You make people feel comfortable and supported.",
-        ),
-        "casual" => Some("You are laid-back and casual. You keep things light and conversational."),
-        "creative" => Some(
-            "You are creative, imaginative, and expressive. You bring fresh perspectives and ideas.",
-        ),
-        "analytical" => Some(
-            "You are methodical, detail-oriented, and data-driven. You think critically and provide thorough analysis.",
-        ),
-        _ => None,
     }
 }
 
@@ -930,7 +787,6 @@ mod tests {
     #[test]
     fn test_format_empty_context() {
         let ctx = DBContext {
-            agent: None,
             user: None,
             preferences: None,
             personality_directive: None,
@@ -942,90 +798,43 @@ mod tests {
         assert!(result.contains("Memory Quick Reference"));
     }
 
+    /// The old single profile (its Identity, Personality and Rules pages
+    /// are gone) never reaches the prompt: not its personality, character,
+    /// style, rules or tool notes. Those moved to each employee's soul and
+    /// the company layer (`server::old_profile`).
     #[test]
-    fn test_format_with_agent_profile() {
-        let agent = AgentProfile {
-            id: 1,
-            name: "TestBot".to_string(),
-            personality_preset: Some("friendly".to_string()),
-            custom_personality: None,
-            voice_style: Some("warm".to_string()),
-            response_length: Some("medium".to_string()),
-            emoji_usage: Some("moderate".to_string()),
-            formality: Some("casual".to_string()),
-            proactivity: None,
-            created_at: 0,
-            updated_at: 0,
-            emoji: Some("🤖".to_string()),
-            creature: Some("robot".to_string()),
-            vibe: Some("chill".to_string()),
-            avatar: None,
-            agent_rules: None,
-            tool_notes: None,
-            role: Some("assistant".to_string()),
-            quiet_hours_start: "22:00".to_string(),
-            quiet_hours_end: "08:00".to_string(),
-        };
-
-        let ctx = DBContext {
-            agent: Some(agent),
-            user: None,
-            preferences: None,
-            personality_directive: None,
-            tacit_memories: vec![],
-            plugin_accounts: vec![],
-            scope: tools::memory_tools::MemoryScopeKind::Private,
-        };
-
-        let result = format_for_system_prompt(&ctx, "TestBot");
-        assert!(result.contains("Identity"));
-        assert!(result.contains("friendly"));
-        assert!(result.contains("Character"));
-        assert!(result.contains("robot"));
-        assert!(result.contains("Communication Style"));
-        assert!(result.contains("warm"));
-    }
-
-    /// The employee-memory row opened with "# Identity — You are a capable
-    /// AI employee." for every owner who never chose a personality (the
-    /// default preset, `balanced`, has no text), repeating the system
-    /// prompt's identity section.
-    #[test]
-    fn no_chosen_personality_means_no_identity_block() {
-        let agent = AgentProfile {
-            id: 1,
-            name: "TestBot".to_string(),
-            personality_preset: Some("balanced".to_string()),
-            custom_personality: None,
-            voice_style: None,
-            response_length: None,
-            emoji_usage: None,
-            formality: None,
-            proactivity: None,
-            created_at: 0,
-            updated_at: 0,
-            emoji: None,
-            creature: None,
-            vibe: None,
-            avatar: None,
-            agent_rules: None,
-            tool_notes: None,
-            role: None,
-            quiet_hours_start: "22:00".to_string(),
-            quiet_hours_end: "08:00".to_string(),
-        };
-        let ctx = DBContext {
-            agent: Some(agent),
-            user: None,
-            preferences: None,
-            personality_directive: None,
-            tacit_memories: vec![],
-            plugin_accounts: vec![],
-            scope: tools::memory_tools::MemoryScopeKind::Private,
-        };
-        let result = format_for_system_prompt(&ctx, "TestBot");
-        assert!(!result.contains("# Identity"), "{result}");
-        assert!(!result.contains("capable AI employee"), "{result}");
+    fn the_old_profile_never_reaches_the_prompt() {
+        let (_dir, store) = test_store("old_profile");
+        store.ensure_agent_profile().unwrap();
+        store
+            .update_agent_profile(
+                None,
+                Some("friendly"),
+                Some("You are {agent_name}, calm under pressure."),
+                Some("warm"),
+                Some("brief"),
+                Some("lots"),
+                Some("casual"),
+                None,
+                Some("🦉"),
+                Some("owl"),
+                Some("chill"),
+                Some("concierge"),
+                None,
+                Some("Never book travel without asking."),
+                Some("Use the shared drive for client files."),
+                None,
+                None,
+            )
+            .unwrap();
+        let ctx = load_db_context(&store, "", "", &[]);
+        let result = format_for_system_prompt(&ctx, "Ava");
+        for old in [
+            "calm under pressure", "warm, friendly", "# Identity", "# Character", "owl", "chill", "concierge",
+            "Voice:", "brief", "lots", "casual", "Never book travel", "# Agent Rules", "shared drive", "# Tool Notes",
+        ] {
+            assert!(!result.contains(old), "{old:?} reached the prompt: {result}");
+        }
         assert!(result.contains("Memory Quick Reference"), "{result}");
     }
 
@@ -1053,7 +862,6 @@ mod tests {
         };
 
         let ctx = DBContext {
-            agent: None,
             user: Some(user),
             preferences: None,
             personality_directive: None,
@@ -1072,7 +880,6 @@ mod tests {
     #[test]
     fn test_format_with_personality_directive() {
         let ctx = DBContext {
-            agent: None,
             user: None,
             preferences: None,
             personality_directive: Some("Be concise and direct.".to_string()),
@@ -1103,7 +910,6 @@ mod tests {
         };
 
         let ctx = DBContext {
-            agent: None,
             user: None,
             preferences: None,
             personality_directive: None,
@@ -1118,68 +924,5 @@ mod tests {
         let result = format_for_system_prompt(&ctx, "Nebo");
         assert!(result.contains("What You Know"));
         assert!(result.contains("favorite-color: blue"));
-    }
-
-    #[test]
-    fn test_format_structured_json_array() {
-        let json = r#"["Rule one", "Rule two", "Rule three"]"#;
-        let result = format_structured_or_raw(json, "Rules");
-        assert!(result.contains("- Rule one"));
-        assert!(result.contains("- Rule two"));
-    }
-
-    #[test]
-    fn test_format_structured_json_objects() {
-        let json = r#"[{"text": "Do this"}, {"text": "Do that"}]"#;
-        let result = format_structured_or_raw(json, "Rules");
-        assert!(result.contains("- Do this"));
-        assert!(result.contains("- Do that"));
-    }
-
-    #[test]
-    fn test_format_raw_fallback() {
-        let text = "Just plain text rules";
-        let result = format_structured_or_raw(text, "Rules");
-        assert_eq!(result, "Just plain text rules");
-    }
-
-    #[test]
-    fn test_agent_name_replacement() {
-        let agent = AgentProfile {
-            id: 1,
-            name: "Nebo".to_string(),
-            personality_preset: None,
-            custom_personality: Some("You are {agent_name}, a helpful bot.".to_string()),
-            voice_style: None,
-            response_length: None,
-            emoji_usage: None,
-            formality: None,
-            proactivity: None,
-            created_at: 0,
-            updated_at: 0,
-            emoji: None,
-            creature: None,
-            vibe: None,
-            avatar: None,
-            agent_rules: None,
-            tool_notes: None,
-            role: None,
-            quiet_hours_start: "22:00".to_string(),
-            quiet_hours_end: "08:00".to_string(),
-        };
-
-        let ctx = DBContext {
-            agent: Some(agent),
-            user: None,
-            preferences: None,
-            personality_directive: None,
-            tacit_memories: vec![],
-            plugin_accounts: vec![],
-            scope: tools::memory_tools::MemoryScopeKind::Private,
-        };
-
-        let result = format_for_system_prompt(&ctx, "Nebo");
-        assert!(result.contains("You are Nebo, a helpful bot."));
-        assert!(!result.contains("{agent_name}"));
     }
 }

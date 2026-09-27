@@ -376,6 +376,7 @@ export interface Chat {
 	userId?: string
 	sessionName?: string
 	model?: string
+	folder?: string
 }
 
 export interface ChatMessage {
@@ -1377,15 +1378,6 @@ export interface ApplyUpdateResponse {
 	status: string
 }
 
-export interface AuthLoginAccountResponse {
-	started: boolean
-	perAccount: number
-}
-
-export interface AuthLoginResponse {
-	started: boolean
-}
-
 export interface AuthLogoutResponse {
 	success: boolean
 }
@@ -1909,7 +1901,7 @@ export interface ListMemoriesResponse {
 }
 
 export interface ListModelsResponse {
-	models: unknown
+	models: Record<string, unknown[]>
 	taskRouting: unknown
 	laneRouting: unknown
 	aliases: unknown[]
@@ -2225,6 +2217,10 @@ export interface SetSkillSecretResponse {
 
 export interface SetUpdateSettingsResponse {
 	ok: boolean
+}
+
+export interface SidecarStateResponse {
+	state: string
 }
 
 export interface StartHelpChatResponse {
