@@ -10,6 +10,7 @@ pub mod delegation;
 pub mod events;
 pub mod goal;
 pub mod memory_context;
+pub mod memory_save;
 pub mod model_call;
 pub mod owner_intent;
 pub mod permissions;

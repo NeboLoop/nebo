@@ -593,7 +593,7 @@ impl DynTool for MemoryTool {
                 .to_string(),
             MemoryOp::Remember => "Saves a fact worth keeping across conversations, in the owner's exact words. Use a short, specific key (\"owner/coffee-order\").\n\
                  - `scope` \"local\" (company memory, shared, for everyone) is read by every employee on this Nebo; the default is your private memory.\n\
-                 - When the owner asks you to remember something, save it — the request is their consent. Passwords and API keys go to the system keychain and the memory keeps a pointer.\n\
+                 - When the owner asks you to save something, save it before saying so: the ask is their consent. Passwords and API keys go to the system keychain and the memory keeps a pointer.\n\
                  - Saving to an existing key replaces it."
                 .to_string(),
             MemoryOp::Forget => "Deletes a remembered fact by its key.\n\

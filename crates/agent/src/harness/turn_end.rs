@@ -199,14 +199,21 @@ pub struct EndChecks {
     pub goal: Option<GoalCheck>,
     /// The activity's contract (workflow turns).
     pub workflow_contract: Option<WorkflowContract>,
+    /// A save the owner asked for that no `remember` call answers yet (chat
+    /// turns; `memory_save`).
+    pub unsaved_memory: Option<super::memory_save::SaveCheck>,
 }
 
-/// The checks a turn of `mode` runs at its end: the agreed-goal check for
-/// chat turns, the workflow contract for workflow turns; none for helpers
-/// and forks.
+/// The checks a turn of `mode` runs at its end: an unanswered save, then
+/// the agreed-goal check, for chat turns; the workflow contract for workflow
+/// turns; none for helpers and forks.
 pub fn registry(mode: &TurnMode, checks: EndChecks) -> Vec<Box<dyn EndCheck>> {
     match mode {
-        TurnMode::Chat => checks.goal.map(|g| Box::new(g) as Box<dyn EndCheck>).into_iter().collect(),
+        TurnMode::Chat => {
+            let saves = checks.unsaved_memory.map(|c| Box::new(c) as Box<dyn EndCheck>);
+            let goal = checks.goal.map(|g| Box::new(g) as Box<dyn EndCheck>);
+            saves.into_iter().chain(goal).collect()
+        }
         TurnMode::Workflow(_) => checks
             .workflow_contract
             .map(|c| Box::new(WorkflowContractCheck(c)) as Box<dyn EndCheck>)
@@ -297,8 +304,8 @@ mod tests {
     #[tokio::test]
     async fn workflow_contract_continues_workflow_mode_only() {
         let checks = || EndChecks {
-            goal: None,
             workflow_contract: Some(contract()),
+            ..Default::default()
         };
         // Chat, helpers and forks never run the workflow contract.
         assert!(registry(&TurnMode::Chat, checks()).is_empty());

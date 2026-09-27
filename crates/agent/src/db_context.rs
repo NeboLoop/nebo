@@ -316,10 +316,15 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
         ));
     }
 
-    // 9. Memory quick reference (aligns with SECTION_MEMORY_DOCS)
+    // 9. Memory quick reference (aligns with SECTION_MEMORY_DOCS). It never
+    // says facts are saved on their own: it did ("Facts are automatically
+    // extracted from conversations"), and in 6 of 21 turns of
+    // suites/memory.yaml (2026-09-27) the model told the owner "Saved…"
+    // with no remember call, trusting that line.
     sections.push(
         "# Memory Quick Reference\n\
-         Facts are automatically extracted from conversations.\n\
+         A fact is saved only by a remember call that succeeds. When the owner asks you to save or remember \
+         something, call remember in that turn, and say it is saved only after the result says so.\n\
          Proactively save: user corrections, preferences, environment facts, recurring patterns.\n\
          Write as declarative facts (\"User prefers X\"), not directives (\"Always do X\").\n\
          Use recall(query: \"...\") to search memories, or recall with a saved key for one fact.\n\
@@ -476,34 +481,41 @@ pub async fn recall_within_budget(
             // task, so the in-flight search finishes in the background — its
             // results are dropped for this turn, but its query-embedding lands
             // in the embedding cache, making a retry of this prompt cheap.
-            let scope_chain = crate::memory::memory_scope_chain(user_id);
-            let fts = store
-                .search_memories_fts(prompt, &scope_chain, PROMPT_MEMORY_CANDIDATES as i64)
-                .unwrap_or_default();
-            fts.iter()
-                .filter_map(|(mem_id, rank)| {
-                    // No PROMPT_RECALL_MIN_SCORE here: that floor is
-                    // calibrated for cosine similarity, and BM25 magnitudes
-                    // are corpus-dependent (a clean single-term match in a
-                    // small store sits well below 0.45) — applying it emptied
-                    // this tier entirely. An FTS hit is already a literal
-                    // term match from the user's own prompt; normalize_bm25
-                    // orders, it does not gate.
-                    let score = crate::search::normalize_bm25(*rank);
-                    store.get_memory(*mem_id).ok().flatten().map(|m| {
-                        tools::HybridSearchResult {
-                            memory_id: Some(*mem_id),
-                            key: m.key,
-                            value: m.value,
-                            namespace: m.namespace,
-                            scope: m.user_id,
-                            score,
-                        }
-                    })
-                })
-                .collect()
+            literal_recall(store, user_id, prompt)
         }
     }
+}
+
+/// The literal tier of the recall: a synchronous FTS search of the owner's
+/// words over the read-scope chain, local and fast (no network). The tier a
+/// recall falls back to past [`RECALL_VECTOR_BUDGET_MS`], and what the
+/// turn's first step reads when the hybrid search has not answered yet
+/// (`memory_context::RecallPrefetch::land`).
+pub fn literal_recall(store: &Store, user_id: &str, prompt: &str) -> Vec<tools::HybridSearchResult> {
+    let scope_chain = crate::memory::memory_scope_chain(user_id);
+    let fts = store
+        .search_memories_fts(prompt, &scope_chain, PROMPT_MEMORY_CANDIDATES as i64)
+        .unwrap_or_default();
+    fts.iter()
+        .filter_map(|(mem_id, rank)| {
+            // No PROMPT_RECALL_MIN_SCORE here: that floor is
+            // calibrated for cosine similarity, and BM25 magnitudes
+            // are corpus-dependent (a clean single-term match in a
+            // small store sits well below 0.45) — applying it emptied
+            // this tier entirely. An FTS hit is already a literal
+            // term match from the user's own prompt; normalize_bm25
+            // orders, it does not gate.
+            let score = crate::search::normalize_bm25(*rank);
+            store.get_memory(*mem_id).ok().flatten().map(|m| tools::HybridSearchResult {
+                memory_id: Some(*mem_id),
+                key: m.key,
+                value: m.value,
+                namespace: m.namespace,
+                scope: m.user_id,
+                score,
+            })
+        })
+        .collect()
 }
 
 /// The recall results that may be shown, best first: durable memories only,
