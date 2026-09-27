@@ -11,6 +11,7 @@ pub mod events;
 pub mod goal;
 pub mod memory_context;
 pub mod model_call;
+pub mod owner_intent;
 pub mod permissions;
 pub mod prompt;
 pub mod recap;

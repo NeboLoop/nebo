@@ -140,7 +140,14 @@ const OUTCOME_CAP: usize = 300;
 /// turns triage off, `shadow` logs without acting, anything else (or unset)
 /// is on.
 pub fn mode() -> Mode {
-    mode_from(std::env::var("NEBO_DECIDE_TRIAGE").ok().as_deref())
+    switch("NEBO_DECIDE_TRIAGE")
+}
+
+/// What a decision's env switch `var` says, read the same way for every
+/// decision that has one: `0`/`false`/`off`/`no` is off, `shadow` logs
+/// without acting, anything else (or unset) is on.
+pub fn switch(var: &str) -> Mode {
+    mode_from(std::env::var(var).ok().as_deref())
 }
 
 fn mode_from(value: Option<&str>) -> Mode {

@@ -485,6 +485,8 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
     let mut thinking: Vec<ai::ThinkingBlock> = Vec::new();
     // CLI providers run multi-turn tool loops — save each turn incrementally.
     let cli_incremental = provider.handles_tools();
+    // The reply never carries a note in Nebo's own format past this point.
+    let mut notes = super::reminders::NoteFence::default();
 
     loop {
         let mut event = tokio::select! {
@@ -569,14 +571,12 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                     assistant_content.clear();
                     tool_calls.clear();
                     block_order.clear();
+                    notes = super::reminders::NoteFence::default();
                 }
-                assistant_content.push_str(&event.text);
-                folds.text(&event.text);
-                // Coalesce consecutive text events into one block
-                if !matches!(block_order.last(), Some(Block::Text(_))) {
-                    block_order.push(Block::Text(None));
+                event.text = notes.push(&event.text);
+                if !event.text.is_empty() {
+                    show_text(event, &mut assistant_content, folds, &mut block_order, tx).await;
                 }
-                let _ = tx.send(event).await;
             }
             StreamEventType::Thinking => {
                 let _ = tx.send(event).await;
@@ -586,6 +586,12 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 thinking.extend(event.block());
             }
             StreamEventType::ToolCall => {
+                // The call ends the text before it: what the fence held
+                // there never became a note.
+                let held = notes.finish();
+                if !held.is_empty() {
+                    show_text(StreamEvent::text(held), &mut assistant_content, folds, &mut block_order, tx).await;
+                }
                 if let Some(ref tc) = event.tool_call {
                     info!(session_id, tool = %tc.name, tool_id = %tc.id, "tool call received");
                     tool_calls.push(tc.clone());
@@ -748,6 +754,14 @@ pub(crate) async fn call_model(call: ModelCall<'_>, st: &mut CallState, state: &
                 let _ = tx.send(event).await;
             }
         }
+    }
+
+    let held = notes.finish();
+    if !held.is_empty() {
+        show_text(StreamEvent::text(held), &mut assistant_content, folds, &mut block_order, tx).await;
+    }
+    if notes.cut() {
+        warn!(session_id, iteration, "the reply opened a note in Nebo's own format: it ends there, unshown and unstored");
     }
 
     // Drop LLM permit now that stream is complete
@@ -934,6 +948,24 @@ pub(crate) enum StepRetry {
     /// Continue in place: the reply stands and the next call resumes it
     /// (`TurnEvent::CutoffResume`).
     Resume,
+}
+
+/// Hand a piece of the reply's text the note fence let through to the
+/// owner's stream, the reply being built and the turn's fold tracker.
+async fn show_text(
+    event: StreamEvent,
+    assistant_content: &mut String,
+    folds: &mut super::text_fold::TurnFolds,
+    block_order: &mut Vec<Block>,
+    tx: &mpsc::Sender<StreamEvent>,
+) {
+    assistant_content.push_str(&event.text);
+    folds.text(&event.text);
+    // Coalesce consecutive text events into one block
+    if !matches!(block_order.last(), Some(Block::Text(_))) {
+        block_order.push(Block::Text(None));
+    }
+    let _ = tx.send(event).await;
 }
 
 /// The output-cap ladder for a reply the output cap cut off: first a retry

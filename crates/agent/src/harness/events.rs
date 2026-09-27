@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use db::models::ChatMessage;
 
+use super::owner_intent::{self, OwnerIntent};
 use super::reminders::{Attachment, attachment_fields};
 use super::tool_surface::{ListingDelta as ToolsDelta, render_listing};
 
@@ -89,9 +90,14 @@ pub enum TurnEvent {
     StreamCut,
     /// The last reply had no visible output.
     EmptyReply,
-    /// The last reply answered the owner's mid-turn message, with tools
-    /// off: the work goes on after it unless they asked it to stop.
-    MidTurnAnswered,
+    /// The owner's message reached the running work and this step answers
+    /// it, with tools off. The note says what happens after the answer,
+    /// as the harness decided it (`owner_intent`); it stores the intent.
+    MidTurnMessage { via: String, intent: OwnerIntent },
+    /// The last reply answered the owner's mid-turn message, and the work
+    /// goes on: as it was (an aside) or as the message changed it (a
+    /// redirect). A stop never reaches here: the turn ended on the answer.
+    MidTurnAnswered(OwnerIntent),
     /// The unmet workflow contract term (workflow mode only).
     WorkflowContract(String),
     /// A helper whose answer is read as data answered in the wrong shape:
@@ -198,6 +204,7 @@ pub const NAMES: &[&str] = &[
     "cutoff_resume",
     "stream_cut",
     "empty_reply",
+    "mid_turn_message",
     "mid_turn_answered",
     "workflow_contract",
     "answer_shape",
@@ -386,11 +393,38 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
             "empty_reply",
             "Your last reply had no visible output. Continue.".to_string(),
         ),
-        TurnEvent::MidTurnAnswered => (
+        TurnEvent::MidTurnMessage { via, intent } => {
+            let next = match intent {
+                OwnerIntent::Stop => {
+                    "They asked you to stop: the work ends with that reply. Tell them what you have so far."
+                }
+                OwnerIntent::Redirect => "After that reply the work goes on, the way their message now asks.",
+                OwnerIntent::Aside => {
+                    "After that reply the work goes on where you left off, so don't ask whether to continue."
+                }
+                OwnerIntent::Undecided => {
+                    "The work pauses after that reply until they write again: if it isn't finished, say where it stands."
+                }
+            };
+            let mut data = serde_json::Map::new();
+            data.insert(owner_intent::NOTE_FIELD.into(), intent.as_str().into());
+            return Some(Attachment {
+                kind: "mid_turn_message",
+                text: format!(
+                    "The owner's latest message reached you while you were working (via {via}). Answer it directly \
+                     in your next reply; tools are off for that reply. {next}"
+                ),
+                data,
+            });
+        }
+        TurnEvent::MidTurnAnswered(intent) => (
             "mid_turn_answered",
-            "You answered the owner's message. If they asked you to stop, the work ends here: end the turn \
-             without another reply. Otherwise, carry on with the work where you left off."
-                .to_string(),
+            match intent {
+                OwnerIntent::Redirect => "You answered the owner's message. Carry on with the work, the way their message now asks.",
+                OwnerIntent::Aside => "You answered the owner's message. Carry on with the work where you left off.",
+                OwnerIntent::Stop | OwnerIntent::Undecided => return None,
+            }
+            .to_string(),
         ),
         TurnEvent::WorkflowContract(text) => ("workflow_contract", non_empty(text)?),
         TurnEvent::AnswerShape(text) => ("answer_shape", non_empty(text)?),
@@ -1018,7 +1052,8 @@ mod tests {
             TurnEvent::TeamsListing(lined.clone()),
             TurnEvent::StreamCut,
             TurnEvent::EmptyReply,
-            TurnEvent::MidTurnAnswered,
+            TurnEvent::MidTurnMessage { via: "web".into(), intent: OwnerIntent::Stop },
+            TurnEvent::MidTurnAnswered(OwnerIntent::Aside),
             TurnEvent::DateChanged(chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap()),
             TurnEvent::RunBriefing("team: Ann".into()),
             TurnEvent::RestrictedRun("outside origin".into()),

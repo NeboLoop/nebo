@@ -53,9 +53,10 @@ impl Interrupt {
         }
     }
 
-    /// The line the thread carries.
+    /// The line the thread carries: a note in Nebo's own format, so a reply
+    /// that echoes it never shows it (`reminders::NoteFence`).
     fn line(self) -> String {
-        match self {
+        crate::harness::reminders::wrap(&match self {
             Interrupt::Owner => INTERRUPT_MESSAGE.to_string(),
             Interrupt::Stalled => format!(
                 "[Run ended: nothing happened for {} minutes] The run went silent (no reply and no \
@@ -64,7 +65,7 @@ impl Interrupt {
                  tell them what it was doing.",
                 stall_minutes()
             ),
-        }
+        })
     }
 }
 
@@ -133,12 +134,13 @@ pub(crate) fn record_interrupt(sessions: &SessionManager, session_id: &str, why:
     info!(session_id, open_calls = open.len(), ?why, "interrupt recorded");
 }
 
-/// Who a message queued into a running turn came from. Both senders store
-/// their words as typed with this mark (`metadata`); the loop hears the row at
-/// its next step (`mid_turn_message_landed`), and the model reads it framed
-/// for its sender (`frame_mid_turn_message`). One queue, three senders. The
-/// owner's is answered in words at the step that hears it
-/// (`unanswered_mid_turn_message`).
+/// Who a message queued into a running turn came from. Every sender's words
+/// are stored as typed with this mark (`metadata`); the loop hears the row at
+/// its next step (`mid_turn_message_landed`). A parent's or a coworker's
+/// reads framed with who sent it (`frame_mid_turn_message`); the owner's
+/// reads as he typed it, and the step that hears it answers it with tools
+/// off, told so by a note of its own (`owner_waiting`, the
+/// `mid_turn_message` attachment). One queue, three senders.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MidTurnFrom {
     /// The owner typed it while the turn ran; `via` is the channel.
@@ -219,17 +221,62 @@ pub(crate) fn mid_turn_message_landed(fresh: &[ChatMessage], seen: &[ChatMessage
 
 /// True while the owner's latest mid-turn message has no reply in words
 /// after it, in `messages` as heard (`order_as_heard`): the step built from
-/// them is that reply, with tools off. A reply that only calls tools is not
-/// one: the model is still on its old plan. A parent's or a coworker's
-/// message never makes a step a reply: they are information for the work.
+/// them is that reply, with tools off.
 pub(crate) fn unanswered_mid_turn_message(messages: &[ChatMessage]) -> bool {
-    let Some(at) = messages
+    owner_waiting(messages).is_some()
+}
+
+/// The owner's messages typed into the running work that no reply in words
+/// answers yet, as the step that answers them reads them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnerWaiting {
+    /// The latest one's row id: what is decided about them is decided once
+    /// per latest message.
+    pub latest: String,
+    /// Their words, oldest first.
+    pub words: String,
+    /// The channel the latest came through.
+    pub via: String,
+    /// What the work is doing: the owner's words before them.
+    pub task: String,
+}
+
+/// The owner's mid-turn messages after the last reply in words, in
+/// `messages` as heard (`order_as_heard`); `None` when there are none. A
+/// reply that only calls tools answers nothing: the model is still on its
+/// old plan. A parent's or a coworker's message never waits here: they are
+/// information for the work.
+pub(crate) fn owner_waiting(messages: &[ChatMessage]) -> Option<OwnerWaiting> {
+    let owners = |m: &ChatMessage| m.role == "user" && matches!(arrived_mid_turn(m), Some(MidTurnFrom::Owner { .. }));
+    let since = messages.iter().rposition(is_worded_reply).map_or(0, |at| at + 1);
+    let waiting: Vec<&ChatMessage> = messages[since..].iter().filter(|m| owners(m)).collect();
+    let latest = *waiting.last()?;
+    let first = messages.iter().position(|m| m.id == waiting[0].id).unwrap_or(since);
+    let task = messages[..first]
         .iter()
-        .rposition(|m| m.role == "user" && matches!(arrived_mid_turn(m), Some(MidTurnFrom::Owner { .. })))
-    else {
-        return false;
-    };
-    !messages[at + 1..].iter().any(is_worded_reply)
+        .rev()
+        .find(|m| m.role == "user" && !is_meta(m) && !matches!(arrived_mid_turn(m), Some(MidTurnFrom::Parent { .. } | MidTurnFrom::Coworker { .. })))
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+    Some(OwnerWaiting {
+        latest: latest.id.clone(),
+        words: waiting.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n\n"),
+        via: match arrived_mid_turn(latest) {
+            Some(MidTurnFrom::Owner { via }) => via,
+            _ => "chat".to_string(),
+        },
+        task,
+    })
+}
+
+/// A row the platform wrote for the model: a note, a notification, a hidden
+/// prompt, the interrupt line.
+fn is_meta(m: &ChatMessage) -> bool {
+    m.metadata
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+        .and_then(|v| v.get("isMeta").and_then(|b| b.as_bool()))
+        == Some(true)
 }
 
 /// An assistant row that answers in words, with no tool calls.
@@ -302,19 +349,18 @@ pub(crate) fn received_taint(messages: &[ChatMessage]) -> Vec<types::provenance:
         .collect()
 }
 
-/// How a message that arrived mid-turn reads to the model: one fixed frame
-/// naming who sent it, so the model knows it arrived while it worked. The
+/// How a message that arrived mid-turn reads to the model. A parent's or a
+/// coworker's carries one fixed frame naming who sent it: their words are
+/// never the owner's. The owner's reads exactly as he typed it: what the
+/// step that hears it does is the harness's note beside it
+/// (`mid_turn_message`), never text inside his message, where the model
+/// took it for part of the conversation, echoed it into his reply and
+/// imitated it to write itself a "carry on" (2026-09-27 release proof). The
 /// frame never changes after the row is written, so the conversation's
-/// cached prefix holds. The owner's frame states what the turn does with
-/// it: the step that hears it has tools off, and the model decides after
-/// its reply whether the work goes on.
+/// cached prefix holds.
 pub(crate) fn frame_mid_turn_message(words: &str, from: &MidTurnFrom) -> String {
     match from {
-        MidTurnFrom::Owner { via } => format!(
-            "The owner sent this message while you were working (via {via}):\n{words}\n\n\
-             Your next reply answers it in words, with tools off for that reply. After it, carry on \
-             with the work, unless they asked you to stop."
-        ),
+        MidTurnFrom::Owner { .. } => words.to_string(),
         MidTurnFrom::Parent { .. } => format!(
             "The employee who gave you this task sent this message while you were working:\n{words}\n\n\
              Take it into the task and carry on; your final report goes back to them as usual."
@@ -843,8 +889,11 @@ mod tests {
         assert!(!framed.contains("The owner sent"));
     }
 
+    /// The owner's mid-turn message reads as he typed it: the harness's
+    /// words about it are a note of their own, never written into his
+    /// message, where the model echoed them and imitated them.
     #[test]
-    fn mid_turn_message_is_framed_for_the_model_only() {
+    fn the_owners_mid_turn_message_reads_as_typed() {
         let row = |content: &str, metadata: Option<&str>| ChatMessage {
             id: "m".into(),
             chat_id: "c".into(),
@@ -864,20 +913,19 @@ mod tests {
             "stop searching and tell me",
             Some(r#"{"arrivedMidTurn":true,"via":"web"}"#),
         )], "");
-        assert!(queued[0].content.starts_with("The owner sent this message while you were working (via web):\nstop searching and tell me"), "{}", queued[0].content);
-        assert!(!queued[0].content.contains("IMPORTANT"), "no pressure text");
+        assert_eq!(queued[0].content, "stop searching and tell me");
         let mid = row("stop reading", Some(r#"{"arrivedMidTurn":true,"via":"web"}"#));
         let mut narrating = row("Reading part 3.", None);
         narrating.role = "assistant".into();
         narrating.tool_calls = Some(r#"[{"id":"c1","name":"os","input":{}}]"#.into());
         let mut reply = row("So far: Northwind, March.", None);
         reply.role = "assistant".into();
-        // One frame, never rewritten: answered or not, the row reads the
-        // same, so the cached prefix holds.
+        // Never rewritten: answered or not, the row reads the same, so the
+        // cached prefix holds.
         let pending = convert_messages(&[mid.clone(), narrating.clone()], "");
         let answered = convert_messages(&[mid, narrating, reply], "");
         assert_eq!(pending[0].content, answered[0].content);
-        assert!(answered[0].content.starts_with("The owner sent this message"), "{}", answered[0].content);
+        assert_eq!(answered[0].content, "stop reading");
     }
 
     /// A parent employee's message to its running sub-agent is stored as
