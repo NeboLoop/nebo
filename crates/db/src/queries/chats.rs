@@ -78,6 +78,15 @@ impl Store {
         Ok(())
     }
 
+    /// Record the folder a linked coding employee's conversation works in
+    /// (see `Chat::linked_folder`).
+    pub fn set_chat_linked_folder(&self, id: &str, folder: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE chats SET linked_folder = ?1 WHERE id = ?2", params![folder, id])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn get_chat(&self, id: &str) -> Result<Option<Chat>, NeboError> {
         let conn = self.conn()?;
         conn.query_row("SELECT * FROM chats WHERE id = ?1", params![id], |row| {
@@ -1137,6 +1146,7 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
         model: row.get("model")?,
         linked_chat_id: row.get("linked_chat_id")?,
         linked_agent_id: row.get("linked_agent_id")?,
+        linked_folder: row.get("linked_folder")?,
     })
 }
 
@@ -1322,6 +1332,20 @@ mod tests {
 
         store.set_chat_model("c1", None).unwrap();
         assert!(store.get_chat("c1").unwrap().unwrap().model.is_none(), "clearing returns to the default");
+    }
+
+    /// A linked coding employee's conversation says the folder it works in,
+    /// as `folder` in the chat the app reads; any other chat says none.
+    #[test]
+    fn a_linked_chat_says_the_folder_it_works_in() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "First").unwrap();
+        let json = serde_json::to_value(store.get_chat("c1").unwrap().unwrap()).unwrap();
+        assert!(json.get("folder").is_none(), "{json}");
+        store.set_chat_linked_folder("c1", "/Users/me/workspaces/foo").unwrap();
+        let chat = store.get_chat("c1").unwrap().unwrap();
+        assert_eq!(chat.linked_folder.as_deref(), Some("/Users/me/workspaces/foo"));
+        assert_eq!(serde_json::to_value(chat).unwrap()["folder"], "/Users/me/workspaces/foo");
     }
 
     /// A linked employee's chat remembers the runtime's session once the

@@ -192,6 +192,11 @@ pub struct Chat {
     /// was: the employee's own agent, recorded on its next turn.
     #[serde(default, skip_serializing)]
     pub linked_agent_id: Option<String>,
+    /// The folder a linked coding employee's conversation works in: its
+    /// agent's own, or where the owner asked it to move. Shown in the app
+    /// ("Works in ~/workspaces/foo").
+    #[serde(default, rename = "folder", skip_serializing_if = "Option::is_none")]
+    pub linked_folder: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
