@@ -24,7 +24,7 @@
 						<p class="text-base font-bold truncate">{item.name}</p>
 						<p class="text-sm text-base-content/80 line-clamp-2 leading-relaxed mt-1">{item.description}</p>
 					</div>
-					<PricePill price={item.price} installed={item.installed} />
+					<PricePill price={item.price} installed={item.installed} hire={item.type === 'agent'} />
 				</a>
 			{/each}
 		</MarketplaceGrid>

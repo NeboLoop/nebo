@@ -167,7 +167,7 @@
 						{#if item.installed}
 							<span class="btn-market btn-market-installed shrink-0"><Check class="w-3.5 h-3.5" /></span>
 						{:else}
-							<button type="button" class="btn-market btn-market-get shrink-0">{$t('marketplace.get')}</button>
+							<button type="button" class="btn-market btn-market-get shrink-0">{$t('marketplace.hire')}</button>
 						{/if}
 					</a>
 				{/each}

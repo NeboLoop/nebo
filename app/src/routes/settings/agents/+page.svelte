@@ -128,16 +128,16 @@
     {#snippet footer()}
       <a href="/{selected?.id}/settings" class="px-3 py-1.5 rounded-md border border-base-300 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors no-underline">{$t('settingsAgents.configure')}</a>
       {#if selected?.id !== 'assistant'}
-        <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={() => (confirming = true)}>{$t('common.uninstall')}</button>
+        <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={() => (confirming = true)}>{$t('common.remove')}</button>
       {/if}
     {/snippet}
   </ManageModal>
 
   {#if confirming && selected.id !== 'assistant'}
     <ConfirmModal
-      title={$t('common.uninstallTitle', { values: { name: selected.name } })}
+      title={$t('common.removeTitle', { values: { name: selected.name } })}
       message={$t('settingsAgents.uninstallMessage')}
-      confirmLabel={$t('common.uninstall')}
+      confirmLabel={$t('common.remove')}
       busy={removing}
       onCancel={() => (confirming = false)}
       onConfirm={uninstall}

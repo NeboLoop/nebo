@@ -9,7 +9,7 @@
 -->
 <script lang="ts">
 	import { t } from 'svelte-i18n';
-	import { Star, X, Check, Copy, ShieldCheck, ChevronLeft, Download } from 'lucide-svelte';
+	import { Star, X, Check, Copy, ShieldCheck, ChevronLeft, Download, UserPlus } from 'lucide-svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$lib/nav';
 	import { onMount } from 'svelte';
@@ -383,7 +383,7 @@
 					{:else if installed}
 						<span class="h-11 rounded-xl bg-success/15 text-success font-bold inline-flex items-center justify-center gap-1.5">
 							<Check class="w-4 h-4" />
-							{$t('common.installed')}
+							{artifactType === 'agent' ? $t('installFlow.hired') : $t('common.installed')}
 						</span>
 						{#if artifactType === 'agent'}
 							<button type="button" onclick={configureAgent} class="btn btn-outline rounded-xl h-11">
@@ -396,13 +396,13 @@
 								<div class="flex gap-2">
 									<button type="button" onclick={() => (confirmUninstall = false)} class="btn btn-ghost btn-sm rounded-lg flex-1">{$t('common.cancel')}</button>
 									<button type="button" onclick={uninstallProduct} disabled={uninstalling} class="btn btn-error btn-sm rounded-lg flex-1 disabled:opacity-50">
-										{uninstalling ? $t('marketplace.detail.removing') : $t('common.uninstall')}
+										{uninstalling ? $t('marketplace.detail.removing') : artifactType === 'agent' ? $t('common.remove') : $t('common.uninstall')}
 									</button>
 								</div>
 							</div>
 						{:else}
 							<button type="button" onclick={() => (confirmUninstall = true)} class="btn btn-ghost rounded-xl h-11 text-error/80 hover:text-error">
-								{$t('common.uninstall')}
+								{artifactType === 'agent' ? $t('common.remove') : $t('common.uninstall')}
 							</button>
 						{/if}
 					{:else}
@@ -410,8 +410,13 @@
 							<p class="consent-line">{hireLine}</p>
 						{/if}
 						<button type="button" onclick={installProduct} disabled={installing} class="btn btn-primary rounded-xl h-11 disabled:opacity-50">
-							<Download class="w-4 h-4" />
-							{installing ? $t('marketplace.detail.installing') : $t('common.install')}
+							{#if artifactType === 'agent'}
+								<UserPlus class="w-4 h-4" />
+								{$t('installFlow.hireName', { values: { name: skill.name } })}
+							{:else}
+								<Download class="w-4 h-4" />
+								{installing ? $t('marketplace.detail.installing') : $t('common.install')}
+							{/if}
 						</button>
 					{/if}
 
