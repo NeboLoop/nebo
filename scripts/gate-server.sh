@@ -81,7 +81,7 @@ start() {
   mkdir -p "$GATE_JOB/server-logs"
   local log
   log="$GATE_JOB/server-logs/$(printf '%03d' "$(find "$GATE_JOB/server-logs" -name '*.log' | wc -l)").log"
-  nohup "$here/gate-sandbox.sh" "$GATE_JOB/bin/nebo-server" agent > "$log" 2>&1 &
+  nohup "$here/gate-sandbox.sh" --server "$GATE_JOB/bin/nebo-server" agent > "$log" 2>&1 &
   local server=$!
   echo "$server" > "$GATE_JOB/server.pid"
   # Every gate job is the same CI bot, and the bot has one lease. While
@@ -144,10 +144,10 @@ stop() {
 fresh() {
   stop
   # Everything the last server and the runs against it could write: the bot's
-  # database and files, $HOME, /tmp and the working directory (restored from
-  # the export of the code under test).
+  # database and files, the runner's own Nebo folder, $HOME, /tmp and the
+  # working directory (restored from the export of the code under test).
   local d
-  for d in nebo-home home tmp work; do
+  for d in nebo-home runner-home home tmp work; do
     rm -rf "${GATE_JOB:?}/$d"
     mkdir -p "$GATE_JOB/$d"
   done
