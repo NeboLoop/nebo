@@ -29,6 +29,15 @@ pub const INSTALL_CARD_INSTALLED: &str = "installed";
 /// eight more times.
 pub const CARD_FAILED_PREFIX: &str = "failed:";
 
+/// What a search that found no plugin to install says next. A bare "none
+/// are installable" left the next step to the model: in the v0.16.0 proof
+/// (36348199618, skill-plugin-choreography run 3) it offered to sign in to
+/// the service in the browser and do the job by hand.
+const NO_PLUGIN_NEXT: &str = "Tell the owner plainly what's missing: no plugin can do this here yet, so \
+     you can't. Say what they can do instead: do it themselves, or ask again once a plugin for it is in \
+     the marketplace. Don't attempt it another way on their behalf, such as through their account in the \
+     browser, unless they ask you to.";
+
 /// How a card (install, hire, connect) ended, read from the parked ask's
 /// answer. `done` is the value the card sends on success.
 #[derive(Debug, PartialEq, Eq)]
@@ -667,11 +676,13 @@ impl PluginRunner {
                     }
                 } else if matched > 0 {
                     ToolResult::ok(format!(
-                        "{} results matched but none are installable plugins/connectors.",
-                        matched
+                        "{matched} marketplace listings matched, but none is a plugin or connector, so \
+                         there is nothing to install for this. {NO_PLUGIN_NEXT}"
                     ))
                 } else {
-                    ToolResult::ok("No plugins found in the marketplace for that query.")
+                    ToolResult::ok(format!(
+                        "No plugin in the marketplace matched that query. {NO_PLUGIN_NEXT}"
+                    ))
                 }
     }
 
@@ -2707,6 +2718,24 @@ mod budget_and_install_tests {
         assert!(known.content.contains("plugin__quickbooks"), "{}", known.content);
         assert!(!known.content.contains("Install it on the card"), "{}", known.content);
         assert!(!known.content.contains("owner's approval"), "{}", known.content);
+    }
+
+    /// The v0.16.0 proof (36348199618, skill-plugin-choreography run 3): a
+    /// search with nothing to install said only "none are installable", and
+    /// the model offered to do the job by hand through the owner's account in
+    /// the browser. Both endings with nothing to install say what to tell the
+    /// owner, and not to try it another way unasked.
+    #[tokio::test]
+    async fn a_search_with_nothing_to_install_says_what_to_tell_the_owner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let tool = PluginRunner::new(plugin_store, db_store);
+        let ctx = ToolContext::default();
+        for matched in [0, 2] {
+            let r = tool.offer("post an update", &ctx, &[], matched).await;
+            assert!(!r.is_error, "{}", r.content);
+            assert!(r.content.ends_with(NO_PLUGIN_NEXT), "{matched} matched: {}", r.content);
+        }
     }
 
     /// Offer an install card in an interactive chat and end it the given

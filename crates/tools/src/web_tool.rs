@@ -26,6 +26,15 @@ const MAX_RESULT_CHARS: usize = 50_000;
 /// callers fall straight through to local `sanitize_html`.
 const JANUS_EXTRACT_COOLDOWN_SECS: u64 = 300;
 
+/// What every "no browser here" result says next. fetch_url is named for
+/// reading only: the v0.16.0 proof (36348199618, web-browser-interaction
+/// 0/3) got "Use fetch_url instead" on a page that shows its text only after
+/// a click, and every run then reported that text from what it knew of the
+/// page, not from the page.
+const NO_BROWSER_NEXT: &str = "fetch_url reads a page's text as the server sends it: it can't click, \
+     type or run the page's scripts. When a task needs those and nothing here can do them, tell the \
+     owner so; never report what a page would show from what you know of it.";
+
 fn epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1225,9 +1234,9 @@ impl WebCore {
         let manager = match &self.browser {
             Some(m) => m,
             None => {
-                return ToolResult::error(
-                    "Browser automation is not available here. Use fetch_url to read a page.",
-                );
+                return ToolResult::error(format!(
+                    "Browser automation is not available here. {NO_BROWSER_NEXT}"
+                ));
             }
         };
 
@@ -1254,7 +1263,7 @@ impl WebCore {
                 "Browser extension: not connected. Built-in browser: available (will be used). Use browser_read to see the current page.".to_string()
             } else {
                 format!(
-                    "Browser extension: {}. Built-in browser: not available. No browser backend; connect the Nebo Chrome/Brave extension.",
+                    "Browser extension: {}. Built-in browser: not available. No browser backend; connect the Nebo Chrome/Brave extension. {NO_BROWSER_NEXT}",
                     onoff(ext_connected)
                 )
             };
@@ -1263,19 +1272,17 @@ impl WebCore {
 
         // Cloud bots have no extension and no bundled browser — "connect the
         // extension" is impossible advice there, and the disconnect nudge would
-        // toast the user about a browser that can't exist. Redirect the model to
-        // the fetch pathway instead.
+        // toast the user about a browser that can't exist. Say what fetch_url
+        // can and can't do instead.
         if crate::server_mode() && !executor.is_connected() {
             let computer_hint = if crate::desktop_session::active() {
-                " This bot's desktop session is live: you can also open Chromium \
-                 on it and drive it with the os window/input/ui tools."
+                " This bot's desktop session is live: you can open Chromium on it \
+                 and drive it with the os window/input/ui tools."
             } else {
                 ""
             };
             return ToolResult::error(format!(
-                "Browser automation isn't available on this cloud bot. Use \
-                 fetch_url instead — it returns the page's extracted text — or \
-                 search_web.{computer_hint}"
+                "Browser automation isn't available on this cloud bot.{computer_hint} {NO_BROWSER_NEXT}"
             ));
         }
 
@@ -1296,9 +1303,9 @@ impl WebCore {
                 }
             } else {
                 self.broadcast_extension_disconnected("not_connected", session_id);
-                return ToolResult::error(
-                    "No browser backend available. Connect the Nebo Chrome/Brave extension.",
-                );
+                return ToolResult::error(format!(
+                    "No browser backend available: the owner can connect the Nebo Chrome/Brave extension. {NO_BROWSER_NEXT}"
+                ));
             }
         }
 
@@ -3659,6 +3666,21 @@ link "Create account" [ref_5]"#;
         )
         .unwrap();
         assert_eq!(u.as_str(), "https://example.com/page");
+    }
+
+    /// The v0.16.0 proof (36348199618, web-browser-interaction 0/3): with no
+    /// browser the result said "Use fetch_url instead", and every run then
+    /// reported what the page shows after a click from what it knew of the
+    /// page. A result with no browser says fetch_url can't click and that a
+    /// page is never reported from memory.
+    #[tokio::test]
+    async fn no_browser_says_what_fetch_url_cannot_do() {
+        let r = WebCore::new()
+            .handle_browser("navigate", &serde_json::json!({"url": "https://example.com"}), "s1", "g1")
+            .await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.ends_with(NO_BROWSER_NEXT), "{}", r.content);
+        assert!(!r.content.contains("Use fetch_url"), "{}", r.content);
     }
 
     #[test]

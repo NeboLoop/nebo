@@ -59,6 +59,10 @@ start() {
   # answered from memory with no tool call). An empty URL means the server
   # wires no Memory integration; recall is the fresh NEBO_HOME's alone.
   export NEBOAI_MEMORY_URL="" RUST_LOG="info,nebo_agent=debug"
+  # The job's bin leads the server's PATH, as /usr/bin carries a cloud pod's
+  # Chromium: the browser tools find the job's `chromium` there (harness-gate.yml,
+  # "A browser for the server").
+  export PATH="$GATE_JOB/bin:$PATH"
 
   local port="$GATE_PORT"
   # A job cancelled mid-suite leaves its server on this runner's port (the
