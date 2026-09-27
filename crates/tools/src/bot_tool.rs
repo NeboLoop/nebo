@@ -132,6 +132,9 @@ pub struct HybridSearchResult {
     pub key: String,
     pub value: String,
     pub namespace: String,
+    /// The memory scope (`user_id`) the hit lives in; see
+    /// `memory_tools::MemoryScopeKind`.
+    pub scope: String,
     pub score: f64,
 }
 

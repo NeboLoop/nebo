@@ -1,0 +1,54 @@
+id: memory-for-everyone-means-local
+name: 'Memory: "save it for everyone" goes to local memory, and another employee finds it'
+description: |
+  The owner rarely says "local memory". "Save it for everyone", "for the team" or "company memory"
+  all mean local memory on this Nebo (never global unless the owner says global). One employee
+  saves; another, in a new conversation, recalls.
+target_component: memory
+agent: office-manager-{{tag}}
+setup:
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"office-manager-{{tag}}"}'' > /dev/null'
+- 'curl -sf -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H ''Content-Type: application/json''
+  -d ''{"blank":true,"name":"scheduler-{{tag}}"}'' > /dev/null'
+teardown:
+- python3 -c "import json,urllib.request as u; s='http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1';
+  ags=json.load(u.urlopen(s+'/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name','')=='office-manager-{{tag}}'
+  or a.get('name','')=='scheduler-{{tag}}']; [u.urlopen(u.Request(s+'/agents/'+i, method='DELETE')) for
+  i in ids]"
+conversation:
+- role: user
+  content: 'Save this for everyone: the supply closet code changes every Monday, and this week it is HARBOR-{{tag}}.'
+- role: user
+  agent: scheduler-{{tag}}
+  content: What's the supply closet code this week?
+tool_config:
+  remember:
+    enabled: true
+  recall:
+    enabled: true
+prompt_assertions:
+  first_call:
+  - id: for-everyone-is-local
+    text: '"For everyone" is saved with remember, scope local'
+    severity: critical
+    check:
+      tool: remember
+      arg: scope
+      equals: local
+      result_contains: Saved to local memory
+  recovery:
+  - id: other-employee-finds-it
+    text: The second employee's recall returns HARBOR-{{tag}}
+    severity: critical
+    check:
+      tool: recall
+      result_contains: HARBOR-{{tag}}
+  - id: not-called-global
+    text: 'The reply never calls it global memory: the owner did not say global'
+    severity: important
+    check:
+      reply_not_matches: (?i)global memory
+ideal_behavior:
+  tool_calls: 2
+  narrative: 'remember(scope: "local"); then, as the other employee, recall and answer HARBOR-{{tag}}.'

@@ -145,16 +145,10 @@ async fn run_single(
     // With an agent, the id carries the agent prefix: the server keeps a
     // client session id only when it already does, and replaces anything
     // else with the agent's main session, whose events would never be ours.
-    let session_id = match fixture.agent.as_deref() {
-        Some(agent) => format!(
-            "{}eval:{}:{}:{}",
-            types::keyparser::agent_session_prefix(agent),
-            fixture.id,
-            run_id,
-            ts
-        ),
-        None => format!("eval:{}:{}:{}", fixture.id, run_id, ts),
-    };
+    // A turn that names its own employee starts a new conversation with it
+    // (`conversation_session`), and the turns after it continue there.
+    let mut agent = fixture.agent.clone();
+    let mut session_id = conversation_session(agent.as_deref(), &fixture.id, run_id, ts, None);
 
     let mut rec = Recorder::default();
 
@@ -166,6 +160,10 @@ async fn run_single(
         .collect();
 
     for (turn_idx, turn) in user_turns.iter().enumerate() {
+        if let Some(to) = turn.agent.as_deref() {
+            agent = Some(to.to_string());
+            session_id = conversation_session(Some(to), &fixture.id, run_id, ts, Some(turn_idx + 1));
+        }
         let mut msg_data = json!({
             "session_id": session_id,
             "prompt": turn.content,
@@ -179,7 +177,7 @@ async fn run_single(
         if let Some(cwd) = fixture.cwd.as_deref() {
             msg_data["cwd"] = json!(cwd);
         }
-        if let Some(agent) = fixture.agent.as_deref() {
+        if let Some(agent) = agent.as_deref() {
             msg_data["agent_id"] = json!(agent);
         }
 
@@ -732,15 +730,34 @@ async fn send_replies(ws: &mut Ws, replies: Vec<Value>, fixture_id: &str, run_id
     }
 }
 
-/// The fixture with its employee named by id. A fixture that hires its own
+/// The session id of one conversation of the run: the fixture's own, or
+/// (`turn` given) the new conversation a turn naming its employee starts.
+fn conversation_session(agent: Option<&str>, fixture_id: &str, run_id: &str, ts: u128, turn: Option<usize>) -> String {
+    let suffix = turn.map(|t| format!(":t{t}")).unwrap_or_default();
+    match agent {
+        Some(agent) => format!(
+            "{}eval:{}:{}:{}{}",
+            types::keyparser::agent_session_prefix(agent),
+            fixture_id,
+            run_id,
+            ts,
+            suffix
+        ),
+        None => format!("eval:{}:{}:{}{}", fixture_id, run_id, ts, suffix),
+    }
+}
+
+/// The fixture with every employee it names — its own `agent` and each
+/// turn's — bound to that employee's id. A fixture that hires its own
 /// employee in setup knows only the name it gave (`records-clerk-{{tag}}`),
 /// and the chat payload takes an id, so the name is looked up once setup has
 /// run. An id is kept as it is.
 async fn with_agent_id(fixture: &Fixture, server: &str) -> Result<Fixture, String> {
     let mut bound = fixture.clone();
-    let Some(agent) = fixture.agent.as_deref() else {
+    let named = fixture.agent.is_some() || fixture.conversation.iter().any(|t| t.agent.is_some());
+    if !named {
         return Ok(bound);
-    };
+    }
     let url = format!("http://{server}/api/v1/agents");
     let list: Value = tls::http_client()
         .build()
@@ -752,8 +769,15 @@ async fn with_agent_id(fixture: &Fixture, server: &str) -> Result<Fixture, Strin
         .json()
         .await
         .map_err(|e| format!("list employees: {e}"))?;
-    let id = agent_id_in(&list, agent).ok_or_else(|| format!("no employee with the id or name `{agent}`"))?;
-    bound.agent = Some(id);
+    let resolve = |agent: &str| agent_id_in(&list, agent).ok_or_else(|| format!("no employee with the id or name `{agent}`"));
+    if let Some(agent) = fixture.agent.as_deref() {
+        bound.agent = Some(resolve(agent)?);
+    }
+    for turn in &mut bound.conversation {
+        if let Some(agent) = turn.agent.as_deref() {
+            turn.agent = Some(resolve(agent)?);
+        }
+    }
     Ok(bound)
 }
 
@@ -1028,6 +1052,18 @@ mod agent_lookup_tests {
         assert_eq!(agent_id_in(&list, "records-clerk-1f2e").as_deref(), Some("records-clerk-1f2e"), "an id wins over a name");
         assert_eq!(agent_id_in(&list, "odd").as_deref(), Some("records-clerk-1f2e"));
         assert_eq!(agent_id_in(&list, "nobody"), None);
+    }
+
+    /// A turn that names its employee is a new conversation with it: its own
+    /// session id under that employee's prefix, distinct from the fixture's.
+    #[test]
+    fn a_turn_naming_an_employee_starts_its_own_conversation() {
+        let first = conversation_session(Some("a1"), "fx", "run-1", 7, None);
+        let second = conversation_session(Some("b2"), "fx", "run-1", 7, Some(2));
+        let again = conversation_session(Some("a1"), "fx", "run-1", 7, Some(3));
+        assert!(first.starts_with("agent:a1:") && second.starts_with("agent:b2:"), "{first} {second}");
+        assert_ne!(first, again, "the same employee in a new chat is a new session");
+        assert_eq!(conversation_session(None, "fx", "run-1", 7, None), "eval:fx:run-1:7");
     }
 }
 

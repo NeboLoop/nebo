@@ -35,6 +35,7 @@ use crate::state::AppState;
 mod connections;
 mod conversation;
 mod layers;
+mod memory;
 mod migrations;
 mod policy;
 mod seats;
@@ -90,22 +91,37 @@ pub async fn session() -> Session {
 }
 
 /// The list the owner reads and the tests that run are one set, or this
-/// fails: every `#[tokio::test]`/`#[test]` in the scenario modules is named by
-/// exactly one fixture in `suites/staffed-company.yaml`, and every fixture
-/// names a scenario that exists.
+/// fails: every `#[tokio::test]`/`#[test]` in the staffed-company scenario
+/// modules is named by exactly one fixture in `suites/staffed-company.yaml`,
+/// and every fixture names a scenario that exists.
 #[test]
 fn every_proof_is_a_fixture_in_the_staffed_company_suite_and_every_fixture_proves_something() {
+    suite_and_proofs_are_one_set(
+        "suites/staffed-company.yaml",
+        &[
+            ("connections", include_str!("connections.rs")),
+            ("conversation", include_str!("conversation.rs")),
+            ("layers", include_str!("layers.rs")),
+            ("migrations", include_str!("migrations.rs")),
+            ("policy", include_str!("policy.rs")),
+            ("seats", include_str!("seats.rs")),
+        ],
+    );
+}
+
+/// The memory scenarios and `suites/memory-proof.yaml` are one set, the same
+/// way.
+#[test]
+fn every_memory_proof_is_a_fixture_in_the_memory_proof_suite_and_every_fixture_proves_something() {
+    suite_and_proofs_are_one_set("suites/memory-proof.yaml", &[("memory", include_str!("memory.rs"))]);
+}
+
+/// Every test in `sources` (module name, source) is named by exactly one
+/// fixture of `suite`, and every fixture of `suite` names one of them.
+fn suite_and_proofs_are_one_set(suite_path: &str, sources: &[(&str, &str)]) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let sources = [
-        ("connections", include_str!("connections.rs")),
-        ("conversation", include_str!("conversation.rs")),
-        ("layers", include_str!("layers.rs")),
-        ("migrations", include_str!("migrations.rs")),
-        ("policy", include_str!("policy.rs")),
-        ("seats", include_str!("seats.rs")),
-    ];
     let mut proofs = std::collections::BTreeSet::new();
-    for (module, src) in sources {
+    for &(module, src) in sources {
         let mut lines = src.lines().peekable();
         while let Some(line) = lines.next() {
             if line.trim().starts_with("#[test]") || line.trim().starts_with("#[tokio::test") {
@@ -121,8 +137,7 @@ fn every_proof_is_a_fixture_in_the_staffed_company_suite_and_every_fixture_prove
             }
         }
     }
-    let suite = std::fs::read_to_string(root.join("suites/staffed-company.yaml"))
-        .expect("suites/staffed-company.yaml");
+    let suite = std::fs::read_to_string(root.join(suite_path)).expect(suite_path);
     let mut listed = std::collections::BTreeSet::new();
     for rel in suite.lines().filter_map(|l| l.trim().strip_prefix("- ")) {
         let path = root.join("suites").join(rel.trim());
@@ -136,7 +151,7 @@ fn every_proof_is_a_fixture_in_the_staffed_company_suite_and_every_fixture_prove
         assert!(listed.insert(proof.to_string()), "{proof} is listed twice");
     }
     let missing: Vec<_> = proofs.difference(&listed).collect();
-    assert!(missing.is_empty(), "scenarios with no fixture in suites/staffed-company.yaml: {missing:?}");
+    assert!(missing.is_empty(), "scenarios with no fixture in {suite_path}: {missing:?}");
     assert_eq!(listed.len(), proofs.len());
 }
 

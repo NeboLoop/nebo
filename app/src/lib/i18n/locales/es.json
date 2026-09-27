@@ -2012,12 +2012,12 @@
 	},
 	"agentIsolation": {
 		"title": "Aislamiento de memoria",
-		"shared": "Memoria compartida",
+		"shared": "Una memoria",
 		"sharedHint": "Una memoria para todas las conversaciones — lo que este empleado aprende en cualquier sitio, lo sabe en todos",
 		"isolated": "Aislada por conversación",
-		"isolatedHint": "Cada conversación guarda su propia memoria sellada — un caso, un cliente o un asunto nunca se mezcla con otro",
+		"isolatedHint": "Tus conversaciones aparecen por separado y comparten la memoria privada de este empleado. Cada conversación con otra persona — quien llama, un visitante, otro bot — conserva su propia memoria sellada, así ninguna se mezcla con otra",
 		"confirmOffTitle": "¿Desactivar el aislamiento de memoria?",
-		"confirmOffBody": "Tus conversaciones separadas siguen guardadas, pero ya no aparecerán como una lista de asuntos — este empleado vuelve a una sola conversación continua. Lo aprendido dentro de cada conversación sellada sigue sellado: los chats futuros no lo usarán. No se borra nada, y volver a activar el aislamiento restaura la lista y la memoria propia de cada conversación.",
+		"confirmOffBody": "Tus conversaciones separadas siguen guardadas, pero ya no aparecerán como una lista: este empleado vuelve a una conversación continua. Lo aprendido en una conversación con otra persona sigue sellado: los chats futuros no lo usarán. No se borra nada, y al volver a activar el aislamiento se restaura la lista.",
 		"confirmOffAction": "Desactivar el aislamiento",
 		"lockedByPhone": "Aislado mientras haya una línea de teléfono conectada — cada persona que llama recibe una memoria sellada. Quita la línea en neboai.com/manage/phone para cambiarlo."
 	},

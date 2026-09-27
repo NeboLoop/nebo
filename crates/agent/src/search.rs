@@ -14,6 +14,9 @@ pub struct SearchResult {
     pub key: String,
     pub value: String,
     pub namespace: String,
+    /// The memory scope (`user_id`) the hit lives in — the owner's local
+    /// memory, the employee's private memory, or a sealed conversation.
+    pub scope: String,
     pub score: f64,
     pub source: String,
 }
@@ -80,9 +83,12 @@ pub async fn hybrid_search(
     let mut strength: HashMap<String, f64> = HashMap::new();
     let fts_limit = (config.limit * 3) as i64;
 
-    // 1. FTS5 on memories table — across the read-scope chain so an
-    // agent-scoped search also surfaces owner-level facts.
+    // Every leg searches the whole read-scope chain: the run's own scope and
+    // the scopes above it, so an employee's search reaches local memory (the
+    // owner scope every employee on this Nebo shares) as well as its own.
     let scope_chain = crate::memory::memory_scope_chain(user_id);
+
+    // 1. FTS5 on memories table.
     if let Ok(fts_results) = store.search_memories_fts(query, &scope_chain, fts_limit) {
         for (memory_id, rank) in &fts_results {
             let raw = normalize_bm25(*rank);
@@ -97,6 +103,7 @@ pub async fn hybrid_search(
                     key: mem.key.clone(),
                     value: mem.value.clone(),
                     namespace: mem.namespace.clone(),
+                    scope: mem.user_id.clone(),
                     score: 0.0,
                     source: "fts_memory".to_string(),
                 });
@@ -106,7 +113,10 @@ pub async fn hybrid_search(
     }
 
     // 2. FTS5 on memory_chunks table (0.6x dampening for session chunks)
-    if let Ok(chunk_results) = store.search_chunks_fts(query, user_id, fts_limit) {
+    for scope in &scope_chain {
+        let Ok(chunk_results) = store.search_chunks_fts(query, scope, fts_limit) else {
+            continue;
+        };
         for (chunk_id, rank) in &chunk_results {
             if let Ok(Some((_, memory_id, text, source))) = store.get_memory_chunk(*chunk_id) {
                 let dampening = if source.as_deref() == Some("session") {
@@ -127,30 +137,14 @@ pub async fn hybrid_search(
                 *st = st.max(raw);
 
                 let entry = merged.entry(merge_key).or_insert_with(|| {
-                    // Try to load the parent memory for key/namespace
-                    let (key, value, namespace) = if let Some(mid) = memory_id {
-                        store
-                            .get_memory(mid)
-                            .ok()
-                            .flatten()
-                            .map(|m| (m.key, m.value, m.namespace))
-                            .unwrap_or_else(|| {
-                                ("chunk".to_string(), text.clone(), "unknown".to_string())
-                            })
-                    } else {
-                        (
-                            "session_chunk".to_string(),
-                            text.clone(),
-                            "session".to_string(),
-                        )
-                    };
-
+                    let (key, value, namespace, scope) = chunk_parent(store, memory_id, &text, scope);
                     SearchResult {
                         memory_id,
                         chunk_id: Some(*chunk_id),
                         key,
                         value,
                         namespace,
+                        scope,
                         score: 0.0,
                         source: "fts_chunk".to_string(),
                     }
@@ -162,40 +156,42 @@ pub async fn hybrid_search(
 
     // 3. Vector search (when the query embedded above)
     if let Some(query_vec) = &query_vec {
-        // Fast path: ANN search via TurboVec. Off the runtime workers — the
-        // index lock can be held by a scope sync (see VectorIndex::sync_scope).
-        let ann_hits = match vector_index {
-            Some(index) => {
-                let (uid, q, k) = (user_id.to_string(), query_vec.clone(), config.limit * 3);
-                tokio::task::spawn_blocking(move || index.search(&uid, &q, k))
-                    .await
-                    .ok()
-                    .flatten()
-            }
-            None => None,
-        };
-        if let Some(hits) = ann_hits {
-            for (score, id) in hits {
-                let sim = score as f64;
-                if sim < config.min_score {
-                    continue;
+        for scope in &scope_chain {
+            // Fast path: ANN search via TurboVec. Off the runtime workers — the
+            // index lock can be held by a scope sync (see VectorIndex::sync_scope).
+            let ann_hits = match &vector_index {
+                Some(index) => {
+                    let (index, uid, q, k) = (index.clone(), scope.clone(), query_vec.clone(), config.limit * 3);
+                    tokio::task::spawn_blocking(move || index.search(&uid, &q, k))
+                        .await
+                        .ok()
+                        .flatten()
                 }
-                let chunk_id = id as i64;
-                merge_vector_hit(store, &mut merged, &mut strength, chunk_id, sim, vector_weight);
-            }
-        } else {
-            // Brute-force fallback: load all embeddings and cosine scan
-            let model = embedding_provider
-                .map(|p| p.id().to_string())
-                .unwrap_or_default();
-            if let Ok(all_embeddings) = store.get_all_embeddings_by_user(user_id, &model) {
-                for (chunk_id, blob) in &all_embeddings {
-                    let stored_vec = ai::bytes_to_f32(blob);
-                    let sim = cosine_similarity(query_vec, &stored_vec);
+                None => None,
+            };
+            if let Some(hits) = ann_hits {
+                for (score, id) in hits {
+                    let sim = score as f64;
                     if sim < config.min_score {
                         continue;
                     }
-                    merge_vector_hit(store, &mut merged, &mut strength, *chunk_id, sim, vector_weight);
+                    let chunk_id = id as i64;
+                    merge_vector_hit(store, &mut merged, &mut strength, chunk_id, sim, vector_weight, scope);
+                }
+            } else {
+                // Brute-force fallback: load all embeddings and cosine scan
+                let model = embedding_provider
+                    .map(|p| p.id().to_string())
+                    .unwrap_or_default();
+                if let Ok(all_embeddings) = store.get_all_embeddings_by_user(scope, &model) {
+                    for (chunk_id, blob) in &all_embeddings {
+                        let stored_vec = ai::bytes_to_f32(blob);
+                        let sim = cosine_similarity(query_vec, &stored_vec);
+                        if sim < config.min_score {
+                            continue;
+                        }
+                        merge_vector_hit(store, &mut merged, &mut strength, *chunk_id, sim, vector_weight, scope);
+                    }
                 }
             }
         }
@@ -290,6 +286,25 @@ fn classify_query(query: &str) -> QueryClass {
     }
 }
 
+/// Key, value, namespace and scope for a chunk hit: its parent memory's, or
+/// the transcript fragment itself (in the scope searched) when it has none.
+fn chunk_parent(store: &Store, memory_id: Option<i64>, text: &str, scope: &str) -> (String, String, String, String) {
+    match memory_id {
+        Some(mid) => store
+            .get_memory(mid)
+            .ok()
+            .flatten()
+            .map(|m| (m.key, m.value, m.namespace, m.user_id))
+            .unwrap_or_else(|| ("chunk".to_string(), text.to_string(), "unknown".to_string(), scope.to_string())),
+        None => (
+            "session_chunk".to_string(),
+            text.to_string(),
+            "session".to_string(),
+            scope.to_string(),
+        ),
+    }
+}
+
 /// Merge a single vector search hit into the results map.
 fn merge_vector_hit(
     store: &Arc<Store>,
@@ -298,6 +313,7 @@ fn merge_vector_hit(
     chunk_id: i64,
     raw_sim: f64,
     vector_weight: f64,
+    scope: &str,
 ) {
     let vector_score = raw_sim * vector_weight;
     if let Ok(Some((_, memory_id, text, _source))) = store.get_memory_chunk(chunk_id) {
@@ -310,27 +326,14 @@ fn merge_vector_hit(
         *st = st.max(raw_sim);
 
         let entry = merged.entry(merge_key).or_insert_with(|| {
-            let (key, value, namespace) = if let Some(mid) = memory_id {
-                store
-                    .get_memory(mid)
-                    .ok()
-                    .flatten()
-                    .map(|m| (m.key, m.value, m.namespace))
-                    .unwrap_or_else(|| ("chunk".to_string(), text.clone(), "unknown".to_string()))
-            } else {
-                (
-                    "session_chunk".to_string(),
-                    text.clone(),
-                    "session".to_string(),
-                )
-            };
-
+            let (key, value, namespace, scope) = chunk_parent(store, memory_id, &text, scope);
             SearchResult {
                 memory_id,
                 chunk_id: Some(chunk_id),
                 key,
                 value,
                 namespace,
+                scope,
                 score: 0.0,
                 source: "vector".to_string(),
             }

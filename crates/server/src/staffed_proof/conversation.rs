@@ -15,13 +15,13 @@ use tools::Origin;
 use std::collections::HashMap;
 
 /// What one model call does: optionally wait on a gate, then send events.
-struct Step {
+pub(super) struct Step {
     gate: Option<&'static str>,
     events: Vec<ai::StreamEvent>,
 }
 
 impl Step {
-    fn say(text: impl Into<String>) -> Self {
+    pub(super) fn say(text: impl Into<String>) -> Self {
         Step {
             gate: None,
             events: vec![ai::StreamEvent::text(text)],
@@ -35,7 +35,7 @@ impl Step {
         }
     }
 
-    fn call(calls: Vec<(&str, Value)>) -> Self {
+    pub(super) fn call(calls: Vec<(&str, Value)>) -> Self {
         let events = calls
             .into_iter()
             .map(|(name, input)| {
@@ -51,13 +51,13 @@ impl Step {
 }
 
 /// A thread as the script reads it.
-struct Thread<'a> {
-    req: &'a ai::ChatRequest,
+pub(super) struct Thread<'a> {
+    pub(super) req: &'a ai::ChatRequest,
 }
 
 impl Thread<'_> {
     /// The first user message that names a marker: whose thread this is.
-    fn opener(&self) -> &str {
+    pub(super) fn opener(&self) -> &str {
         self.req
             .messages
             .iter()
@@ -68,7 +68,7 @@ impl Thread<'_> {
     }
 
     /// Everything after the model's last answer: what this step reads new.
-    fn since_last_answer(&self) -> Vec<&ai::Message> {
+    pub(super) fn since_last_answer(&self) -> Vec<&ai::Message> {
         let from = self
             .req
             .messages
@@ -80,7 +80,7 @@ impl Thread<'_> {
     }
 
     /// The step reads the results of its own tool calls.
-    fn has_tool_results(&self) -> bool {
+    pub(super) fn has_tool_results(&self) -> bool {
         self.since_last_answer()
             .iter()
             .any(|m| m.tool_results.is_some() || m.role == "tool")
@@ -92,7 +92,7 @@ impl Thread<'_> {
         self.req.messages.iter().any(|m| m.content.contains(words))
     }
 
-    fn new_text(&self) -> String {
+    pub(super) fn new_text(&self) -> String {
         self.since_last_answer()
             .iter()
             .map(|m| m.content.as_str())
@@ -123,7 +123,7 @@ impl Thread<'_> {
     }
 }
 
-type Rule = Box<dyn Fn(&Thread<'_>) -> Option<Step> + Send + Sync>;
+pub(super) type Rule = Box<dyn Fn(&Thread<'_>) -> Option<Step> + Send + Sync>;
 
 /// The company's model for one scenario.
 struct Company {
@@ -250,14 +250,14 @@ impl Loop {
 }
 
 /// The scenario's model and loop, in place on the one server until dropped.
-struct Rig<'a> {
+pub(super) struct Rig<'a> {
     nebo: &'a Nebo,
     company: Arc<Company>,
     loop_: Arc<Loop>,
 }
 
 impl<'a> Rig<'a> {
-    async fn new(nebo: &'a Nebo, rules: Vec<Rule>) -> Self {
+    pub(super) async fn new(nebo: &'a Nebo, rules: Vec<Rule>) -> Self {
         let company = Company::new(rules);
         nebo.state
             .harness
@@ -285,7 +285,7 @@ impl<'a> Rig<'a> {
     /// The owner writes to employee `agent_id` ("" = the main one) on
     /// session `session_key`: in the loop conversation `conversation`, or in
     /// the app when `None`.
-    async fn owner_writes(
+    pub(super) async fn owner_writes(
         &self,
         session_key: &str,
         agent_id: &str,
@@ -341,7 +341,7 @@ impl<'a> Rig<'a> {
     }
 
     /// The rows of session `key`, as stored.
-    fn thread(&self, key: &str) -> Vec<db::models::ChatMessage> {
+    pub(super) fn thread(&self, key: &str) -> Vec<db::models::ChatMessage> {
         let sessions = self.nebo.state.harness.sessions();
         match sessions.resolve_session_id_by_key(key) {
             Ok(id) => sessions.get_messages(&id).unwrap_or_default(),
@@ -358,7 +358,7 @@ impl<'a> Rig<'a> {
             .collect()
     }
 
-    async fn until(&self, secs: u64, what: &str, cond: impl FnMut() -> bool) {
+    pub(super) async fn until(&self, secs: u64, what: &str, cond: impl FnMut() -> bool) {
         self.nebo.wait_until(secs, what, cond).await;
     }
 }

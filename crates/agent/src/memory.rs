@@ -725,27 +725,17 @@ pub fn agent_memory_scope(owner_user_id: &str, agent_id: &str) -> String {
     }
 }
 
-/// The READ scope chain for a memory user_id — the ONE place ancestor scopes
-/// are derived. An agent (and a context-isolated layer under it) also reads
-/// the scopes above it: `owner:agent:X:ctx:Y` → itself, `owner:agent:X`,
-/// `owner`; the bare owner reads only itself. Writes always use the exact
-/// scope, so what each agent learns stays its own.
-pub fn memory_scope_chain(user_id: &str) -> Vec<String> {
-    let mut chain = vec![user_id.to_string()];
-    if let Some((agent_scope, _ctx)) = user_id.split_once(":ctx:") {
-        chain.push(agent_scope.to_string());
-    }
-    if let Some((owner, _rest)) = user_id.split_once(":agent:") {
-        chain.push(owner.to_string());
-    }
-    chain.dedup();
-    chain
-}
+/// The READ scope chain for a memory user_id (the run's own scope, then
+/// private memory, then local memory). Defined once, beside the memory tools
+/// that also read it.
+pub use tools::memory_tools::memory_scope_chain;
 
 /// Explicit isolation context carried in a session key, if any.
 /// Channel sessions set a deliberate 4th segment: `agent:{id}:{channel}:{ctx}`
 /// (the ctx segment may itself contain colons — everything after the third
-/// colon is the context). Desktop chat-thread sessions carry no segment.
+/// colon is the context). Desktop threads (`agent:{id}:thread:{chat}`) and
+/// workflow activities carry one too; it only scopes memory for an outside
+/// party (see [`resolve_memory_scope`]).
 pub fn session_key_context(session_key: &str) -> Option<String> {
     let parts: Vec<&str> = session_key.splitn(4, ':').collect();
     if parts.len() == 4 && parts[0] == "agent" {
@@ -781,22 +771,31 @@ pub struct MemoryScope {
     pub writes_disabled: bool,
 }
 
-/// Derive the memory scope for a run. Context precedence (highest first):
+/// Derive the memory scope for a run. An employee's durable memory is its
+/// PRIVATE memory (`owner:agent:X`); the main bot (empty `agent_id`) uses
+/// the raw owner scope, which is LOCAL memory.
+///
+/// A memory bound to one conversation exists for exactly one reason: the
+/// owner sealed this employee (`context_isolated`) and someone OTHER than
+/// the owner is in the conversation — a caller, a visitor, another bot, a
+/// coworker on a client matter — whose facts must never reach the next
+/// stranger. `origin` says who is in it: the owner's own runs (trusted
+/// origins — the owner's chats, their schedules and workflows) never bind
+/// memory to a conversation, whatever the isolation setting; one owner is
+/// one person, and splitting what they said by thread only loses it. For an
+/// outside party, context precedence (highest first):
 ///
 /// 1. An EXPLICIT `:ctx:` segment in the session key
 ///    (`agent:{id}:{channel}:{ctx}`) — channel sessions set it deliberately.
-/// 2. With `context_isolated` only: the session's ACTIVE CHAT id
-///    (thread = matter), resolved by the caller via the canonical
-///    `Store::session_chat_id`.
-/// 3. Neither derivable under `context_isolated` → FAIL CLOSED: the base
-///    agent scope is kept for reads, `writes_disabled` is set.
-///
-/// Without `context_isolated`, contexts are ignored and the agent's base
-/// scope applies; the main bot (empty `agent_id`) always uses the raw owner.
+/// 2. The session's ACTIVE CHAT id, resolved by the caller via the
+///    canonical `Store::session_chat_id`.
+/// 3. Neither derivable → FAIL CLOSED: the private scope is kept for reads,
+///    `writes_disabled` is set.
 pub fn resolve_memory_scope(
     owner: &str,
     agent_id: &str,
     context_isolated: bool,
+    origin: tools::Origin,
     explicit_ctx: Option<&str>,
     chat_ctx: Option<&str>,
 ) -> MemoryScope {
@@ -807,7 +806,7 @@ pub fn resolve_memory_scope(
         };
     }
     let agent_scope = agent_memory_scope(owner, agent_id);
-    if !context_isolated {
+    if !context_isolated || origin.is_trusted() {
         return MemoryScope {
             user_id: agent_scope,
             writes_disabled: false,
@@ -1102,6 +1101,7 @@ pub async fn backfill_missing_embeddings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tools::Origin;
 
     fn row(role: &str, content: &str, calls: Option<&str>, results: Option<&str>, meta: Option<&str>) -> ChatMessage {
         ChatMessage {
@@ -1417,7 +1417,7 @@ mod tests {
             session_key_context("agent:a1:loop:dm:123").as_deref(),
             Some("dm:123")
         );
-        // Desktop chat-thread keys carry no segment.
+        // A channel-less agent key carries no segment.
         assert_eq!(session_key_context("agent:a1:web"), None);
         // Non-agent key shapes never yield a context.
         assert_eq!(session_key_context("main"), None);
@@ -1430,10 +1430,10 @@ mod tests {
     fn test_scope_matter_round_trip() {
         // The matter extracted from a resolved scope is exactly what
         // resolve_memory_scope appended — envelope stamping must round-trip.
-        let s = resolve_memory_scope("local", "a1", true, Some("caseA"), None);
+        let s = resolve_memory_scope("local", "a1", true, Origin::Caller, Some("caseA"), None);
         assert_eq!(scope_matter(&s.user_id), Some("caseA"));
         // Matters may carry colons (channel-style ctx segments) — stay whole.
-        let s = resolve_memory_scope("local", "a1", true, Some("dm:123"), None);
+        let s = resolve_memory_scope("local", "a1", true, Origin::Caller, Some("dm:123"), None);
         assert_eq!(scope_matter(&s.user_id), Some("dm:123"));
         // Un-isolated scopes carry no matter.
         assert_eq!(scope_matter("local:agent:a1"), None);
@@ -1443,12 +1443,12 @@ mod tests {
     #[test]
     fn test_resolve_memory_scope_main_bot_and_plain_agent() {
         // Main bot: raw owner, contexts irrelevant.
-        let s = resolve_memory_scope("local", "", true, Some("caseA"), None);
+        let s = resolve_memory_scope("local", "", true, Origin::Caller, Some("caseA"), None);
         assert_eq!(s.user_id, "local");
         assert!(!s.writes_disabled);
 
         // Non-isolated agent: base scope, contexts ignored.
-        let s = resolve_memory_scope("local", "a1", false, Some("caseA"), Some("chat-1"));
+        let s = resolve_memory_scope("local", "a1", false, Origin::Caller, Some("caseA"), Some("chat-1"));
         assert_eq!(s.user_id, "local:agent:a1");
         assert!(!s.writes_disabled);
     }
@@ -1456,14 +1456,47 @@ mod tests {
     #[test]
     fn test_resolve_memory_scope_isolated_context_precedence() {
         // Explicit channel segment wins over the chat derivation.
-        let s = resolve_memory_scope("local", "a1", true, Some("caseA"), Some("chat-1"));
+        let s = resolve_memory_scope("local", "a1", true, Origin::Caller, Some("caseA"), Some("chat-1"));
         assert_eq!(s.user_id, "local:agent:a1:ctx:caseA");
         assert!(!s.writes_disabled);
 
         // No explicit segment → active chat id (thread = matter).
-        let s = resolve_memory_scope("local", "a1", true, None, Some("chat-1"));
+        let s = resolve_memory_scope("local", "a1", true, Origin::Caller, None, Some("chat-1"));
         assert_eq!(s.user_id, "local:agent:a1:ctx:chat-1");
         assert!(!s.writes_disabled);
+    }
+
+    /// The owner's own runs never bind memory to a conversation, even on a
+    /// sealed employee: the primary employee with isolation on, in a desktop
+    /// thread whose key carries the chat id, files durable facts under its
+    /// private memory (the 2026-09-27 regression: every one of the primary
+    /// employee's threads had become its own memory).
+    #[test]
+    fn test_owner_runs_never_bind_memory_to_a_conversation() {
+        let key = "agent:assistant:thread:chat-1";
+        for origin in [Origin::User, Origin::System, Origin::Workflow] {
+            let s = resolve_memory_scope(
+                "owner",
+                "assistant",
+                true,
+                origin,
+                session_key_context(key).as_deref(),
+                Some("chat-1"),
+            );
+            assert_eq!(s.user_id, "owner:agent:assistant", "{origin:?}");
+            assert!(!s.writes_disabled, "{origin:?}");
+            assert_eq!(scope_matter(&s.user_id), None);
+        }
+        // A caller in the same shape of thread stays sealed.
+        let s = resolve_memory_scope(
+            "owner",
+            "assistant",
+            true,
+            Origin::Caller,
+            session_key_context(key).as_deref(),
+            None,
+        );
+        assert_eq!(s.user_id, "owner:agent:assistant:ctx:chat-1");
     }
 
     #[test]
@@ -1471,7 +1504,7 @@ mod tests {
         // Isolated with NO derivable context: reads keep the base agent
         // scope, writes are refused — never a silent write to the shared
         // agent scope.
-        let s = resolve_memory_scope("local", "a1", true, None, None);
+        let s = resolve_memory_scope("local", "a1", true, Origin::Caller, None, None);
         assert_eq!(s.user_id, "local:agent:a1");
         assert!(s.writes_disabled);
     }
@@ -1518,7 +1551,7 @@ mod tests {
         let path = dir.path().join("ctx-extract-test.db");
         let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
 
-        let scope = resolve_memory_scope("local", "a1", true, None, Some("chat-A"));
+        let scope = resolve_memory_scope("local", "a1", true, Origin::Caller, None, Some("chat-A"));
         assert!(!scope.writes_disabled);
 
         let facts = ExtractedFacts {

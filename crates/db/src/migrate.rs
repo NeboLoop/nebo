@@ -858,6 +858,69 @@ Date
         assert_eq!(count(), before);
     }
 
+    /// The owner's own conversations stop owning memory: rows a sealed
+    /// employee filed under one of the owner's threads or one workflow run
+    /// move up to the employee's private memory, the newest row keeps each
+    /// key, a duplicate goes, a different older value is kept beside it, and
+    /// a conversation with someone else stays sealed.
+    #[test]
+    fn memories_leave_the_owners_conversations_for_the_employees_private_memory() {
+        use rusqlite::OptionalExtension;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("memory-scope.db")).unwrap();
+        run_migrations_to(&conn, 187).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (id, name, active_chat_id, created_at, updated_at) VALUES
+                ('s1', 'agent:emp:thread:chat-1', 'chat-1', 0, 0),
+                ('s2', 'agent:emp:thread:chat-2', 'chat-2', 0, 0),
+                ('s3', 'agent:rec:thread:call-1', 'call-1', 0, 0);
+             INSERT INTO workflow_runs (id, workflow_id, trigger_type) VALUES ('run-1', 'agent:rec', 'schedule');
+             INSERT INTO memories (id, namespace, key, value, metadata, updated_at, user_id) VALUES
+                (1, 'project', 'deck', 'The deck is due Friday', NULL, '2026-01-01', 'o:agent:emp:ctx:chat-1'),
+                (2, 'project', 'deck', 'The deck moved to Monday', '{\"provenance\":[\"web\"]}', '2026-02-01', 'o:agent:emp:ctx:chat-2'),
+                (3, 'tacit/preferences', 'tone', 'Short and plain', NULL, '2026-01-01', 'o:agent:emp:ctx:chat-1'),
+                (4, 'tacit/preferences', 'tone', 'Short and plain', NULL, '2026-03-01', 'o:agent:emp'),
+                (5, 'project', 'workflow/pull', 'Voicemail sweep runs hourly', NULL, '2026-01-01', 'o:agent:rec:ctx:run-1:pull::0'),
+                (6, 'entity/default', 'person/caller', 'Caller asked about a refund', '{\"provenance\":[\"phone\"]}', '2026-01-01', 'o:agent:rec:ctx:call-1'),
+                (7, 'project', 'case/deadline', 'Matter 42 files on the 3rd', NULL, '2026-01-01', 'o:agent:emp:ctx:case-42'),
+                (8, 'project', 'recipes/soup', 'Lentil soup, 40 minutes', NULL, '2026-01-01', 'o');
+             INSERT INTO memory_chunks (id, memory_id, chunk_index, text, user_id) VALUES
+                (11, 1, 0, 'The deck is due Friday', 'o:agent:emp:ctx:chat-1'),
+                (13, 3, 0, 'Short and plain', 'o:agent:emp:ctx:chat-1');",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let row = |id: i64| -> Option<(String, String)> {
+            conn.query_row("SELECT key, user_id FROM memories WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()
+                .unwrap()
+        };
+        let own = |id: i64, key: &str, scope: &str| assert_eq!(row(id), Some((key.to_string(), scope.to_string())), "row {id}");
+        own(2, "deck", "o:agent:emp");
+        own(1, "deck/earlier-1", "o:agent:emp");
+        own(4, "tone", "o:agent:emp");
+        assert_eq!(row(3), None, "a duplicate of the kept value goes");
+        own(5, "workflow/pull", "o:agent:rec");
+        own(6, "person/caller", "o:agent:rec:ctx:call-1");
+        own(7, "case/deadline", "o:agent:emp:ctx:case-42");
+        own(8, "recipes/soup", "o");
+        let chunk = |id: i64| -> Option<String> {
+            conn.query_row("SELECT user_id FROM memory_chunks WHERE id = ?1", [id], |r| r.get(0)).optional().unwrap()
+        };
+        assert_eq!(chunk(11).as_deref(), Some("o:agent:emp"), "a chunk follows its memory");
+        assert_eq!(chunk(13), None, "a removed duplicate's chunk goes with it");
+
+        // Idempotent: the statements, run again, change nothing.
+        let count = || conn.query_row("SELECT COUNT(*) FROM memories WHERE user_id LIKE '%:ctx:%'", [], |r| r.get::<_, i64>(0)).unwrap();
+        let before = (count(), conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0)).unwrap());
+        conn.execute_batch(&extract_goose_up(include_str!("../migrations/0188_memory_leaves_the_owners_conversations.sql"))).unwrap();
+        let after = (count(), conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get::<_, i64>(0)).unwrap());
+        assert_eq!(before, after);
+        assert_eq!(before.0, 2, "only the conversations with someone else stay sealed");
+    }
+
     /// A migration file without goose markers is applied verbatim — the
     /// whole file is the Up script, not silently skipped.
     #[test]

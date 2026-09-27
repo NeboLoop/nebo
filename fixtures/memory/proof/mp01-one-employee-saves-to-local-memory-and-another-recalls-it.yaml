@@ -1,0 +1,10 @@
+id: mp01-one-employee-saves-to-local-memory-and-another-recalls-it
+name: "MP01 — One employee saves to local memory; another recalls it"
+description: |
+  The owner asks one employee to save a fact to local memory; a different employee, in a
+  conversation of its own, recalls it. The row is in the owner-wide local scope (never the saver's
+  private one), the saver's result says "Saved to local memory", and the recall labels the hit
+  "(local memory)".
+target_component: memory
+proof: staffed_proof::memory::one_employee_saves_to_local_memory_and_another_recalls_it
+conversation: []
