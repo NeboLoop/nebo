@@ -60,6 +60,30 @@ impl AudioFormat {
             Self::G711Ulaw => json!({ "type": "audio/pcmu", "rate": 8000 }),
         }
     }
+
+    /// Bytes of audio per millisecond: 24 kHz PCM16 mono is 48, 8 kHz μ-law
+    /// is 8. Turns forwarded audio into played time.
+    fn bytes_per_ms(self) -> usize {
+        match self {
+            Self::Pcm24k => 48,
+            Self::G711Ulaw => 8,
+        }
+    }
+
+    /// The `session.turn_detection` object for this format.
+    ///
+    /// A device mic (desktop, phone app) waits 1 s of silence before the
+    /// turn ends. On the provider's default a 0.9 s thinking pause split one
+    /// request into several turns, and the model spoke over the rest of it;
+    /// at 1000 ms the same request stayed one turn (probed 2026-09-27). The
+    /// VAD threshold stays on the default: 0.5–0.85 made no measurable
+    /// difference to barge-in onset. Telephony keeps the provider defaults.
+    fn turn_detection(self) -> Value {
+        match self {
+            Self::Pcm24k => json!({ "type": "server_vad", "silence_duration_ms": 1000 }),
+            Self::G711Ulaw => json!({ "type": "server_vad" }),
+        }
+    }
 }
 
 /// Configuration for one realtime session.
@@ -123,8 +147,11 @@ pub enum RealtimeCommand {
     /// Typed user input (no audio): creates a message item and requests a
     /// response.
     Text(String),
-    /// Barge-in: clear the input buffer and cancel the in-flight response.
-    Interrupt,
+    /// Barge-in: cancel the in-flight response and cut the model's memory of
+    /// its reply back to what the user heard. `played_ms` is how much of the
+    /// reply the client played; None estimates it from the wall clock. The
+    /// user's speech in progress is never touched: it is what barged in.
+    Interrupt { played_ms: Option<u64> },
     /// One executed tool result. Queue every parallel call's output BEFORE
     /// sending [`RealtimeCommand::ToolOutputsDone`].
     ToolOutput { call_id: String, output: String },
@@ -184,7 +211,7 @@ fn session_update(cfg: &RealtimeConfig) -> Value {
     let mut session = json!({
         "instructions": cfg.instructions,
         "voice": cfg.voice,
-        "turn_detection": { "type": "server_vad" },
+        "turn_detection": cfg.audio_format.turn_detection(),
         // Opt in to resumption so a dropped connection can reconnect with
         // ?conversation_id= and replay history (both sides must opt in).
         "resumption": { "enabled": true },
@@ -265,21 +292,20 @@ async fn run_session(
                             Err(e) => Err(e),
                         }
                     }
-                    RealtimeCommand::Interrupt => {
-                        let clear = json!({ "type": "input_audio_buffer.clear" });
-                        match sink.send(Message::Text(clear.to_string().into())).await {
-                            // Only cancel when a response is actually in
-                            // flight — a barge-in against tail-buffered audio
-                            // has nothing upstream to cancel.
-                            Ok(()) if state.response_active => {
-                                state.response_active = false;
-                                sink.send(Message::Text(
-                                    json!({ "type": "response.cancel" }).to_string().into(),
-                                ))
-                                .await
+                    RealtimeCommand::Interrupt { played_ms } => {
+                        let mut sent = Ok(());
+                        for frame in interrupt_frames(
+                            &mut state,
+                            played_ms,
+                            std::time::Instant::now(),
+                            cfg.audio_format,
+                        ) {
+                            sent = sink.send(Message::Text(frame.to_string().into())).await;
+                            if sent.is_err() {
+                                break;
                             }
-                            other => other,
                         }
+                        sent
                     }
                     RealtimeCommand::ToolOutput { call_id, output } => {
                         let item = json!({
@@ -314,11 +340,16 @@ async fn run_session(
             msg = stream.next() => {
                 match msg {
                     Some(Ok(Message::Binary(data))) => {
-                        // transport: "binary" — model audio as raw PCM16 @ 24kHz.
-                        if event_tx
-                            .send(ConversationEvent::AudioChunk(Bytes::from(data)))
-                            .await
-                            .is_err()
+                        // transport: "binary" — model audio in the session's
+                        // format, raw.
+                        if reply_audio(
+                            Bytes::from(data),
+                            std::time::Instant::now(),
+                            &event_tx,
+                            &mut state,
+                        )
+                        .await
+                        .is_err()
                         {
                             break;
                         }
@@ -363,11 +394,46 @@ struct SessionState {
     /// A model response is in flight (response.created seen, no response.done
     /// yet). Barge-in near the end of a response otherwise races the cancel:
     /// the client still hears buffered audio, sends Interrupt, and upstream
-    /// rejects the cancel with "no active response found".
+    /// rejects the cancel with "no active response found". A response xAI
+    /// drops because the user kept talking never gets its `response.done`,
+    /// so this can stay set until the next one ends; the cancel it then
+    /// allows is the benign race above.
     response_active: bool,
     /// Where the user's current utterance is. Consumers commit a user turn
     /// on every `TranscriptionEnd`, so each utterance gets exactly one.
     utterance: Utterance,
+    /// xAI's item id for the open utterance. A pause and more words before
+    /// any reply audio reuse the item: its `speech_started` is the same
+    /// utterance going on, not a new one.
+    utterance_item: Option<String>,
+    /// The item of the last utterance that ended; its late transcripts are
+    /// dropped (a second end would commit the same speech twice).
+    closed_item: Option<String>,
+    /// The response created while the open utterance was open. Its
+    /// `response.done` ends the utterance even with no audio (a reply that
+    /// only calls a tool). xAI creates a response at every pause in the
+    /// user's speech and drops it when they go on, so the latest one counts.
+    answering: Option<String>,
+    /// The current response's audio has started: `PlaybackStart` is sent and
+    /// its `PlaybackEnd` is owed at `response.done`.
+    playing: bool,
+    /// The response's assistant item, announced before its audio.
+    pending_item: Option<String>,
+    /// The assistant item whose audio is going to the client: what an
+    /// interrupt truncates.
+    heard_item: Option<HeardItem>,
+    /// The client barged in on the response in flight: its remaining audio
+    /// is dropped, never played after the user cut it off.
+    discard_audio: bool,
+}
+
+/// An assistant item's audio as forwarded to the client.
+struct HeardItem {
+    id: String,
+    /// Audio bytes forwarded so far.
+    bytes: usize,
+    /// When its first audio was forwarded.
+    first_at: std::time::Instant,
 }
 
 /// The user's utterance, from its first sound to its one `TranscriptionEnd`.
@@ -376,13 +442,109 @@ enum Utterance {
     /// No utterance in progress; its end has been sent.
     #[default]
     Closed,
-    /// Speech started; the finished transcript has not arrived.
-    Open,
-    /// Still open, and the model has started answering it. xAI's finished
-    /// transcript can land after the reply starts, so this is not the end:
-    /// the end is the finished transcript, or, failing that, the reply's
-    /// `response.done`.
+    /// Speech started and no reply audio yet. `transcribed`: a finished
+    /// transcript has arrived. It is not the end — the user can pause and go
+    /// on, and xAI then sends a longer finished transcript for the same item.
+    /// The end is the reply's first audio.
+    Open { transcribed: bool },
+    /// Reply audio started before the finished transcript arrived: the end
+    /// is that transcript, or, failing that, the reply's `response.done`.
     Answered,
+}
+
+/// The utterance is over: its one `TranscriptionEnd`.
+async fn end_utterance(
+    event_tx: &mpsc::Sender<ConversationEvent>,
+    state: &mut SessionState,
+) -> Result<(), ()> {
+    state.utterance = Utterance::Closed;
+    state.closed_item = state.utterance_item.take();
+    state.answering = None;
+    event_tx
+        .send(ConversationEvent::TranscriptionEnd)
+        .await
+        .map_err(|_| ())
+}
+
+/// One chunk of reply audio. The response's first audio is where the model
+/// is heard: an utterance with its finished transcript ends here (before the
+/// reply, so rows land in spoken order), and `PlaybackStart` goes out once.
+async fn reply_audio(
+    audio: Bytes,
+    now: std::time::Instant,
+    event_tx: &mpsc::Sender<ConversationEvent>,
+    state: &mut SessionState,
+) -> Result<(), ()> {
+    if state.discard_audio {
+        return Ok(());
+    }
+    if !state.playing {
+        state.playing = true;
+        // Only a reply created while the utterance was open answers it; the
+        // tail of an earlier one does not.
+        if state.answering.is_some() {
+            match state.utterance {
+                Utterance::Open { transcribed: true } => end_utterance(event_tx, state).await?,
+                Utterance::Open { transcribed: false } => state.utterance = Utterance::Answered,
+                _ => {}
+            }
+        }
+        event_tx
+            .send(ConversationEvent::PlaybackStart)
+            .await
+            .map_err(|_| ())?;
+    }
+    if let Some(id) = state.pending_item.take() {
+        state.heard_item = Some(HeardItem {
+            id,
+            bytes: 0,
+            first_at: now,
+        });
+    }
+    if let Some(item) = state.heard_item.as_mut() {
+        item.bytes += audio.len();
+    }
+    event_tx
+        .send(ConversationEvent::AudioChunk(audio))
+        .await
+        .map_err(|_| ())
+}
+
+/// The frames a barge-in sends upstream. Never `input_audio_buffer.clear`:
+/// that deleted the user's words in progress, the very words barging in.
+/// `response.cancel` only while a response is in flight. Then the reply the
+/// client was playing is truncated to what was played — `played_ms` from the
+/// client, else the wall-clock time since its first audio went out — never
+/// past the audio actually forwarded, so the model remembers saying only
+/// what the user heard. A reply already played to its end is left alone.
+fn interrupt_frames(
+    state: &mut SessionState,
+    played_ms: Option<u64>,
+    now: std::time::Instant,
+    format: AudioFormat,
+) -> Vec<Value> {
+    let mut frames = Vec::new();
+    let cancelling = state.response_active;
+    if cancelling {
+        state.response_active = false;
+        state.discard_audio = true;
+        frames.push(json!({ "type": "response.cancel" }));
+    }
+    if let Some(item) = state.heard_item.take() {
+        let forwarded_ms = (item.bytes / format.bytes_per_ms()) as u64;
+        let played = played_ms
+            .unwrap_or_else(|| now.saturating_duration_since(item.first_at).as_millis() as u64)
+            .min(forwarded_ms);
+        if cancelling || played < forwarded_ms {
+            frames.push(json!({
+                "type": "conversation.item.truncate",
+                "item_id": item.id,
+                "content_index": 0,
+                "audio_end_ms": played,
+            }));
+        }
+    }
+    frames
 }
 
 /// Translate one xAI server event into `ConversationEvent`s. Returns Err when
@@ -421,53 +583,96 @@ async fn handle_server_event(
             }
         }
         "input_audio_buffer.speech_started" => {
-            // A new utterance: a previous one still open will get no more
-            // words, so it ends here, before this one starts.
-            if state.utterance != Utterance::Closed {
-                send(ConversationEvent::TranscriptionEnd).await?;
+            let item = ev.get("item_id").and_then(|v| v.as_str());
+            // The user paused and went on before any reply audio: xAI keeps
+            // the same item, and it is the same utterance — no end, and no
+            // start either (clients open a new bubble and barge in on a
+            // start), only more cumulative words.
+            let continues = matches!(state.utterance, Utterance::Open { .. })
+                && item.is_some()
+                && item == state.utterance_item.as_deref();
+            if !continues {
+                // A new utterance: a previous one still open will get no
+                // more words, so it ends here, before this one starts.
+                if state.utterance != Utterance::Closed {
+                    end_utterance(event_tx, state).await?;
+                }
+                if item.is_some() && item == state.closed_item.as_deref() {
+                    // Speech over the reply on the item that just ended:
+                    // its transcripts belong to this utterance now.
+                    state.closed_item = None;
+                }
+                state.utterance = Utterance::Open { transcribed: false };
+                state.utterance_item = item.map(str::to_string);
+                send(ConversationEvent::TranscriptionStart).await?;
             }
-            state.utterance = Utterance::Open;
-            send(ConversationEvent::TranscriptionStart).await?;
         }
         // xAI-specific rename of OpenAI's `...transcription.delta` — the
         // transcript is CUMULATIVE (includes corrections). Consumers replace,
         // never append.
         "conversation.item.input_audio_transcription.updated" => {
-            if let Some(t) = ev.get("transcript").and_then(|v| v.as_str()) {
+            let item = ev.get("item_id").and_then(|v| v.as_str());
+            if item.is_some() && item == state.closed_item.as_deref() {
+                debug!(frame = %text, "transcript for a closed utterance (dropped)");
+            } else if let Some(t) = ev.get("transcript").and_then(|v| v.as_str()) {
                 if state.utterance == Utterance::Closed {
-                    state.utterance = Utterance::Open;
+                    state.utterance = Utterance::Open { transcribed: false };
+                    state.utterance_item = item.map(str::to_string);
                 }
                 send(ConversationEvent::TranscriptionText(t.to_string())).await?;
             }
         }
-        // What xAI sends today (2026-09-17, probed against grok-voice-latest):
-        // ONE finished transcript per utterance, and it lands AFTER
-        // `speech_stopped`, and it can land after the model's reply has
-        // started. This is the utterance's end: the final words, then its one
-        // `TranscriptionEnd`. A transcript for an utterance already closed
-        // (by the next `speech_started`, the reply's `response.done`, or
-        // session end) is dropped — a second end would commit the same
-        // speech as a second user turn.
+        // What xAI sends (probed against grok-voice-latest, 2026-09-17 and
+        // 2026-09-27): a finished transcript after `speech_stopped`, and when
+        // the user pauses and goes on before any reply audio, ANOTHER one for
+        // the same item carrying everything said so far. So it is the
+        // utterance's words, not its end: the end is the reply's first audio
+        // (or, when this lands after that audio, right here). A transcript
+        // for an utterance already closed (by the next `speech_started`, the
+        // reply's `response.done`, or session end) is dropped — a second end
+        // would commit the same speech as a second user turn.
         "conversation.item.input_audio_transcription.completed" => {
-            if state.utterance == Utterance::Closed {
+            let item = ev.get("item_id").and_then(|v| v.as_str());
+            if state.utterance == Utterance::Closed
+                || (item.is_some() && item == state.closed_item.as_deref())
+            {
                 debug!(frame = %text, "transcript for a closed utterance (dropped)");
             } else if let Some(t) = ev.get("transcript").and_then(|v| v.as_str())
                 && !t.is_empty()
             {
-                state.utterance = Utterance::Closed;
                 send(ConversationEvent::TranscriptionText(t.to_string())).await?;
-                send(ConversationEvent::TranscriptionEnd).await?;
+                if state.utterance == Utterance::Answered {
+                    end_utterance(event_tx, state).await?;
+                } else {
+                    state.utterance = Utterance::Open { transcribed: true };
+                }
             }
         }
         // Not the utterance's end: the finished transcript follows it, and
         // ending here committed the words heard so far as a turn of their own.
         "input_audio_buffer.speech_stopped" => {}
+        // Not playback: xAI creates a response at every pause in the user's
+        // speech and drops it, silent, when they go on. Playback starts with
+        // the response's first audio (`reply_audio`).
         "response.created" => {
             state.response_active = true;
-            if state.utterance == Utterance::Open {
-                state.utterance = Utterance::Answered;
+            state.discard_audio = false;
+            state.pending_item = None;
+            if state.utterance != Utterance::Closed {
+                state.answering = Some(
+                    ev.pointer("/response/id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                );
             }
-            send(ConversationEvent::PlaybackStart).await?;
+        }
+        "response.output_item.added" => {
+            if ev.pointer("/item/role").and_then(|v| v.as_str()) == Some("assistant")
+                && let Some(id) = ev.pointer("/item/id").and_then(|v| v.as_str())
+            {
+                state.pending_item = Some(id.to_string());
+            }
         }
         // JSON-transport fallback (binary transport makes these unnecessary,
         // but the server is allowed to ignore the hint).
@@ -475,7 +680,7 @@ async fn handle_server_event(
             if let Some(b64) = ev.get("delta").and_then(|v| v.as_str())
                 && let Ok(pcm) = base64::engine::general_purpose::STANDARD.decode(b64)
             {
-                send(ConversationEvent::AudioChunk(Bytes::from(pcm))).await?;
+                reply_audio(Bytes::from(pcm), std::time::Instant::now(), event_tx, state).await?;
             }
         }
         // Assistant transcript deltas (incremental, unlike input transcription).
@@ -501,14 +706,24 @@ async fn handle_server_event(
         }
         "response.done" => {
             state.response_active = false;
-            // The reply to the utterance is over and no finished transcript
-            // came: the words already sent are its final words. An utterance
-            // the reply did not answer (a barge-in) stays open.
-            if state.utterance == Utterance::Answered {
-                state.utterance = Utterance::Closed;
-                send(ConversationEvent::TranscriptionEnd).await?;
+            state.discard_audio = false;
+            // The reply to the utterance is over — spoken with no finished
+            // transcript yet, or silent (a tool call): the words already sent
+            // are its final words, and the runs it asked for can start. An
+            // utterance the reply did not answer (a barge-in) stays open.
+            let id = ev
+                .pointer("/response/id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if state.utterance != Utterance::Closed && state.answering.as_deref() == Some(id) {
+                end_utterance(event_tx, state).await?;
             }
-            send(ConversationEvent::PlaybackEnd).await?;
+            // Only a response that was heard ends playback: a silent one
+            // never started it.
+            if state.playing {
+                state.playing = false;
+                send(ConversationEvent::PlaybackEnd).await?;
+            }
         }
         "error" => {
             let msg = ev
@@ -553,6 +768,9 @@ mod tests {
         assert_eq!(v["type"], "session.update");
         let s = &v["session"];
         assert_eq!(s["turn_detection"]["type"], "server_vad");
+        // A thinking pause does not end a device mic's turn.
+        assert_eq!(s["turn_detection"]["silence_duration_ms"], 1000);
+        assert!(s["turn_detection"].get("threshold").is_none());
         assert_eq!(s["resumption"]["enabled"], true);
         for dir in ["input", "output"] {
             assert_eq!(s["audio"][dir]["format"]["type"], "audio/pcm");
@@ -577,7 +795,7 @@ mod tests {
 
         let v = session_update(&cfg);
         let s = &v["session"];
-        assert_eq!(s["turn_detection"]["type"], "server_vad");
+        assert_eq!(s["turn_detection"], json!({ "type": "server_vad" }));
         assert_eq!(s["resumption"]["enabled"], true);
         for dir in ["input", "output"] {
             assert_eq!(s["audio"][dir]["format"]["type"], "audio/pcmu");
@@ -627,7 +845,8 @@ mod tests {
         assert!(
             matches!(rx.recv().await, Some(ConversationEvent::TranscriptionText(t)) if t == "hello world")
         );
-        assert!(matches!(rx.recv().await, Some(ConversationEvent::TranscriptionEnd)));
+        // The finished transcript is not the end (the user may go on): the
+        // next event is the tool call, not a TranscriptionEnd.
 
         handle_server_event(
             r#"{"type":"response.function_call_arguments.done","call_id":"c1","name":"os","arguments":"{\"action\":\"read\"}"}"#,
@@ -646,65 +865,263 @@ mod tests {
         }
     }
 
-    /// Replays `frames` through one session state and returns every event
-    /// they produced, in order.
-    async fn replay(frames: &[&str]) -> Vec<ConversationEvent> {
-        let (tx, mut rx) = mpsc::channel(32);
+
+    /// Stands for one binary frame of reply audio in a replay: 480 bytes of
+    /// 24 kHz PCM16, 10 ms.
+    const AUDIO: &str = "AUDIO";
+
+    /// Drives `frames` through one session state (`AUDIO` = a reply audio
+    /// frame, forwarded at `now`) and returns every event they produced, in
+    /// order, with the state they left.
+    async fn drive(
+        frames: &[&str],
+        now: std::time::Instant,
+    ) -> (Vec<ConversationEvent>, SessionState) {
+        let (tx, mut rx) = mpsc::channel(1024);
         let mut state = SessionState {
             initialized: true,
             ..Default::default()
         };
         for frame in frames {
-            handle_server_event(frame, &tx, &mut state).await.unwrap();
+            if *frame == AUDIO {
+                reply_audio(Bytes::from_static(&[0u8; 480]), now, &tx, &mut state)
+                    .await
+                    .unwrap();
+            } else {
+                handle_server_event(frame, &tx, &mut state).await.unwrap();
+            }
         }
         drop(tx);
         let mut events = Vec::new();
         while let Some(e) = rx.recv().await {
             events.push(e);
         }
-        events
+        (events, state)
+    }
+
+    async fn replay(frames: &[&str]) -> Vec<ConversationEvent> {
+        drive(frames, std::time::Instant::now()).await.0
+    }
+
+    fn count(events: &[ConversationEvent], want: fn(&ConversationEvent) -> bool) -> usize {
+        events.iter().filter(|e| want(e)).count()
     }
 
     /// The order xAI sends one utterance in: the finished transcript lands
-    /// after `speech_stopped`. Exactly one end, after the final words, and
-    /// none extra when the model's turn starts.
+    /// after `speech_stopped`, before the reply's audio. Exactly one end,
+    /// after the final words and before the reply is heard.
     #[tokio::test]
     async fn one_end_per_utterance_carrying_final_transcript() {
         let events = replay(&[
-            r#"{"type":"input_audio_buffer.speech_started"}"#,
-            r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"hello"}"#,
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u1"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","item_id":"u1","transcript":"hello"}"#,
             r#"{"type":"input_audio_buffer.speech_stopped"}"#,
-            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"hello world","status":"completed"}"#,
-            r#"{"type":"response.created"}"#,
+            r#"{"type":"response.created","response":{"id":"r1"}}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"hello world","status":"completed"}"#,
+            r#"{"type":"response.output_item.added","item":{"id":"a1","type":"message","role":"assistant"}}"#,
+            AUDIO,
         ])
         .await;
-        let ends: Vec<usize> = events
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| matches!(e, ConversationEvent::TranscriptionEnd))
-            .map(|(i, _)| i)
-            .collect();
-        assert_eq!(ends.len(), 1, "one end per utterance: {events:?}");
         assert!(
-            matches!(&events[ends[0] - 1], ConversationEvent::TranscriptionText(t) if t == "hello world"),
-            "the end follows the final transcript: {events:?}"
+            matches!(
+                events.as_slice(),
+                [
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::TranscriptionText(partial),
+                    ConversationEvent::TranscriptionText(full),
+                    ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::PlaybackStart,
+                    ConversationEvent::AudioChunk(_),
+                ] if partial == "hello" && full == "hello world"
+            ),
+            "{events:?}"
         );
-        assert!(matches!(events.last(), Some(ConversationEvent::PlaybackStart)));
     }
 
-    /// The order the owner's phone hit: the model starts answering before
-    /// the finished transcript lands. The utterance stays open through
-    /// `response.created`; the late transcript is its final words and its one
-    /// end.
+    /// xAI creates a response at every pause in the user's speech and drops
+    /// it, silent and with no `response.done`, when they go on. That is not
+    /// the model speaking: no PlaybackStart, and the utterance stays open.
+    #[tokio::test]
+    async fn phantom_response_is_not_playback() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u1"}"#,
+            r#"{"type":"input_audio_buffer.speech_stopped"}"#,
+            r#"{"type":"response.created","response":{"id":"p1"}}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"Okay, so what I would like you to do.","status":"completed"}"#,
+            r#"{"type":"response.output_item.added","item":{"id":"a1","type":"message","role":"assistant"}}"#,
+        ])
+        .await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [ConversationEvent::TranscriptionStart, ConversationEvent::TranscriptionText(_)]
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// Playback starts with the response's first audio, once, and ends at
+    /// its `response.done`.
+    #[tokio::test]
+    async fn first_audio_starts_playback_once() {
+        let events = replay(&[
+            r#"{"type":"response.created","response":{"id":"r1"}}"#,
+            AUDIO,
+            AUDIO,
+            AUDIO,
+            r#"{"type":"response.done","response":{"id":"r1","status":"completed"}}"#,
+        ])
+        .await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    ConversationEvent::PlaybackStart,
+                    ConversationEvent::AudioChunk(_),
+                    ConversationEvent::AudioChunk(_),
+                    ConversationEvent::AudioChunk(_),
+                    ConversationEvent::PlaybackEnd,
+                ]
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// The owner's duplicate rows ("I'm listening." then "I'm listening.
+    /// Okay, uh, what I'd like…"): the user pauses and goes on before any
+    /// reply audio, xAI reuses the SAME item and sends a second, cumulative
+    /// finished transcript. One utterance: one start, the final cumulative
+    /// words, one end — at the reply's first audio. Frames as probed.
+    #[tokio::test]
+    async fn same_item_continuation_is_one_utterance() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"c405"}"#,
+            r#"{"type":"input_audio_buffer.speech_stopped"}"#,
+            r#"{"type":"response.created","response":{"id":"p1"}}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"c405","transcript":"Okay, so what I would like you to do.","status":"completed"}"#,
+            r#"{"type":"response.output_item.added","item":{"id":"a1","type":"message","role":"assistant"}}"#,
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"c405"}"#,
+            r#"{"type":"input_audio_buffer.speech_stopped"}"#,
+            r#"{"type":"response.created","response":{"id":"r2"}}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"c405","transcript":"Okay, so what I would like you to do is figure out a couple of things for me.","status":"completed"}"#,
+            r#"{"type":"response.output_item.added","item":{"id":"a2","type":"message","role":"assistant"}}"#,
+            AUDIO,
+            AUDIO,
+            r#"{"type":"response.done","response":{"id":"r2","status":"completed"}}"#,
+        ])
+        .await;
+        assert_eq!(count(&events, |e| matches!(e, ConversationEvent::TranscriptionStart)), 1, "{events:?}");
+        assert_eq!(count(&events, |e| matches!(e, ConversationEvent::TranscriptionEnd)), 1, "{events:?}");
+        assert_eq!(count(&events, |e| matches!(e, ConversationEvent::PlaybackStart)), 1, "{events:?}");
+        let end = events
+            .iter()
+            .position(|e| matches!(e, ConversationEvent::TranscriptionEnd))
+            .unwrap();
+        assert!(
+            matches!(&events[end - 1], ConversationEvent::TranscriptionText(t)
+                if t == "Okay, so what I would like you to do is figure out a couple of things for me."),
+            "the end carries the cumulative words: {events:?}"
+        );
+        assert!(
+            matches!(events[end + 1], ConversationEvent::PlaybackStart),
+            "the end comes before the reply is heard: {events:?}"
+        );
+    }
+
+    /// Once the reply is heard, speech is a new utterance even on the same
+    /// item: the open one ends, and a start goes out (the clients' barge-in
+    /// signal and new bubble). Only speech before any reply audio continues.
+    #[tokio::test]
+    async fn same_item_speech_over_the_reply_is_a_new_utterance() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u1"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","item_id":"u1","transcript":"tell me"}"#,
+            r#"{"type":"response.created","response":{"id":"r1"}}"#,
+            AUDIO,
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u1"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"tell me a story","status":"completed"}"#,
+        ])
+        .await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::TranscriptionText(_),
+                    ConversationEvent::PlaybackStart,
+                    ConversationEvent::AudioChunk(_),
+                    ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::TranscriptionText(t),
+                ] if t == "tell me a story"
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// A new item is a new utterance: the open one ends before it starts.
+    #[tokio::test]
+    async fn different_item_ends_the_previous_utterance() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u1"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"one","status":"completed"}"#,
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u2"}"#,
+        ])
+        .await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::TranscriptionText(t),
+                    ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::TranscriptionStart,
+                ] if t == "one"
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// A reply that only calls a tool is never heard: no playback events,
+    /// and its `response.done` ends the utterance, so the runs waiting for
+    /// the user's row start.
+    #[tokio::test]
+    async fn silent_tool_reply_ends_the_utterance_at_response_done() {
+        let events = replay(&[
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u1"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"make the repo","status":"completed"}"#,
+            r#"{"type":"response.created","response":{"id":"r1"}}"#,
+            r#"{"type":"response.function_call_arguments.done","call_id":"c1","name":"nebo","arguments":"{}"}"#,
+            r#"{"type":"response.done","response":{"id":"r1","status":"completed"}}"#,
+        ])
+        .await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    ConversationEvent::TranscriptionStart,
+                    ConversationEvent::TranscriptionText(_),
+                    ConversationEvent::ToolCall { .. },
+                    ConversationEvent::TranscriptionEnd,
+                ]
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// Reply audio before the finished transcript: the utterance stays open
+    /// through the first audio; the late transcript is its final words and
+    /// its one end.
     #[tokio::test]
     async fn late_transcript_after_reply_starts_is_the_end() {
         let events = replay(&[
-            r#"{"type":"input_audio_buffer.speech_started"}"#,
-            r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"what I want is just"}"#,
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u1"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","item_id":"u1","transcript":"what I want is just"}"#,
             r#"{"type":"input_audio_buffer.speech_stopped"}"#,
-            r#"{"type":"response.created"}"#,
-            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"what I want is just a list","status":"completed"}"#,
-            r#"{"type":"response.done"}"#,
+            r#"{"type":"response.created","response":{"id":"r1"}}"#,
+            AUDIO,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"what I want is just a list","status":"completed"}"#,
+            r#"{"type":"response.done","response":{"id":"r1","status":"completed"}}"#,
         ])
         .await;
         assert!(
@@ -714,6 +1131,7 @@ mod tests {
                     ConversationEvent::TranscriptionStart,
                     ConversationEvent::TranscriptionText(partial),
                     ConversationEvent::PlaybackStart,
+                    ConversationEvent::AudioChunk(_),
                     ConversationEvent::TranscriptionText(full),
                     ConversationEvent::TranscriptionEnd,
                     ConversationEvent::PlaybackEnd,
@@ -729,12 +1147,14 @@ mod tests {
     #[tokio::test]
     async fn utterance_ends_on_response_done_without_completed() {
         let events = replay(&[
-            r#"{"type":"input_audio_buffer.speech_started"}"#,
-            r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"hello"}"#,
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u1"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","item_id":"u1","transcript":"hello"}"#,
             r#"{"type":"input_audio_buffer.speech_stopped"}"#,
-            r#"{"type":"response.created"}"#,
-            r#"{"type":"response.done"}"#,
-            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"hello world","status":"completed"}"#,
+            r#"{"type":"response.created","response":{"id":"r1"}}"#,
+            AUDIO,
+            r#"{"type":"response.done","response":{"id":"r1","status":"completed"}}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"hello world","status":"completed"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.updated","item_id":"u1","transcript":"hello world"}"#,
         ])
         .await;
         assert!(
@@ -744,6 +1164,7 @@ mod tests {
                     ConversationEvent::TranscriptionStart,
                     ConversationEvent::TranscriptionText(t),
                     ConversationEvent::PlaybackStart,
+                    ConversationEvent::AudioChunk(_),
                     ConversationEvent::TranscriptionEnd,
                     ConversationEvent::PlaybackEnd,
                 ] if t == "hello"
@@ -752,18 +1173,21 @@ mod tests {
         );
     }
 
-    /// Barge-in: the user speaks over a reply. The earlier utterance, still
-    /// without its finished transcript, ends when the new one starts; the
-    /// interrupted reply's `response.done` does not end the new one.
+    /// Barge-in: the user speaks over a reply. The earlier utterance ended
+    /// at the reply's first audio; the interrupted reply's `response.done`
+    /// does not end the new one — its own reply's first audio does.
     #[tokio::test]
     async fn barge_in_ends_the_previous_utterance_not_the_new_one() {
         let events = replay(&[
-            r#"{"type":"input_audio_buffer.speech_started"}"#,
-            r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"first"}"#,
-            r#"{"type":"response.created"}"#,
-            r#"{"type":"input_audio_buffer.speech_started"}"#,
-            r#"{"type":"response.done"}"#,
-            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"second","status":"completed"}"#,
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u1"}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"first","status":"completed"}"#,
+            r#"{"type":"response.created","response":{"id":"r1"}}"#,
+            AUDIO,
+            r#"{"type":"input_audio_buffer.speech_started","item_id":"u2"}"#,
+            r#"{"type":"response.done","response":{"id":"r1","status":"completed"}}"#,
+            r#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u2","transcript":"second","status":"completed"}"#,
+            r#"{"type":"response.created","response":{"id":"r2"}}"#,
+            AUDIO,
         ])
         .await;
         assert!(
@@ -772,15 +1196,116 @@ mod tests {
                 [
                     ConversationEvent::TranscriptionStart,
                     ConversationEvent::TranscriptionText(first),
-                    ConversationEvent::PlaybackStart,
                     ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::PlaybackStart,
+                    ConversationEvent::AudioChunk(_),
                     ConversationEvent::TranscriptionStart,
                     ConversationEvent::PlaybackEnd,
                     ConversationEvent::TranscriptionText(second),
                     ConversationEvent::TranscriptionEnd,
+                    ConversationEvent::PlaybackStart,
+                    ConversationEvent::AudioChunk(_),
                 ] if first == "first" && second == "second"
             ),
             "{events:?}"
+        );
+    }
+
+    fn types(frames: &[Value]) -> Vec<&str> {
+        frames.iter().map(|f| f["type"].as_str().unwrap_or_default()).collect()
+    }
+
+    /// The reply the user heard: 300 frames of 10 ms = 3000 ms forwarded,
+    /// first sent at `first_at`, response still in flight.
+    async fn hearing_a_reply(first_at: std::time::Instant) -> SessionState {
+        let mut frames = vec![
+            r#"{"type":"response.created","response":{"id":"r1"}}"#,
+            r#"{"type":"response.output_item.added","item":{"id":"a1","type":"message","role":"assistant"}}"#,
+        ];
+        frames.extend(std::iter::repeat_n(AUDIO, 300));
+        drive(&frames, first_at).await.1
+    }
+
+    /// Barge-in mid-response: cancel, then truncate the heard item at the
+    /// client's played position. Never a buffer clear — that deleted the
+    /// user's words in progress. The cancelled reply's late audio is dropped.
+    #[tokio::test]
+    async fn interrupt_cancels_and_truncates_at_the_played_position() {
+        let now = std::time::Instant::now();
+        let mut state = hearing_a_reply(now).await;
+        let frames = interrupt_frames(&mut state, Some(1200), now, AudioFormat::Pcm24k);
+        assert_eq!(types(&frames), ["response.cancel", "conversation.item.truncate"]);
+        assert_eq!(frames[1]["item_id"], "a1");
+        assert_eq!(frames[1]["content_index"], 0);
+        assert_eq!(frames[1]["audio_end_ms"], 1200);
+
+        let (tx, mut rx) = mpsc::channel(4);
+        reply_audio(Bytes::from_static(&[0u8; 480]), now, &tx, &mut state)
+            .await
+            .unwrap();
+        drop(tx);
+        assert!(rx.recv().await.is_none(), "audio after the barge-in is not played");
+
+        // Nothing left to cut: a second barge-in sends nothing.
+        assert!(interrupt_frames(&mut state, Some(1500), now, AudioFormat::Pcm24k).is_empty());
+    }
+
+    /// The common case: generation outran playback, the response is done,
+    /// the client is still playing it. No cancel (nothing in flight), but
+    /// the truncate still cuts the model's memory to what was heard; with no
+    /// played position from the client, the wall clock since the first
+    /// audio estimates it.
+    #[tokio::test]
+    async fn interrupt_after_generation_truncates_by_the_wall_clock() {
+        let now = std::time::Instant::now();
+        let first_at = now - std::time::Duration::from_millis(800);
+        let mut state = hearing_a_reply(first_at).await;
+        let (tx, _rx) = mpsc::channel(4);
+        handle_server_event(r#"{"type":"response.done","response":{"id":"r1"}}"#, &tx, &mut state)
+            .await
+            .unwrap();
+        let frames = interrupt_frames(&mut state, None, now, AudioFormat::Pcm24k);
+        assert_eq!(types(&frames), ["conversation.item.truncate"]);
+        assert_eq!(frames[0]["audio_end_ms"], 800);
+    }
+
+    /// The played position never passes the audio actually forwarded, and a
+    /// reply the user heard to its end is left alone.
+    #[tokio::test]
+    async fn interrupt_clamps_to_the_audio_forwarded() {
+        let now = std::time::Instant::now();
+        let long_ago = now - std::time::Duration::from_secs(10);
+
+        let mut state = hearing_a_reply(long_ago).await;
+        let frames = interrupt_frames(&mut state, None, now, AudioFormat::Pcm24k);
+        assert_eq!(types(&frames), ["response.cancel", "conversation.item.truncate"]);
+        assert_eq!(frames[1]["audio_end_ms"], 3000);
+
+        let mut state = hearing_a_reply(now).await;
+        let frames = interrupt_frames(&mut state, Some(9000), now, AudioFormat::Pcm24k);
+        assert_eq!(frames[1]["audio_end_ms"], 3000);
+
+        let mut state = hearing_a_reply(long_ago).await;
+        state.response_active = false;
+        assert!(
+            interrupt_frames(&mut state, None, now, AudioFormat::Pcm24k).is_empty(),
+            "fully heard, nothing in flight: nothing to send"
+        );
+
+        // μ-law is 8 bytes a millisecond: the same 144000 bytes are 18 s.
+        let mut state = hearing_a_reply(long_ago).await;
+        let frames = interrupt_frames(&mut state, None, now, AudioFormat::G711Ulaw);
+        assert_eq!(frames[1]["audio_end_ms"], 10_000);
+    }
+
+    /// With nothing in flight and nothing heard, a barge-in sends nothing at
+    /// all — least of all a buffer clear.
+    #[tokio::test]
+    async fn interrupt_with_nothing_playing_sends_nothing() {
+        let mut state = SessionState::default();
+        assert!(
+            interrupt_frames(&mut state, Some(100), std::time::Instant::now(), AudioFormat::Pcm24k)
+                .is_empty()
         );
     }
 
@@ -799,7 +1324,11 @@ mod tests {
             .await
             .unwrap();
         assert!(state.response_active);
+        reply_audio(Bytes::from_static(&[0u8; 480]), std::time::Instant::now(), &tx, &mut state)
+            .await
+            .unwrap();
         assert!(matches!(rx.recv().await, Some(ConversationEvent::PlaybackStart)));
+        assert!(matches!(rx.recv().await, Some(ConversationEvent::AudioChunk(_))));
 
         handle_server_event(r#"{"type":"response.done"}"#, &tx, &mut state)
             .await
