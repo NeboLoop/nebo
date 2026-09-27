@@ -19,7 +19,7 @@ import type { UploadedAttachment } from '$lib/types/attachment';
 import type { ChatMessagesResponse, SessionGoalStatus } from '$lib/api/neboComponents';
 import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
-import { parseMessages } from '$lib/chat/history';
+import { parseMessages, lastRunError } from '$lib/chat/history';
 import { applyHelperEvent, type HelperLine } from '$lib/chat/helpers';
 import { isThinking, latestThought } from '$lib/chat/progress';
 import type { Fold } from '$lib/chat/turnBlocks';
@@ -1001,6 +1001,10 @@ export function createChatController(config: ChatControllerConfig) {
         hasMore = !!resp.hasMore;
         oldestMessageId = resp.messages[0]?.id ?? null;
         messages = parseMessages(resp.messages);
+        // The last run ended on an error the page never heard live: the
+        // same banner the `chat_error` event raises.
+        const failed = lastRunError(resp.messages);
+        if (failed) chatError = failed;
       }
       // The thread is still working: show it now, not at the next event.
       const run = resp.activeRun;

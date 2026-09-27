@@ -40,6 +40,23 @@ interface MessageMeta {
   /** The owner-visible marker left where earlier conversation was summarized
    * (role "system"). Every other system row stays hidden. */
   compactBoundary?: boolean;
+  /** The error a failed run left in the thread (role "system"): shown on the
+   * chat's error banner, never as a bubble. */
+  runError?: boolean;
+}
+
+/** The error the thread's last run ended on, when that is the newest row:
+ * the stored twin of the live `chat_error` event, for a page that opens the
+ * thread after the event went out (a hire's first greeting, a reload). */
+export function lastRunError(rawMessages: ApiChatMessage[]): string | null {
+  const last = rawMessages[rawMessages.length - 1];
+  if (!last?.metadata) return null;
+  try {
+    const meta: MessageMeta = typeof last.metadata === 'string' ? JSON.parse(last.metadata) : last.metadata;
+    return meta?.runError === true ? last.content : null;
+  } catch {
+    return null;
+  }
 }
 
 

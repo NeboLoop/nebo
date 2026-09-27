@@ -54,7 +54,9 @@ fn own_conversation_sql(session_name: &str) -> String {
 
 /// A chat's preview line is its last VISIBLE message: not a tool result,
 /// not empty, not a hidden system-injected message (reminders carry
-/// metadata {"hidden":true}). `chat_id` is the SQL expression to match on.
+/// metadata {"hidden":true}), not the error a failed run left (metadata
+/// {"runError":true}, shown on the thread's error banner, never as a line).
+/// `chat_id` is the SQL expression to match on.
 fn last_visible_message_sql(chat_id: &str) -> String {
     format!(
         "(SELECT m2.content FROM chat_messages m2
@@ -62,6 +64,7 @@ fn last_visible_message_sql(chat_id: &str) -> String {
             AND m2.role != 'tool'
             AND m2.content != ''
             AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"hidden\":true%')
+            AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"runError\":true%')
           ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1)"
     )
 }
@@ -287,7 +290,8 @@ impl Store {
     /// after the last row the boundary's summary read (its `heardThrough`)
     /// but before the boundary itself arrived while the summary was written:
     /// the summary never read it, so it loads too, after the boundary. The
-    /// owner's marker (`compactBoundary`) never does. Rows before the
+    /// owner's marker (`compactBoundary`) never does, and neither does the
+    /// error a failed run left for the owner (`runError`). Rows before the
     /// boundary stay on disk and in the owner's thread.
     pub fn get_chat_messages_since_checkpoint(&self, chat_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
         let conn = self.conn()?;
@@ -296,6 +300,7 @@ impl Store {
                 "WITH visible AS (
                      SELECT rowid AS r, * FROM chat_messages
                      WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
+                       AND COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.runError') END, 0) != 1
                  ),
                  boundary AS (
                      SELECT b.created_at, b.r,
@@ -1507,6 +1512,26 @@ mod tests {
 
         assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["b2", "m4", "m5"]);
         assert_eq!(store.get_chat_messages("c1").unwrap().len(), 7, "the thread keeps every row");
+    }
+
+    /// The error a failed run left for the owner is in the thread, never in
+    /// the model's conversation.
+    #[test]
+    fn the_model_never_reads_a_run_error() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        let ids = |rows: Vec<crate::models::ChatMessage>| rows.into_iter().map(|m| m.id).collect::<Vec<_>>();
+        store.create_chat_message("m1", "c1", "user", "Draft the letter.", None).unwrap();
+        set_created_at(&store, "m1", 100);
+        store
+            .create_chat_message("e1", "c1", "system", "USAGE_LIMIT_EXCEEDED: no balance", Some(r#"{"runError":true}"#))
+            .unwrap();
+        set_created_at(&store, "e1", 101);
+        store.create_chat_message("m2", "c1", "user", "Try again.", None).unwrap();
+        set_created_at(&store, "m2", 102);
+
+        assert_eq!(ids(store.get_chat_messages_since_checkpoint("c1").unwrap()), vec!["m1", "m2"]);
+        assert_eq!(ids(store.get_chat_messages("c1").unwrap()), vec!["m1", "e1", "m2"], "the thread keeps it");
     }
 
     /// Rows stored while a checkpoint's summary was written sit before its
