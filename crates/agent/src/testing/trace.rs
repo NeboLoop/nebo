@@ -67,6 +67,10 @@ pub struct TurnMetrics {
     pub approvals: usize,
     /// How the turn ended: `complete`, `cancelled` or `error`.
     pub end: String,
+    /// The turn's streamed reply text: what a reply check with `turn`
+    /// reads. Empty in traces from before it existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reply: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -436,6 +440,7 @@ mod tests {
             cards: 0,
             approvals: 1,
             end: "complete".into(),
+            reply: "Two facts.".into(),
         }];
         let dir = std::env::temp_dir().join(format!("nebo-trace-turns-{}", std::process::id()));
         t.save(&dir).unwrap();

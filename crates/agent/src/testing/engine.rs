@@ -416,6 +416,7 @@ impl Recorder {
                     if turn.metrics.first_reply_ms.is_none() && !t.trim().is_empty() {
                         turn.metrics.first_reply_ms = Some(turn.started.elapsed().as_millis() as u64);
                     }
+                    turn.metrics.reply.push_str(t);
                     self.text.push(t.to_string());
                 }
                 Step::Continue

@@ -146,7 +146,13 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
         }
         evidence.push(format!("total_tokens {} ≤ {}", got, max));
     }
-    let reply = &trace.final_response.content;
+    let reply = match check.turn {
+        Some(n) => match trace.turns.iter().find(|t| t.turn == n && !t.woken) {
+            Some(t) => &t.reply,
+            None => return Ok((false, format!("the trace has no owner turn {n} to read the reply of"))),
+        },
+        None => &trace.final_response.content,
+    };
     if let Some(pattern) = &check.reply_matches {
         let re = regex::Regex::new(pattern)
             .map_err(|e| format!("invalid regex '{}': {}", pattern, e))?;
@@ -363,6 +369,12 @@ fn validate(check: &Check) -> Result<(), String> {
     }
     if let Some(0) = check.call {
         return Err("call is 1-based; 0 is invalid".into());
+    }
+    if check.turn.is_some() && check.reply_matches.is_none() && check.reply_not_matches.is_none() {
+        return Err("turn narrows a reply check (reply_matches or reply_not_matches)".into());
+    }
+    if let Some(0) = check.turn {
+        return Err("turn is 1-based; 0 is invalid".into());
     }
     if (check.equals.is_some() || check.contains.is_some() || check.matches.is_some() || check.exists)
         && check.arg.is_none()
@@ -738,6 +750,26 @@ prompt_assertions:
         assert!(evaluate(&check(r#"{ reply_not_matches: "(" }"#), &t).is_err());
     }
 
+    /// A reply check with `turn` reads that owner turn's reply alone: the
+    /// fact in turn one's save does not answer turn two.
+    #[test]
+    fn a_reply_check_reads_one_turn() {
+        let mut t = trace_with(vec![], 0);
+        t.final_response.content = "Saved HARBOR-7 to local memory.I don't know the code.".into();
+        t.turns = vec![
+            TurnMetrics { turn: 1, reply: "Saved HARBOR-7 to local memory.".into(), ..Default::default() },
+            TurnMetrics { turn: 2, reply: "I don't know the code.".into(), ..Default::default() },
+        ];
+        assert!(evaluate(&check(r#"{ reply_matches: "HARBOR-7" }"#), &t).unwrap().0, "the joined reply has it");
+        let (p, why) = evaluate(&check(r#"{ turn: 2, reply_matches: "HARBOR-7" }"#), &t).unwrap();
+        assert!(!p && why.contains("I don't know"), "{why}");
+        t.turns[1].reply = "The code this week is HARBOR-7.".into();
+        assert!(evaluate(&check(r#"{ turn: 2, reply_matches: "HARBOR-7" }"#), &t).unwrap().0);
+        let (p, why) = evaluate(&check(r#"{ turn: 3, reply_matches: "HARBOR-7" }"#), &t).unwrap();
+        assert!(!p && why.contains("no owner turn 3"), "{why}");
+        assert!(evaluate(&check("{ turn: 2, max_errors: 0 }"), &t).is_err(), "turn only narrows a reply check");
+    }
+
     #[test]
     fn a_misspelt_key_is_a_load_error_not_a_dropped_assertion() {
         assert!(serde_yaml::from_str::<Check>("{ max_tool_call: 2 }").is_err());
@@ -793,6 +825,8 @@ prompt_assertions:
         assert!(paths.len() > 100, "the fixtures went missing: {}", paths.len());
         for path in paths {
             let fix = load_fixture(&path).unwrap_or_else(|e| panic!("{e}"));
+            // Checks are graded bound (`{{tag}}` in a pattern is a run's tag).
+            let fix = crate::testing::scratch::bind(&fix, "run-1").unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             for a in fix.prompt_assertions.all().into_iter().chain(fix.integrated_assertions.iter()) {
                 if let Some(c) = &a.check {
                     validate(c).unwrap_or_else(|e| panic!("{} / {}: {e}", path.display(), a.id));

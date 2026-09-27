@@ -229,6 +229,11 @@ pub struct Check {
     /// tool's answers. Needs a call selector.
     #[serde(default, deserialize_with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
     pub result_not_contains: Vec<String>,
+    /// The 1-based owner turn whose reply `reply_matches` and
+    /// `reply_not_matches` read, instead of every turn's joined: what one
+    /// turn answered, e.g. that another employee's reply gave the fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<usize>,
     /// Regex that must match the run's reply text: every owner turn's
     /// streamed reply joined, with the harness's card notes. The way to pin
     /// what was said: a question asked, a fact reported.

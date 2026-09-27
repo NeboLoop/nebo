@@ -106,9 +106,9 @@ pub enum TurnEvent {
     /// A helper whose answer is read as data answered in the wrong shape:
     /// what's wrong with it.
     AnswerShape(String),
-    /// The owner asked for something to be saved and no `remember` call has
-    /// succeeded since (`memory_save`).
-    UnsavedMemory,
+    /// The owner asked for something to be saved, in this memory, and no
+    /// `remember` call has succeeded since (`memory_save`).
+    UnsavedMemory(super::memory_save::Scope),
     /// The `steering.generate` app hook's text.
     AppHook {
         label: String,
@@ -443,13 +443,14 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         ),
         TurnEvent::WorkflowContract(text) => ("workflow_contract", non_empty(text)?),
         TurnEvent::AnswerShape(text) => ("answer_shape", non_empty(text)?),
-        TurnEvent::UnsavedMemory => (
+        TurnEvent::UnsavedMemory(scope) => (
             "unsaved_memory",
-            "The owner asked you to save something, and nothing is saved yet: no remember call has succeeded since \
-             they asked. Save it now with remember, in the scope they asked for, then tell them where it went in the \
-             result's words. If it can't be saved, tell them so plainly. If their message didn't ask you to keep \
-             anything, reply with nothing."
-                .to_string(),
+            format!(
+                "Nothing is saved yet: no remember call has succeeded since the owner asked you to save something. \
+                 Make the remember call now, with scope \"{}\". This step is Nebo's: nothing you write in it \
+                 reaches the owner, and only the remember call counts.",
+                scope.as_str()
+            ),
         ),
         TurnEvent::AppHook { text, .. } => ("app_hook", non_empty(text)?),
         TurnEvent::RestoredFile { path, content } => (
@@ -1100,7 +1101,7 @@ mod tests {
             TurnEvent::CutoffResume,
             TurnEvent::WorkflowContract("call publish once".into()),
             TurnEvent::AnswerShape("no JSON object".into()),
-            TurnEvent::UnsavedMemory,
+            TurnEvent::UnsavedMemory(crate::harness::memory_save::Scope::Private),
             TurnEvent::AppHook {
                 label: "app".into(),
                 text: "the invoice is due".into(),
