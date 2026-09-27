@@ -1915,7 +1915,7 @@
 			"emptyHint": "Los elementos compartidos de forma privada por una organización aparecerán aquí."
 		},
 		"employeesHeadline": "Contrata a tus empleados de IA",
-		"employeesLede": "Empleados ya preparados, organizados por departamento. Cada uno funciona localmente con memoria persistente y empieza a trabajar en cuanto lo contratas.",
+		"employeesLede": "Empleados ya preparados, organizados por departamento. Cada uno tiene memoria persistente y empieza a trabajar en cuanto lo contratas.",
 		"toolsHeadline": "Herramientas",
 		"toolsLede": "Conecta el software que ya usas — organizado por lo que hace.",
 		"searchAllPlaceholder": "Busca empleados, herramientas, colecciones…",
@@ -2703,7 +2703,7 @@
 		"business": "Negocios",
 		"businessDesc": "Organiza y automatiza tu trabajo.",
 		"welcomeTitle": "Bienvenido a bordo.",
-		"welcomeBody": "Vivo en tu computadora y te ayudo a organizar y automatizar {noun}. Déjame darte un recorrido rápido para que sepas dónde está todo.",
+		"welcomeBody": "Estoy aquí para ayudarte a organizar y automatizar {noun}. Déjame darte un recorrido rápido para que sepas dónde está todo.",
 		"nounPersonal": "tu vida",
 		"nounBusiness": "tu negocio",
 		"skipTour": "Omitir recorrido",
@@ -2757,7 +2757,16 @@
 		"paymentAtCheckout": "El método de pago se solicitará al finalizar la compra",
 		"processingPaymentEllipsis": "Procesando pago…",
 		"mayTakeMoment": "Esto puede tardar un momento",
-		"skipSetup": "Omitir configuración"
+		"skipSetup": "Omitir configuración",
+		"hireName": "Contratar a {name}",
+		"hired": "Contratado",
+		"hiringName": "Contratando a {name}…",
+		"hiredTitle": "{name} ya está contratado",
+		"hiredReady": "{name} está listo para trabajar.",
+		"gettingReady": "Preparando a {name}…",
+		"skillsAndTools": "Habilidades y herramientas",
+		"hireFailedTitle": "No se pudo completar la contratación",
+		"hireFailed": "No se pudo contratar a {name}. Inténtalo de nuevo."
 	},
 	"activity": {
 		"pageTitle": "Actividad - Nebo",
@@ -3000,7 +3009,7 @@
 	},
 	"christen": {
 		"title": "Ponle nombre a tu primer empleado",
-		"lede": "Toda contratación empieza por un nombre. Este funciona en tu máquina, recuerda todo lo que le enseñas y trabaja solo para ti.",
+		"lede": "Toda contratación empieza por un nombre. Este recuerda todo lo que le enseñas y trabaja solo para ti.",
 		"placeholder": "p. ej. Jarvis, Piper, Ada…",
 		"create": "Contratarlo",
 		"creating": "Creando a {name}…",

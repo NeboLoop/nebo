@@ -1915,7 +1915,7 @@
 			"emptyHint": "組織から非公開で共有されたアイテムがここに表示されます。"
 		},
 		"employeesHeadline": "AI社員を採用しましょう",
-		"employeesLede": "部門ごとに整理された、すぐに使える社員。それぞれがローカルで動き、記憶を保ち、採用した瞬間から働き始めます。",
+		"employeesLede": "部門ごとに整理された、すぐに使える社員。それぞれが記憶を保ち、採用した瞬間から働き始めます。",
 		"toolsHeadline": "ツール",
 		"toolsLede": "すでにお使いのソフトウェアを接続します — できることで整理されています。",
 		"searchAllPlaceholder": "社員、ツール、コレクションを検索…",
@@ -2703,7 +2703,7 @@
 		"business": "ビジネス",
 		"businessDesc": "仕事を整理し、自動化します。",
 		"welcomeTitle": "ようこそ。",
-		"welcomeBody": "私はあなたのコンピュータに住み、{noun}の整理と自動化をお手伝いします。どこに何があるか、簡単にツアーでご案内しますね。",
+		"welcomeBody": "{noun}の整理と自動化をお手伝いします。どこに何があるか、簡単にツアーでご案内しますね。",
 		"nounPersonal": "暮らし",
 		"nounBusiness": "ビジネス",
 		"skipTour": "ツアーをスキップ",
@@ -2757,7 +2757,16 @@
 		"paymentAtCheckout": "お支払い方法はチェックアウト時に登録します",
 		"processingPaymentEllipsis": "決済を処理中…",
 		"mayTakeMoment": "少々お待ちください",
-		"skipSetup": "セットアップをスキップ"
+		"skipSetup": "セットアップをスキップ",
+		"hireName": "{name}を採用",
+		"hired": "採用済み",
+		"hiringName": "{name}を採用しています…",
+		"hiredTitle": "{name}を採用しました",
+		"hiredReady": "{name}はすぐに働けます。",
+		"gettingReady": "{name}の準備をしています…",
+		"skillsAndTools": "スキルとツール",
+		"hireFailedTitle": "採用を完了できませんでした",
+		"hireFailed": "{name}を採用できませんでした。もう一度お試しください。"
 	},
 	"activity": {
 		"pageTitle": "アクティビティ - Nebo",
@@ -3000,7 +3009,7 @@
 	},
 	"christen": {
 		"title": "最初の社員に名前をつけましょう",
-		"lede": "採用は名前から始まります。この社員はあなたのマシンで動き、教えたことをすべて覚え、あなたのためだけに働きます。",
+		"lede": "採用は名前から始まります。この社員は教えたことをすべて覚え、あなたのためだけに働きます。",
 		"placeholder": "例：Jarvis、Piper、Ada…",
 		"create": "採用する",
 		"creating": "{name}を作成しています…",
