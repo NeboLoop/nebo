@@ -1,84 +1,99 @@
 //! The linked provider: the brain of an employee hired from a linked bot.
 //!
 //! A linked bot (a computer's agents joined to the owner's account by
-//! `nebo-link`: OpenClaw, Hermes, Claude Code, Codex, ...) serves Nebo's chat
-//! contract over its tunnel: the roster, chats and the streamed chat socket
-//! the phone speaks. This provider drives one of its agents through that
-//! contract, the way [`super::cli`] drives a CLI through a process: it
-//! reports `handles_tools`, sends the turn, and maps the contract's events
-//! into [`StreamEvent`]s.
+//! `nebo-link`: OpenClaw, Hermes, Claude Code, Codex, ...) serves its agents
+//! over Open Agent Link (OAL), and Nebo is an OAL client of it. This
+//! provider drives one of its agents in ACP on that agent's channel, the way
+//! [`super::cli`] drives a CLI through a process: it reports
+//! `handles_tools`, sends the turn, and maps the agent's `session/update`s,
+//! its permission requests and the host's `host/turn` into
+//! [`StreamEvent`]s, read as the phone reads them ([`link_core::turn`]).
 //!
 //! The target rides in the model id, `linked/<linkedBotId>/<agentId>`, on the
 //! employee's `model_preference`; one provider serves every linked employee.
-//! It reaches another computer's linked bot at
-//! `{NEBOAI_API_URL}/t/{linkedBotId}/…` with the Nebo bot's own token, which
-//! the hub admits for a bot of the same owner. An agent on this computer is
-//! hosted by Nebo itself ([`super::local_host::LocalHost`]), under this bot's
-//! own id: the same contract, carried in memory, with no hub between.
+//! Another computer's linked bot is reached through a relay ([`Relay`]):
+//! NeboAI, at `{NEBOAI_API_URL}/t/{linkedBotId}/oal` with the Nebo bot's own
+//! token, end-to-end encrypted with the keys Nebo paired with the bot
+//! ([`super::oal`]; the first time, Nebo pairs by itself). An agent on this
+//! computer is hosted by Nebo itself ([`super::local_host::LocalHost`]),
+//! under this bot's own id, and reached the same way in memory, with no hub
+//! between: one client for both.
 //!
-//! The runtime keeps the transcript. One Nebo chat is one runtime session: the
-//! first turn on a thread creates the runtime's chat and records its id on the
-//! Nebo chat row (`chats.linked_chat_id`); every turn sends only the newest
-//! user message, never the flattened history the CLI provider builds. Nebo's
-//! system prompt and steering are not sent — the runtime owns its persona.
+//! The agent keeps the transcript. One Nebo chat is one agent session: the
+//! first turn on a thread creates the session and records its id and agent
+//! on the Nebo chat row (`chats.linked_chat_id`, `chats.linked_agent_id`);
+//! every later turn loads it and sends only the newest user message, never
+//! the flattened history the CLI provider builds. Nebo's system prompt and
+//! steering are not sent — the agent owns its persona. A connection that
+//! drops mid-turn is opened again and the session loaded: the turn goes on
+//! from where Nebo left it (spec §12).
 //!
-//! A question the runtime stops for (`ask_request`, e.g. its permission to
-//! run a command) becomes a [`StreamEvent::ask_request`] registered on the
-//! run's ask channels, the ONE way a parked question is answered: the app's
-//! ask card, the phone (live and on reload), and a loop reply all show it
-//! with the runtime's own options, and the option chosen goes back as
-//! `ask_response`.
+//! A permission request the agent stops for becomes a
+//! [`StreamEvent::ask_request`] registered on the run's ask channels, the ONE
+//! way a parked question is answered: the app's ask card, the phone (live
+//! and on reload), and a loop reply all show it with the agent's own
+//! options, and the option chosen goes back as the request's answer. The
+//! first answer wins: one given elsewhere (the phone) takes Nebo's card
+//! back.
 
-use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::{SinkExt, StreamExt};
-use link_core::phone::{Contract, Outbound};
+use link_core::model::{DeviceRef, PermissionOption, StopReason, TurnState, TurnUpdate, code};
+use link_core::turn::{self, Permission, ToolEvent, Tools, mode_for};
+use nebo_runtimes::acp::protocol::{self, ToolCall as AcpToolCall};
+use oal_host::OalHost;
+use oal_secure::KeyStore;
 use serde_json::{Value, json};
-use tokio::net::TcpStream;
-use tokio::sync::{broadcast, mpsc};
-use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::local_host::LocalHost;
+use super::oal::{self, Conn, Unreached};
+pub use super::oal::{Relay, TokenSource};
 use crate::types::*;
 
 /// The provider id, and the prefix of every linked model id.
 pub const ID: &str = "linked";
 
-/// How long the hub and the link may take to answer a connect.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-/// How long a cancel waits for the runtime's `chat_cancelled`.
+/// How long a cancel waits for the turn's end.
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How often a connection pings the host, so a turn that waits on the owner
+/// keeps it (spec §11: every 20 s of quiet).
+const HEARTBEAT: Duration = Duration::from_secs(20);
+/// Waits between tries to reach the linked bot again after a connection
+/// drops mid-turn (spec §11: from 1 s, capped at 30 s).
+const RECONNECT: [u64; 7] = [1, 2, 4, 8, 16, 30, 30];
 
-/// The Nebo bot's current NeboAI token, resolved per call (the hub rotates
-/// it on every comms connect). `None` = not signed in.
-pub type TokenSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+/// Nebo as a client of the host on its own computer.
+fn this_device() -> DeviceRef {
+    DeviceRef {
+        device_id: "nebo".to_owned(),
+        name: "Nebo".to_owned(),
+    }
+}
 
 #[derive(Clone)]
 pub struct LinkedProvider {
-    /// `NEBOAI_API_URL`, without a trailing slash.
-    api_url: String,
+    /// How other computers' linked bots are reached.
+    relay: Relay,
     store: Arc<db::Store>,
-    token: TokenSource,
-    client: reqwest::Client,
-    /// This computer's host, when Nebo has a bot to host as.
+    /// This computer's host and Nebo's keys.
     local: Option<Arc<LocalHost>>,
+    /// What a linked bot calls Nebo once they are paired.
+    device_name: String,
 }
 
 impl LinkedProvider {
-    pub fn new(api_url: &str, store: Arc<db::Store>, token: TokenSource, local: Option<Arc<LocalHost>>) -> Self {
+    pub fn new(relay: Relay, store: Arc<db::Store>, local: Option<Arc<LocalHost>>, device_name: &str) -> Self {
         Self {
-            api_url: api_url.trim_end_matches('/').to_owned(),
+            relay,
             store,
-            token,
-            client: crate::http::request_client(),
             local,
+            device_name: device_name.to_owned(),
         }
     }
 
@@ -95,339 +110,87 @@ impl LinkedProvider {
             .and_then(split)
     }
 
-    /// One turn, end to end. `Err` is the message the owner reads.
-    async fn turn(
-        &self,
-        req: &ChatRequest,
-        bot_id: &str,
-        agent_id: &str,
-        tx: &mpsc::Sender<StreamEvent>,
-    ) -> Result<(), String> {
-        let name = self.employee_name(req, agent_id);
-        let offline = || format!("Could not connect to {name}. Try again.");
-        let route = self.route(bot_id, &name)?;
-        let prompt = owners_message(&req.messages).ok_or_else(|| "Nothing to send.".to_owned())?;
-
-        let linked_chat_id = self
-            .linked_chat(req, bot_id, agent_id, &route)
+    /// Pairs Nebo with the linked bot `bot_id` using a pairing code the
+    /// owner got on its computer (`nebo-link pair`). Through NeboAI Nebo
+    /// pairs by itself; through a self-hosted relay it needs this once.
+    pub async fn pair(&self, bot_id: &str, code: &str) -> Result<(), String> {
+        let refused = || "That code didn't work. Get a new one on the computer.".to_owned();
+        let keys = self.keys().ok_or_else(refused)?;
+        let code = oal_secure::PairingCode::parse(code).map_err(|_| refused())?;
+        oal::pair(&self.relay, &keys, bot_id, &code, &self.device_name)
             .await
-            .map_err(|e| match e {
-                Reach::Offline => offline(),
-                Reach::Refused(why) => why,
-            })?;
-        let session_id = format!("agent:{agent_id}:thread:{linked_chat_id}");
+            .map(drop)
+            .map_err(|_| refused())
+    }
 
-        let mut ws = self.socket(&route, bot_id).await.ok_or_else(offline)?;
-
-        // The phone's handshake: `auth` is answered with `auth_ok` before
-        // anything else.
-        let token = match &route {
-            Route::Hub { token } => token.as_str(),
-            Route::Local(_) => "",
-        };
-        send(
-            &mut ws,
-            json!({ "type": "auth", "data": { "token": token } }),
-            &offline,
-        )
-        .await?;
-        loop {
-            match tokio::time::timeout(CONNECT_TIMEOUT, ws.next()).await {
-                Ok(Some(frame)) if frame["type"] == "auth_ok" => break,
-                Ok(Some(_)) => continue,
-                _ => return Err(offline()),
-            }
-        }
-
-        // The employee's permission mode rides with the turn: a linked coding
-        // agent runs it in its own matching mode (nebo-link maps it).
-        let mut data = json!({
-            "prompt": prompt,
-            "agent_id": agent_id,
-            "session_id": session_id,
-        });
-        if let Some(mode) = req.permission_mode {
-            data["permission_mode"] = json!(mode.as_str());
-        }
-        send(
-            &mut ws,
-            json!({
-                "type": "chat",
-                "message_id": uuid::Uuid::new_v4().to_string(),
-                "data": data,
-            }),
-            &offline,
-        )
-        .await?;
-        info!(bot_id, agent_id, %session_id, prompt_len = prompt.len(), "linked: turn sent");
-
-        // Answers to the runtime's questions arrive here from the ask door.
-        let (answers_tx, mut answers_rx) = mpsc::channel::<(String, String)>(8);
-        let cancel = req.cancel_token.clone().unwrap_or_default();
-        let mut cancel_deadline: Option<tokio::time::Instant> = None;
-        // A message sent into a turn another door started is queued behind
-        // it; the running turn's events are not this one's.
-        let mut queued = false;
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled(), if cancel_deadline.is_none() => {
-                    send(&mut ws, json!({ "type": "cancel", "data": { "session_id": session_id } }), &offline).await?;
-                    cancel_deadline = Some(tokio::time::Instant::now() + CANCEL_TIMEOUT);
-                }
-                _ = tokio::time::sleep_until(cancel_deadline.unwrap_or_else(tokio::time::Instant::now)), if cancel_deadline.is_some() => {
-                    return Err("Cancelled".to_owned());
-                }
-                Some((request_id, value)) = answers_rx.recv() => {
-                    send(&mut ws, json!({ "type": "ask_response", "data": { "request_id": request_id, "value": value } }), &offline).await?;
-                }
-                frame = ws.next() => {
-                    let Some(frame) = frame else {
-                        return Err(offline());
-                    };
-                    let data = &frame["data"];
-                    if data["session_id"] != session_id {
-                        continue;
-                    }
-                    let kind = frame["type"].as_str().unwrap_or("");
-                    let terminal = matches!(kind, "chat_complete" | "chat_error" | "chat_cancelled");
-                    if queued {
-                        if terminal {
-                            queued = false;
-                        }
-                        continue;
-                    }
-                    match kind {
-                        "chat_stream" => {
-                            if let Some(content) = data["content"].as_str().filter(|c| !c.is_empty()) {
-                                let _ = tx.send(StreamEvent::text(content)).await;
-                            }
-                        }
-                        "thinking" => {
-                            if let Some(text) = data["text"].as_str().filter(|t| !t.is_empty()) {
-                                let _ = tx.send(StreamEvent::thinking(text)).await;
-                            }
-                        }
-                        "tool_start" => {
-                            let _ = tx
-                                .send(StreamEvent::tool_call(ToolCall {
-                                    id: data["tool_id"].as_str().unwrap_or("").to_owned(),
-                                    name: data["tool"].as_str().unwrap_or("").to_owned(),
-                                    input: data["input"].clone(),
-                                }))
-                                .await;
-                        }
-                        "tool_result" => {
-                            let is_error = data["is_error"].as_bool().unwrap_or(false);
-                            let _ = tx
-                                .send(StreamEvent {
-                                    payload: None,
-                                    provenance: None,
-                                    event_type: StreamEventType::ToolResult,
-                                    text: data["result"].as_str().unwrap_or("").to_owned(),
-                                    tool_call: Some(ToolCall {
-                                        id: data["tool_id"].as_str().unwrap_or("").to_owned(),
-                                        name: data["tool_name"].as_str().unwrap_or("").to_owned(),
-                                        input: Value::Null,
-                                    }),
-                                    error: is_error.then(|| "tool error".to_owned()),
-                                    usage: None,
-                                    rate_limit: None,
-                                    widgets: None,
-                                    provider_metadata: None,
-                                    stop_reason: None,
-                                    image_url: None,
-                                })
-                                .await;
-                        }
-                        "usage" => {
-                            let _ = tx
-                                .send(StreamEvent::usage(UsageInfo {
-                                    input_tokens: data["input_tokens"].as_i64().unwrap_or(0) as i32,
-                                    output_tokens: data["output_tokens"].as_i64().unwrap_or(0) as i32,
-                                    ..UsageInfo::default()
-                                }))
-                                .await;
-                        }
-                        "ask_request" => {
-                            self.ask(data, req, tx, &answers_tx).await;
-                        }
-                        "chat_complete" => {
-                            let _ = tx.send(StreamEvent::done()).await;
-                            return Ok(());
-                        }
-                        "chat_error" => {
-                            if data["stop_reason"] == "queued_into_running_turn" {
-                                queued = true;
-                                continue;
-                            }
-                            let error = data["error"].as_str().filter(|e| !e.is_empty());
-                            return Err(error.map(str::to_owned).unwrap_or_else(offline));
-                        }
-                        "chat_cancelled" => return Err("Cancelled".to_owned()),
-                        _ => {}
-                    }
-                }
-            }
-        }
+    fn keys(&self) -> Option<KeyStore> {
+        self.local.as_ref().map(|l| l.keys().clone())
     }
 
     /// Where `bot_id` is reached: this computer's own host when it is this
-    /// bot, else through the hub. `Err` is the message the owner reads.
+    /// bot, else through the relay. `Err` is the message the owner reads.
     fn route(&self, bot_id: &str, name: &str) -> Result<Route, String> {
         if let Some(local) = self.local.as_ref().filter(|l| l.bot_id().as_deref() == Some(bot_id)) {
-            return match local.contract() {
-                Some(contract) => Ok(Route::Local(contract)),
+            return match local.oal() {
+                Some(oal) => Ok(Route::Local(oal)),
                 None => {
                     info!(bot_id, "linked: nebo-link hosts this computer's agents, so Nebo does not");
                     Err(format!("Could not connect to {name}. Try again."))
                 }
             };
         }
-        match (self.token)() {
-            Some(token) => Ok(Route::Hub { token }),
-            None => Err(format!("Sign in to NeboAI to reach {name}.")),
+        match self.keys() {
+            Some(keys) => Ok(Route::Remote(keys)),
+            None => {
+                warn!(bot_id, "linked: Nebo has no key store, so it can't reach another computer");
+                Err(format!("Could not connect to {name}. Try again."))
+            }
         }
     }
 
-    /// The chat socket, through the hub or on this computer.
-    async fn socket(&self, route: &Route, bot_id: &str) -> Option<Socket> {
-        let token = match route {
-            Route::Local(contract) => {
-                return Some(Socket::Local {
-                    frames: contract.subscribe(),
-                    contract: contract.clone(),
-                    replies: VecDeque::new(),
-                });
-            }
-            Route::Hub { token } => token,
-        };
-        let url = format!("{}/t/{bot_id}/ws", ws_base(&self.api_url));
-        let mut request = match url.as_str().into_client_request() {
-            Ok(request) => request,
-            Err(e) => {
-                info!(bot_id, error = %e, "linked: the chat socket's address is not valid");
-                return None;
-            }
-        };
-        let Ok(bearer) = format!("Bearer {token}").parse() else {
-            info!(bot_id, "linked: the NeboAI token is not a valid header value");
-            return None;
-        };
-        request.headers_mut().insert(AUTHORIZATION, bearer);
-        match tokio::time::timeout(CONNECT_TIMEOUT, tls::connect_ws(request)).await {
-            Ok(Ok((ws, _))) => Some(Socket::Hub(Box::new(ws))),
-            Ok(Err(e)) => {
-                info!(bot_id, error = %e, "linked: the chat socket did not connect");
-                None
-            }
-            Err(_) => None,
+    /// A connection to the host `bot_id` is on.
+    async fn open(&self, route: &Route, bot_id: &str) -> Result<Conn, Unreached> {
+        match route {
+            Route::Local(oal) => Ok(Conn::local(oal, this_device())),
+            Route::Remote(keys) => oal::connect(&self.relay, keys, bot_id, &self.device_name).await,
         }
     }
 
-    /// The runtime's chat behind this Nebo chat: recorded on the chat row, or
-    /// created on the thread's first turn and recorded then.
-    async fn linked_chat(
-        &self,
-        req: &ChatRequest,
-        bot_id: &str,
-        agent_id: &str,
-        route: &Route,
-    ) -> Result<String, Reach> {
+    /// One turn, end to end. `Err` is the message the owner reads.
+    async fn turn(&self, req: &ChatRequest, bot_id: &str, agent_id: &str, tx: &mpsc::Sender<StreamEvent>) -> Result<(), String> {
+        let name = self.employee_name(req, agent_id);
+        let route = self.route(bot_id, &name)?;
+        let prompt = owners_message(&req.messages).ok_or_else(|| "Nothing to send.".to_owned())?;
         if req.chat_id.is_empty() {
-            return Err(Reach::Refused(
-                "This turn belongs to no conversation, so it has no linked chat.".to_owned(),
-            ));
+            return Err("This turn belongs to no conversation, so it has no linked chat.".to_owned());
         }
         let chat = self
             .store
             .get_chat(&req.chat_id)
-            .map_err(|e| Reach::Refused(format!("Could not read the conversation: {e}")))?;
-        if let Some(id) = chat
-            .and_then(|c| c.linked_chat_id)
-            .filter(|id| !id.is_empty())
-        {
-            return Ok(id);
-        }
-        let path = format!("/api/v1/agents/{agent_id}/chats");
-        let (status, body) = match route {
-            Route::Hub { token } => {
-                let response = self
-                    .client
-                    .post(format!("{}/t/{bot_id}{path}", self.api_url))
-                    .bearer_auth(token)
-                    .json(&json!({}))
-                    .send()
-                    .await
-                    .map_err(|e| {
-                        info!(bot_id, error = %e, "linked: creating the runtime's chat did not connect");
-                        Reach::Offline
-                    })?;
-                let status = response.status().as_u16();
-                (status, response.json().await.unwrap_or(Value::Null))
-            }
-            Route::Local(contract) => match contract.rest("POST", &path).await {
-                Ok(body) => (200, body),
-                Err(refused) => (refused.status, json!({ "error": refused.message })),
-            },
+            .map_err(|e| format!("Could not read the conversation: {e}"))?;
+        let conn = self.open(&route, bot_id).await.map_err(|e| unreached(e, &name))?;
+        let mut driver = Driver {
+            provider: self,
+            req,
+            tx,
+            route,
+            bot_id: bot_id.to_owned(),
+            agent_id: agent_id.to_owned(),
+            agent: String::new(),
+            folder: None,
+            name,
+            session: String::new(),
+            conn,
+            prompt: prompt.to_owned(),
+            prompted: false,
+            waiting: false,
+            turn: None,
+            seen: 0,
+            tools: Tools::default(),
+            asks: HashMap::new(),
         };
-        if !(200..300).contains(&status) {
-            // 502 is the link saying the runtime is not answering; anything
-            // else is a refusal with its own words.
-            return Err(match body["error"].as_str().filter(|e| !e.is_empty()) {
-                Some(error) if status != 502 => Reach::Refused(error.to_owned()),
-                _ => Reach::Offline,
-            });
-        }
-        let Some(id) = body["chat"]["id"].as_str().filter(|id| !id.is_empty()) else {
-            return Err(Reach::Refused(
-                "The linked bot created a chat without an id.".to_owned(),
-            ));
-        };
-        self.store
-            .set_chat_linked_chat_id(&req.chat_id, id)
-            .map_err(|e| Reach::Refused(format!("Could not record the linked chat: {e}")))?;
-        info!(bot_id, agent_id, chat_id = %req.chat_id, linked_chat_id = id, "linked: chat created");
-        Ok(id.to_owned())
-    }
-
-    /// The runtime stopped to ask the owner: register the question on the
-    /// run's ask channels and raise `ask_request` with the runtime's own
-    /// options; the option chosen comes back through `answers`.
-    async fn ask(
-        &self,
-        data: &Value,
-        req: &ChatRequest,
-        tx: &mpsc::Sender<StreamEvent>,
-        answers: &mpsc::Sender<(String, String)>,
-    ) {
-        let request_id = data["request_id"].as_str().unwrap_or("").to_owned();
-        let Some(channels) = req.ask_channels.as_ref() else {
-            // No ask door on this run (nothing could answer): the question
-            // stays open for the linked bot's own chat and the phone.
-            warn!(request_id, "linked: an ask with no ask door on the run");
-            return;
-        };
-        if request_id.is_empty() {
-            return;
-        }
-        info!(request_id, "linked: the runtime asks the owner");
-        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-        channels.lock().await.insert(request_id.clone(), resp_tx);
-        let _ = tx
-            .send(StreamEvent::ask_request(
-                request_id.clone(),
-                data["prompt"].as_str().unwrap_or(""),
-                Some(data["widgets"].clone()),
-            ))
-            .await;
-        let answers = answers.clone();
-        tokio::spawn(async move {
-            // A question nobody answers (the run ended) is not answered: the
-            // runtime cancels it with its turn.
-            if let Ok(value) = resp_rx.await {
-                let _ = answers.send((request_id, value)).await;
-            }
-        });
+        driver.begin(chat).await?;
+        driver.run().await
     }
 
     /// The employee's name, for the copy the owner reads.
@@ -452,7 +215,7 @@ impl Provider for LinkedProvider {
         true
     }
 
-    /// The runtime keeps the transcript: a message is delivered once, and the
+    /// The agent keeps the transcript: a message is delivered once, and the
     /// provider answers only for the agent it is addressed to.
     fn retryable(&self) -> bool {
         false
@@ -462,10 +225,7 @@ impl Provider for LinkedProvider {
         // The runner hands the provider its model without the `linked/`
         // prefix, as it does every provider.
         let Some((bot_id, agent_id)) = split(&req.model) else {
-            return Err(ProviderError::Request(format!(
-                "not a linked agent: {:?}",
-                req.model
-            )));
+            return Err(ProviderError::Request(format!("not a linked agent: {:?}", req.model)));
         };
         let (bot_id, agent_id) = (bot_id.to_owned(), agent_id.to_owned());
         let (tx, rx) = mpsc::channel(100);
@@ -483,80 +243,589 @@ impl Provider for LinkedProvider {
 
 /// Where a linked agent is reached.
 enum Route {
-    /// Another computer's linked bot, through the hub with the Nebo bot's
-    /// token.
-    Hub { token: String },
-    /// This computer's own host.
-    Local(Arc<Contract>),
+    /// This computer's own host, in this process.
+    Local(Arc<OalHost>),
+    /// Another computer's linked bot, through the relay, with Nebo's keys.
+    Remote(KeyStore),
 }
 
-/// The chat contract's socket: the phone's `{type, data}` frames, over the
-/// hub's tunnel or in memory on this computer.
-enum Socket {
-    Hub(Box<WebSocketStream<MaybeTlsStream<TcpStream>>>),
-    Local {
-        contract: Arc<Contract>,
-        frames: broadcast::Receiver<Outbound>,
-        /// Direct answers to frames sent (`auth_ok`), read before the rest.
-        replies: VecDeque<Value>,
-    },
+/// A permission request Nebo raised a card for.
+struct Asked {
+    /// The id of this connection's copy of the request (`None` after a
+    /// reconnect, until the host sends the request again).
+    rpc: Option<Value>,
+    options: Vec<PermissionOption>,
+    labels: Vec<String>,
+    /// The option the owner chose, sent again to a copy the host sends after
+    /// a reconnect until the host says the request is resolved.
+    chosen: Option<String>,
 }
 
-impl Socket {
-    /// Sends one frame; `false` when the socket is gone.
-    async fn send(&mut self, frame: Value) -> bool {
-        match self {
-            Socket::Hub(ws) => ws.send(WsMessage::text(frame.to_string())).await.is_ok(),
-            Socket::Local { contract, replies, .. } => {
-                replies.extend(contract.inbound(&frame));
-                true
+/// One turn on one connection (opened again if it drops).
+struct Driver<'a> {
+    provider: &'a LinkedProvider,
+    req: &'a ChatRequest,
+    tx: &'a mpsc::Sender<StreamEvent>,
+    route: Route,
+    bot_id: String,
+    /// The agent as the employee's brain names it.
+    agent_id: String,
+    /// The agent's id on the host: its channel.
+    agent: String,
+    /// The folder its sessions work in, when it has one.
+    folder: Option<String>,
+    /// The employee's name, for the copy the owner reads.
+    name: String,
+    session: String,
+    conn: Conn,
+    prompt: String,
+    /// The prompt was sent and not refused.
+    prompted: bool,
+    /// The prompt was refused while another turn runs in the session: it is
+    /// sent again when that one ends.
+    waiting: bool,
+    /// This turn's id, once the host started it.
+    turn: Option<String>,
+    /// How many of this turn's updates were read.
+    seen: usize,
+    tools: Tools,
+    /// The permission requests asked, by their id on the run's ask channels
+    /// (the tool call's id).
+    asks: HashMap<String, Asked>,
+}
+
+impl Driver<'_> {
+    fn offline(&self) -> String {
+        format!("Could not connect to {}. Try again.", self.name)
+    }
+
+    /// The agent, its session (made on the chat's first turn, loaded on every
+    /// other), the employee's mode, and the prompt sent.
+    async fn begin(&mut self, chat: Option<db::models::Chat>) -> Result<(), String> {
+        self.locate().await?;
+        let capabilities = self.initialize().await?;
+        let recorded = chat.and_then(|c| {
+            let session = c.linked_chat_id.filter(|id| !id.is_empty())?;
+            // A session recorded before its agent was is the employee's.
+            let unrecorded = c.linked_agent_id.is_none();
+            let agent = c.linked_agent_id.unwrap_or_else(|| self.agent_id.clone());
+            (agent == self.agent_id).then_some((session, unrecorded))
+        });
+        let opened = match recorded {
+            Some((session, unrecorded)) => {
+                let resume = capabilities["sessionCapabilities"]["resume"].is_object();
+                let method = if resume { "session/resume" } else { "session/load" };
+                let params = json!({ "sessionId": session, "cwd": self.cwd(), "mcpServers": [] });
+                let agent = self.agent.clone();
+                let (answer, _) = self.conn.call(Some(&agent), method, params).await.ok_or_else(|| self.offline())?;
+                let opened = answer.map_err(|e| turn::plain(&self.name, &e))?;
+                self.session = session;
+                if unrecorded {
+                    self.record()?;
+                }
+                opened
+            }
+            None => {
+                let params = json!({ "cwd": self.cwd(), "mcpServers": [] });
+                let agent = self.agent.clone();
+                let (answer, _) = self.conn.call(Some(&agent), "session/new", params).await.ok_or_else(|| self.offline())?;
+                let created = answer.map_err(|e| turn::plain(&self.name, &e))?;
+                self.session = created["sessionId"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "The linked bot created a chat without an id.".to_owned())?
+                    .to_owned();
+                self.record()?;
+                info!(bot_id = %self.bot_id, agent = %self.agent, chat_id = %self.req.chat_id, session = %self.session, "linked: session created");
+                created
+            }
+        };
+        self.mode(&opened).await?;
+        self.send_prompt()
+    }
+
+    /// The agent on the host (`host/agents`): by the id the brain names, or
+    /// by the one form every agent id now takes.
+    async fn locate(&mut self) -> Result<(), String> {
+        let (answer, _) = self.conn.call(None, "host/agents", json!({})).await.ok_or_else(|| self.offline())?;
+        let agents = answer.map_err(|e| turn::plain(&self.name, &e))?;
+        let listed = agents["agents"].as_array().cloned().unwrap_or_default();
+        let canonical = link_core::roster::agent_id(&self.agent_id);
+        let found = listed
+            .iter()
+            .find(|a| a["id"] == self.agent_id.as_str())
+            .or_else(|| listed.iter().find(|a| a["id"] == canonical.as_str()))
+            .ok_or_else(|| format!("No agent {} on this bot.", self.agent_id))?;
+        self.agent = found["id"].as_str().unwrap_or_default().to_owned();
+        self.folder = found["folder"].as_str().map(str::to_owned);
+        Ok(())
+    }
+
+    /// `initialize` on the agent's channel: its capabilities.
+    async fn initialize(&mut self) -> Result<Value, String> {
+        let params = json!({ "protocolVersion": 1, "clientCapabilities": {} });
+        let agent = self.agent.clone();
+        let (answer, _) = self.conn.call(Some(&agent), "initialize", params).await.ok_or_else(|| self.offline())?;
+        Ok(answer.map_err(|e| turn::plain(&self.name, &e))?["agentCapabilities"].clone())
+    }
+
+    fn cwd(&self) -> String {
+        self.folder.clone().unwrap_or_else(|| "/".to_owned())
+    }
+
+    /// Records the session and its agent on the chat row.
+    fn record(&self) -> Result<(), String> {
+        self.provider
+            .store
+            .set_chat_linked_session(&self.req.chat_id, &self.agent_id, &self.session)
+            .map_err(|e| format!("Could not record the linked chat: {e}"))
+    }
+
+    /// The employee's permission mode rides with the turn: an agent with
+    /// modes runs it in its own matching one.
+    async fn mode(&mut self, opened: &Value) -> Result<(), String> {
+        let Some(permission) = self.req.permission_mode.and_then(|m| Permission::parse(m.as_str())) else {
+            return Ok(());
+        };
+        let Some(modes) = protocol::modes(opened) else {
+            return Ok(());
+        };
+        let Some(wanted) = mode_for(permission, &modes.available).filter(|id| *id != modes.current) else {
+            return Ok(());
+        };
+        let wanted = wanted.to_owned();
+        let params = json!({ "sessionId": self.session, "modeId": wanted });
+        let agent = self.agent.clone();
+        let (answer, _) = self.conn.call(Some(&agent), "session/set_mode", params).await.ok_or_else(|| self.offline())?;
+        answer.map_err(|e| format!("{} could not switch to its {wanted} mode: {}", self.name, e.message))?;
+        info!(session = %self.session, mode = %wanted, ?permission, "linked: session mode set");
+        Ok(())
+    }
+
+    fn send_prompt(&mut self) -> Result<(), String> {
+        let params = json!({ "sessionId": self.session, "prompt": [{ "type": "text", "text": self.prompt }] });
+        let agent = self.agent.clone();
+        if self.conn.request(Some(&agent), "session/prompt", params).is_none() {
+            return Err(self.offline());
+        }
+        self.prompted = true;
+        self.waiting = false;
+        info!(bot_id = %self.bot_id, agent = %self.agent, session = %self.session, prompt_len = self.prompt.len(), "linked: turn sent");
+        Ok(())
+    }
+
+    /// The turn, from the prompt to its end.
+    async fn run(&mut self) -> Result<(), String> {
+        let (answers_tx, mut answers_rx) = mpsc::channel::<(String, String)>(8);
+        let cancel = self.req.cancel_token.clone().unwrap_or_default();
+        let mut cancel_deadline: Option<tokio::time::Instant> = None;
+        let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled(), if cancel_deadline.is_none() => {
+                    let cancel = json!({ "agent": self.agent, "acp": { "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": self.session } } });
+                    if !self.conn.send(&cancel) {
+                        return Err("Cancelled".to_owned());
+                    }
+                    cancel_deadline = Some(tokio::time::Instant::now() + CANCEL_TIMEOUT);
+                }
+                _ = tokio::time::sleep_until(cancel_deadline.unwrap_or_else(tokio::time::Instant::now)), if cancel_deadline.is_some() => {
+                    return Err("Cancelled".to_owned());
+                }
+                Some((id, value)) = answers_rx.recv() => self.answer(&id, &value),
+                _ = heartbeat.tick() => {
+                    let _ = self.conn.request(None, "host/ping", json!({}));
+                }
+                frame = self.conn.next() => {
+                    let ended = match frame {
+                        Some(frame) => self.frame(frame, &answers_tx).await?,
+                        None if cancel_deadline.is_some() => return Err("Cancelled".to_owned()),
+                        None => self.reconnect(&answers_tx, &cancel).await?,
+                    };
+                    if let Some(ended) = ended {
+                        return self.ended(ended).await;
+                    }
+                }
             }
         }
     }
 
-    /// The next frame; `None` when the socket is gone.
-    async fn next(&mut self) -> Option<Value> {
-        match self {
-            Socket::Hub(ws) => loop {
-                match ws.next().await {
-                    Some(Ok(WsMessage::Text(text))) => {
-                        if let Ok(frame) = serde_json::from_str(text.as_str()) {
-                            return Some(frame);
-                        }
-                    }
-                    Some(Ok(WsMessage::Close(_))) | None => return None,
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => {
-                        info!(error = %e, "linked: the chat socket failed");
-                        return None;
-                    }
+    /// One frame from the host; the turn's end when it is that.
+    async fn frame(&mut self, frame: Value, answers: &mpsc::Sender<(String, String)>) -> Result<Option<TurnUpdate>, String> {
+        if frame.get("agent").is_none() {
+            if frame["method"] == "host/turn" {
+                return self.host_turn(&frame["params"]);
+            }
+            return Ok(None);
+        }
+        if frame["agent"] != self.agent.as_str() {
+            return Ok(None);
+        }
+        let msg = &frame["acp"];
+        let ours = msg["params"]["sessionId"] == self.session.as_str();
+        match (msg["method"].as_str(), msg.get("id")) {
+            (Some("session/update"), None) if ours => {
+                if self.turn.is_some() {
+                    self.seen += 1;
+                    self.update(&msg["params"]["update"]).await;
                 }
+            }
+            (Some("session/request_permission"), Some(id)) if ours => {
+                self.asked(id.clone(), &msg["params"], answers).await;
+            }
+            (Some("$/cancel_request"), None) => self.withdrawn(&msg["params"]["requestId"]).await,
+            (None, Some(_)) => {
+                // The prompt's answer: an error before the turn started is
+                // a refusal (or a turn already running, which this one waits
+                // behind); anything else the turn's end says.
+                if let Err(e) = oal::answer(msg)
+                    && self.turn.is_none()
+                    && self.prompted
+                {
+                    if e.code != code::TURN_IN_PROGRESS {
+                        return Err(turn::plain(&self.name, &e));
+                    }
+                    self.prompted = false;
+                    self.waiting = true;
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    /// `host/turn` for the session: this turn starting or ending, or the one
+    /// this turn waits behind ending.
+    fn host_turn(&mut self, params: &Value) -> Result<Option<TurnUpdate>, String> {
+        let Ok(update) = serde_json::from_value::<TurnUpdate>(params.clone()) else {
+            return Ok(None);
+        };
+        if update.agent != self.agent || update.session_id != self.session {
+            return Ok(None);
+        }
+        let ours = update.by.as_ref().is_some_and(|d| d.device_id == self.conn.device);
+        match update.state {
+            TurnState::Running if self.turn.is_none() && self.prompted && ours => self.turn = Some(update.turn_id),
+            TurnState::Ended if self.turn.as_deref() == Some(update.turn_id.as_str()) => return Ok(Some(update)),
+            TurnState::Ended if self.waiting => self.send_prompt()?,
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    /// One of this turn's updates, as stream events.
+    async fn update(&mut self, update: &Value) {
+        let Some((_, parsed)) = protocol::update(&json!({ "sessionId": self.session, "update": update })) else {
+            return;
+        };
+        match parsed {
+            protocol::Update::AgentText { text, .. } => {
+                self.tools.flush();
+                self.cards().await;
+                if !text.is_empty() {
+                    let _ = self.tx.send(StreamEvent::text(text)).await;
+                }
+            }
+            protocol::Update::Thought(text) => {
+                if !text.is_empty() {
+                    let _ = self.tx.send(StreamEvent::thinking(text)).await;
+                }
+            }
+            protocol::Update::Plan(entries) => {
+                let _ = self.tx.send(StreamEvent::thinking(turn::plan(&entries))).await;
+            }
+            protocol::Update::ToolCall(call) | protocol::Update::ToolCallUpdate(call) => {
+                self.tools.tool(call, update["_meta"]["durationMs"].as_u64());
+                self.cards().await;
+            }
+            _ => {}
+        }
+    }
+
+    /// The tool cards made since last sent.
+    async fn cards(&mut self) {
+        for card in self.tools.take() {
+            let event = match card {
+                ToolEvent::Started { id, name, input } => StreamEvent::tool_call(ToolCall { id, name, input }),
+                ToolEvent::Finished { id, name, output, failed, .. } => StreamEvent {
+                    payload: None,
+                    provenance: None,
+                    event_type: StreamEventType::ToolResult,
+                    text: output,
+                    tool_call: Some(ToolCall { id, name, input: Value::Null }),
+                    error: failed.then(|| "tool error".to_owned()),
+                    usage: None,
+                    rate_limit: None,
+                    widgets: None,
+                    provider_metadata: None,
+                    stop_reason: None,
+                    image_url: None,
+                },
+            };
+            let _ = self.tx.send(event).await;
+        }
+    }
+
+    /// The agent stopped to ask the owner: the question registered on the
+    /// run's ask channels and raised as `ask_request` with the agent's own
+    /// options; the option chosen comes back through `answers`. A request
+    /// sent again after a reconnect is the same question.
+    async fn asked(&mut self, rpc: Value, params: &Value, answers: &mpsc::Sender<(String, String)>) {
+        let call = AcpToolCall::parse(&params["toolCall"]).unwrap_or_default();
+        let id = match call.id.as_str() {
+            "" => format!("ask-{rpc}"),
+            id => id.to_owned(),
+        };
+        if let Some(asked) = self.asks.get_mut(&id) {
+            asked.rpc = Some(rpc);
+            self.send_answer(&id);
+            return;
+        }
+        let options: Vec<PermissionOption> = serde_json::from_value(params["options"].clone()).unwrap_or_default();
+        let words = match turn::words_in(params) {
+            Some(words) => words,
+            None => {
+                let words = self.tools.ask(call, &options);
+                self.cards().await;
+                words
+            }
+        };
+        self.asks.insert(
+            id.clone(),
+            Asked {
+                rpc: Some(rpc),
+                options,
+                labels: words.labels.clone(),
+                chosen: None,
             },
-            Socket::Local { frames, replies, .. } => {
-                if let Some(reply) = replies.pop_front() {
-                    return Some(reply);
+        );
+        let Some(channels) = self.req.ask_channels.as_ref() else {
+            // No ask door on this run (nothing could answer): the question
+            // stays open for the linked bot's other clients and the phone.
+            warn!(request_id = %id, "linked: an ask with no ask door on the run");
+            return;
+        };
+        info!(request_id = %id, "linked: the agent asks the owner");
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        channels.lock().await.insert(id.clone(), resp_tx);
+        let widgets = json!([{ "type": "options", "multiSelect": false, "options": words.labels }]);
+        let _ = self.tx.send(StreamEvent::ask_request(id.clone(), words.question, Some(widgets))).await;
+        let answers = answers.clone();
+        tokio::spawn(async move {
+            // A question nobody answers (the run ended) is not answered: the
+            // host resolves it with its turn.
+            if let Ok(value) = resp_rx.await {
+                let _ = answers.send((id, value)).await;
+            }
+        });
+    }
+
+    /// The owner's answer to the question `id`: the label shown (or the
+    /// option's id), sent as the option it names.
+    fn answer(&mut self, id: &str, value: &str) {
+        let Some(asked) = self.asks.get_mut(id) else {
+            info!(request_id = id, "linked: an answer for a question nobody is waiting on");
+            return;
+        };
+        let chosen = asked
+            .options
+            .iter()
+            .zip(asked.labels.iter().map(Some).chain(std::iter::repeat(None)))
+            .find(|(o, label)| label.is_some_and(|l| l == value) || o.option_id == value)
+            .map(|(o, _)| o.option_id.clone());
+        let Some(option_id) = chosen else {
+            info!(request_id = id, value, "linked: an answer that is none of the question's options");
+            return;
+        };
+        asked.chosen = Some(option_id);
+        self.send_answer(id);
+    }
+
+    /// Sends the chosen option to this connection's copy of the question, if
+    /// both are there. The question stays until the host takes it back
+    /// (`$/cancel_request`), so an answer a dropped connection lost goes
+    /// again to the copy the host sends after the reconnect.
+    fn send_answer(&mut self, id: &str) {
+        let Some(asked) = self.asks.get(id) else { return };
+        if let (Some(rpc), Some(option_id)) = (&asked.rpc, &asked.chosen) {
+            let outcome = json!({ "outcome": { "outcome": "selected", "optionId": option_id } });
+            self.conn.respond(&self.agent, rpc, outcome);
+        }
+    }
+
+    /// The host took back this connection's copy of a request
+    /// (`$/cancel_request`): answered, here or elsewhere, or cancelled. Its
+    /// card is no longer waiting on the run.
+    async fn withdrawn(&mut self, rpc: &Value) {
+        let Some(id) = self.asks.iter().find(|(_, a)| a.rpc.as_ref() == Some(rpc)).map(|(id, _)| id.clone()) else {
+            return;
+        };
+        let answered_here = self.asks.remove(&id).is_some_and(|a| a.chosen.is_some());
+        if !answered_here {
+            if let Some(channels) = self.req.ask_channels.as_ref() {
+                channels.lock().await.remove(&id);
+            }
+            info!(request_id = %id, "linked: the question was answered elsewhere");
+        }
+    }
+
+    /// The turn ended: its last cards, then how it ended as the owner reads
+    /// it.
+    async fn ended(&mut self, ended: TurnUpdate) -> Result<(), String> {
+        self.tools.flush();
+        self.cards().await;
+        if let Some(error) = &ended.error {
+            return Err(turn::plain(&self.name, error));
+        }
+        match ended.stop_reason {
+            Some(StopReason::Cancelled) => Err("Cancelled".to_owned()),
+            Some(StopReason::Refusal) => Err(format!("{} declined to do that.", self.name)),
+            _ => {
+                if let Some(usage) = &ended.usage {
+                    let usage = UsageInfo {
+                        input_tokens: usage.all_input() as i32,
+                        output_tokens: usage.output_tokens as i32,
+                        ..UsageInfo::default()
+                    };
+                    let _ = self.tx.send(StreamEvent::usage(usage)).await;
                 }
-                loop {
-                    match frames.recv().await {
-                        Ok(Outbound { kind, data }) => return Some(json!({ "type": kind, "data": data })),
-                        // Fell behind: what comes next still arrives, as it
-                        // does to a phone over the tunnel.
-                        Err(broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(broadcast::error::RecvError::Closed) => return None,
-                    }
-                }
+                let _ = self.tx.send(StreamEvent::done()).await;
+                Ok(())
             }
         }
     }
+
+    /// The connection dropped mid-turn: the bot reached again, the session
+    /// loaded, and what this turn missed read from its record (spec §12).
+    /// The turn's end, when it ended while Nebo was away.
+    async fn reconnect(&mut self, answers: &mpsc::Sender<(String, String)>, cancel: &CancellationToken) -> Result<Option<TurnUpdate>, String> {
+        for ask in self.asks.values_mut() {
+            ask.rpc = None;
+        }
+        info!(bot_id = %self.bot_id, session = %self.session, "linked: the connection dropped mid-turn; reconnecting");
+        for wait in RECONNECT {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
+                _ = cancel.cancelled() => return Err("Cancelled".to_owned()),
+            }
+            self.conn = match self.provider.open(&self.route, &self.bot_id).await {
+                Ok(conn) => conn,
+                Err(Unreached::SignedOut) => return Err(format!("Sign in to NeboAI to reach {}.", self.name)),
+                Err(_) => continue,
+            };
+            match self.reattach(answers).await {
+                Ok(ended) => return Ok(ended),
+                Err(Some(message)) => return Err(message),
+                Err(None) => continue,
+            }
+        }
+        Err(self.offline())
+    }
+
+    /// The session loaded on a new connection, and this turn caught up from
+    /// its record. `Err(None)`: this connection failed too; try again.
+    async fn reattach(&mut self, answers: &mpsc::Sender<(String, String)>) -> Result<Option<TurnUpdate>, Option<String>> {
+        let agent = self.agent.clone();
+        let params = json!({ "protocolVersion": 1, "clientCapabilities": {} });
+        let (answer, _) = self.conn.call(Some(&agent), "initialize", params).await.ok_or(None)?;
+        answer.map_err(|e| Some(turn::plain(&self.name, &e)))?;
+        let params = json!({ "sessionId": self.session, "cwd": self.cwd(), "mcpServers": [] });
+        let (answer, replay) = self.conn.call(Some(&agent), "session/load", params).await.ok_or(None)?;
+        answer.map_err(|e| Some(turn::plain(&self.name, &e)))?;
+        let mut record: Vec<Value> = Vec::new();
+        let mut latest: Option<TurnUpdate> = None;
+        for frame in replay {
+            let host_turn = frame.get("agent").is_none() && frame["method"] == "host/turn";
+            let recorded = frame["agent"] == agent.as_str()
+                && frame["acp"]["method"] == "session/update"
+                && frame["acp"]["params"]["sessionId"] == self.session.as_str();
+            if host_turn {
+                if let Ok(update) = serde_json::from_value::<TurnUpdate>(frame["params"].clone())
+                    && update.agent == self.agent
+                    && update.session_id == self.session
+                {
+                    latest = Some(update);
+                }
+            } else if recorded {
+                record.push(frame["acp"]["params"]["update"].clone());
+            } else {
+                self.frame(frame, answers).await.map_err(Some)?;
+            }
+        }
+        if self.turn.is_none() {
+            let ours = latest.as_ref().is_some_and(|t| t.by.as_ref().is_some_and(|d| d.device_id == self.conn.device));
+            match &latest {
+                // The prompt arrived and its turn started while Nebo was away.
+                Some(update) if ours && self.prompted => self.turn = Some(update.turn_id.clone()),
+                // Still behind another turn: sent when that one ends.
+                Some(update) if self.waiting && update.state == TurnState::Running => return Ok(None),
+                // The prompt never arrived, or the turn it waited behind is
+                // over: sent (again) on this connection.
+                _ => {
+                    self.send_prompt().map_err(Some)?;
+                    return Ok(None);
+                }
+            }
+        }
+        let latest = latest.filter(|t| Some(t.turn_id.as_str()) == self.turn.as_deref());
+        // This turn's updates are the record after its prompt (and before the
+        // next turn's, when one began after it); those read before the drop
+        // are skipped.
+        let missed: Vec<Value> = this_turns(&record, latest.is_some()).iter().skip(self.seen).cloned().collect();
+        for update in &missed {
+            self.seen += 1;
+            self.update(update).await;
+        }
+        info!(session = %self.session, missed = missed.len(), "linked: reconnected mid-turn");
+        Ok(match latest {
+            Some(latest) => (latest.state == TurnState::Ended).then_some(latest),
+            // It ended while Nebo was away and another turn began: its end
+            // is no longer the session's latest, and its answer is all in.
+            None => Some(TurnUpdate {
+                agent: self.agent.clone(),
+                session_id: self.session.clone(),
+                turn_id: self.turn.clone().unwrap_or_default(),
+                state: TurnState::Ended,
+                started_at: String::new(),
+                by: None,
+                stop_reason: Some(StopReason::EndTurn),
+                error: None,
+                usage: None,
+            }),
+        })
+    }
 }
 
-/// Why the linked bot could not be reached for a chat.
-enum Reach {
-    /// The link or the runtime is not answering; the owner reads
-    /// "Could not connect to <name>. Try again."
-    Offline,
-    /// A refusal with its own words.
-    Refused(String),
+/// The updates of a turn in a session's record: those after the prompt that
+/// began it, the newest prompt when it is the `latest` turn, else the one
+/// before the newest.
+fn this_turns(record: &[Value], latest: bool) -> &[Value] {
+    // Each prompt's first and one-past-last update.
+    let mut prompts: Vec<(usize, usize)> = Vec::new();
+    for (i, update) in record.iter().enumerate() {
+        if update["sessionUpdate"] != "user_message_chunk" {
+            continue;
+        }
+        match prompts.last_mut() {
+            Some((_, end)) if *end == i => *end = i + 1,
+            _ => prompts.push((i, i + 1)),
+        }
+    }
+    match (latest, prompts.as_slice()) {
+        (true, [.., (_, end)]) => &record[*end..],
+        (false, [.., (_, end), (next, _)]) => &record[*end..*next],
+        (true, []) => record,
+        _ => &[],
+    }
+}
+
+/// Why the linked bot could not be reached, as the owner reads it.
+fn unreached(why: Unreached, name: &str) -> String {
+    match why {
+        Unreached::Offline => format!("Could not connect to {name}. Try again."),
+        Unreached::SignedOut => format!("Sign in to NeboAI to reach {name}."),
+        Unreached::Refused(message) => message,
+    }
 }
 
 /// The owner's newest message: the newest user message that is not a
@@ -579,95 +848,235 @@ fn split(model: &str) -> Option<(&str, &str)> {
     (!bot.is_empty() && !agent.is_empty() && !agent.contains('/')).then_some((bot, agent))
 }
 
-/// The socket base for an API base: `https://…` → `wss://…`.
-fn ws_base(api_url: &str) -> String {
-    if let Some(rest) = api_url.strip_prefix("https://") {
-        format!("wss://{rest}")
-    } else if let Some(rest) = api_url.strip_prefix("http://") {
-        format!("ws://{rest}")
-    } else {
-        api_url.to_owned()
-    }
-}
-
-async fn send(ws: &mut Socket, frame: Value, offline: &(dyn Fn() -> String + Sync)) -> Result<(), String> {
-    if ws.send(frame).await { Ok(()) } else { Err(offline()) }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use std::collections::HashMap;
     use std::sync::Mutex;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio_util::sync::CancellationToken;
+    use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 
+    /// The linked bot on "another computer".
     const BOT: &str = "5a137883-0000-4000-8000-000000000001";
+    /// This bot's id, under which Nebo hosts this computer's agents.
+    const SELF: &str = "5e1f0000-0000-4000-8000-000000000002";
 
-    /// What the fake linked bot does with a `chat` frame.
-    #[derive(Clone, Copy)]
-    enum Script {
-        /// Text, a tool, usage, then completion.
-        Turn,
-        /// An ask; the answer's label is echoed in the reply.
-        Ask,
-        /// Streams one word, then waits for `cancel`.
-        Hang,
+    /// Not a test when the harness runs it: the ACP agent a hire starts (this
+    /// test binary again, with `NEBO_FAKE_ACP` naming the file it writes what
+    /// it was told to, and `NEBO_FAKE_ACP_SCRIPT` what it does with a prompt):
+    ///
+    /// - `git` (the default): asks before it runs `git status`, then runs it.
+    /// - `turn`: thinks, says, runs `ls`, says, and ends with its usage.
+    /// - `ask`: asks in its own words whether to run `rm -rf build`.
+    /// - `hang`: says it is working until it is cancelled.
+    #[test]
+    fn fake_acp_agent() {
+        use std::io::{BufRead, Write};
+        let Ok(told) = std::env::var("NEBO_FAKE_ACP") else {
+            return;
+        };
+        let script = std::env::var("NEBO_FAKE_ACP_SCRIPT").unwrap_or_else(|_| "git".to_owned());
+        let note = |line: Value| {
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&told).unwrap();
+            writeln!(file, "{line}").unwrap();
+        };
+        let send = |frame: Value| {
+            let mut out = std::io::stdout().lock();
+            writeln!(out, "{frame}").unwrap();
+            out.flush().unwrap();
+        };
+        let update = |update: Value| {
+            send(json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s-1", "update": update } }));
+        };
+        let say = |text: &str| update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": text } }));
+        // The harness printed "test ... " without a newline: end that line,
+        // so every frame is a line of its own.
+        send(Value::Null);
+        let mut prompt_id = Value::Null;
+        for line in std::io::stdin().lock().lines() {
+            let Ok(message) = serde_json::from_str::<Value>(&line.unwrap()) else {
+                continue;
+            };
+            let id = message["id"].clone();
+            let reply = |result: Value| send(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+            match message["method"].as_str() {
+                Some("initialize") => reply(json!({
+                    "protocolVersion": 1,
+                    "agentCapabilities": { "loadSession": false },
+                    "agentInfo": { "name": "fake-acp" },
+                })),
+                Some("session/new") => {
+                    note(json!({ "new": message["params"]["cwd"] }));
+                    let mut modes = vec![
+                        json!({ "id": "default", "name": "Default", "_meta": { "kind": "standard" } }),
+                        json!({ "id": "acceptEdits", "name": "Accept edits", "_meta": { "kind": "standard" } }),
+                    ];
+                    if script == "turn" {
+                        modes.push(json!({ "id": "bypassPermissions", "name": "Bypass", "_meta": { "kind": "full_access" } }));
+                    }
+                    reply(json!({ "sessionId": "s-1", "modes": { "currentModeId": "default", "availableModes": modes } }));
+                }
+                Some("session/set_mode") => {
+                    note(json!({ "mode": message["params"]["modeId"] }));
+                    reply(json!({}));
+                }
+                Some("session/cancel") => {
+                    note(json!({ "cancel": true }));
+                    send(json!({ "jsonrpc": "2.0", "id": prompt_id, "result": { "stopReason": "cancelled" } }));
+                }
+                Some("session/prompt") => {
+                    note(json!({ "prompt": message["params"]["prompt"] }));
+                    prompt_id = id.clone();
+                    match script.as_str() {
+                        "turn" => {
+                            update(json!({ "sessionUpdate": "agent_thought_chunk", "content": { "type": "text", "text": "hmm" } }));
+                            say("Listing ");
+                            update(json!({ "sessionUpdate": "tool_call", "toolCallId": "call_1", "title": "terminal", "kind": "execute",
+                                "status": "in_progress", "rawInput": { "command": "ls" } }));
+                            update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "call_1", "status": "completed",
+                                "content": [{ "type": "content", "content": { "type": "text", "text": "a b" } }] }));
+                            say("done.");
+                            reply(json!({ "stopReason": "end_turn", "usage": { "inputTokens": 12, "outputTokens": 5 } }));
+                        }
+                        "ask" => send(json!({ "jsonrpc": "2.0", "id": 900, "method": "session/request_permission", "params": {
+                            "sessionId": "s-1",
+                            "toolCall": { "toolCallId": "req-9", "title": "rm -rf build", "kind": "execute", "status": "pending" },
+                            "options": [
+                                { "optionId": "once", "name": "Allow once", "kind": "allow_once" },
+                                { "optionId": "always", "name": "Always allow", "kind": "allow_always" },
+                                { "optionId": "deny", "name": "Deny", "kind": "reject_once" },
+                            ],
+                            "_meta": { "nebo/words": { "question": "Run `rm -rf build`?", "summary": "run `rm -rf build`",
+                                "labels": ["Allow once", "Always allow", "Deny"] } },
+                        } })),
+                        "hang" => say("Working"),
+                        _ => {
+                            say("Checking.");
+                            send(json!({ "jsonrpc": "2.0", "id": 900, "method": "session/request_permission", "params": {
+                                "sessionId": "s-1",
+                                "toolCall": { "toolCallId": "call_1", "title": "git status", "kind": "execute", "status": "pending", "rawInput": { "command": "git status" } },
+                                "options": [
+                                    { "optionId": "allow", "name": "Allow", "kind": "allow_once" },
+                                    { "optionId": "reject", "name": "Reject", "kind": "reject_once" },
+                                ],
+                            } }));
+                        }
+                    }
+                }
+                None if id == json!(900) => {
+                    note(json!({ "answer": message["result"]["outcome"] }));
+                    if script == "ask" {
+                        let chosen = match message["result"]["outcome"]["optionId"].as_str() {
+                            Some("once") => "Allow once",
+                            Some("always") => "Always allow",
+                            _ => "Deny",
+                        };
+                        say(&format!("answered: {chosen}"));
+                        send(json!({ "jsonrpc": "2.0", "id": prompt_id, "result": { "stopReason": "end_turn" } }));
+                        continue;
+                    }
+                    update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "call_1", "status": "completed",
+                        "content": [{ "type": "content", "content": { "type": "text", "text": "nothing to commit" } }] }));
+                    say("Ran it.");
+                    send(json!({ "jsonrpc": "2.0", "id": prompt_id, "result": { "stopReason": "end_turn", "usage": { "inputTokens": 7, "outputTokens": 3 } } }));
+                }
+                _ => {}
+            }
+        }
     }
 
+    /// How a hire starts the fake agent running `script`.
+    fn fake_acp(told: &std::path::Path, script: &str) -> nebo_runtimes::RuntimeCommand {
+        nebo_runtimes::RuntimeCommand {
+            program: std::env::current_exe().unwrap().to_string_lossy().into_owned(),
+            args: ["providers::linked::tests::fake_acp_agent", "--exact", "--nocapture", "--test-threads=1"]
+                .map(String::from)
+                .to_vec(),
+            env: vec![
+                ("NEBO_FAKE_ACP".into(), told.to_string_lossy().into_owned()),
+                ("NEBO_FAKE_ACP_SCRIPT".into(), script.into()),
+            ],
+        }
+    }
+
+    /// What the fake agent was told, in order.
+    fn told(path: &std::path::Path) -> Vec<Value> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// A computer's host, as Nebo hosts one: `bot` its bot id, its record in
+    /// `root`, and its nebo-link daemon's state (none) there too.
+    fn host_at(root: &std::path::Path, bot: &'static str) -> Arc<LocalHost> {
+        LocalHost::open(Arc::new(move || Some(bot.to_owned())), root.join("link"), root.join("home"), Some(root.join("nebo-link"))).unwrap()
+    }
+
+    /// Nebo's own host (and keys) for the tests.
+    fn local_host(root: &std::path::Path) -> Arc<LocalHost> {
+        host_at(root, SELF)
+    }
+
+    /// What the fake hub saw.
     #[derive(Default)]
-    struct Recorded {
-        chats_created: usize,
+    struct Hub {
         bearers: Vec<String>,
-        chat_frames: Vec<Value>,
-        ask_responses: Vec<Value>,
-        cancels: usize,
+        /// The sockets it relays, to drop them.
+        sockets: Vec<tokio::task::AbortHandle>,
     }
 
-    /// A fake contract behind `/t/<bot>/…`: `POST …/agents/{id}/chats` and
-    /// the `/ws` socket, on one loopback port.
-    async fn fake_link(script: Script) -> (String, Arc<Mutex<Recorded>>) {
+    impl Hub {
+        fn drop_sockets(&mut self) {
+            for socket in self.sockets.drain(..) {
+                socket.abort();
+            }
+        }
+    }
+
+    /// NeboAI's side of a linked bot, as a test sees it: `/t/<bot>/oal`
+    /// carried to the bot's OAL host as its tunnel would (the hub relays the
+    /// WebSocket's bytes and reads none of them), and the bot's own
+    /// `/_link/oal/pair`.
+    async fn fake_hub(oal: Arc<OalHost>) -> (String, Arc<Mutex<Hub>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
-        let recorded = Arc::new(Mutex::new(Recorded::default()));
-        let rec = recorded.clone();
+        let hub = Arc::new(Mutex::new(Hub::default()));
+        let seen = hub.clone();
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
-                let rec = rec.clone();
-                tokio::spawn(async move { serve(stream, script, rec).await });
+                let (oal, hub) = (oal.clone(), seen.clone());
+                tokio::spawn(async move { serve_hub(stream, oal, hub).await });
             }
         });
-        (url, recorded)
+        (url, hub)
     }
 
-    async fn serve(mut stream: TcpStream, script: Script, rec: Arc<Mutex<Recorded>>) {
+    async fn serve_hub(mut stream: TcpStream, oal: Arc<OalHost>, hub: Arc<Mutex<Hub>>) {
         let mut head = [0u8; 2048];
         let n = stream.peek(&mut head).await.unwrap();
         let head = String::from_utf8_lossy(&head[..n]).into_owned();
         let target = head.split_whitespace().nth(1).unwrap_or("").to_owned();
-        if target == format!("/t/{BOT}/ws") {
-            let rec2 = rec.clone();
+        if target == format!("/t/{BOT}/oal") {
+            let seen = hub.clone();
             let ws = tokio_tungstenite::accept_hdr_async(
                 stream,
                 move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                      resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
-                    let bearer = req
-                        .headers()
-                        .get(AUTHORIZATION)
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("")
-                        .to_owned();
-                    rec2.lock().unwrap().bearers.push(bearer);
+                      mut resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    let bearer = req.headers().get(AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("").to_owned();
+                    seen.lock().unwrap().bearers.push(bearer);
+                    resp.headers_mut().insert("sec-websocket-protocol", "oal".parse().unwrap());
                     Ok(resp)
                 },
             )
             .await
             .unwrap();
-            serve_socket(ws, script, rec).await;
+            let task = tokio::spawn(async move { oal.serve(oal_host::wire::websocket(ws), oal_host::Via::Tunnel).await });
+            hub.lock().unwrap().sockets.push(task.abort_handle());
             return;
         }
         // REST: read the whole request, answer by path.
@@ -676,45 +1085,20 @@ mod tests {
         loop {
             let n = stream.read(&mut chunk).await.unwrap();
             buf.extend_from_slice(&chunk[..n]);
-            let text = String::from_utf8_lossy(&buf);
-            if let Some((head, body)) = text.split_once("\r\n\r\n") {
-                let len = head
-                    .lines()
-                    .find_map(|l| {
-                        l.to_lowercase()
-                            .strip_prefix("content-length:")
-                            .map(|v| v.trim().parse::<usize>().unwrap_or(0))
-                    })
-                    .unwrap_or(0);
-                if body.len() >= len || n == 0 {
-                    break;
-                }
-            }
-            if n == 0 {
+            if n == 0 || String::from_utf8_lossy(&buf).contains("\r\n\r\n") {
                 break;
             }
         }
         let bearer = head
             .lines()
-            .find_map(|l| {
-                l.to_lowercase()
-                    .strip_prefix("authorization:")
-                    .map(|v| v.trim().to_owned())
-            })
+            .find_map(|l| l.to_lowercase().strip_prefix("authorization:").map(|v| v.trim().to_owned()))
             .unwrap_or_default();
-        let (status, body) = if target == format!("/t/{BOT}/api/v1/agents/coder/chats")
-            && head.starts_with("POST")
-        {
-            let mut r = rec.lock().unwrap();
-            r.chats_created += 1;
-            r.bearers.push(bearer);
-            let id = format!("api_{}", r.chats_created);
-            (
-                "200 OK",
-                json!({ "chat": { "id": id, "title": "New chat" } }),
-            )
+        let (status, body) = if target == format!("/t/{BOT}/_link/oal/pair") && head.starts_with("POST") {
+            hub.lock().unwrap().bearers.push(bearer);
+            let code = oal.pairing_code().await.unwrap();
+            ("200 OK", json!({ "code": code.to_string(), "hostId": BOT }))
         } else {
-            ("404 Not Found", json!({ "error": "not on a linked bot" }))
+            ("404 Not Found", json!({ "error": "not found" }))
         };
         let body = body.to_string();
         let response = format!(
@@ -725,122 +1109,53 @@ mod tests {
         stream.shutdown().await.ok();
     }
 
-    async fn serve_socket(
-        mut ws: tokio_tungstenite::WebSocketStream<TcpStream>,
-        script: Script,
-        rec: Arc<Mutex<Recorded>>,
-    ) {
-        let mut session = String::new();
-        let payload = |session: &str, fields: Value| {
-            let mut data = json!({ "agent_id": "coder", "session_id": session, "turn_id": "t1" });
-            if let (Value::Object(data), Value::Object(fields)) = (&mut data, fields) {
-                data.extend(fields);
-            }
-            data
+    /// A linked bot on another computer hosting the fake agent running
+    /// `script` (as `claude-code`), reached through a fake hub; and the
+    /// provider Nebo reaches it with.
+    struct Remote {
+        _root: tempfile::TempDir,
+        bot: Arc<LocalHost>,
+        hub: Arc<Mutex<Hub>>,
+        told: std::path::PathBuf,
+        store: Arc<db::Store>,
+        provider: LinkedProvider,
+    }
+
+    async fn remote(script: &str) -> Remote {
+        let root = tempfile::tempdir().unwrap();
+        let told = root.path().join("told.jsonl");
+        let bot = host_at(&root.path().join("bot"), BOT);
+        let hosted = bot.host(nebo_runtimes::acp::Agent::ClaudeCode, fake_acp(&told, script)).await.unwrap();
+        assert_eq!(hosted.id, "claude-code");
+        let (url, hub) = fake_hub(bot.oal().unwrap()).await;
+        let nebo = local_host(&root.path().join("nebo"));
+        let (store, _) = store_in(root.path());
+        let relay = Relay::Hub {
+            api_url: url,
+            token: Arc::new(|| Some("bot-jwt".to_owned())),
         };
-        while let Some(Ok(WsMessage::Text(text))) = ws.next().await {
-            let frame: Value = serde_json::from_str(text.as_str()).unwrap();
-            match frame["type"].as_str().unwrap_or("") {
-                "auth" => {
-                    ws.send(WsMessage::text(json!({ "type": "auth_ok" }).to_string()))
-                        .await
-                        .unwrap();
-                }
-                "chat" => {
-                    rec.lock().unwrap().chat_frames.push(frame.clone());
-                    session = frame["data"]["session_id"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_owned();
-                    let out = |kind: &str, fields: Value| {
-                        let f = json!({ "type": kind, "data": payload(&session, fields) });
-                        f.to_string()
-                    };
-                    let frames: Vec<String> = match script {
-                        Script::Turn => vec![
-                            out("thinking", json!({ "text": "hmm" })),
-                            out(
-                                "chat_stream",
-                                json!({ "content": "Listing ", "done": false }),
-                            ),
-                            out(
-                                "tool_start",
-                                json!({ "tool_id": "call_1", "tool": "terminal", "label": "terminal", "input": { "command": "ls" } }),
-                            ),
-                            out(
-                                "tool_result",
-                                json!({ "tool_id": "call_1", "tool_name": "terminal", "result": "a b", "is_error": false, "outcome": "terminal" }),
-                            ),
-                            out("chat_stream", json!({ "content": "done.", "done": false })),
-                            out("usage", json!({ "input_tokens": 12, "output_tokens": 5 })),
-                            out(
-                                "chat_complete",
-                                json!({ "stop_reason": "end_turn", "message_id": "t1" }),
-                            ),
-                        ],
-                        Script::Ask => vec![out(
-                            "ask_request",
-                            json!({
-                                "request_id": "req-9",
-                                "prompt": "Run `rm -rf build`?",
-                                "widgets": [{ "type": "options", "multiSelect": false, "options": ["Allow once", "Always allow", "Deny"] }],
-                            }),
-                        )],
-                        Script::Hang => vec![out(
-                            "chat_stream",
-                            json!({ "content": "Working", "done": false }),
-                        )],
-                    };
-                    for f in frames {
-                        ws.send(WsMessage::text(f)).await.unwrap();
-                    }
-                }
-                "ask_response" => {
-                    rec.lock()
-                        .unwrap()
-                        .ask_responses
-                        .push(frame["data"].clone());
-                    let value = frame["data"]["value"].as_str().unwrap_or("").to_owned();
-                    let f = json!({ "type": "chat_stream", "data": payload(&session, json!({ "content": format!("answered: {value}") })) });
-                    ws.send(WsMessage::text(f.to_string())).await.unwrap();
-                    let f = json!({ "type": "chat_complete", "data": payload(&session, json!({ "stop_reason": "end_turn" })) });
-                    ws.send(WsMessage::text(f.to_string())).await.unwrap();
-                }
-                "cancel" => {
-                    rec.lock().unwrap().cancels += 1;
-                    let f =
-                        json!({ "type": "chat_cancelled", "data": payload(&session, Value::Null) });
-                    ws.send(WsMessage::text(f.to_string())).await.unwrap();
-                }
-                _ => {}
-            }
+        let provider = LinkedProvider::new(relay, store.clone(), Some(nebo), "Nebo on test");
+        Remote {
+            _root: root,
+            bot,
+            hub,
+            told,
+            store,
+            provider,
         }
     }
 
-    fn store() -> (tempfile::TempDir, Arc<db::Store>) {
-        let dir = tempfile::tempdir().unwrap();
-        let store = db::Store::new(&dir.path().join("linked.db").to_string_lossy()).unwrap();
+    fn store_in(dir: &std::path::Path) -> (Arc<db::Store>, std::path::PathBuf) {
+        let path = dir.join("linked.db");
+        let store = db::Store::new(&path.to_string_lossy()).unwrap();
         store
-            .create_agent(
-                "emp-1",
-                Some("linked"),
-                "Danny",
-                "",
-                "---\nname: Danny\n---\n",
-                "{}",
-                None,
-                None,
-            )
+            .create_agent("emp-1", Some("linked"), "Danny", "", "---\nname: Danny\n---\n", "{}", None, None)
             .unwrap();
         store.create_chat("chat-1", "First").unwrap();
-        (dir, Arc::new(store))
+        (Arc::new(store), path)
     }
 
-    fn provider(url: &str, store: Arc<db::Store>) -> LinkedProvider {
-        LinkedProvider::new(url, store, Arc::new(|| Some("bot-jwt".to_owned())), None)
-    }
-
-    fn request(prompt: &str, chat_id: &str) -> ChatRequest {
+    fn request(prompt: &str, chat_id: &str, model: &str) -> ChatRequest {
         ChatRequest {
             messages: vec![
                 Message {
@@ -859,7 +1174,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
-            model: format!("{BOT}/coder"),
+            model: model.into(),
             chat_id: chat_id.into(),
             system: "NEVER SENT".into(),
             ..ChatRequest::new(RequestTrace {
@@ -869,12 +1184,29 @@ mod tests {
         }
     }
 
+    fn remote_model() -> String {
+        format!("{BOT}/claude-code")
+    }
+
     async fn collect(mut rx: EventReceiver) -> Vec<StreamEvent> {
         let mut events = Vec::new();
-        while let Some(e) = rx.recv().await {
+        while let Some(e) = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.expect("the turn went on") {
             events.push(e);
         }
         events
+    }
+
+    /// Events up to the first ask, which is returned with them.
+    async fn until_ask(rx: &mut EventReceiver) -> (Vec<StreamEvent>, StreamEvent) {
+        let mut before = Vec::new();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
+            if event.event_type == StreamEventType::AskRequest {
+                return (before, event);
+            }
+            assert_ne!(event.event_type, StreamEventType::Error, "{:?}", event.error);
+            before.push(event);
+        }
     }
 
     fn kinds(events: &[StreamEvent]) -> Vec<StreamEventType> {
@@ -891,8 +1223,6 @@ mod tests {
         assert_eq!(LinkedProvider::target("linked/b"), None);
         assert_eq!(LinkedProvider::target("linked//a"), None);
         assert_eq!(LinkedProvider::target(""), None);
-        assert_eq!(ws_base("https://api.neboai.com"), "wss://api.neboai.com");
-        assert_eq!(ws_base("http://127.0.0.1:1"), "ws://127.0.0.1:1");
     }
 
     #[test]
@@ -912,21 +1242,30 @@ mod tests {
         assert_eq!(owners_message(&[say("user", "  ")]), None);
     }
 
-    /// The first turn creates the runtime's chat with the bot token and
-    /// records it; the second reuses it, and each turn sends exactly the
-    /// newest user message — never the history, never the system prompt.
+    /// A reconnect catches a turn up from its session's record: the updates
+    /// after its prompt, or, when another turn began after it, those before
+    /// the next prompt.
+    #[test]
+    fn a_turns_updates_are_found_in_the_record() {
+        let user = |t: &str| json!({ "sessionUpdate": "user_message_chunk", "content": { "type": "text", "text": t } });
+        let agent = |t: &str| json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": t } });
+        let record = vec![user("one"), agent("a"), user("two"), user("two, more"), agent("b"), agent("c")];
+        assert_eq!(this_turns(&record, true), &record[4..]);
+        assert_eq!(this_turns(&record, false), &record[1..2]);
+        assert_eq!(this_turns(&[agent("x")], true).len(), 1);
+        assert!(this_turns(&[agent("x")], false).is_empty());
+    }
+
+    /// The first turn pairs Nebo with the linked bot by itself (a code from
+    /// the bot, over the hub, with the bot token) and creates the agent's
+    /// session and records it; the second reuses the session on a session
+    /// with the pinned keys. Each turn sends exactly the newest user message
+    /// — never the history, never the system prompt — and the run's mode
+    /// rides with the turn as the agent's own.
     #[tokio::test]
     async fn one_nebo_chat_is_one_linked_chat_and_only_the_newest_message_travels() {
-        let (url, rec) = fake_link(Script::Turn).await;
-        let (_dir, store) = store();
-        let p = provider(&url, store.clone());
-
-        let first = collect(
-            p.stream(&request("list the files", "chat-1"))
-                .await
-                .unwrap(),
-        )
-        .await;
+        let r = remote("turn").await;
+        let first = collect(r.provider.stream(&request("list the files", "chat-1", &remote_model())).await.unwrap()).await;
         assert_eq!(
             kinds(&first),
             vec![
@@ -937,246 +1276,196 @@ mod tests {
                 StreamEventType::Text,
                 StreamEventType::Usage,
                 StreamEventType::Done,
-            ]
+            ],
+            "{:?}",
+            first.iter().map(|e| (&e.text, &e.error)).collect::<Vec<_>>()
         );
+        assert_eq!(first[0].text, "hmm");
         assert_eq!(first[1].text, "Listing ");
         let call = first[2].tool_call.as_ref().unwrap();
-        assert_eq!(
-            (call.id.as_str(), call.name.as_str()),
-            ("call_1", "terminal")
-        );
+        assert_eq!((call.id.as_str(), call.name.as_str()), ("call_1", "terminal"));
         assert_eq!(call.input["command"], "ls");
         assert_eq!(first[3].text, "a b");
         assert_eq!(first[3].tool_call.as_ref().unwrap().id, "call_1");
         let usage = first[5].usage.as_ref().unwrap();
         assert_eq!((usage.input_tokens, usage.output_tokens), (12, 5));
-        assert_eq!(
-            store
-                .get_chat("chat-1")
-                .unwrap()
-                .unwrap()
-                .linked_chat_id
-                .as_deref(),
-            Some("api_1")
-        );
+        let chat = r.store.get_chat("chat-1").unwrap().unwrap();
+        assert_eq!(chat.linked_chat_id.as_deref(), Some("s-1"));
+        assert_eq!(chat.linked_agent_id.as_deref(), Some("claude-code"));
 
-        let mut in_a_run = request("and now?", "chat-1");
+        let mut in_a_run = request("and now?", "chat-1", &remote_model());
         in_a_run.permission_mode = Some(types::permissions::Mode::FullAccess);
-        let second = collect(p.stream(&in_a_run).await.unwrap()).await;
+        let second = collect(r.provider.stream(&in_a_run).await.unwrap()).await;
         assert_eq!(second.last().unwrap().event_type, StreamEventType::Done);
 
-        let r = rec.lock().unwrap();
-        assert_eq!(r.chats_created, 1, "the second turn reuses the linked chat");
+        let bearers = r.hub.lock().unwrap().bearers.clone();
+        assert_eq!(bearers.len(), 3, "a pairing code and two sockets: {bearers:?}");
+        assert!(bearers.iter().all(|b| b.eq_ignore_ascii_case("Bearer bot-jwt")), "{bearers:?}");
+        let devices = r.bot.oal().unwrap().devices();
+        assert_eq!(devices.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Nebo on test"], "Nebo paired once");
+        let told = told(&r.told);
+        let folder = r.bot.agents()[0].acp.workdir.to_string_lossy().into_owned();
         assert_eq!(
-            r.bearers.len(),
-            3,
-            "one chat creation and two sockets: {:?}",
-            r.bearers
+            told,
+            vec![
+                json!({ "new": folder }),
+                json!({ "prompt": [{ "type": "text", "text": "list the files" }] }),
+                json!({ "mode": "bypassPermissions" }),
+                json!({ "prompt": [{ "type": "text", "text": "and now?" }] }),
+            ],
+            "one session; the run's mode on the second turn only; only the newest message"
         );
-        assert!(
-            r.bearers
-                .iter()
-                .all(|b| b.eq_ignore_ascii_case("Bearer bot-jwt")),
-            "{:?}",
-            r.bearers
-        );
-        assert_eq!(r.chat_frames.len(), 2);
-        assert_eq!(r.chat_frames[0]["data"].get("permission_mode"), None, "a call outside a run names none");
-        assert_eq!(r.chat_frames[1]["data"]["permission_mode"], "full_access", "the run's mode rides with the turn");
-        for (frame, prompt) in r.chat_frames.iter().zip(["list the files", "and now?"]) {
-            assert_eq!(frame["data"]["prompt"], prompt);
-            assert_eq!(frame["data"]["agent_id"], "coder");
-            assert_eq!(frame["data"]["session_id"], "agent:coder:thread:api_1");
-            assert!(frame["message_id"].as_str().is_some_and(|m| !m.is_empty()));
-            let wire = frame.to_string();
-            assert!(
-                !wire.contains("earlier") && !wire.contains("NEVER SENT"),
-                "{wire}"
-            );
-        }
+        let wire = serde_json::to_string(&told).unwrap();
+        assert!(!wire.contains("earlier") && !wire.contains("NEVER SENT"), "{wire}");
     }
 
-    /// An ask becomes an `ask_request` on the run's ask channels with the
-    /// runtime's own options; the option answered there goes back as it is.
+    /// An ask becomes an `ask_request` on the run's ask channels, in the
+    /// agent's own words with its own options; the option answered there goes
+    /// back as the option it names.
     #[tokio::test]
     async fn an_ask_round_trips_through_the_ask_channels() {
-        let (url, rec) = fake_link(Script::Ask).await;
-        let (_dir, store) = store();
-        let p = provider(&url, store);
+        let r = remote("ask").await;
         let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let mut req = request("clean the build", "chat-1");
+        let mut req = request("clean the build", "chat-1", &remote_model());
         req.ask_channels = Some(channels.clone());
 
-        let mut rx = p.stream(&req).await.unwrap();
-        let ask = rx.recv().await.unwrap();
-        assert_eq!(ask.event_type, StreamEventType::AskRequest);
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let (before, ask) = until_ask(&mut rx).await;
+        assert!(before.is_empty(), "{:?}", kinds(&before));
         assert_eq!(ask.error.as_deref(), Some("req-9"), "the question's id");
         assert_eq!(ask.text, "Run `rm -rf build`?");
         let widgets = ask.widgets.as_ref().unwrap();
         assert_eq!(widgets[0]["options"], json!(["Allow once", "Always allow", "Deny"]));
 
         // The ask card's answer, through the ONE pathway.
-        let sender = channels
-            .lock()
-            .await
-            .remove("req-9")
-            .expect("registered on the run");
+        let sender = channels.lock().await.remove("req-9").expect("registered on the run");
         sender.send("Always allow".to_owned()).unwrap();
 
         let rest = collect(rx).await;
-        assert_eq!(
-            kinds(&rest),
-            vec![StreamEventType::Text, StreamEventType::Done]
-        );
+        assert_eq!(kinds(&rest), vec![StreamEventType::Text, StreamEventType::Done]);
         assert_eq!(rest[0].text, "answered: Always allow");
-        let r = rec.lock().unwrap();
-        assert_eq!(r.ask_responses.len(), 1);
-        assert_eq!(r.ask_responses[0]["request_id"], "req-9");
-        assert_eq!(r.ask_responses[0]["value"], "Always allow");
+        let answers: Vec<Value> = told(&r.told).into_iter().filter_map(|t| t.get("answer").cloned()).collect();
+        assert_eq!(answers, vec![json!({ "outcome": "selected", "optionId": "always" })]);
     }
 
-    /// A stop sends the contract's `cancel`, waits for `chat_cancelled`, and
-    /// ends the stream the way the CLI provider does.
+    /// A stop cancels the agent's turn, waits for its end, and ends the
+    /// stream the way the CLI provider does.
     #[tokio::test]
     async fn cancel_reaches_the_runtime_and_ends_the_turn() {
-        let (url, rec) = fake_link(Script::Hang).await;
-        let (_dir, store) = store();
-        let p = provider(&url, store);
+        let r = remote("hang").await;
         let token = CancellationToken::new();
-        let mut req = request("do something long", "chat-1");
+        let mut req = request("do something long", "chat-1", &remote_model());
         req.cancel_token = Some(token.clone());
 
-        let mut rx = p.stream(&req).await.unwrap();
-        let first = rx.recv().await.unwrap();
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
         assert_eq!(first.text, "Working");
         token.cancel();
         let rest = collect(rx).await;
-        assert_eq!(
-            kinds(&rest),
-            vec![StreamEventType::Error, StreamEventType::Done]
-        );
+        assert_eq!(kinds(&rest), vec![StreamEventType::Error, StreamEventType::Done]);
         assert_eq!(rest[0].error.as_deref(), Some("Cancelled"));
-        assert_eq!(rec.lock().unwrap().cancels, 1);
+        assert_eq!(told(&r.told).iter().filter(|t| t.get("cancel").is_some()).count(), 1);
     }
 
     /// Nothing answers at the linked bot: the plain copy, no retry.
     #[tokio::test]
     async fn an_unreachable_link_answers_with_the_plain_copy() {
+        let root = tempfile::tempdir().unwrap();
         let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
-        let (_dir, store) = store();
-        let p = provider(&url, store);
+        let (store, _) = store_in(root.path());
+        let relay = Relay::Hub {
+            api_url: url,
+            token: Arc::new(|| Some("bot-jwt".to_owned())),
+        };
+        let p = LinkedProvider::new(relay, store, Some(local_host(root.path())), "Nebo on test");
         assert!(!p.retryable());
 
-        let events = collect(p.stream(&request("hello", "chat-1")).await.unwrap()).await;
+        let events = collect(p.stream(&request("hello", "chat-1", &remote_model())).await.unwrap()).await;
+        assert_eq!(kinds(&events), vec![StreamEventType::Error, StreamEventType::Done]);
+        assert_eq!(events[0].error.as_deref(), Some("Could not connect to Danny. Try again."));
+    }
+
+    /// The connection drops while the agent waits on the owner: Nebo reaches
+    /// the bot again, loads the session, and the turn goes on. The owner's
+    /// answer, given while Nebo was away, is sent to the question the host
+    /// asks again; nothing Nebo already showed is shown twice.
+    #[tokio::test]
+    async fn a_turn_survives_a_reconnect_while_it_waits_on_the_owner() {
+        let r = remote("git").await;
+        let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut req = request("check the repo", "chat-1", &remote_model());
+        req.ask_channels = Some(channels.clone());
+
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let (before, ask) = until_ask(&mut rx).await;
+        assert_eq!(kinds(&before), vec![StreamEventType::Text, StreamEventType::ToolCall]);
+        assert_eq!(ask.error.as_deref(), Some("call_1"));
+
+        r.hub.lock().unwrap().drop_sockets();
+        channels.lock().await.remove("call_1").expect("registered on the run").send("Allow once".to_owned()).unwrap();
+
+        let rest = collect(rx).await;
         assert_eq!(
-            kinds(&events),
-            vec![StreamEventType::Error, StreamEventType::Done]
+            kinds(&rest),
+            vec![StreamEventType::ToolResult, StreamEventType::Text, StreamEventType::Usage, StreamEventType::Done],
+            "{:?}",
+            rest.iter().map(|e| (&e.text, &e.error)).collect::<Vec<_>>()
         );
+        assert_eq!(rest[1].text, "Ran it.");
+        let answers: Vec<Value> = told(&r.told).into_iter().filter_map(|t| t.get("answer").cloned()).collect();
+        assert_eq!(answers, vec![json!({ "outcome": "selected", "optionId": "allow" })], "answered once");
+        assert_eq!(r.hub.lock().unwrap().bearers.len(), 3, "the pairing, then one reconnect");
+    }
+
+    /// The first answer wins: answered on the phone (another client of the
+    /// bot's host), the question leaves Nebo's run, and the turn goes on.
+    #[tokio::test]
+    async fn an_answer_on_the_phone_takes_nebos_card_back() {
+        let r = remote("git").await;
+        let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut req = request("check the repo", "chat-1", &remote_model());
+        req.ask_channels = Some(channels.clone());
+
+        let mut rx = r.provider.stream(&req).await.unwrap();
+        let (_, ask) = until_ask(&mut rx).await;
+        assert_eq!(ask.error.as_deref(), Some("call_1"));
+        let host = r.bot.oal().unwrap().host().clone();
+        let pending = host.pending();
+        assert_eq!(pending.len(), 1);
+        let phone = DeviceRef {
+            device_id: "d-phone".into(),
+            name: "Alma's phone".into(),
+        };
+        host.answer(&pending[0].id, link_core::model::Outcome::Selected { option_id: "allow".into() }, Some(phone)).unwrap();
+
+        let rest = collect(rx).await;
         assert_eq!(
-            events[0].error.as_deref(),
-            Some("Could not connect to Danny. Try again.")
+            kinds(&rest),
+            vec![StreamEventType::ToolResult, StreamEventType::Text, StreamEventType::Usage, StreamEventType::Done]
         );
+        assert!(channels.lock().await.get("call_1").is_none(), "Nebo's card was taken back");
+    }
+
+    /// A bot that forgot Nebo (unpaired it) is paired with again by itself on
+    /// the next turn.
+    #[tokio::test]
+    async fn a_bot_that_forgot_nebo_is_paired_again() {
+        let r = remote("turn").await;
+        let first = collect(r.provider.stream(&request("list the files", "chat-1", &remote_model())).await.unwrap()).await;
+        assert_eq!(first.last().unwrap().event_type, StreamEventType::Done);
+        let oal = r.bot.oal().unwrap();
+        let nebo = oal.devices().remove(0);
+        oal.unpair(&nebo.id).await.unwrap();
+
+        let second = collect(r.provider.stream(&request("and now?", "chat-1", &remote_model())).await.unwrap()).await;
+        assert_eq!(second.last().unwrap().event_type, StreamEventType::Done, "{:?}", second.iter().map(|e| &e.error).collect::<Vec<_>>());
+        assert_eq!(oal.devices().len(), 1, "paired again");
+        assert_ne!(oal.devices()[0].id, nebo.id);
     }
 
     // -- A coding agent on this computer ----------------------------------
-
-    /// This bot's id, under which Nebo hosts this computer's agents.
-    const SELF: &str = "5e1f0000-0000-4000-8000-000000000002";
-
-    /// Not a test when the harness runs it: the ACP agent a local hire
-    /// starts (this test binary again, with `NEBO_FAKE_ACP` naming the file
-    /// it writes what it was told to). It asks before it runs `git status`.
-    #[test]
-    fn fake_acp_agent() {
-        use std::io::{BufRead, Write};
-        let Ok(told) = std::env::var("NEBO_FAKE_ACP") else {
-            return;
-        };
-        let note = |line: Value| {
-            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&told).unwrap();
-            writeln!(file, "{line}").unwrap();
-        };
-        let send = |frame: Value| {
-            let mut out = std::io::stdout().lock();
-            writeln!(out, "{frame}").unwrap();
-            out.flush().unwrap();
-        };
-        let update = |update: Value| {
-            send(json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "s-1", "update": update } }));
-        };
-        // The harness printed "test ... " without a newline: end that line,
-        // so every frame is a line of its own.
-        send(Value::Null);
-        let mut prompt_id = Value::Null;
-        for line in std::io::stdin().lock().lines() {
-            let Ok(message) = serde_json::from_str::<Value>(&line.unwrap()) else {
-                continue;
-            };
-            let id = message["id"].clone();
-            let reply = |result: Value| send(json!({ "jsonrpc": "2.0", "id": id, "result": result }));
-            match message["method"].as_str() {
-                Some("initialize") => reply(json!({
-                    "protocolVersion": 1,
-                    "agentCapabilities": { "loadSession": false },
-                    "agentInfo": { "name": "fake-acp" },
-                })),
-                Some("session/new") => reply(json!({
-                    "sessionId": "s-1",
-                    "modes": { "currentModeId": "default", "availableModes": [
-                        { "id": "default", "name": "Default", "_meta": { "kind": "standard" } },
-                        { "id": "acceptEdits", "name": "Accept edits", "_meta": { "kind": "standard" } },
-                    ] },
-                })),
-                Some("session/set_mode") => {
-                    note(json!({ "mode": message["params"]["modeId"] }));
-                    reply(json!({}));
-                }
-                Some("session/prompt") => {
-                    note(json!({ "prompt": message["params"]["prompt"][0]["text"] }));
-                    prompt_id = id.clone();
-                    update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Checking." } }));
-                    send(json!({ "jsonrpc": "2.0", "id": 900, "method": "session/request_permission", "params": {
-                        "sessionId": "s-1",
-                        "toolCall": { "toolCallId": "call_1", "title": "git status", "kind": "execute", "status": "pending", "rawInput": { "command": "git status" } },
-                        "options": [
-                            { "optionId": "allow", "name": "Allow", "kind": "allow_once" },
-                            { "optionId": "reject", "name": "Reject", "kind": "reject_once" },
-                        ],
-                    } }));
-                }
-                None if id == json!(900) => {
-                    note(json!({ "answer": message["result"]["outcome"] }));
-                    update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "call_1", "status": "completed",
-                        "content": [{ "type": "content", "content": { "type": "text", "text": "nothing to commit" } }] }));
-                    update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Ran it." } }));
-                    send(json!({ "jsonrpc": "2.0", "id": prompt_id, "result": { "stopReason": "end_turn", "usage": { "inputTokens": 7, "outputTokens": 3 } } }));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// How a local hire starts the fake agent.
-    fn fake_acp(told: &std::path::Path) -> nebo_runtimes::RuntimeCommand {
-        nebo_runtimes::RuntimeCommand {
-            program: std::env::current_exe().unwrap().to_string_lossy().into_owned(),
-            args: ["providers::linked::tests::fake_acp_agent", "--exact", "--nocapture", "--test-threads=1"]
-                .map(String::from)
-                .to_vec(),
-            env: vec![("NEBO_FAKE_ACP".into(), told.to_string_lossy().into_owned())],
-        }
-    }
-
-    fn local_host(root: &std::path::Path) -> Arc<LocalHost> {
-        LocalHost::open(
-            Arc::new(|| Some(SELF.to_owned())),
-            root.join("link"),
-            root.join("home"),
-            Some(root.join("nebo-link")),
-        )
-    }
 
     /// A coding agent hired on this computer runs in Nebo, in its own
     /// folder: a turn reaches it, its permission request is an ask on the
@@ -1186,13 +1475,13 @@ mod tests {
     #[tokio::test]
     async fn a_coding_agent_on_this_computer_runs_in_nebo_with_no_hub() {
         let root = tempfile::tempdir().unwrap();
-        let told = root.path().join("told.jsonl");
+        let told_path = root.path().join("told.jsonl");
         let local = local_host(root.path());
-        let hosted = local.host(nebo_runtimes::acp::Agent::ClaudeCode, fake_acp(&told)).await.unwrap();
+        let hosted = local.host(nebo_runtimes::acp::Agent::ClaudeCode, fake_acp(&told_path, "git")).await.unwrap();
         assert_eq!((hosted.id.as_str(), hosted.label.as_str()), ("claude-code", "Claude Code"));
         let folder = root.path().join("home").join("NeboAI").join("claude-code").canonicalize().unwrap();
         assert_eq!(hosted.acp.workdir, folder, "its own folder under ~/NeboAI");
-        let second = local.host(nebo_runtimes::acp::Agent::ClaudeCode, fake_acp(&told)).await.unwrap();
+        let second = local.host(nebo_runtimes::acp::Agent::ClaudeCode, fake_acp(&told_path, "git")).await.unwrap();
         assert_eq!((second.id.as_str(), second.label.as_str()), ("claude-code-2", "Claude Code 2"));
         // nebo-link reads that Nebo hosts this computer's agents, and so
         // refuses to link or pair: one program hosts them.
@@ -1204,24 +1493,19 @@ mod tests {
         let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let hub = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
-        let (_dir, store) = store();
-        let p = LinkedProvider::new(&hub, store.clone(), Arc::new(|| None), Some(local.clone()));
+        let (store, db_path) = store_in(root.path());
+        let relay = Relay::Hub {
+            api_url: hub,
+            token: Arc::new(|| None),
+        };
+        let p = LinkedProvider::new(relay, store.clone(), Some(local.clone()), "Nebo on test");
         let channels: AskChannels = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let mut req = request("check the repo", "chat-1");
-        req.model = format!("{SELF}/{}", hosted.id);
+        let mut req = request("check the repo", "chat-1", &format!("{SELF}/{}", hosted.id));
         req.permission_mode = Some(types::permissions::Mode::Automatic);
         req.ask_channels = Some(channels.clone());
 
         let mut rx = p.stream(&req).await.unwrap();
-        let mut before = Vec::new();
-        let ask = loop {
-            let event = tokio::time::timeout(Duration::from_secs(60), rx.recv()).await.unwrap().unwrap();
-            if event.event_type == StreamEventType::AskRequest {
-                break event;
-            }
-            assert_ne!(event.event_type, StreamEventType::Error, "{:?}", event.error);
-            before.push(event);
-        };
+        let (before, ask) = until_ask(&mut rx).await;
         assert_eq!(kinds(&before), vec![StreamEventType::Text, StreamEventType::ToolCall]);
         assert_eq!(before[0].text, "Checking.");
         assert_eq!(before[1].tool_call.as_ref().unwrap().name, "git status");
@@ -1231,7 +1515,7 @@ mod tests {
 
         // The ask card's answer, through the ONE pathway.
         channels.lock().await.remove("call_1").expect("registered on the run").send("Allow once".to_owned()).unwrap();
-        let rest = tokio::time::timeout(Duration::from_secs(60), collect(rx)).await.unwrap();
+        let rest = collect(rx).await;
         assert_eq!(
             kinds(&rest),
             vec![StreamEventType::ToolResult, StreamEventType::Text, StreamEventType::Usage, StreamEventType::Done]
@@ -1241,25 +1525,36 @@ mod tests {
         let usage = rest[2].usage.as_ref().unwrap();
         assert_eq!((usage.input_tokens, usage.output_tokens), (7, 3));
 
-        let told: Vec<Value> = std::fs::read_to_string(&told)
-            .unwrap()
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
         assert_eq!(
-            told,
+            told(&told_path),
             vec![
+                json!({ "new": folder.to_string_lossy() }),
                 json!({ "mode": "acceptEdits" }),
-                json!({ "prompt": "check the repo" }),
+                json!({ "prompt": [{ "type": "text", "text": "check the repo" }] }),
                 json!({ "answer": { "outcome": "selected", "optionId": "allow" } }),
             ],
-            "the employee's mode, then only the newest message, then the owner's answer"
+            "its session in its folder, the employee's mode, then only the newest message, then the owner's answer"
         );
-        assert_eq!(
-            store.get_chat("chat-1").unwrap().unwrap().linked_chat_id.as_deref(),
-            Some("claude-code~s-1"),
-            "the Nebo chat records the agent's session"
-        );
+        let chat = store.get_chat("chat-1").unwrap().unwrap();
+        assert_eq!(chat.linked_chat_id.as_deref(), Some("s-1"), "the Nebo chat records the agent's session");
+        assert_eq!(chat.linked_agent_id.as_deref(), Some("claude-code"), "and the agent it is");
+
+        // A chat recorded before its agent was (the phone contract's
+        // `claude-code~s-1`, migrated to `s-1`) goes on in the same session,
+        // and records its agent.
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .execute("UPDATE chats SET linked_agent_id = NULL WHERE id = 'chat-1'", [])
+            .unwrap();
+        let mut again = request("and now?", "chat-1", &format!("{SELF}/{}", hosted.id));
+        again.ask_channels = Some(channels.clone());
+        let mut rx = p.stream(&again).await.unwrap();
+        let (_, ask) = until_ask(&mut rx).await;
+        channels.lock().await.remove(ask.error.as_deref().unwrap()).unwrap().send("Deny".to_owned()).unwrap();
+        let rest = collect(rx).await;
+        assert_eq!(rest.last().unwrap().event_type, StreamEventType::Done);
+        assert_eq!(told(&told_path).iter().filter(|t| t.get("new").is_some()).count(), 1, "the same session, no new one");
+        assert_eq!(store.get_chat("chat-1").unwrap().unwrap().linked_agent_id.as_deref(), Some("claude-code"));
 
         // Fired: the agent is no longer hosted, and its folder stays.
         local.remove(&hosted.id).unwrap();
@@ -1282,22 +1577,22 @@ mod tests {
         std::fs::write(daemon.join("link.json"), r#"{"botId":"b1","name":"Studio Mac"}"#).unwrap();
 
         assert_eq!(local.hosted_by_daemon().as_deref(), Some("Studio Mac"));
-        assert!(local.contract().is_none());
-        assert!(
-            link_core::machine::hosting_app(&root.path().join("nebo-link")).is_none(),
-            "Nebo records hosting nothing"
-        );
+        assert!(local.oal().is_none());
+        assert!(link_core::machine::hosting_app(&root.path().join("nebo-link")).is_none(), "Nebo records hosting nothing");
         assert!(local.hireable().is_empty());
         let refused = local
-            .host(nebo_runtimes::acp::Agent::Codex, fake_acp(&root.path().join("told")))
+            .host(nebo_runtimes::acp::Agent::Codex, fake_acp(&root.path().join("told"), "git"))
             .await
             .unwrap_err();
         assert!(refused.contains("Studio Mac"), "{refused}");
 
-        let (_dir, store) = store();
-        let p = LinkedProvider::new("http://127.0.0.1:9", store, Arc::new(|| None), Some(local));
-        let mut req = request("hello", "chat-1");
-        req.model = format!("{SELF}/claude-code");
+        let (store, _) = store_in(root.path());
+        let relay = Relay::Hub {
+            api_url: "http://127.0.0.1:9".into(),
+            token: Arc::new(|| None),
+        };
+        let p = LinkedProvider::new(relay, store, Some(local), "Nebo on test");
+        let req = request("hello", "chat-1", &format!("{SELF}/claude-code"));
         let events = collect(p.stream(&req).await.unwrap()).await;
         assert_eq!(kinds(&events), vec![StreamEventType::Error, StreamEventType::Done]);
         assert_eq!(events[0].error.as_deref(), Some("Could not connect to Danny. Try again."));

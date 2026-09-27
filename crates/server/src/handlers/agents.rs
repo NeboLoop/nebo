@@ -2142,7 +2142,7 @@ fn here(state: &AppState) -> Option<Here> {
     let local = state.local_host.as_ref()?;
     Some(Here {
         bot_id: local.bot_id()?,
-        agents: match local.contract() {
+        agents: match local.oal() {
             Some(_) => local.agents().into_iter().map(|a| a.id).collect(),
             None => Vec::new(),
         },

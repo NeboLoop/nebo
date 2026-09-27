@@ -4,7 +4,13 @@
 //! link-core, with no nebo-link daemon and nothing sent through the hub.
 //! Its employee's brain is `linked/<this bot>/<agent>` like any linked
 //! agent's; [`super::linked::LinkedProvider`] reaches it here instead of
-//! through the hub, over the same chat contract.
+//! through the hub, over Open Agent Link like any other: this host is an
+//! `oal_host::OalHost` Nebo connects to in its own process
+//! ([`LocalHost::oal`]), with no network and nothing to encrypt.
+//!
+//! Nebo is one Open Agent Link device with one key, kept in one key store
+//! ([`LocalHost::keys`], `<data dir>/link/oal/`): the key this host is
+//! known by, and the key Nebo pairs with every linked bot it reaches.
 //!
 //! One host per computer per OS user ([`link_core::machine`]): while a
 //! nebo-link daemon is linked for this user, it is the host, Nebo hosts
@@ -20,17 +26,20 @@
 //! agents/<id>/acp-chats.json  the chats an agent that can't list its
 //!                             sessions was given
 //! logs/<id>.log               each agent's own output
+//! oal/                        Nebo's key and every pairing (a KeyStore)
+//! oal-seen.json               when each device was last seen
 //! ```
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use link_core::acp::{Acp, AcpLink, Client, Settings};
 use link_core::host::Host;
-use link_core::phone::Contract;
 use link_core::roster::{Member, Roster};
 use nebo_runtimes::acp::Agent as AcpAgent;
 use nebo_runtimes::{Environment, Runtime, RuntimeCommand};
+use oal_host::{OalHost, Runtime as OalRuntime};
+use oal_secure::KeyStore;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -75,40 +84,47 @@ pub struct LocalHost {
     home: PathBuf,
     /// Where this OS user's nebo-link daemon would keep its state.
     daemon_home: Option<PathBuf>,
-    contract: Arc<Contract>,
-    agents: Mutex<Vec<LocalAgent>>,
+    host: Arc<Host>,
+    /// Nebo's key and pairings.
+    keys: KeyStore,
+    /// The host over Open Agent Link, made once there is a bot to host as.
+    oal: OnceLock<Arc<OalHost>>,
+    agents: Arc<Mutex<Vec<LocalAgent>>>,
     /// One hire at a time, so two never take the same id or folder.
     hiring: tokio::sync::Mutex<()>,
 }
 
 impl LocalHost {
-    /// The host for Nebo's bot, keeping its record in `dir`. `daemon_home`
-    /// is where a nebo-link daemon of this OS user keeps its state
-    /// ([`link_core::machine::daemon_home`]).
+    /// The host for Nebo's bot, keeping its record in `dir` and Nebo's key
+    /// store in `dir/oal`. `daemon_home` is where a nebo-link daemon of this
+    /// OS user keeps its state ([`link_core::machine::daemon_home`]).
     pub fn open(
         bot_id: BotIdSource,
         dir: PathBuf,
         home: PathBuf,
         daemon_home: Option<PathBuf>,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>, String> {
+        let keys = KeyStore::open(dir.join("oal"))
+            .map_err(|e| format!("Could not open Nebo's keys in {}: {e}", dir.join("oal").display()))?;
         let agents: Vec<LocalAgent> = std::fs::read_to_string(dir.join("agents.json"))
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
         let members = agents.iter().map(|a| member(&dir, a)).collect();
         let host = Host::new(Arc::new(Roster::new(members)));
-        let contract = Contract::new(AcpAgent::Other.key(), AcpAgent::Other.name(), host, None);
         let local = Arc::new(Self {
             bot_id,
             dir,
             home,
             daemon_home,
-            contract,
-            agents: Mutex::new(agents.clone()),
+            host,
+            keys,
+            oal: OnceLock::new(),
+            agents: Arc::new(Mutex::new(agents.clone())),
             hiring: tokio::sync::Mutex::new(()),
         });
         local.record_hosting(&agents);
-        local
+        Ok(local)
     }
 
     /// Says, where nebo-link looks ([`link_core::machine::record_app_host`]),
@@ -140,12 +156,52 @@ impl LocalHost {
             .and_then(link_core::machine::linked_daemon)
     }
 
-    /// The chat contract the hosted agents are reached through; `None`
-    /// while a nebo-link daemon is this computer's host.
-    pub fn contract(&self) -> Option<Arc<Contract>> {
-        self.hosted_by_daemon()
-            .is_none()
-            .then(|| self.contract.clone())
+    /// Nebo's key and every pairing: the one key store.
+    pub fn keys(&self) -> &KeyStore {
+        &self.keys
+    }
+
+    /// The Open Agent Link host the hosted agents are reached through, in
+    /// this process; `None` while a nebo-link daemon is this computer's
+    /// host, or before Nebo has a bot to host as.
+    pub fn oal(&self) -> Option<Arc<OalHost>> {
+        if self.hosted_by_daemon().is_some() {
+            return None;
+        }
+        if let Some(oal) = self.oal.get() {
+            return Some(oal.clone());
+        }
+        let bot_id = self.bot_id()?;
+        let agents = self.agents.clone();
+        let config = oal_host::Config {
+            host_id: bot_id,
+            host_name: "This computer".to_owned(),
+            software: ("nebo".to_owned(), env!("CARGO_PKG_VERSION").to_owned()),
+            keys: self.keys.clone(),
+            seen_file: self.dir.join("oal-seen.json"),
+            runtimes: Arc::new(move || {
+                let mut all: Vec<OalRuntime> = agents
+                    .lock()
+                    .expect("local agents")
+                    .iter()
+                    .map(|a| OalRuntime {
+                        id: a.agent.key().to_owned(),
+                        name: a.agent.name().to_owned(),
+                        kind: "acp".to_owned(),
+                        version: None,
+                    })
+                    .collect();
+                all.sort_by(|a, b| a.id.cmp(&b.id));
+                all
+            }),
+        };
+        match OalHost::new(config, self.host.clone()) {
+            Ok(oal) => Some(self.oal.get_or_init(|| oal).clone()),
+            Err(e) => {
+                warn!(error = %e, "linked: this computer's host could not start");
+                None
+            }
+        }
     }
 
     /// Every agent Nebo hosts.
@@ -261,7 +317,7 @@ impl LocalHost {
     fn save(&self, agents: Vec<LocalAgent>) -> Result<(), String> {
         write_private(&self.dir.join("agents.json"), &agents)
             .map_err(|e| format!("Could not save this computer's agents: {e}"))?;
-        let host = self.contract.host();
+        let host = &self.host;
         let current = host.roster().members();
         let members = agents
             .iter()

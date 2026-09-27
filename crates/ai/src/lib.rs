@@ -15,6 +15,6 @@ pub use embedding::{
 };
 pub use providers::{
     AnthropicProvider, CLIProvider, GeminiProvider, LinkedProvider, LocalHost, LocalProvider,
-    OllamaProvider, OpenAIProvider,
+    OllamaProvider, OpenAIProvider, Relay,
 };
 pub use types::*;

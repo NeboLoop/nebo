@@ -180,12 +180,18 @@ pub struct Chat {
     /// the employee's `model_preference`, then the selector's choice.
     #[serde(default)]
     pub model: Option<String>,
-    /// The linked runtime's session behind this chat, for an employee hired
-    /// from a linked bot: set by the linked provider on the thread's first
-    /// turn and reused after. Internal — the runtime's id means nothing to
-    /// the app (skip_serializing keeps the response shape unchanged).
+    /// The linked agent's session behind this chat, for an employee hired
+    /// from a linked bot: the agent's own session id (Open Agent Link's
+    /// `sessionId`), set by the linked provider on the thread's first turn
+    /// and reused after. Internal — the runtime's id means nothing to the
+    /// app (skip_serializing keeps the response shape unchanged).
     #[serde(default, skip_serializing)]
     pub linked_chat_id: Option<String>,
+    /// The linked agent that session belongs to (`linked/<bot>/<agent>`'s
+    /// agent). None on a chat whose session was recorded before the agent
+    /// was: the employee's own agent, recorded on its next turn.
+    #[serde(default, skip_serializing)]
+    pub linked_agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

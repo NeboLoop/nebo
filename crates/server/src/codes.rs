@@ -2062,7 +2062,7 @@ async fn persist_workflow_artifact(
 /// comms connect and the management-tunnel watcher — one resolution pathway.
 /// The machine's hostname for the manage console (".local" stripped). Env vars
 /// cover containers/Windows; the `hostname` command covers desktops.
-fn host_label() -> String {
+pub(crate) fn host_label() -> String {
     let from_env = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()

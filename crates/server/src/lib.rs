@@ -704,12 +704,16 @@ pub fn build_providers(
     // registered — it resolves the NeboAI token per call through the ONE
     // resolver — and never a default or a fallback (`retryable` = false).
     let token_store = store.clone();
-    providers.push(Arc::new(ai::LinkedProvider::new(
-        &cfg.neboai.api_url,
-        store.clone(),
-        Arc::new(move || auth::neboai_token(&token_store)),
-        local_host.cloned(),
-    )));
+    let relay = ai::Relay::Hub {
+        api_url: cfg.neboai.api_url.trim_end_matches('/').to_owned(),
+        token: Arc::new(move || auth::neboai_token(&token_store)),
+    };
+    // What a linked bot calls this Nebo once they are paired.
+    let device = match crate::codes::host_label() {
+        host if host.is_empty() => "Nebo".to_owned(),
+        host => format!("Nebo on {host}"),
+    };
+    providers.push(Arc::new(ai::LinkedProvider::new(relay, store.clone(), local_host.cloned(), &device)));
 
     providers
 }
@@ -1116,12 +1120,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // does (one host per computer per OS user). One for the process: every
     // provider build shares it, so a reload never restarts its agents.
     let local_host = match (config::data_dir(), dirs::home_dir()) {
-        (Ok(data_dir), Some(home)) => Some(ai::LocalHost::open(
+        (Ok(data_dir), Some(home)) => ai::LocalHost::open(
             Arc::new(config::read_bot_id),
             data_dir.join("link"),
             home,
             link_core::machine::daemon_home(),
-        )),
+        )
+        .inspect_err(|e| warn!(error = %e, "this computer's host is not available"))
+        .ok(),
         _ => None,
     };
 
