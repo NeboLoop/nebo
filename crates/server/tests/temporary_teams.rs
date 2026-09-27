@@ -29,7 +29,7 @@ fn fresh(messages: &[Value], marker: &str) -> bool {
 
 /// Say `prompt` to employee `agent_id` in its app conversation.
 async fn say(server: &TestServer, agent_id: &str, prompt: &str) {
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{}/ws", server.port)).await.expect("ws");
+    let (mut ws, _) = connect_async(server.ws_url()).await.expect("ws");
     let msg = json!({"type": "chat", "data": {"session_id": format!("agent:{agent_id}:web"), "prompt": prompt}});
     ws.send(Message::Text(msg.to_string().into())).await.unwrap();
 }

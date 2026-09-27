@@ -18,6 +18,9 @@ use serde_json::Value;
 
 pub struct TestServer {
     pub port: u16,
+    /// The install key the test proves itself with, as the owner's own
+    /// clients do (`install_key`).
+    pub key: String,
     pub client: Client,
     pub data_dir: PathBuf,
     _temp_dir: tempfile::TempDir,
@@ -45,6 +48,7 @@ impl TestServer {
             std::env::set_var("NEBO_HOME", &data_dir);
         }
 
+        let key = install_key();
         let port = find_free_port();
         let db_path = data_dir.join("data").join("nebo.db");
 
@@ -78,6 +82,7 @@ impl TestServer {
 
         Self {
             port,
+            key,
             client,
             data_dir: temp_dir.path().to_path_buf(),
             _temp_dir: temp_dir,
@@ -85,8 +90,17 @@ impl TestServer {
         }
     }
 
+    /// An API route, with the install key as the address's first segment
+    /// (`/k/<key>`, the form a process that knows Nebo as a base URL uses),
+    /// so the Authorization header stays free for what a route checks
+    /// itself (a user's token).
     pub fn url(&self, path: &str) -> String {
-        format!("http://127.0.0.1:{}/api/v1{}", self.port, path)
+        format!("http://127.0.0.1:{}/k/{}/api/v1{}", self.port, self.key, path)
+    }
+
+    /// The chat socket, with the install key the same way.
+    pub fn ws_url(&self) -> String {
+        format!("ws://127.0.0.1:{}/k/{}/ws", self.port, self.key)
     }
 
     pub fn health_url(&self) -> String {
@@ -124,6 +138,21 @@ impl TestServer {
         let db_path = self.data_dir.join("data").join("nebo.db");
         db::Store::new(&db_path.to_string_lossy()).expect("open test DB")
     }
+}
+
+/// This process's install key. Every server a test binary boots reads it
+/// from `NEBO_MCP_API_KEY` (`config::read_install_key`), not from a file in
+/// its `NEBO_HOME`: the tests in one binary boot their servers in parallel,
+/// and `NEBO_HOME` is one variable for the whole process.
+fn install_key() -> String {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let key = uuid::Uuid::new_v4().simple().to_string();
+        // SAFETY: set before any server of this process starts, like NEBO_HOME.
+        unsafe { std::env::set_var("NEBO_MCP_API_KEY", &key) };
+        key
+    })
+    .clone()
 }
 
 pub fn find_free_port() -> u16 {
