@@ -49,6 +49,28 @@ fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     input.get(key).and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty())
 }
 
+/// Text that says there is nothing — "None yet set for this employee.",
+/// "N/A", "TBD" — every word of it one that says so; the job's own words
+/// always add one of their own. Release proof of 2026-09-27
+/// (correction-work-name-in-definition run 2): get_employee said "Persona:
+/// none yet", and update_employee, called before it was loaded, wrote
+/// "None yet set for this employee." over the employee's instructions.
+fn says_nothing(text: &str) -> bool {
+    const NOTHING: &[&str] = &[
+        "none", "no", "not", "yet", "set", "unset", "n", "a", "na", "tbd", "todo", "placeholder", "empty", "null",
+        "nil", "nothing", "blank", "pending", "for", "this", "the", "employee", "instructions", "instruction",
+        "persona", "description", "is", "are", "here", "there", "any", "currently", "provided", "given", "defined",
+        "specified", "available", "at", "moment", "it", "has", "have",
+    ];
+    let words: Vec<String> = text
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    !words.is_empty() && words.iter().all(|w| NOTHING.contains(&w.as_str()))
+}
+
 /// The name property every tool that acts on one employee declares.
 fn name_param() -> serde_json::Value {
     serde_json::json!({ "type": "string", "description": "The employee's name or id, as list_employees shows it." })
@@ -441,18 +463,30 @@ impl DynTool for EmployeeTool {
     }
 
     /// A create or update names its employee, or sends the draft the owner
-    /// said yes to — one or the other.
+    /// said yes to — one or the other; and what it says the employee does
+    /// is words about the job, never a line saying there are none.
     fn validate_input(&self, input: &serde_json::Value) -> Result<(), String> {
         if !matches!(self.kind, Kind::CreateEmployee | Kind::UpdateEmployee) {
             return Ok(());
         }
-        match (str_field(input, "draft_id").is_some(), str_field(input, "name").is_some()) {
-            (false, false) => Err(format!(
+        if let (false, false) = (str_field(input, "draft_id").is_some(), str_field(input, "name").is_some()) {
+            return Err(format!(
                 "{} needs `name` (to draft), or `draft_id` alone (to make what the owner said yes to).",
                 self.kind.name()
-            )),
-            _ => Ok(()),
+            ));
         }
+        for key in ["instructions", "description"] {
+            if let Some(text) = str_field(input, key)
+                && says_nothing(text)
+            {
+                return Err(format!(
+                    "`{key}` says there is nothing (\"{}\"); it would replace the employee's own words. \
+                     Nothing was changed. Pass what the employee does, in the owner's words, or leave `{key}` out.",
+                    text.trim()
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn activity(&self, input: &serde_json::Value) -> String {
@@ -613,6 +647,77 @@ mod tests {
         let r = registry.execute(&ctx, "update_employee", real).await;
         assert!(!r.content.contains("help text"), "{}", r.content);
         assert!(r.content.contains("No employee named 'front-desk-63ed55f1'"), "{}", r.content);
+    }
+
+    /// Release proof of 2026-09-27 (correction-work-name-in-definition run
+    /// 2, call #3): update_employee(name, instructions: "None yet set for
+    /// this employee.") replaced the employee's instructions. A line that
+    /// says there is nothing is refused before the tool runs, through the
+    /// registry, and loads the tool when it wasn't; the job's own words,
+    /// however short, and an empty value pass.
+    #[tokio::test]
+    async fn update_employee_refuses_a_line_that_says_there_is_nothing() {
+        let (family, _dir) = family();
+        let registry = crate::Registry::new(crate::gate::test_gate());
+        for t in family {
+            registry.register(Box::new(t)).await;
+        }
+        let ctx = ToolContext {
+            declared_tools: Some(Arc::new(std::collections::HashSet::from(["get_employee".to_string()]))),
+            ..ToolContext::default()
+        };
+        let junk = json!({"instructions": "None yet set for this employee.", "name": "cs-agent-387b239e"});
+        let r = registry.execute(&ctx, "update_employee", junk).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("`instructions` says there is nothing (\"None yet set for this employee.\")"), "{}", r.content);
+        assert_eq!(r.loads.len(), 1, "the refusal loads update_employee: {}", r.content);
+        for nothing in ["N/A", "TBD", "none", "Not set yet.", "No instructions provided."] {
+            assert!(says_nothing(nothing), "{nothing}");
+            let t = registry.get("create_employee").await.unwrap();
+            assert!(t.validate_input(&json!({"name": "x", "description": nothing})).is_err(), "{nothing}");
+        }
+        for words in ["Answers the phone.", "You are the billing desk.", "Set up new client files", "No refunds without the owner's yes."] {
+            assert!(!says_nothing(words), "{words}");
+        }
+        let t = registry.get("update_employee").await.unwrap();
+        assert!(t.validate_input(&json!({"name": "x", "instructions": ""})).is_ok());
+        assert!(t.validate_input(&json!({"name": "x", "instructions": "Answers the phone."})).is_ok());
+    }
+
+    /// Release proof of 2026-09-27 (plugin-many-skills-fan-out run 2, calls
+    /// #33 and #61): create_employee reported "Created employee
+    /// 'billing-desk-40458bec'", and update_employee and reload_employee
+    /// answered "No employee named 'billing-desk-40458bec'" until the display
+    /// name was used. Every employee tool takes the short name, the id or
+    /// the display name in any case, by the one resolver.
+    #[tokio::test]
+    async fn every_employee_tool_takes_the_short_name_the_id_or_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("e.db").to_string_lossy()).unwrap());
+        let id = "42d998e0-f1fc-4969-bedc-ea4cfabe00fa";
+        store
+            .create_agent(id, None, "Billing Desk 40458bec", "Handles billing.", "---\nname: billing-desk-40458bec\n---\nYou are the billing desk.", "", None, None)
+            .unwrap();
+        let loader = Arc::new(napp::AgentLoader::new(dir.path().join("a"), dir.path().join("b")));
+        let live = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        let family = tools(PersonaTool::new(store.clone(), live, loader));
+        let ctx = ToolContext::default();
+        for label in ["billing-desk-40458bec", "Billing Desk 40458bec", "billing desk 40458BEC", id] {
+            for name in ["get_employee", "update_employee", "reload_employee", "employee_stats", "setup_employee", "repair_employee"] {
+                let mut input = json!({"name": label});
+                if name == "update_employee" {
+                    input["description"] = json!("Handles billing and payments.");
+                }
+                let r = tool(&family, name).execute_dyn(&ctx, input).await;
+                assert!(!r.content.contains("No employee named"), "{name}({label}): {}", r.content);
+            }
+        }
+        assert_eq!(store.get_agent(id).unwrap().unwrap().description, "Handles billing and payments.");
+        let r = tool(&family, "update_employee").execute_dyn(&ctx, json!({"name": "billing-desk", "description": "x y"})).await;
+        assert!(r.content.contains("No employee named 'billing-desk'"), "a near miss names no one: {}", r.content);
+        let r = tool(&family, "delete_employee").execute_dyn(&ctx, json!({"name": "billing-desk-40458bec"})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(store.get_agent(id).unwrap().is_none());
     }
 
     /// Making an employee goes through the one consent step: with the

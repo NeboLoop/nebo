@@ -22,6 +22,10 @@ pub struct WorkflowInfo {
     /// it is made).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// The employee the workflow belongs to, by name. None for a
+    /// standalone marketplace workflow, which belongs to no one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub employee: Option<String>,
 }
 
 /// How long a workflow lives (owner, 09-25). One create path, with this as
@@ -69,7 +73,9 @@ pub struct WorkflowRunInfo {
 pub trait WorkflowManager: Send + Sync {
     /// List workflows visible to an agent: its own `agent_workflows` bindings
     /// (what the Settings → Workflows panel shows) plus any standalone
-    /// marketplace-installed workflows.
+    /// marketplace-installed workflows. An empty `agent_id` (a conversation
+    /// no employee owns, which can own no workflow) lists every employee's
+    /// bindings, each naming its employee.
     fn list<'a>(
         &'a self,
         agent_id: &'a str,

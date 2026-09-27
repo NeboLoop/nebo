@@ -433,12 +433,8 @@ impl PersonaTool {
             registry.clear();
             ToolResult::ok(format!("Turned off every employee: {}", names.join(", ")))
         } else {
-            // Deactivate a specific agent by name or id
-            let lower = name.to_lowercase();
-            let key = registry
-                .iter()
-                .find(|(k, v)| k.to_lowercase() == lower || v.name.to_lowercase() == lower)
-                .map(|(k, _)| k.clone());
+            // Deactivate a specific agent: the live registry is keyed by id.
+            let key = self.find_agent_row(name).map(|a| a.id).filter(|id| registry.contains_key(id));
             match key {
                 Some(k) => {
                     let agent = registry.remove(&k).unwrap();
@@ -965,11 +961,11 @@ impl PersonaTool {
             .join(" ")
     }
 
-    /// The employee an update names: by name (any case) or id.
-    fn find_agent_row(&self, name: &str) -> Result<Option<db::models::Agent>, String> {
-        let agents = self.store.list_agents(500, 0).map_err(|e| format!("Failed to query agents: {}", e))?;
-        let lower = name.to_lowercase();
-        Ok(agents.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name))
+    /// The employee a call names: its id, its name in any case, or its
+    /// short name (the slug create_employee reports) — the one resolver,
+    /// [`crate::team::resolve_agent`], for every employee tool.
+    fn find_agent_row(&self, name: &str) -> Option<db::models::Agent> {
+        crate::team::resolve_agent(&self.store, name)
     }
 
     /// Fields of an update that change what the job is.
@@ -1197,7 +1193,7 @@ impl PersonaTool {
         let (Some(consent), true, false) = (consent, shapes_the_job, name.is_empty()) else {
             return self.handle_update(input).await;
         };
-        let Ok(Some(agent)) = self.find_agent_row(name) else {
+        let Some(agent) = self.find_agent_row(name) else {
             return self.handle_update(input).await;
         };
         let before = consent.job_of(&agent.id);
@@ -1601,10 +1597,6 @@ impl PersonaTool {
         }
         // Find the agent in DB
         let db_agent = match self.find_agent_row(name) {
-            Ok(found) => found,
-            Err(e) => return ToolResult::error(e),
-        };
-        let db_agent = match db_agent {
             Some(r) => r,
             None => {
                 return ToolResult::error(format!(
@@ -2137,16 +2129,7 @@ impl PersonaTool {
         }
 
         // Find in DB
-        let db_agent = match self.store.list_agents(500, 0) {
-            Ok(agents) => {
-                let lower = name.to_lowercase();
-                agents
-                    .into_iter()
-                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
-            }
-            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
-        };
-        let db_agent = match db_agent {
+        let db_agent = match self.find_agent_row(name) {
             Some(r) => r,
             None => return ToolResult::error(format!("No employee named '{}'.", name)),
         };
@@ -2236,16 +2219,7 @@ impl PersonaTool {
         let apply_update = input["apply_update"].as_bool().unwrap_or(false);
 
         // Find the agent in DB
-        let db_agent = match self.store.list_agents(500, 0) {
-            Ok(agents) => {
-                let lower = name.to_lowercase();
-                agents
-                    .into_iter()
-                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
-            }
-            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
-        };
-        let db_agent = match db_agent {
+        let db_agent = match self.find_agent_row(name) {
             Some(r) => r,
             None => return ToolResult::error(format!("No employee named '{}'.", name)),
         };
@@ -2455,11 +2429,8 @@ impl PersonaTool {
         let target_agents: Vec<&db::models::Agent> = if name_filter.is_empty() {
             agents.iter().collect()
         } else {
-            let lower = name_filter.to_lowercase();
-            agents
-                .iter()
-                .filter(|r| r.name.to_lowercase() == lower || r.id == name_filter)
-                .collect()
+            let wanted = self.find_agent_row(name_filter).map(|a| a.id);
+            agents.iter().filter(|r| Some(&r.id) == wanted.as_ref()).collect()
         };
 
         if target_agents.is_empty() && !name_filter.is_empty() {
@@ -3259,16 +3230,7 @@ impl PersonaTool {
         }
 
         // Resolve agent_id from DB
-        let db_agent = match self.store.list_agents(500, 0) {
-            Ok(agents) => {
-                let lower = name.to_lowercase();
-                agents
-                    .into_iter()
-                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
-            }
-            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
-        };
-        let db_agent = match db_agent {
+        let db_agent = match self.find_agent_row(name) {
             Some(r) => r,
             None => {
                 return ToolResult::error(format!(
@@ -3380,16 +3342,7 @@ impl PersonaTool {
             ));
         }
 
-        let db_agent = match self.store.list_agents(500, 0) {
-            Ok(agents) => {
-                let lower = name.to_lowercase();
-                agents
-                    .into_iter()
-                    .find(|r| r.name.to_lowercase() == lower || r.id == name)
-            }
-            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
-        };
-        let db_agent = match db_agent {
+        let db_agent = match self.find_agent_row(name) {
             Some(r) => r,
             None => return ToolResult::error(format!("No employee named '{}'.", name)),
         };
@@ -3411,82 +3364,75 @@ impl PersonaTool {
 
     /// Find an agent by name across loader cache and DB.
     async fn find_agent(&self, name: &str) -> Option<napp::agent_loader::LoadedAgent> {
+        // The employee the label names, by the one resolver; the loader is
+        // keyed by that employee's name.
+        let row = self.find_agent_row(name);
+        let key = row.as_ref().map_or(name, |r| r.name.as_str());
         // Check loader cache first (exact lowercase key)
-        if let Some(agent) = self.agent_loader.get_by_name(name).await {
+        if let Some(agent) = self.agent_loader.get_by_name(key).await {
             return Some(agent);
         }
         // Try normalized form: "chief-of-staff" → "chief of staff"
-        let normalized = name.to_lowercase().replace(['-', '_'], " ");
-        if normalized != name.to_lowercase() {
+        let normalized = key.to_lowercase().replace(['-', '_'], " ");
+        if normalized != key.to_lowercase() {
             if let Some(agent) = self.agent_loader.get_by_name(&normalized).await {
                 return Some(agent);
             }
         }
 
-        // Fallback: check DB (agents created via REST API or marketplace install).
-        // Matching uses the ONE normalizer (comm::handle::slugify) so a name
-        // resolves to the same agent on every rail — the loader probes above
-        // keep their space-form because that is the loader's own key format.
-        let slug = comm::handle::slugify(name);
-        if let Ok(db_agents) = self.store.list_agents(500, 0) {
-            for r in db_agents {
-                if comm::handle::slugify(&r.name) == slug || r.id == name {
-                    // The body is the persona after the frontmatter, as the
-                    // loader parses it; the raw file stays in `agent_md`.
-                    let agent_def = napp::agent::AgentDef {
-                        id: r.id.clone(),
-                        name: r.name.clone(),
-                        description: r.description.clone(),
-                        body: Self::agent_body(&r.agent_md),
-                    };
-                    let config = if !r.frontmatter.is_empty() {
-                        napp::agent::parse_agent_config(&r.frontmatter).ok()
-                    } else {
-                        None
-                    };
-                    // A row created in the app or by the tool lives under the
-                    // user directory and records that path. Reporting it as
-                    // "marketplace" at the installed root sent a live run on a
-                    // forty-call hunt through the wrong tree (2026-09-05).
-                    let dir = r.napp_path.clone().map(std::path::PathBuf::from);
-                    // The same classification `info` prints: only a path in
-                    // the installed tree (or a sealed .napp) is a marketplace
-                    // install; a row with no directory is a local employee.
-                    let source = if Self::source_label(
-                        dir.as_deref(),
-                        self.agent_loader.user_dir(),
-                        self.agent_loader.installed_dir(),
-                    ) == SOURCE_MARKETPLACE
-                    {
-                        napp::agent_loader::AgentSource::Installed
-                    } else {
-                        napp::agent_loader::AgentSource::User
-                    };
-                    // No recorded directory means the employee lives only in
-                    // the database; an empty path says so to `info`.
-                    let source_path = dir.clone().unwrap_or_default();
-                    return Some(napp::agent_loader::LoadedAgent {
-                        agent_def,
-                        config,
-                        source,
-                        napp_path: dir,
-                        source_path,
-                        version: None,
-                        agent_md: r.agent_md.clone(),
-                        frontmatter: r.frontmatter.clone(),
-                        description: r.description.clone(),
-                        id: Some(r.id.clone()),
-                        theme_css: None,
-                        is_app: false,
-                        app_ui_path: None,
-                        app_binary_path: None,
-                        app_window_config: None,
-                    });
-                }
-            }
-        }
-
-        None
+        // Fallback: the DB row (agents created via REST API or marketplace install).
+        let r = row?;
+        // The body is the persona after the frontmatter, as the
+        // loader parses it; the raw file stays in `agent_md`.
+        let agent_def = napp::agent::AgentDef {
+            id: r.id.clone(),
+            name: r.name.clone(),
+            description: r.description.clone(),
+            body: Self::agent_body(&r.agent_md),
+        };
+        let config = if !r.frontmatter.is_empty() {
+            napp::agent::parse_agent_config(&r.frontmatter).ok()
+        } else {
+            None
+        };
+        // A row created in the app or by the tool lives under the
+        // user directory and records that path. Reporting it as
+        // "marketplace" at the installed root sent a live run on a
+        // forty-call hunt through the wrong tree (2026-09-05).
+        let dir = r.napp_path.clone().map(std::path::PathBuf::from);
+        // The same classification `info` prints: only a path in
+        // the installed tree (or a sealed .napp) is a marketplace
+        // install; a row with no directory is a local employee.
+        let source = if Self::source_label(
+            dir.as_deref(),
+            self.agent_loader.user_dir(),
+            self.agent_loader.installed_dir(),
+        ) == SOURCE_MARKETPLACE
+        {
+            napp::agent_loader::AgentSource::Installed
+        } else {
+            napp::agent_loader::AgentSource::User
+        };
+        // No recorded directory means the employee lives only in
+        // the database; an empty path says so to `info`.
+        let source_path = dir.clone().unwrap_or_default();
+        Some(napp::agent_loader::LoadedAgent {
+            agent_def,
+            config,
+            source,
+            napp_path: dir,
+            source_path,
+            version: None,
+            agent_md: r.agent_md.clone(),
+            frontmatter: r.frontmatter.clone(),
+            description: r.description.clone(),
+            id: Some(r.id.clone()),
+            theme_css: None,
+            is_app: false,
+            app_ui_path: None,
+            app_binary_path: None,
+            app_window_config: None,
+        })
     }
 }
 

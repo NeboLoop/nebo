@@ -272,6 +272,7 @@ impl WorkflowManagerImpl {
             activity_count,
             temporary: false,
             run_id: None,
+            employee: None,
         }
     }
 
@@ -504,6 +505,7 @@ fn agent_workflow_to_info(store: &db::Store, wf: &db::models::AgentWorkflow) -> 
         activity_count,
         temporary: temporary.is_some(),
         run_id: temporary.and_then(|t| t.run_id),
+        employee: store.get_agent(&wf.agent_id).ok().flatten().map(|a| a.name),
     }
 }
 
@@ -538,10 +540,19 @@ impl WorkflowManager for WorkflowManagerImpl {
             let mut out = Vec::new();
 
             // The agent's own bindings — the canonical store the panel reads.
-            if !agent_id.is_empty() {
-                match self.store.list_agent_workflows(agent_id) {
+            // A conversation no employee owns can own no workflow (a save
+            // needs an employee), so there "yours" is every employee's:
+            // the release proof of 2026-09-27 listed 0 right after 13
+            // creates on an employee.
+            let owners = if agent_id.is_empty() {
+                self.store.list_agents(500, 0).unwrap_or_default()
+            } else {
+                self.store.get_agent(agent_id).ok().flatten().into_iter().collect()
+            };
+            for owner in owners {
+                match self.store.list_agent_workflows(&owner.id) {
                     Ok(bindings) => out.extend(bindings.iter().map(|b| agent_workflow_to_info(&self.store, b))),
-                    Err(e) => warn!(agent_id, error = %e, "failed to list agent workflows"),
+                    Err(e) => warn!(agent_id = %owner.id, error = %e, "failed to list agent workflows"),
                 }
             }
 
@@ -1063,32 +1074,24 @@ impl WorkflowManager for WorkflowManagerImpl {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
-            if let Ok(Some(_)) = self.store.get_agent(agent_ref) {
-                return Ok(agent_ref.to_string());
+            // The one resolver every employee tool uses: id, name in any
+            // case, or the short name create_employee reports.
+            if let Some(agent) = tools::team::resolve_agent(&self.store, agent_ref) {
+                return Ok(agent.id);
             }
             let agents = self
                 .store
                 .list_agents(500, 0)
                 .map_err(|e| format!("list_agents: {}", e))?;
-            let names: Vec<(&str, &str)> = agents
-                .iter()
-                .map(|a| (a.id.as_str(), a.name.as_str()))
-                .collect();
-            match find_agent_by_name(&names, agent_ref) {
-                Some(id) => Ok(id.to_string()),
-                None => Err(format!(
-                    "no agent matching '{}' — available: {}. To create a NEW agent \
-                     with duties, use create_employee(name: \"...\", \
-                     automations: [...]) first — workflows can only \
-                     attach to an agent that exists.",
-                    agent_ref,
-                    names
-                        .iter()
-                        .map(|(_, n)| *n)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-            }
+            let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+            Err(format!(
+                "no agent matching '{}' — available: {}. To create a NEW agent \
+                 with duties, use create_employee(name: \"...\", \
+                 automations: [...]) first — workflows can only \
+                 attach to an agent that exists.",
+                agent_ref,
+                names.join(", ")
+            ))
         })
     }
 
@@ -2421,26 +2424,6 @@ async fn review_failed_workflow_run(
     }
 }
 
-/// Match an agent reference against (id, name) pairs: exact name
-/// (case-insensitive) first, then slug equality ("Content Creator Agent"
-/// matches "content-creator-agent"). Pure core of `resolve_agent`.
-fn find_agent_by_name<'a>(agents: &[(&'a str, &str)], agent_ref: &str) -> Option<&'a str> {
-    if let Some((id, _)) = agents
-        .iter()
-        .find(|(_, n)| n.eq_ignore_ascii_case(agent_ref))
-    {
-        return Some(id);
-    }
-    let want = slug(agent_ref);
-    if want.is_empty() {
-        return None;
-    }
-    agents
-        .iter()
-        .find(|(_, n)| slug(n) == want)
-        .map(|(id, _)| *id)
-}
-
 /// Resolve a tool-authored workflow definition's trigger. Accepts a `trigger`
 /// object ({type, ...}) or a top-level `schedule` (cron string, or a
 /// {cron: "..."} map). A trigger that is PRESENT but malformed is a hard
@@ -2679,6 +2662,7 @@ async fn save_binding(
             if let Some(e) = def.get("emit") {
                 binding_val["emit"] = e.clone();
             }
+            loadable_binding(&binding_val)?;
             fm["workflows"][binding_name.as_str()] = binding_val;
 
             mgr.store
@@ -2776,8 +2760,24 @@ async fn save_binding(
                 activity_count,
                 temporary,
                 run_id,
+                employee: Some(agent.name.clone()),
             })
     }
+}
+
+/// What a save accepts is what the employee's own config loads and runs
+/// ([`napp::agent::WorkflowBinding`]). The release proof of 2026-09-27
+/// saved 13 workflows whose steps were objects: each save said "created",
+/// and reload_employee then read 0 workflows (the loader skipped every one)
+/// and cleared their schedules.
+fn loadable_binding(binding: &serde_json::Value) -> Result<(), String> {
+    serde_json::from_value::<napp::agent::WorkflowBinding>(binding.clone()).map(|_| ()).map_err(|e| {
+        format!(
+            "invalid workflow definition: {e}. Shape: {{\"activities\": [{{\"id\": \"run\", \"intent\": \
+             \"what this accomplishes\", \"steps\": [\"concrete step 1\", \"concrete step 2\"]}}]}}: each step \
+             is one plain sentence."
+        )
+    })
 }
 
 /// A save's lifetime option, applied to a binding (owner, 09-25): temporary
@@ -3225,16 +3225,24 @@ fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str
 
 #[cfg(test)]
 mod trigger_tests {
-    use super::{find_agent_by_name, resolve_tool_trigger};
+    use super::{loadable_binding, resolve_tool_trigger};
 
+    /// The release proof's definition (plugin-many-skills-fan-out run 2,
+    /// call #38): steps written as objects. The employee's config can't
+    /// load it, so the save refuses it; plain-sentence steps save.
     #[test]
-    fn agent_ref_matches_name_and_slug() {
-        let agents = [("id-1", "Content Creator Agent"), ("id-2", "Map Master")];
-        assert_eq!(find_agent_by_name(&agents, "content creator agent"), Some("id-1"));
-        assert_eq!(find_agent_by_name(&agents, "content-creator-agent"), Some("id-1"));
-        assert_eq!(find_agent_by_name(&agents, "Map Master"), Some("id-2"));
-        assert_eq!(find_agent_by_name(&agents, "no-such-agent"), None);
-        assert_eq!(find_agent_by_name(&agents, ""), None);
+    fn a_save_refuses_what_the_employee_cannot_load() {
+        let trigger = serde_json::json!({"type": "manual"});
+        let objects = serde_json::json!({"trigger": trigger, "activities": [{"id": "run", "intent": "invoice-customer", "steps": [
+            {"name": "get-customer-info", "instruction": "Ask the owner for the customer name."}
+        ]}]});
+        let err = loadable_binding(&objects).unwrap_err();
+        assert!(err.starts_with("invalid workflow definition: "), "{err}");
+        assert!(err.contains("each step is one plain sentence"), "{err}");
+        let sentences = serde_json::json!({"trigger": trigger, "activities": [{"id": "run", "intent": "invoice-customer", "steps": [
+            "Ask the owner for the customer name."
+        ]}]});
+        assert_eq!(loadable_binding(&sentences), Ok(()));
     }
 
     #[test]
@@ -3412,5 +3420,82 @@ mod employee_model_tests {
         assert_eq!(linked.lock().unwrap().as_slice(), ["bot-1/assistant"]);
         assert!(janus.lock().unwrap().is_empty(), "the default provider stood in for the linked agent");
         assert_eq!(out.text, "answered by linked");
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use std::sync::Arc;
+
+    use tools::workflows::{SaveOptions, WorkflowManager};
+
+    /// A loop no test here runs: saving and listing never start a turn.
+    struct NoLoop;
+
+    #[async_trait::async_trait]
+    impl workflow::ActivityLoop for NoLoop {
+        async fn run_turn(&self, _turn: workflow::LoopTurn<'_>) -> Result<workflow::LoopOutcome, workflow::WorkflowError> {
+            Err(workflow::WorkflowError::Provider("no turns in this test".into()))
+        }
+        async fn acquire_tool_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+            Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap()
+        }
+        fn cleanup(&self, _run_id: &str) {}
+    }
+
+    fn manager(store: Arc<db::Store>) -> super::WorkflowManagerImpl {
+        super::WorkflowManagerImpl::new(
+            store.clone(),
+            Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            None,
+            Arc::new(tools::Registry::new(Arc::new(agent::Check::new(store)))),
+            Arc::new(crate::handlers::ws::ClientHub::new()),
+            config::Config::default(),
+            None,
+            None,
+            Arc::new(NoLoop),
+        )
+    }
+
+    const STEPS: &str = r#"{"steps": ["Ask the owner for the customer name.", "Draft the invoice."]}"#;
+
+    /// Release proof of 2026-09-27 (plugin-many-skills-fan-out run 2, call
+    /// #52): thirteen create_workflow calls on the Billing Desk succeeded,
+    /// then list_workflows from the main conversation (no employee of its
+    /// own, so none of its own workflows) answered 0. There it lists every
+    /// employee's, each naming its employee; an employee's own list is its
+    /// own. A definition the employee's config can't load (steps written as
+    /// objects, calls #38–50) is refused and nothing is stored.
+    #[tokio::test]
+    async fn the_main_conversation_lists_every_employees_workflows() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(&dir.path().join("nebo.db").to_string_lossy()).unwrap());
+        store.create_agent("bd-1", None, "Billing Desk 40458bec", "Billing.", "You bill.", "{}", None, None).unwrap();
+        store.create_agent("fd-1", None, "Front Desk", "Calls.", "You answer.", "{}", None, None).unwrap();
+        let mgr = manager(store.clone());
+        for name in ["invoice-customer", "record-customer-payment"] {
+            mgr.create("bd-1", name, STEPS, SaveOptions::default()).await.unwrap();
+        }
+        mgr.create("fd-1", "take-a-message", STEPS, SaveOptions::default()).await.unwrap();
+
+        let all = mgr.list("").await;
+        let mut seen: Vec<(String, String)> =
+            all.iter().map(|w| (w.employee.clone().unwrap_or_default(), w.name.clone())).collect();
+        seen.sort();
+        assert_eq!(
+            seen,
+            [
+                ("Billing Desk 40458bec".to_string(), "invoice-customer".to_string()),
+                ("Billing Desk 40458bec".to_string(), "record-customer-payment".to_string()),
+                ("Front Desk".to_string(), "take-a-message".to_string()),
+            ]
+        );
+        let own: Vec<String> = mgr.list("fd-1").await.into_iter().map(|w| w.name).collect();
+        assert_eq!(own, ["take-a-message"]);
+
+        let objects = r#"{"steps": [{"name": "get-customer-info", "instruction": "Ask the owner for the customer name."}]}"#;
+        let err = mgr.create("bd-1", "create-estimate", objects, SaveOptions::default()).await.unwrap_err();
+        assert!(err.starts_with("invalid workflow definition: "), "{err}");
+        assert_eq!(mgr.list("bd-1").await.len(), 2, "nothing was stored");
     }
 }

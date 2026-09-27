@@ -333,7 +333,7 @@ async fn global_store_stand_in() -> String {
                 let id = req["id"].clone();
                 let result = match req["method"].as_str() {
                     Some("tools/list") => json!({ "tools": [
-                        { "name": "memory_remember", "description": "Store a fact.", "inputSchema": { "type": "object", "properties": { "src_id": { "type": "integer" }, "text": { "type": "string" } }, "required": ["src_id", "text"] } },
+                        { "name": "memory_remember", "description": "Store a fact.", "inputSchema": { "type": "object", "properties": { "src_id": { "type": "integer" }, "predicate": { "type": "string" }, "text": { "type": "string" }, "evidence": { "type": "string" }, "source_ref": { "type": "string" } }, "required": ["src_id", "text"] } },
                         { "name": "memory_recall", "description": "Recall facts.", "inputSchema": { "type": "object", "properties": { "src_id": { "type": "integer" } }, "required": ["src_id"] } }
                     ]}),
                     Some("tools/call") => {

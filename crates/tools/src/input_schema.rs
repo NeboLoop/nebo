@@ -33,11 +33,68 @@ pub fn issues(validator: &jsonschema::Validator, input: &serde_json::Value) -> V
                     "The parameter `{param}` type is expected as `{expected}` but provided as `{}`",
                     json_type(&e.instance)
                 ),
+                // Said once, by name, by `unknown_parameters`.
+                ValidationErrorKind::AdditionalProperties { .. } => String::new(),
                 _ if param.is_empty() => e.to_string(),
                 _ => format!("The parameter `{param}` is invalid: {e}"),
             }
         })
+        .filter(|issue| !issue.is_empty())
         .collect()
+}
+
+/// Every parameter in `input` its schema doesn't have, at any depth where
+/// the schema lists the properties an object takes: one line per object,
+/// naming the unknown ones and the ones it takes. A schema that leaves
+/// room for others (`additionalProperties` other than `false`,
+/// `patternProperties`, or a composition beside the properties) takes
+/// anything there.
+///
+/// Release proof of 2026-09-27: `create_workflow` called before it was
+/// loaded, with `background`, `helper_type` and `prompt` (another tool's
+/// parameters), ran; the model never saw its definition. A parameter the
+/// tool doesn't have is a call that won't run as written.
+pub fn unknown_parameters(schema: &serde_json::Value, input: &serde_json::Value) -> Vec<String> {
+    let mut found = Vec::new();
+    unknowns(schema, input, "", &mut found);
+    found
+}
+
+fn unknowns(schema: &serde_json::Value, value: &serde_json::Value, path: &str, found: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else {
+                return;
+            };
+            let open = schema.get("additionalProperties").is_some_and(|a| a != &serde_json::Value::Bool(false))
+                || ["patternProperties", "allOf", "anyOf", "oneOf"].iter().any(|k| schema.get(*k).is_some());
+            let at = |key: &str| if path.is_empty() { key.to_string() } else { format!("{path}.{key}") };
+            let mut unknown: Vec<String> = fields.keys().filter(|k| !props.contains_key(*k)).map(|k| format!("`{}`", at(k))).collect();
+            if !open && !unknown.is_empty() {
+                unknown.sort();
+                let mut takes: Vec<&str> = props.keys().map(String::as_str).collect();
+                takes.sort();
+                let takes = if takes.is_empty() { "none".to_string() } else { takes.join(", ") };
+                let (subject, verb) = if unknown.len() == 1 { ("parameter", "doesn't") } else { ("parameters", "don't") };
+                let whose = if path.is_empty() { "This tool's parameters".to_string() } else { format!("`{path}` takes") };
+                found.push(format!("The {subject} {} {verb} exist. {whose}: {takes}.", unknown.join(", ")));
+            }
+            for (key, v) in fields {
+                if let Some(sub) = props.get(key) {
+                    unknowns(sub, v, &at(key), found);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            let Some(sub) = schema.get("items") else {
+                return;
+            };
+            for (i, v) in items.iter().enumerate() {
+                unknowns(sub, v, &format!("{path}.{i}"), found);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Every string value in `input` that is its own parameter's help text:
@@ -204,6 +261,40 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    /// A parameter the schema doesn't have is named, with what the object
+    /// takes, at any depth; a schema that leaves room for others takes
+    /// anything there; an explicit `additionalProperties: false` is said
+    /// once, not twice.
+    #[test]
+    fn a_parameter_the_schema_does_not_have_is_named() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "definition": {"type": "string"},
+                "steps": {"type": "array", "items": {"type": "object", "properties": {"prompt": {"type": "string"}}}},
+                "headers": {"type": "object", "additionalProperties": {"type": "string"}},
+                "inputs": {"type": "object", "description": "free-form"}
+            }
+        });
+        let call = json!({"name": "x", "background": "false", "helper_type": "general"});
+        assert_eq!(
+            unknown_parameters(&schema, &call),
+            ["The parameters `background`, `helper_type` don't exist. This tool's parameters: definition, headers, inputs, name, steps."]
+        );
+        let nested = unknown_parameters(&schema, &json!({"steps": [{"prompt": "a"}, {"prompt": "b", "id": "2"}]}));
+        assert_eq!(nested, ["The parameter `steps.1.id` doesn't exist. `steps.1` takes: prompt."]);
+        let open = json!({"name": "x", "headers": {"X-Any": "1"}, "inputs": {"anything": 1}, "steps": [{"prompt": "a"}]});
+        assert!(unknown_parameters(&schema, &open).is_empty());
+        let loose = json!({"type": "object", "properties": {"a": {}}, "additionalProperties": true});
+        assert!(unknown_parameters(&loose, &json!({"b": 1})).is_empty());
+        let closed = json!({"type": "object", "properties": {"a": {"type": "string"}}, "additionalProperties": false});
+        let v = compile("t", &closed).unwrap();
+        let all: Vec<String> =
+            issues(&v, &json!({"b": 1})).into_iter().chain(unknown_parameters(&closed, &json!({"b": 1}))).collect();
+        assert_eq!(all, ["The parameter `b` doesn't exist. This tool's parameters: a."]);
     }
 
     #[test]
