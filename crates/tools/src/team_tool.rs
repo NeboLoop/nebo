@@ -310,7 +310,7 @@ impl Teams {
         match rail.post_team(post).await {
             Ok(receipt) => {
                 let asked = if receipt.asked.is_empty() {
-                    "Every member read it as context; nobody was asked to act (mention members to ask them).".to_string()
+                    "Nobody was asked to act. The post is in the team thread, and a member reads it there when it is next asked (mention members to ask them now).".to_string()
                 } else {
                     format!(
                         "Asked to act: {}. They answer in the team, and each reply comes to you as a notification.",

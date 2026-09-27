@@ -822,6 +822,138 @@ async fn a_silent_member_is_announced_as_working() {
     .await;
 }
 
+/// The owner's live case (2026-09-26): he asked Marketing & Growth to add
+/// Hermes, the lead answered, and the exchange also showed up in Neighbor
+/// Mail's own chat — a member nobody asked. A team's conversation lives in
+/// the team thread only: the owner's post goes to the lead, who answers in
+/// the team; a member not asked is sent nothing — none of its threads gains
+/// a row, its list opens on its own conversation, and its direct turns never
+/// read the team's words. A member the owner asks by @Name answers in the
+/// team with the conversation so far in hand, read from the team thread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_team_conversation_stays_in_the_team_thread() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let nebo = session().await;
+    let lead = nebo.hire("Proof Bleed Lead", json!({ "workflows": {} })).await;
+    let mailer = nebo.hire("Proof Bleed Mailer", json!({ "workflows": {} })).await;
+    let neighbor = nebo.hire("Proof Bleed Neighbor", json!({ "workflows": {} })).await;
+    const TEAM: &str = "proof-team-bleed";
+    nebo.store()
+        .create_team(
+            TEAM,
+            "Proof Marketing & Growth",
+            "grow the pipeline",
+            &[db::TeamMember::local(&lead), db::TeamMember::local(&mailer), db::TeamMember::local(&neighbor)],
+            &lead,
+            None,
+        )
+        .unwrap();
+    let mailer_had_context = Arc::new(AtomicBool::new(false));
+    let direct_saw_team = Arc::new(AtomicBool::new(false));
+    let rules: Vec<Rule> = vec![
+        Box::new(|t| {
+            (t.opener().contains("MARK-BLEED") && t.says("You are Proof Bleed Lead.") && !t.answered("BLEED-LEAD-ANSWER"))
+                .then(|| Step::say("BLEED-LEAD-ANSWER: I will bring Hermes onto the team."))
+        }),
+        Box::new({
+            let had = mailer_had_context.clone();
+            move |t| {
+                if !(t.opener().contains("MARK-BLEED") && t.says("You are Proof Bleed Mailer.")) {
+                    return None;
+                }
+                had.store(t.says("MARK-BLEED-1 add Hermes") && t.says("BLEED-LEAD-ANSWER"), Ordering::SeqCst);
+                Some(Step::say("BLEED-MAILER-RESULT: the flyer is in the mail."))
+            }
+        }),
+        Box::new({
+            let saw = direct_saw_team.clone();
+            move |t| {
+                // The owner's direct message to the neighbor, on its own session.
+                if !t.opener().contains("OWNER-BLEED-DIRECT") {
+                    return None;
+                }
+                // Anywhere in what the model reads: its history and its prompt.
+                let read = |w: &str| t.says(w) || t.req.system.contains(w);
+                saw.store(read("MARK-BLEED") || read("BLEED-LEAD-ANSWER") || read("BLEED-MAILER-RESULT"), Ordering::SeqCst);
+                Some(Step::say("BLEED-DIRECT-ANSWER: flats go at the marketing-mail rate."))
+            }
+        }),
+    ];
+    let rig = Rig::new(&nebo, rules).await;
+    let seat = |id: &str| format!("agent:{id}:coworker:team:{TEAM}");
+    let listed = |body: &Value| -> Vec<String> {
+        body["chats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["sessionName"].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+
+    // The owner asks the team, naming nobody: the lead answers in the team.
+    nebo.post_ok(&format!("/teams/{TEAM}/messages"), &json!({"text": "MARK-BLEED-1 add Hermes to this team"})).await;
+    rig.until(30, "the lead answers in the team thread", || {
+        team_rows(&nebo, TEAM)
+            .iter()
+            .any(|(from, text)| from == "Proof Bleed Lead" && text.contains("BLEED-LEAD-ANSWER"))
+    })
+    .await;
+    assert!(rig.thread(&seat(&neighbor)).is_empty(), "the member nobody asked got nothing: {:?}", rig.thread(&seat(&neighbor)));
+    assert!(rig.thread(&seat(&mailer)).is_empty(), "nor did the other: {:?}", rig.thread(&seat(&mailer)));
+    let neighbor_chats = nebo.get_ok(&format!("/agents/{neighbor}/chats")).await;
+    assert!(listed(&neighbor_chats).is_empty(), "the neighbor's own chat is still empty: {neighbor_chats}");
+    let lead_chats = nebo.get_ok(&format!("/agents/{lead}/chats")).await;
+    assert!(
+        !listed(&lead_chats).iter().any(|s| s.contains(":coworker:team:")),
+        "the lead's own chats are its conversations with the owner, not the team's: {lead_chats}"
+    );
+
+    // The owner asks one member by name: it answers in the team, briefed with
+    // the conversation so far from the team thread.
+    nebo.post_ok(
+        &format!("/teams/{TEAM}/messages"),
+        &json!({"text": "MARK-BLEED-2 @Proof Bleed Mailer mail the new flyer to the neighborhood"}),
+    )
+    .await;
+    rig.until(30, "the named member answers in the team thread", || {
+        team_rows(&nebo, TEAM)
+            .iter()
+            .any(|(from, text)| from == "Proof Bleed Mailer" && text.contains("BLEED-MAILER-RESULT"))
+    })
+    .await;
+    assert!(mailer_had_context.load(Ordering::SeqCst), "the named member read the team's earlier posts");
+    let asked: Vec<String> = rig
+        .thread(&seat(&mailer))
+        .into_iter()
+        .filter(|m| m.role == "user" && m.content.contains("[Post from"))
+        .map(|m| m.content)
+        .collect();
+    assert_eq!(asked.len(), 1, "its seat holds the one post it was asked on, not copies of the rest: {asked:?}");
+    assert!(asked[0].contains("MARK-BLEED-2"), "{}", asked[0]);
+    assert!(rig.thread(&seat(&neighbor)).is_empty(), "still nothing for the member nobody asked");
+    assert_eq!(
+        team_rows(&nebo, TEAM).iter().filter(|(_, text)| text.contains("MARK-BLEED")).count(),
+        2,
+        "the team thread holds each post once"
+    );
+
+    // The owner talks to the member nobody asked, in its own chat: its turn
+    // reads its own conversation, and the team's words are not in it.
+    let direct = format!("agent:{neighbor}:web");
+    rig.owner_writes(&direct, &neighbor, None, "OWNER-BLEED-DIRECT what does a flat cost to mail?").await;
+    rig.until(30, "the neighbor answers the owner directly", || {
+        rig.thread(&direct).iter().any(|m| m.role == "assistant" && m.content.contains("BLEED-DIRECT-ANSWER"))
+    })
+    .await;
+    assert!(!direct_saw_team.load(Ordering::SeqCst), "the direct turn never read the team's conversation");
+    let neighbor_chats = nebo.get_ok(&format!("/agents/{neighbor}/chats")).await;
+    assert_eq!(listed(&neighbor_chats), vec![direct.clone()], "{neighbor_chats}");
+    assert!(
+        !rig.thread(&direct).iter().any(|m| m.content.contains("MARK-BLEED")),
+        "no team row in the direct chat"
+    );
+}
+
 /// A linked employee's turn streams from another runtime. Hermes taking
 /// a team ask is acknowledged in the thread from its first streamed words,
 /// before its runtime's first tool call, and its answer comes back to the
@@ -1068,8 +1200,8 @@ async fn a_woken_turn_replies_where_the_work_came_from() {
 
 /// E15 (owner rule 2026-09-15): the employee the owner talks to directs a
 /// team without naming anyone. The lead answers, alone, and the reply
-/// comes back to the poster as a notification; the other member only reads
-/// the post. A team with no lead refuses such a post, with the reason, and
+/// comes back to the poster as a notification; the other member is not run
+/// (it is sent nothing). A team with no lead refuses such a post, with the reason, and
 /// nothing is recorded or sent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_it() {
@@ -1117,7 +1249,7 @@ async fn an_employees_team_post_goes_to_the_lead_and_a_leaderless_team_refuses_i
         rig.notifications(&poster).join("\n").contains("E15-LEAD-RESULT")
     })
     .await;
-    assert_eq!(member_ran.load(std::sync::atomic::Ordering::SeqCst), 0, "the member only read the post");
+    assert_eq!(member_ran.load(std::sync::atomic::Ordering::SeqCst), 0, "the member was not asked, so it did not run");
 
     let before = nebo.store().list_team_messages("proof-team-e15-open", 50).unwrap().len();
     let refused = nebo

@@ -27,6 +27,31 @@ fn message_created_at(conn: &rusqlite::Connection, id: &str) -> Result<i64, Nebo
     .map_err(|e| NeboError::Database(e.to_string()))
 }
 
+/// Whether a chat under an employee's session prefix is one of the
+/// employee's own conversations — the ONE predicate every "this employee's
+/// threads" query uses (its list, its latest thread, its count), so the
+/// thread the app opens, the one a loop DM continues and the one the roster
+/// previews are always chosen from the same set. `session_name` is the SQL
+/// expression to match on. Not a conversation:
+/// - internal tooling surfaces (Architect/help sessions), which bled raw
+///   session keys into the Chats tab;
+/// - a workflow run's activity sessions
+///   (`agent:<id>:workflow:<run>:<activity>::<n>`), the run's plumbing — the
+///   employee's own list showed every one as a chat titled with its raw key
+///   (2026-09-09);
+/// - a member's seat for a team (`agent:<id>:coworker:team:<team>`), where it
+///   works when the team asks it to act. That is the team's conversation,
+///   which lives in the team thread; counted here it was the employee's
+///   newest thread, so its own chat opened onto a team exchange it never took
+///   part in (2026-09-26).
+fn own_conversation_sql(session_name: &str) -> String {
+    format!(
+        "{session_name} NOT LIKE '%:help:%'
+         AND {session_name} NOT LIKE '%:workflow:%'
+         AND {session_name} NOT LIKE 'agent:%:coworker:team:%'"
+    )
+}
+
 /// A chat's preview line is its last VISIBLE message: not a tool result,
 /// not empty, not a hidden system-injected message (reminders carry
 /// metadata {"hidden":true}). `chat_id` is the SQL expression to match on.
@@ -103,8 +128,11 @@ impl Store {
                  WHERE session_name IS NULL
                     OR (session_name NOT LIKE 'agent:%:workflow:%'
                         AND session_name NOT LIKE 'workflow:%'
-                        -- A team's thread is the team's surface, not a chat.
-                        AND session_name NOT LIKE 'team:%')
+                        -- A team's thread is the team's surface, not a chat,
+                        -- and so is a member's seat for the team: the work
+                        -- it does when the team asks it to act.
+                        AND session_name NOT LIKE 'team:%'
+                        AND session_name NOT LIKE 'agent:%:coworker:team:%')
                  ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2")
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -831,18 +859,10 @@ impl Store {
                      GROUP BY m.chat_id
                  ) s ON s.chat_id = c.id
                  WHERE c.session_name LIKE ?1
-                   -- Internal tooling surfaces (Architect/help sessions) are
-                   -- not conversations; they bled raw session keys into the
-                   -- Chats tab.
-                   AND c.session_name NOT LIKE '%:help:%'
-                   -- A workflow run's activity sessions
-                   -- (agent:<id>:workflow:<run>:<activity>::<n>) are the
-                   -- run's plumbing, hidden from the global list since day
-                   -- one; the employee's own list showed every one of them
-                   -- as a chat titled with its raw key (2026-09-09).
-                   AND c.session_name NOT LIKE '%:workflow:%'
+                   AND {own}
                  ORDER BY c.updated_at DESC",
-                last_visible = last_visible_message_sql("m.chat_id")
+                last_visible = last_visible_message_sql("m.chat_id"),
+                own = own_conversation_sql("c.session_name"),
             ))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -1008,8 +1028,11 @@ impl Store {
     pub fn count_agent_chats(&self, agent_id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT COUNT(*) FROM chats WHERE session_name LIKE 'agent:' || ?1 || ':%'
-               AND session_name NOT LIKE '%:workflow:%'",
+            &format!(
+                "SELECT COUNT(*) FROM chats WHERE session_name LIKE 'agent:' || ?1 || ':%'
+                   AND {}",
+                own_conversation_sql("session_name")
+            ),
             params![agent_id],
             |row| row.get(0),
         )
@@ -1051,17 +1074,18 @@ impl Store {
     ) -> Result<Vec<(Chat, i64)>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT chats.*, COALESCE(
                      (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.chat_id = chats.id),
                      updated_at
                  ) AS last_activity
                  FROM chats
                  WHERE session_name LIKE 'agent:' || ?1 || ':%'
-                   AND session_name NOT LIKE '%:workflow:%'
+                   AND {}
                  ORDER BY last_activity DESC
                  LIMIT ?2",
-            )
+                own_conversation_sql("session_name")
+            ))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![agent_id, limit as i64], |row| {
@@ -1299,6 +1323,34 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use crate::Store;
+
+    /// An employee's threads are its own conversations: its seat for a team,
+    /// a workflow run's plumbing and a help surface are never listed, counted
+    /// or chosen as its latest thread — even when the seat is the newest.
+    #[test]
+    fn a_team_seat_is_never_one_of_the_employees_threads() {
+        let (_dir, store) = store();
+        store.create_chat_for_session("direct", "agent:nm:web", "Rates", None).unwrap();
+        store.create_chat_message("d1", "direct", "user", "what are the USPS rates?", None).unwrap();
+        store.create_chat_for_session("seat", "agent:nm:coworker:team:t1", "Team: Marketing", None).unwrap();
+        store.create_chat_message("s1", "seat", "user", "add Hermes to this team", None).unwrap();
+        store.create_chat_for_session("wf", "agent:nm:workflow:r1:a1::1", "agent:nm:workflow:r1:a1::1", None).unwrap();
+        store.create_chat_for_session("help", "agent:nm:help:architect", "help", None).unwrap();
+        set_created_at(&store, "d1", 1_000);
+        set_created_at(&store, "s1", 2_000);
+
+        let listed: Vec<String> = store
+            .list_chats_by_session_enriched("agent:nm:")
+            .unwrap()
+            .into_iter()
+            .map(|(c, _, _)| c.id)
+            .collect();
+        assert_eq!(listed, vec!["direct".to_string()]);
+        assert_eq!(store.get_latest_agent_chat("nm").unwrap().map(|c| c.id).as_deref(), Some("direct"));
+        assert_eq!(store.latest_agent_chat_preview("nm").unwrap().as_deref(), Some("what are the USPS rates?"));
+        assert_eq!(store.count_agent_chats("nm").unwrap(), 1);
+        assert!(!store.list_chats(50, 0).unwrap().iter().any(|c| c.id == "seat"), "not in the global list either");
+    }
 
     /// The sweep removes only empty `api-` rows; a conversation with a
     /// message keeps its row whatever its id.

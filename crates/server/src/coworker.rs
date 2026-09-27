@@ -55,9 +55,7 @@ pub(crate) async fn send_coworker_message(
     state: AppState,
     msg: CoworkerMessage,
 ) -> Result<CoworkerDelivery, String> {
-    // Team leg: the message is a team post being delivered to a member.
-    // `act` = false is context only (recorded in the member's team thread,
-    // no run) — nothing to depth-check because nothing runs.
+    // Team leg: the message is a team post a member is asked to act on.
     let team = match msg.team.as_ref() {
         Some(t) => Some(
             state
@@ -68,9 +66,8 @@ pub(crate) async fn send_coworker_message(
         ),
         None => None,
     };
-    let act = msg.team.as_ref().map_or(true, |t| t.act);
 
-    if act && msg.handoff_depth >= crate::MAX_HANDOFF_DEPTH {
+    if msg.handoff_depth >= crate::MAX_HANDOFF_DEPTH {
         return Err(format!(
             "Coworker chain is {} hops deep — the cap is {}. Finish the work you have or \
              report back to whoever asked you; do not message further coworkers from here.",
@@ -130,31 +127,12 @@ pub(crate) async fn send_coworker_message(
 
     // Target-side thread gets a readable title before the run creates it with
     // the legacy key-named chat shape.
-    let target_sid = ensure_conversation_thread(&state, &thread_key, &thread_title)?;
+    ensure_conversation_thread(&state, &thread_key, &thread_title)?;
 
     // What the member reads: the post with every mention written out as
     // "@Name" (the team record keeps the tokens; a member reads names).
     let roster = team.as_ref().map(|t| tools::team::member_roster(&state.store, t)).unwrap_or_default();
     let text = tools::team::spell_mentions(&msg.text, &roster);
-
-    // Team post, context only: the member reads it in its team thread and
-    // is not asked to act. The post is delivered — nothing runs.
-    if let (Some(t), false) = (team.as_ref(), act) {
-        let record = team_envelope(&t.name, &t.mission, &from_name, &text);
-        let meta = team_post_metadata(&t.id).to_string();
-        if let Err(e) = state
-            .harness
-            .sessions()
-            .append_message(&target_sid, "user", &record, None, None, Some(&meta))
-        {
-            tracing::warn!(error = %e, to = %to_id, "team: failed to record post in member thread");
-        }
-        return Ok(CoworkerDelivery {
-            to_agent_id: to_id,
-            to_name,
-            thread_key,
-        });
-    }
 
     ensure_agent_active(&state, &to_id).await?;
 
@@ -178,6 +156,18 @@ pub(crate) async fn send_coworker_message(
 
     let (prompt, mention_context) = match team.as_ref() {
         Some(t) => {
+            // What the team said before this post, read from the team thread
+            // — the one record — rather than copied into the member's threads.
+            let history = match state.store.list_team_messages(&t.id, 0) {
+                Ok(rows) => {
+                    let post_id = msg.team.as_ref().map(|d| d.post_id.as_str()).unwrap_or("");
+                    team_context(&rows, &to_id, post_id, &roster)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, team = %t.id, "team: could not read the team thread for the briefing");
+                    None
+                }
+            };
             // The first line names the team and carries the mission; the
             // briefing carries the roster and the turn-taking rule.
             let roster: Vec<String> = roster
@@ -219,12 +209,13 @@ pub(crate) async fn send_coworker_message(
                      acts, and if you address no one your reply ends the exchange (a reply never asks \
                      anyone; only the owner or the lead can summon the whole team, with @everyone). \
                      Teammates are persistent experts with their own instructions and access — never \
-                     spawn sub-agents to do a teammate's job.{floor}",
+                     spawn sub-agents to do a teammate's job.{floor}{history}",
                     name = t.name,
                     mission = if t.mission.is_empty() { "(none stated)" } else { t.mission.as_str() },
                     from_who = from_who,
                     roster = roster,
                     floor = floor,
+                    history = history.map(|h| format!("\n\n{h}")).unwrap_or_default(),
                 ),
             )
         }
@@ -570,32 +561,14 @@ impl OwnerForward<'_> {
     }
 }
 
-/// The two thread keys for one coworker exchange. Target side:
-/// `agent:{to}:coworker:{ctx}` where ctx is the requester's matter when they
-/// are isolated (thread = matter) or the sender's id otherwise (one continuous
-/// thread per colleague) — the 4th segment is the deliberate isolation context
-/// the runner's canonical `session_key_context` picks up, so an isolated
-/// target scopes the exchange per-matter instead of pooling. Sender side
-/// (`None` for main-bot sends): `agent:{from}:coworker:{to}[:{matter}]` — a
-/// runnerless record thread.
-/// What a team post carries in a member's thread. It is the team's message
-/// to that member — a real party's words, not the house steering itself —
-/// so it is NEVER `isMeta`: the owner opening the member's team thread must
-/// see what the team said (2026-09-15: every member thread read as blank,
-/// because the only message in it was hidden as meta).
-fn team_post_metadata(team_id: &str) -> serde_json::Value {
-    serde_json::json!({ "teamPost": true, "teamId": team_id })
-}
-
 /// The owner's name in a team post. A post with no sending agent behind it
 /// is the owner speaking; every reader asks "was this the owner?" and this is
 /// the one place the answer is spelled.
 pub(crate) const OWNER: &str = "Owner";
 
 /// A team post as the model reads it: which team, whose words, then the words.
-/// The ONE way the envelope is written — a member asked to act and a member
-/// given the post as context read the same bytes, so `parse_team_envelope`
-/// can hand every client the pieces no matter which path stored the row.
+/// The ONE way the envelope is written, so `parse_team_envelope` can hand
+/// every client the pieces of the post a member was asked to act on.
 pub(crate) fn team_envelope(team_name: &str, mission: &str, from: &str, text: &str) -> String {
     format!("[Team \"{team_name}\" — {mission}]\n[Post from {from}]\n\n{text}")
 }
@@ -624,6 +597,64 @@ pub(crate) fn parse_team_envelope(content: &str) -> Option<TeamEnvelope<'_>> {
     })
 }
 
+/// At most this many of the team's posts ride a member's briefing, and at
+/// most this many characters of one post; the rest is named, never dropped
+/// silently — `team_messages` reads the whole thread.
+const TEAM_CONTEXT_POSTS: usize = 20;
+const TEAM_CONTEXT_POST_CHARS: usize = 2000;
+
+/// The team's conversation a member is briefed with when it is asked to act
+/// on a post, read from the team thread (`rows`, oldest first): the posts
+/// before the one it is asked on (`post_id`) that came after its own last
+/// post there — what it has not taken part in — as "Name: words", mentions
+/// written out. `None` when there are none. This is the ONE way a member
+/// learns what its team said; no copy of a post is written into a member's
+/// threads.
+pub(crate) fn team_context(
+    rows: &[db::TeamMessage],
+    member_id: &str,
+    post_id: &str,
+    roster: &[(String, String)],
+) -> Option<String> {
+    let before = match rows.iter().position(|m| m.id == post_id) {
+        Some(at) => &rows[..at],
+        None => rows,
+    };
+    let since = before
+        .iter()
+        .rposition(|m| m.from_agent_id == member_id)
+        .map_or(0, |at| at + 1);
+    let unseen = &before[since..];
+    if unseen.is_empty() {
+        return None;
+    }
+    let shown = &unseen[unseen.len().saturating_sub(TEAM_CONTEXT_POSTS)..];
+    let mut out = if since == 0 {
+        "The team's conversation before this post, oldest first:".to_string()
+    } else {
+        "The team's conversation since your last post in it, oldest first:".to_string()
+    };
+    let left_out = unseen.len() - shown.len();
+    if left_out > 0 {
+        out.push_str(&format!(
+            "\n({left_out} earlier post(s) are not shown here; team_messages reads the whole thread.)"
+        ));
+    }
+    for m in shown {
+        let who = if m.from.is_empty() { OWNER } else { m.from.as_str() };
+        let words = tools::team::spell_mentions(&m.content, roster);
+        let words = match words.char_indices().nth(TEAM_CONTEXT_POST_CHARS) {
+            Some((cut, _)) => format!(
+                "{} … (the post is cut here; team_messages shows it whole)",
+                &words[..cut]
+            ),
+            None => words,
+        };
+        out.push_str(&format!("\n{who}: {words}"));
+    }
+    Some(out)
+}
+
 /// A member's seat in a team: the thread it works in when the team asks it
 /// to act (`agent:<member>:coworker:team:<id>`), and that thread's title.
 /// One thread per team per member, whether the ask arrives as a text post
@@ -635,6 +666,14 @@ pub(crate) fn team_seat(agent_id: &str, team: &db::Team) -> (String, String) {
     )
 }
 
+/// The two thread keys for one coworker exchange. Target side:
+/// `agent:{to}:coworker:{ctx}` where ctx is the requester's matter when they
+/// are isolated (thread = matter) or the sender's id otherwise (one continuous
+/// thread per colleague) — the 4th segment is the deliberate isolation context
+/// the runner's canonical `session_key_context` picks up, so an isolated
+/// target scopes the exchange per-matter instead of pooling. Sender side
+/// (`None` for main-bot sends): `agent:{from}:coworker:{to}[:{matter}]` — a
+/// runnerless record thread.
 fn coworker_thread_keys(
     from_agent_id: &str,
     to_id: &str,
@@ -834,8 +873,8 @@ pub(crate) fn origin_matter_context(
 #[cfg(test)]
 mod tests {
     use super::{
-        coworker_thread_keys, label_tainted_reply, parse_team_envelope, team_envelope,
-        team_post_metadata, OWNER,
+        coworker_thread_keys, label_tainted_reply, parse_team_envelope, team_context, team_envelope,
+        OWNER,
     };
     use types::provenance::ProvenanceClass;
 
@@ -867,14 +906,56 @@ mod tests {
         }
     }
 
-    // A team post is the team talking to a member; it must reach the owner's
-    // transcript. `isMeta` on it hid every member's team thread.
+    fn post(id: &str, from: &str, from_agent_id: &str, content: &str) -> db::TeamMessage {
+        db::TeamMessage {
+            id: id.into(),
+            from: from.into(),
+            from_agent_id: from_agent_id.into(),
+            role: if from_agent_id.is_empty() { "user" } else { "assistant" }.into(),
+            content: content.into(),
+            attachments: Vec::new(),
+            created_at: 0,
+        }
+    }
+
+    /// A member is briefed with what the team said before the post it is
+    /// asked on and after its own last word there, names written out; the
+    /// post itself is the prompt, never repeated in the briefing.
     #[test]
-    fn a_team_post_is_never_meta() {
-        let meta = team_post_metadata("team-1");
-        assert_eq!(meta["teamPost"], serde_json::Value::Bool(true));
-        assert_eq!(meta["teamId"], "team-1");
-        assert!(meta.get("isMeta").is_none());
+    fn a_member_is_briefed_from_the_team_thread_since_its_last_post() {
+        let roster = vec![("lead".to_string(), "Pam".to_string()), ("m".to_string(), "Neighbor Mail".to_string())];
+        let rows = vec![
+            post("1", OWNER, "", "old business"),
+            post("2", "Neighbor Mail", "m", "done with the old business"),
+            post("3", OWNER, "", "add Hermes to this team"),
+            post("4", "Pam", "lead", "<@m> can you mail the new flyer?"),
+        ];
+        let got = team_context(&rows, "m", "4", &roster).expect("unseen posts");
+        assert_eq!(
+            got,
+            "The team's conversation since your last post in it, oldest first:\nOwner: add Hermes to this team"
+        );
+        // A member that never posted reads the conversation before the post.
+        let got = team_context(&rows, "lead", "4", &roster).expect("unseen posts");
+        assert!(got.starts_with("The team's conversation before this post"), "{got}");
+        assert!(got.contains("Neighbor Mail: done with the old business"), "{got}");
+        assert!(!got.contains("mail the new flyer"), "the post itself is not in its briefing: {got}");
+        // Nothing unseen: no briefing section at all.
+        assert_eq!(team_context(&rows[..3], "m", "3", &roster), None);
+    }
+
+    /// The briefing is bounded, and says what it left out instead of
+    /// dropping it silently.
+    #[test]
+    fn a_long_team_history_is_bounded_and_says_so() {
+        let mut rows: Vec<db::TeamMessage> =
+            (0..25).map(|i| post(&i.to_string(), OWNER, "", &format!("post {i}"))).collect();
+        rows.push(post("big", OWNER, "", &"x".repeat(super::TEAM_CONTEXT_POST_CHARS + 10)));
+        rows.push(post("ask", OWNER, "", "the ask"));
+        let got = team_context(&rows, "m", "ask", &[]).expect("unseen posts");
+        assert!(got.contains("(6 earlier post(s) are not shown here; team_messages reads the whole thread.)"), "{got}");
+        assert!(!got.contains("post 5\n") && got.contains("Owner: post 6\n"), "{got}");
+        assert!(got.contains("… (the post is cut here; team_messages shows it whole)"), "{got}");
     }
 
     /// A tainted reply gets the engine-written provenance label; a clean reply
