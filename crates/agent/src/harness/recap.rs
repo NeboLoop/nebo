@@ -117,6 +117,9 @@ async fn call_for_recap(req: &RecapRequest, provider: Arc<dyn Provider>) -> Opti
         }
     }
 
+    // The owner reads the recap: a note in Nebo's own format never reaches
+    // him (`reminders::NoteFence`).
+    let text = super::reminders::fence_notes(&text);
     let text = text.trim();
     if text.is_empty() {
         None
