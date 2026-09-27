@@ -2281,6 +2281,8 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
         tokio::spawn(async move {
             // Sync bot identity (name) to NeboAI
             sync_bot_identity(&st).await;
+            // The bot's own hosted address, as a sender of mail_message_send.
+            crate::mail_intake::refresh_bot_address(&st).await;
             // Refresh content protection license keys for sealed .napp files
             if let Err(e) = refresh_license_keys(&st).await {
                 warn!(error = %e, "license key refresh failed");

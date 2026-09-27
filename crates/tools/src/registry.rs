@@ -385,6 +385,9 @@ pub struct Registry {
     /// The `plugin__<slug>` and operation tools the last refresh registered;
     /// held across a refresh so two never interleave.
     plugin_tools: tokio::sync::Mutex<HashSet<String>>,
+    /// Operation providers the runtime supplies itself (the bot's own
+    /// hosted mail address), turned into operation tools with the plugins'.
+    runtime_providers: crate::operation_tools::RuntimeProviders,
     /// Browser manager, for closing a session's tab/page when a sub-agent finishes.
     browser_manager: std::sync::RwLock<Option<Arc<browser::Manager>>>,
     /// Canonical marketplace-code installer (server-implemented). `Arc`-wrapped so the
@@ -432,6 +435,7 @@ impl Registry {
             store: std::sync::RwLock::new(None),
             plugin_runner: std::sync::RwLock::new(None),
             plugin_tools: tokio::sync::Mutex::new(HashSet::new()),
+            runtime_providers: Default::default(),
             browser_manager: std::sync::RwLock::new(None),
             code_installer: Arc::new(std::sync::RwLock::new(None)),
             job_consent: Arc::new(std::sync::RwLock::new(None)),
@@ -723,7 +727,7 @@ impl Registry {
             .iter()
             .map(|slug| Box::new(crate::plugin_tools::PluginCliTool::new(runner.clone(), slug)) as Box<dyn DynTool>)
             .collect();
-        let providers: Vec<Arc<dyn crate::operation_tools::OperationProvider>> = runner
+        let mut providers: Vec<Arc<dyn crate::operation_tools::OperationProvider>> = runner
             .active_slugs()
             .iter()
             .map(|slug| {
@@ -731,6 +735,7 @@ impl Registry {
                     as Arc<dyn crate::operation_tools::OperationProvider>
             })
             .collect();
+        providers.extend(self.runtime_providers.read().unwrap_or_else(|e| e.into_inner()).iter().cloned());
         next.extend(
             crate::operation_tools::operation_tools(&providers)
                 .into_iter()
@@ -756,6 +761,21 @@ impl Registry {
             self.register(tool).await;
         }
         *registered = names;
+    }
+
+    /// Put a runtime provider in place (`Some`) or take the one of that name
+    /// away (`None`), and re-derive the operation tools from what is there.
+    pub async fn set_runtime_provider(
+        &self,
+        name: &str,
+        provider: Option<Arc<dyn crate::operation_tools::OperationProvider>>,
+    ) {
+        {
+            let mut providers = self.runtime_providers.write().unwrap_or_else(|e| e.into_inner());
+            providers.retain(|p| p.provider() != name);
+            providers.extend(provider);
+        }
+        self.refresh_plugin_tools().await;
     }
 
     /// The operation tools an employee binds through `requires.interfaces`:
@@ -1170,7 +1190,9 @@ impl Registry {
         .await;
 
         // OS tool (desktop, apps, settings, music, keychain, search, PIM).
-        let mut os_tool = crate::os_tool::OsTool::new().with_store(store.clone());
+        let mut os_tool = crate::os_tool::OsTool::new()
+            .with_store(store.clone())
+            .with_runtime_providers(self.runtime_providers.clone());
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);

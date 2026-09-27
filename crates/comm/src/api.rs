@@ -1705,6 +1705,23 @@ impl NeboAIApi {
         .await
     }
 
+    /// This bot's own hosted email address and its sending state. A hub
+    /// without the address service answers 404, which callers read as "no
+    /// hosted address", never as a failure.
+    pub async fn bot_email(&self) -> Result<BotEmailInfo, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/bots/self/email", None::<&()>)
+            .await
+    }
+
+    /// Send mail from this bot's own address: new mail, mail to the owner
+    /// (`to_owner`), or a reply to mail it received (`inbound_email_id`). The
+    /// hub applies the bot's daily limit and shutoff and answers 403/429 when
+    /// they refuse it.
+    pub async fn send_bot_email(&self, req: &BotEmailSend) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/bots/self/email", Some(req))
+            .await
+    }
+
     pub async fn delete_webhook(&self, id: &str) -> Result<(), CommError> {
         self.do_void(
             reqwest::Method::DELETE,

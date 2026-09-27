@@ -1329,6 +1329,13 @@ export function neboAIConnectHandler(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Nebo a i bot email"
+ */
+export function neboAIBotEmail() {
+	return webapi.get<components.BotEmailResponse>(`/api/v1/neboai/email`)
+}
+
+/**
  * @description "Nebo a i entitlements"
  */
 export function neboAIEntitlements() {

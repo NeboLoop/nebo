@@ -1,0 +1,9 @@
+id: sc51-mail-to-an-employees-tag-reaches-that-employee
+name: "SC51 — Mail to an employee's +tag reaches that employee"
+description: |
+  Mail to address+tag reaches the employee the tag names, whatever its case, in a thread of the
+  sender's own, and is answered with one email. A tag that names nobody reaches the primary
+  employee, told which tag it was. An auto-reply is recorded and never answered.
+target_component: staffed-company
+proof: staffed_proof::conversation::mail_to_an_employees_tag_reaches_that_employee
+conversation: []

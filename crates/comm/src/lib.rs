@@ -203,4 +203,11 @@ pub trait CommPlugin: Send + Sync {
 pub trait ChannelProvider: Send + Sync {
     fn name(&self) -> &str;
     async fn send_response(&self, msg: CommMessage) -> Result<(), CommError>;
+    /// A channel that carries one message per turn (email): it is handed the
+    /// turn's whole answer once, at the end, and never a stream chunk, a
+    /// mid-turn segment or tool activity. Chat-like channels keep the live
+    /// feed (the default).
+    fn whole_turns(&self) -> bool {
+        false
+    }
 }

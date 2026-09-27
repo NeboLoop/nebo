@@ -110,6 +110,13 @@ pub(crate) fn push_to_inbox(state: &AppState, c: &PermissionAskCard) {
         buttons.push(button("This once", "default", "this_once"));
     }
     buttons.push(button("No", "danger", "no"));
+    // The conversation that asked: an answer by email (the hub mails the
+    // owner every new item) comes back into it.
+    let sessions = state.harness.sessions();
+    let chat_id = sessions
+        .resolve_session_id_by_key(&c.session_key)
+        .map(|sid| sessions.active_chat_id(&sid))
+        .unwrap_or_default();
     crate::codes::push_inbox(
         state,
         serde_json::json!({
@@ -118,6 +125,8 @@ pub(crate) fn push_to_inbox(state: &AppState, c: &PermissionAskCard) {
             "title": title(c),
             "body": body(c),
             "link": format!("/{}", c.agent_id),
+            "agentId": c.agent_id,
+            "chatId": chat_id,
             "actions": { "buttons": buttons, "status": { "method": "GET", "path": path } },
         }),
     );

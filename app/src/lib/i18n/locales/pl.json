@@ -799,6 +799,8 @@
 		"viewUsageArrow": "Zobacz użycie →",
 		"botIdentity": "Tożsamość bota",
 		"botIdentityDesc": "Stała, globalnie unikalna tożsamość Twojego bota. Nigdy się nie zmienia.",
+		"botEmail": "Adres e-mail",
+		"botEmailDesc": "Wiadomości wysłane na ten adres trafiają do twojego bota. Dodaj +pracownik przed @, aby trafić do jednego pracownika, np. nazwa+recepcja@.",
 		"dangerZone": "Strefa zagrożenia",
 		"deleteAccountDesc": "Trwale usuń swoje konto i wszystkie dane. Tej operacji nie można cofnąć."
 	},

@@ -52,3 +52,5 @@ fixtures:
   - ../fixtures/staffed-company/conversation/sc47-a-silent-team-member-is-announced-as-working.yaml
   - ../fixtures/staffed-company/conversation/sc48-a-linked-team-member-acknowledges-and-an-unreachable-one-says-so.yaml
   - ../fixtures/staffed-company/conversation/sc49-a-team-conversation-stays-in-the-team-thread.yaml
+  - ../fixtures/staffed-company/conversation/sc50-only-the-owners-proven-email-answers-for-the-owner.yaml
+  - ../fixtures/staffed-company/conversation/sc51-mail-to-an-employees-tag-reaches-that-employee.yaml

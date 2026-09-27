@@ -480,6 +480,33 @@ pub async fn bot_status(State(state): State<AppState>) -> HandlerResult<serde_js
     })))
 }
 
+// --- The bot's own hosted address ---
+
+/// The bot's own hosted email address, when its hub gives it one.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotEmailResponse {
+    /// "" when the bot has no hosted address (not paired, or the hub offers none).
+    pub address: String,
+    pub sending_enabled: bool,
+    pub daily_limit: i64,
+    pub sent_today: i64,
+}
+
+/// GET /api/v1/neboai/email — the bot's own address, read from the hub.
+pub async fn bot_email(State(state): State<AppState>) -> HandlerResult<BotEmailResponse> {
+    let info = match crate::codes::build_api_client(&state) {
+        Ok(api) => api.bot_email().await.unwrap_or_default(),
+        Err(_) => comm::api_types::BotEmailInfo::default(),
+    };
+    Ok(Json(BotEmailResponse {
+        address: info.address,
+        sending_enabled: info.sending_enabled,
+        daily_limit: info.daily_limit,
+        sent_today: info.sent_today,
+    }))
+}
+
 // --- Janus AI usage ---
 
 /// Fetch usage directly from Janus GET /v1/usage and update the in-memory cache.
@@ -682,6 +709,8 @@ pub async fn account_disconnect(
             warn!("Failed to delete NeboAI profile {}: {e}", profile.id);
         }
     }
+    // The hosted address goes with the pairing.
+    crate::mail_intake::refresh_bot_address(&state).await;
 
     Ok(Json(DisconnectResponse {
         message: "Disconnected from NeboAI".into(),

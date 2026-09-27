@@ -304,6 +304,9 @@ pub fn channel_rules(channel: &str, channel_plugin: bool, files_dir: &str) -> St
     let rules = match channel {
         "dm" => "This is a direct message: keep replies short, in plain text with no markdown.".to_string(),
         "cli" => "Replies are shown in a terminal: write plain text with no markdown.".to_string(),
+        "email" => "Your reply is sent as an email: write the body of a short email in plain text, with no markdown, \
+no subject line and no signature block."
+            .to_string(),
         "voice" => "This is a voice call and your replies are spoken aloud: answer in one or two sentences, with no \
 formatting, lists or special characters."
             .to_string(),

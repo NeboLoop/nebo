@@ -799,6 +799,8 @@
 		"viewUsageArrow": "Xem mức sử dụng →",
 		"botIdentity": "Danh tính bot",
 		"botIdentityDesc": "Danh tính vĩnh viễn, duy nhất toàn cầu của bot. Điều này không bao giờ thay đổi.",
+		"botEmail": "Địa chỉ email",
+		"botEmailDesc": "Thư gửi đến địa chỉ này sẽ đến bot của bạn. Thêm +nhânviên trước dấu @ để gửi cho một nhân viên, ví dụ name+receptionist@.",
 		"dangerZone": "Vùng nguy hiểm",
 		"deleteAccountDesc": "Xóa vĩnh viễn tài khoản và toàn bộ dữ liệu. Không thể hoàn tác."
 	},

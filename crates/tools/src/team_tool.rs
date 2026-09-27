@@ -13,7 +13,7 @@ use comm::CommPlugin;
 /// The primary employee's local agent id — a call from the main companion
 /// chat carries no agent segment in its session key, and the companion IS
 /// the primary employee.
-const PRIMARY_AGENT_ID: &str = "assistant";
+pub const PRIMARY_AGENT_ID: &str = "assistant";
 
 /// The teams on this Nebo: the one core every team tool and the team route
 /// of `send_message` share.

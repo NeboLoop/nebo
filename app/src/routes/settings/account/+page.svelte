@@ -22,6 +22,9 @@
   // name. Shown read-only as the bot's permanent identity.
   let defaultHandle = $state('');
 
+  // The bot's own hosted email address, when its NeboAI account gives it one.
+  let botEmail = $state('');
+
   onDestroy(() => {
     if (oauthPollInterval) clearInterval(oauthPollInterval);
     if (oauthTimeout) clearTimeout(oauthTimeout);
@@ -48,6 +51,12 @@
       if (botStatus?.defaultHandle) defaultHandle = botStatus.defaultHandle;
       if (botStatus?.botId) botId = botStatus.botId;
     } catch { /* not connected — identity shows placeholder */ }
+
+    try {
+      const api = await import('$lib/api/nebo');
+      const email = await api.neboAIBotEmail();
+      if (email?.address) botEmail = email.address;
+    } catch { /* no hosted address — the row stays hidden */ }
   });
 
   async function reconnect() {
@@ -166,6 +175,17 @@
     {/if}
   </div>
 </div>
+
+{#if botEmail}
+  <!-- The bot's own email address -->
+  <div class="mb-8">
+    <h3 class="text-base font-semibold mb-1">{$t('settingsAccount.botEmail')}</h3>
+    <p class="text-xs text-base-content/70 mb-2.5">{$t('settingsAccount.botEmailDesc')}</p>
+    <div class="flex items-center gap-3 p-3 rounded-lg border border-base-content/10 bg-base-200/50" data-selectable>
+      <span class="font-mono text-sm font-medium text-base-content truncate">{botEmail}</span>
+    </div>
+  </div>
+{/if}
 
 <!-- Danger zone -->
 <div class="mb-7">

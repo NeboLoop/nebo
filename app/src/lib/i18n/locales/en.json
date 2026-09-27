@@ -808,6 +808,8 @@
 		"viewUsageArrow": "View Usage →",
 		"botIdentity": "Bot Identity",
 		"botIdentityDesc": "Your bot's permanent, globally-unique identity. This never changes.",
+		"botEmail": "Email address",
+		"botEmailDesc": "Mail sent to this address reaches your bot. Add +employee before the @ to reach one employee, like name+receptionist@.",
 		"dangerZone": "Danger Zone",
 		"deleteAccountDesc": "Permanently delete your account and all data. This cannot be undone."
 	},

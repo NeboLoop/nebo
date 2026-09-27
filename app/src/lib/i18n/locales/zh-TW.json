@@ -799,6 +799,8 @@
 		"viewUsageArrow": "檢視用量 →",
 		"botIdentity": "機器人身分",
 		"botIdentityDesc": "你的機器人永久且全域唯一的身分。永遠不會改變。",
+		"botEmail": "電子郵件地址",
+		"botEmailDesc": "寄到此地址的郵件會送達你的機器人。在 @ 前加上 +員工名，即可寄給某位員工，例如 name+receptionist@。",
 		"dangerZone": "危險區域",
 		"deleteAccountDesc": "永久刪除你的帳戶和所有資料。此操作無法復原。"
 	},

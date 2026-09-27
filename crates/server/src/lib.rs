@@ -19,6 +19,7 @@ mod workforce_reporter;
 pub mod import;
 pub mod local_access;
 pub mod middleware;
+mod mail_intake;
 mod migration;
 mod outside;
 mod plugin_commands;
@@ -2304,6 +2305,16 @@ pub async fn run(mut cfg: Config, quiet: bool) -> Result<(), NeboError> {
         warn!(error = %e, "parked approvals not converted");
     }
 
+    // Replies to mail go back the way it came, one email per turn.
+    state.channel_providers.write().await.insert(
+        mail_intake::EMAIL_CHANNEL.to_string(),
+        Arc::new(mail_intake::EmailChannel::new(
+            state.store.clone(),
+            state.config.neboai.api_url.clone(),
+            state.harness.sessions().clone(),
+        )) as Arc<dyn comm::ChannelProvider>,
+    );
+
     // The proof suite (`staffed_proof`) boots this real server in-process and
     // reaches the same registry, loader and bus the handlers use. Test-only:
     // compiled out of every shipped binary.
@@ -4055,6 +4066,17 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         return;
     }
 
+    // Mail to the bot's hosted address: the ONE mail intake decides who it
+    // is from and which employee takes it. Before the echo checks below —
+    // the hub delivers it on the bot's own stream.
+    if msg.topic == "channels/inbound" {
+        match mail_intake::InboundMail::from_hub_envelope(&msg.content) {
+            Ok(mail) => mail_intake::intake(&state, mail).await,
+            Err(e) => tracing::warn!(error = %e, msg_id = %msg.id, "channels/inbound: not a message the intake takes"),
+        }
+        return;
+    }
+
     // Route install events to napp registry
     if msg.topic == "installs" {
         if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
@@ -5736,7 +5758,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
 /// Resolve a role ID from an agent slug by scanning the active role registry.
 /// Resolve the companion chat's session key (matches what the frontend uses).
 /// Falls back to "web" if no companion chat exists yet.
-fn resolve_companion_session_key(state: &AppState) -> String {
+pub(crate) fn resolve_companion_session_key(state: &AppState) -> String {
     match state.store.get_companion_chat_by_user("companion-default") {
         Ok(Some(chat)) => {
             let key = chat.session_name.unwrap_or(chat.id);
@@ -5752,7 +5774,7 @@ fn resolve_companion_session_key(state: &AppState) -> String {
 /// desktop threads stay ONE continuous conversation (the secondary-agent
 /// counterpart of `resolve_companion_session_key`). Falls back to the agent's
 /// legacy `:web` session when the agent has no conversations yet.
-fn resolve_agent_session_key(state: &AppState, agent_id: &str) -> String {
+pub(crate) fn resolve_agent_session_key(state: &AppState, agent_id: &str) -> String {
     match state.store.get_latest_agent_chat(agent_id) {
         Ok(Some(chat)) => {
             let key = chat
