@@ -97,7 +97,7 @@ impl ShellTool {
         match si.resource.as_str() {
             "bash" if ctx.reach.offline => {
                 let mut result = self.handle_bash(&si, ctx).await;
-                result.content.push_str(OFFLINE_NOTE);
+                result.content.push_str(&offline_note());
                 result
             }
             "bash" => self.handle_bash(&si, ctx).await,
@@ -458,7 +458,7 @@ impl ShellTool {
         };
         let prefix = crate::confine::Confinement { offline: ctx.reach.offline, fence: fence.as_ref(), closed_ports: &closed_ports }
             .prefix()
-            .map_err(|_| ToolResult::error(OFFLINE_UNAVAILABLE))?;
+            .map_err(|_| ToolResult::error(offline_unavailable()))?;
         let (shell, shell_args) = process::shell_command();
         let mut cmd = match prefix.split_first() {
             Some((program, args)) => {
@@ -933,15 +933,21 @@ impl Drop for KillOnDrop {
 pub const COMMAND_EXIT: &str = "command_exit";
 
 /// Told after every command of a run whose web access is off.
-const OFFLINE_NOTE: &str = "\n\n(This ran with no network access: web access is off for this work, so nothing a command \
-runs reaches the internet or a server on this computer. Don't look for another way online; tell the owner what you \
-needed.)";
+fn offline_note() -> String {
+    format!("\n\n{}", crate::capabilities::web_off(
+        "This ran with no network access: if it reached for the network, that is why it failed.",
+        "this work",
+    ))
+}
 
 /// A run whose web access is off, on a computer that can't keep a command
 /// off the network.
-const OFFLINE_UNAVAILABLE: &str = "Commands can't run for this work here: web access is off for it, and this computer \
-has no way to run a command without the network. Tell the owner what you needed the command for; web access is turned \
-on in the employee's settings.";
+fn offline_unavailable() -> String {
+    crate::capabilities::web_off(
+        "Commands can't run for this work here: this computer has no way to run a command without the network.",
+        "this work",
+    )
+}
 
 fn spawn_failure(command: &str, e: &std::io::Error) -> ToolResult {
     let err_str = e.to_string();

@@ -453,6 +453,61 @@ async fn typing_into_a_command_meets_the_command_safeguard() {
     assert!(r.is_error && r.content.contains("no session bg-0000aaaa"), "{}", r.content);
 }
 
+/// Every refusal caused by web access being off says so and closes every
+/// other route, for the employee and for its helpers alike, whichever web
+/// tool was reached for. 2026-09-27 release-fix proof
+/// (helper-cannot-exceed-parent): the helper was told only "This is beyond
+/// what the employee this work is for may do", so it tried the browser,
+/// fetch_url and curl in turn in every run.
+#[tokio::test]
+async fn web_off_refusals_say_so_and_close_every_route() {
+    let (_d, store) = store();
+    put(&store, rule(Scope::Company, cap("web"), None, Effect::Allow));
+    put(&store, rule(Scope::Employee("clerk".into()), cap("web"), None, Effect::Deny));
+    let clerk = resolve_grant(&store, "clerk", None);
+    // The clerk's helper as delegation seats one, and a helper whose own
+    // rules allow the web but whose employee's don't.
+    let mut helper = clerk.clone();
+    helper.ceiling = Some(Ceiling::Parent { grant: Box::new(clerk.clone()) });
+    let mut narrowed = resolve_grant(&store, "", None);
+    narrowed.ceiling = Some(Ceiling::Parent { grant: Box::new(clerk.clone()) });
+    let mut probes = Vec::new();
+    let mut ran = Vec::new();
+    for (name, key) in [("browser", "browser_open"), ("fetch", "fetch_url"), ("search", "search_web")] {
+        let (p, r) = Probe::new(name, key, Some("web"));
+        probes.push(p);
+        ran.push(r);
+    }
+    let reg = registry(&store, probes).await;
+    let run = |key: &str, grant: Grant, door: Door| ToolContext {
+        session_key: key.into(),
+        door,
+        grant: Some(Arc::new(grant)),
+        ..Default::default()
+    };
+    for (who, c) in [
+        ("the clerk", run("agent:clerk:web", clerk.clone(), Door::Chat)),
+        ("the clerk's helper", run("subagent:agent:clerk:web:sa-1", helper, Door::Helper)),
+        ("a helper under the clerk's grant", run("subagent:agent:clerk:web:sa-2", narrowed, Door::Helper)),
+    ] {
+        for tool in ["browser", "fetch", "search"] {
+            let r = reg.execute(&c, tool, json!({})).await;
+            assert!(r.is_error, "{who}: {tool} ran");
+            for said in [
+                "web access is off",
+                "the browser, fetch_url, a web search, or a command such as curl",
+                "No other tool, helper or coworker gets around it",
+                "turned on in the employee's settings",
+                "don't give what it would have said from memory",
+            ] {
+                assert!(r.content.contains(said), "{who}, {tool}: {said:?} missing from {:?}", r.content);
+            }
+            assert!(!r.content.contains("beyond what"), "{who}, {tool}: the reason is named: {}", r.content);
+        }
+    }
+    assert!(ran.iter().all(|r| r.load(Ordering::SeqCst) == 0));
+}
+
 #[tokio::test]
 async fn helper_cannot_exceed_parent() {
     let (_d, store) = store();

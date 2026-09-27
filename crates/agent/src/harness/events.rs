@@ -90,6 +90,9 @@ pub enum TurnEvent {
     StreamCut,
     /// The last reply had no visible output.
     EmptyReply,
+    /// The last reply wrote a call to this tool out as text: it was cut
+    /// there, and the call did not run (`reminders::NoteFence`).
+    TextCall(String),
     /// The owner's message reached the running work and this step answers
     /// it, with tools off. The note says what happens after the answer,
     /// as the harness decided it (`owner_intent`); it stores the intent.
@@ -207,6 +210,7 @@ pub const NAMES: &[&str] = &[
     "cutoff_resume",
     "stream_cut",
     "empty_reply",
+    "text_call",
     "mid_turn_message",
     "mid_turn_answered",
     "workflow_contract",
@@ -396,6 +400,13 @@ pub fn attachment_for(e: &TurnEvent) -> Option<Attachment> {
         TurnEvent::EmptyReply => (
             "empty_reply",
             "Your last reply had no visible output. Continue.".to_string(),
+        ),
+        TurnEvent::TextCall(tool) => (
+            "text_call",
+            format!(
+                "Your last reply wrote a call to {tool} out as text, so it did not run and the owner did not see it. \
+                 A tool runs only when you call it as a tool, never from text. If the work still needs it, call it now."
+            ),
         ),
         TurnEvent::MidTurnMessage { via, intent } => {
             let next = match intent {
@@ -1064,6 +1075,7 @@ mod tests {
             TurnEvent::TeamsListing(lined.clone()),
             TurnEvent::StreamCut,
             TurnEvent::EmptyReply,
+            TurnEvent::TextCall("read_file".into()),
             TurnEvent::MidTurnMessage { via: "web".into(), intent: OwnerIntent::Stop },
             TurnEvent::MidTurnAnswered(OwnerIntent::Aside),
             TurnEvent::DateChanged(chrono::NaiveDate::from_ymd_opt(2026, 9, 24).unwrap()),

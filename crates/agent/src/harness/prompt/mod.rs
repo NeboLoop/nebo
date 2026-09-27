@@ -250,6 +250,17 @@ mod tests {
         }
     }
 
+    /// A refused call, the employee's or its helper's, is reported as
+    /// refused: no other route, and nothing filled in from memory.
+    #[test]
+    fn a_refusal_is_reported_not_filled_in() {
+        let text = system_prompt();
+        let line = "When a call is refused, yours or a helper's, don't reach for another way to do the same thing, and \
+                    don't fill the gap from memory: what a page, file or account says is known only from reading it. \
+                    Tell the owner what couldn't be done and why.";
+        assert!(text.contains(line), "{line:?} missing from:\n{text}");
+    }
+
     /// The size snapshot. Update the number when the text changes on
     /// purpose; the prompt must stay a small fraction of the 39k-char prompt
     /// it replaced.
@@ -260,5 +271,5 @@ mod tests {
         assert!(chars < 8_000);
     }
 
-    const SYSTEM_PROMPT_CHARS: usize = 6_939;
+    const SYSTEM_PROMPT_CHARS: usize = 7_107;
 }
